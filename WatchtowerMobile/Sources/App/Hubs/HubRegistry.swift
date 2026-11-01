@@ -37,7 +37,9 @@ struct PendingFarewell: Equatable, Sendable {
     /// not reach the zones after); a relay link's goes to its Mac's mailbox.
     var route: HubRoute
     /// The iCloud account the link was made on: another account's phone
-    /// cannot reach the zones, so its farewell is dropped.
+    /// cannot reach the zones, so its farewell is dropped. Only iCloud routes
+    /// compare it (`retryFarewells`); a relay farewell stores "" and never
+    /// depends on the iCloud account (R19).
     var userRecordName: String
     /// The sealed wire record, as it waited in the send queue.
     var record: CloudRecord
@@ -368,6 +370,31 @@ final class HubRegistry {
     func removePendingFarewell(_ hubID: String) throws {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM pending_farewells WHERE hub_id = ?", arguments: [hubID])
+        }
+    }
+
+    // MARK: Pending slot removals (relay client Phase 3 Task 10)
+
+    /// The relay Macs whose `remove_slot` failed and is retried at launch, oldest first.
+    func pendingSlotRemovals() throws -> [String] {
+        try queue.read { db in
+            try String.fetchAll(db, sql: "SELECT mac_device_id FROM pending_slot_removals ORDER BY since")
+        }
+    }
+
+    /// Keeps `macDeviceID`'s slot removal for the next launch (one row per Mac; a second keeps the first's date).
+    func keepSlotRemoval(_ macDeviceID: String, since: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO pending_slot_removals (mac_device_id, since) VALUES (?, ?)",
+                arguments: [macDeviceID, since.timeIntervalSince1970]
+            )
+        }
+    }
+
+    func removeSlotRemoval(_ macDeviceID: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM pending_slot_removals WHERE mac_device_id = ?", arguments: [macDeviceID])
         }
     }
 

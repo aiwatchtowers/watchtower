@@ -15,6 +15,10 @@ struct TransportFactory: Sendable {
     let serves: @Sendable (_ route: HubRoute) -> Bool
     /// A phone-role transport for `route` on `store`; a route this factory cannot serve throws `UnsupportedRouteError`.
     let make: @Sendable (_ route: HubRoute, _ store: TransportStore, _ hubID: String, _ energy: EnergyCounter?) throws -> any LiveTransport
+    /// A Relay link's pairing transport (relay client Phase 3 Task 10): both lanes on `pair/<slot>`, on `store`
+    /// bound to the Mac `macDeviceID` (after `promote_pairing`, `make` goes on with the same store).
+    var makePairing: @Sendable (_ macDeviceID: String, _ slot: String, _ store: TransportStore, _ energy: EnergyCounter?) throws
+        -> any LiveTransport = { macDeviceID, _, _, _ in throw UnsupportedRouteError(route: .hostedRelay(macDeviceID: macDeviceID)) }
     /// One record saved outside any engine (the kept farewell, #143): CloudKit's `saveDirectly(_:scope:hubID:)`,
     /// or on a relay route a save through the shared client into the phone's mailbox with that Mac.
     let sendDirectly: @Sendable (_ record: CloudRecord, _ route: HubRoute, _ hubID: String) async throws -> Void
@@ -28,7 +32,7 @@ struct TransportFactory: Sendable {
 
     /// CloudKit, and the hosted relay on `relay`'s shared session.
     static func live(relay: SharedRelaySession) -> Self {
-        Self(
+        var factory = Self(
             isAvailable: { CloudKitTransport.entitlementPresent() },
             serves: { route in
                 guard case .hostedRelay = route else { return true }
@@ -55,5 +59,12 @@ struct TransportFactory: Sendable {
             },
             wake: CloudKitPushWake()
         )
+        factory.makePairing = { macDeviceID, slot, store, energy in
+            guard let session = try relay.session() else { throw UnsupportedRouteError(route: .hostedRelay(macDeviceID: macDeviceID)) }
+            return try HostedRelayTransport(
+                session: session, store: store, macDeviceID: macDeviceID, mode: .pairing(slot: slot), energy: energy
+            )
+        }
+        return factory
     }
 }

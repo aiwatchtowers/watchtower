@@ -61,7 +61,7 @@ final class AppRootRelinkTests: XCTestCase {
         let identity = DeviceIdentity(deviceID: try keyStore.deviceID()?.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
         let engine = FakeAudioEngine()
         let clock = FakeClock()
-        let factory = HubSessionFactory { [weak self] _, hubID, route, device in
+        var factory = HubSessionFactory { [weak self] _, hubID, route, device in
             guard let self else { throw CancellationError() }
             try paths.prepare(hubID)
             let zone = zones[hubID] ?? InMemoryCloudTransport()
@@ -90,6 +90,9 @@ final class AppRootRelinkTests: XCTestCase {
             }
             return session
         }
+        // A Relay link's pairing session: the same hub zone stands in for `pair/<slot>`.
+        let make = factory.make
+        factory.makePairing = { hubID, mac, _ in try make(nil, hubID, .hostedRelay(macDeviceID: mac), nil) }
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults
         ) { _ in }
@@ -109,6 +112,40 @@ final class AppRootRelinkTests: XCTestCase {
             },
             farewellDelivery: farewellDelivery
         )
+    }
+
+    /// Relay client Phase 3 Task 10: after `promote_pairing`, `prepare` on the Mac's route replaces the pairing
+    /// session with the hub's, on the same files: the keybox the pairing read stays; a second `prepare` keeps the
+    /// hub's session. The launch's orphan pass keeps a confirmed link's files.
+    func testAPairingSessionHandsItsFilesOnAfterPromote() async throws {
+        let root = try makeRoot()
+        let mac = String(repeating: "m", count: 52)
+        let deviceID = TestE2E.deviceID.uuidString
+        // The scan stored the hub's keys before the pairing transport (as the link flow does).
+        try keyStore.saveHubLink(try ScannedHubKeys(code(iat: Int64(Date().timeIntervalSince1970))).unconfirmedLink)
+        _ = try await root.preparePairing(macDeviceID: mac, slot: "slot-1", hubID: hubID)
+        let pairing = try XCTUnwrap(root.env.session(hubID))
+        let grant = DeviceGrant(
+            deviceID: deviceID, hubID: hubID, name: "Colleague A's iPhone", scope: .private, linked: true,
+            typingAllowed: false, startSessionsAllowed: true
+        )
+        let zone = try XCTUnwrap(zones[hubID])
+        try await TestPhone.hub(over: zone).save([try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date())])
+        let fetched = await root.fetchKeybox(hubID: hubID, deviceID: deviceID)
+        XCTAssertNotNil(fetched)
+
+        _ = try await root.prepare(route: .hostedRelay(macDeviceID: mac), hubID: hubID, fresh: false)
+
+        let hubSession = try XCTUnwrap(root.env.session(hubID))
+        XCTAssertFalse(hubSession === pairing, "the pairing session went")
+        let kept = await root.storedKeybox(hubID: hubID, deviceID: deviceID)
+        XCTAssertNotNil(kept, "its replica stayed")
+        _ = try await root.prepare(route: .hostedRelay(macDeviceID: mac), hubID: hubID, fresh: false)
+        XCTAssertTrue(root.env.session(hubID) === hubSession, "a hub session is not rebuilt")
+
+        let hubID = hubID
+        await root.launch { [hubID] }.value
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(hubID)), "a confirmed link's files stay")
     }
 
     /// A shared link code of the test hub issued at `iat`.

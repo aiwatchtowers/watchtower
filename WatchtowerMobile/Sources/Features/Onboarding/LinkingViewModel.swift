@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import WatchtowerHostedRelay
 import WatchtowerSync
 
 /// The link flow (mobile POC spec §2.3 steps 1–5, mobile E2E spec §2.3) and
@@ -28,6 +29,9 @@ final class LinkingViewModel {
         case failed(LinkFailure)
         /// "Linked to <Mac name>", until the owner continues.
         case linked(macName: String)
+        /// The relay account holds 3 Macs (the `open_pairing` pre-check, before any hello): the slots screen,
+        /// whose removal lets the link go on with the same code (`relaySlots`).
+        case slotsFull(macName: String)
     }
 
     /// Step 1's grace for the phone's clock: the code is refused locally
@@ -76,6 +80,12 @@ final class LinkingViewModel {
     /// The hub ids of the saved links that cannot be read (#222), refreshed
     /// with `links`: listed with Forget only, never linked through.
     private(set) var unreadableHubIDs: [String] = []
+    /// The confirmed Relay links still finishing (`LinkStore.promoted`), oldest first, refreshed with `links`.
+    private(set) var promotedLinks: [PromotedLink] = []
+    /// The slots screen's state: the Macs in this account's slots and the removal running or failed.
+    private(set) var relaySlots = RelaySlotsState()
+    /// Finishes the confirmed Relay links (Settings → Macs reads its running and failed hubs).
+    let resumer: PromotedLinkResumer
 
     /// Set by the owner right after init (it owns this model).
     @ObservationIgnored weak var host: (any LinkHost)? {
@@ -88,6 +98,12 @@ final class LinkingViewModel {
     /// The phone's E2E keys: the device identity and each hub's link.
     @ObservationIgnored private let keys: any PhoneKeyStore
     @ObservationIgnored private let clock: any LinkClock
+    /// The relay's account ops (off: never asked).
+    @ObservationIgnored private let relay: any RelayLinkOps
+    /// The code a failure's Try Again opens again (`LinkFailure.retryTitle`).
+    @ObservationIgnored private var retryCode: URL?
+    /// The code the inline slots screen goes on with after a removal.
+    @ObservationIgnored private var slotsCode: RelayCode?
     /// Hubs whose link is ending (an unlink, a removal, the account
     /// switch): a removal or an account signal arriving meanwhile is the
     /// ending's own, and is ignored.
@@ -102,13 +118,18 @@ final class LinkingViewModel {
         store: LinkStore,
         identity: DeviceIdentity,
         keys: any PhoneKeyStore,
-        clock: any LinkClock = SystemLinkClock()
+        clock: any LinkClock = SystemLinkClock(),
+        relay: any RelayLinkOps = OffRelayLinkOps()
     ) {
         self.access = access
         self.store = store
         self.identity = identity
         self.keys = keys
         self.clock = clock
+        self.relay = relay
+        resumer = PromotedLinkResumer(store: store, relay: relay, clock: clock)
+        resumer.finish = { [weak self] link in await self?.completePromoted(link) ?? .failed }
+        resumer.changed = { [weak self] in self?.refreshLinks() }
     }
 
     /// The phone has at least one saved link (the tabs, not Welcome).
@@ -123,6 +144,7 @@ final class LinkingViewModel {
     func refreshLinks() {
         links = host?.linkedHubs() ?? []
         unreadableHubIDs = host?.unreadableHubIDs() ?? []
+        promotedLinks = store.promoted.values.sorted { $0.since < $1.since }
     }
 
     /// `hubID`'s row as the host holds it now (not the cached `links`).
@@ -145,7 +167,8 @@ final class LinkingViewModel {
         // A report about the last link is read by now; stale stays until
         // the active hub's heartbeat clears it.
         switch notice {
-        case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan: notice = nil
+        case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan, .macOnRelay, .finishingInBackground,
+             .needsOwner: notice = nil
         case .stale, nil: break
         }
         phase = .scanning
@@ -159,6 +182,7 @@ final class LinkingViewModel {
     /// link).
     func dismiss() {
         guard !isBusy else { return }
+        if case .slotsFull = phase { closeSlots() }
         phase = .idle
     }
 
@@ -174,44 +198,15 @@ final class LinkingViewModel {
     /// A `watchtower://link` URL, from the scanner or the system Camera app:
     /// steps 1–5 for the code's hub, added to the linked ones.
     func open(_ url: URL) async {
-        guard !isBusy else { return }
-        let payload: LinkPayload
-        switch LinkPayload.parse(url) {
-        case let .success(parsed):
-            payload = parsed
-        case .failure(.newerVersion):
-            phase = .failed(.updateApp)
-            return
-        case .failure(.olderVersion):
-            phase = .failed(.updateMac)
-            return
-        case let .failure(error):
-            Self.logger.warning("unusable link code: \(String(describing: error), privacy: .public)")
-            phase = .failed(.refused)
-            return
-        }
-        // The Kit reads v4 now, but which route a v4 code links over is relay client Phase 3 Task 10's: until then
-        // a v4 code reads as it did before the Kit could read v4. A v3 code always carries its owner.
-        guard payload.v <= LinkPayload.currentVersion, let ownerUser = payload.ownerUser else {
-            phase = .failed(.updateApp)
-            return
-        }
-        // The hub id names the hub's directories: only a plain name.
-        guard HubPaths.isValidHubID(payload.hubID) else {
-            Self.logger.warning("link code with an unusable hub id")
-            phase = .failed(.refused)
-            return
-        }
-        let hubKeys: ScannedHubKeys
-        do {
-            hubKeys = try ScannedHubKeys(payload)
-        } catch {
-            Self.logger.warning("link code with unusable keys: \(String(describing: error), privacy: .public)")
-            phase = .failed(.refused)
+        guard !isBusy, let (payload, hubKeys) = readCode(url) else { return }
+        // A confirmed Relay link of this hub: one attempt to finish it, whatever the code (its expiry included); no
+        // hello, no relay pairing call of the code's own.
+        if store.promoted[payload.hubID] != nil {
+            await finishPromoted(payload.hubID, ownerAsked: true)
             return
         }
         // Step 1: only a code clearly past its expiry on this clock.
-        if Double(payload.exp) < clock.now().timeIntervalSince1970 - Self.expiryGrace {
+        guard !isExpired(payload) else {
             phase = .failed(.expired)
             return
         }
@@ -229,10 +224,35 @@ final class LinkingViewModel {
             phase = .linked(macName: row.link.macName)
             return
         }
-        // A fifth Mac: refused before any share is accepted or written.
-        if links.count >= HubRegistry.limit, !links.contains(where: { $0.hubID == payload.hubID }) {
+        // A fifth Mac: refused before any share is accepted or written. A confirmed Relay link still finishing
+        // counts as a Mac.
+        let promotedElsewhere = store.promoted.keys.filter { key in !links.contains { $0.hubID == key } }.count
+        if links.count + promotedElsewhere >= HubRegistry.limit, !links.contains(where: { $0.hubID == payload.hubID }) {
             phase = .failed(.tooManyMacs)
             return
+        }
+        // The route (R4): the paying check only for a hub on the relay with the relay available.
+        let route = await LinkRoutePolicy.decide(payload, relay: relay.availability) { [relay] in
+            await LinkRoutePolicy.paying { try await relay.accountState() }
+        }
+        let ownerUser: String
+        switch route {
+        case let .refuse(failure):
+            phase = .failed(failure)
+            return
+        case let .relay(mac, authPub):
+            if let row = row(payload.hubID), !ending.contains(row.hubID) {
+                report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
+            }
+            await connectRelay(RelayCode(payload: payload, mac: mac, authPub: authPub, hubKeys: hubKeys))
+            return
+        case .cloudKit:
+            // The route rule sends only a code that offers iCloud here, and such a code names its owner.
+            guard let owner = payload.ownerUser else {
+                phase = .failed(.refused)
+                return
+            }
+            ownerUser = owner
         }
         // Step 2.
         guard await access.availability() == .available else {
@@ -255,6 +275,38 @@ final class LinkingViewModel {
             report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
         }
         await connect(payload, ownerUser: ownerUser, hubKeys: hubKeys, userRecordName: userRecordName)
+    }
+
+    /// The scanned code and its hub keys; nil with the failure shown when the code cannot be used.
+    private func readCode(_ url: URL) -> (LinkPayload, ScannedHubKeys)? {
+        let payload: LinkPayload
+        switch LinkPayload.parse(url) {
+        case let .success(parsed):
+            payload = parsed
+        case .failure(.newerVersion):
+            phase = .failed(.updateApp)
+            return nil
+        case .failure(.olderVersion):
+            phase = .failed(.updateMac)
+            return nil
+        case let .failure(error):
+            Self.logger.warning("unusable link code: \(String(describing: error), privacy: .public)")
+            phase = .failed(.refused)
+            return nil
+        }
+        // The hub id names the hub's directories: only a plain name.
+        guard HubPaths.isValidHubID(payload.hubID) else {
+            Self.logger.warning("link code with an unusable hub id")
+            phase = .failed(.refused)
+            return nil
+        }
+        do {
+            return (payload, try ScannedHubKeys(payload))
+        } catch {
+            Self.logger.warning("link code with unusable keys: \(String(describing: error), privacy: .public)")
+            phase = .failed(.refused)
+            return nil
+        }
     }
 
     /// "Linked to <Mac name>" → the notification prompt → Now.
@@ -358,6 +410,19 @@ final class LinkingViewModel {
     /// no row yet (a first link, or a re-pair whose old link ended) leaves no
     /// session, directory or keys behind.
     private func fail(_ failure: LinkFailure, hubID: String) async {
+        // A confirmed Relay link is never failed: its slot and keys go only by the owner's Cancel.
+        guard store.promoted[hubID] == nil else {
+            Self.logger.notice("a pending link of a confirmed relay link dropped; the link resumes")
+            store.pending = nil
+            linkCode = nil
+            macSeesPhone = false
+            phase = .idle
+            return
+        }
+        // A Relay link not confirmed yet: its pairing slot is closed first (best effort; it expires anyway).
+        if let pending = store.pending, pending.link.hubID == hubID, let slot = pending.relaySlot {
+            await relay.close(slot: slot)
+        }
         store.pending = nil
         linkCode = nil
         macSeesPhone = false
@@ -401,14 +466,19 @@ final class LinkingViewModel {
     /// host's transport seals it to the hub's agreement key and signs it with
     /// the device key.
     private func helloRecord(
-        hubID: String, for device: LinkedDevice, keys deviceKeys: DeviceIdentityKeys, linkNonce: String
+        hubID: String,
+        for device: LinkedDevice,
+        keys deviceKeys: DeviceIdentityKeys,
+        linkNonce: String,
+        relayDeviceID: String? = nil
     ) throws -> CloudRecord {
         guard let host else { throw CancellationError() }
         let payload = host.devicePayload(hubID: hubID, for: device, linkNonce: linkNonce, unlinked: false, now: clock.now())
         let hello = DeviceHello(
             device: payload,
             signingKey: WireBytes.base64URL(deviceKeys.signing.publicKey.rawRepresentation),
-            agreementKey: WireBytes.base64URL(deviceKeys.agreement.publicKey.rawRepresentation)
+            agreementKey: WireBytes.base64URL(deviceKeys.agreement.publicKey.rawRepresentation),
+            relayDeviceID: relayDeviceID
         )
         return try CloudRecordFactory.record(for: hello, modifiedAt: payload.updatedAt)
     }
@@ -430,6 +500,21 @@ final class LinkingViewModel {
             store.pending = nil
             phase = .failed(.refused)
             return
+        }
+        // A Relay link the owner already confirmed is never bounded by the code's deadline (point 9).
+        switch relayConfirmation(of: pending) {
+        case .promoted:
+            // A kill between the two writes of `LinkStore.confirm`: the promoted entry is the link.
+            store.pending = nil
+            return
+        case .keysArrived:
+            await confirmPendingRelay(pending)
+            return
+        case .locked:
+            Self.logger.notice("keys locked at launch: the pending link waits for the next launch")
+            return
+        case .notYet:
+            break
         }
         guard clock.now() < pending.deadline, pending.baselineCaptured else {
             await fail(.noAnswer, hubID: pending.link.hubID)
@@ -469,7 +554,11 @@ final class LinkingViewModel {
         }
         phase = .checking
         do {
-            _ = try await host?.prepare(route: pending.link.route, hubID: pending.link.hubID, fresh: false)
+            if let slot = pending.relaySlot, let mac = pending.link.relayMacDeviceID {
+                _ = try await host?.preparePairing(macDeviceID: mac, slot: slot, hubID: pending.link.hubID)
+            } else {
+                _ = try await host?.prepare(route: pending.link.route, hubID: pending.link.hubID, fresh: false)
+            }
         } catch {
             await fail(.local(error.localizedDescription), hubID: pending.link.hubID)
             return
@@ -524,6 +613,11 @@ final class LinkingViewModel {
                 return
             }
         }
+        // A Relay link's wait ends with its slot at the latest: a code still valid then needs a new slot.
+        if let expiresAt = pending.relaySlotExpiresAt, clock.now() >= expiresAt {
+            await fail(.expired, hubID: hubID)
+            return
+        }
         await fail(.noAnswer, hubID: hubID)
     }
 
@@ -543,6 +637,12 @@ final class LinkingViewModel {
     /// fifth hub that raced past the scan's check is refused (its keys go).
     private func complete(_ pending: PendingLink, keys boxKeys: KeyboxKeys, linkedAt: Date?) async {
         let hubID = pending.link.hubID
+        if pending.relaySlot != nil {
+            // Kept before the keys: a launch that finds them confirms the link with the grant's own time.
+            var kept = pending
+            kept.linkedAt = linkedAt
+            store.pending = kept
+        }
         do {
             guard let unconfirmed = try keys.hubLink(hubID) else { throw SecureTransportError.keysUnavailable }
             try keys.saveHubLink(try unconfirmed.adding(boxKeys))
@@ -553,6 +653,10 @@ final class LinkingViewModel {
         }
         var record = pending.link
         record.linkedAt = linkedAt
+        if let slot = pending.relaySlot {
+            await confirmRelay(pending, record: record, slot: slot)
+            return
+        }
         guard let host, let device = identity.linkedDevice(for: record) else { return }
         do {
             try await host.linked(record, device: device)
@@ -568,13 +672,25 @@ final class LinkingViewModel {
         linkCode = nil
         macSeesPhone = false
         refreshLinks()
-        // A notice about another link's state no longer applies; a report of
-        // what an unlink lost ("Not sent", a recording kept) stays.
+        // R4: the fetch that brought the keys also read the hub's data zone and the mailbox. A Mac that runs over
+        // Relay, on a phone that cannot use Relay, would send this link nothing: it ends at once.
+        if host.hubRunsOnRelay(hubID), !(await canUseRelay()), let row = row(hubID), !ending.contains(hubID) {
+            Self.logger.notice("an iCloud link to a Mac on Relay ended")
+            _ = await endLink(row, farewell: true, keepRecordings: true)
+            phase = .failed(.macOnRelay(macName: record.macName))
+            return
+        }
+        clearNoticeAfterLink()
+        phase = .linked(macName: record.macName)
+    }
+
+    /// A notice about another link's state no longer applies once a link completes; a report of what an unlink
+    /// lost ("Not sent", a recording kept) stays.
+    private func clearNoticeAfterLink() {
         switch notice {
         case .notSent, .recordingKept, .recordingsProblem: break
         default: notice = nil
         }
-        phase = .linked(macName: record.macName)
     }
 
     /// The replica of `link`'s hub holds a linked, unrevoked keybox of that
@@ -711,8 +827,17 @@ final class LinkingViewModel {
     func unlink(_ hubID: String) async {
         guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
         phase = .unlinking
-        report(LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName), removed: hubID)
+        _ = await unlinkRow(row)
         phase = .idle
+    }
+
+    /// An unlink of `row`: its farewell, the hub removed, and for a Relay link its slot freed afterwards (R14:
+    /// once the farewell left the queue or was kept, `remove_slot`; a failure is kept for a retry at launch).
+    /// Returns whether the slot is free (true for an iCloud link).
+    private func unlinkRow(_ row: HubRow) async -> Bool {
+        report(LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
+        guard case let .hostedRelay(mac) = row.link.route, row.state == .linked else { return true }
+        return await removeRelaySlot(mac, keepOnFailure: true)
     }
 
     /// Settings → Macs → Forget: a hub the Mac removed goes with no farewell
@@ -796,19 +921,23 @@ final class LinkingViewModel {
     func retryFarewells() async {
         guard let host, !isBusy else { return }
         let kept = host.pendingFarewells()
-        guard !kept.isEmpty, await access.availability() == .available else { return }
-        let account: String
-        do {
-            account = try await access.identity()
-        } catch {
-            Self.logger.warning("account check before the farewells failed: \(error.localizedDescription, privacy: .public)")
-            return
+        guard !kept.isEmpty else { return }
+        // Only an iCloud farewell needs the account (carry-over R19: a Relay farewell never depends on iCloud).
+        var account: String?
+        if kept.contains(where: { $0.route.cloudKitScope != nil }), await access.availability() == .available {
+            do {
+                account = try await access.identity()
+            } catch {
+                Self.logger.warning("account check before the farewells failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
         for farewell in kept {
             let hubID = farewell.hubID
+            let iCloud = farewell.route.cloudKitScope != nil
+            if iCloud, account == nil { continue }
             // Read again at its turn: a relink dropped it (`LinkHost.linked`), or an unlink replaced it.
             guard host.pendingFarewells().contains(where: { $0.isSame(as: farewell) }), !ending.contains(hubID) else { continue }
-            if isLinked(hubID) || farewell.userRecordName != account {
+            if isLinked(hubID) || (iCloud && farewell.userRecordName != account) {
                 host.dropFarewell(hubID)
                 continue
             }
@@ -818,8 +947,8 @@ final class LinkingViewModel {
             } else if await !host.resendFarewell(farewell) {
                 continue
             }
-            // The resend awaited: a link of this hub begun meanwhile has its own shares.
-            guard !isLinked(hubID) else { continue }
+            // The resend awaited: a link of this hub begun meanwhile has its own shares. A Relay link has none.
+            guard iCloud, !isLinked(hubID) else { continue }
             do {
                 try await access.leave(route: farewell.route, hubID: hubID)
             } catch {
@@ -831,7 +960,7 @@ final class LinkingViewModel {
     /// `hubID` has a saved link, a pending one, or a code of it being
     /// linked: read now, from the host and the store.
     private func isLinked(_ hubID: String) -> Bool {
-        row(hubID) != nil || store.pending?.link.hubID == hubID || linkingHubID == hubID
+        row(hubID) != nil || store.pending?.link.hubID == hubID || linkingHubID == hubID || store.promoted[hubID] != nil
     }
 
     /// The transport saw an iCloud account change. Another account ends
@@ -839,7 +968,8 @@ final class LinkingViewModel {
     /// keeps them until an account is back (spec §9, multi-hub §6.2).
     func accountChanged() async {
         refreshLinks()
-        guard !links.isEmpty else { return }
+        // A Relay link depends on no iCloud account (R19).
+        guard links.contains(where: { $0.link.route.cloudKitScope != nil }) else { return }
         guard await access.availability() == .available else { return }
         let current: String
         do {
@@ -850,10 +980,12 @@ final class LinkingViewModel {
         }
         // An unlink or a removal that ran during the check already ended
         // its hub.
-        let rows = (host?.linkedHubs() ?? []).filter { !ending.contains($0.hubID) }
+        let rows = (host?.linkedHubs() ?? []).filter { !ending.contains($0.hubID) && $0.link.route.cloudKitScope != nil }
         guard let host, rows.contains(where: { $0.link.userRecordName != current }) else { return }
-        Self.logger.notice("iCloud account changed while linked: removing every hub")
-        store.pending = nil
+        Self.logger.notice("iCloud account changed while linked: removing every iCloud hub")
+        if store.pending?.relaySlot == nil {
+            store.pending = nil
+        }
         ending.formUnion(rows.map(\.hubID))
         // The recordings were made for the old account's Macs: not carried
         // to whatever the new account links, reported "Not sent".
@@ -947,7 +1079,8 @@ final class LinkingViewModel {
         switch notice {
         case .stale, nil:
             notice = stale
-        case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan:
+        case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan, .macOnRelay, .finishingInBackground,
+             .needsOwner:
             break
         }
     }
@@ -982,7 +1115,7 @@ final class LinkingViewModel {
         removeKeys(hubID)
         refreshLinks()
         // A kept farewell still needs the zones: the shares go once it is out (`retryFarewells`).
-        if linked, !wipe.farewellKept {
+        if linked, !wipe.farewellKept, route.cloudKitScope != nil {
             do {
                 try await access.leave(route: route, hubID: hubID)
             } catch {
@@ -996,5 +1129,418 @@ final class LinkingViewModel {
         guard let host else { throw CancellationError() }
         let payload = host.devicePayload(hubID: hubID, for: device, linkNonce: linkNonce, unlinked: unlinked, now: clock.now())
         return try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)
+    }
+}
+
+// MARK: - Linking over the relay (relay client Phase 3 Task 10)
+
+/// A scanned code that links over a relay pairing slot: the code, the Mac's relay id and `relay_auth` key, and the
+/// hub's keys from it.
+struct RelayCode {
+    let payload: LinkPayload
+    let mac: String
+    let authPub: Data
+    let hubKeys: ScannedHubKeys
+}
+
+/// The slots screen's state (`LinkingViewModel.relaySlots`): the Macs in slots, which one is being removed, and
+/// which removal failed. `finishing` names the confirmed link the screen was opened for from Settings → Macs
+/// (Manage Macs); nil while it shows on the link screen, before the owner confirmed.
+struct RelaySlotsState: Equatable {
+    var macs: [String] = []
+    var removing: String?
+    var failed: String?
+    /// The removed Mac's row as it read when Remove was pressed: an unlink ends its registry row before
+    /// `remove_slot` answers, and the row keeps its name and kind while removing and after a failure.
+    var pinned: [String: RelaySlotsModel.Pinned] = [:]
+    var finishing: String?
+    /// The account state is being read (Manage Macs).
+    var loading = false
+}
+
+extension LinkingViewModel {
+    /// A code clearly past its expiry on this clock.
+    private func isExpired(_ payload: LinkPayload) -> Bool {
+        Double(payload.exp) < clock.now().timeIntervalSince1970 - Self.expiryGrace
+    }
+
+    /// The relay path of steps 2–5 (R3): the slot (`open_pairing`, after its pre-check), the keys, the pairing
+    /// transport, the hello with this phone's relay id in `pair/<slot>`, the wait. Nothing is written before the
+    /// slot opens; a failure before the owner confirmed closes it and removes what the link wrote.
+    private func connectRelay(_ code: RelayCode) async {
+        let payload = code.payload
+        let slot: (slot: String, expiresAt: Date)
+        do {
+            slot = try await relay.open(mac: code.mac)
+        } catch HostedRelayPairing.Refusal.slotsFull(let macs) {
+            slotsCode = code
+            relaySlots = RelaySlotsState(macs: macs)
+            phase = .slotsFull(macName: payload.macName)
+            return
+        } catch {
+            let failure = Self.openFailure(error, code: payload)
+            retryCode = failure.retryTitle == nil ? nil : payload.url()
+            phase = .failed(failure)
+            return
+        }
+        let deviceKeys: DeviceIdentityKeys
+        let relayDeviceID: String
+        do {
+            deviceKeys = try keys.identity()
+            try keys.saveHubLink(code.hubKeys.unconfirmedLink)
+        } catch {
+            Self.logger.error("device keys unavailable: \(String(describing: error), privacy: .public)")
+            await relay.close(slot: slot.slot)
+            phase = .failed(.local(Self.keysUnavailableReason))
+            return
+        }
+        identity.deviceID = deviceKeys.deviceID.uuidString
+        var record = LinkRecord(
+            hubID: payload.hubID, macName: payload.macName, scope: .private, ownerName: payload.ownerUser ?? "",
+            userRecordName: "", nonce: payload.nonce, dataShareURL: nil, relayShareURL: nil, deviceID: identity.deviceID,
+            relayAuthPub: payload.relayAuthPub, hubTransports: payload.transports
+        )
+        record.setRelay(mac: code.mac)
+        guard let host, let device = identity.linkedDevice(for: record) else { return }
+        let deadline = min(waitDeadline(expiresAt: payload.exp), slot.expiresAt)
+        let issuedAt = Date(timeIntervalSince1970: TimeInterval(payload.iat))
+        store.pending = PendingLink(
+            link: record, deadline: deadline, baseline: nil, baselineCaptured: false, issuedAt: issuedAt,
+            relaySlot: slot.slot, relaySlotExpiresAt: slot.expiresAt
+        )
+        let transport: any CloudSyncTransport
+        do {
+            relayDeviceID = try relay.phoneDeviceID()
+            transport = try await host.preparePairing(macDeviceID: code.mac, slot: slot.slot, hubID: record.hubID)
+        } catch is CancellationError {
+            return
+        } catch {
+            await fail(.local(error.localizedDescription), hubID: record.hubID)
+            return
+        }
+        let baseline = await host.fetchKeybox(hubID: record.hubID, deviceID: device.deviceID)?.grant
+        let pending = PendingLink(
+            link: record, deadline: deadline, baseline: baseline, baselineCaptured: true, issuedAt: issuedAt,
+            relaySlot: slot.slot, relaySlotExpiresAt: slot.expiresAt
+        )
+        store.pending = pending
+        do {
+            try await transport.save([
+                try helloRecord(
+                    hubID: record.hubID, for: device, keys: deviceKeys, linkNonce: payload.nonce, relayDeviceID: relayDeviceID
+                )
+            ])
+        } catch {
+            await fail(.local(error.localizedDescription), hubID: record.hubID)
+            return
+        }
+        await waitForGrant(pending, code: PairingCode(hubKeys: code.hubKeys, deviceKeys: deviceKeys))
+    }
+
+    /// What a refused `open_pairing` (before any hello) shows.
+    static func openFailure(_ error: any Error, code: LinkPayload) -> LinkFailure {
+        switch error as? HostedRelayPairing.Refusal {
+        case .notPaying where code.offersCloudKit: .macOnRelay(macName: code.macName)
+        case .notPaying: .needsRelay(macName: code.macName)
+        case .updateRequired: .updateApp
+        case .pairingExpired: .expired
+        case .replacementLimit, .slotsFull, .unreachable, .attestationBackoff: .relayUnreachable
+        case nil:
+            if case HostedRelayError.server(code: .notFound, _)? = error as? HostedRelayError {
+                .macNotOnRelay(macName: code.macName)
+            } else {
+                .relayUnreachable
+            }
+        }
+    }
+
+    /// The owner confirmed (the keys arrived): the link moves to `LinkStore.promoted` as `.confirmed`, and from
+    /// here it never belongs to the link screen; a slot removal or a relay farewell kept for this Mac or hub goes.
+    /// Then one attempt to finish it inline.
+    private func confirmRelay(_ pending: PendingLink, record: LinkRecord, slot: String) async {
+        let link = PromotedLink(
+            link: record, slot: slot, slotExpiresAt: pending.relaySlotExpiresAt ?? clock.now(), state: .confirmed,
+            since: clock.now()
+        )
+        linkCode = nil
+        macSeesPhone = false
+        do {
+            try store.confirm(link)
+        } catch {
+            // Kept in `pending`: the next launch's resume writes it again before any relay call.
+            Self.logger.error("confirmed relay link not saved: it resumes at the next launch")
+            notice = .finishingInBackground(macName: record.macName)
+            phase = .idle
+            return
+        }
+        if let host {
+            host.forgetSlotRemoval(link.macDeviceID)
+            if host.pendingFarewells().contains(where: { $0.hubID == link.hubID && $0.route.cloudKitScope == nil }) {
+                host.dropFarewell(link.hubID)
+            }
+        }
+        refreshLinks()
+        await finishPromoted(link.hubID, ownerAsked: false)
+    }
+
+    /// One attempt for a confirmed link, from the link screen (the inline attempt, or a scan of its hub's code):
+    /// "Linked", or the notice of what is left, and the scanner is free.
+    private func finishPromoted(_ hubID: String, ownerAsked: Bool) async {
+        guard let macName = store.promoted[hubID]?.macName else { return }
+        phase = .checking
+        let outcome = await resumer.run(hubID, ownerAsked: ownerAsked)
+        switch outcome {
+        case .linked:
+            clearNoticeAfterLink()
+            phase = .linked(macName: macName)
+        case let .needsOwner(reason):
+            notice = .needsOwner(macName: macName, reason: reason)
+            phase = .idle
+        case .waiting, .none:
+            notice = .finishingInBackground(macName: macName)
+            phase = .idle
+        }
+    }
+
+    /// `prepare` on the Mac's data zone (the pairing transport goes), then `linked` with the `.relay` route: the row
+    /// is saved and the promoted entry goes. False (logged) when either throws: the link resumes later.
+    private func completePromoted(_ link: PromotedLink) async -> PromotedLinkResumer.Finish {
+        guard let host, let device = identity.linkedDevice(for: link.link) else { return .failed }
+        do {
+            _ = try await host.prepare(route: link.link.route, hubID: link.hubID, fresh: false)
+            try await host.linked(link.link, device: device)
+        } catch HubRegistryError.full {
+            return .registryFull
+        } catch {
+            Self.logger.error("promoted link not finished: \(error.localizedDescription, privacy: .public)")
+            return .failed
+        }
+        store.removePromoted(link.hubID)
+        resumer.forget(link.hubID)
+        refreshLinks()
+        return .linked
+    }
+
+    /// At launch and on every foreground: one automatic attempt per confirmed link (`.needsOwner` waits).
+    func resumePromotedLinks() async {
+        await resumer.resumeAll()
+        refreshLinks()
+    }
+
+    /// Settings → Macs → Try Again on a confirmed link.
+    func tryAgain(_ hubID: String) async {
+        _ = await resumer.run(hubID, ownerAsked: true)
+        refreshLinks()
+    }
+
+    /// Settings → Macs → Cancel (after "Cancel the link to <Mac>?"), and Remove on the slots screen for a Mac still
+    /// finishing. Never waits on `prepare`: the farewell, sealed with the keys the phone holds, goes straight into
+    /// the mailbox (10 s bound; kept on failure); then `remove_slot`, always (kept on failure); then the hub's keys,
+    /// session, directory and the promoted entry go, whatever those did. Returns whether the slot is free.
+    @discardableResult
+    func cancelPromoted(_ hubID: String) async -> Bool {
+        guard let link = store.promoted[hubID], let host, !ending.contains(hubID) else { return false }
+        ending.insert(hubID)
+        defer { ending.remove(hubID) }
+        let route = link.link.route
+        var sent = false
+        if let device = identity.linkedDevice(for: link.link),
+           let record = try? deviceRecord(hubID: hubID, for: device, linkNonce: nil, unlinked: true),
+           let sealed = await host.sealFarewell(hubID: hubID, route: route, record: record) {
+            let farewell = PendingFarewell(
+                hubID: hubID, route: route, userRecordName: link.link.userRecordName, record: sealed, since: clock.now()
+            )
+            if host.keepFarewell(farewell) {
+                sent = await host.resendFarewell(farewell)
+            }
+        }
+        let freed = await removeRelaySlot(link.macDeviceID, keepOnFailure: true)
+        if freed, !sent, host.pendingFarewells().contains(where: { $0.hubID == hubID && $0.route == route }) {
+            Self.logger.notice("relay farewell undeliverable after slot removal")
+            host.dropFarewell(hubID)
+        }
+        store.removePromoted(hubID)
+        resumer.forget(hubID)
+        _ = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
+        removeKeys(hubID)
+        refreshLinks()
+        return freed
+    }
+
+    /// `remove_slot` for the relay Mac `mac`. On failure the removal is kept for a retry at launch
+    /// (`keepOnFailure`). True once the slot is free (`Ok` or `NOT_FOUND`).
+    private func removeRelaySlot(_ mac: String, keepOnFailure: Bool) async -> Bool {
+        do {
+            try await relay.removeSlot(mac: mac)
+            host?.forgetSlotRemoval(mac)
+            return true
+        } catch {
+            Self.logger.warning("relay slot removal failed: kept for the next launch")
+            if keepOnFailure { host?.keepSlotRemoval(mac) }
+            return false
+        }
+    }
+
+    /// At launch, after the kept farewells: each kept slot removal again, unless a local link names that Mac (a
+    /// row, a promoted link or a pending one): then the removal is dropped, never sent (it would free that link's
+    /// slot). A slot freed leaves its Mac's relay farewell undeliverable: it is dropped.
+    func retrySlotRemovals() async {
+        guard let host else { return }
+        for mac in host.pendingSlotRemovals() {
+            if localLinkNames(mac) {
+                host.forgetSlotRemoval(mac)
+                continue
+            }
+            guard await removeRelaySlot(mac, keepOnFailure: true) else { continue }
+            for farewell in host.pendingFarewells() where farewell.route == .hostedRelay(macDeviceID: mac) {
+                Self.logger.notice("relay farewell undeliverable after slot removal")
+                host.dropFarewell(farewell.hubID)
+            }
+        }
+    }
+
+    /// A local link record names the relay Mac `mac`: a registry row, a promoted link in any state, or the pending one.
+    private func localLinkNames(_ mac: String) -> Bool {
+        (host?.linkedHubs() ?? []).contains { $0.link.relayMacDeviceID == mac }
+            || store.promoted.values.contains { $0.macDeviceID == mac }
+            || store.pending?.link.relayMacDeviceID == mac
+    }
+
+    // MARK: - A Mac on Relay over iCloud (R4)
+
+    /// Whether this phone may use the relay: off → no; else the paying check, where only a definite "no" says no.
+    private func canUseRelay() async -> Bool {
+        guard case .available = relay.availability else { return false }
+        let answer = await LinkRoutePolicy.paying { [relay] in try await relay.accountState() }
+        switch answer {
+        case .success(let paying): return paying
+        case .failure: return true
+        }
+    }
+
+    /// After a fetch of `hubID` found that its hub runs over Relay (a relay marker or `hub_on_relay`): an iCloud
+    /// link that never came alive (no heartbeat after its `linkedAt`) on a phone that cannot use Relay ends with
+    /// the notice; a link that was alive is kept (the Mac can switch back; Task 11 follows it).
+    func hubRunsOnRelay(_ hubID: String) async {
+        guard let row = row(hubID), row.state == .linked, row.link.route.cloudKitScope != nil, !ending.contains(hubID) else {
+            return
+        }
+        let linkedAt = row.link.linkedAt ?? .distantPast
+        guard row.lastHeartbeatAt.map({ $0 <= linkedAt }) ?? true else { return }
+        guard !(await canUseRelay()), self.row(hubID) != nil, !ending.contains(hubID) else { return }
+        Self.logger.notice("a never-live iCloud link to a Mac on Relay ended")
+        let wipe = await endLink(row, farewell: true, keepRecordings: true)
+        notice = LinkNotice.after(wipe, macName: row.link.macName, otherwise: .macOnRelay(macName: row.link.macName))
+    }
+
+    // MARK: - The slots screen
+
+    /// Remove on the slots screen (after its confirmation): a Mac linked on this iPhone is unlinked (farewell,
+    /// then `remove_slot`); a Mac still finishing its link is cancelled; a Mac not on this iPhone only frees its
+    /// slot. After a removal the link goes on: on the link screen with the same code while it is valid, from
+    /// Settings → Macs the confirmed link (vouch, promote).
+    func removeFromSlots(_ mac: String) async {
+        guard relaySlots.removing == nil else { return }
+        if relaySlots.pinned[mac] == nil,
+           let row = RelaySlotsModel(state: relaySlots, links: links, promoted: promotedLinks).rows.first(where: { $0.id == mac }) {
+            relaySlots.pinned[mac] = RelaySlotsModel.Pinned(name: row.name, sub: row.sub, kind: row.kind)
+        }
+        relaySlots.removing = mac
+        relaySlots.failed = nil
+        let freed: Bool
+        if let row = links.first(where: { $0.link.relayMacDeviceID == mac }) {
+            freed = await unlinkRow(row)
+        } else if let promoted = store.promoted.values.first(where: { $0.macDeviceID == mac }) {
+            freed = await cancelPromoted(promoted.hubID)
+        } else {
+            freed = await removeRelaySlot(mac, keepOnFailure: false)
+        }
+        relaySlots.removing = nil
+        guard freed else {
+            relaySlots.failed = mac
+            return
+        }
+        relaySlots.macs.removeAll { $0 == mac }
+        relaySlots.pinned[mac] = nil
+        if let hubID = relaySlots.finishing {
+            closeSlots()
+            await tryAgain(hubID)
+        } else if let code = slotsCode {
+            slotsCode = nil
+            guard !isExpired(code.payload) else {
+                phase = .failed(.expired)
+                return
+            }
+            phase = .checking
+            linkingHubID = code.payload.hubID
+            await connectRelay(code)
+            linkingHubID = nil
+        }
+    }
+
+    /// Settings → Macs → Manage Macs on a `.slotsFull` link: the slots screen with the account's Macs.
+    func manageSlots(for hubID: String) async {
+        relaySlots = RelaySlotsState(finishing: hubID, loading: true)
+        do {
+            relaySlots.macs = try await relay.accountState().macs
+        } catch {
+            Self.logger.notice("relay account state unread for the slots screen")
+        }
+        relaySlots.loading = false
+    }
+
+    /// Leaves the slots screen (its Cancel, or the sheet dismissed).
+    func closeSlots() {
+        relaySlots = RelaySlotsState()
+        slotsCode = nil
+        if case .slotsFull = phase { phase = .idle }
+    }
+}
+
+// MARK: - A confirmed Relay link left in `pending` (relay client Phase 3 Task 10, review round 1)
+
+extension LinkingViewModel {
+    enum RelayConfirmation {
+        /// Its hub is already in `LinkStore.promoted`.
+        case promoted
+        /// The keybox's keys are stored: the owner confirmed, the `.confirmed` write did not land.
+        case keysArrived
+        /// The keys cannot be read now.
+        case locked
+        /// An iCloud link, or a Relay link still waiting for the owner.
+        case notYet
+    }
+
+    /// Where a pending link stands before its deadline is looked at.
+    private func relayConfirmation(of pending: PendingLink) -> RelayConfirmation {
+        if store.promoted[pending.link.hubID] != nil { return .promoted }
+        guard pending.relaySlot != nil else { return .notYet }
+        do {
+            return try keys.hubLink(pending.link.hubID)?.epochs.isEmpty == false ? .keysArrived : .notYet
+        } catch KeyStoreError.locked {
+            return .locked
+        } catch {
+            return .notYet
+        }
+    }
+
+    /// The `.confirmed` write again, at launch, whatever the time: the link's `linkedAt` is the grant's, kept in the
+    /// pending link before the keys; one an older build saved without it falls back to the code's issue time.
+    private func confirmPendingRelay(_ pending: PendingLink) async {
+        guard let slot = pending.relaySlot else { return }
+        var record = pending.link
+        record.linkedAt = pending.linkedAt ?? pending.issuedAt
+        phase = .checking
+        await confirmRelay(pending, record: record, slot: slot)
+    }
+}
+
+extension LinkingViewModel {
+    /// The failure screen's Try Again: the same code once more (its expiry checked again).
+    func retryFailedCode() async {
+        guard case .failed = phase, let url = retryCode else { return }
+        retryCode = nil
+        phase = .idle
+        await open(url)
     }
 }

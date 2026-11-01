@@ -114,4 +114,64 @@ final class MacsModelTests: XCTestCase {
         XCTAssertEqual(try registry.hubIDs(), ["hub-x", "hub-b", "hub-a"])
         XCTAssertEqual(try items().map(\.id), try registry.hubIDs(), "the saved order is the shown one")
     }
+
+    // MARK: - Finishing Relay links (relay client Phase 3 Task 10, mockup 7.4)
+
+    private func promoted(_ state: PromotedLink.State, hubID: String = "hub-build") -> PromotedLink {
+        var record = LinkRecord(
+            hubID: hubID, macName: "build-box", scope: .private, ownerName: "", userRecordName: "", nonce: "n",
+            dataShareURL: nil, relayShareURL: nil
+        )
+        record.setRelay(mac: String(repeating: "m", count: 52))
+        return PromotedLink(link: record, slot: "slot-1", slotExpiresAt: Date(), state: state, since: Date())
+    }
+
+    func testEveryNeedsOwnerReasonHasItsRowCopyAndActions() {
+        let expected: [PromotedLink.Reason: (String, [MacsModel.FinishingRow.Action])] = [
+            .slotExpired: ("The link timed out on Relay. Try again, or cancel it.", [.tryAgain, .cancel]),
+            .slotsFull: ("Relay already has 3 Macs. Remove one, then try again, or cancel this link.", [.manageMacs, .tryAgain, .cancel]),
+            .replacementLimit: ("Too many Mac changes on Relay. Try again later, or cancel this link.", [.tryAgain, .cancel]),
+            .notPaying: ("Relay isn't active on this iPhone. Try again when it is, or cancel this link.", [.tryAgain, .cancel]),
+            .hubNotOnRelay: (
+                "build-box isn't on Relay yet. Keep Watchtower open on it and try again, or cancel this link.", [.tryAgain, .cancel]
+            ),
+            .notConfirmed: ("Relay didn't confirm the link. Try again, or cancel it.", [.tryAgain, .cancel]),
+            .updateApp: ("Update Watchtower to finish this link, or cancel it.", [.tryAgain, .cancel]),
+            .tooManyMacs: ("You can link up to 4 Macs. Unlink one, then try again, or cancel this link.", [.tryAgain, .cancel])
+        ]
+        XCTAssertEqual(Set(expected.keys), Set(PromotedLink.Reason.allCases))
+        for (reason, (line, actions)) in expected {
+            let row = MacsModel.finishingRows([promoted(.needsOwner(reason))], running: [], failed: []).first
+            XCTAssertEqual(row?.line, line, "\(reason)")
+            XCTAssertEqual(row?.actions, actions, "\(reason)")
+            XCTAssertNil(row?.note)
+            XCTAssertEqual(row?.showsProgress, false)
+        }
+        XCTAssertEqual(MacsModel.FinishingRow.Action.manageMacs.title, "Manage Macs")
+        XCTAssertEqual(MacsModel.FinishingRow.Action.tryAgain.title, "Try Again")
+        XCTAssertEqual(MacsModel.FinishingRow.Action.cancel.title, "Cancel")
+    }
+
+    func testABusyRowHasNoActionsAndAFailedOneOffersTryAgain() {
+        let link = promoted(.promoteSent)
+        let busy = MacsModel.finishingRows([link], running: [link.hubID], failed: []).first
+        XCTAssertEqual(busy?.status, .busy)
+        XCTAssertEqual(busy?.line, "Finishing the link…")
+        XCTAssertEqual(busy?.note, "No actions while an attempt runs.")
+        XCTAssertEqual(busy?.showsProgress, true)
+        XCTAssertEqual(busy?.actions, [])
+        let failed = MacsModel.finishingRows([link], running: [], failed: [link.hubID]).first
+        XCTAssertEqual(failed?.line, "Couldn't finish the link. Watchtower tries again when it opens.")
+        XCTAssertEqual(failed?.actions, [.tryAgain, .cancel])
+        let resting = MacsModel.finishingRows([link], running: [], failed: []).first
+        XCTAssertEqual(resting?.status, .finishing)
+        XCTAssertEqual(resting?.line, "Finishing the link…")
+        XCTAssertTrue(failed?.toneUses.allSatisfy { $0.tone != .orange } ?? false)
+    }
+
+    func testTheCancelConfirmationCopy() {
+        XCTAssertEqual(MacsModel.cancelQuestion("build-box"), "Cancel the link to build-box? It frees its Relay slot.")
+        XCTAssertEqual(MacsModel.cancelLink, "Cancel Link")
+        XCTAssertEqual(MacsModel.keepTrying, "Keep Trying")
+    }
 }

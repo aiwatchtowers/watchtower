@@ -123,7 +123,21 @@ actor SaveLogTransport: CloudSyncTransport {
         self.sealer = sealer
     }
 
+    private var saveError: (any Error)?
+
+    func setSaveError(_ error: (any Error)?) {
+        saveError = error
+    }
+
+    /// Every hello saved, in write order.
+    func hellos() throws -> [DeviceHello] {
+        try saved.filter { $0.kind == RelayRecordKind.hello.rawValue }.map {
+            try RelayCoder.makeDecoder().decode(DeviceHello.self, from: $0.payload)
+        }
+    }
+
     func save(_ records: [CloudRecord]) async throws {
+        if let saveError { throw saveError }
         if let sealer {
             var wire: [CloudRecord] = []
             for record in records { wire.append(try await sealer.seal(record)) }
@@ -381,6 +395,86 @@ final class FakeLinkHost: LinkHost {
     func dropFarewell(_ hubID: String) {
         log.append("drop farewell \(hubID)")
         keptFarewells.removeAll { $0.hubID == hubID }
+    }
+
+    // MARK: Relay (relay client Phase 3 Task 10)
+
+    /// Every pairing transport prepared, in call order: the Mac and the slot.
+    private(set) var pairings: [(mac: String, slot: String, hubID: String)] = []
+    /// Thrown by `preparePairing`.
+    var pairingError: (any Error)?
+    /// The pairing transport of each slot: what a hello wrote into `pair/<slot>`.
+    private(set) var pairZones: [String: SaveLogTransport] = [:]
+    /// Thrown by a hello's save into a pair zone.
+    var pairSaveError: (any Error)?
+
+    func preparePairing(macDeviceID: String, slot: String, hubID: String) async throws -> any CloudSyncTransport {
+        log.append("pair \(slot)")
+        pairings.append((macDeviceID, slot, hubID))
+        if let pairingError { throw pairingError }
+        let transport = pairZones[slot] ?? SaveLogTransport()
+        pairZones[slot] = transport
+        await transport.setSaveError(pairSaveError)
+        transports[Self.describe(.hostedRelay(macDeviceID: macDeviceID))] = transport
+        if let keys {
+            let provider = try PhoneKeyProvider(store: keys, hubID: hubID, seq: SeqAllocator(load: { 1 }, store: { _ in }))
+            await transport.setSealer(SecureTransport(inner: InMemoryCloudTransport(), keys: provider, rollback: InMemoryRollbackGuard()))
+        }
+        return transport
+    }
+
+    /// Every hello written into any pair zone.
+    func pairHellos() async throws -> [DeviceHello] {
+        var all: [DeviceHello] = []
+        for transport in pairZones.values {
+            all += try await transport.hellos()
+        }
+        return all
+    }
+
+    func keepFarewell(_ farewell: PendingFarewell) -> Bool {
+        log.append("keep farewell \(farewell.hubID)")
+        keptFarewells.removeAll { $0.hubID == farewell.hubID }
+        keptFarewells.append(farewell)
+        return true
+    }
+
+    /// Whether a farewell can be sealed (the hub's keys are there).
+    var sealsFarewells = true
+
+    func sealFarewell(hubID: String, route: HubRoute, record: CloudRecord) async -> CloudRecord? {
+        log.append("seal farewell \(hubID)")
+        return sealsFarewells ? record : nil
+    }
+
+    /// The kept slot removals, by Mac.
+    var slotRemovals: [String] = []
+
+    func pendingSlotRemovals() -> [String] {
+        slotRemovals
+    }
+
+    func keepSlotRemoval(_ macDeviceID: String) {
+        log.append("keep slot removal \(macDeviceID)")
+        if !slotRemovals.contains(macDeviceID) { slotRemovals.append(macDeviceID) }
+    }
+
+    func forgetSlotRemoval(_ macDeviceID: String) {
+        slotRemovals.removeAll { $0 == macDeviceID }
+    }
+
+    /// The hubs whose session saw them run over Relay (a relay marker or `hub_on_relay`).
+    var onRelay: Set<String> = []
+
+    func hubRunsOnRelay(_ hubID: String) -> Bool {
+        onRelay.contains(hubID)
+    }
+
+    /// Sets a row's last heartbeat (a link that came alive).
+    func noteHeartbeat(_ date: Date, hubID: String) {
+        if let index = rows.firstIndex(where: { $0.hubID == hubID }) {
+            rows[index].lastHeartbeatAt = date
+        }
     }
 
     func markRemovedByMac(_ hubID: String) async {

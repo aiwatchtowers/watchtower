@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WatchtowerHostedRelay
 import WatchtowerKit
 import WatchtowerSync
 import XCTest
@@ -47,12 +48,17 @@ final class ScreenshotTourTests: XCTestCase {
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
         let recorderRows = try await captureRecorder(into: dir, linking: root.linking)
         let outboxRows = try await captureOutbox(into: dir, linking: root.linking)
-        try ScreenshotHost.writeIndex(Self.indexRows(shots) + asleepRows + recorderRows + outboxRows, to: dir)
+        let relayRows = try await captureRelayLinking(host: host)
+        try ScreenshotHost.writeIndex(Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows, to: dir)
 
         let pngs = try FileManager.default
             .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
             .filter { $0.pathExtension == "png" }
-        XCTAssertEqual(pngs.count, 2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count))
+        XCTAssertEqual(
+            pngs.count,
+            2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count)
+                + 3 * relayRows.count
+        )
         for png in pngs {
             XCTAssertGreaterThan(try png.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0, 0, png.lastPathComponent)
         }
@@ -116,6 +122,140 @@ final class ScreenshotTourTests: XCTestCase {
             )
         ]
     }
+
+    // MARK: - Linking over Relay (relay client Phase 3 Task 10, mockup section 7)
+
+    /// A link flow over a scripted relay account and a fake host holding the demo Macs plus "Work Mac" on Relay,
+    /// with the demo's finishing link to "build-box" in `state` (nil: none).
+    private func relayLinking(_ state: PromotedLink.State?, now: Date) throws -> (LinkingViewModel, FakeRelayOps, FakeLinkHost) {
+        let clock = FakeLinkClock(now: now)
+        let relay = FakeRelayOps(clock: clock)
+        let host = FakeLinkHost(log: LinkEventLog())
+        for hub in DemoSeed.hubs {
+            host.seed(DemoSeed.link(for: hub, now: now))
+        }
+        host.seed(DemoSeed.Relay.workLink(now: now))
+        host.noteHeartbeat(now, hubID: DemoSeed.Relay.workLink(now: now).hubID)
+        let store = LinkStore(defaults: try makeDefaults())
+        if let state {
+            let link = DemoSeed.Relay.finishingLink(state, now: now)
+            store.promoted = [link.hubID: link]
+        }
+        let device = DemoSeed.device
+        let linking = LinkingViewModel(
+            access: FakeLinkAccess(log: LinkEventLog()), store: store,
+            identity: DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion),
+            keys: InMemoryPhoneKeyStore(), clock: clock, relay: relay
+        )
+        linking.host = host
+        relay.slots = [DemoSeed.Relay.workMac, DemoSeed.Relay.unknownMac, DemoSeed.Relay.finishingMac]
+        return (linking, relay, host)
+    }
+
+    /// R01–R21, each light, dark and narrow (iPhone SE, the largest Dynamic Type size).
+    private func captureRelayLinking(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let onboarding = "Features/Onboarding/"
+        var rows: [ScreenshotHost.IndexRow] = []
+        func shot(
+            _ number: String,
+            _ slug: String,
+            _ source: String,
+            _ reached: String,
+            _ view: some View,
+            settle: Duration = .milliseconds(600)
+        ) async throws {
+            try await host.captureThree("\(number)-\(slug)", view, settle: settle)
+            let name = URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent
+            rows.append(ScreenshotHost.IndexRow(number: number, view: name, source: source, reached: "\(reached), light/dark/narrow"))
+        }
+        for (number, slug, failure) in [
+            ("R01", "link-needs-relay", LinkFailure.needsRelay(macName: "build-box")),
+            ("R02", "link-relay-unreachable", .relayUnreachable),
+            ("R03", "link-mac-on-relay", .macOnRelay(macName: "Work Mac"))
+        ] {
+            try await shot(number, slug, onboarding + "LinkedView.swift", "leaf view", LinkFailureView(failure: failure))
+        }
+        for (number, slug, notice) in [
+            ("R04", "link-finish-in-background", LinkNotice.finishingInBackground(macName: "build-box")),
+            ("R05", "notice-mac-on-relay", .macOnRelay(macName: "Work Mac"))
+        ] {
+            host.env.navigation.tab = .now
+            try await shot(number, slug, "App/AppRootView.swift", "full app with the notice", TabsWithNotice(notice: notice))
+        }
+
+        let slots = onboarding + "RelaySlotsView.swift"
+        let (slotsLinking, slotsRelay, _) = try relayLinking(.needsOwner(.slotsFull), now: now)
+        await slotsLinking.manageSlots(for: DemoSeed.Relay.finishingHubID)
+        try await shot("R06", "relay-slots-full", slots, "sheet", RelaySlotsView {}.environment(slotsLinking))
+        let finishingRow = try XCTUnwrap(
+            RelaySlotsModel(state: slotsLinking.relaySlots, links: slotsLinking.links, promoted: slotsLinking.promotedLinks)
+                .rows.first { $0.id == DemoSeed.Relay.finishingMac }
+        )
+        try await shot(
+            "R07", "relay-slots-finishing-mac", slots, "sheet, Remove on the finishing link. \(Self.alertGap)",
+            RelaySlotsView(asking: RelaySlotsModel.ask(for: finishingRow)) {}.environment(slotsLinking), settle: .seconds(2)
+        )
+        slotsRelay.park("removeSlot")
+        slotsRelay.fail("removeSlot", with: HostedRelayPairing.Refusal.unreachable)
+        let removal = Task { await slotsLinking.removeFromSlots(DemoSeed.Relay.workMac) }
+        try await poll({ slotsRelay.isParked("removeSlot") }, "the removal is running")
+        try await shot("R08", "relay-slots-removing", slots, "sheet, a removal running", RelaySlotsView {}.environment(slotsLinking))
+        slotsRelay.release("removeSlot")
+        await removal.value
+        try await shot("R09", "relay-slots-remove-error", slots, "sheet, the removal failed", RelaySlotsView {}.environment(slotsLinking))
+
+        try await captureRelayMacs(now: now) { number, slug, reached, view, settle in
+            try await shot(number, slug, "Features/Settings/MacsView.swift", reached, view, settle: settle)
+        }
+        try await shot(
+            "R21", "link-mac-not-on-relay", onboarding + "LinkedView.swift", "leaf view",
+            LinkFailureView(failure: .macNotOnRelay(macName: "build-box"))
+        )
+        return rows
+    }
+
+    /// R10–R20: Settings → Macs with the demo's finishing link in each state.
+    private func captureRelayMacs(
+        now: Date, shot: (_ number: String, _ slug: String, _ reached: String, _ view: AnyView, _ settle: Duration) async throws -> Void
+    ) async throws {
+        let (busy, busyRelay, _) = try relayLinking(.confirmed, now: now)
+        busyRelay.park("vouch")
+        let attempt = Task { await busy.tryAgain(DemoSeed.Relay.finishingHubID) }
+        try await poll({ busyRelay.isParked("vouch") }, "the attempt is running")
+        try await shot(
+            "R10", "macs-finishing-row", "bare stack, an attempt running",
+            AnyView(NavigationStack { MacsView() }.environment(busy)), .milliseconds(600)
+        )
+        busyRelay.release("vouch")
+        await attempt.value
+
+        let (failed, _, failedHost) = try relayLinking(.promoted, now: now)
+        failedHost.prepareError = CocoaError(.fileReadCorruptFile)
+        await failed.resumePromotedLinks()
+        try await shot(
+            "R11", "macs-finishing-row-error", "bare stack, the last attempt failed",
+            AnyView(NavigationStack { MacsView() }.environment(failed)), .milliseconds(600)
+        )
+
+        for (index, reason) in PromotedLink.Reason.allCases.enumerated() {
+            let (linking, _, _) = try relayLinking(.needsOwner(reason), now: now)
+            try await shot(
+                String(format: "R%02d", 12 + index), "macs-needs-owner-\(reason.rawValue)", "bare stack",
+                AnyView(NavigationStack { MacsView() }.environment(linking)), .milliseconds(600)
+            )
+        }
+        let (cancel, _, _) = try relayLinking(.needsOwner(.slotExpired), now: now)
+        let row = try XCTUnwrap(MacsModel.finishingRows(cancel.promotedLinks, running: [], failed: []).first)
+        try await shot(
+            "R20", "macs-finishing-cancel-confirm", "bare stack, Cancel pressed. \(Self.alertGap)",
+            AnyView(NavigationStack { MacsView(cancelling: row) }.environment(cancel)), .seconds(2)
+        )
+    }
+
+    /// R07/R20's INDEX note: the confirmation alert is presented but not in the PNG.
+    static let alertGap = "The alert is not captured (iOS 26 draws it outside drawHierarchy); its copy is asserted in "
+        + "RelaySlotsModelTests and MacsModelTests; the owner checks it on a device"
 
     private static func isHydrated(_ env: AppEnvironment) -> Bool {
         env.activeSession.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty

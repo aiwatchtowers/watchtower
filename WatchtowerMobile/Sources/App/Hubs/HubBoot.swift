@@ -8,6 +8,15 @@ import WatchtowerSync
 /// cleared).
 struct HubSessionFactory {
     let make: @MainActor (_ row: HubRow?, _ hubID: String, _ route: HubRoute, _ device: LinkedDevice?) throws -> HubSession
+    /// A Relay link's pairing session for `hubID` (relay client Phase 3 Task 10): its transport reads and writes
+    /// `pair/<slot>` on the relay store of the Mac `macDeviceID`. Unsupported unless the factory serves the relay.
+    var makePairing: @MainActor (_ hubID: String, _ macDeviceID: String, _ slot: String) throws -> HubSession = { _, mac, _ in
+        throw UnsupportedRouteError(route: .hostedRelay(macDeviceID: mac))
+    }
+
+    init(make: @escaping @MainActor (_ row: HubRow?, _ hubID: String, _ route: HubRoute, _ device: LinkedDevice?) throws -> HubSession) {
+        self.make = make
+    }
 
     /// The live app: the route's transport (`transports`: CloudKit, or the
     /// relay on the process's shared session) on the hub's own store for that
@@ -18,34 +27,59 @@ struct HubSessionFactory {
     /// (mobile E2E); the transport store's folder and stash take class C
     /// (D8, `AppEnvironment.liveTransportStore`).
     static func live(paths: HubPaths, keys: any PhoneKeyStore, transports: TransportFactory = .cloudKit) -> Self {
-        Self { _, hubID, route, device in
-            try paths.prepare(hubID)
-            let energy = BatteryDiagnostics.shared.counter
-            let active = UIApplication.shared.applicationState == .active
-            // Refused before the route's store is opened: no empty file for a route the factory cannot serve.
-            guard transports.serves(route) else { throw UnsupportedRouteError(route: route) }
-            let transportStore = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID, route: route))
-            let transport = try transports.make(route, transportStore, hubID, energy)
-            return try HubSession(
-                transport: transport,
-                replicaPath: paths.replicaPath(hubID),
-                backend: .live,
-                transportStore: transportStore,
-                hubID: hubID,
-                linkedDevice: device,
-                keys: PhoneKeys(store: keys, hubID: hubID),
-                recordingsDirectory: paths.recordingsDirectory(hubID),
-                hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
-                route: route,
-                // The work-alert push is CloudKit's alone until Phase 4's relay pushes.
-                pushWake: route.cloudKitScope != nil && transports.isAvailable() ? transports.wake : nil,
-                startsActive: active,
-                uploadRetriesAllowed: active,
-                replicaObservesSuspension: true,
-                energy: energy,
-                startWork: BackgroundWork.starter()
-            )
+        var factory = Self { _, hubID, route, device in
+            try session(hubID: hubID, route: route, device: device, paths: paths, keys: keys, transports: transports) { store, energy in
+                try transports.make(route, store, hubID, energy)
+            }
         }
+        factory.makePairing = { hubID, macDeviceID, slot in
+            try session(
+                hubID: hubID, route: .hostedRelay(macDeviceID: macDeviceID), device: nil, paths: paths, keys: keys,
+                transports: transports
+            ) { store, energy in
+                try transports.makePairing(macDeviceID, slot, store, energy)
+            }
+        }
+        return factory
+    }
+
+    /// One live session on `route`'s store, its transport from `transport`.
+    @MainActor
+    private static func session(
+        hubID: String,
+        route: HubRoute,
+        device: LinkedDevice?,
+        paths: HubPaths,
+        keys: any PhoneKeyStore,
+        transports: TransportFactory,
+        transport makeTransport: (TransportStore, EnergyCounter?) throws -> any LiveTransport
+    ) throws -> HubSession {
+        try paths.prepare(hubID)
+        let energy = BatteryDiagnostics.shared.counter
+        let active = UIApplication.shared.applicationState == .active
+        // Refused before the route's store is opened: no empty file for a route the factory cannot serve.
+        guard transports.serves(route) else { throw UnsupportedRouteError(route: route) }
+        let transportStore = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID, route: route))
+        let transport = try makeTransport(transportStore, energy)
+        return try HubSession(
+            transport: transport,
+            replicaPath: paths.replicaPath(hubID),
+            backend: .live,
+            transportStore: transportStore,
+            hubID: hubID,
+            linkedDevice: device,
+            keys: PhoneKeys(store: keys, hubID: hubID),
+            recordingsDirectory: paths.recordingsDirectory(hubID),
+            hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
+            route: route,
+            // The work-alert push is CloudKit's alone until Phase 4's relay pushes.
+            pushWake: route.cloudKitScope != nil && transports.isAvailable() ? transports.wake : nil,
+            startsActive: active,
+            uploadRetriesAllowed: active,
+            replicaObservesSuspension: true,
+            energy: energy,
+            startWork: BackgroundWork.starter()
+        )
     }
 }
 
@@ -160,8 +194,19 @@ enum HubBoot {
         keeping pendingHubID: String?,
         factory: HubSessionFactory
     ) async throws {
+        try await removeOrphans(registry: registry, paths: paths, keepingAll: Set([pendingHubID].compactMap { $0 }), factory: factory)
+    }
+
+    /// `removeOrphans(keeping:)` keeping every hub in `kept` (the pending link's and the confirmed Relay links').
+    @MainActor
+    static func removeOrphans(
+        registry: HubRegistry,
+        paths: HubPaths,
+        keepingAll kept: Set<String>,
+        factory: HubSessionFactory
+    ) async throws {
         let linked = Set(try registry.hubIDs())
-        for hubID in try paths.hubIDsOnDisk() where !linked.contains(hubID) && hubID != pendingHubID {
+        for hubID in try paths.hubIDsOnDisk() where !linked.contains(hubID) && !kept.contains(hubID) {
             let session = try factory.make(nil, hubID, .cloudKit(.private), nil)
             // Stopped before its boot runs: no engine starts, no fetch.
             session.stop()

@@ -192,6 +192,23 @@ extension RelayFeedTests {
         XCTAssertEqual(logged, ["transport_switched", "hub_on_relay", "future_kind"])
     }
 
+    /// Relay client Phase 3 Task 10: a well-formed `hub_on_relay` is told to the link flow (once per read) and stays
+    /// in the mailbox; one for another hub is not told.
+    func testHubOnRelayIsToldAndStaysInTheMailbox() async throws {
+        let told = Counter()
+        let rig = try await OrderedRig.make { await told.bump() }
+        let onRelay = await rig.hub.control(.hubOnRelay)
+        try await rig.hub.writeControl(onRelay)
+
+        _ = try await rig.feed.pollOnce()
+
+        let count = await told.value
+        XCTAssertEqual(count, 1)
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertEqual(mailbox, [try rig.wire(onRelay)], "left for the transport follower")
+        XCTAssertFalse(try rig.store.isControlHandled(id: onRelay.id))
+    }
+
     /// The phone's own `skip_to` reflects back through the shared zone: the hub reads and deletes it, never the phone.
     func testThePhonesOwnControlIsLeftForTheHub() async throws {
         let rig = try await OrderedRig.make()
@@ -229,5 +246,13 @@ extension RelayFeedTests {
         _ = try await rig.feed.pollOnce()
         let deletes = await rig.recorder.conditionalDeletes
         XCTAssertEqual(deletes.count, 1, "one try per read")
+    }
+}
+
+private actor Counter {
+    private(set) var value = 0
+
+    func bump() {
+        value += 1
     }
 }

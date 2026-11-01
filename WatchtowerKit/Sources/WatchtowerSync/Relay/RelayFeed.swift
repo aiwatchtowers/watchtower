@@ -85,6 +85,9 @@ public actor RelayFeed {
     /// — harmless for the hydrate-nudge purpose (a spurious re-hydration is
     /// an idempotent no-op).
     private let onActionApplied: (@Sendable () async -> Void)?
+    /// Called for each well-formed `hub_on_relay` control this phone reads (relay client Phase 3 Task 10: an
+    /// iCloud link to a Mac on Relay ends on a phone that cannot use Relay). The control stays in the mailbox.
+    private let onHubOnRelay: (@Sendable () async -> Void)?
     /// When a hub control is marked handled (its id is kept 15 days).
     private let now: @Sendable () -> Date
     private var loopTask: Task<Void, Never>?
@@ -106,6 +109,7 @@ public actor RelayFeed {
         uploads: (any RecordingUploadAcking)? = nil,
         pull: (@Sendable () async throws -> Void)? = nil,
         onActionApplied: (@Sendable () async -> Void)? = nil,
+        onHubOnRelay: (@Sendable () async -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
@@ -114,6 +118,7 @@ public actor RelayFeed {
         self.uploads = uploads
         self.pull = pull
         self.onActionApplied = onActionApplied
+        self.onHubOnRelay = onHubOnRelay
         self.now = now
     }
 
@@ -305,8 +310,15 @@ public actor RelayFeed {
             }
             _ = try store.markControlHandled(id: control.id, at: now())
             return Self.delete(record)
+        case .hubOnRelay:
+            // Told to the link flow, and left in the mailbox for the transport follower.
+            await onHubOnRelay?()
+            if loggedControlKinds.insert(control.kind.rawValue).inserted {
+                logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
+            }
+            return nil
         default:
-            // `transport_switched`, `hub_on_relay` (Phase 3) and kinds this build does not know: left in the mailbox.
+            // `transport_switched` (Phase 3) and kinds this build does not know: left in the mailbox.
             if loggedControlKinds.insert(control.kind.rawValue).inserted {
                 logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
             }

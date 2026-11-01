@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerHostedRelay
 import WatchtowerSync
 
 /// The phone's account identity and the access a hub's route needs before
@@ -17,6 +18,40 @@ protocol LinkAccess: Sendable {
     /// `hubID`'s two zones from this phone's shared database. Private route:
     /// nothing. Hosted relay: `UnsupportedRouteError`.
     func leave(route: HubRoute, hubID: String) async throws
+}
+
+/// The phone's account ops of linking over the relay (`HostedRelayPairing` on the process's one relay session;
+/// relay client Phase 3 Task 10). The live one is `HostedRelayLinkOps`; while the relay is off it is
+/// `OffRelayLinkOps`, which builds nothing and is never asked (the route rule checks `availability` first).
+protocol RelayLinkOps: Sendable {
+    var availability: RelayAvailability { get }
+    /// This phone's relay device id (the session client's): the hello's `relay_device_id`.
+    func phoneDeviceID() throws -> String
+    /// `get_account_state`: paying, and the Macs in this account's slots.
+    func accountState() async throws -> (paying: Bool, macs: [String])
+    /// `open_pairing` after the slot pre-check; `HostedRelayPairing.Refusal` for the answers a screen acts on.
+    func open(mac: String) async throws -> (slot: String, expiresAt: Date)
+    /// `vouch_hub`; `HostedRelayPairing.VouchRefusal` for the answers a screen acts on.
+    func vouch(hubDeviceID: String, authPub: Data) async throws
+    /// `promote_pairing`; `HostedRelayPairing.Refusal`, or the client's error (`HUB_NOT_VOUCHED`, `NOT_FOUND`).
+    func promote(slot: String) async throws
+    /// `close_pairing`, best effort.
+    func close(slot: String) async
+    /// `remove_slot` (`NOT_FOUND` counts as done).
+    func removeSlot(mac: String) async throws
+}
+
+/// The relay while it is off: never asked, since nothing routes to it.
+struct OffRelayLinkOps: RelayLinkOps {
+    var availability: RelayAvailability = .off(.notConfigured)
+
+    func phoneDeviceID() throws -> String { throw HostedRelayPairing.Refusal.unreachable }
+    func accountState() async throws -> (paying: Bool, macs: [String]) { throw HostedRelayPairing.Refusal.unreachable }
+    func open(mac: String) async throws -> (slot: String, expiresAt: Date) { throw HostedRelayPairing.Refusal.unreachable }
+    func vouch(hubDeviceID: String, authPub: Data) async throws { throw HostedRelayPairing.VouchRefusal.unreachable }
+    func promote(slot: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
+    func close(slot: String) async {}
+    func removeSlot(mac: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
 }
 
 /// The link flow's clock: the grant wait and the expiry check run on it.
@@ -62,6 +97,12 @@ protocol LinkHost: AnyObject {
     /// A new session's seqs start above the ceiling a removal of the same
     /// hub left in this process (F29).
     func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport
+    /// A Relay link's pairing transport (relay client Phase 3 Task 10): a new session for `hubID` on the relay
+    /// store of the Mac `macDeviceID`, whose transport reads and writes the pairing slot's zone (`pair/<slot>`),
+    /// sealing with the phone's keys for that hub. A running session of the hub is removed first, as a fresh
+    /// `prepare`. After `promote_pairing`, `prepare(route: .hostedRelay(mac), fresh: false)` moves the hub to its
+    /// data zone and mailbox on the same store.
+    func preparePairing(macDeviceID: String, slot: String, hubID: String) async throws -> any CloudSyncTransport
     /// One fetch of `hubID`'s session, then this phone's keybox there
     /// (`device_grant-<device_id>`, the epoch keys included).
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?
@@ -97,6 +138,20 @@ protocol LinkHost: AnyObject {
     func resendFarewell(_ farewell: PendingFarewell) async -> Bool
     /// Stops keeping `hubID`'s farewell unsent.
     func dropFarewell(_ hubID: String)
+    /// Keeps `farewell` for a later resend (#143); false when it could not be kept (logged).
+    func keepFarewell(_ farewell: PendingFarewell) -> Bool
+    /// `record` sealed with the phone's keys for `hubID` (its session's, or a stopped session built on its files
+    /// for the seal alone); nil when it cannot be sealed (logged). Nothing is sent.
+    func sealFarewell(hubID: String, route: HubRoute, record: CloudRecord) async -> CloudRecord?
+    /// The relay Macs whose slot removal is kept for a retry.
+    func pendingSlotRemovals() -> [String]
+    /// Keeps the slot removal of the relay Mac `macDeviceID` for a retry at launch.
+    func keepSlotRemoval(_ macDeviceID: String)
+    /// Stops keeping it (done, or a new link to that Mac).
+    func forgetSlotRemoval(_ macDeviceID: String)
+    /// `hubID`'s session has seen that its hub runs over Relay: the newest transport marker in its data zone says
+    /// `relay`, or a `hub_on_relay` control came to its mailbox.
+    func hubRunsOnRelay(_ hubID: String) -> Bool
     /// The Mac removed this phone: the row turns `unlinked_by_mac` and the
     /// session freezes (no sync, no writes, data readable with the hub's
     /// keys, which stay until Forget).

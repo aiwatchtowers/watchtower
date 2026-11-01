@@ -25,6 +25,12 @@ packages:
   GRDB:
     url: https://github.com/aiwatchtowers/GRDB.swift
     exactVersion: "7.11.1-sqlcipher.2"
+  # SwiftProtobuf is transitive through WatchtowerHostedRelay; the test bundle compiles the Kit's in-memory relay,
+  # which uses it directly, so it is declared for the app and the tests alike (same URL and version as the Kit's:
+  # SPM dedupes it, and the bundle reuses the host's copy).
+  SwiftProtobuf:
+    url: https://github.com/apple/swift-protobuf
+    exactVersion: "1.39.0"
 
 # Signing lives in Base.xcconfig (unsigned defaults plus an optional
 # `#include? "Signing.xcconfig"` for device and archive signing), wired to
@@ -69,6 +75,8 @@ targets:
         product: WatchtowerHostedRelay
       - package: GRDB
         product: GRDB
+      - package: SwiftProtobuf
+        product: SwiftProtobuf
       # App extensions are embedded into the app's PlugIns folder.
       - target: NotifyService
       - target: NotifyContent
@@ -167,6 +175,10 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Tests
+      # The Kit's in-memory relay, compiled into the bundle (relay client Phase 3 Task 10's end-to-end link): its
+      # product would link a second copy of WatchtowerHostedRelay beside the host app's, and errors thrown by one
+      # copy would not match a catch in the other.
+      - path: ../WatchtowerKit/Sources/WatchtowerHostedRelayTesting
     configFiles:
       Debug: Base.xcconfig
       Release: Base.xcconfig
@@ -187,6 +199,8 @@ targets:
         product: WatchtowerHostedRelay
       - package: GRDB
         product: GRDB
+      - package: SwiftProtobuf
+        product: SwiftProtobuf
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobileTests

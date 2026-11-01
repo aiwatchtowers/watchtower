@@ -103,6 +103,9 @@ final class AppRoot {
     /// seqs above it. A relaunch forgets it; the hub's re-link absorbs a
     /// restart (`HubSyncState.linkDevice`).
     @ObservationIgnored private var seqFloors: [String: UInt64] = [:]
+    /// The hubs whose session is a Relay link's pairing session (`preparePairing`): its `prepare` after
+    /// `promote_pairing` rebuilds it on the Mac's data zone, its files kept.
+    @ObservationIgnored private var pairingHubs: Set<String> = []
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     init(
@@ -236,11 +239,13 @@ final class AppRoot {
             factory: factory,
             identity: identity,
             defaults: defaults,
-            linking: LinkingViewModel(access: CloudKitLinkAccess(), store: store, identity: identity, keys: keys),
+            linking: LinkingViewModel(
+                access: CloudKitLinkAccess(), store: store, identity: identity, keys: keys, relay: HostedRelayLinkOps(relay: relay)
+            ),
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live(transports: transports)
         )
-        root.launch { store.pending?.link.hubID }
+        root.launch { Set([store.pending?.link.hubID].compactMap { $0 } + store.promoted.keys) }
         return root
     }
 
@@ -289,12 +294,18 @@ final class AppRoot {
     /// retry of the kept farewells waits for it (`becameActive`).
     @discardableResult
     func launch(pendingHubID: @escaping @MainActor () -> String?) -> Task<Void, Never> {
+        launch { Set([pendingHubID()].compactMap { $0 }) }
+    }
+
+    /// `launch(pendingHubID:)` keeping every hub `keeping` names: the pending link's and the confirmed Relay links'.
+    @discardableResult
+    func launch(keeping: @escaping @MainActor () -> Set<String>) -> Task<Void, Never> {
         let pass = Task { [linking, registry, paths, factory, startWork] in
             await linking.dropUnencryptedLinks()
             let end = startWork?("hub-orphans")
             defer { end?() }
             do {
-                try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID(), factory: factory)
+                try await HubBoot.removeOrphans(registry: registry, paths: paths, keepingAll: keeping(), factory: factory)
             } catch {
                 Self.logger.error("orphan hub files not removed: \(error.localizedDescription, privacy: .public)")
             }
@@ -314,6 +325,7 @@ final class AppRoot {
     func resumeLink() async {
         await linking.dropUnencryptedLinks()
         await linking.resumePendingLink()
+        await linking.resumePromotedLinks()
         await accountCheck()
     }
 
@@ -331,6 +343,9 @@ final class AppRoot {
             if !isDemo {
                 let endWork = startWork?("hub-farewells")
                 await linking.retryFarewells()
+                // A Relay Mac's farewell first, then its slot removal; then the confirmed links go on.
+                await linking.retrySlotRemovals()
+                await linking.resumePromotedLinks()
                 endWork?()
             }
             farewellRetry = nil
@@ -433,7 +448,9 @@ final class AppRoot {
         let keybox: Keybox? = if case let .success(stored)? = reading { stored } else { nil }
         let isActive = env.activeHubID == hubID
         let linking = linking
+        let onRelay = row.link.route.cloudKitScope != nil && session.runsOnRelay()
         linkChecks[hubID] = Task {
+            if onRelay { await linking.hubRunsOnRelay(hubID) }
             if let keybox { await linking.reconcileKeyboxKeys(hubID: hubID, keybox: keybox) }
             await linking.evaluate(hubID: hubID, heartbeat: heartbeat, isActive: isActive)
             switch grant {
@@ -553,6 +570,7 @@ final class AppRoot {
             env.remove(hubID)
         }
         linkChecks[hubID] = nil
+        pairingHubs.remove(hubID)
         loggedUnreadableGrants.remove(hubID)
         DeviceSettings.removeChoices(of: hubID, defaults: defaults)
         if filesFree {
@@ -779,7 +797,10 @@ extension AppRoot: LinkHost {
         _ = await removals[hubID]?.value
         _ = await resends[hubID]?.value
         let frozen = (try registry.row(hubID))?.state == .unlinkedByMac
-        if let session = env.session(hubID) {
+        if let session = env.session(hubID), pairingHubs.contains(hubID), session.route == route, !fresh {
+            // After `promote_pairing`: the same store goes on with the Mac's data zone and mailbox.
+            await closeSession(session)
+        } else if let session = env.session(hubID) {
             if session.route == route, !frozen, !fresh {
                 return session.linkTransport
             }
@@ -791,9 +812,13 @@ extension AppRoot: LinkHost {
             }
         }
         let session = try factory.make(nil, hubID, route, nil)
-        // Before anything is sealed (no await since the build): the seqs a
-        // removal of this hub left in this process are never reused (F29).
-        if let floor = seqFloors[hubID] {
+        return adopt(session)
+    }
+
+    /// A new session of a hub put to use: the seq floor a removal left (before anything is sealed: no await since
+    /// the build, F29), the link flow's hooks, the environment.
+    private func adopt(_ session: HubSession) -> any CloudSyncTransport {
+        if let floor = seqFloors[session.hubID] {
             do {
                 try session.raiseSeqFloor(floor)
             } catch {
@@ -803,6 +828,44 @@ extension AppRoot: LinkHost {
         wire(session)
         env.add(session)
         return session.linkTransport
+    }
+
+    /// Stops and closes a session whose files stay (a pairing session handing its store on).
+    private func closeSession(_ session: HubSession) async {
+        session.onLinkSignal = nil
+        session.onFetched = nil
+        session.onKeyboxChanged = nil
+        session.onKeysAvailable = nil
+        await session.shutDown()
+        do {
+            seqFloors[session.hubID] = max(seqFloors[session.hubID] ?? 0, try session.envelopeSeqCeiling())
+        } catch {
+            Self.logger.error("seq ceiling unreadable at a pairing hand-over: \(error.localizedDescription, privacy: .public)")
+        }
+        session.closeDatabases()
+        env.remove(session.hubID)
+        pairingHubs.remove(session.hubID)
+    }
+
+    func preparePairing(macDeviceID: String, slot: String, hubID: String) async throws -> any CloudSyncTransport {
+        guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
+        await orphanPass?.value
+        _ = await removals[hubID]?.value
+        _ = await resends[hubID]?.value
+        if let session = env.session(hubID) {
+            if pairingHubs.contains(hubID) {
+                // A resumed wait, or another slot: the files (and a keybox already buffered) stay.
+                await closeSession(session)
+            } else {
+                let wipe = await removeHub(hubID, keepRecordings: true, farewell: nil)
+                if let problem = wipe.problem {
+                    Self.logger.error("recordings at a relay pairing: \(problem, privacy: .public)")
+                }
+            }
+        }
+        let session = try factory.makePairing(hubID, macDeviceID, slot)
+        pairingHubs.insert(hubID)
+        return adopt(session)
     }
 
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox? {
@@ -898,6 +961,78 @@ extension AppRoot: LinkHost {
         } catch {
             Self.logger.error("kept farewell not dropped: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    func keepFarewell(_ farewell: PendingFarewell) -> Bool {
+        do {
+            try registry.savePendingFarewell(farewell)
+            return true
+        } catch {
+            Self.logger.error("relay farewell not kept: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    func sealFarewell(hubID: String, route: HubRoute, record: CloudRecord) async -> CloudRecord? {
+        var built: HubSession?
+        let session: HubSession
+        if let running = env.session(hubID) {
+            session = running
+        } else {
+            // A confirmed link after a relaunch has no session: one on its files, stopped before its boot, seals.
+            do {
+                let stopped = try factory.make(nil, hubID, route, nil)
+                stopped.stop()
+                built = stopped
+                session = stopped
+            } catch {
+                Self.logger.warning("farewell not sealed: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+        defer {
+            if let built {
+                Task { @MainActor in
+                    await built.shutDown()
+                    built.closeDatabases()
+                }
+            }
+        }
+        do {
+            return try await session.seal(record)
+        } catch {
+            Self.logger.warning("farewell not sealed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    func pendingSlotRemovals() -> [String] {
+        do {
+            return try registry.pendingSlotRemovals()
+        } catch {
+            Self.logger.error("kept slot removals unreadable: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    func keepSlotRemoval(_ macDeviceID: String) {
+        do {
+            try registry.keepSlotRemoval(macDeviceID, since: Date())
+        } catch {
+            Self.logger.error("slot removal not kept: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func forgetSlotRemoval(_ macDeviceID: String) {
+        do {
+            try registry.removeSlotRemoval(macDeviceID)
+        } catch {
+            Self.logger.error("kept slot removal not dropped: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func hubRunsOnRelay(_ hubID: String) -> Bool {
+        env.session(hubID)?.runsOnRelay() ?? false
     }
 
     func markRemovedByMac(_ hubID: String) async {

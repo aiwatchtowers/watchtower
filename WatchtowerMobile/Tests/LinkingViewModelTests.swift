@@ -1408,7 +1408,7 @@ final class LinkingViewModelTests: XCTestCase {
     func testANewerCodeVersionAsksToUpdateTheApp() async throws {
         let model = makeModel()
 
-        await model.open(code(version: LinkPayload.currentVersion + 1).url())
+        await model.open(code(version: LinkPayload.newestReadable + 1).url())
 
         XCTAssertEqual(model.phase, .failed(.updateApp))
         XCTAssertEqual(LinkFailure.updateApp.message, "Update Watchtower on this iPhone")
@@ -1501,6 +1501,26 @@ final class LinkingViewModelTests: XCTestCase {
         }
         XCTAssertNil(LinkFailure.iCloud("").hint, "an empty reason is no hint")
         XCTAssertEqual(LinkFailure.iCloud("").message, "Couldn't reach iCloud")
+    }
+
+    /// Relay client Phase 3 Task 10: the new failures' copy, from the Task 8 mockup (section 7.2), and the notices
+    /// a confirmed Relay link leaves on the link screen (section 7.5).
+    func testFailureCopyMatchesTheMockup() {
+        let expected: [(LinkFailure, String, String)] = [
+            (.needsRelay(macName: "build-box"), "build-box works over Relay only", "Relay isn't available on this iPhone"),
+            (.relayUnreachable, "Couldn't reach Relay", "Check your connection and scan again"),
+            (
+                .macOnRelay(macName: "Work Mac"), "Work Mac runs over Relay",
+                "This iPhone can't use Relay, so it would get no updates from it. Link it when the Mac is back on iCloud."
+            )
+        ]
+        for (failure, title, hint) in expected {
+            XCTAssertEqual(failure.title, title)
+            XCTAssertEqual(failure.hint, hint)
+            XCTAssertTrue(failure.offersScan, "\(failure): Scan again")
+            XCTAssertEqual(failure.toneUses.map(\.tone), [.secondary])
+        }
+        // The finishing notices' and rows' copy: `RelayLinkingTests`, `MacsModelTests`.
     }
 
     /// Design pass O2: every phase change stamps when it started, on the
