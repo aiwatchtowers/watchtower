@@ -2,9 +2,17 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"unicode/utf16"
+
+	"golang.org/x/text/unicode/norm"
+
+	"watchtower/internal/asks"
+	"watchtower/internal/db"
+	"watchtower/internal/specreview"
 )
 
 // anchorFixtures is WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json,
@@ -71,13 +79,18 @@ func TestAnchorFixtures(t *testing.T) {
 					t.Fatalf("heading %d = %+v, want %+v", i, h, c.Headings[i])
 				}
 			}
-			prefix, suffix, ok := relocate(doc.text, c.Anchor.Quote)
-			if !ok || prefix != c.Anchor.Prefix || suffix != c.Anchor.Suffix {
-				t.Fatalf("relocate = %q, %q, %v\nwant %q, %q", prefix, suffix, ok, c.Anchor.Prefix, c.Anchor.Suffix)
-			}
-			got := placeComment("", c.Anchor.Quote, "b", &doc)
-			if got.Quote != c.Anchor.Quote || got.Heading != c.Anchor.Heading {
-				t.Fatalf("comment = %+v, want heading %q", got, c.Anchor.Heading)
+			// The quote as stored and in either normal form: Swift matches
+			// canonically equivalent text, and hands back the document's
+			// own bytes.
+			for _, quote := range []string{c.Anchor.Quote, norm.NFC.String(c.Anchor.Quote), norm.NFD.String(c.Anchor.Quote)} {
+				prefix, suffix, ok := relocate(doc.text, quote)
+				if !ok || prefix != c.Anchor.Prefix || suffix != c.Anchor.Suffix {
+					t.Fatalf("relocate(%+q) = %q, %q, %v\nwant %q, %q", quote, prefix, suffix, ok, c.Anchor.Prefix, c.Anchor.Suffix)
+				}
+				got := placeComment("", quote, "b", &doc)
+				if got.Quote != c.Anchor.Quote || got.Heading != c.Anchor.Heading {
+					t.Fatalf("comment(%+q) = %+v, want heading %q", quote, got, c.Anchor.Heading)
+				}
 			}
 		})
 	}
@@ -132,19 +145,98 @@ func TestPlacedCommentFallsBackToTheReviewersHeading(t *testing.T) {
 // The context window counts characters (grapheme clusters), as Swift does.
 func TestContextCountsGraphemes(t *testing.T) {
 	family := "👩‍👩‍👧"
-	text := "x" + family + "yz"
-	start := len("x" + family)
-	p, s := anchorContext(text, start, start+1)
-	if p != "x"+family || s != "z" {
-		t.Fatalf("%q %q", p, s)
+	if p, s, ok := relocate("x"+family+"yz", "y"); !ok || p != "x"+family || s != "z" {
+		t.Fatalf("%q %q %v", p, s, ok)
 	}
-	long := ""
-	for range 70 {
-		long += family
-	}
-	p, _ = anchorContext(long+"Q", len(long), len(long)+1)
-	if p != long[len(family)*6:] {
+	long := strings.Repeat(family, 70)
+	if p, _, _ := relocate(long+"Q", "Q"); p != strings.Repeat(family, 64) {
 		t.Fatalf("prefix holds %d bytes, want 64 families", len(p))
+	}
+}
+
+// A hit that starts or ends inside a grapheme cluster is no hit: the
+// search goes on to the next whole one, or finds nothing.
+func TestAHitInsideAClusterIsNotAMatch(t *testing.T) {
+	// The collapsed tier's repro: the needle starts with the combining
+	// accent of "é" (decomposed).
+	if p, s, ok := relocate("x é  y", "́ y"); ok {
+		t.Fatalf("matched inside a cluster: %q, %q", p, s)
+	}
+	// A lone woman inside the family emoji, then a real one.
+	if p, s, ok := relocate("The 👩‍👩‍👧 family and one 👩 alone.", "👩"); !ok || p != "The 👩‍👩‍👧 family and one " || s != " alone." {
+		t.Fatalf("emoji: %q, %q, %v", p, s, ok)
+	}
+	// "Zoe" before a combining diaeresis is part of "Zoë", not "Zoe".
+	if p, _, ok := relocate("Zoë wrote it. Zoe read it.", "Zoe"); !ok || p != "Zoë wrote it. " {
+		t.Fatalf("combining: %q, %v", p, ok)
+	}
+}
+
+// A composed quote is found in a decomposed document and the document's own
+// bytes come back, as Swift's canonical comparison does.
+func TestCanonicallyEquivalentQuotesMatch(t *testing.T) {
+	doc := renderDocument("# Café menu\n\nThe café opens at nine.\n")
+	got := placeComment("", "café opens", "b", &doc)
+	if got.Quote != "café opens" || got.Prefix != "Café menu\n\nThe " || got.Heading != "Café menu" {
+		t.Fatalf("comment = %+q", got)
+	}
+}
+
+// Two headings at one offset (an empty heading before "## B"): Swift's
+// max(by:) keeps the first, whose empty title falls back to the
+// reviewer's heading.
+func TestEqualHeadingOffsetsKeepTheFirst(t *testing.T) {
+	doc := renderDocument("# A\n\n##\n\n## B\n\nquote\n")
+	if len(doc.headings) != 3 || doc.headings[1].offset != doc.headings[2].offset {
+		t.Fatalf("headings = %+v", doc.headings)
+	}
+	if got := placeComment("## Mine", "quote", "b", &doc); got.Heading != "Mine" {
+		t.Fatalf("heading = %q", got.Heading)
+	}
+}
+
+// One snapshot is split into clusters once, however many comments it gets.
+func TestManyCommentsIndexTheSnapshotOnce(t *testing.T) {
+	var md strings.Builder
+	for i := range 2000 {
+		fmt.Fprintf(&md, "## Part %d\n\nLine %d of the acme plan with café and 👩‍👩‍👧 in it.\n\n", i, i)
+	}
+	marks := map[string]db.SpecReviewMark{}
+	for i := range 200 {
+		marks[fmt.Sprintf("old:%03d", i)] = db.SpecReviewMark{State: "comment", About: fmt.Sprintf("Line %d of", i*7)}
+	}
+	before := anchorIndexBuilds.Load()
+	a := buildSpecReviewAnswer(nil, marks, nil, false, asks.Answer{}, md.String())
+	if n := anchorIndexBuilds.Load() - before; n != 1 {
+		t.Fatalf("index built %d times for one snapshot", n)
+	}
+	if len(a.Comments) != 200 || a.Comments[0].Suffix == "" {
+		t.Fatalf("comments = %d, first %+v", len(a.Comments), a.Comments[0])
+	}
+}
+
+func BenchmarkPlaceCommentsOnALargeSnapshot(b *testing.B) {
+	var md strings.Builder
+	for i := range 5000 {
+		fmt.Fprintf(&md, "## Part %d\n\nLine %d of the acme plan with café and 👩‍👩‍👧 in it.\n\n", i, i)
+	}
+	doc := renderDocument(md.String())
+	for b.Loop() {
+		for i := range 100 {
+			_ = placeComment("", fmt.Sprintf("Line %d of", i*41), "b", &doc)
+		}
+	}
+}
+
+// The non-loop path end to end: a finding's comment carries its context.
+func TestMarkCommentsCarryContext(t *testing.T) {
+	result := &specreview.Result{BlindSpots: []specreview.BlindSpot{{Key: "bs:1", Text: "No undo",
+		Where: &specreview.Anchor{Heading: "## Behaviour", Quote: "Muting lasts **a day**"}}}}
+	marks := map[string]db.SpecReviewMark{"bs:1": {State: "comment", Body: "add one"}}
+	a := buildSpecReviewAnswer(result, marks, nil, false, asks.Answer{}, "# Spec\n\n## Behaviour\n\nMuting lasts **a day** for acme.\n")
+	want := asks.Comment{Heading: "Behaviour", Quote: "Muting lasts a day", Prefix: "Spec\n\nBehaviour\n\n", Suffix: " for acme.\n\n", Body: "No undo — add one"}
+	if len(a.Comments) != 1 || a.Comments[0] != want {
+		t.Fatalf("comments = %+v\nwant %+v", a.Comments, want)
 	}
 }
 
@@ -171,6 +263,10 @@ func TestRenderPlainFollowsDocumentRendering(t *testing.T) {
 		{"tag in paragraph", "Text\n<owner>\n", "Text <owner>\n\n"},
 		{"tag with text", "<owner> config\n", "<owner> config\n\n"},
 		{"empty", "", ""},
+		// An escaped "&" keeps the entity literal: decoded once, not twice.
+		{"escaped entity", "\\&amp; and &amp;amp;\n", "&amp; and &amp;\n\n"},
+		{"fence ending in a blank line", "```\nlet a = 1\n\n```\n\nAfter\n", "let a = 1\n\nAfter\n\n"},
+		{"crlf", "# T\r\n\r\none\r\ntwo\r\n", "T\n\none two\n\n"},
 	} {
 		if got := renderPlain(c.md); got != c.want {
 			t.Errorf("%s: %q\nwant %q", c.name, got, c.want)

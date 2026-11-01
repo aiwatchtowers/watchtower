@@ -16,7 +16,12 @@ final class CommentAnchorFixtureTests: XCTestCase {
             "selection_at_document_end",
             "selection_spanning_a_heading",
             "selection_in_a_clipped_snapshots_last_shown_line",
-            "spec_review_comment_on_a_rendered_list_item"
+            "spec_review_comment_on_a_rendered_list_item",
+            "decomposed_document",
+            "combining_mark_after_a_lookalike",
+            "lone_emoji_after_a_zwj_family",
+            "crlf_line_endings",
+            "fenced_code_ending_in_a_blank_line"
         ])
         XCTAssertEqual(fixtures.cases.filter(\.docClipped).count, 1)
         // A full window counted in characters, not scalars or UTF-16 units:

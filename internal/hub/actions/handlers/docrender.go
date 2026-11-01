@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"html"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 
@@ -16,6 +18,7 @@ import (
 	east "github.com/yuin/goldmark/extension/ast"
 	ghtml "github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/text"
+	"golang.org/x/text/unicode/norm"
 
 	"watchtower/internal/asks"
 )
@@ -36,6 +39,7 @@ type plainHeading struct {
 type plainDoc struct {
 	text     string
 	headings []plainHeading
+	index    *anchorIndex // anchors(), built on first use
 }
 
 // plainMarkdown reads CommonMark + the GFM parts swift-markdown reads
@@ -269,12 +273,133 @@ func decodeText(value []byte) string {
 
 // MARK: - Re-locating a quote
 
-// locateQuote is OwnerAskReviewText.range(ofQuote:in:): the quote as
-// written, else as the markdown renders it (a raw-markdown quote with `code`
-// or **bold**), the first exact hit; failing both, a whitespace-collapsed
-// match that is the only one (CommentAnchor.locate with no stored context).
-// Byte offsets into rendered.
-func locateQuote(rendered, quote string) (start, end int, ok bool) {
+// anchorIndex is a rendered text split once into grapheme clusters, with
+// its NFC form and its whitespace-collapsed NFC form, so each quote of a
+// snapshot costs a substring search and a walk of 64 clusters either side.
+// Matching runs on NFC (Swift's String and NSString compare canonically
+// equivalent text as equal); every offset handed back is in the original
+// text, so prefix, suffix and quote are its own bytes, as Swift's are.
+type anchorIndex struct {
+	text string
+	// starts[i] is cluster i's first byte in text; starts[len] = len(text).
+	starts []int
+	// nfc is the clusters' NFC forms joined; nfcStarts as starts.
+	nfc       string
+	nfcStarts []int
+	// collapsed is nfc with every whitespace run one space; units[k] is the
+	// cluster where its k-th unit (a cluster or a run) starts, unitStarts[k]
+	// that unit's first byte in collapsed, then len(collapsed).
+	collapsed  string
+	units      []int
+	unitStarts []int
+}
+
+// anchorIndexBuilds counts index builds (a test bounds them per snapshot).
+var anchorIndexBuilds atomic.Int64
+
+func newAnchorIndex(text string) *anchorIndex {
+	anchorIndexBuilds.Add(1)
+	ix := &anchorIndex{text: text}
+	var nfc, collapsed strings.Builder
+	lastSpace := false
+	g := uniseg.NewGraphemes(text)
+	for g.Next() {
+		from, _ := g.Positions()
+		cluster := norm.NFC.String(g.Str())
+		ix.starts = append(ix.starts, from)
+		ix.nfcStarts = append(ix.nfcStarts, nfc.Len())
+		nfc.WriteString(cluster)
+		space := isSpaceCluster(cluster)
+		if space && lastSpace {
+			continue
+		}
+		ix.units = append(ix.units, len(ix.starts)-1)
+		ix.unitStarts = append(ix.unitStarts, collapsed.Len())
+		if space {
+			collapsed.WriteByte(' ')
+		} else {
+			collapsed.WriteString(cluster)
+		}
+		lastSpace = space
+	}
+	ix.starts = append(ix.starts, len(text))
+	ix.nfcStarts = append(ix.nfcStarts, nfc.Len())
+	ix.unitStarts = append(ix.unitStarts, collapsed.Len())
+	ix.nfc, ix.collapsed = nfc.String(), collapsed.String()
+	return ix
+}
+
+// anchors is the doc's index, built on first use.
+func (d *plainDoc) anchors() *anchorIndex {
+	if d.index == nil {
+		d.index = newAnchorIndex(d.text)
+	}
+	return d.index
+}
+
+// boundary is the position of offset in bounds (sorted), or -1 when offset
+// falls inside an element (a hit starting or ending inside a cluster).
+func boundary(bounds []int, offset int) int {
+	i, found := slices.BinarySearch(bounds, offset)
+	if !found {
+		return -1
+	}
+	return i
+}
+
+// exact is the first hit of needle (NFC) that starts and ends on cluster
+// boundaries, as cluster indices [first, end).
+func (ix *anchorIndex) exact(needle string) (first, end int, ok bool) {
+	for from := 0; ; {
+		i := strings.Index(ix.nfc[from:], needle)
+		if i < 0 {
+			return 0, 0, false
+		}
+		at := from + i
+		if s, e := boundary(ix.nfcStarts, at), boundary(ix.nfcStarts, at+len(needle)); s >= 0 && e >= 0 {
+			return s, e, true
+		}
+		from = at + 1
+	}
+}
+
+// collapsedOnly is CommentAnchor.locate's whitespace-collapsed tier with no
+// stored context: exactly one boundary-aligned hit, else no match.
+func (ix *anchorIndex) collapsedOnly(needle string) (first, end int, ok bool) {
+	want := strings.TrimSpace(collapseSpaces(norm.NFC.String(needle)))
+	if want == "" {
+		return 0, 0, false
+	}
+	hits := 0
+	for from := 0; ; {
+		i := strings.Index(ix.collapsed[from:], want)
+		if i < 0 {
+			break
+		}
+		at := from + i
+		s, e := boundary(ix.unitStarts, at), boundary(ix.unitStarts, at+len(want))
+		if s >= 0 && e >= 0 {
+			hits++
+			if hits > 1 {
+				return 0, 0, false
+			}
+			// The needle is trimmed: its last unit is one cluster.
+			first, end = ix.units[s], ix.units[e-1]+1
+		}
+		from = at + 1
+	}
+	return first, end, hits == 1
+}
+
+// locate is OwnerAskReviewText.range(ofQuote:in:): the quote as written,
+// else as the markdown renders it (a raw-markdown quote with `code` or
+// **bold**), the first hit; failing both, a whitespace-collapsed match that
+// is the only one. Cluster indices [first, end).
+//
+// CommentAnchor.locate's legacy tier (old "———" and " | " separators) is
+// left out on purpose: with no stored context it always scores 0, so it
+// never finds anything here.
+func (ix *anchorIndex) locate(quote string) (first, end int, ok bool) {
 	written := strings.TrimSpace(quote)
 	if written == "" {
 		return 0, 0, false
@@ -284,59 +409,31 @@ func locateQuote(rendered, quote string) (start, end int, ok bool) {
 		needles = append(needles, r)
 	}
 	for _, needle := range needles {
-		if i := strings.Index(rendered, needle); i >= 0 {
-			return i, i + len(needle), true
+		if f, e, ok := ix.exact(norm.NFC.String(needle)); ok {
+			return f, e, true
 		}
 	}
 	for _, needle := range needles {
-		if s, e, ok := collapsedMatch(rendered, needle); ok {
-			return s, e, true
+		if f, e, ok := ix.collapsedOnly(needle); ok {
+			return f, e, true
 		}
 	}
 	return 0, 0, false
 }
 
-// collapsedMatch finds needle with every whitespace run of both read as one
-// space; one hit only (several with no context to rank them are no match).
-func collapsedMatch(text, needle string) (start, end int, ok bool) {
-	want := strings.TrimSpace(collapseSpaces(needle))
-	if want == "" {
-		return 0, 0, false
+// relocate finds quote and returns its byte range in the text with
+// CommentAnchor.make's context: up to anchorContextLength characters
+// before and after.
+func (ix *anchorIndex) relocate(quote string) (start, end int, prefix, suffix string, ok bool) {
+	f, e, found := ix.locate(quote)
+	if !found {
+		return 0, 0, "", "", false
 	}
-	var collapsed strings.Builder
-	// origins maps the collapsed byte where a grapheme starts to its
-	// original byte range (a collapsed run: its first whitespace grapheme).
-	type span struct{ from, to int }
-	origins := map[int]span{}
-	lastSpace := false
-	g := uniseg.NewGraphemes(text)
-	for g.Next() {
-		from, to := g.Positions()
-		space := isSpaceCluster(g.Str())
-		if space && lastSpace {
-			continue
-		}
-		origins[collapsed.Len()] = span{from, to}
-		if space {
-			collapsed.WriteByte(' ')
-		} else {
-			collapsed.WriteString(g.Str())
-		}
-		lastSpace = space
-	}
-	c := collapsed.String()
-	first := strings.Index(c, want)
-	if first < 0 || strings.Contains(c[first+1:], want) {
-		return 0, 0, false
-	}
-	// The needle is trimmed: its last byte is in a non-space grapheme.
-	last := first + len(want) - 1
-	for ; last > first; last-- {
-		if _, ok := origins[last]; ok {
-			break
-		}
-	}
-	return origins[first].from, origins[last].to, true
+	clusters := len(ix.starts) - 1
+	start, end = ix.starts[f], ix.starts[e]
+	prefix = ix.text[ix.starts[max(0, f-anchorContextLength)]:start]
+	suffix = ix.text[end:ix.starts[min(clusters, e+anchorContextLength)]]
+	return start, end, prefix, suffix, true
 }
 
 func collapseSpaces(s string) string {
@@ -363,38 +460,11 @@ func isSpaceCluster(cluster string) bool {
 	return unicode.IsSpace(r)
 }
 
-// anchorContext is CommentAnchor.make's context: up to anchorContextLength
-// characters before start and after end.
-func anchorContext(text string, start, end int) (prefix, suffix string) {
-	var bounds []int // grapheme starts, then len(text)
-	g := uniseg.NewGraphemes(text)
-	for g.Next() {
-		from, _ := g.Positions()
-		bounds = append(bounds, from)
-	}
-	bounds = append(bounds, len(text))
-	i := 0 // the last boundary at or before start
-	for i+1 < len(bounds) && bounds[i+1] <= start {
-		i++
-	}
-	j := len(bounds) - 1 // the first boundary at or after end
-	for j > 0 && bounds[j-1] >= end {
-		j--
-	}
-	from := bounds[max(0, i-anchorContextLength)]
-	to := bounds[min(len(bounds)-1, j+anchorContextLength)]
-	return text[from:start], text[end:to]
-}
-
 // relocate is the context Core's SpecReviewAnswer gives a quote it finds in
 // the rendered snapshot; ok is false when the quote is not found there.
 func relocate(rendered, quote string) (prefix, suffix string, ok bool) {
-	start, end, found := locateQuote(rendered, quote)
-	if !found {
-		return "", "", false
-	}
-	prefix, suffix = anchorContext(rendered, start, end)
-	return prefix, suffix, true
+	_, _, prefix, suffix, ok = newAnchorIndex(rendered).relocate(quote)
+	return prefix, suffix, ok
 }
 
 // placeComment is SpecReviewAnswer.comment: the quote as found in the
@@ -402,15 +472,15 @@ func relocate(rendered, quote string) (prefix, suffix string, ok bool) {
 // before it (none: the reviewer's heading without its hashes). A quote not
 // found keeps the reviewer's heading and quote with no context.
 func placeComment(heading, quote, body string, doc *plainDoc) asks.Comment {
-	start, end, ok := locateQuote(doc.text, quote)
+	start, end, prefix, suffix, ok := doc.anchors().relocate(quote)
 	if !ok {
 		return asks.Comment{Heading: heading, Quote: quote, Body: body}
 	}
-	prefix, suffix := anchorContext(doc.text, start, end)
-	found := ""
+	// Swift's max(by:) keeps the first of equal offsets.
+	found, best := "", -1
 	for _, h := range doc.headings {
-		if h.offset <= start {
-			found = h.title
+		if h.offset <= start && h.offset > best {
+			found, best = h.title, h.offset
 		}
 	}
 	if found == "" {
