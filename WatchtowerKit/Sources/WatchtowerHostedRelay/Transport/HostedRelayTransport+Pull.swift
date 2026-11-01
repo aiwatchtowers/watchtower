@@ -117,10 +117,15 @@ extension HostedRelayTransport {
     }
 
     /// A server record as the buffer keeps it (R7: the writer's clock is `serverAt`; no author),
-    /// its attachment downloaded to the stash first.
+    /// its attachment downloaded to the stash first, except an attachment this device uploaded
+    /// itself (a recording: nothing on the phone reads it back) or one gone by the download
+    /// (`download` answers nil): those records are kept without a file (#1469).
     private func incoming(_ record: Relay_V1_Record, zone: CloudZoneID) async throws -> CloudRecord {
-        let asset = record.attachmentID.isEmpty ? nil : try await download(record, zone: zone)
-        return Self.cloudRecord(record, zone: zone, asset: asset)
+        guard !record.attachmentID.isEmpty,
+              try !store.isRelayOwnAttachment(record.attachmentID, name: record.name, zone: zone) else {
+            return Self.cloudRecord(record, zone: zone)
+        }
+        return Self.cloudRecord(record, zone: zone, asset: try await download(record, zone: zone))
     }
 
     /// The relay's `Record` as a `CloudRecord` of `zone` (pages and conflicts).
