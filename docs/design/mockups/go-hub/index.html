@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Go hub phase 3 mockups</title>
+<style>
+:root{--bg:#f2f2f4;--fg:#1d1d1f;--muted:#6e6e73;--card:#fff;--group:#f5f5f7;--hover:#ececef;--line:#d2d2d7;--btn:#e5e5ea;--accent:#0a64d0;--onaccent:#fff;--warn:#a85a00;--err:#c4291f;--ok:#1f7a3a;--pill-i:#dbe8fb;--pill-i-fg:#1b5aa8;--pill-r:#d8f0df;--pill-r-fg:#1f7a3a;--pill-n:#f9e6d2;--pill-n-fg:#a85a00;--qr-fg:#000;--qr-bg:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#0f0f10;--fg:#e6e6e8;--muted:#8e8e93;--card:#1e1e20;--group:#2a2a2d;--hover:#333336;--line:#3a3a3c;--btn:#3a3a3d;--accent:#0a64d0;--warn:#ffb36b;--err:#ff6961;--ok:#7ee29a;--pill-i:#283a52;--pill-i-fg:#8fc2ff;--pill-r:#2a4632;--pill-r-fg:#7ee29a;--pill-n:#4a3324;--pill-n-fg:#ffb36b}}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,sans-serif;font-size:13px}
+main{max-width:1100px;margin:0 auto}
+h1{font-size:18px;margin:0 0 6px}
+h2{font-size:14px;margin:34px 0 4px}
+.note{color:var(--muted);font-size:12px;max-width:900px;margin:2px 0 10px;line-height:1.5}
+.tag{display:inline-block;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:10px;padding:0 7px;margin-left:6px;font-weight:400}
+nav ul{columns:2;color:var(--muted);font-size:12px;max-width:760px;padding-left:18px}
+nav a{color:var(--accent)}
+.row{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.mac{width:640px;max-width:100%;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 20px 18px}
+.mac.narrow{width:380px}
+.sec{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 6px}
+.group{background:var(--group);border-radius:8px}
+.item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;min-height:40px}
+.narrow .item{flex-wrap:wrap}
+.item .act{visibility:hidden}
+.item:hover,.item.hover{background:var(--hover)}
+.item:hover .act,.item.hover .act{visibility:visible}
+.grow{flex:1;min-width:0}
+.sub{color:var(--muted);font-size:12px;margin-top:2px;line-height:1.4}
+.btn{display:inline-block;background:var(--btn);border-radius:6px;padding:3px 10px;font-size:12px;white-space:nowrap}
+.btn.primary{background:var(--accent);color:var(--onaccent)}
+.btn.red{color:var(--err)}
+.btn.off{opacity:.45}
+.pill{border-radius:10px;padding:1px 8px;font-size:11px;white-space:nowrap}
+.p-i{background:var(--pill-i);color:var(--pill-i-fg)}.p-r{background:var(--pill-r);color:var(--pill-r-fg)}.p-n{background:var(--pill-n);color:var(--pill-n-fg)}
+.warn{color:var(--warn)}.err{color:var(--err)}.ok{color:var(--ok)}
+.toggle{width:34px;height:20px;border-radius:10px;background:var(--btn);position:relative;flex:none}
+.toggle::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+.toggle.on{background:var(--accent)}.toggle.on::after{left:16px}
+.toggle.busy{opacity:.5}
+.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;display:inline-block;vertical-align:-2px;margin-right:6px}
+.bar{height:6px;border-radius:3px;background:var(--btn);margin-top:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}
+.skel{height:10px;border-radius:5px;background:var(--btn);width:40%}
+.sheet{width:380px;max-width:100%;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;text-align:center}
+.sheet h3{font-size:15px;margin:0 0 4px}
+.qr{width:140px;height:140px;margin:12px auto;background:var(--qr-bg);padding:8px;border-radius:6px;display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.qr i{background:var(--qr-fg)}.qr i.w{background:transparent}
+.sas{font-size:30px;letter-spacing:.2em;font-variant-numeric:tabular-nums;margin:10px 0}
+.sheet .btns{display:flex;gap:8px;justify-content:center;margin-top:12px}
+.phone{width:300px;background:#000;color:#e6e6e8;border:1px solid #3a3a3c;border-radius:30px;padding:14px 12px 18px}
+.phone .nav{font-size:20px;font-weight:700;padding:6px 8px 10px}
+.phone .ig{background:#1c1c1e;border-radius:10px;margin:0 4px 12px}
+.phone .ii{padding:10px 12px;font-size:13px}.phone .sub{color:#8e8e93}
+.phone .banner{background:#3a2a17;color:#ffcf8a;border-radius:10px;margin:0 4px 12px;padding:10px 12px;font-size:13px}
+.pane{background:#000;border:1px solid var(--line);border-radius:10px;width:560px;max-width:100%;overflow:hidden;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.pane .tb{background:#2a2a2d;color:#8e8e93;padding:5px 10px;font-family:-apple-system,system-ui,sans-serif;font-size:11px}
+.pane pre{margin:0;padding:10px 12px;color:#d7d7d7;font:inherit;white-space:pre-wrap}
+.sw-menu{width:280px}
+code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+</style></head><body><main>
+<h1>Go hub phase 3 — mockups</h1>
+<p class="note">Plan: docs/superpowers/plans/2026-10-31-go-hub-phase-3.md, Task 3 (spec §12.4). Copy and layout only; colours follow the design kit when built (docs/design/desktop-style-guide.md): Desktop rows are <code>SettingsSection</code> + <code>.kitRow</code>, no row separators, row actions on hover, semantic colours only. Light and dark follow the system. Sample names are fixtures (acme, example.com, Phone A). Each section says which task builds it. The pinned copy (Mobile is run by a newer Watchtower; Continue notice; N sessions wait to resume; session host line; No phones linked; can't take typed text) is verbatim; other lines are proposals for the owner to approve.</p>
+<nav><ul>
+<li><a href="#s1">1 Settings → Mobile: phones</a></li><li><a href="#s2">2 Phones: narrow</a></li><li><a href="#s3">3 Empty</a></li><li><a href="#s4">4 Loading</a></li>
+<li><a href="#s5">5 Hand-over in progress</a></li><li><a href="#s6">6 Adoption error</a></li><li><a href="#s7">7 Hub off (reasons)</a></li><li><a href="#s8">8 Busy</a></li>
+<li><a href="#s9">9 Kept recordings</a></li><li><a href="#s10">10 Moved to a newer Watchtower</a></li><li><a href="#s11">11 Pairing: QR, waiting</a></li><li><a href="#s12">12 Pairing: confirm, linked</a></li>
+<li><a href="#s13">13 Pairing: refusals</a></li><li><a href="#s14">14 v1-host notice</a></li><li><a href="#s15">15 Workspace switcher line</a></li><li><a href="#s16">16 Session pane lines</a></li><li><a href="#s17">17 Phone: hub_moved</a></li></ul></nav>
+
+<section id="s1"><h2>1. Settings → Mobile: phones<span class="tag">Task 23</span></h2>
+<p class="note">Normal state. The hub line says who switched the transport and when; each phone shows its transport and "switched by &lt;phone&gt; &lt;time&gt;". Grants, recordings switch and Mac name are rows of the same section. Row actions appear on hover (first phone hovered). DesignShot <code>mobileSettingsPhones</code>.</p>
+<div class="row"><div class="mac">
+<div class="sec">Mobile</div><div class="group">
+<div class="item"><div class="grow">Mobile sync<div class="sub">This Mac shares its board and sessions with your linked phones.</div></div><div class="toggle on"></div></div>
+<div class="item"><div class="grow">Mac name<div class="sub">Shown on the phone</div></div><span class="btn">Work Mac</span></div>
+<div class="item"><div class="grow">Transcribe phone recordings on this Mac<div class="sub">Recordings from a phone are transcribed here.</div></div><div class="toggle on"></div></div>
+<div class="item"><div class="grow">Transport<div class="sub">Switched to Relay by Phone A · today 10:42</div></div><span class="pill p-r">Relay</span></div>
+</div>
+<div class="sec">Phones</div><div class="group">
+<div class="item hover"><div class="grow">Phone A<div class="sub">Linked 12 Oct · Relay · switched by Phone A today 10:42</div><div class="sub">Type into sessions · Answer permission prompts · Start sessions</div></div><span class="pill p-r">Relay</span><span class="btn red act">Remove…</span></div>
+<div class="item"><div class="grow">Phone B<div class="sub">Linked 3 Oct · iCloud</div><div class="sub">Type into sessions · Start sessions</div></div><span class="pill p-i">iCloud</span><span class="btn red act">Remove…</span></div>
+</div>
+<div class="item"><span class="btn primary">Link a phone…</span></div>
+</div></div></section>
+
+<section id="s2"><h2>2. Phones: narrow width<span class="tag">Task 23</span></h2>
+<p class="note">Same state at the narrowest settings width: sub-lines wrap, pill and action move below. DesignShot <code>mobileSettingsNarrow</code>.</p>
+<div class="row"><div class="mac narrow"><div class="sec">Phones</div><div class="group">
+<div class="item"><div class="grow">Phone A<div class="sub">Linked 12 Oct · Relay · switched by Phone A today 10:42</div></div><span class="pill p-r">Relay</span></div>
+<div class="item"><div class="grow">Phone B<div class="sub">Linked 3 Oct · iCloud</div></div><span class="pill p-i">iCloud</span></div>
+</div></div></div></section>
+
+<section id="s3"><h2>3. Empty<span class="tag">Task 23</span></h2>
+<p class="note">No phone linked yet. DesignShot <code>mobileSettingsEmpty</code>. Pinned copy: "No phones linked".</p>
+<div class="row"><div class="mac"><div class="sec">Phones</div><div class="group">
+<div class="item"><div class="grow">No phones linked<div class="sub">Link one to see this Mac's board and sessions on your phone.</div></div></div></div>
+<div class="item"><span class="btn primary">Link a phone…</span></div></div></div></section>
+
+<section id="s4"><h2>4. Loading<span class="tag">Task 23 · adoption check: Task 22</span></h2>
+<p class="note">While <code>hub status</code> is read, or while the adoption state is read at launch. DesignShots <code>mobileSettingsLoading</code>, <code>mobileAdoptionLoading</code>.</p>
+<div class="row"><div class="mac"><div class="sec">Mobile</div><div class="group">
+<div class="item"><span class="spin"></span><div class="grow">Loading…</div></div>
+<div class="item"><div class="grow"><div class="skel"></div></div></div></div></div></div></section>
+
+<section id="s5"><h2>5. Hand-over in progress<span class="tag">Task 22</span></h2>
+<p class="note">Mobile moves to the new hub once, after the update. The toggle and Link a phone are disabled until it ends. Steps are the adoption steps (copy, verify, move, migrate, keys). DesignShot <code>mobileHandOverInProgress</code> (and narrow).</p>
+<div class="row"><div class="mac"><div class="sec">Mobile</div><div class="group">
+<div class="item"><div class="grow"><span class="spin"></span>Moving Mobile to the new version…<div class="sub">Step 3 of 5. Your phones stay linked; this takes a moment.</div><div class="bar"><i style="width:60%"></i></div></div></div>
+<div class="item"><div class="grow">Mobile sync</div><div class="toggle on busy"></div></div></div></div>
+<div class="mac narrow"><div class="sec">Mobile — narrow</div><div class="group"><div class="item"><div class="grow"><span class="spin"></span>Moving Mobile to the new version…<div class="sub">Step 3 of 5.</div><div class="bar"><i style="width:60%"></i></div></div></div></div></div></div></section>
+
+<section id="s6"><h2>6. Adoption error with Retry<span class="tag">Task 22</span></h2>
+<p class="note">Any adoption failure: Mobile stays off (no fallback to the old hub) and says why; <strong>Retry</strong> runs the hand-over again from its recorded step. Reasons shown are samples (<code>swift_schema</code>, <code>no_keys</code>). DesignShot <code>mobileAdoptionFailed</code>.</p>
+<div class="row"><div class="mac"><div class="sec">Mobile</div><div class="group">
+<div class="item"><div class="grow err">Mobile could not move to the new version<div class="sub">The old Mobile data has a format this version does not know. Nothing was changed.</div></div><span class="btn primary">Retry</span></div></div>
+<div class="sec">Other reason</div><div class="group">
+<div class="item"><div class="grow err">Mobile could not move to the new version<div class="sub">This Mac's encryption keys are missing. Your phones need to be linked again.</div></div><span class="btn primary">Retry</span></div></div></div>
+<div class="mac narrow"><div class="sec">Narrow</div><div class="group"><div class="item"><div class="grow err">Mobile could not move to the new version<div class="sub">The old Mobile data has a format this version does not know. Nothing was changed.</div></div><span class="btn primary">Retry</span></div></div></div></div></section>
+
+<section id="s7"><h2>7. Hub off, with its reason<span class="tag">Task 23</span></h2>
+<p class="note">When <code>hub status</code> says off, one row names the reason; a policy-forced state has no toggle. DesignShot <code>mobileSettingsOff</code> (MDM <code>policy_off</code>).</p>
+<div class="row"><div class="mac"><div class="sec">Mobile</div><div class="group">
+<div class="item"><div class="grow">Mobile is turned off by your organization<div class="sub">Managed by your organization. Linked phones are kept and work again when it is allowed.</div></div><span class="pill p-n">Managed</span></div></div>
+<div class="sec">Switched off by you</div><div class="group">
+<div class="item"><div class="grow">Mobile sync<div class="sub">Off. Linked phones are kept.</div></div><div class="toggle"></div></div></div></div></div></section>
+
+<section id="s8"><h2>8. Busy (a write in flight)<span class="tag">Task 23</span></h2>
+<p class="note">A grant, the name, the recordings switch or Remove is being applied through <code>hub …</code>: the row shows a spinner and its control is disabled; the rest stays usable. DesignShot <code>mobileSettingsBusy</code>.</p>
+<div class="row"><div class="mac"><div class="sec">Mobile</div><div class="group">
+<div class="item"><div class="grow"><span class="spin"></span>Transcribe phone recordings on this Mac<div class="sub">Turning on…</div></div><div class="toggle on busy"></div></div>
+<div class="item"><div class="grow">Phone A<div class="sub">Linked 12 Oct · Relay</div></div><span class="pill p-r">Relay</span></div></div>
+<div class="sec">Inline refusal</div><div class="group"><div class="item"><div class="grow">Transcribe phone recordings on this Mac<div class="sub err">This host has no transcriber.</div></div><div class="toggle"></div></div></div></div></div></section>
+
+<section id="s9"><h2>9. Kept recordings line<span class="tag">Task 23, data from Task 13</span></h2>
+<p class="note">After the hand-over, phone recordings that were still being transcribed are kept on the Mac and not transcribed; the line names the count, offers <strong>Show in Finder</strong> and says when they are removed. Hidden when none. Singular: "1 phone recording was not transcribed during the update". DesignShot <code>mobileSettingsKeptRecordings</code> (and narrow).</p>
+<div class="row"><div class="mac"><div class="sec">Phones</div><div class="group">
+<div class="item"><div class="grow">Phone A<div class="sub">Linked 12 Oct · Relay · switched by Phone A today 10:42</div></div><span class="pill p-r">Relay</span></div></div>
+<div class="sec">Recordings</div><div class="group">
+<div class="item"><div class="grow warn">3 phone recordings were not transcribed during the update<div class="sub">Removed from this Mac on Nov 14, 2026</div></div><span class="btn">Show in Finder</span></div></div></div>
+<div class="mac narrow"><div class="sec">Recordings — narrow, one</div><div class="group"><div class="item"><div class="grow warn">1 phone recording was not transcribed during the update<div class="sub">Removed from this Mac on Nov 14, 2026</div></div><span class="btn">Show in Finder</span></div></div></div></div></section>
+
+<section id="s10"><h2>10. Moved to a newer Watchtower<span class="tag">Task 2 (ships first; shown here for the owner's review)</span></h2>
+<p class="note">An old Watchtower opened after the Mac moved to the Go hub: one row, no toggle, no controls. DesignShot <code>mobileSettingsMoved</code> (and narrow).</p>
+<div class="row"><div class="mac"><div class="sec">Mobile</div><div class="group"><div class="item"><div class="grow">Mobile is run by a newer Watchtower</div></div></div></div>
+<div class="mac narrow"><div class="sec">Mobile</div><div class="group"><div class="item"><div class="grow">Mobile is run by a newer Watchtower</div></div></div></div></div></section>
+
+<section id="s11"><h2>11. Pairing sheet: starting, QR, waiting<span class="tag">Task 23</span></h2>
+<p class="note">The QR comes from the hub's <code>qr</code> event (the pattern here is a placeholder); waiting follows once shown. DesignShot <code>mobilePairingQR</code>.</p>
+<div class="row">
+<div class="sheet"><h3>Use Watchtower on iPhone</h3><div class="sub">Making a code…</div><div style="margin:20px 0"><span class="spin"></span></div><div class="btns"><span class="btn">Cancel</span></div></div>
+<div class="sheet"><h3>Use Watchtower on iPhone</h3><div class="qr" aria-label="Link code (placeholder pattern)"><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i></div>
+<div class="sub">Scan it with the iPhone camera or the Watchtower app.</div><div class="sub">Expires in 9:41</div><div class="btns"><span class="btn">New code</span><span class="btn">Done</span></div></div>
+<div class="sheet"><h3>Use Watchtower on iPhone</h3><div style="margin:20px 0"><span class="spin"></span>Waiting for your phone…</div><div class="sub">Expires in 8:02</div><div class="btns"><span class="btn">Cancel</span></div></div></div></section>
+
+<section id="s12"><h2>12. Pairing sheet: confirm and linked<span class="tag">Task 23</span></h2>
+<p class="note">A phone scanned the code: the owner checks that the same code shows on the phone. DesignShot <code>mobilePairingSAS</code>.</p>
+<div class="row">
+<div class="sheet"><h3>Link “Phone A”?</h3><div class="sub">Check that your iPhone shows the same code</div><div class="sas">4827</div><div class="btns"><span class="btn">Refuse</span><span class="btn primary">Link</span></div></div>
+<div class="sheet"><h3 class="ok">Linked Phone A</h3><div class="sub">It shows this Mac's board and sessions now.</div><div class="btns"><span class="btn primary">Done</span></div></div></div></section>
+
+<section id="s13"><h2>13. Pairing sheet: each refusal<span class="tag">Task 23</span></h2>
+<p class="note">One line each, with the action that fits. Refusal ids as in <code>hub pair</code>: used_code, expired_code, unknown_code, not_confirmed, too_many_requests, and an unknown reason. DesignShot <code>mobilePairingRefused</code>.</p>
+<div class="row">
+<div class="sheet"><h3 class="err">This code was already used.</h3><div class="sub">used_code</div><div class="btns"><span class="btn primary">Show a new code</span></div></div>
+<div class="sheet"><h3 class="err">This code expired.</h3><div class="sub">expired_code</div><div class="btns"><span class="btn primary">Show a new code</span></div></div>
+<div class="sheet"><h3 class="err">The phone sent a code this Mac does not know.</h3><div class="sub">unknown_code</div><div class="btns"><span class="btn primary">Show a new code</span></div></div>
+<div class="sheet"><h3 class="err">Not linked: the code was not confirmed.</h3><div class="sub">not_confirmed</div><div class="btns"><span class="btn primary">Show a new code</span></div></div>
+<div class="sheet"><h3 class="err">Too many phones tried this code.</h3><div class="sub">too_many_requests</div><div class="btns"><span class="btn primary">Show a new code</span></div></div>
+<div class="sheet"><h3 class="err">The phone could not be linked.</h3><div class="sub">unknown reason</div><div class="btns"><span class="btn primary">Try again</span></div></div></div></section>
+
+<section id="s14"><h2>14. v1-host notice (one-time session restart)<span class="tag">Task 19</span></h2>
+<p class="note">After the update, running sessions move to the new session host once. Nothing happens until <strong>Continue</strong>; closing the window leaves the sessions as they are and the notice returns next launch. States: waiting, busy (stopping 2 of 5), error with <strong>Retry</strong>, narrow. DesignShots <code>hostRestartNotice</code>, <code>hostRestartBusy</code>, <code>hostRestartError</code>. Empty (not needed) renders nothing.</p>
+<div class="row">
+<div class="mac"><div class="sec">Update</div><div class="group"><div class="item"><div class="grow">Running sessions restart once with this update; their conversations continue</div><span class="btn primary">Continue</span></div></div></div>
+<div class="mac"><div class="sec">Update — busy</div><div class="group"><div class="item"><div class="grow"><span class="spin"></span>Stopping sessions… 2 of 5<div class="bar"><i style="width:40%"></i></div></div><span class="btn off">Continue</span></div></div></div>
+<div class="mac"><div class="sec">Update — error</div><div class="group"><div class="item"><div class="grow err">Sessions could not be restarted<div class="sub">The session host did not start. Your sessions were not changed.</div></div><span class="btn primary">Retry</span></div></div></div>
+<div class="mac narrow"><div class="sec">Narrow</div><div class="group"><div class="item"><div class="grow">Running sessions restart once with this update; their conversations continue</div><span class="btn primary">Continue</span></div></div></div></div></section>
+
+<section id="s15"><h2>15. Workspace switcher line<span class="tag">Task 19</span></h2>
+<p class="note">Sessions of another workspace wait for that workspace to open (resumed then). One session: "1 session waits to resume". DesignShot <code>workspaceSwitcherWaitLine</code> (and narrow).</p>
+<div class="row"><div class="mac sw-menu"><div class="group"><div class="item"><div class="grow">acme<div class="sub">Current</div></div></div>
+<div class="item hover"><div class="grow">acme-labs<div class="sub warn">3 sessions wait to resume</div></div></div>
+<div class="item"><div class="grow">example<div class="sub warn">1 session waits to resume</div></div></div></div></div>
+<div class="mac narrow" style="width:220px"><div class="group"><div class="item"><div class="grow">acme-labs<div class="sub warn">3 sessions wait to resume</div></div></div></div></div></div></section>
+
+<section id="s16"><h2>16. Session pane lines<span class="tag">Tasks 7, 19</span></h2>
+<p class="note">When the session host is gone, the pane says so as a Watchtower line; a session that cannot take typed text answers the same way.</p>
+<div class="row"><div class="pane"><div class="tb">Session</div><pre>[Watchtower] the session host is not running</pre></div>
+<div class="pane"><div class="tb">Session</div><pre>[Watchtower] This session can't take typed text right now</pre></div></div></section>
+
+<section id="s17"><h2>17. Phone: recording failure after the update<span class="tag">Task 13</span></h2>
+<p class="note">A recording job still being transcribed during the hand-over fails with class <code>hub_moved</code>; the phone shows this fixed text on the recording.</p>
+<div class="row"><div class="phone"><div class="nav">Recordings</div>
+<div class="banner">Watchtower was updated while this recording was being transcribed. The audio is kept on your Mac; send it again if you still have it on this iPhone.</div>
+<div class="ig"><div class="ii">Standup, 31 Oct<div class="sub">Failed</div></div></div></div></div></section>
+
+</main></body></html>

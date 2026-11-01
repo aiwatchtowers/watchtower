@@ -26,12 +26,14 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
+	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
 // hub is a hub's relay transport over the fake, with its keys for a phone.
 type hub struct {
 	tr      *relay.Transport
+	c       *client.Client
 	relayID string
 	id      secure.ID
 	sig     ed25519.PublicKey
@@ -54,9 +56,12 @@ func newHub(t *testing.T, srv *relaytest.Server) *hub {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	c := relay.NewClient(srv.URL, key)
+	if _, err := c.Register(t.Context()); err != nil { // a phone can vouch for it before it connects
+		t.Fatal(err)
+	}
 	tr := relay.New(c, relay.Options{Origin: srv.URL, HubRelayID: c.DeviceID(), Store: st, AssetDir: t.TempDir()})
 	t.Cleanup(func() { _ = tr.Close() })
-	return &hub{tr: tr, relayID: c.DeviceID(), id: secure.DeviceID(pub), sig: pub, kx: kx}
+	return &hub{tr: tr, c: c, relayID: c.DeviceID(), id: secure.DeviceID(pub), sig: pub, kx: kx}
 }
 
 func (h *hub) connect(t *testing.T) {
@@ -115,11 +120,28 @@ func controlOf(kind transport.ControlKind) func(transport.Event) bool {
 	return func(ev transport.Event) bool { return ev.Control != nil && ev.Control.Kind == kind }
 }
 
-func addSlot(t *testing.T, store *hubtest.RelayStore, mac string) {
+// addSlot vouches for h as the store's phone and puts it into the phone's
+// slots.
+func addSlot(t *testing.T, store *hubtest.RelayStore, h *hub) {
 	t.Helper()
-	if _, err := store.C.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_AddSlot{AddSlot: &relayv1.AddMacSlot{
+	vouch(t, store, h)
+	if err := addSlotOnly(t, store, h.relayID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func addSlotOnly(t *testing.T, store *hubtest.RelayStore, mac string) error {
+	t.Helper()
+	_, err := store.C.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_AddSlot{AddSlot: &relayv1.AddMacSlot{
 		MacDeviceId: mac,
-	}}}); err != nil {
+	}}})
+	return err
+}
+
+// vouch is the phone's vouch_hub for h (registered by newHub).
+func vouch(t *testing.T, store *hubtest.RelayStore, h *hub) {
+	t.Helper()
+	if err := store.VouchHub(t.Context(), h.sig); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -164,8 +186,13 @@ func TestPairingThroughTheFakeRelay(t *testing.T) {
 	if got := phonesOf(t, h); len(got) != 0 || h.tr.Admitted() {
 		t.Fatalf("phones before promote_pairing: %v", got)
 	}
+	vouch(t, store, h)
 	if err := store.PromotePairing(t.Context(), slot); err != nil {
 		t.Fatal(err)
+	}
+	waitEvent(t, h.tr, "SLOT_ADDED", control(transport.SlotAdded, p.RelayDeviceID()))
+	if !h.tr.Vouched() {
+		t.Fatal("SLOT_ADDED came before the account state showed the slot")
 	}
 	got := phonesOf(t, h)
 	if len(got) != 1 || got[0].GetPhoneDeviceId() != p.RelayDeviceID() || !got[0].GetPaying() || !h.tr.Admitted() {
@@ -209,7 +236,7 @@ func TestSetPayingSendsEntitlementExpiredToTheHub(t *testing.T) {
 	h := newHub(t, srv)
 	h.connect(t)
 	p, store := newPhone(t, srv, h)
-	addSlot(t, store, h.relayID)
+	addSlot(t, store, h)
 	if got := phonesOf(t, h); len(got) != 1 || !got[0].GetPaying() {
 		t.Fatalf("phones after add_slot: %v", got)
 	}
@@ -383,7 +410,7 @@ func TestNewSocketReplacesTheOldForControlsAndPush(t *testing.T) {
 	srv := relaytest.Start(t)
 	h := newHub(t, srv)
 	p, store := newPhone(t, srv, h)
-	addSlot(t, store, h.relayID)
+	addSlot(t, store, h)
 	old := dialWS(t, srv, h.relayID)
 	subscribeWS(t, old, "z")
 	cur := dialWS(t, srv, h.relayID)

@@ -2,6 +2,7 @@ package hubtest
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"time"
@@ -75,6 +76,21 @@ func (s *RelayStore) OpenPairing(ctx context.Context, hubRelayID string) (string
 		return "", errors.New("hubtest: open_pairing: no slot in the answer")
 	}
 	return slot, nil
+}
+
+// VouchHub vouches, as this phone, for the hub with key hubPub (the link
+// code's relay_auth_pub) through the relay client's VouchHub: a fresh VOUCH
+// challenge, then vouch_hub with no attestation (dev or an exempt device).
+// The relay keeps the vouch 10 minutes for the next promote_pairing or
+// add_slot of that hub.
+func (s *RelayStore) VouchHub(ctx context.Context, hubPub ed25519.PublicKey) error {
+	if s.C == nil {
+		return errors.New("hubtest: relay store has no client")
+	}
+	if err := s.C.VouchHub(ctx, hubPub); err != nil {
+		return fmt.Errorf("hubtest: vouch_hub: %w", relay.MapError(err))
+	}
+	return nil
 }
 
 // PromotePairing turns the pairing slot into a slot of the phone's account
