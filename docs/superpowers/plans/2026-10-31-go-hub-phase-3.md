@@ -310,6 +310,8 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Interfaces:**
 - Consumes: Task 4 `bridge.proto` + `frames.json`; Kit `CloudKitTransport` (CKSyncEngine, `TransportStore`, zones, `AskAlertSubscription` — the query subscription on `sig-` records, the only signal work the bridge does; signals arrive as ordinary `Save`/`Delete` frames —, push fetch), the share logic of today's `ShareService` (moved here), `InMemoryCloudTransport` for the contract test.
 - Produces: an `LSUIElement` app that serves `<hub dir>/bridge.sock` (path from `--socket`), mints a random `generation` when it creates `bridge.db` and persists it there (sent in `HelloOk` and every `Batch`; a `Changes` cursor or an `EXPECT_SEQ` tag of another generation is answered `token_expired`, never compared — Task 4 review round 1), checks the peer UID (`getpeereid`), answers every Task 4 frame, keeps `tag_seq`/`bridge_seq` in `BridgeTagMap` (GRDB, `<hub dir>/cloudkit/bridge.db`, ids and numbers only), conditional saves as `modifyRecords(savePolicy: .ifServerRecordUnchanged)` with the last known change tag (`expect: absent` = no tag; conflict answers carry the server copy's envelope), receives silent pushes and emits `Event{pull_now}`; exits when the socket peer closes for 60 s and the daemon does not reconnect.
+  - Creator and owner user (Task 12 amendment): every `Record` in `Batch.changed` and in a conflict carries `creator` = `CKRecord.creatorUserRecordID.recordName` as CloudKit reports it (`__defaultOwner__` for the Mac's own user, `""` when absent), and `OwnerUser` is answered `OwnerUserInfo{user_record_name}` from `CKContainer.userRecordID()` (`""` while the account has no user); pinned by the `frames.json` cases `batch_creators`, `owner_user`, `owner_user_info`, `owner_user_info_empty`.
+  - Account change (Task 12 review): on `CKAccountChanged` the bridge sends `Event{account_changed: true}` (`frames.json` case `event_account_changed`).
 - **Built (review round 1, PR #586):**
   - The bridge talks to the private database directly through a `BridgeDatabase` seam, not CKSyncEngine.
   - It saves one database subscription of its own (`watchtower-bridge-db-<hub_id>`, a silent push, the role CKSyncEngine's subscription played for the Swift hub) and never touches the phone's `ask-alert-<hub_id>`.
@@ -448,7 +450,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Test: `internal/hub/slices/cloudkit_test.go`, `internal/hub/runtime_test.go`
 
 **Interfaces:**
-- Consumes: Task 4 `Event.PullNow`; Task 11; Plan 1a's ask-alert signals as they are (`Sealer.Signal`, the publisher's `sig-` save/delete on `KindCloudKit`, tests `TestAskAlertSignalOnCloudKit`, `TestAskAlertHasNoSignalOnTheRelay`, `TestAskAlertSignalIsNeverCreatedTwice` in `internal/hub/slices/alert_signal_test.go`) — nothing to add for signals.
+- Consumes: Task 12 — the runtime calls `link.Center.CloseLink(ctx, client, link.CloseRestart)` once at start, `SweepShares(ctx, client)` on every relay pass and `CloseLink(ctx, client, link.CloseUsed)` after a confirm that linked, and routes RelayZone `hello-*` records to `HandleCloudKitHello(ctx, client, rec)`; the owner's Remove and a phone's own unlink (Task 11's `device` record) call `RemoveCloudKit(ctx, client, device)`, and `transport.Event.AccountChanged` calls `AccountChanged(ctx, client)`. Task 4 `Event.PullNow`; Task 11; Plan 1a's ask-alert signals as they are (`Sealer.Signal`, the publisher's `sig-` save/delete on `KindCloudKit`, tests `TestAskAlertSignalOnCloudKit`, `TestAskAlertHasNoSignalOnTheRelay`, `TestAskAlertSignalIsNeverCreatedTwice` in `internal/hub/slices/alert_signal_test.go`) — nothing to add for signals.
 - Produces:
   ```go
   const CloudKitActivePass, CloudKitIdlePass = 3 * time.Second, 30 * time.Second
@@ -593,7 +595,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Test: `internal/hub/resolve_desktop_test.go`, `cmd/hub_test.go`, `cmd/hub_recording_test.go`
 
 **Interfaces:**
-- Consumes: Phase 2 `hub.Resolve`/`Dir`/`Mode`/`hostkind.Detect`; Tasks 1, 4, 10, 13, 15, 16, 18; Plan 1b `sessionhost.Dial` (`ErrHostV1`).
+- Consumes: Task 12 — on a desktop host the runtime calls `link.Center.CloseLink(ctx, client, link.CloseRestart)` once at start, `SweepShares(ctx, client)` on every relay pass and `CloseLink(ctx, client, link.CloseUsed)` after a confirm that linked, and routes RelayZone `hello-*` records to `HandleCloudKitHello(ctx, client, rec)`; the owner's Remove and a phone's own unlink (Task 11's `device` record) call `RemoveCloudKit(ctx, client, device)`, and `transport.Event.AccountChanged` calls `AccountChanged(ctx, client)`. Phase 2 `hub.Resolve`/`Dir`/`Mode`/`hostkind.Detect`; Tasks 1, 4, 10, 13, 15, 16, 18; Plan 1b `sessionhost.Dial` (`ErrHostV1`).
 - Produces:
   ```go
   // Resolve on a desktop host (Phase 2 returned ModeOff/desktop_host):
@@ -681,6 +683,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Delete: `WatchtowerDesktop/Sources/Services/MobileHub/` (all), `WatchtowerDesktop/Sources/WatchtowerCore/Services/MobileHubMovedGuard.swift` (Task 2's guard is for older releases; this build has no Swift hub to guard), their tests under `WatchtowerDesktop/Tests/MobileHub/` (except `HubKeyringVectorTests.swift`, kept as the vector writer; the Mobile view-model tests are handled by Task 23), `TrayAppDelegate`'s remote-notification forwarding to the hub, Swift `TerminalLaunch`/`SessionStartPlacement` start-path code left by Task 8 (their fixture tests stay as the Go dual-path check)
+- Modify: `internal/hub/link/cloudkit_test.go` — `TestCloudKitLinkingMatchesTheSwiftHub` reads `MobileLinkCenter.swift`, `MobileHubService.swift` and `ShareService.swift` and fails when they are missing (Task 12 review F7): drop those reads with the deletion, keep the Go literals and the Kit reads.
 - Create: `WatchtowerDesktop/Tests/Core/DesktopNeverOpensTheSidecarTests.swift`
 - Modify: `WatchtowerDesktop/Sources/App/AppState.swift` (`mobileSyncPolicy` / `MobileSyncPolicyBox` over `Services/MobileHub/MobileSyncPolicy.swift` → `HubCenter.status` reason `policy_off` from `hub status --json`; `MobileHubPolicyTests` maps to the Go twins `TestPolicy03_OffStopsHubKeepsSetting` / `TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` in `internal/hub/hub_test.go` and Task 21's `TestPolicy03_OffStopsDesktopHostHubKeepsSetting`)
 - Modify: `docs/inventory/workbench.md` (PROJ-12/16/21 Swift paths → Go files; PROJ-17 note: the Undo batch reaches the hub, Task 5), `docs/inventory/session-feed.md` (FEED Swift hub paths → Go), `docs/inventory/policy.md` (`MobileSyncPolicy.swift` → Go), `docs/inventory/README.md` (module paths), each with a changelog line citing spec approval and asks #807, #812, #813, #814

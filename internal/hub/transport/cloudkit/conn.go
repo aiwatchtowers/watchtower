@@ -255,6 +255,8 @@ func (c *Client) eventOf(ev *bridgepb.Event) (transport.Event, bool) {
 		return transport.Event{}, false
 	case ev.GetPullNow():
 		return transport.Event{PullNow: true}, true
+	case ev.GetAccountChanged():
+		return transport.Event{AccountChanged: true}, true
 	case ev.GetErrorClass() != "":
 		return transport.Event{Err: classError(ev.GetErrorClass(), false)}, true
 	}
@@ -288,7 +290,7 @@ func (c *Client) emit(e transport.Event) {
 		case e.Err != nil && p.Err != nil && errors.Is(errKind(p.Err), errKind(e.Err)):
 			c.pending[i] = e // the latest of its class
 			return
-		case e.Err == nil && p.Err == nil && p.Zone == e.Zone && p.PullNow == e.PullNow:
+		case e.Err == nil && p.Err == nil && p.Zone == e.Zone && p.PullNow == e.PullNow && p.AccountChanged == e.AccountChanged:
 			return
 		}
 	}

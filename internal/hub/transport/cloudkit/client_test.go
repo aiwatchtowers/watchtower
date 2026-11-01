@@ -545,6 +545,8 @@ func TestPullNowEventIsEmitted(t *testing.T) {
 	r.nextEvent("relay zone", func(e transport.Event) bool { return e.Zone == transport.SharedMailboxZone(relayID) })
 	r.fake.SendError("rate_limited")
 	r.nextEvent("error", func(e transport.Event) bool { return errors.Is(e.Err, transport.ErrRateLimited) })
+	r.fake.AccountChanged()
+	r.nextEvent("account changed", func(e transport.Event) bool { return e.AccountChanged })
 	// A dropped connection is an Err event; the next op reconnects and the
 	// reconnect is a pull_now (pushes may have been missed).
 	r.fake.DropConnections()
