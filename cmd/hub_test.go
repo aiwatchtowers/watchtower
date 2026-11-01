@@ -310,6 +310,32 @@ func TestHubPhonesJSONKeys(t *testing.T) {
 	assert.Equal(t, id, list[0]["device_id"])
 }
 
+// A phone linked over the relay shows transport "pending" until the relay
+// lists it holding the hub in a slot (relay_admitted_at), "relay" after.
+func TestHubPhonesTransportPendingUntilAdmitted(t *testing.T) {
+	dir := hubTestDir(t)
+	linkTestPhone(t, dir)
+	transportOf := func() any {
+		t.Helper()
+		out, err := runHub(t, "phones", "--json")
+		require.NoError(t, err)
+		var list []map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &list), out)
+		require.Len(t, list, 1)
+		return list[0]["transport"]
+	}
+	assert.Equal(t, "pending", transportOf())
+
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	devices, err := st.Devices()
+	require.NoError(t, err)
+	_, err = st.MarkRelayAdmitted([]string{devices[0].RelayDeviceID}, time.Now())
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+	assert.Equal(t, "relay", transportOf())
+}
+
 func TestHubAllowJSONKeys(t *testing.T) {
 	dir := hubTestDir(t)
 	id := linkTestPhone(t, dir)

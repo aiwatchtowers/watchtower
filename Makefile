@@ -341,9 +341,12 @@ relay-go:
 # interop) against the relay's local stand: `wrangler dev` from
 # $(RELAY)/worker in its own process group (needs Node and `npm ci` there),
 # killed and waited for on exit, failure and signal. Any relay dir works; it
-# warns when a git checkout is not at the vendored client's pin.
+# warns when a git checkout is not at the vendored client's pin. KIT=1
+# (macOS) runs the Kit suite's GoHubInteropTests against a live headless hub
+# on the stand instead (see the script's header).
+KIT ?=
 relay-interop:
-	bash scripts/relay-interop.sh "$(RELAY)"
+	KIT="$(KIT)" bash scripts/relay-interop.sh "$(RELAY)"
 
 # The headless hub smoke test (cmd/hub_headless_smoke_test.go, build tag
 # smoke): builds the binary, runs `sync --daemon` against an in-process fake

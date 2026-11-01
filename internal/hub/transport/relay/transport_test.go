@@ -405,7 +405,7 @@ func TestRelayTransport_ConnectRegistersSubscribesAndPulls(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := h.relay.Requests("register")
-	if len(reg) != 1 || reg[0].GetRegister().GetDeviceKind() != relayv1.DeviceKind_DEVICE_KIND_MAC || reg[0].GetRegister().GetAttestation() != nil {
+	if len(reg) != 1 || reg[0].GetRegister().GetDeviceKind() != relayv1.DeviceKind_DEVICE_KIND_HUB || reg[0].GetRegister().GetAttestation() != nil {
 		t.Fatalf("register: %v", reg)
 	}
 	seen := map[string]bool{}
