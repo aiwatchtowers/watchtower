@@ -31,6 +31,8 @@ An update, log-out or restart never asks about sessions (only about a running re
 
 Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates. A session that exited meanwhile shows its last output and reads as exited when you return.
 
+**Once, with the update that brings the new phone hub,** the helper itself is replaced. If sessions are running then, Watchtower shows **Running sessions restart once with this update; their conversations continue** with a **Continue** button. Nothing changes until you press it: quitting leaves the sessions running, and the notice comes back at the next launch. After **Continue**, Watchtower stops each session, starts the new helper and resumes each session's conversation. Sessions of another workspace resume when you open that workspace; until then Settings → System → Workspace shows **N sessions wait to resume** under its name. A session whose conversation cannot be found shows **Start fresh**, as after any failed resume.
+
 Every Watchtower build on your Mac shares one helper. Two copies open on the same workspace compete for its sessions: the loser shows **Another Watchtower window took this session over.**, and restarting the session there starts a second agent. The helper quits a minute after its last session ends, and an update's new helper takes over then.
 
 ## Using it
@@ -42,6 +44,7 @@ Every Watchtower build on your Mac shares one helper. Two copies open on the sam
 ## When it's empty or wrong
 
 - **[Watchtower] the session host is not running.** The helper is not running and starting it again failed, so the session did not start. Press **Restart**; if it still fails, quit and reopen Watchtower.
+- **Sessions could not be restarted.** The one-time restart stopped part-way (the reason is under the line). Press **Retry**; sessions already listed resume then, and a reason that says your sessions were not changed means they still run.
 - **Another Watchtower window took this session over.** Two copies of Watchtower on one workspace share the helper. Use the session in the copy that holds it: restarting it here starts a second agent.
 
 ## Related
