@@ -100,6 +100,17 @@ final class MobileHubMovedGuardTests: XCTestCase {
         XCTAssertFalse(MobileHubMovedGuard.isMoved(mobileHubDir: dir))
     }
 
+    /// Exactly the cap with no trailing newline: nothing was cut, so the last
+    /// line still counts.
+    func testANoteOfExactlyTheCapKeepsItsLastLine() throws {
+        var bytes = Array("moved_to=/var/empty/".utf8)
+        while bytes.count < 4096 - 12 { bytes.append(UInt8(ascii: "a")) }
+        bytes += Array("\nhub_impl=go".utf8)
+        XCTAssertEqual(bytes.count, 4096)
+        try writeNote(bytes)
+        XCTAssertTrue(MobileHubMovedGuard.isMoved(mobileHubDir: dir))
+    }
+
     func testThePinnedNames() {
         XCTAssertEqual(MobileHubMovedGuard.noteName, "MOVED")
         XCTAssertEqual(MobileHubMovedGuard.message, "Mobile is run by a newer Watchtower")

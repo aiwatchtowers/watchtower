@@ -27,8 +27,13 @@ public enum MobileHubMovedGuard {
     /// counts as moved, because only a newer app writes it: a symlink (never
     /// followed), a directory or other non-regular file, a file that cannot be
     /// opened or read, or a line that is not UTF-8. Lines split on LF, with a
-    /// trailing CR and surrounding spaces trimmed. A last line cut by the cap
-    /// (possibly mid-character) is skipped.
+    /// trailing CR and surrounding spaces trimmed. In a note longer than the
+    /// cap the last line read was cut (perhaps mid-character) and is skipped.
+    ///
+    /// Read only before a hub is built or started: a hub already running when
+    /// `MOVED` appears is not stopped. That is deliberate — only a newer app
+    /// writes `MOVED`, during its adoption, and two copies of the app (one
+    /// bundle id) never run at once, so this app is not running then.
     public static func isMoved(mobileHubDir: URL) -> Bool {
         let path = mobileHubDir.appendingPathComponent(noteName, isDirectory: false).path
         var info = stat()
@@ -36,7 +41,7 @@ public enum MobileHubMovedGuard {
         guard info.st_mode & S_IFMT == S_IFREG else { return true }
         guard let bytes = readHead(path) else { return true }
         var lines = bytes.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
-        if bytes.count == maxNoteBytes, bytes.last != UInt8(ascii: "\n") { lines.removeLast() }
+        if info.st_size > maxNoteBytes { lines.removeLast() } // cut by the cap, perhaps mid-character
         let trim = CharacterSet.whitespaces.union(CharacterSet(charactersIn: "\r"))
         for line in lines {
             guard let text = String(bytes: line, encoding: .utf8) else { return true }

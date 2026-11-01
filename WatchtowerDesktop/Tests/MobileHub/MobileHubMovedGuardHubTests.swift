@@ -46,11 +46,14 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
 
     /// An AppState over `hubDir` with the toggle on; `storageBuilds` counts
     /// every open of the hub's storage (sidecar, keychain, transport).
-    /// `policy` is the organization's managed preferences.
+    /// `policy` holds the organization's managed preferences; `transport`
+    /// is the stub every built storage uses.
     private func makeAppState(
-        policy: [String: Any] = [:], storageBuilds: @escaping () -> Void
+        policy: PolicyBox = PolicyBox(),
+        transport: StubHubTransport = StubHubTransport(),
+        storageBuilds: @escaping () -> Void
     ) throws -> AppState {
-        let appState = AppState { policy }
+        let appState = AppState { policy.raw }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.mobileSyncDefaults = defaults
         appState.mobileHubDirectory = hubDir
@@ -58,7 +61,7 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
         let sidecar = try XCTUnwrap(self.sidecar)
         appState.makeMobileHubStorage = {
             storageBuilds()
-            var storage = try MobileHubStorage.stub(transport: StubHubTransport(), sidecar: sidecar)
+            var storage = try MobileHubStorage.stub(transport: transport, sidecar: sidecar)
             storage.ownerUser = { "_owner-acme" }
             return storage
         }
@@ -138,7 +141,7 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
     func testMovedSkipsThePolicyOffWipe() throws {
         try writeNote("hub_impl=go\n")
         var builds = 0
-        let appState = try makeAppState(policy: ["MobileSync": "off"]) { builds += 1 }
+        let appState = try makeAppState(policy: PolicyBox(["MobileSync": "off"])) { builds += 1 }
         defer { stopAll(appState) }
         appState.managedPolicy.refresh()
         XCTAssertEqual(appState.mobileSyncPolicy.current, "off")
@@ -148,6 +151,64 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
 
         XCTAssertEqual(builds, 0, "no wipe build while moved")
         XCTAssertNil(appState.mobileHub)
+    }
+
+    /// Leaving `MobileSync = off` while moved starts nothing.
+    func testLeavingPolicyOffWhileMovedStartsNothing() throws {
+        try writeNote("hub_impl=go\n")
+        var builds = 0
+        let policy = PolicyBox(["MobileSync": "off"])
+        let transport = StubHubTransport()
+        let appState = try makeAppState(policy: policy, transport: transport) { builds += 1 }
+        defer { stopAll(appState) }
+        appState.managedPolicy.refresh()
+        runInitWorkbenches(appState)
+
+        policy.raw = [:]
+        appState.managedPolicy.refresh()
+
+        XCTAssertNotEqual(appState.mobileSyncPolicy.current, "off", "the policy left off")
+        XCTAssertEqual(builds, 0)
+        XCTAssertEqual(transport.starts, 0)
+        XCTAssertNil(appState.mobileHub)
+    }
+
+    /// A hub built before the note appeared: turning the toggle off still
+    /// disables it.
+    func testToggleOffWhileMovedDisablesTheHub() async throws {
+        var builds = 0
+        let transport = StubHubTransport()
+        let appState = try makeAppState(transport: transport) { builds += 1 }
+        defer { stopAll(appState) }
+        runInitWorkbenches(appState)
+        let hub = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the hub runs") { hub.status == .running }
+        try writeNote("hub_impl=go\n")
+        appState.resolveMobileHubMoved()
+
+        appState.setMobileSyncEnabled(false)
+
+        XCTAssertEqual(hub.status, .off, "disable() ran")
+        XCTAssertFalse(defaults.bool(forKey: Constants.mobileSyncEnabledKey))
+        await awaitHubCondition("the zones are deleted") { transport.zoneDeletes > 0 }
+    }
+
+    /// A note that appears after launch refuses a later toggle-on.
+    func testToggleOnAfterANoteAppearsIsRefused() throws {
+        var builds = 0
+        let appState = try makeAppState { builds += 1 }
+        defaults.set(false, forKey: Constants.mobileSyncEnabledKey)
+        defer { stopAll(appState) }
+        runInitWorkbenches(appState)
+        XCTAssertFalse(appState.isMobileHubMoved)
+        try writeNote("hub_impl=go\n")
+
+        appState.setMobileSyncEnabled(true)
+
+        XCTAssertEqual(builds, 0)
+        XCTAssertNil(appState.mobileHub)
+        XCTAssertTrue(appState.isMobileHubMoved)
+        XCTAssertFalse(defaults.bool(forKey: Constants.mobileSyncEnabledKey), "the toggle is not written")
     }
 
     /// The note is read at launch and at each hub build, not on a view read:
@@ -208,4 +269,10 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
         XCTAssertEqual(model.state, .regular)
         XCTAssertNoThrow(try MobileSettingsView(model: model).inspect().find(ViewType.Toggle.self))
     }
+}
+
+/// The managed preferences an AppState reads, changeable between ticks.
+final class PolicyBox {
+    var raw: [String: Any]
+    init(_ raw: [String: Any] = [:]) { self.raw = raw }
 }
