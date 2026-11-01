@@ -124,12 +124,14 @@ final class KeychainRelayIdentityTests: XCTestCase {
         XCTAssertNil(backend.item("relay.attestkey", group: group))
         XCTAssertTrue(backend.calls.contains { $0.op == "delete" && $0.account == "relay.attestkey" })
 
-        // A failed write reads as "no key" next time (the lost-key path), never as an error.
+        // A failed write keeps whatever was stored: plant an id, fail the write while locked.
+        identity.setKeyID("attest-key-old")
         backend.isLocked = true
         identity.setKeyID("while-locked")
-        XCTAssertNil(identity.keyID())
+        XCTAssertNil(identity.keyID(), "a read error returns nil")
         backend.isLocked = false
-        XCTAssertNil(identity.keyID(), "the failed write stored nothing")
+        XCTAssertEqual(identity.keyID(), "attest-key-old", "the failed write kept the old id")
+        XCTAssertEqual(backend.item("relay.attestkey", group: group), Data("attest-key-old".utf8))
     }
 
     func testRelayDeviceIDOfTheStoredKeyIsStable() throws {

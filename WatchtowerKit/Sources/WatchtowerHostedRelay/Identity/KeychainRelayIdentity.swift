@@ -53,12 +53,15 @@ public final class KeychainRelayIdentity: AppAttestKeyStore, @unchecked Sendable
         }
     }
 
+    /// The stored App Attest key id. Any read error (locked, missing entitlement,
+    /// not UTF-8 or empty) is logged by code and returns nil, which leads into the
+    /// lost-key path. It never touches `relay_auth`.
     public func keyID() -> String? {
         do {
             let data = try lock.withLock { try backend.read(account: Self.attestKeyAccount, group: group) }
             guard let data else { return nil }
             guard let id = String(data: data, encoding: .utf8), !id.isEmpty else {
-                Self.logger.error("relay attest key id read: not UTF-8")
+                Self.logger.error("relay attest key id read: not UTF-8 or empty")
                 return nil
             }
             return id
@@ -68,8 +71,9 @@ public final class KeychainRelayIdentity: AppAttestKeyStore, @unchecked Sendable
         }
     }
 
-    /// nil deletes the item. `AppAttestKeyStore` does not throw: a failed write is
-    /// logged by code and reads as "no key" next time, the lost-key path.
+    /// nil deletes the item. `AppAttestKeyStore` does not throw: a failed write keeps
+    /// whatever was stored (or nothing) and is logged by code. A stale id is caught
+    /// by the attestor's invalid-key and server-refusal paths.
     public func setKeyID(_ id: String?) {
         do {
             try lock.withLock {
