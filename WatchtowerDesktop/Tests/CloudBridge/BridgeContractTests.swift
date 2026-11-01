@@ -387,6 +387,29 @@ final class BridgeContractTests: XCTestCase {
         XCTAssertEqual(try second.read().id, 2, "the closed connection's late answer was dropped")
     }
 
+    func testAWriteThatTimesOutClosesTheConnection() async throws {
+        let path = hubDir.appendingPathComponent("bridge.sock").path
+        let server = BridgeSocketServer(socketPath: path, service: service, sendTimeout: 0.2)
+        try server.start()
+        defer { server.stop() }
+        let client = try SocketClient(path: path)
+        defer { client.close() }
+        try client.send(BridgeRequest(id: 1, op: .hello(version: 1, hubID: hub)))
+        _ = try client.read()
+        // About 3 MiB of answer the peer never reads: the socket buffers fill, the write times out mid-frame.
+        for i in 0..<3 { await cloud.write(zone: data, name: "big\(i)", envelope: Data(count: 1 << 20)) }
+        try client.send(BridgeRequest(id: 2, op: .changes(zone: data, since: 0, generation: "")))
+        var closed = false
+        for _ in 0..<300 where !closed {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            closed = server.connectionCount == 0
+        }
+        XCTAssertTrue(closed, "a half-written frame ends the connection")
+        // What reached the peer is a frame cut short, then the end of the stream: no later frame follows it.
+        XCTAssertThrowsError(try client.read())
+        XCTAssertThrowsError(try client.read())
+    }
+
     func testARefusedFrameIsAnsweredAndClosed() throws {
         _ = try startServer()
         let client = try SocketClient(path: hubDir.appendingPathComponent("bridge.sock").path)

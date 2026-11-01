@@ -318,6 +318,7 @@ public final class BridgeSocketServer: @unchecked Sendable {
     private let service: BridgeService
     private let peerUID: PeerUID
     private let idleExit: TimeInterval
+    private let sendTimeout: TimeInterval
     private let onIdle: @Sendable () -> Void
 
     private let lock = NSLock()
@@ -337,12 +338,14 @@ public final class BridgeSocketServer: @unchecked Sendable {
         service: BridgeService,
         peerUID: @escaping PeerUID = BridgeSocketServer.systemPeerUID,
         idleExit: TimeInterval = BridgeSocketServer.defaultIdleExit,
+        sendTimeout: TimeInterval = 30,
         onIdle: @escaping @Sendable () -> Void = {}
     ) {
         self.socketPath = socketPath
         self.service = service
         self.peerUID = peerUID
         self.idleExit = idleExit
+        self.sendTimeout = sendTimeout
         self.onIdle = onIdle
     }
 
@@ -430,8 +433,8 @@ public final class BridgeSocketServer: @unchecked Sendable {
             var noSigPipe: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
             // A peer that stops reading cannot hold a write (and the connection's lock) forever.
-            var sendTimeout = timeval(tv_sec: 30, tv_usec: 0)
-            setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+            var timeout = timeval(tv_sec: Int(sendTimeout), tv_usec: Int32((sendTimeout - sendTimeout.rounded(.down)) * 1_000_000))
+            setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
             guard let uid = peerUID(client), uid == geteuid() else {
                 bridgeLogger.notice("refused a bridge peer of another user")
                 close(client)
@@ -561,6 +564,11 @@ final class BridgeConnection: @unchecked Sendable {
                     let n = Darwin.write(fd, base + offset, raw.count - offset)
                     if n <= 0 {
                         if n < 0 && errno == EINTR { continue }
+                        // A failed or timed-out write (SO_SNDTIMEO) may leave half a frame on the stream:
+                        // nothing after it could be framed, so the connection ends here.
+                        bridgeLogger.error("a write to the hub failed part-way; closing the connection")
+                        closing = true
+                        shutdown(fd, SHUT_RDWR)
                         return
                     }
                     offset += n

@@ -763,6 +763,8 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 ## Known limits
 
+- A record that keeps failing inside a CloudKit change page holds that zone. The bridge fails the whole page closed, so its cursor never passes a record the hub did not see. The pass retries every time, and there is no poisoned-record state to skip it (Task 10, review round 1).
+
 - The other RC §10 indicators (Relay unavailable, quota errors, undelivered count, Diagnostics, latency samples) and `send_alert` pushes are phase 4. Phase 3 shows only the transport per phone and who switched it last.
 - A CLI-only Mac's `<data root>/.hub` relay links are not merged into a later Desktop adoption (Phase 2 Known limits). On such a Mac, Desktop finds no `MobileHub/`, so it starts the existing Go hub as a desktop host: the relay links stay and CloudKit is offered to new links only (spec §7.3).
 - A phone whose Kit predates control records (today's App Store build) cannot read a switch notice. It shows the Mac as not updating until it is updated, and then reads the marker left in the old transport (contract point 6a).
