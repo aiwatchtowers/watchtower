@@ -357,6 +357,14 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
                 LLMUsageShotFixtures.progress()
+            },
+            // Settings → Mobile once a newer Watchtower runs the phone hub (go hub phase 3 Task 2):
+            // the Settings window's width and a narrow one.
+            DesignShot(name: "mobileSettingsMoved", size: NSSize(width: 640, height: 160)) {
+                MobileMovedShotFixtures.screen()
+            },
+            DesignShot(name: "mobileSettingsMoved-narrow", size: NSSize(width: 320, height: 180)) {
+                MobileMovedShotFixtures.screen()
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
