@@ -4,10 +4,12 @@ import Foundation
 import WatchtowerSync
 
 /// Silent pushes to the bridge become `Event{pull_now}` for the hub (Go hub spec §6.2), which then reads its
-/// mailboxes at once. The bridge registers two subscriptions in the private database once the hub said Hello:
-/// a database subscription that sends a silent push on any change (what CKSyncEngine set up for the Swift
-/// hub), and the Kit's `AskAlertSubscription` query subscription on `sig-` records — the only signal work the
-/// bridge does; signals themselves reach it as ordinary saves and deletes.
+/// mailboxes at once. The Swift hub got its silent pushes from CKSyncEngine's own database subscription
+/// (`TrayAppDelegate.application(_:didReceiveRemoteNotification:)` → `wakeRelay`); the bridge, with no engine,
+/// saves one database subscription of its own (`databaseSubscriptionID`) once the hub said Hello. It never
+/// saves or deletes any other subscription: the ask-alert query subscription on `sig-` records
+/// (`AskAlertSubscription`, `ask-alert-<hub_id>`) belongs to the phone, which registers it for its
+/// notification extension. Signals reach the bridge as ordinary saves and deletes.
 public final class PushReceiver: @unchecked Sendable {
     private let emit: @Sendable (BridgeEvent) -> Void
 
@@ -21,27 +23,28 @@ public final class PushReceiver: @unchecked Sendable {
         emit(BridgeEvent(pullNow: true))
     }
 
-    /// The database subscription's id for one hub.
-    public static func databaseSubscriptionID(hubID: String) -> String { "bridge-db-\(hubID)" }
+    /// The bridge's own database subscription id for one hub.
+    public static func databaseSubscriptionID(hubID: String) -> String { "watchtower-bridge-db-\(hubID)" }
 
-    /// The subscriptions the bridge keeps for `hubID`.
-    public static func subscriptions(hubID: String) -> [CKSubscription] {
+    /// The phone's ask-alert subscription id, which the bridge must never touch.
+    public static func phoneAlertSubscriptionID(hubID: String) -> String { AskAlertSubscription.subscriptionID(hubID: hubID) }
+
+    /// The one subscription the bridge keeps for `hubID`: silent pushes on any change of the private database.
+    public static func subscription(hubID: String) -> CKSubscription {
         let database = CKDatabaseSubscription(subscriptionID: databaseSubscriptionID(hubID: hubID))
         let info = CKSubscription.NotificationInfo()
         info.shouldSendContentAvailable = true
         database.notificationInfo = info
-        return [database] + [AskAlertSubscription.subscription(for: .private, hubID: hubID)].compactMap { $0 }
+        return database
     }
 
-    /// Saves the subscriptions (re-saving one replaces it); a failure is logged by class and retried at the
-    /// next launch.
-    public static func register(hubID: String, saver: any SubscriptionSaving) async {
-        for subscription in subscriptions(hubID: hubID) {
-            do {
-                try await saver.save(subscription)
-            } catch {
-                bridgeLogger.notice("subscription save failed: \(bridgeFailureClass(error), privacy: .public)")
-            }
+    /// Saves the bridge's subscription through `save` (re-saving it replaces it); a failure is logged by class
+    /// and retried at the next launch.
+    public static func register(hubID: String, save: @Sendable (CKSubscription) async throws -> Void) async {
+        do {
+            try await save(subscription(hubID: hubID))
+        } catch {
+            bridgeLogger.notice("subscription save failed: \(bridgeFailureClass(error), privacy: .public)")
         }
     }
 }
@@ -64,7 +67,7 @@ public struct BridgeArguments: Equatable, Sendable {
 
 /// The `LSUIElement` app around the bridge: no Dock icon, no window. It refuses a hub dir that is not this
 /// user's private (0700) directory, serves the socket, registers for remote notifications, and exits when the
-/// daemon has been gone 60 s.
+/// daemon has been gone 10 minutes.
 @MainActor
 public final class BridgeAppDelegate: NSObject, NSApplicationDelegate {
     private let arguments: BridgeArguments
@@ -95,21 +98,21 @@ public final class BridgeAppDelegate: NSObject, NSApplicationDelegate {
             bridgeLogger.error("bridge.db could not be opened; exiting")
             exit(3)
         }
-        let stash = hubDir.appendingPathComponent("cloudkit").appendingPathComponent("stash")
         let entitled = CloudKitTransport.entitlementPresent()
         let service = BridgeService(
             tags: tags, hubDir: hubDir,
             makeBackends: { hubID in
                 BridgeService.Backends(
-                    cloud: CloudKitBridgeCloud(hubID: hubID, stashDirectory: stash),
+                    cloud: CloudKitBridgeCloud(hubID: hubID),
                     shares: CloudKitZoneShares(hubID: hubID))
             },
             onHello: { hubID in
                 guard entitled else { return }
-                Task { await PushReceiver.register(hubID: hubID, saver: CloudKitSubscriptionSaver()) }
+                let saver = CloudKitSubscriptionSaver()
+                Task { await PushReceiver.register(hubID: hubID) { try await saver.save($0) } }
             })
         let server = BridgeSocketServer(socketPath: arguments.socketPath, service: service) {
-            bridgeLogger.notice("no daemon connection for 60 s; exiting")
+            bridgeLogger.notice("no daemon connection for 10 min; exiting")
             exit(0)
         }
         do {

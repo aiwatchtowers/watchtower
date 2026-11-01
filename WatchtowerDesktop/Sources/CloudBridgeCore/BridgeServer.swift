@@ -302,9 +302,15 @@ public actor BridgeService {
 /// The bridge's Unix socket: `<hub dir>/bridge.sock` (0600, its directory 0700), one thread per connection,
 /// frames of a u32 big-endian length and a message of at most 4 MiB. A peer whose uid differs from this
 /// process's is closed before anything is read or written. When no connection has been open for `idleExit`
-/// (60 s) — the daemon closed and did not come back — `onIdle` runs (the app exits).
+/// (10 min) `onIdle` runs (the app exits). It is a backstop for a bridge the daemon left behind: the daemon
+/// stops the bridge with the hub, and its supervisor (internal/hub/transport/cloudkit/supervisor.go) restarts
+/// one that exits, so a shorter limit would only churn restarts while the hub reconnects (its healthy-run
+/// mark is 60 s).
 public final class BridgeSocketServer: @unchecked Sendable {
     public typealias PeerUID = @Sendable (Int32) -> uid_t?
+
+    /// How long the bridge waits without a connection before it exits: 10 minutes.
+    public static let defaultIdleExit: TimeInterval = 600
 
     private let socketPath: String
     private let service: BridgeService
@@ -328,7 +334,7 @@ public final class BridgeSocketServer: @unchecked Sendable {
         socketPath: String,
         service: BridgeService,
         peerUID: @escaping PeerUID = BridgeSocketServer.systemPeerUID,
-        idleExit: TimeInterval = 60,
+        idleExit: TimeInterval = BridgeSocketServer.defaultIdleExit,
         onIdle: @escaping @Sendable () -> Void = {}
     ) {
         self.socketPath = socketPath
@@ -421,6 +427,9 @@ public final class BridgeSocketServer: @unchecked Sendable {
             }
             var noSigPipe: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+            // A peer that stops reading cannot hold a write (and the connection's lock) forever.
+            var sendTimeout = timeval(tv_sec: 30, tv_usec: 0)
+            setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
             guard let uid = peerUID(client), uid == geteuid() else {
                 bridgeLogger.notice("refused a bridge peer of another user")
                 close(client)
@@ -473,13 +482,17 @@ public final class BridgeSocketServer: @unchecked Sendable {
 }
 
 /// One accepted connection: reads frames on its own thread, answers each request as it completes (answers
-/// carry their request's id), writes under a lock.
+/// carry their request's id), writes under `lock`. The descriptor's lifetime follows one rule: only the reader
+/// thread releases it, when its loop ends, under `lock`; `close()` only marks the connection closing and shuts
+/// the socket down (which ends the reader's blocking read). `send` checks both marks under the same lock, so a
+/// late answer — a request that finished after its connection closed — is dropped and never written to a
+/// reused descriptor number.
 final class BridgeConnection: @unchecked Sendable {
     private let fd: Int32
     private let service: BridgeService
-    private let writeLock = NSLock()
-    private let state = NSLock()
-    private var isClosed = false
+    private let lock = NSLock()
+    private var closing = false
+    private var released = false
     private var saidHello = false
 
     init(fd: Int32, service: BridgeService) {
@@ -487,18 +500,33 @@ final class BridgeConnection: @unchecked Sendable {
         self.service = service
     }
 
-    var helloed: Bool { state.withLock { saidHello } }
+    var helloed: Bool { lock.withLock { saidHello } }
 
     func run() {
-        defer { close() }
-        while let message = readFrame() {
-            guard let request = try? BridgeRequest.decode(message) else { return }
+        defer { release() }
+        while true {
+            let message: Data
+            switch readFrame() {
+            case .closed:
+                return
+            case .refused(let length):
+                bridgeLogger.error("refused a frame of \(length, privacy: .public) bytes; closing the connection")
+                send(BridgeResponse(id: 0, result: .failure(class: "bad_request")).encoded())
+                return
+            case .message(let bytes):
+                message = bytes
+            }
+            guard let request = try? BridgeRequest.decode(message) else {
+                bridgeLogger.error("refused an undecodable frame; closing the connection")
+                send(BridgeResponse(id: 0, result: .failure(class: "bad_request")).encoded())
+                return
+            }
             if case .hello = request.op {
                 // A Hello is answered before the next request is read, so that one is judged after it.
                 let answered = DispatchSemaphore(value: 0)
                 Task {
                     let response = await service.handle(request, helloed: false)
-                    if case .hello = response.result { state.withLock { saidHello = true } }
+                    if case .hello = response.result { lock.withLock { saidHello = true } }
                     send(response.encoded())
                     answered.signal()
                 }
@@ -510,9 +538,20 @@ final class BridgeConnection: @unchecked Sendable {
         }
     }
 
+    /// Writes one answer; dropped once the connection is closing. An answer too large for a frame is
+    /// answered `record_too_large` under its id instead.
     func send(_ message: Data) {
-        guard let frame = try? BridgeFraming.frame(message) else { return }
-        writeLock.withLock {
+        let frame: Data
+        do {
+            frame = try BridgeFraming.frame(message)
+        } catch {
+            let id = (try? BridgeResponse.decode(message))?.id ?? 0
+            bridgeLogger.error("an answer of \(message.count, privacy: .public) bytes does not fit a frame")
+            send(BridgeResponse(id: id, result: .failure(class: "record_too_large")).encoded())
+            return
+        }
+        lock.withLock {
+            guard !closing, !released else { return }
             frame.withUnsafeBytes { raw in
                 guard let base = raw.baseAddress else { return }
                 var offset = 0
@@ -528,14 +567,28 @@ final class BridgeConnection: @unchecked Sendable {
         }
     }
 
+    /// Marks the connection closing and ends the reader's read; the reader releases the descriptor.
     func close() {
-        let already = state.withLock { () -> Bool in
-            defer { isClosed = true }
-            return isClosed
+        lock.withLock {
+            guard !closing, !released else { return }
+            closing = true
+            shutdown(fd, SHUT_RDWR)
         }
-        guard !already else { return }
-        shutdown(fd, SHUT_RDWR)
-        writeLock.withLock { _ = Darwin.close(fd) }
+    }
+
+    private func release() {
+        lock.withLock {
+            guard !released else { return }
+            closing = true
+            released = true
+            Darwin.close(fd)
+        }
+    }
+
+    private enum Frame {
+        case message(Data)
+        case refused(Int)
+        case closed
     }
 
     private func readExactly(_ count: Int) -> Data? {
@@ -554,8 +607,12 @@ final class BridgeConnection: @unchecked Sendable {
         return ok ? data : nil
     }
 
-    private func readFrame() -> Data? {
-        guard let header = readExactly(4), let length = try? BridgeFraming.length(ofHeader: header) else { return nil }
-        return length == 0 ? Data() : readExactly(length)
+    private func readFrame() -> Frame {
+        guard let header = readExactly(4) else { return .closed }
+        let bytes = [UInt8](header)
+        let announced = Int(bytes[0]) << 24 | Int(bytes[1]) << 16 | Int(bytes[2]) << 8 | Int(bytes[3])
+        guard let length = try? BridgeFraming.length(ofHeader: header) else { return .refused(announced) }
+        if length == 0 { return .message(Data()) }
+        return readExactly(length).map(Frame.message) ?? .closed
     }
 }

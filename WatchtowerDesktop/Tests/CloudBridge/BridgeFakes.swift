@@ -18,6 +18,26 @@ actor FakeBridgeCloud: BridgeCloud {
 
     func setPageLimit(_ n: Int) { pageLimit = n }
 
+    // A held Changes call: it waits until `releaseChanges`.
+    private var holding = false
+    private var held: CheckedContinuation<Void, Never>?
+
+    func holdChanges() { holding = true }
+
+    func releaseChanges() {
+        holding = false
+        held?.resume()
+        held = nil
+    }
+
+    /// Returns once a Changes call is waiting on the hold.
+    func waitUntilHeld() async throws {
+        for _ in 0..<500 where held == nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        if held == nil { throw BridgeCloudFailure.unavailable }
+    }
+
     private func tag() -> String { UUID().uuidString }
 
     private func current(_ zone: String, _ name: String) -> CloudItem? { zones[zone]?[name]?.item }
@@ -69,6 +89,7 @@ actor FakeBridgeCloud: BridgeCloud {
     func fetch(zone: String, name: String) async throws -> CloudItem? { current(zone, name) }
 
     func changes(zone: String, since token: Data?) async throws -> CloudPage {
+        if holding { await withCheckedContinuation { held = $0 } }
         let floor = token.flatMap { String(bytes: $0, encoding: .utf8) }.flatMap { Int($0) } ?? 0
         let entries = (zones[zone] ?? [:]).filter { $0.value.change > floor && (token != nil || $0.value.item != nil) }
             .sorted { $0.value.change < $1.value.change }

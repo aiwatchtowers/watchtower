@@ -1,4 +1,5 @@
 import CloudBridgeCore
+import CloudKit
 import Darwin
 import XCTest
 
@@ -315,12 +316,61 @@ final class BridgeContractTests: XCTestCase {
         let push = PushReceiver { server.broadcast($0) }
         push.didReceiveRemoteNotification(["ck": ["met": ["dbs": 1]], "aps": ["content-available": 1]])
         XCTAssertEqual(try client.read(), BridgeResponse(id: 0, result: .event(BridgeEvent(pullNow: true))))
-        XCTAssertEqual(PushReceiver.subscriptions(hubID: hub).map(\.subscriptionID).sorted(), [
-            "ask-alert-\(hub)", "bridge-db-\(hub)"
-        ])
+    }
+
+    func testThePhonesAlertSubscriptionIsNeverTouched() async throws {
+        let saved = Locked<[String]>([])
+        await PushReceiver.register(hubID: hub) { subscription in saved.update { $0.append(subscription.subscriptionID) } }
+        XCTAssertEqual(saved.value, [PushReceiver.databaseSubscriptionID(hubID: hub)], "one save, the bridge's own subscription")
+        XCTAssertEqual(PushReceiver.phoneAlertSubscriptionID(hubID: hub), "ask-alert-\(hub)")
+        XCTAssertNotEqual(PushReceiver.databaseSubscriptionID(hubID: hub), PushReceiver.phoneAlertSubscriptionID(hubID: hub))
+        let subscription = try XCTUnwrap(PushReceiver.subscription(hubID: hub) as? CKDatabaseSubscription)
+        XCTAssertEqual(subscription.notificationInfo?.shouldSendContentAvailable, true, "a silent push, as CKSyncEngine's was")
+        // Nothing in the bridge builds, saves or deletes another subscription.
+        for (file, text) in try Self.bridgeSources() {
+            for call in ["AskAlertSubscription.subscription(", "deleteSubscription", "unsubscribeAlerts", "subscribeAlerts", "CKQuerySubscription("] {
+                XCTAssertNil(text.range(of: call), "\(file) calls \(call)")
+            }
+        }
+    }
+
+    func testALateAnswerNeverReachesAnotherConnection() async throws {
+        _ = try startServer()
+        let path = hubDir.appendingPathComponent("bridge.sock").path
+        let first = try SocketClient(path: path)
+        try first.send(BridgeRequest(id: 1, op: .hello(version: 1, hubID: hub)))
+        _ = try first.read()
+        await cloud.holdChanges()
+        try first.send(BridgeRequest(id: 77, op: .changes(zone: relay, since: 0, generation: "")))
+        try await cloud.waitUntilHeld()
+        first.close()
+        // The next connection likely gets the same descriptor number on the bridge's side.
+        let second = try SocketClient(path: path)
+        defer { second.close() }
+        try second.send(BridgeRequest(id: 1, op: .hello(version: 1, hubID: hub)))
+        XCTAssertEqual(try second.read().id, 1)
+        await cloud.releaseChanges()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try second.send(BridgeRequest(id: 2, op: .accountStatus))
+        XCTAssertEqual(try second.read().id, 2, "the closed connection's late answer was dropped")
+    }
+
+    func testARefusedFrameIsAnsweredAndClosed() throws {
+        _ = try startServer()
+        let client = try SocketClient(path: hubDir.appendingPathComponent("bridge.sock").path)
+        defer { client.close() }
+        try client.sendRaw(Data([0x00, 0x50, 0x00, 0x00])) // 5 MiB announced
+        XCTAssertEqual(try client.read(), BridgeResponse(id: 0, result: .failure(class: "bad_request")))
+        XCTAssertNil(try? client.read(), "then the connection closes")
+
+        let garbage = try SocketClient(path: hubDir.appendingPathComponent("bridge.sock").path)
+        defer { garbage.close() }
+        try garbage.sendRaw(Data([0, 0, 0, 1, 0x07])) // a lone key of wire type 7
+        XCTAssertEqual(try garbage.read(), BridgeResponse(id: 0, result: .failure(class: "bad_request")))
     }
 
     func testExitsWhenTheDaemonStaysAway() throws {
+        XCTAssertEqual(BridgeSocketServer.defaultIdleExit, 600, "well past the supervisor's 60 s healthy run")
         let idle = expectation(description: "idle")
         let server = try startServer(idleExit: 0.3) { idle.fulfill() }
         let client = try SocketClient(path: hubDir.appendingPathComponent("bridge.sock").path)
@@ -333,12 +383,22 @@ final class BridgeContractTests: XCTestCase {
 
     // MARK: - Review Focus 5
 
+    /// WatchtowerSync types outside `Secure/` that open, seal or hold keys, directly or through it.
+    static let openingEntryPoints: Set<String> = [
+        "DeviceHello", "Keybox", "KeyboxKeys", "DeviceGrant", "ReplicaOpening", "EnvelopeReplicaOpener",
+        "ReplicaHydrator", "ReplicaStore", "RelayFeed", "ActionOutbox", "RecordingUploader"
+    ]
+
     /// The bridge holds no hub key and opens no envelope: CloudBridgeCore's own object code references no
-    /// sealing, opening or key type of WatchtowerSync and nothing of CryptoKit, its package target depends on
-    /// WatchtowerSync (and its GRDB) only, and its sources name none of those types.
+    /// sealing, opening or key type of WatchtowerSync (nested types included) nor any of its entry points that
+    /// reach one, and nothing of CryptoKit; its package target depends on WatchtowerSync and GRDB only; and
+    /// its sources name none of those types.
     func testBridgeNeverOpensEnvelopes() throws {
         let root = repoRoot()
-        let forbidden = try Self.keyTypes(root: root)
+        let declared = try Self.kitTypes(root: root)
+        let renamed = Self.openingEntryPoints.subtracting(declared.all)
+        XCTAssertTrue(renamed.isEmpty, "an entry point was renamed: \(renamed)")
+        let forbidden = try Self.keyTypes(root: root).union(Self.openingEntryPoints)
         XCTAssertTrue(forbidden.isSuperset(of: ["SecureTransport", "EnvelopeSealer", "AlertOpener", "SecureKeyProvider", "HubKeyStore"]))
 
         // 1. Linked symbols of the built library.
@@ -346,41 +406,111 @@ final class BridgeContractTests: XCTestCase {
         XCTAssertFalse(objects.isEmpty, "CloudBridgeCore's object files not found next to the test bundle")
         let symbols = try Self.demangledUndefinedSymbols(objects)
         XCTAssertTrue(symbols.contains { $0.contains("WatchtowerSync.HubZones") }, "positive control: the bridge does use WatchtowerSync")
-        for type in forbidden.sorted() {
-            let hits = symbols.filter { $0.contains("WatchtowerSync.\(type)") }
-            XCTAssertTrue(hits.isEmpty, "CloudBridgeCore references \(type): \(hits.prefix(3))")
-        }
+        let pattern = #"WatchtowerSync\.(?:[A-Za-z0-9_]+\.)*("# + forbidden.sorted().joined(separator: "|") + #")\b"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let hits = symbols.filter { regex.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil }
+        XCTAssertTrue(hits.isEmpty, "CloudBridgeCore references key or opening code: \(hits.prefix(5))")
         XCTAssertFalse(symbols.contains { $0.contains("CryptoKit.") }, "CloudBridgeCore uses CryptoKit")
 
         // 2. The package graph: CloudBridgeCore's dependencies.
         let manifest = try String(contentsOf: root.appendingPathComponent("WatchtowerDesktop/Package.swift"), encoding: .utf8)
-        let target = #"name: "CloudBridgeCore",[\s\S]*?path: "Sources/CloudBridgeCore""#
-        let block = try XCTUnwrap(manifest.range(of: target, options: .regularExpression))
-        let products = Self.captures(#"\.product\(name: "([^"]+)""#, in: String(manifest[block]))
-        XCTAssertEqual(products.sorted(), ["GRDB", "WatchtowerSync"])
-        XCTAssertNil(manifest[block].range(of: #"dependencies: \[[^\]]*"[A-Za-z]+",\s*\]"#, options: .regularExpression),
-                     "no target dependency besides the products")
+        let deps = try XCTUnwrap(Self.targetDependencies(manifest, target: "CloudBridgeCore"))
+        XCTAssertEqual(deps.sorted(), ["product:GRDB", "product:WatchtowerSync"])
 
-        // 3. The sources.
-        let sources = root.appendingPathComponent("WatchtowerDesktop/Sources/CloudBridgeCore")
-        for file in try FileManager.default.contentsOfDirectory(atPath: sources.path) where file.hasSuffix(".swift") {
-            let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+        // 3. The sources: top-level names only (a nested name such as `Kind` is too common to scan text for).
+        for (file, text) in try Self.bridgeSources() {
             XCTAssertNil(text.range(of: "import CryptoKit"), file)
-            for type in forbidden where text.range(of: "\\b\(type)\\b", options: .regularExpression) != nil {
+            for type in forbidden.intersection(declared.topLevel.union(Self.openingEntryPoints))
+            where text.range(of: "\\b\(type)\\b", options: .regularExpression) != nil {
                 XCTFail("\(file) names \(type)")
             }
         }
     }
 
-    /// Every type the Kit's Secure layer declares (keys, sealing, opening), plus the openers outside it,
-    /// less the pure metadata types a record carries (`EnvelopeClass`, `AssetDescriptor` and its `AssetHeader`) that the Kit's
-    /// `CloudRecord` initializer names.
+    func testTheDependencyParserReadsEveryForm() {
+        let manifest = """
+            .target(
+                name: "X",
+                dependencies: [
+                    // a comment with .product(name: "Nope", package: "p")
+                    .product(name: "A", package: "a"), "B",
+                    .target(name: "C"), .byName(name: "D"),
+                ],
+                path: "Sources/X"
+            ),
+            .target(name: "Y", dependencies: ["Z"])
+            """
+        XCTAssertEqual(Self.targetDependencies(manifest, target: "X")?.sorted(), ["name:B", "product:A", "target:C", "target:D"])
+        XCTAssertEqual(Self.targetDependencies(manifest, target: "Y"), ["name:Z"])
+        XCTAssertNil(Self.targetDependencies(manifest, target: "W"))
+    }
+
+    /// The `dependencies:` list of the target named `target`, comments stripped, bracket-balanced, each entry as
+    /// `product:<name>`, `target:<name>` (`.target`/`.byName`) or `name:<name>` (a bare string).
+    static func targetDependencies(_ manifest: String, target: String) -> [String]? {
+        let lines = manifest.split(separator: "\n", omittingEmptySubsequences: false).map { line -> Substring in
+            line.range(of: "//").map { line[..<$0.lowerBound] } ?? line
+        }
+        let text = lines.joined(separator: "\n")
+        guard let name = text.range(of: "name: \"\(target)\"") else { return nil }
+        guard let key = text.range(of: "dependencies:", range: name.upperBound..<text.endIndex),
+              let open = text.range(of: "[", range: key.upperBound..<text.endIndex) else { return [] }
+        // The target's dependencies must come before its next sibling target starts.
+        if let next = text.range(of: ".target(", range: name.upperBound..<text.endIndex), next.lowerBound < key.lowerBound { return [] }
+        var depth = 0, end = open.lowerBound
+        for index in text[open.lowerBound...].indices {
+            if text[index] == "[" { depth += 1 }
+            if text[index] == "]" { depth -= 1 }
+            if depth == 0 { end = index; break }
+        }
+        let list = String(text[text.index(after: open.lowerBound)..<end])
+        var out: [String] = []
+        var rest = list
+        for (pattern, kind) in [
+            (#"\.product\(\s*name:\s*"([^"]+)"[^)]*\)"#, "product"),
+            (#"\.(?:target|byName)\(\s*name:\s*"([^"]+)"[^)]*\)"#, "target")
+        ] {
+            out += captures(pattern, in: rest).map { "\(kind):\($0)" }
+            rest = rest.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        return out + captures(#""([^"]+)""#, in: rest).map { "name:\($0)" }
+    }
+
+    static func bridgeSources() throws -> [(String, String)] {
+        let sources = repoRoot().appendingPathComponent("WatchtowerDesktop/Sources/CloudBridgeCore")
+        return try FileManager.default.contentsOfDirectory(atPath: sources.path).filter { $0.hasSuffix(".swift") }.map { file in
+            (file, try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8))
+        }
+    }
+
+    /// The types WatchtowerSync declares, top-level and every one.
+    static func kitTypes(root: URL) throws -> (topLevel: Set<String>, all: Set<String>) {
+        let dir = root.appendingPathComponent("WatchtowerKit/Sources/WatchtowerSync")
+        var top: Set<String> = [], all: Set<String> = []
+        let enumerator = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            let text = try String(contentsOf: url, encoding: .utf8)
+            top.formUnion(captures(Self.topLevelDecl, in: text))
+            all.formUnion(captures(Self.anyDecl, in: text))
+        }
+        return (top, all)
+    }
+
+    static let declModifiers = "(?:public |internal |fileprivate |private |final |open |indirect )*"
+    static let declKind = "(?:struct|class|enum|protocol|actor) ([A-Za-z_][A-Za-z0-9_]+)"
+    static let topLevelDecl = "(?m)^" + declModifiers + declKind
+    static let anyDecl = #"(?m)^\s*"# + declModifiers + declKind
+
+    /// Every type the Kit's Secure layer declares (keys, sealing, opening), nested ones included, less the pure
+    /// metadata types a record carries (`EnvelopeClass`, `AssetDescriptor` and its `AssetHeader`) that the
+    /// Kit's `CloudRecord` initializer names, plus `HubKeyring` (the Swift hub's, should one move into the Kit).
     static func keyTypes(root: URL) throws -> Set<String> {
         let dir = root.appendingPathComponent("WatchtowerKit/Sources/WatchtowerSync/Secure")
-        var names: Set<String> = ["ReplicaOpener", "Keybox", "HubKeyring"]
+        var names: Set<String> = ["HubKeyring"]
         for file in try FileManager.default.contentsOfDirectory(atPath: dir.path) where file.hasSuffix(".swift") {
             let text = try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8)
-            names.formUnion(captures(#"(?m)^(?:public |internal |final |open )*(?:struct|class|enum|protocol|actor) ([A-Za-z]{2,})"#, in: text))
+            names.formUnion(captures(anyDecl, in: text))
         }
         return names.subtracting(["EnvelopeClass", "AssetDescriptor", "AssetHeader"])
     }
@@ -393,11 +523,16 @@ final class BridgeContractTests: XCTestCase {
     }
 
     /// `<target>.build/*.o` beside the test bundle (SwiftPM's build products dir).
+    /// One object file per current source (a stale object of a deleted source is left out); a source
+    /// without its object fails the test.
     static func objectFiles(of target: String) throws -> [URL] {
         let bundle = Bundle(for: BridgeContractTests.self).bundleURL
         let dir = bundle.deletingLastPathComponent().appendingPathComponent("\(target).build")
-        return try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "o" }
+        let objects = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        let sources = try bridgeSources().map(\.0)
+        let wanted = objects.filter { object in sources.contains { object.lastPathComponent == "\($0).o" } }
+        XCTAssertEqual(wanted.count, sources.count, "an object file is missing for one of \(sources)")
+        return wanted
     }
 
     static func demangledUndefinedSymbols(_ objects: [URL]) throws -> [String] {
@@ -477,5 +612,22 @@ final class SocketClient {
         return try BridgeResponse.decode(length == 0 ? Data() : try readExactly(length))
     }
 
+    func sendRaw(_ bytes: Data) throws {
+        let n = bytes.withUnsafeBytes { raw in raw.baseAddress.map { write(fd, $0, raw.count) } ?? -1 }
+        guard n == bytes.count else { throw POSIXError(.EPIPE) }
+    }
+
     func close() { Darwin.close(fd) }
+}
+
+/// A value shared with a `@Sendable` closure in a test.
+final class Locked<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+
+    init(_ value: T) { stored = value }
+
+    var value: T { lock.withLock { stored } }
+
+    func update(_ body: (inout T) -> Void) { lock.withLock { body(&stored) } }
 }

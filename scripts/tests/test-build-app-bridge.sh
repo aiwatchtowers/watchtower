@@ -126,7 +126,9 @@ EOF
 GOOD="$WORK_DIR/good.provisionprofile"
 make_profile "$GOOD" "$TEAM.$BRIDGE_ID"
 
-# run_case <sign identity> <WATCHTOWER_BRIDGE_PROFILE or "unset">
+# run_case <sign identity> <WATCHTOWER_BRIDGE_PROFILE or "unset"> [dev|release|plain]
+# release = not --dev with NOTARIZE_PROFILE set (the notarized path); plain = not --dev, no notarization;
+# dev = --dev. Default: release.
 run_case() {
     rm -rf "$WORK_DIR/stage"
     mkdir -p "$WORK_DIR/stage/Watchtower.app/Contents/MacOS" "$WORK_DIR/bin"
@@ -147,14 +149,22 @@ run_case() {
         APS_ENV="production"
         SIGN_IDENTITY="$1"
         TIMESTAMP_FLAG=""
+        DEV_MODE=false
+        NOTARIZE_PROFILE="acme-notary"
+        case "${3:-release}" in
+            dev) DEV_MODE=true ;;
+            plain) NOTARIZE_PROFILE="" ;;
+        esac
         if [ "$2" != "unset" ]; then WATCHTOWER_BRIDGE_PROFILE="$2"; else unset WATCHTOWER_BRIDGE_PROFILE; fi
         set -euo pipefail
         # shellcheck disable=SC1090,SC1091
         . "$WORK_DIR/bridge-profile-check.sh"
         . "$WORK_DIR/bridge-bundle.sh"
         . "$WORK_DIR/bridge-codesign.sh"
-        sign_bridge
-        cp "$SIGNED_BRIDGE_ENTITLEMENTS" "$WORK_DIR/merged.entitlements"
+        if [ -n "$BRIDGE_APP" ]; then
+            sign_bridge
+            cp "$SIGNED_BRIDGE_ENTITLEMENTS" "$WORK_DIR/merged.entitlements"
+        fi
     ) > "$WORK_DIR/out.log" 2>&1 || rc=$?
     return $rc
 }
@@ -182,10 +192,31 @@ check "signed with the profile's application id" "$signed" "\"com.apple.applicat
 check "signed with the push entitlement" "$signed" '"com.apple.developer.aps-environment" => "production"'
 check "codesign hardened runtime" "$(cat "$WORK_DIR/codesign.log")" "--options runtime"
 
-# 2. The remedy line when the profile is missing from .env.
-if run_case "$IDENTITY" unset; then note_fail "no WATCHTOWER_BRIDGE_PROFILE stops the build"; fi
+# 2. Without WATCHTOWER_BRIDGE_PROFILE: a release build stops with the remedy line; a dev build, or a
+# build that is not notarized, goes on without the helper and says so.
+if run_case "$IDENTITY" unset release; then note_fail "a release build without WATCHTOWER_BRIDGE_PROFILE stops"; fi
 check "remedy line" "$(cat "$WORK_DIR/out.log")" "put its path in .env as WATCHTOWER_BRIDGE_PROFILE"
 [ ! -d "$HELPER" ] && echo "ok: nothing assembled without a profile" || note_fail "nothing assembled without a profile"
+for mode in dev plain; do
+    for identity in "$IDENTITY" "-"; do
+        if run_case "$identity" unset "$mode"; then
+            echo "ok: a $mode build (identity '$identity') goes on without the profile"
+        else
+            note_fail "a $mode build (identity '$identity') goes on without the profile"
+            cat "$WORK_DIR/out.log"
+        fi
+        out=$(cat "$WORK_DIR/out.log")
+        check "$mode build warns" "$out" "building without the CloudKit bridge"
+        check "$mode build says the bundle has no helper" "$out" "no CloudKit bridge in this build"
+        [ ! -d "$HELPER" ] && echo "ok: $mode build embeds no helper" || note_fail "$mode build embeds no helper"
+        [ ! -s "$CODESIGN_LOG" ] && echo "ok: $mode build signs no helper" || note_fail "$mode build signs no helper"
+    done
+done
+if run_case "$IDENTITY" "$GOOD" dev; then
+    [ -d "$HELPER" ] && echo "ok: a dev build with a profile embeds the helper" || note_fail "a dev build with a profile embeds the helper"
+else
+    note_fail "a dev build with a profile passes"
+fi
 
 # 3. Profiles that must fail, each with its reason.
 make_profile "$WORK_DIR/noaps.provisionprofile" "$TEAM.$BRIDGE_ID" none

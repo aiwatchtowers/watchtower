@@ -103,9 +103,12 @@ public struct CloudKitZoneShares: Sendable {
     }
 
     /// Creates whichever of the two shares does not exist yet (public link closed) and returns both URLs. An
-    /// existing share is reused.
+    /// existing share is reused. The hub's zones are created first (saving an existing zone keeps it): a zone
+    /// share needs its zone, and on the Go hub nothing else may have created them yet.
     public func ensureShares() async throws -> (data: String, relay: String) {
         try requireEntitlement()
+        let zones = HubZones(scope: .private, hubID: hubID)
+        _ = try await database.modifyRecordZones(saving: zones.allZoneIDs.map { CKRecordZone(zoneID: $0) }, deleting: [])
         var urls: [CloudZoneID: String] = [:]
         for zone in [CloudZoneID.data, .relay] {
             let share: CKShare

@@ -35,6 +35,7 @@ public struct CloudItem: Equatable, Sendable {
     /// The record's archived system fields (id, change tag, server dates — no payload field).
     public var systemFields: Data
     public var serverAt: Date?
+    /// The record may carry an asset `Download` can fetch (the bridge's answer carries its name as `asset_id`).
     public var hasAsset: Bool
     /// Who created the record (`creatorUserRecordID.recordName`), for the hub's creator checks once the
     /// protocol carries it.
@@ -145,37 +146,174 @@ public func bridgeFailureClass(_ error: any Error) -> String {
     }
 }
 
+// MARK: - The CloudKit database seam
+
+/// A record CloudKit returned, with its change tag (read from the record by the live seam; a test sets it).
+public struct DatabaseRecord: @unchecked Sendable {
+    public let record: CKRecord
+    public let changeTag: String
+
+    public init(record: CKRecord, changeTag: String) {
+        self.record = record
+        self.changeTag = changeTag
+    }
+}
+
+/// One record to save. `baseTag` is the change tag the record's system fields carry (nil for a fresh
+/// record): the live database reads it from the record itself; a fake compares it.
+public struct DatabaseSave: @unchecked Sendable {
+    public let record: CKRecord
+    public let baseTag: String?
+
+    public init(record: CKRecord, baseTag: String?) {
+        self.record = record
+        self.baseTag = baseTag
+    }
+}
+
+public enum DatabaseSaveResult: @unchecked Sendable {
+    case saved(DatabaseRecord)
+    /// `.ifServerRecordUnchanged` failed: the server's copy (nil when CloudKit sent none).
+    case changed(DatabaseRecord?)
+    case failed(any Error)
+}
+
+public struct DatabaseChanges: @unchecked Sendable {
+    /// Per record: the record, or the error CloudKit gave for it alone.
+    public let modifications: [(id: CKRecord.ID, result: Result<DatabaseRecord, any Error>)]
+    public let deletions: [String]
+    /// The archived server change token after this page.
+    public let token: Data
+    public let more: Bool
+
+    public init(
+        modifications: [(id: CKRecord.ID, result: Result<DatabaseRecord, any Error>)],
+        deletions: [String],
+        token: Data,
+        more: Bool
+    ) {
+        self.modifications = modifications
+        self.deletions = deletions
+        self.token = token
+        self.more = more
+    }
+}
+
+/// The few CloudKit database calls the bridge makes; `LiveBridgeDatabase` over `CKDatabase`, a fake in tests.
+/// Zone-missing errors come back as thrown `CKError`s (`.zoneNotFound`), an expired token as
+/// `BridgeCloudFailure.tokenExpired`.
+public protocol BridgeDatabase: Sendable {
+    func save(_ saves: [DatabaseSave], policy: CKModifyRecordsOperation.RecordSavePolicy) async throws -> [CKRecord.ID: DatabaseSaveResult]
+    /// One result per id; a deletion of a missing record succeeds.
+    func delete(_ ids: [CKRecord.ID]) async throws -> [CKRecord.ID: Result<Void, any Error>]
+    /// The records that exist (a missing one is absent from the answer), with only `desiredKeys` filled
+    /// (nil = every key).
+    func records(_ ids: [CKRecord.ID], desiredKeys: [String]?) async throws -> [CKRecord.ID: DatabaseRecord]
+    func zoneChanges(_ zone: CKRecordZone.ID, since token: Data?, desiredKeys: [String], limit: Int) async throws -> DatabaseChanges
+    func saveZones(_ ids: [CKRecordZone.ID]) async throws
+}
+
+/// The live seam: the container's private database.
+public struct LiveBridgeDatabase: BridgeDatabase {
+    public let containerID: String
+
+    public init(containerID: String = WatchtowerCloud.containerID) {
+        self.containerID = containerID
+    }
+
+    private var db: CKDatabase { CKContainer(identifier: containerID).privateCloudDatabase }
+
+    private static func tagged(_ ck: CKRecord) -> DatabaseRecord {
+        DatabaseRecord(record: ck, changeTag: ck.recordChangeTag ?? "")
+    }
+
+    public func save(_ saves: [DatabaseSave], policy: CKModifyRecordsOperation.RecordSavePolicy) async throws -> [CKRecord.ID: DatabaseSaveResult] {
+        let results = try await db.modifyRecords(saving: saves.map(\.record), deleting: [], savePolicy: policy, atomically: false).saveResults
+        return results.mapValues { result in
+            switch result {
+            case .success(let ck):
+                return .saved(Self.tagged(ck))
+            case .failure(let error as CKError) where error.code == .serverRecordChanged:
+                return .changed(error.serverRecord.map(Self.tagged))
+            case .failure(let error):
+                return .failed(error)
+            }
+        }
+    }
+
+    public func delete(_ ids: [CKRecord.ID]) async throws -> [CKRecord.ID: Result<Void, any Error>] {
+        try await db.modifyRecords(saving: [], deleting: ids, savePolicy: .allKeys, atomically: false).deleteResults
+    }
+
+    public func records(_ ids: [CKRecord.ID], desiredKeys: [String]?) async throws -> [CKRecord.ID: DatabaseRecord] {
+        var out: [CKRecord.ID: DatabaseRecord] = [:]
+        for (id, result) in try await db.records(for: ids, desiredKeys: desiredKeys) {
+            switch result {
+            case .success(let ck):
+                out[id] = Self.tagged(ck)
+            case .failure(let error as CKError) where error.code == .unknownItem:
+                continue
+            case .failure(let error):
+                throw error
+            }
+        }
+        return out
+    }
+
+    public func zoneChanges(_ zone: CKRecordZone.ID, since token: Data?, desiredKeys: [String], limit: Int) async throws -> DatabaseChanges {
+        var serverToken: CKServerChangeToken?
+        if let token {
+            guard let decoded = try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: token) else {
+                throw BridgeCloudFailure.tokenExpired
+            }
+            serverToken = decoded
+        }
+        let page = try await db.recordZoneChanges(inZoneWith: zone, since: serverToken, desiredKeys: desiredKeys, resultsLimit: limit)
+        let modifications = page.modificationResultsByID.map { id, result in
+            (id: id, result: result.map { Self.tagged($0.record) })
+        }
+        let archived = try NSKeyedArchiver.archivedData(withRootObject: page.changeToken, requiringSecureCoding: true)
+        return DatabaseChanges(
+            modifications: modifications, deletions: page.deletions.map(\.recordID.recordName), token: archived,
+            more: page.moreComing)
+    }
+
+    public func saveZones(_ ids: [CKRecordZone.ID]) async throws {
+        _ = try await db.modifyRecordZones(saving: ids.map { CKRecordZone(zoneID: $0) }, deleting: [])
+    }
+}
+
 // MARK: - CloudKit
 
-/// The bridge's CloudKit backend: the hub's two zones in the Mac user's private database. Without the iCloud
-/// entitlement (an unsigned build) it never touches `CKContainer`, which would crash: every call is
-/// `forbidden`. A record's fetched asset is moved into `stashDirectory` (the bridge's own state dir) until
-/// `Download` takes it, so an upload's audio is fetched once.
+/// The bridge's CloudKit backend: the hub's two zones in the Mac user's private database, through a
+/// `BridgeDatabase`. Without the iCloud entitlement (an unsigned build) it never touches the database, which
+/// would crash: every call is `forbidden`. A change feed never downloads an asset (`desiredKeys` leaves it
+/// out): every relay-zone record carries its name as `asset_id`, and `Download` fetches the asset alone —
+/// the hub asks only for the recordings whose sealed frame names an asset.
 public struct CloudKitBridgeCloud: BridgeCloud {
     public let hubID: String
-    public let containerID: String
-    public let stashDirectory: URL
+    private let database: any BridgeDatabase
     private let entitlementPresent: @Sendable () -> Bool
-    /// CloudKit's own change page limit; the bridge splits a page that does not fit a frame.
+    /// CloudKit's change page limit; the bridge splits a page that does not fit a frame.
     static let pageLimit = 200
+    /// Every key but the asset.
+    static let feedKeys = ["kind", "modifiedAt", "payload", "notifyLevel"]
 
     public init(
         hubID: String,
-        stashDirectory: URL,
-        containerID: String = WatchtowerCloud.containerID,
+        database: any BridgeDatabase = LiveBridgeDatabase(),
         entitlementPresent: (@Sendable () -> Bool)? = nil
     ) {
         self.hubID = hubID
-        self.stashDirectory = stashDirectory
-        self.containerID = containerID
-        self.entitlementPresent = entitlementPresent ?? { CloudKitTransport.entitlementPresent(containerID: containerID) }
+        self.database = database
+        self.entitlementPresent = entitlementPresent ?? { CloudKitTransport.entitlementPresent() }
     }
 
     private var zones: HubZones { HubZones(scope: .private, hubID: hubID) }
 
-    private func database() throws -> CKDatabase {
+    private func db() throws -> any BridgeDatabase {
         guard entitlementPresent() else { throw BridgeCloudFailure.forbidden }
-        return CKContainer(identifier: containerID).privateCloudDatabase
+        return database
     }
 
     private func zone(_ name: String) throws -> (id: CKRecordZone.ID, kind: CloudZoneID) {
@@ -185,17 +323,12 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         return (zones.zoneID(for: kind), kind)
     }
 
-    /// Creates the hub's two zones (the hub role owns them); an existing zone is kept.
-    private func ensureZones(_ db: CKDatabase) async throws {
-        _ = try await db.modifyRecordZones(saving: zones.allZoneIDs.map { CKRecordZone(zoneID: $0) }, deleting: [])
-    }
-
-    /// Runs `body`, and once more after creating the zones when CloudKit says a zone is missing.
-    private func withZones<T>(_ db: CKDatabase, _ body: () async throws -> T) async throws -> T {
+    /// Runs `body`, and once more after creating the hub's zones when CloudKit says a zone is missing.
+    private func withZones<T>(_ db: any BridgeDatabase, _ body: () async throws -> T) async throws -> T {
         do {
             return try await body()
         } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
-            try await ensureZones(db)
+            try await db.saveZones(zones.allZoneIDs)
             return try await body()
         }
     }
@@ -204,47 +337,51 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         envelope.isEmpty && name.hasPrefix("\(WireKind.signal)-")
     }
 
-    private func item(_ ck: CKRecord, kind: CloudZoneID) -> CloudItem? {
+    private func item(_ fetched: DatabaseRecord, kind: CloudZoneID) -> CloudItem? {
+        let ck = fetched.record
         guard let record = CloudKitTransport.cloudRecord(from: ck, zone: kind) else { return nil }
         return CloudItem(
-            name: ck.recordID.recordName, envelope: record.payload, changeTag: ck.recordChangeTag ?? "",
+            name: ck.recordID.recordName, envelope: record.payload, changeTag: fetched.changeTag,
             systemFields: CloudKitTransport.archivedSystemFields(of: ck), serverAt: ck.modificationDate,
-            hasAsset: record.assetFileURL != nil, creator: record.origin.author)
+            hasAsset: kind == .relay, creator: record.origin.author)
     }
 
     public func save(zone name: String, _ writes: [CloudWrite]) async throws -> [CloudWriteResult] {
-        let db = try database()
+        let db = try db()
         let (zoneID, kind) = try zone(name)
         var results = [CloudWriteResult?](repeating: nil, count: writes.count)
-        var records: [Int: CKRecord] = [:]
+        var conditional: [(Int, DatabaseSave)] = [], plain: [(Int, DatabaseSave)] = []
         for (i, write) in writes.enumerated() {
             let signal = Self.isSignal(write.name, write.envelope)
             guard signal || !write.envelope.isEmpty else {
+                // Only a sig- record is payload-free; an empty envelope anywhere else is not a sealed record.
                 results[i] = .refused("bad_request")
                 continue
             }
             let record = CloudRecord(
                 recordName: write.name, zone: kind, kind: signal ? WireKind.signal : WireKind.envelope,
                 modifiedAt: Date(), payload: write.envelope, assetFileURL: write.assetURL)
-            var systemFields: Data?
-            if case .unchanged(_, let fields) = write.precondition { systemFields = fields }
-            records[i] = CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: systemFields)
+            switch write.precondition {
+            case .none:
+                plain.append((i, DatabaseSave(record: CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: nil), baseTag: nil)))
+            case .absent:
+                conditional.append((i, DatabaseSave(record: CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: nil), baseTag: nil)))
+            case let .unchanged(tag, fields):
+                let based = CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: fields)
+                conditional.append((i, DatabaseSave(record: based, baseTag: tag)))
+            }
         }
         // CloudKit compares change tags only under .ifServerRecordUnchanged; an unconditional save overwrites.
-        let conditional = records.filter { writes[$0.key].precondition != .none }
-        let plain = records.filter { writes[$0.key].precondition == .none }
         for (group, policy) in [(conditional, CKModifyRecordsOperation.RecordSavePolicy.ifServerRecordUnchanged), (plain, .allKeys)]
         where !group.isEmpty {
-            let saved = try await withZones(db) {
-                try await db.modifyRecords(saving: Array(group.values), deleting: [], savePolicy: policy, atomically: false).saveResults
-            }
-            for (i, ck) in group {
-                switch saved[ck.recordID] {
-                case .success(let server):
-                    results[i] = .done(item(server, kind: kind))
-                case .failure(let error as CKError) where error.code == .serverRecordChanged:
-                    results[i] = .conflict(error.serverRecord.flatMap { item($0, kind: kind) })
-                case .failure(let error):
+            let saved = try await withZones(db) { try await db.save(group.map(\.1), policy: policy) }
+            for (i, pending) in group {
+                switch saved[pending.record.recordID] {
+                case .saved(let server)?:
+                    results[i] = item(server, kind: kind).map { .done($0) } ?? .refused("unavailable")
+                case .changed(let server)?:
+                    results[i] = .conflict(server.flatMap { item($0, kind: kind) })
+                case .failed(let error)?:
                     results[i] = .refused(bridgeFailureClass(error))
                 case nil:
                     results[i] = .refused("unavailable")
@@ -255,142 +392,99 @@ public struct CloudKitBridgeCloud: BridgeCloud {
     }
 
     public func delete(zone name: String, _ deletions: [CloudDeletion]) async throws -> [CloudWriteResult] {
-        let db = try database()
-        let (zoneID, _) = try zone(name)
+        let db = try db()
+        let (zoneID, kind) = try zone(name)
+        // CloudKit has no conditional delete. A conditional one is checked against one fresh read of the
+        // batch just before: a write that lands between that read and the delete is lost. The hub deletes
+        // conditionally only records written once under their name (ordered actions, controls) or its own
+        // echoes, so the window loses no phone write (Go hub plan phase 3, Task 10).
+        let checked = deletions.indices.filter { deletions[$0].precondition != .none }
+        let ids = deletions.map { CKRecord.ID(recordName: $0.name, zoneID: zoneID) }
+        var current: [CKRecord.ID: DatabaseRecord] = [:]
+        if !checked.isEmpty {
+            do {
+                current = try await db.records(checked.map { ids[$0] }, desiredKeys: Self.feedKeys)
+            } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
+                current = [:]
+            }
+        }
         var results = [CloudWriteResult?](repeating: nil, count: deletions.count)
-        var ids: [Int: CKRecord.ID] = [:]
+        var sendable: [Int] = []
         for (i, deletion) in deletions.enumerated() {
-            // CloudKit has no conditional delete: the precondition is checked against a fresh read just before
-            // (a write landing between the read and the delete is lost — accepted, the hub's deletes of a
-            // phone's records follow its own reads).
+            let now = current[ids[i]]
             switch deletion.precondition {
             case .none:
-                break
+                sendable.append(i)
             case .absent:
-                if let current = try await fetch(zone: name, name: deletion.name) {
-                    results[i] = .conflict(current)
-                    continue
-                }
+                if let now { results[i] = .conflict(item(now, kind: kind)) } else { results[i] = .done(nil) }
             case .unchanged(let tag, _):
-                let current = try await fetch(zone: name, name: deletion.name)
-                guard let current, current.changeTag == tag else {
-                    results[i] = .conflict(current)
-                    continue
-                }
+                if let now, now.changeTag == tag { sendable.append(i) } else { results[i] = .conflict(now.flatMap { item($0, kind: kind) }) }
             }
-            ids[i] = CKRecord.ID(recordName: deletion.name, zoneID: zoneID)
         }
-        if !ids.isEmpty {
+        if !sendable.isEmpty {
             let deleted: [CKRecord.ID: Result<Void, any Error>]
             do {
-                deleted = try await db.modifyRecords(saving: [], deleting: Array(ids.values), savePolicy: .allKeys, atomically: false).deleteResults
+                deleted = try await db.delete(sendable.map { ids[$0] })
             } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
                 deleted = [:] // no zone, no record: what was asked for
             }
-            for (i, id) in ids {
-                switch deleted[id] {
-                case .failure(let error as CKError) where error.code != .unknownItem && error.code != .zoneNotFound:
+            for i in sendable {
+                switch deleted[ids[i]] {
+                case .failure(let error as CKError)? where error.code == .unknownItem || error.code == .zoneNotFound:
+                    results[i] = .done(nil)
+                case .failure(let error)?:
                     results[i] = .refused(bridgeFailureClass(error))
-                default:
+                case .success?, nil:
                     results[i] = .done(nil)
                 }
-                removeStash(zone: name, name: deletions[i].name)
             }
         }
         return results.map { $0 ?? .refused("unavailable") }
     }
 
     public func fetch(zone name: String, name recordName: String) async throws -> CloudItem? {
-        let db = try database()
+        let db = try db()
         let (zoneID, kind) = try zone(name)
+        let id = CKRecord.ID(recordName: recordName, zoneID: zoneID)
         do {
-            let ck = try await db.record(for: CKRecord.ID(recordName: recordName, zoneID: zoneID))
-            return item(ck, kind: kind)
-        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
+            return try await db.records([id], desiredKeys: Self.feedKeys)[id].flatMap { item($0, kind: kind) }
+        } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
             return nil
         }
     }
 
+    /// A record that fails alone fails the page: its cursor would otherwise pass a record the hub never saw.
     public func changes(zone name: String, since token: Data?) async throws -> CloudPage {
-        let db = try database()
+        let db = try db()
         let (zoneID, kind) = try zone(name)
-        var serverToken: CKServerChangeToken?
-        if let token {
-            guard let decoded = try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: token) else {
-                throw BridgeCloudFailure.tokenExpired
-            }
-            serverToken = decoded
-        }
         let page = try await withZones(db) {
-            try await db.recordZoneChanges(inZoneWith: zoneID, since: serverToken, desiredKeys: nil, resultsLimit: Self.pageLimit)
+            try await db.zoneChanges(zoneID, since: token, desiredKeys: Self.feedKeys, limit: Self.pageLimit)
         }
-        var changed: [(Date, CloudItem)] = []
-        for (_, result) in page.modificationResultsByID {
-            guard case .success(let modification) = result, let it = item(modification.record, kind: kind) else { continue }
-            if let asset = (modification.record["asset"] as? CKAsset)?.fileURL {
-                stash(asset, zone: name, name: it.name)
+        var changed: [(Date, String, CloudItem)] = []
+        for (id, result) in page.modifications {
+            switch result {
+            case .success(let fetched):
+                guard let it = item(fetched, kind: kind) else { continue } // another record type: never read
+                changed.append((fetched.record.modificationDate ?? .distantPast, id.recordName, it))
+            case .failure(let error):
+                let failureClass = bridgeFailureClass(error)
+                bridgeLogger.error("a record of the change page failed: \(failureClass, privacy: .public); page refused")
+                throw BridgeCloudFailure(failureClass)
             }
-            changed.append((modification.record.modificationDate ?? .distantPast, it))
         }
-        let deleted = page.deletions.map(\.recordID.recordName)
-        deleted.forEach { removeStash(zone: name, name: $0) }
-        let archived = try NSKeyedArchiver.archivedData(withRootObject: page.changeToken, requiringSecureCoding: true)
-        return CloudPage(
-            changed: changed.sorted { $0.0 < $1.0 }.map(\.1), deleted: deleted, token: archived, more: page.moreComing)
+        changed.sort { ($0.0, $0.1) < ($1.0, $1.1) }
+        return CloudPage(changed: changed.map(\.2), deleted: page.deletions, token: page.token, more: page.more)
     }
 
     public func downloadAsset(zone name: String, name recordName: String, to dst: URL) async throws {
-        let fm = FileManager.default
-        let stashed = stashURL(zone: name, name: recordName)
-        if fm.fileExists(atPath: stashed.path) {
-            try fm.moveItem(at: stashed, to: dst)
-        } else {
-            let db = try database()
-            let (zoneID, _) = try zone(name)
-            let ids = [CKRecord.ID(recordName: recordName, zoneID: zoneID)]
-            let fetched = try await db.records(for: ids, desiredKeys: ["asset"])
-            guard let ck = try fetched[ids[0]]?.get(), let url = (ck["asset"] as? CKAsset)?.fileURL else {
-                throw BridgeCloudFailure.badRequest
-            }
-            try fm.copyItem(at: url, to: dst)
+        let db = try db()
+        let (zoneID, _) = try zone(name)
+        let id = CKRecord.ID(recordName: recordName, zoneID: zoneID)
+        guard let url = (try await db.records([id], desiredKeys: ["asset"])[id]?.record["asset"] as? CKAsset)?.fileURL else {
+            throw BridgeCloudFailure.badRequest
         }
-        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
-    }
-
-    // MARK: Asset stash
-
-    private func stashURL(zone: String, name: String) -> URL {
-        stashDirectory.appendingPathComponent(Self.fileName(zone)).appendingPathComponent(Self.fileName(name))
-    }
-
-    /// A record or zone name as a file name: [A-Za-z0-9-] kept, every other byte as `_xx`.
-    static func fileName(_ name: String) -> String {
-        let parts = name.utf8.map { byte in
-            switch byte {
-            case 0x30...0x39, 0x41...0x5a, 0x61...0x7a, 0x2d: return String(UnicodeScalar(byte))
-            default: return String(format: "_%02x", byte)
-            }
-        }
-        return parts.joined()
-    }
-
-    private func stash(_ file: URL, zone: String, name: String) {
-        let fm = FileManager.default
-        let dst = stashURL(zone: zone, name: name)
-        do {
-            try fm.createDirectory(
-                at: dst.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try? fm.removeItem(at: dst)
-            try fm.copyItem(at: file, to: dst)
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
-        } catch {
-            // Download fetches the asset again.
-            bridgeLogger.notice("asset stash failed: \(String(describing: type(of: error)), privacy: .public)")
-        }
-    }
-
-    private func removeStash(zone: String, name: String) {
-        try? FileManager.default.removeItem(at: stashURL(zone: zone, name: name))
+        try FileManager.default.copyItem(at: url, to: dst)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
     }
 }
 
