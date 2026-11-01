@@ -1,6 +1,10 @@
 package cmd
 
 import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/hub/adopt"
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/state/swiftfixture"
 )
@@ -114,7 +120,7 @@ func TestHubAdoptJSONKeys(t *testing.T) {
 
 func TestAdoptIsRefusedUnderAnAgentMarker(t *testing.T) {
 	for _, marker := range agentEnvMarkers {
-		for _, args := range [][]string{{"--settings-stdin"}, {"--status", "--json"}} {
+		for _, args := range [][]string{{"--settings-stdin"}, {"--status", "--json"}, {"--keys-stdin", "--json"}, {"--confirm-deleted", "--json"}} {
 			t.Run(marker+"/"+args[0], func(t *testing.T) {
 				dir := hubTestDir(t)
 				mobile := swiftMobileHub(t, dir)
@@ -180,4 +186,116 @@ func TestHubStatusMidAdoption(t *testing.T) {
 	out, err := runHub(t, "status", "--json")
 	require.NoError(t, err)
 	assert.NotContains(t, decodeKeys(t, out), "kept_recordings")
+}
+
+// adoptedWithKeys adopts swiftMobileHub's state through the CLI and reseals
+// the sidecar's keys under a fresh Swift-shaped identity (the fixture's
+// rows hold none); it returns the keys' stdin payload.
+func adoptedWithKeys(t *testing.T, dir string) string {
+	t.Helper()
+	mobile := swiftMobileHub(t, dir)
+	withStdin(t, adoptSettings)
+	_, err := runHub(t, "adopt", "--settings-stdin", "--mobile-hub", mobile)
+	require.NoError(t, err)
+	return resealedKeys(t, dir)
+}
+
+func resealedKeys(t *testing.T, dir string) string {
+	t.Helper()
+	var sig, kx, wrap [32]byte
+	for _, b := range [][]byte{sig[:], kx[:], wrap[:]} {
+		_, err := rand.Read(b)
+		require.NoError(t, err)
+	}
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+	require.NoError(t, st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM hub_epochs`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`DELETE FROM hub_meta WHERE key = ?`, state.MetaKMetaSealed)
+		return err
+	}))
+	id, err := identity.FromSwift(sig[:], kx[:], wrap[:])
+	require.NoError(t, err)
+	_, err = identity.NewKeyring(id, st, nil)
+	require.NoError(t, err)
+	b, err := json.Marshal(adopt.KeysPayload{HubSig: sig[:], HubKX: kx[:], Wrap: wrap[:]})
+	require.NoError(t, err)
+	return string(b)
+}
+
+func TestHubAdoptKeysStdin(t *testing.T) {
+	dir := hubTestDir(t)
+	payload := adoptedWithKeys(t, dir)
+
+	_, err := runHub(t, "adopt", "--confirm-deleted", "--json")
+	require.Error(t, err, "confirm before adopted")
+
+	withStdin(t, payload)
+	out, err := runHub(t, "adopt", "--keys-stdin", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.Equal(t, []string{"identity"}, hubKeysOf(m))
+	assert.Equal(t, "adopted", m["identity"])
+	assert.NotContains(t, out, payload[10:30], "no key text in the answer")
+	// Test mode keeps the identity in the hub dir's file, never the Keychain.
+	info, err := os.Stat(filepath.Join(dir, identity.FileName))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	out, err = runHub(t, "adopt", "--status", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "adopted", decodeKeys(t, out)["identity"])
+
+	out, err = runHub(t, "adopt", "--confirm-deleted", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"identity": "confirmed"}, decodeKeys(t, out))
+
+	// A repeat hand-over answers adopted at once.
+	withStdin(t, "{}")
+	out, err = runHub(t, "adopt", "--keys-stdin", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "adopted", decodeKeys(t, out)["identity"])
+}
+
+func TestHubAdoptWrongKeys(t *testing.T) {
+	dir := hubTestDir(t)
+	adoptedWithKeys(t, dir)
+	other := resealedKeys(t, filepath.Join(t.TempDir(), "other")) // another sidecar's keys
+	withStdin(t, other)
+	out, err := runHub(t, "adopt", "--keys-stdin", "--json")
+	require.Error(t, err)
+	assert.Equal(t, map[string]any{"identity": "wrong_keys"}, decodeKeys(t, out))
+	_, err = os.Stat(filepath.Join(dir, identity.StagedFileName))
+	assert.True(t, os.IsNotExist(err), "the staged copy is deleted")
+}
+
+func TestHubAdoptKeysWithoutASidecar(t *testing.T) {
+	dir := hubTestDir(t)
+	withStdin(t, "{}")
+	out, err := runHub(t, "adopt", "--keys-stdin", "--json")
+	require.Error(t, err)
+	assert.Equal(t, map[string]any{"identity": "no_sidecar"}, decodeKeys(t, out))
+	_, err = os.Stat(filepath.Join(dir, state.FileName))
+	assert.True(t, os.IsNotExist(err), "no sidecar created")
+}
+
+func TestKeysStdinAndSettingsStdinAreSeparateCalls(t *testing.T) {
+	dir := hubTestDir(t)
+	mobile := swiftMobileHub(t, dir)
+	for _, args := range [][]string{
+		{"--settings-stdin", "--keys-stdin"},
+		{"--keys-stdin", "--confirm-deleted"},
+		{"--status", "--keys-stdin"},
+		{"--settings-stdin", "--confirm-deleted"},
+	} {
+		withStdin(t, adoptSettings)
+		_, err := runHub(t, append([]string{"adopt", "--json", "--mobile-hub", mobile}, args...)...)
+		require.Error(t, err, args)
+		assert.ErrorContains(t, err, "one per call")
+	}
+	_, err := os.Stat(filepath.Join(dir, state.FileName))
+	assert.True(t, os.IsNotExist(err), "nothing adopted")
 }
