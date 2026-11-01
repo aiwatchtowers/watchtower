@@ -38,11 +38,16 @@ public struct EpochKeys: Codable, Equatable, Sendable {
     public let epoch: UInt32
     public let dataKey: Data
     public let alertKey: Data
+    /// When a newer epoch joined the Keychain (`HubLinkKeys.stampingSuperseded`); nil for the newest and for an
+    /// epoch stored before the stamp existed (an absent key: such items decode, and an unstamped epoch encodes as
+    /// they did).
+    public var supersededAt: Date?
 
-    public init(epoch: UInt32, dataKey: Data, alertKey: Data) {
+    public init(epoch: UInt32, dataKey: Data, alertKey: Data, supersededAt: Date? = nil) {
         self.epoch = epoch
         self.dataKey = dataKey
         self.alertKey = alertKey
+        self.supersededAt = supersededAt
     }
 }
 
@@ -52,10 +57,14 @@ public struct HubLinkKeys: Codable, Equatable, Sendable {
     public let hubAgreementKey: Data
     public let linkNonce: Data
     public var metaKey: Data?
-    /// Newest last, at most `maxEpochs` kept.
+    /// Newest last; `saveHubLink` keeps `retained(now:)`.
     public var epochs: [EpochKeys]
 
-    public static let maxEpochs = 2
+    /// The most epochs kept, whatever their age (relay client Phase 3: three switches in a week keep four).
+    public static let maxEpochs = 8
+    /// How long an epoch is kept after a newer one arrived: the hub retires an epoch after 7 days (ask #843, "7 days
+    /// everywhere", in place of sim rule 14's 14), so a phone keeping it longer would hold keys nobody uses.
+    public static let previousEpochGrace: TimeInterval = 7 * 86_400
 
     public init(
         hubID: String,
@@ -71,6 +80,45 @@ public struct HubLinkKeys: Codable, Equatable, Sendable {
         self.linkNonce = linkNonce
         self.metaKey = metaKey
         self.epochs = epochs
+    }
+}
+
+extension HubLinkKeys {
+    /// The epochs kept at `now`: the newest; every unstamped epoch (stored before this build: stamped on the next
+    /// merge, never dropped before it); every epoch superseded less than `previousEpochGrace` ago. Then the newest
+    /// `maxEpochs` of those, oldest first.
+    public func retained(now: Date) -> HubLinkKeys {
+        let sorted = epochs.sorted { $0.epoch < $1.epoch }
+        let newest = sorted.last?.epoch
+        let kept = sorted.filter { keys in
+            guard keys.epoch != newest, let supersededAt = keys.supersededAt else { return true }
+            return now.timeIntervalSince(supersededAt) < Self.previousEpochGrace
+        }
+        var copy = self
+        copy.epochs = Array(kept.suffix(Self.maxEpochs))
+        return copy
+    }
+
+    /// This merged link with each epoch's `supersededAt`: the stamp `previous` holds for that epoch, else `now` for
+    /// every epoch but the newest (the previous newest when a newer one arrived, and any epoch stored before the
+    /// stamp existed); the newest is never stamped.
+    public func stampingSuperseded(from previous: HubLinkKeys, now: Date) -> HubLinkKeys {
+        let stamps = Dictionary(previous.epochs.map { ($0.epoch, $0.supersededAt) }) { first, _ in first }
+        let newest = epochs.map(\.epoch).max()
+        var copy = self
+        copy.epochs = epochs.map { keys in
+            var stamped = keys
+            stamped.supersededAt = keys.epoch == newest ? nil : stamps[keys.epoch].flatMap { $0 } ?? now
+            return stamped
+        }
+        return copy
+    }
+
+    /// Whether this link's newest epoch is above `previous`'s (an `epoch_ack` is due on an ordered hub).
+    public func newestEpochRaised(over previous: HubLinkKeys) -> Bool {
+        guard let newest = epochs.map(\.epoch).max() else { return false }
+        guard let before = previous.epochs.map(\.epoch).max() else { return true }
+        return newest > before
     }
 }
 

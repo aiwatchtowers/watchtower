@@ -180,6 +180,8 @@ final class HubSession {
     @ObservationIgnored private var backlogObservation: ResilientObservation?
     /// The last flush (and sweep) the session started without waiting for it (`startOutboxWork`).
     @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
+    /// The last `epoch_ack` the session queued after a raised epoch (`keysMerged`), not awaited (tests wait on it).
+    @ObservationIgnored private(set) var epochAckWork: Task<Void, Never>?
     /// How long `shutDown()` waits for the outbox's chain before it goes on; tests shorten it.
     @ObservationIgnored var outboxDrainCap: Duration = .seconds(10)
     /// The phone recorder (record a meeting or a voice note), owned for the
@@ -1145,9 +1147,25 @@ final class HubSession {
         startOutboxWork(sweep: false)
     }
 
+    /// The link flow merged new epoch keys into the Keychain (`AppRoot.keysMerged`): the rows they unlock are
+    /// opened, and when the newest epoch went up an ordered hub gets `epoch_ack` for it (the outbox sends none to a
+    /// hub on today's path, and never one for an epoch it already acknowledged). A locked keychain or a missing
+    /// link leaves it to the next raise.
+    func keysMerged(newestEpochRaised: Bool) {
+        indexStoredRows()
+        guard newestEpochRaised, !stopped else { return }
+        epochAckWork = Task { [outbox, secure] in
+            do {
+                try await outbox.enqueueEpochAck(epoch: secure.currentEpoch())
+            } catch {
+                Self.logger.warning("epoch_ack not queued: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
-    /// by a fetch does. Rows that still cannot open stay for the next pass. Also the link flow's call once new
-    /// epoch keys joined the Keychain (`AppRoot.keysMerged`).
+    /// by a fetch does. Rows that still cannot open stay for the next pass. Also run once new epoch keys joined
+    /// the Keychain (`keysMerged`).
     func indexStoredRows() {
         do {
             let indexed = try store.indexPending()

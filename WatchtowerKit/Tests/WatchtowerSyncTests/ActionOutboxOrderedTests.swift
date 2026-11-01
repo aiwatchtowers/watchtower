@@ -1,3 +1,4 @@
+import GRDB
 import os
 import WatchtowerE2ETesting
 import XCTest
@@ -22,6 +23,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
         let store: ReplicaStore
         let outbox: ActionOutbox
         let clock: OSAllocatedUnfairLock<Date>
+        let keys: InMemoryPhoneKeyStore
 
         func advance(by seconds: TimeInterval) {
             clock.withLock { $0 = $0.addingTimeInterval(seconds) }
@@ -42,7 +44,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
         await outbox.setHubID(hubID)
         return Phone(
             inner: inner, recorder: recorder, secure: secure, hub: TestE2E.hubTransport(inner: inner), store: store,
-            outbox: outbox, clock: clock)
+            outbox: outbox, clock: clock, keys: keys)
     }
 
     // MARK: - Helpers
@@ -64,7 +66,8 @@ final class ActionOutboxOrderedTests: XCTestCase {
         let sealed = try await phone.secure.seal(try CloudRecordFactory.orderedRecord(
             for: action, actionSeq: seq, deviceID: TestE2E.deviceID, modifiedAt: action.createdAt))
         XCTAssertTrue(try phone.store.insertOrderedAction(
-            action, entityRecordName: "target-42", sealed: sealed, epoch: 1, seq: seq))
+            action, entityRecordName: "target-42", sealed: sealed, epoch: try Envelope.parse(sealed.payload).header.epoch,
+            seq: seq))
         return (action.id, seq)
     }
 
@@ -1045,6 +1048,174 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(saves.count, 3, "two refused writes, then the control alone")
         let controls = try await writtenControls(phone)
         XCTAssertEqual(controls.map(\.seq), [3])
+    }
+
+    // MARK: - Epoch keys (relay client Phase 3, Task 6)
+
+    /// The phone's keybox moves to `epoch` (its keys join the stored ones, as the link flow's merge does).
+    private func raiseEpoch(_ phone: Phone, to epoch: UInt32) throws {
+        var link = try XCTUnwrap(try phone.keys.hubLink(hubID))
+        link.epochs.append(EpochKeys(
+            epoch: epoch, dataKey: Data(repeating: UInt8(epoch), count: 32), alertKey: Data(repeating: UInt8(epoch), count: 32)))
+        try phone.keys.saveHubLink(link)
+        XCTAssertEqual(try phone.secure.currentEpoch(), epoch)
+    }
+
+    private func epochAcks(_ phone: Phone) async throws -> [UInt32?] {
+        try await writtenControls(phone).filter { $0.kind == .epochAck }.map(\.epoch)
+    }
+
+    private func envelopeHeader(_ data: Data) throws -> EnvelopeHeader {
+        try Envelope.parse(data).header
+    }
+
+    func testEpochAckIsQueuedOncePerRaise() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 2)
+
+        let first = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        let second = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        _ = try await phone.outbox.flush()
+
+        XCTAssertTrue(first)
+        XCTAssertFalse(second, "the same raise is acknowledged once")
+        let acks = try await epochAcks(phone)
+        XCTAssertEqual(acks, [2])
+        let controls = try await writtenControls(phone)
+        let control = try XCTUnwrap(controls.first)
+        XCTAssertEqual(control.deviceID, device)
+        XCTAssertEqual(control.hubID, hubID)
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+
+        try raiseEpoch(phone, to: 3)
+        let third = try await phone.outbox.enqueueEpochAck(epoch: 3)
+        _ = try await phone.outbox.flush()
+        XCTAssertTrue(third)
+        let both = try await epochAcks(phone)
+        XCTAssertEqual(both.sorted { ($0 ?? 0) < ($1 ?? 0) }, [2, 3])
+    }
+
+    func testEpochAckNeverGoesDown() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 3)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 3)
+        _ = try await phone.outbox.flush()
+        let lower = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        XCTAssertFalse(lower)
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty, "a lower epoch is never queued")
+
+        // An unsent ack for a lower epoch is replaced by the newer one.
+        await phone.inner.refuseNext(.unreachable, count: 1)
+        try raiseEpoch(phone, to: 4)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 4)
+        await phone.outbox.drain()
+        XCTAssertEqual(try phone.store.queuedControls().map(\.kind), [.epochAck], "the ack for 4 waits, refused")
+        try raiseEpoch(phone, to: 5)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 5)
+        await phone.outbox.drain()
+        _ = try await phone.outbox.flush()
+        let acks = try await epochAcks(phone)
+        XCTAssertEqual(acks.sorted { ($0 ?? 0) < ($1 ?? 0) }, [3, 5])
+    }
+
+    func testNoEpochAckToALegacyHub() async throws {
+        let phone = try await makePhone(ordered: false)
+        try raiseEpoch(phone, to: 2)
+        let queued = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        _ = try await phone.outbox.flush()
+        XCTAssertFalse(queued)
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+        let calls = await phone.recorder.calls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    /// Sim rule 14: `resend_from(1)` after the phone moved to epoch 2 reseals rows 1–2 (epoch 1) under epoch 2 and
+    /// overwrites their records; row 3, already in epoch 2, is resent byte for byte.
+    func testResendFromResealsOnlyOlderEpochRows() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        let two = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let oldOne = try XCTUnwrap(try row(phone, one.id))
+        let oldTwo = try XCTUnwrap(try row(phone, two.id))
+        try raiseEpoch(phone, to: 2)
+        let three = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let oldThree = try XCTUnwrap(try row(phone, three.id))
+        XCTAssertEqual([oldOne.epoch, oldTwo.epoch, oldThree.epoch], [1, 1, 2])
+
+        try await phone.outbox.resendFrom(1)
+
+        for (old, id) in [(oldOne, one.id), (oldTwo, two.id)] {
+            let resealed = try XCTUnwrap(try row(phone, id))
+            XCTAssertEqual(resealed.epoch, 2)
+            XCTAssertNotEqual(resealed.envelope, old.envelope)
+            XCTAssertEqual(try envelopeHeader(resealed.envelope).epoch, 2)
+            XCTAssertEqual(resealed.wireName, old.wireName)
+            XCTAssertEqual(resealed.delivery, .sent)
+            let onWire = try await current(phone, old.wireName)
+            XCTAssertEqual(onWire?.payload, resealed.envelope, "the record is overwritten")
+        }
+        let resent = try XCTUnwrap(try row(phone, three.id))
+        XCTAssertEqual(resent.envelope, oldThree.envelope, "the current epoch's row keeps its bytes")
+        let saves = await saves(phone)
+        XCTAssertEqual(saves.dropFirst(3).map(\.names), [[oldOne.wireName], [oldTwo.wireName], [oldThree.wireName]])
+        XCTAssertEqual(
+            saves.dropFirst(3).map(\.expects),
+            [[.seq(try XCTUnwrap(oldOne.recordSeq))], [.seq(try XCTUnwrap(oldTwo.recordSeq))],
+             [.seq(try XCTUnwrap(oldThree.recordSeq))]],
+            "each overwrite goes under the version of its last write")
+    }
+
+    func testAResealKeepsTheActionSeq() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let old = try XCTUnwrap(try row(phone, one.id))
+        try raiseEpoch(phone, to: 2)
+
+        try await phone.outbox.resendFrom(1)
+
+        let resealed = try XCTUnwrap(try row(phone, one.id))
+        XCTAssertEqual(resealed.actionSeq, old.actionSeq)
+        XCTAssertGreaterThan(try envelopeHeader(resealed.envelope).seq, try envelopeHeader(old.envelope).seq, "a fresh envelope seq")
+        let opened = try await phone.secure.changes(in: .relay, since: nil).changed
+            .first { $0.kind == RelayRecordKind.action.rawValue }
+        let action = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: try XCTUnwrap(opened).payload)
+        XCTAssertEqual(action.id, one.id)
+        XCTAssertEqual(action.actionSeq, one.seq)
+        XCTAssertEqual(opened?.sealed?.epoch, 2)
+    }
+
+    /// A row of an older epoch whose stored envelope does not open cannot be resealed: listed as Not delivered.
+    func testAnUnopenableOldRowIsNotDelivered() async throws {
+        let phone = try await makePhone()
+        let seq = try phone.store.nextActionSeq()
+        let action = ActionRequestPayload(
+            id: UUID().uuidString, kind: .targetDone, entityID: "42", createdAt: base, deviceID: device, hubID: hubID)
+        let sealed = try await phone.secure.seal(try CloudRecordFactory.orderedRecord(
+            for: action, actionSeq: seq, deviceID: TestE2E.deviceID, modifiedAt: base))
+        var corrupt = sealed.payload
+        corrupt[corrupt.count - 1] ^= 0xFF
+        let broken = CloudRecord(
+            recordName: sealed.recordName, zone: .relay, kind: sealed.kind, modifiedAt: base, payload: corrupt)
+        XCTAssertTrue(try phone.store.insertOrderedAction(
+            action, entityRecordName: "target-42", sealed: broken, epoch: 1, seq: seq))
+        let good = try await insert(phone)
+        try raiseEpoch(phone, to: 2)
+
+        try await phone.outbox.resendFrom(1)
+
+        // The overlay cannot open its envelope either, so the row is read from the outbox and the table.
+        XCTAssertEqual(try row(phone, action.id)?.delivery, .undelivered)
+        let reason = try await phone.store.reader.read { db in
+            try String.fetchOne(
+                db, sql: "SELECT undelivered_reason FROM pending_actions WHERE action_id = ?", arguments: [action.id])
+        }
+        XCTAssertEqual(reason, UndeliveredReason.refused.rawValue)
+        let resealed = try XCTUnwrap(try row(phone, good.id))
+        XCTAssertEqual(resealed.epoch, 2)
+        XCTAssertEqual(resealed.delivery, .sent, "the rows after it go on")
     }
 }
 
