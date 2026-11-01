@@ -1,0 +1,357 @@
+{
+  "note": "Bridge protocol v1 frames (bridge.proto). hex is the message bytes without the u32 length prefix; fields in field-number order, defaults omitted. Regenerate: go test ./internal/hub/transport/cloudkit -run TestFramesFixture -update",
+  "cases": [
+    {
+      "name": "hello",
+      "message": "Request",
+      "json": {
+        "id": "1",
+        "hello": {
+          "version": 1,
+          "hub_id": "8C1D2E3F-0000-4000-8000-00000000ACME"
+        }
+      },
+      "hex": "080112280801122438433144324533462d303030302d343030302d383030302d303030303030303041434d45"
+    },
+    {
+      "name": "save",
+      "message": "Request",
+      "json": {
+        "id": "2",
+        "save": {
+          "items": [
+            {
+              "zone": "DataZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+              "name": "k1a2b3",
+              "envelope": "V1RFMQABAP+A"
+            },
+            {
+              "zone": "RelayZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+              "name": "a-DEVICE-7",
+              "envelope": "V1RFMQABAP+A",
+              "expect": {
+                "mode": "EXPECT_ABSENT"
+              }
+            },
+            {
+              "zone": "DataZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+              "name": "t9x8",
+              "envelope": "V1RFMQABAP+A",
+              "asset_path": "/hub/assets/transcripts/7.asset",
+              "expect": {
+                "mode": "EXPECT_SEQ",
+                "tag_seq": "9223372036854788153",
+                "generation": "5f1c0a9e2b7d4c18"
+              }
+            },
+            {
+              "zone": "DataZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+              "name": "sig-k1a2b3"
+            }
+          ]
+        }
+      },
+      "hex": "08021ad3020a420a2d446174615a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d4512066b31613262331a0957544531000100ff800a4b0a2e52656c61795a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d45120a612d4445564943452d371a0957544531000100ff802a0208010a82010a2d446174615a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d451204743978381a0957544531000100ff80221f2f6875622f6173736574732f7472616e736372697074732f372e61737365742a1f080210b9e080808080808080011a10356631633061396532623764346331380a3b0a2d446174615a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d45120a7369672d6b3161326233"
+    },
+    {
+      "name": "delete",
+      "message": "Request",
+      "json": {
+        "id": "3",
+        "delete": {
+          "zone": "RelayZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+          "items": [
+            {
+              "name": "c-1"
+            },
+            {
+              "name": "a-DEVICE-7",
+              "expect": {
+                "mode": "EXPECT_SEQ",
+                "tag_seq": "300",
+                "generation": "5f1c0a9e2b7d4c18"
+              }
+            }
+          ]
+        }
+      },
+      "hex": "0803225e0a2e52656c61795a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d4512050a03632d3112250a0a612d4445564943452d371217080210ac021a1035663163306139653262376434633138"
+    },
+    {
+      "name": "changes",
+      "message": "Request",
+      "json": {
+        "id": "4",
+        "changes": {
+          "zone": "RelayZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+          "since": "150",
+          "generation": "5f1c0a9e2b7d4c18"
+        }
+      },
+      "hex": "08042a450a2e52656c61795a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d451096011a1035663163306139653262376434633138"
+    },
+    {
+      "name": "changes_from_start",
+      "message": "Request",
+      "json": {
+        "id": "5",
+        "changes": {
+          "zone": "DataZone-8C1D2E3F-0000-4000-8000-00000000ACME"
+        }
+      },
+      "hex": "08052a2f0a2d446174615a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d45"
+    },
+    {
+      "name": "download",
+      "message": "Request",
+      "json": {
+        "id": "6",
+        "download": {
+          "zone": "RelayZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+          "asset_id": "asset-1",
+          "dst": "/hub/downloads/ab12.part"
+        }
+      },
+      "hex": "080632530a2e52656c61795a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d45120761737365742d311a182f6875622f646f776e6c6f6164732f616231322e70617274"
+    },
+    {
+      "name": "account_status",
+      "message": "Request",
+      "json": {
+        "id": "7",
+        "account_status": {}
+      },
+      "hex": "08073a00"
+    },
+    {
+      "name": "ensure_shares",
+      "message": "Request",
+      "json": {
+        "id": "8",
+        "ensure_shares": {}
+      },
+      "hex": "08084200"
+    },
+    {
+      "name": "set_public_link_open",
+      "message": "Request",
+      "json": {
+        "id": "9",
+        "set_public_link": {
+          "open": true
+        }
+      },
+      "hex": "08094a020801"
+    },
+    {
+      "name": "set_public_link_closed",
+      "message": "Request",
+      "json": {
+        "id": "10",
+        "set_public_link": {}
+      },
+      "hex": "080a4a00"
+    },
+    {
+      "name": "participants",
+      "message": "Request",
+      "json": {
+        "id": "11",
+        "participants": {
+          "zone": "DataZone-8C1D2E3F-0000-4000-8000-00000000ACME"
+        }
+      },
+      "hex": "080b522f0a2d446174615a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d45"
+    },
+    {
+      "name": "remove_participants",
+      "message": "Request",
+      "json": {
+        "id": "12",
+        "remove_participants": {
+          "zone": "RelayZone-8C1D2E3F-0000-4000-8000-00000000ACME",
+          "user_record_names": [
+            "_user-a",
+            "_user-é"
+          ]
+        }
+      },
+      "hex": "080c5a430a2e52656c61795a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d4512075f757365722d6112085f757365722dc3a9"
+    },
+    {
+      "name": "hello_ok",
+      "message": "Response",
+      "json": {
+        "id": "1",
+        "hello": {
+          "version": 1,
+          "generation": "5f1c0a9e2b7d4c18"
+        }
+      },
+      "hex": "080112140801121035663163306139653262376434633138"
+    },
+    {
+      "name": "outcomes",
+      "message": "Response",
+      "json": {
+        "id": "2",
+        "outcomes": {
+          "items": [
+            {
+              "saved": true,
+              "tag_seq": "9223372036854788153"
+            },
+            {
+              "conflict": {
+                "name": "a-DEVICE-7",
+                "envelope": "V1RFMQABAP+A",
+                "tag_seq": "77",
+                "server_at_ms": "1800000000123"
+              }
+            },
+            {},
+            {
+              "refused_class": "record_too_large"
+            }
+          ]
+        }
+      },
+      "hex": "08021a490a0d080110b9e080808080808080010a221a200a0a612d4445564943452d37120957544531000100ff80184d20fba0f1c2b1340a000a1222107265636f72645f746f6f5f6c61726765"
+    },
+    {
+      "name": "batch",
+      "message": "Response",
+      "json": {
+        "id": "4",
+        "batch": {
+          "changed": [
+            {
+              "name": "a-DEVICE-8",
+              "envelope": "V1RFMQABAP+A",
+              "tag_seq": "9223372036854788153",
+              "server_at_ms": "1800000000999"
+            },
+            {
+              "name": "recupload-u1",
+              "envelope": "V1RFMQABAP+A",
+              "tag_seq": "5",
+              "server_at_ms": "1800000001000",
+              "asset_id": "asset-1"
+            }
+          ],
+          "deleted": [
+            "c-1",
+            "c-2"
+          ],
+          "new_seq": "152",
+          "more": true,
+          "generation": "5f1c0a9e2b7d4c18"
+        }
+      },
+      "hex": "080422790a290a0a612d4445564943452d38120957544531000100ff8018b9e0808080808080800120e7a7f1c2b1340a2b0a0c72656375706c6f61642d7531120957544531000100ff80180520e8a7f1c2b1342a0761737365742d311203632d311203632d3218980120012a1035663163306139653262376434633138"
+    },
+    {
+      "name": "batch_empty",
+      "message": "Response",
+      "json": {
+        "id": "5",
+        "batch": {
+          "generation": "5f1c0a9e2b7d4c18"
+        }
+      },
+      "hex": "080522122a1035663163306139653262376434633138"
+    },
+    {
+      "name": "done",
+      "message": "Response",
+      "json": {
+        "id": "6",
+        "done": {}
+      },
+      "hex": "08062a00"
+    },
+    {
+      "name": "account",
+      "message": "Response",
+      "json": {
+        "id": "7",
+        "account": {
+          "status": "temporarily_unavailable"
+        }
+      },
+      "hex": "080732190a1774656d706f726172696c795f756e617661696c61626c65"
+    },
+    {
+      "name": "shares",
+      "message": "Response",
+      "json": {
+        "id": "8",
+        "shares": {
+          "data_url": "https://www.icloud.com/share/0data",
+          "relay_url": "https://www.icloud.com/share/0relay"
+        }
+      },
+      "hex": "08083a490a2268747470733a2f2f7777772e69636c6f75642e636f6d2f73686172652f3064617461122368747470733a2f2f7777772e69636c6f75642e636f6d2f73686172652f3072656c6179"
+    },
+    {
+      "name": "participant_list",
+      "message": "Response",
+      "json": {
+        "id": "11",
+        "participants": {
+          "items": [
+            {
+              "user_record_name": "_user-a",
+              "accepted": true
+            },
+            {
+              "user_record_name": "_user-b"
+            }
+          ]
+        }
+      },
+      "hex": "080b42180a0b0a075f757365722d6110010a090a075f757365722d62"
+    },
+    {
+      "name": "failure",
+      "message": "Response",
+      "json": {
+        "id": "4",
+        "failure": {
+          "class": "token_expired"
+        }
+      },
+      "hex": "08044a0f0a0d746f6b656e5f65787069726564"
+    },
+    {
+      "name": "event_zone",
+      "message": "Response",
+      "json": {
+        "event": {
+          "zone": "RelayZone-8C1D2E3F-0000-4000-8000-00000000ACME"
+        }
+      },
+      "hex": "52300a2e52656c61795a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d45"
+    },
+    {
+      "name": "event_pull_now",
+      "message": "Response",
+      "json": {
+        "event": {
+          "pull_now": true
+        }
+      },
+      "hex": "52021001"
+    },
+    {
+      "name": "event_error",
+      "message": "Response",
+      "json": {
+        "event": {
+          "error_class": "unavailable"
+        }
+      },
+      "hex": "520d1a0b756e617661696c61626c65"
+    }
+  ]
+}

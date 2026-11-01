@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/workbenchgit"
@@ -334,10 +335,10 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 	if err != nil {
 		return err
 	}
-	var wbID, targetID sql.NullInt64
+	var wbID, targetID, runID sql.NullInt64
 	var kind, claudeID string
-	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, '')
-		FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&wbID, &kind, &targetID, &claudeID)
+	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, ''), automation_run_id
+		FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&wbID, &kind, &targetID, &claudeID, &runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("terminal session %d: %w", sessionID, db.ErrTerminalSessionNotFound)
 	}
@@ -348,7 +349,7 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 	if !wbID.Valid || !ok {
 		return fmt.Errorf("terminal session %d is not a workbench agent session", sessionID)
 	}
-	st := &newStart{d: d, agent: agent, choice: choice, claudeID: claudeID, id: sessionID}
+	st := &newStart{d: d, agent: agent, choice: choice, claudeID: claudeID, id: sessionID, automationRun: runID.Int64}
 	if st.wb, err = loadWorkbench(ctx, d.DB, wbID.Int64); err != nil {
 		return err
 	}
@@ -421,7 +422,8 @@ func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, 
 			return nil, nil, res, err
 		}
 	}
-	st = &newStart{d: d, wb: wb, target: target, agent: agent, choice: choice}
+	st = &newStart{d: d, wb: wb, target: target, agent: agent, choice: choice, title: strings.TrimSpace(r.Title),
+		automationRun: r.AutomationRunID}
 	if st.codex, err = codexArgs(ctx, d, agent, wb.id); err != nil {
 		release()
 		return nil, nil, res, err
@@ -488,6 +490,9 @@ type newStart struct {
 	prompt   string
 	claudeID string
 	id       int64
+	// title "" = the default (Begin only); automationRun 0 = none.
+	title         string
+	automationRun int64
 }
 
 // firstPrompt is the brief, else the work-on prompt (the group wording for a
@@ -515,6 +520,10 @@ func (s *newStart) insert(ctx context.Context) error {
 			n.Title = "Target #" + strconv.FormatInt(s.target.id, 10)
 		}
 	}
+	if s.title != "" {
+		n.Title = s.title
+	}
+	n.AutomationRunID = s.automationRun
 	if s.agent == agentkind.Claude {
 		s.claudeID = NewSessionID()
 		n.ClaudeSessionID = s.claudeID
@@ -546,33 +555,75 @@ func (s *newStart) finish(ctx context.Context) error {
 	if info, ok := findRun(list, s.d.scope(), s.id); ok && !info.Exited {
 		return ErrAlreadyLaunched
 	}
-	dir, placed, err := s.place(ctx, c)
+	// The workbench's placement lock, from the place decision until the run
+	// is in the host: another process's start then sees this one's run.
+	unlock, err := s.lockPlacement(ctx)
+	if err != nil {
+		s.markFailed(ctx, LockTimeoutReason)
+		return fmt.Errorf("session %d: %w", s.id, err)
+	}
+	locked := true
+	release := func() {
+		if locked {
+			locked = false
+			unlock()
+		}
+	}
+	defer release()
+	dir, placed, notice, err := s.place(ctx, c)
 	if err != nil {
 		hostErr = err
 		return err
 	}
-	setup := ""
+	s.setNotice(ctx, notice)
+	setup, setupNotice := "", ""
 	if placed && strings.TrimSpace(s.wb.setup) != "" {
 		setup = s.wb.setup
+		setupNotice = strings.TrimSpace(notice + " " + SetupNotRunPrefix + strings.TrimSpace(setup))
 	}
 	// Deleted while its place was decided: it never launches.
 	var one int
-	if err := s.d.DB.QueryRowContext(ctx, `SELECT 1 FROM terminal_sessions WHERE id = ?`, s.id).Scan(&one); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("Session #%d was deleted before it started.", s.id) //nolint:staticcheck // Swift's sentence, verbatim
-		}
+	// Read past a cancelled ctx: the launch below then fails and is recorded.
+	err = s.d.DB.QueryRowContext(context.WithoutCancel(ctx), `SELECT 1 FROM terminal_sessions WHERE id = ?`, s.id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("Session #%d was deleted before it started.", s.id) //nolint:staticcheck // Swift's sentence, verbatim
+	}
+	if err != nil {
+		s.markFailed(ctx, "the session could not be read before its launch")
 		return fmt.Errorf("reading session %d: %w", s.id, err)
 	}
-	m := Mode{Agent: string(s.agent), SessionID: s.claudeID}
+	if beforeLaunch != nil {
+		beforeLaunch(s.id)
+	}
+	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun}
 	if s.prompt != "" {
 		p := s.prompt
 		m.Prompt = &p
 	}
-	run, err := launch(ctx, s.d, c, s.id, dir, m, s.codex, setup)
+	run, err := launch(ctx, s.d, c, s.id, dir, m, s.codex, setup, setupNotice)
+	release()
 	if err != nil {
 		return err
 	}
+	// The owner's delete (the Desktop's Undo batch committing) can land
+	// between the check above and the launch: a run whose row is gone is
+	// stopped at once, never left running.
+	if err := s.d.DB.QueryRowContext(context.WithoutCancel(ctx), `SELECT 1 FROM terminal_sessions WHERE id = ?`,
+		s.id).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		if serr := stopOn(context.WithoutCancel(ctx), c, s.d.scope(), s.id); serr != nil {
+			log.Printf("sessionstart: session %d: the run of a deleted row could not be stopped (%s)", s.id, errClass(serr))
+		}
+		return fmt.Errorf("Session #%d was deleted before it started.", s.id) //nolint:staticcheck // Swift's sentence, verbatim
+	}
 	return watchLaunch(ctx, s.d, c, s.id, run, s.agent)
+}
+
+// setNotice records the start's line for the owner on the row (the
+// Desktop's startNotice); best effort — a start never fails over it.
+func (s *newStart) setNotice(ctx context.Context, notice string) {
+	if err := s.d.DB.SetTerminalSessionStartNotice(context.WithoutCancel(ctx), s.id, notice); err != nil {
+		log.Printf("sessionstart: session %d: the start notice was not recorded (%s)", s.id, errClass(err))
+	}
 }
 
 // watchLaunch is SessionStartStopHandlers.exitedNotFound: for d.LaunchWatch
@@ -617,13 +668,16 @@ func watchLaunch(ctx context.Context, d Deps, c *sessionhost.Client, row int64, 
 }
 
 // notFoundReason is agent_error's reason for a missing agent binary.
-func notFoundReason(agent agentkind.Kind) string { return string(agent) + " was not found" }
+func notFoundReason(agent agentkind.Kind) string { return AgentNotFoundReason(string(agent)) }
 
 // place moves the row where Place decides, in the workbench's placement
 // turn: dir is where it starts, placed whether it went into a worktree made
-// for it. A row that could not be moved into its new worktree is deleted (it
-// never ran) and the worktree stays on disk.
-func (s *newStart) place(ctx context.Context, c *sessionhost.Client) (dir string, placed bool, err error) {
+// for it, notice the owner's line about it ("" = nothing to say). A row that
+// could not be moved into its new worktree is failed with MoveFailedPrefix
+// and the worktree named (the Desktop then reports it and deletes the
+// never-run row); only when even that write fails is the row deleted here.
+// The worktree stays on disk either way.
+func (s *newStart) place(ctx context.Context, c *sessionhost.Client) (dir string, placed bool, notice string, err error) {
 	placementTurn(s.wb.id, func() {
 		occupied, working, oerr := s.occupied(ctx, c)
 		if oerr != nil {
@@ -644,26 +698,36 @@ func (s *newStart) place(ctx context.Context, c *sessionhost.Client) (dir string
 		}
 		prep := Prepare(ctx, o, Place(occupied, s.choice, st), Slug(targetID, targetText, working+1), "",
 			s.d.DB.HeldWorktreeBranches)
-		dir = prep.Dir
+		dir, notice = prep.Dir, prep.Notice
 		if prep.Worktree == nil {
 			return
 		}
 		if s.d.Integrate != nil {
 			// The session runs without it (no hooks or board tools); logged
-			// by id and class only (FILES-01).
+			// by id and class only (FILES-01), named to the owner in the notice.
 			if ierr := s.d.Integrate(ctx, s.wb.id, prep.Dir, s.agent); ierr != nil {
 				log.Printf("sessionstart: session %d: worktree integration failed (%s)", s.id, errClass(ierr))
+				notice = WorktreeNotice(*prep.Worktree, logredact.Full(ierr))
 			}
 		}
-		if perr := s.d.DB.PlaceTerminalSession(ctx, s.id, prep.Dir, prep.Worktree.Branch, prep.Worktree.Base); perr != nil {
-			_, _ = s.d.DB.ExecContext(context.WithoutCancel(ctx), `DELETE FROM terminal_sessions WHERE id = ?`, s.id)
+		// The worktree exists: its row is moved even when the caller gave up.
+		bg := context.WithoutCancel(ctx)
+		if perr := s.d.DB.PlaceTerminalSession(bg, s.id, prep.Dir, prep.Worktree.Branch, prep.Worktree.Base); perr != nil {
+			reason := MoveFailedPrefix + logredact.Full(perr) + " — the worktree " + prep.Dir + " on " +
+				prep.Worktree.Branch + " was kept."
+			// agent_error is clipped (launchErrorRunes): the whole sentence
+			// goes in start_notice, which the Desktop reports.
+			nerr := s.d.DB.SetTerminalSessionStartNotice(bg, s.id, reason)
+			if ferr := s.d.DB.SetTerminalSessionLaunchError(bg, s.id, reason, s.d.now()); ferr != nil || nerr != nil {
+				_, _ = s.d.DB.ExecContext(bg, `DELETE FROM terminal_sessions WHERE id = ?`, s.id)
+			}
 			err = fmt.Errorf("could not move session %d into its worktree (the worktree was kept): %w", s.id, perr)
 			return
 		}
 		placed = true
 		setStarting(s.id, &startingRow{workbench: s.wb.id, folder: prep.Dir, branch: prep.Worktree.Branch})
 	})
-	return dir, placed, err
+	return dir, placed, notice, err
 }
 
 // agentRow is a workbench agent row as the folder check reads it.
@@ -759,17 +823,26 @@ func (s *newStart) markFailed(ctx context.Context, reason string) {
 }
 
 // launch builds the argv (Launch) and hands it to session-host. A refused
-// launch is recorded on the row (agent_error) and returned.
+// launch is recorded on the row (agent_error) and returned; failNotice, when
+// set, replaces the row's start_notice first (the setup command that never
+// ran), so a reader that sees the failure sees the notice too.
 func launch(ctx context.Context, d Deps, c *sessionhost.Client, row int64, dir string, m Mode,
-	codex *devpack.LaunchArgs, setup string,
+	codex *devpack.LaunchArgs, setup, failNotice string,
 ) (run string, err error) {
+	failed := func(reason string) {
+		bg := context.WithoutCancel(ctx)
+		if failNotice != "" {
+			_ = d.DB.SetTerminalSessionStartNotice(bg, row, failNotice)
+		}
+		_ = d.DB.SetTerminalSessionLaunchError(bg, row, reason, d.now())
+	}
 	shell := d.Shell
 	if shell == "" {
 		shell = os.Getenv("SHELL")
 	}
 	spec, err := Launch(m, row, dir, shell, codex, setup)
 	if err != nil {
-		_ = d.DB.SetTerminalSessionLaunchError(context.WithoutCancel(ctx), row, "the launch could not be built", d.now())
+		failed("the launch could not be built")
 		return "", err
 	}
 	run = NewSessionID()
@@ -779,7 +852,7 @@ func launch(ctx context.Context, d Deps, c *sessionhost.Client, row int64, dir s
 		Scope: d.scope(), Agent: m.Agent,
 	})
 	if err != nil {
-		_ = d.DB.SetTerminalSessionLaunchError(context.WithoutCancel(ctx), row, launchFailure(err), d.now())
+		failed(launchFailure(err))
 		return "", fmt.Errorf("session %d did not launch: %w", row, err)
 	}
 	return run, nil
@@ -877,7 +950,7 @@ func reopen(ctx context.Context, d Deps, r existingRow) (handlers.StartResult, e
 		return handlers.StartResult{}, fmt.Errorf("opening session %d: %w", r.id, err)
 	}
 	m := Mode{Agent: r.kind, SessionID: r.agentSessionID, Resume: r.agentSessionID != ""}
-	run, err := launch(ctx, d, c, r.id, r.folder, m, codex, "")
+	run, err := launch(ctx, d, c, r.id, r.folder, m, codex, "", "")
 	if err == nil {
 		err = watchLaunch(ctx, d, c, r.id, run, agent)
 	}

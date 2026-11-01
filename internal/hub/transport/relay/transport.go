@@ -110,7 +110,10 @@ type Transport struct {
 	wg         sync.WaitGroup
 }
 
-var _ transport.Transport = (*Transport)(nil)
+var (
+	_ transport.Transport     = (*Transport)(nil)
+	_ transport.SharedMailbox = (*Transport)(nil)
+)
 
 // New returns a transport over c; Connect starts its live events.
 func New(c *client.Client, o Options) *Transport {
@@ -145,6 +148,10 @@ func (t *Transport) Events() <-chan transport.Event { return t.events }
 
 // Origin is the relay origin this transport was configured with.
 func (t *Transport) Origin() string { return t.o.Origin }
+
+// MailboxFor implements transport.SharedMailbox: on the relay each phone has
+// its own mailbox zone.
+func (t *Transport) MailboxFor(hub, phone string) string { return transport.MailboxZone(hub, phone) }
 
 // Connect registers the hub (idempotent), opens the WebSocket, subscribes
 // zones and reads the account state, then emits a zone event per zone so the

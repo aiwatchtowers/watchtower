@@ -722,6 +722,52 @@ struct InstructionForgetResult: Decodable, Equatable {
     let removed: Bool
 }
 
+/// `watchtower workbench session start --json` (Go hub 3 Task 8): the row Go
+/// wrote, answered at once (instant start, #942) — `state` is `starting`
+/// while a detached finish places and launches it, or `running` for a
+/// reopened one. Exactly the four pinned keys.
+struct SessionStartResult: Decodable, Equatable {
+    let sessionID: Int64
+    let state: String
+    let folderPath: String
+    let worktreeBranch: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case sessionID = "session_id"
+        case state
+        case folderPath = "folder_path"
+        case worktreeBranch = "worktree_branch"
+    }
+}
+
+/// What a Desktop start asks `workbench session start` for. `brief` (the
+/// first prompt) goes over stdin, never argv; nil or blank sends none (Go
+/// then gives a target its work-on prompt).
+struct SessionStartRequest: Equatable {
+    var workbenchID: Int64
+    var targetID: Int64?
+    var agent: AgentKind
+    var place: WorktreeChoice
+    var title: String?
+    var brief: String?
+    var automationRunID: Int64?
+
+    var args: [String] {
+        var args = ["workbench", "session", "start", "--workbench", String(workbenchID)]
+        if let targetID { args += ["--target", String(targetID)] }
+        args += ["--agent", agent.rawValue, "--place", place.rawValue]
+        if let title, !title.isEmpty { args += ["--title", title] }
+        if let automationRunID { args += ["--automation-run", String(automationRunID)] }
+        if stdin != nil { args.append("--brief-stdin") }
+        return args + ["--json"]
+    }
+
+    var stdin: Data? {
+        guard let brief, !brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return Data(brief.utf8)
+    }
+}
+
 /// A `WorkbenchCLI` call's own refusals, beyond the runner's errors.
 enum WorkbenchCLIError: LocalizedError, Equatable {
     /// `launch-args` found no binary for the agent (exit 3).
@@ -999,6 +1045,42 @@ struct WorkbenchCLI {
         case .dismiss(let id):
             return try await review(["lessons", "dismiss"] + workbench + ["--lesson", String(id)])
         }
+    }
+
+    /// Starts a workbench agent session in Go (`workbench session start`):
+    /// the row is written and answered at once, then placed and launched in
+    /// the session host by a detached finish (Go hub 3 Task 8). A missing
+    /// agent binary (exit `GoSessionStartContract.agentNotFoundExit`) is
+    /// `WorkbenchCLIError.agentNotFound`; a call past `timeout` seconds is
+    /// ended and thrown as the runner's timeout.
+    func sessionStart(_ r: SessionStartRequest, timeout: TimeInterval = 30) async throws -> SessionStartResult {
+        let data: Data
+        do {
+            if let stdin = r.stdin {
+                let runner = runner
+                data = try await withThrowingTaskGroup(of: Data.self) { group in
+                    group.addTask { try await runner.run(args: r.args, stdin: stdin) }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(timeout))
+                        throw CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out after \(Int(timeout)) s")
+                    }
+                    defer { group.cancelAll() }
+                    guard let first = try await group.next() else { throw CancellationError() }
+                    return first
+                }
+            } else {
+                data = try await runner.run(args: r.args, timeout: timeout)
+            }
+        } catch CLIRunnerError.nonZeroExit(code: GoSessionStartContract.agentNotFoundExit, _) {
+            throw WorkbenchCLIError.agentNotFound(r.agent)
+        }
+        return try JSONDecoder().decode(SessionStartResult.self, from: data)
+    }
+
+    /// Stops session `sessionID` in the session host (`workbench session
+    /// stop`, the host's Stop request: no worktree cleanup).
+    func sessionStop(sessionID: Int64) async throws {
+        _ = try await runner.run(args: ["workbench", "session", "stop", "--session", String(sessionID), "--json"])
     }
 
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`)
