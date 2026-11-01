@@ -1,5 +1,5 @@
 // Package link is the hub side of linking a phone (Go hub spec §10, §12a;
-// the Swift MobileLinkCenter without the CloudKit shares): the QR link code
+// the Swift MobileLinkCenter, its CloudKit shares in cloudkit.go): the QR link code
 // and its single-use nonce, the phone's hello sealed to hub_kx, the SAS v2
 // four-digit code, the owner's confirmation, the device_grant keyboxes, the
 // owner's grants and unlink with its epoch rotation. It is transport-neutral:
@@ -104,6 +104,11 @@ type Config struct {
 	Host    HostInfo
 	Clock   func() time.Time
 	Publish func(kinds ...string)
+	// CloudKit linking (cloudkit.go): the container the QR names (default
+	// CloudKitContainer) and the sweep's grace (zero = DefaultSweep). The
+	// Mac's iCloud user comes from the bridge (transport.CloudUser).
+	Container string
+	Sweep     Sweep
 }
 
 // Center is the hub's linking state machine. Its methods are safe for
@@ -139,6 +144,24 @@ type Center struct {
 	pairs  map[string]*pairSlot
 	// readersMu runs SyncReaders one at a time.
 	readersMu sync.Mutex
+
+	// CloudKit linking (cloudkit.go): the config, the share calls' state
+	// (guarded by ck.mu) and the code an answering close retired, whose
+	// late hellos read that close's refusal (guarded by mu).
+	container string
+	sweep     Sweep
+	ck        ckState
+	retired   retiredCode
+	// linkMu lets one public-link write run at a time (cloudkit.go setLink)
+	// and issueMu one IssueCloudKit: the only locks held across a bridge
+	// call; LinkUrgent and Sharing never take them.
+	linkMu  sync.Mutex
+	issueMu sync.Mutex
+	// Test seams (cloudkit.go): beforeIssueStore runs before a CloudKit code
+	// is stored (an error fails the store); afterSweep runs after a deferred
+	// sweep returned, before its outcome is recorded.
+	beforeIssueStore func() error
+	afterSweep       func()
 }
 
 // NewCenter builds a Center over c.
@@ -150,10 +173,17 @@ func NewCenter(c Config) *Center {
 		c.Host.Transports = []string{wire.TransportRelay}
 	}
 	c.Host.Transports = append([]string(nil), c.Host.Transports...)
+	if c.Container == "" {
+		c.Container = CloudKitContainer
+	}
+	if c.Sweep == (Sweep{}) {
+		c.Sweep = DefaultSweep
+	}
 	return &Center{
 		st: c.Store, keys: c.Keys, opener: c.Opener, host: c.Host, clock: c.Clock,
 		publish: c.Publish, events: make(chan PairEvent, eventBuffer),
 		sealer: secure.NewSealer(c.Keys), pairs: map[string]*pairSlot{},
+		container: c.Container, sweep: c.Sweep,
 	}
 }
 
@@ -196,14 +226,23 @@ func (c *Center) OnRevoke(fn func(device string)) {
 // Unlink removes a linked phone and rotates the epoch in the same
 // transaction (identity.RotateWith, reason unlink): its row, refusal, pending
 // request, rollback marks and held actions go, and it gets a revoked row so
-// its keybox reads revoked (no keys) for RevokedLifetime. A phone that only
+// its keybox reads revoked (no keys) for RevokedLifetime. A shared-scope
+// phone marks the CloudKit participant sweep pending in the same
+// transaction (bumping its epoch, so a sweep running meanwhile keeps the
+// mark) and due at the next SweepShares pass, so its iCloud user leaves the
+// shares even when nobody calls RemoveCloudKit. A phone that only
 // waits for the owner is refused not_confirmed instead (it never had keys,
 // nothing rotates). state.ErrNoDevice when neither.
 func (c *Center) Unlink(device string) error {
 	c.mu.Lock()
 	defer c.unlock()
-	removed := false
+	removed, shared := false, false
 	err := c.keys.RotateWith(identity.ReasonUnlink, func(tx *sql.Tx) error {
+		var scope string
+		if err := tx.QueryRow(`SELECT scope FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(&scope); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		ok, err := removeDevice(tx, device, c.now())
 		if err != nil {
 			return err
@@ -212,12 +251,19 @@ func (c *Center) Unlink(device string) error {
 			return identity.ErrSkipRotation
 		}
 		removed = true
+		if scope == wire.ScopeShared {
+			shared = true
+			return markSweepTx(tx)
+		}
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("unlinking a phone: %w", err)
 	}
 	if removed {
+		if shared {
+			c.sweepSoon() // its participant goes at the next pass, as in Swift
+		}
 		log.Printf("hub link: phone %s unlinked, epoch rotated", strings.ToUpper(device))
 		c.changed()
 		c.revoked = append(c.revoked, device)

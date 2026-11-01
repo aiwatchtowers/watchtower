@@ -179,6 +179,15 @@
       "hex": "080c5a430a2e52656c61795a6f6e652d38433144324533462d303030302d343030302d383030302d303030303030303041434d4512075f757365722d6112085f757365722dc3a9"
     },
     {
+      "name": "owner_user",
+      "message": "Request",
+      "json": {
+        "id": "13",
+        "owner_user": {}
+      },
+      "hex": "080d6200"
+    },
+    {
       "name": "hello_ok",
       "message": "Response",
       "json": {
@@ -251,6 +260,38 @@
       "hex": "080422790a290a0a612d4445564943452d38120957544531000100ff8018b9e0808080808080800120e7a7f1c2b1340a2b0a0c72656375706c6f61642d7531120957544531000100ff80180520e8a7f1c2b1342a0761737365742d311203632d311203632d3218980120012a1035663163306139653262376434633138"
     },
     {
+      "name": "batch_creators",
+      "message": "Response",
+      "json": {
+        "id": "14",
+        "batch": {
+          "changed": [
+            {
+              "name": "hello-DEVICE-9",
+              "envelope": "V1RFMQABAP+A",
+              "tag_seq": "9",
+              "server_at_ms": "1800000002000",
+              "creator": "_user-é"
+            },
+            {
+              "name": "device-DEVICE-9",
+              "envelope": "V1RFMQABAP+A",
+              "tag_seq": "9223372036854788153",
+              "creator": "__defaultOwner__"
+            },
+            {
+              "name": "a-DEVICE-9-1",
+              "envelope": "V1RFMQABAP+A",
+              "tag_seq": "10"
+            }
+          ],
+          "new_seq": "3",
+          "generation": "5f1c0a9e2b7d4c18"
+        }
+      },
+      "hex": "080e229c010a2e0a0e68656c6c6f2d4445564943452d39120957544531000100ff80180920d0aff1c2b13432085f757365722dc3a90a390a0f6465766963652d4445564943452d39120957544531000100ff8018b9e0808080808080800132105f5f64656661756c744f776e65725f5f0a1b0a0c612d4445564943452d392d31120957544531000100ff80180a18032a1035663163306139653262376434633138"
+    },
+    {
       "name": "batch_empty",
       "message": "Response",
       "json": {
@@ -313,6 +354,26 @@
       "hex": "080b42180a0b0a075f757365722d6110010a090a075f757365722d62"
     },
     {
+      "name": "owner_user_info",
+      "message": "Response",
+      "json": {
+        "id": "13",
+        "owner_user": {
+          "user_record_name": "_owner-acme"
+        }
+      },
+      "hex": "080d5a0d0a0b5f6f776e65722d61636d65"
+    },
+    {
+      "name": "owner_user_info_empty",
+      "message": "Response",
+      "json": {
+        "id": "13",
+        "owner_user": {}
+      },
+      "hex": "080d5a00"
+    },
+    {
       "name": "failure",
       "message": "Response",
       "json": {
@@ -352,6 +413,16 @@
         }
       },
       "hex": "520d1a0b756e617661696c61626c65"
+    },
+    {
+      "name": "event_account_changed",
+      "message": "Response",
+      "json": {
+        "event": {
+          "account_changed": true
+        }
+      },
+      "hex": "52022001"
     }
   ]
 }
