@@ -277,7 +277,7 @@ package struct TerminalLaunch: Equatable, Sendable {
 /// `watchtower workbench launch-args --agent codex --workbench N --json`
 /// (spec 2026-10-12 §4.2): the `codex` binary, the folder to put ahead of
 /// `PATH` (its own, so an nvm install finds `node`), and the argv elements
-/// that follow the binary (`--no-daemon`, the update-check, MCP and hook
+/// that follow the binary (the update-check, MCP and hook
 /// overrides), each one raw.
 package struct CodexLaunchArgs: Decodable, Equatable, Sendable {
     package let binary: String

@@ -222,7 +222,6 @@
     "automation_run_id" : 0,
     "codex" : {
       "args" : [
-        "--no-daemon",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -250,7 +249,7 @@
       "dir" : "/work/acme",
       "env" : [
         "WATCHTOWER_TERMINAL_SESSION_ID=7",
-        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']'"
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']'"
       ],
       "executable" : "/bin/zsh",
       "row" : 7
@@ -260,7 +259,6 @@
     "automation_run_id" : 0,
     "codex" : {
       "args" : [
-        "--no-daemon",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -289,7 +287,7 @@
       "dir" : "/work/acme",
       "env" : [
         "WATCHTOWER_TERMINAL_SESSION_ID=7",
-        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' -- \"$WATCHTOWER_FIRST_PROMPT\"",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' -- \"$WATCHTOWER_FIRST_PROMPT\"",
         "WATCHTOWER_FIRST_PROMPT=-p not a flag"
       ],
       "executable" : "/bin/zsh",
@@ -336,7 +334,6 @@
     "automation_run_id" : 0,
     "codex" : {
       "args" : [
-        "--no-daemon",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -364,7 +361,7 @@
       "dir" : "/work/acme",
       "env" : [
         "WATCHTOWER_TERMINAL_SESSION_ID=7",
-        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' resume '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b'"
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' resume '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b'"
       ],
       "executable" : "/bin/zsh",
       "row" : 7
@@ -582,7 +579,6 @@
     "automation_run_id" : 0,
     "codex" : {
       "args" : [
-        "--no-daemon",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -611,7 +607,7 @@
       "dir" : "/work/acme",
       "env" : [
         "WATCHTOWER_TERMINAL_SESSION_ID=7",
-        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' -- \"$WATCHTOWER_FIRST_PROMPT\"",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' -- \"$WATCHTOWER_FIRST_PROMPT\"",
         "WATCHTOWER_FIRST_PROMPT=hello",
         "WATCHTOWER_WORKTREE_SETUP=npm ci && echo 'ready'"
       ],
@@ -649,7 +645,6 @@
     "automation_run_id" : 0,
     "codex" : {
       "args" : [
-        "--no-daemon",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -677,7 +672,7 @@
       "dir" : "/work/acme",
       "env" : [
         "WATCHTOWER_TERMINAL_SESSION_ID=7",
-        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' resume '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b'"
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' resume '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b'"
       ],
       "executable" : "/bin/zsh",
       "row" : 7
@@ -797,7 +792,6 @@
     "automation_run_id" : 41,
     "codex" : {
       "args" : [
-        "--no-daemon",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -825,7 +819,7 @@
       "dir" : "/work/acme",
       "env" : [
         "WATCHTOWER_TERMINAL_SESSION_ID=7",
-        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']'",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']'",
         "WATCHTOWER_WORKTREE_SETUP=npm ci && echo 'ready'",
         "WATCHTOWER_AUTOMATION_RUN_ID=41"
       ],

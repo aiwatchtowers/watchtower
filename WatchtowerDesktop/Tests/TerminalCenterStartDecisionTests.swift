@@ -25,7 +25,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
 
     nonisolated static let codexArgs = CodexLaunchArgs(
         binary: "/Users/example/bin/codex", pathPrepend: "/Users/example/bin",
-        args: ["--no-daemon", "-c", "check_for_update_on_startup=false"]
+        args: ["-c", "check_for_update_on_startup=false"]
     )
     private let storedID = "0199d1c2-7a3b-7c4d-8e5f-0a1b2c3d4e5f"
 
@@ -522,10 +522,10 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
     // MARK: - The CLI call
 
     func testLaunchArgsCallAndExit3() async throws {
-        let json = #"{"binary":"/opt/codex","path_prepend":"/opt","args":["--no-daemon"]}"#
+        let json = #"{"binary":"/opt/codex","path_prepend":"/opt","args":["-c","a=b"]}"#
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let args = try await WorkbenchCLI(runner: runner).launchArgs(agent: .codex, workbenchID: 7)
-        XCTAssertEqual(args, CodexLaunchArgs(binary: "/opt/codex", pathPrepend: "/opt", args: ["--no-daemon"]))
+        XCTAssertEqual(args, CodexLaunchArgs(binary: "/opt/codex", pathPrepend: "/opt", args: ["-c", "a=b"]))
         XCTAssertEqual(runner.invocations, [["workbench", "launch-args", "--agent", "codex", "--workbench", "7", "--json"]])
 
         let missing = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 3, stderr: ""))

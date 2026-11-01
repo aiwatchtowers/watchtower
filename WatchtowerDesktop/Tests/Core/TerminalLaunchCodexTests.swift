@@ -10,7 +10,7 @@ final class TerminalLaunchCodexTests: XCTestCase {
     /// Raw argv elements as `launch-args` prints them: TOML with quotes, a
     /// single-quoted binary inside a hook command, a space, a `$`.
     private let rawArgs = [
-        "--no-daemon", "-c", "check_for_update_on_startup=false",
+        "-c", "check_for_update_on_startup=false",
         "-c", #"mcp_servers.watchtower-workbench.args=["mcp","--workbench","7","--agent","codex"]"#,
         "-c", #"hooks.SessionStart=[{hooks=[{type="command",command="'/Users/example/Application Support/watchtower' "#
             + #"workbench brief --agent codex",timeout=10}]}]"#,
@@ -165,9 +165,9 @@ final class TerminalLaunchCodexTests: XCTestCase {
     }
 
     func testLaunchArgsDecode() throws {
-        let json = #"{"binary":"/opt/codex","path_prepend":"/opt","args":["--no-daemon","-c","a=b"]}"#
+        let json = #"{"binary":"/opt/codex","path_prepend":"/opt","args":["-c","a=b"]}"#
         XCTAssertEqual(try JSONDecoder().decode(CodexLaunchArgs.self, from: Data(json.utf8)),
-                       CodexLaunchArgs(binary: "/opt/codex", pathPrepend: "/opt", args: ["--no-daemon", "-c", "a=b"]))
+                       CodexLaunchArgs(binary: "/opt/codex", pathPrepend: "/opt", args: ["-c", "a=b"]))
         XCTAssertThrowsError(try JSONDecoder().decode(CodexLaunchArgs.self, from: Data(#"{"error":"codex_not_found"}"#.utf8)))
     }
 

@@ -35,7 +35,7 @@ green unchanged.
 | C8 | MCP via launch flags works (`-c mcp_servers.<name>.command/args`). By default **every MCP call asks for approval**. `mcp_servers.<name>.default_tools_approval_mode = "approve"` removes the prompt. | §4.2, D3 |
 | C9 | Tool names in hooks: MCP `mcp__<server, '-'→'_'>__<tool>` (`mcp__watchtower_workbench__ask_owner`); shell `Bash`; the ask-the-user tool `request_user_input` (Plan mode only). | §6.4, skill text |
 | C10 | Skills in `<folder>/.agents/skills/<name>/SKILL.md` load in untrusted folders too. | §4.1 |
-| C11 | No app-server daemon was started by the TUI or `exec`. `--no-daemon` exists and is accepted by `codex` and `codex resume`. SIGTERM to the process group ends the TUI (no `SessionEnd`). | §7 |
+| C11 | No app-server daemon was started by the TUI or `exec`. `--no-daemon` was accepted by `codex` and `codex resume` (removed in codex-cli 0.145, see §15). SIGTERM to the process group ends the TUI (no `SessionEnd`). | §7 |
 | C12 | The TUI enables bracketed paste and the kitty keyboard protocol. Typed text + CR submits. A bracketed paste (also multi-line) + pause + CR submits one prompt. A one-off notice (for example a model migration) swallows keystrokes, and while showing it the TUI rewrites `~/.codex/config.toml`. On the "Update available" notice, Enter means "Update now" and runs `npm install -g @openai/codex`; `-c check_for_update_on_startup=false` suppresses it. | §8 |
 | C13 | Rollouts at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`. New sessions are **paginated** (`ordinal` on lines; owner text in `event_msg` `item_completed` `item.type == "UserMessage"`, `item.content[].text`). Older sessions are **legacy** (`event_msg` `user_message.message`). `response_item` role `user` also carries injected context. Compression is a codex feature in development. | §9 |
 | C14 | The `codex` on PATH may be an nvm node shim (`#!/usr/bin/env node`). A zsh login shell does not read `.zshrc`, so nvm's bin is often missing from the PATH there. | §7 |
@@ -116,7 +116,7 @@ object (§4.5). `watchtower integrate claude-code` is unchanged. The `Setup` flo
 `watchtower workbench launch-args --agent codex --workbench N --json` prints:
 
 ```
-{ "binary": "<abs codex path>", "path_prepend": "<dir of binary>", "args": ["--no-daemon", "-c", "<k=v>", …] }
+{ "binary": "<abs codex path>", "path_prepend": "<dir of binary>", "args": ["-c", "<k=v>", …] }
 ```
 
 - `binary`: `codex_path` from config, else `internal/codex.FindBinary` (nvm-aware). Not found: exit code 3 and
@@ -124,7 +124,7 @@ object (§4.5). `watchtower integrate claude-code` is unchanged. The `Setup` flo
 - `path_prepend`: the binary's directory, so the node shim finds `node` (C14). Swift puts it in front of `PATH` in
   the launch command.
 - `args`, in a fixed order:
-  1. `--no-daemon`, then `-c check_for_update_on_startup=false` (§15).
+  1. `-c check_for_update_on_startup=false` (§15; `--no-daemon` dropped 2026-11-01).
   2. MCP: `mcp_servers.watchtower-workbench.command="<watchtower bin>"`,
      `mcp_servers.watchtower-workbench.args=["mcp","--workbench","N","--agent","codex"]`,
      `mcp_servers.watchtower-workbench.default_tools_approval_mode="approve"` (D3),
@@ -290,7 +290,7 @@ fixtures.
   `$CODEX_HOME/sessions/*/*/*/rollout-*-<id>.jsonl`) → `resumeAgent`. Otherwise `newAgent` after NULLing the id.
   Resume-failure tracking (`resumeClaude` today) is keyed by the mode, not the agent.
 - `CODEX_HOME` is honoured when the login environment sets it. Default `~/.codex`.
-- QuitCoordinator: unchanged. SIGTERM to the process group ends codex (C11). `--no-daemon` keeps a shared daemon out.
+- QuitCoordinator: unchanged. SIGTERM to the process group ends codex (C11). The TUI never starts a shared daemon (since 0.145 its app server is built in; a daemon starts only through `codex remote-control start`).
 - TCC: the same responsibility chain as `claude` (node shim → native binary, child of Watchtower.app). The manual
   check includes a `tccd` log pass.
 
@@ -422,3 +422,8 @@ What shipped differs from the text above in these points. The inline text is upd
   **Set up Codex**; the orange Repair state is only for a real failure (skill present but hooks untrusted, imported
   duplicates, or the skill copy an older shipped version) or a failed setup. A failed codex step never fails the Claude setup.
 
+- **C11/§4.2, `--no-daemon` dropped (2026-11-01).** codex-cli 0.145 removed the flag and refuses to start with it
+  ("unexpected argument '--no-daemon'"), so every new and resumed Codex session failed. `launch-args` no longer
+  passes it; the args start with `-c check_for_update_on_startup=false`. Safe: the TUI never started a shared daemon
+  (C11), and since 0.145 its app server is built in (`tui_app_server` removed); a daemon starts only through
+  `codex remote-control start`.
