@@ -48,7 +48,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - **Desktop screens** (spec §12.4, `docs/design/desktop-style-guide.md`, workbench rule for screen specs): each changed screen gets (a) its mockup states in `docs/design/mockups/go-hub/index.html` (Task 3), (b) a `DesignShotCatalog` entry per state — **empty, loading, error with Retry, busy, narrow width** — on fixture data (`acme`, `example.com`), (c) every UI string defined in its model (no literal in the view) and pinned by a model test, (d) colours only through `Tone`/semantic styles, `SettingsSection` + `.kitRow`, no row separators, (e) `make desktop-shots DESKTOP_SHOTS=<dir>` compared with the mockup before review, PNGs attached to the PR.
 - **Pinned copy** (spec text, verbatim): "Mobile is run by a newer Watchtower"; "Running sessions restart once with this update; their conversations continue" + **Continue**; "N sessions wait to resume" (`1 session waits to resume` for one); "[Watchtower] the session host is not running"; "No phones linked"; "This session can't take typed text right now".
 - **Swift** follows the "Swift / Desktop conventions" of `docs/review/review-rules.md` and the `add-desktop-feature` skill; every Swift task runs `make lint-swift` (lint-diff is Go-only).
-- Sidecar migrations continue from the newest file on origin/main: the directory ends at Phase 2's `00006_held_uploads.sql` (Phase 2 Task 10's vouch migration did not ship — blocked on relay ask #805), so Task 5 is `00007` and Task 20 is `00008`; a later vouch migration takes the next free number. Re-check when each task starts.
+- Sidecar migrations continue from the newest file on `feature/go-hub`: `00007` is Phase 2's `00007_relay_admission.sql` (Phase 2 Task 10, the vouch, shipped), so Task 5 is `00008` and Task 20 is `00009`. Re-check when each task starts.
 - Inner loop only per task (`go test ./internal/hub/<pkg>`, `make test-swift FILTER=…`, `make kit-test FILTER=…`, `make lint-diff`, `make lint-swift`); the full gate runs once, in Task 25.
 
 ## Review Focus
@@ -179,7 +179,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ### Task 5: Desktop inputs reach the hub — `desktop_view`, `recording_progress`, `desktop_watch`
 
 **Files:**
-- Create: `internal/hub/state/migrations/00007_desktop_recordings.sql`
+- Create: `internal/hub/state/migrations/00008_desktop_recordings.sql`
 - Modify: `internal/hub/control.go` (ops), `internal/hub/state/recordings.go`, `internal/hub/slices/sources/terminal_session.go` (hidden + displayOver), `internal/hub/slices/sources/recording_job.go` (phase, percent), `cmd/hub_recording.go` (`progress`)
 - Create: `internal/hub/desktopview.go`
 - Test: `internal/hub/desktopview_test.go`, `internal/hub/control_test.go`, `internal/hub/slices/sources/terminal_session_test.go`, `internal/hub/slices/sources/recording_job_test.go`, `internal/hub/state/columns_test.go`, `cmd/hub_recording_test.go`
@@ -190,16 +190,17 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   ```go
   package hub
   const OpDesktopView, OpRecordingProgress, OpDesktopWatch = "desktop_view", "recording_progress", "desktop_watch"
-  // ControlRequest gains: Hidden, DisplayOver []int64; Upload, Phase string; Percent *int
-  type DesktopView struct{ Hidden, DisplayOver map[int64]bool; At time.Time } // in memory only; empty once the Desktop heartbeat is stale (> 90 s)
+  // ControlRequest gains: Hidden []int64, DisplayOver []ShownOverWire{id, run, reported_at} (each ≤ 10 000, else too_many_ids); Upload, Phase string; Percent *int
+  // ControlAnswer gains: ViewNeeded (desktop_heartbeat), State/Reason snapshot (desktop_watch answer, its first line)
+  type DesktopView struct{ Hidden map[int64]bool; DisplayOver map[int64]sources.ShownOver; At time.Time } // in memory only; empty once the Desktop heartbeat is stale (> 90 s)
   func (h *hubRuntime) SetDesktopView(v DesktopView)
   // desktop_watch: the connection stays open and receives {"event":"status"|"recording_queued"|"pair"|"switched", …} lines
   package sources
-  // TerminalSessionOptions gains: View func() (hidden, displayOver map[int64]bool)
+  // TerminalSessionOptions (and WorkAlertConfig) gain: View func() (hidden map[int64]bool, displayOver map[int64]ShownOver{Run time.Time; ReportedAt string})
   package state
-  func (s *Store) RecordingProgress(uploadID, phase string, percent *int, now time.Time) error // phase transcribing|diarizing|summarizing; percent 0..100 only while transcribing
+  func (s *Store) RecordingProgress(uploadID, phase string, percent *int) error // phase transcribing|diarizing|summarizing; percent 0..100 only while transcribing
   ```
-  - `00007`: `ALTER TABLE recording_jobs ADD COLUMN phase TEXT CHECK (phase IN ('transcribing','diarizing','summarizing'))`, `percent INTEGER CHECK (percent BETWEEN 0 AND 100)`, — no file-name column (ask #843). Allowlist (Plan 1b Task 16): `phase: enum`, `percent: counter`.
+  - `00008`: `ALTER TABLE recording_jobs ADD COLUMN phase TEXT CHECK (phase IN ('transcribing','diarizing','summarizing'))`, `percent INTEGER CHECK (percent BETWEEN 0 AND 100)`, — no file-name column (ask #843). Allowlist (Plan 1b Task 16): `phase: enum`, `percent: counter`.
   - `recording_job` slice: `claimed` + `phase` → the Swift statuses `transcribing` (with `percent`), `diarizing`, `summarizing`, exactly as today's `RecordingJobSlice`; the phone sees no change from the Swift hub.
   - `terminal_session` (and the `workbench`/`session_timeline` sources that read its published set): a hidden id (PROJ-17 Undo batch) is not published; a `displayOver` id resolves with `displayOver: true` (#411) — the two "Known divergences" in the source's doc comment are removed.
   - CLI (pinned): `hub recording progress --upload <id> --phase <p> [--percent N] --json` → `{"upload_id","status","phase","percent"}`; Desktop uses the socket op only; the CLI verb exists for tests and for `hubWrite`'s lock-free path (no hub running: it writes the sidecar under the lock as the other `hub recording` verbs do).
@@ -374,7 +375,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Test: `internal/hub/adopt/{adopt_test.go,steps_test.go,recordings_test.go}`, `cmd/hub_adopt_test.go`, `internal/hub/slices/sources/recording_job_test.go`
 
 **Interfaces:**
-- Consumes: Plan 1a `state.Open`/`AcquireLock`, every sidecar migration present (`00001`–`00007` at the time of writing); Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
+- Consumes: Plan 1a `state.Open`/`AcquireLock`, every sidecar migration present (`00001`–`00009` at the time of writing); Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
 - Produces:
   ```go
   package adopt
@@ -416,13 +417,16 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   @MainActor @Observable final class HubCenter {
       private(set) var status: HubStatus?
       func start(); func stop()          // heartbeat every 30 s while Desktop runs (op desktop_heartbeat); watch stream with reconnect 1 s → 30 s
-      func publishView(hidden: Set<Int64>, displayOver: Set<Int64>) // coalesced 250 ms
+      func publishView(hidden: Set<Int64>, displayOver: [Int64: ShownOverCount]) // coalesced 250 ms
   }
   ```
+  - `publishView` sends `displayOver` as triples `{id, run, reported_at}` (the `ShownOverCount` run start — null when not live — and its `agent_background_at`; null when none): the hub shows a count over only while the row still holds that run and report (Task 5). Hidden stays a list of ids. Each list holds at most 10 000 entries (`too_many_ids`).
+  - Desktop sends the whole view unconditionally at `start()` (after its first heartbeat) and again whenever a `desktop_heartbeat` answer carries `view_needed: true` (the hub holds no current view: never sent, a hub restart, or dropped while the heartbeat was stale), besides every change.
+  - The `desktop_watch` answer's `state` / `reason` are the status snapshot: `HubCenter.status` is set from it when the stream (re)connects, then from the `status` events.
   No hub running → the client falls back to `watchtower hub status --json` for status and skips heartbeat/view (nothing to tell); never opens `hubstate.db`.
 - **Depends on:** Task 5
 
-- [ ] **Step 1: Failing tests:** `testHeartbeatEvery30Seconds` (fake clock + fake socket), `testWatchReconnectsWithBackoff`, `testUndoBatchReachesTheHub` (a pending delete → `desktop_view` with that id; Undo → without it), `testDisplayOverReachesTheHub`, `testNoHubFallsBackToCLIStatus`, `testDecodesPinnedStatusKeys`.
+- [ ] **Step 1: Failing tests:** `testHeartbeatEvery30Seconds` (fake clock + fake socket), `testWatchReconnectsWithBackoff`, `testUndoBatchReachesTheHub` (a pending delete → `desktop_view` with that id; Undo → without it), `testDisplayOverReachesTheHub` (the triple with the judged run and report stamp), `testViewResentOnViewNeeded`, `testStatusFromTheWatchAnswer`, `testNoHubFallsBackToCLIStatus`, `testDecodesPinnedStatusKeys`.
 - [ ] **Step 2:** `make test-swift FILTER='HubControlClientTests|HubCenterTests'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-swift`.
@@ -552,7 +556,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Modify: `internal/hub/identity/keyring.go` (multi-epoch retention: today's `window()` holds the current epoch and the previous one only), `internal/hub/state/keys.go` (`Epoch`, `InsertEpoch`, `RetireEpoch` gain `reason` and `retire_after`; per-device acked epoch), `internal/hub/switcher/entitlement.go` (new), `internal/hub/actions/control.go` (resend for an unknown epoch, second-copy delete), `internal/hub/transport/relay/transport.go` (`ENTITLEMENT_EXPIRED` read from the existing `transport.Control.Detail`)
-- Create: `internal/hub/state/migrations/00008_switch_epochs.sql`
+- Create: `internal/hub/state/migrations/00009_switch_epochs.sql`
 - Test: `internal/hub/switcher/sim_entitlement_test.go`, `internal/hub/identity/retention_test.go`
 
 **Interfaces:**
@@ -563,7 +567,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   func (k *Keyring) Retained() ([]uint32, error)              // every epoch whose relay-lane keys are still accepted
   func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) error // rule 14 with the 7-day cap
   ```
-  - `00008`: `ALTER TABLE hub_epochs ADD COLUMN reason TEXT CHECK (reason IN ('age','cap','unlink','manual','transport_switch'))`, `retire_after REAL` (timestamps and an enum only; `hub_epochs` today has `epoch, sealed_keys, created_at, first_seq, retired_at`, no reason).
+  - `00009`: `ALTER TABLE hub_epochs ADD COLUMN reason TEXT CHECK (reason IN ('age','cap','unlink','manual','transport_switch'))`, `retire_after REAL` (timestamps and an enum only; `hub_epochs` today has `epoch, sealed_keys, created_at, first_seq, retired_at`, no reason).
   - Rule 14: an action sealed in an epoch no longer held → `resend_from(seq)` once per record version. Rule 15: the hub deletes what it read and a second copy of a control id unread. Rule 16: `ENTITLEMENT_EXPIRED` with `detail` naming a phone → act as that phone's `transport_switch(cloudkit, reason=entitlement_expired)`; no other paying phone → move to CloudKit (rule 11); another paying phone → stay, apply none of that phone's relay actions, `hub_on_relay` over CloudKit; an echo refused on the relay (`ENTITLEMENT_INACTIVE`) is owed and written over CloudKit **before** `hub_on_relay`. Plan 1a's queued entitlement/quota controls (sim rule 7a drops) are revisited: `ENTITLEMENT_INACTIVE` on a hub write now triggers rule 16 for the phone of that mailbox.
 - **Depends on:** Task 18
 
@@ -593,7 +597,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   // Dir: on a desktop host returns DefaultDir (ErrDesktopHost removed)
   // Status gains: Adoption ("none"|"in_progress"|"failed"|"done"), Bridge ("running"|"restarting"|"unavailable"), Identity ("keychain"|"file")
   ```
-  `hub status --json` keys: Phase 2's set plus `"adoption","bridge","identity","switched_at","switched_by"` (additive). `hub phones --json` rows gain `"transport"` with the full value set `cloudkit|relay|pending` (`cloudkit`/`relay` = the phone's current one as the hub knows it; `pending` = a relay link not yet vouched, Phase 2 Task 10's planned value, so the two tasks share one key and one set) — the RC §10 transport indicator; the other §10 indicators are phase 4.
+  `hub status --json` keys: Phase 2's set plus `"adoption","bridge","identity","switched_at","switched_by"` (additive). `hub phones --json` rows gain `"transport"` with the full value set `cloudkit|relay|pending` (`cloudkit`/`relay` = the phone's current one as the hub knows it; `pending` = a relay link not yet vouched, already answered by Phase 2 Task 10 (shipped), so the two tasks share one key and one set) — the RC §10 transport indicator; the other §10 indicators are phase 4.
 - **Depends on:** Task 10, Task 15, Task 16, Task 18
 
 - [ ] **Step 1: Failing tests:** `TestDesktopHostOffUntilAdopted`, `TestResolveIgnoresALaterMobileHub` (Review Focus 2), `TestFreshDesktopHostStartsWhenEnabled` (no `MobileHub/`, `hub enable` → live, new `hub_id`, identity in the recorded store), `TestDaemonWaitsWhileAV1HostAnswers` (no hub, no `session-host` spawned; a v2 host appears → the hub starts within one cycle), `TestDesktopHostAnnouncesBothTransports`, `TestRecordingsDirIsAppSupport` (test seam: `config.AppSupportDir()` under `t.TempDir()`), `TestBridgeUnavailableSaysSoInStatus`, `TestHubStatusJSONKeys`, `TestHubPhonesJSONKeys` (with `transport`, each of `cloudkit|relay|pending`), `TestDesktopHeartbeatAcceptedOnALiveDesktopHost` (no `WATCHTOWER_HUB_DIR`; `hub recordings on` accepted after it), `TestPolicy03_OffStopsDesktopHostHubKeepsSetting` (desktop host variant of the Plan 1a guard, same meaning).
@@ -741,9 +745,9 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 7. **Keys on stdin.** `hub adopt --keys-stdin --json`, a separate call from `--settings-stdin`: Foundation's `Process` spawns with `POSIX_SPAWN_CLOEXEC_DEFAULT`, so an inherited fd 3 never reaches the child. Still an inherited pipe, never a file, argv or the control socket (Global Constraints, Tasks 16, 22, 25 M2).
 8. **Signals reused from Plan 1a.** `Sealer.Signal` and the publisher's `sig-` save/delete on CloudKit already exist; no `Signals` capability, no signal frames, no `SignalSource`. The bridge only keeps its query subscription on `sig-` records (Tasks 4, 10, 15).
-9. **Migration numbering.** The sidecar ends at `00006_held_uploads.sql` (Phase 2 Task 10's vouch did not ship): Task 5 is `00007`, Task 20 is `00008`; a later vouch migration takes the next free number.
+9. **Migration numbering.** The sidecar ends at Phase 2's `00007_relay_admission.sql` (Phase 2 Task 10, the vouch, shipped): Task 5 is `00008`, Task 20 is `00009`.
 10. **`CloudBridgeCore` library + own test target.** The bridge code is a library over `WatchtowerSync` only, the executable is `main.swift`, the tests are their own target; both bridge folders are excluded from the app and Desktop test targets. Frames are hand-coded (no `swift-protobuf` in `Package.resolved`) (Tasks 4, 10).
-11. **`transport` value set** in `hub phones --json`: `cloudkit|relay|pending` (`pending` = Phase 2 Task 10's not-yet-vouched relay link), one set for both tasks (Task 21).
+11. **`transport` value set** in `hub phones --json`: `cloudkit|relay|pending` (`pending` = a relay link not yet vouched, which Phase 2 Task 10 already answers in `hub phones`), one set for both tasks (Task 21).
 
 ## Known limits
 

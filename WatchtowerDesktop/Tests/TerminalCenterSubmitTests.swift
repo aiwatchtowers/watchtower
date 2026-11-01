@@ -8,6 +8,9 @@ import WatchtowerTestSupport
 /// Spec 2026-10-12 §8 (board #399): answers, comments and hand-offs typed
 /// into a Codex session by its `AgentInputProfile`; PROJ-12's gates hold for
 /// it unchanged. The Codex rows run on stubbed launch args (no real `codex`).
+/// Since Go hub phase 3 (Task 7) the session host types the lines (its
+/// `Deliver`, stood in for by `FakeHostDelivery`); Codex's bytes are pinned
+/// by the Go twins named below.
 @MainActor
 final class TerminalCenterSubmitTests: XCTestCase {
     private var pool: DatabasePool!
@@ -16,9 +19,8 @@ final class TerminalCenterSubmitTests: XCTestCase {
     private var folder: URL!
     private var processes: [FakeTerminalSession] = []
     private var center: TerminalCenter!
+    /// The host's pauses, as each line asked for them.
     private var slept: [Duration] = []
-    /// Runs inside each pause (the owner typing meanwhile).
-    private var onSleep: (() -> Void)?
 
     nonisolated private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
 
@@ -29,19 +31,19 @@ final class TerminalCenterSubmitTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         processes = []
         slept = []
-        onSleep = nil
         center = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = FakeTerminalSession(pid: 0)
+                process.host.pause = { [weak self] settle in
+                    self?.slept.append(settle ?? AgentInputProfile.codex.pasteSettle)
+                }
                 self?.processes.append(process)
                 return process
             },
+            // A v1-only host's pause is the app's own (`typeLocally`).
             signaller: ProcessGroupSignaller(
                 signal: { _, _ in }, isAlive: { _ in false },
-                sleep: { [weak self] step in
-                    self?.slept.append(step)
-                    self?.onSleep?()
-                }
+                sleep: { [weak self] step in self?.slept.append(step) }
             )
         )
         center.shell = { "/bin/zsh" }
@@ -85,10 +87,6 @@ final class TerminalCenterSubmitTests: XCTestCase {
         return try XCTUnwrap(vm.asks.openAsks[project]?.first { $0.id == id })
     }
 
-    private func paste(_ text: String) -> [UInt8] {
-        [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(text.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
-    }
-
     private var typed: [[UInt8]] { processes.flatMap(\.inputs) }
 
     // MARK: - The session's profile
@@ -116,12 +114,53 @@ final class TerminalCenterSubmitTests: XCTestCase {
 
     // MARK: - Delivery
 
+    // Codex's bytes — one bracketed paste, the profile's pause, then its CR
+    // as a write of its own; a multi-line hand-off as one prompt; Ctrl+J as
+    // a draft — are a v2 session host's, pinned by their Go twins
+    // (`internal/sessionhost/deliver_test.go::TestProj12_CodexSubmitIsBracketedPasteThenCR`,
+    // `TestProj12_CodexMultilineAnswerOnePrompt`,
+    // `internal/sessionhost/prompt_test.go::TestCodexDraftTrackingUsesCodexNewline`).
+    // The app's half: what a Codex line asks the host for. (A v1-only host: the app's own typing, below.)
+
+    /// A hand-off into Codex asks for the profile's own pause (none named)
+    /// and keeps its line breaks; an answer asks for its `submitSettle` and
+    /// drops them. The host types; the app writes nothing.
+    func testCodexLinesAskForTheProfilesPause() async throws {
+        let (_, s, _) = try await runningCodexSession()
+
+        let handOff = await center.deliver("Fix the flaky test", sessionID: s.id) { true }
+        let answer = await center.deliver("line one\nline two", sessionID: s.id, keepingLineBreaks: false,
+                                          delay: center.inputProfile(s.id).submitSettle) { true }
+
+        XCTAssertEqual(handOff, .submitted)
+        XCTAssertEqual(answer, .submitted)
+        XCTAssertEqual(processes[0].host.lines.map(\.settle), [nil, AgentInputProfile.codex.submitSettle])
+        XCTAssertEqual(processes[0].host.lines.map(\.keepLineBreaks), [true, false])
+        XCTAssertEqual(processes[0].appInputs, 0, "the host types, never the app")
+    }
+
+    // MARK: - A v1-only session host: the app types Codex's lines
+
+    // A host an update left running speaks v1: the app types the lines
+    // itself, by the session's profile, as before v2 (`typeLocally`).
+
+    /// A v1-only host's Codex session, `processes[0]`.
+    private func runningV1CodexSession() async throws -> (project: Int64, session: TerminalSession, ask: Int64) {
+        let seeded = try await runningCodexSession()
+        processes[0].hostDelivers = false
+        return seeded
+    }
+
+    private func paste(_ text: String) -> [UInt8] {
+        [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(text.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+    }
+
     /// A hand-off into Codex: one bracketed paste, the profile's pause, then
     /// its CR as a write of its own.
     func testCodexSubmitIsBracketedPasteThenCR() async throws {
-        let (_, s, _) = try await runningCodexSession()
+        let (_, s, _) = try await runningV1CodexSession()
 
-        let delivery = await center.submitPrompt("Fix the flaky test", sessionID: s.id) { true }
+        let delivery = await center.deliver("Fix the flaky test", sessionID: s.id) { true }
 
         XCTAssertEqual(delivery, .submitted)
         XCTAssertEqual(typed, [paste("Fix the flaky test"), AgentInputProfile.codex.submit])
@@ -131,16 +170,33 @@ final class TerminalCenterSubmitTests: XCTestCase {
     /// A multi-line hand-off keeps its line breaks inside the one paste and
     /// goes as one prompt (one CR); an answer's line breaks are dropped.
     func testCodexMultilineAnswerOnePrompt() async throws {
-        let (_, s, _) = try await runningCodexSession()
+        let (_, s, _) = try await runningV1CodexSession()
 
-        let handOff = await center.submitPrompt("first\nsecond\r\nthird", sessionID: s.id) { true }
-        let answer = await center.submitPrompt("line one\nline two", sessionID: s.id, keepingLineBreaks: false,
-                                               delay: center.inputProfile(s.id).submitSettle) { true }
+        let handOff = await center.deliver("first\nsecond\r\nthird", sessionID: s.id) { true }
+        let answer = await center.deliver("line one\nline two", sessionID: s.id, keepingLineBreaks: false,
+                                          delay: center.inputProfile(s.id).submitSettle) { true }
 
         XCTAssertEqual(handOff, .submitted)
         XCTAssertEqual(answer, .submitted)
         XCTAssertEqual(typed, [paste("first\nsecond\nthird"), [0x0D], paste("line oneline two"), [0x0D]])
         XCTAssertEqual(slept, [AgentInputProfile.codex.pasteSettle, AgentInputProfile.codex.submitSettle])
+    }
+
+    /// The owner's Ctrl+J line break in Codex's composer is a draft, so the
+    /// next line is only pasted; their plain Return submits it and the next
+    /// line gets its CR again.
+    func testCodexDraftTrackingUsesCodexNewline() async throws {
+        let (_, s, _) = try await runningV1CodexSession()
+        processes[0].onOwnerInput?(Array("half".utf8) + [0x0A])
+
+        let overDraft = await center.deliver("x", sessionID: s.id) { true }
+        XCTAssertEqual(overDraft, .pasted)
+        XCTAssertTrue(slept.isEmpty, "no Return to wait for")
+
+        processes[0].onOwnerInput?([0x0D])
+        let clean = await center.deliver("y", sessionID: s.id) { true }
+        XCTAssertEqual(clean, .submitted)
+        XCTAssertEqual(typed, [paste("x"), paste("y"), [0x0D]])
     }
 
     // MARK: - PROJ-12 on Codex
@@ -159,6 +215,7 @@ final class TerminalCenterSubmitTests: XCTestCase {
 
         XCTAssertEqual(delivery, .held)
         XCTAssertTrue(typed.isEmpty, "nothing reaches the approval prompt")
+        XCTAssertTrue(processes[0].host.lines.isEmpty, "nothing was asked of the host")
         let held = try XCTUnwrap(vm.asks.answerNotices[askID])
         XCTAssertEqual(vm.asks.noticeText(held, ask: ask),
                        "Answer saved — it goes to Codex once the permission prompt is resolved")
@@ -172,7 +229,8 @@ final class TerminalCenterSubmitTests: XCTestCase {
     }
 
     /// PROJ-12: until Codex's hooks report this run nothing vouches that no
-    /// approval prompt is up, so the line is only pasted.
+    /// approval prompt is up, so the line is only pasted: the host is asked
+    /// for no Return.
     func testProj12_CodexAnswerNotSubmittedBeforeHooksReported() async throws {
         let (p, s, askID) = try await runningCodexSession()
         let vm = makeVM()
@@ -182,6 +240,7 @@ final class TerminalCenterSubmitTests: XCTestCase {
         let delivery = await vm.asks.answer(ask)
 
         XCTAssertEqual(delivery, .typed)
+        XCTAssertEqual(processes[0].host.lines.map(\.submitIf), [false])
         XCTAssertEqual(typed.count, 1)
         XCTAssertFalse(typed[0].contains(0x0D))
         XCTAssertEqual(center.answerHints[s.id], .typed)
@@ -189,26 +248,11 @@ final class TerminalCenterSubmitTests: XCTestCase {
 
     // MARK: - Owner-draft tracking
 
-    /// The owner's Ctrl+J line break in Codex's composer is a draft, so the
-    /// next line is only pasted; their plain Return submits it and the next
-    /// line gets its CR again.
-    func testCodexDraftTrackingUsesCodexNewline() async throws {
-        let (_, s, _) = try await runningCodexSession()
-        processes[0].onOwnerInput?(Array("half".utf8) + [0x0A])
-
-        let overDraft = await center.submitPrompt("x", sessionID: s.id) { true }
-        XCTAssertEqual(overDraft, .pasted)
-        XCTAssertTrue(slept.isEmpty, "no Return to wait for")
-
-        processes[0].onOwnerInput?([0x0D])
-        let clean = await center.submitPrompt("y", sessionID: s.id) { true }
-        XCTAssertEqual(clean, .submitted)
-        XCTAssertEqual(typed, [paste("x"), paste("y"), [0x0D]])
-    }
-
     /// The keys the capture saw, read under each profile: Codex's newline
     /// and the line breaks every agent shares are drafts; only a plain CR
-    /// submits. `\` then Return stays a draft in Codex too (fail safe).
+    /// submits. `\` then Return stays a draft in Codex too (fail safe). The
+    /// app's own pre-checks (PROJ-16's hold reason, the chat-question
+    /// escalation) read the owner's drafts this way; the host keeps its own.
     func testIsSubmitPerProfile() {
         let drafts: [(String, [UInt8])] = [
             ("Ctrl+J", Array("a".utf8) + [0x0A]),
@@ -227,6 +271,17 @@ final class TerminalCenterSubmitTests: XCTestCase {
             XCTAssertTrue(TerminalCenter.isSubmit([0x0D], backslashBefore: false, profile: profile))
             XCTAssertFalse(TerminalCenter.isSubmit([0x0D], backslashBefore: true, profile: profile), "after a `\\` typed earlier")
         }
+    }
+
+    /// The owner's Ctrl+J in Codex's composer is a draft for the app's
+    /// pre-checks; their plain Return empties it.
+    func testCodexOwnerDraftUsesCodexNewline() async throws {
+        let (_, s, _) = try await runningCodexSession()
+        processes[0].onOwnerInput?(Array("half".utf8) + [0x0A])
+        XCTAssertTrue(center.promptHoldsText(s.id))
+
+        processes[0].onOwnerInput?([0x0D])
+        XCTAssertFalse(center.promptHoldsText(s.id))
     }
 
     // MARK: - Strings

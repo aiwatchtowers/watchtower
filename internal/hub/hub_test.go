@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -871,10 +872,15 @@ func TestFILES01_HubLogsNoNamesCodesOrKeys(t *testing.T) {
 	sink := logcanary.Capture(t)
 	e := runEndToEnd(t, logcanary.Text("hub.name"), nil)
 	sink.AssertClean(t)
-	for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "code": e.code, "phone name": "Test Phone"} {
+	for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "phone name": "Test Phone"} {
 		if strings.Contains(sink.String(), v) {
 			t.Errorf("the %s reached the log", what)
 		}
+	}
+	// The four-digit code is matched as a whole token only: as a substring it
+	// also turns up by chance inside a logged UUID's hex run.
+	if regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(e.code) + `($|[^0-9A-Za-z])`).MatchString(sink.String()) {
+		t.Error("the code reached the log")
 	}
 }
 

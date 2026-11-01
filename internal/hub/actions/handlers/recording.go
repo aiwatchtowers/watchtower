@@ -133,6 +133,9 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 		log.Print("hub recording: job not queued")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
 	}
+	if h.d.RecordingQueued != nil {
+		h.d.RecordingQueued(in.UploadID)
+	}
 	return RecordingOutcome{Status: wire.StatusReceived}
 }
 

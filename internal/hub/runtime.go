@@ -418,6 +418,9 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 
 // publishSoon marks kinds dirty on the publisher (none before it is built).
 func (h *hubRuntime) publishSoon(kinds ...slices.Kind) {
+	if h.sup != nil && h.sup.o.published != nil {
+		h.sup.o.published(kinds)
+	}
 	if h.pub != nil {
 		h.pub.PublishSoon(kinds...)
 	}

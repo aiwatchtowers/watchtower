@@ -15,12 +15,40 @@ protocol TerminalSessionProcess: AnyObject {
     func start(_ launch: TerminalLaunch)
     /// Drops the session's view from any host once the process is gone.
     func detach()
-    /// Writes bytes to the session (the owner's "Send N comments to
-    /// Claude", as a bracketed paste). Main thread only.
+    /// Writes bytes to the session through the app's input path (the
+    /// phone's one Esc). Never a line for the agent: lines go through
+    /// `deliver`. Main thread only.
     func sendInput(_ bytes: [UInt8])
     /// Whether the program in the terminal enabled bracketed paste (DECSET
-    /// 2004), so a paste arrives as text rather than as keystrokes.
+    /// 2004), so a paste arrives as text rather than as keystrokes. Read
+    /// only when the app types a line itself (a v1-only host).
     var bracketedPasteMode: Bool { get }
+    /// The session host types the app's lines (`deliver`, protocol v2).
+    /// False for a run in a v1-only host — one an app update left running —
+    /// whose lines the app types itself (`sendInput`), as before v2.
+    var hostDelivers: Bool { get }
+    /// The session host types `line` into the current run (PROJ-12; Go
+    /// `sessionhost.Deliver`): one bracketed paste, then — only after the
+    /// pause and `check`'s fresh answer — one Return of its own. The host
+    /// owns the prompt state, the pause and the run check; the app never
+    /// writes the line to the PTY itself. A process the host does not run
+    /// delivers nothing (`.noSession`).
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome
+    /// The host's delivery events for the current run (`pasted`,
+    /// `left_typed`, `submitted`): they drive the pane's hints. Main thread.
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)? { get set }
+    /// The current run's exit followed the host's Stop — the owner stopped
+    /// it — so no PROJ-18 cleanup follows it.
+    var exitRequested: Bool { get }
+    /// Asks the host to stop the current run (its Stop: hang-up, then kill
+    /// after its grace). False when the host cannot: the caller signals the
+    /// process group itself.
+    func requestStop() async -> Bool
+    /// After `requestStop`: waits for the run's exit, at most `timeout`;
+    /// true when it ended.
+    func waitForExit(timeout: Duration) async -> Bool
+    /// Tells the host whether a permission dialog is up in the run.
+    @discardableResult func sendPromptHint(dialog: Bool) -> Bool
     /// The owner's own input reached the session (a keystroke, a paste),
     /// with its bytes — never `sendInput` or the terminal's replies (focus
     /// and mouse reports). Main thread.
@@ -48,14 +76,45 @@ protocol TerminalSessionProcess: AnyObject {
 extension TerminalSessionProcess {
     var isHosted: Bool { false }
     var neverStarted: Bool { false }
+    var exitRequested: Bool { false }
+    /// A test fake stands in for a v2 host unless it says otherwise.
+    var hostDelivers: Bool { true }
 
     var onOwnerFocus: (() -> Void)? {
         get { nil }
         set {} // swiftlint:disable:this unused_setter_value
     }
 
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)? {
+        get { nil }
+        set {} // swiftlint:disable:this unused_setter_value
+    }
+
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
+        .noSession
+    }
+
+    func requestStop() async -> Bool { false }
+    func waitForExit(timeout: Duration) async -> Bool { true }
+    func sendPromptHint(dialog: Bool) -> Bool { false }
+
     func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {}
+}
+
+/// One line for the session host to type (`TerminalSessionProcess.deliver`),
+/// without the host's row, run and launch, which the process adds.
+struct SessionDeliverLine: Equatable {
+    let text: String
+    var keepLineBreaks = false
+    var keepFormat = false
+    /// The pause between paste and Return; nil = the agent profile's
+    /// (`AgentInputProfile.pasteSettle`).
+    var settle: Duration?
+    /// The caller's pre-check: false only pastes.
+    let submitIf: Bool
+    /// Hold the line, nothing written, while the prompt holds text.
+    var holdIfPromptText = false
 }
 
 /// Process-group signalling seam, so tests never signal a real process.
@@ -86,6 +145,10 @@ final class TerminalCenter {
     }
 
     static let killGrace: Duration = .seconds(3)
+    /// How long a close waits for a hosted run's exit after the host's
+    /// Stop: the host's own grace (Go `stopGrace`, 3 s) before its SIGKILL,
+    /// plus room for the kill and the Exit frame. Past it the app kills.
+    static let hostStopWait: Duration = .seconds(5)
     static let pollStep: Duration = .milliseconds(100)
 
     /// Keyed by `terminal_sessions.id`.
@@ -105,29 +168,33 @@ final class TerminalCenter {
     /// answers the prompt; input into a permission dialog changes none),
     /// Dismiss, the next delivery or the process's exit.
     private(set) var answerHints: [Int64: AnswerHint] = [:]
-    /// Sessions whose Claude Code prompt holds text not submitted (board
-    /// #379): the owner typed since their last submitting Return, or
-    /// `submitPrompt` left a line pasted without its Return. A Return now
-    /// would submit that text with ours, so `submitPrompt` only pastes.
-    /// Input while `inputAnswersDialog` holds goes to Claude Code's
+    /// Sessions whose agent prompt holds text not submitted, as the app
+    /// sees it: the owner typed since their last submitting Return, or the
+    /// host left a line typed (`left_typed`). Only the app's own pre-checks
+    /// read it — the phone's hold reason (PROJ-16) and the chat-question
+    /// escalation; the delivery itself is the session host's, which keeps
+    /// its own prompt state (PROJ-12, `internal/sessionhost/prompt.go`).
+    /// Input while `inputAnswersDialog` holds goes to the agent's
     /// permission dialog, not to its prompt, and changes nothing.
     @ObservationIgnored private(set) var promptDrafts: Set<Int64> = []
-    /// Sessions whose prompt holds a line `submitPrompt` left without its
-    /// Return next to other text not submitted — an ask's answer left
-    /// typed, the owner's draft, another hand-off, there before the paste
-    /// or added during its pause (board #380). The pane's "press Return"
-    /// bar says the Return sends them together. Cleared with `promptDrafts`.
+    /// Sessions whose prompt holds a line the host left without its Return
+    /// next to other text not submitted (its `left_typed` event with
+    /// `beside_text`, board #380). The pane's "press Return" bar says the
+    /// Return sends them together. Cleared with `promptDrafts`.
     private(set) var sharedPrompts: Set<Int64> = []
-    /// Process runs (`runs`) where a `submitPrompt` pasted its line and
-    /// waits out the pause before its Return (board #380): that line is in
-    /// the prompt not submitted yet, so another delivery meanwhile — a
-    /// hand-off during an answer's pause, or the reverse — only pastes, as
-    /// over a draft. Keyed by run, so a relaunch during the pause starts
-    /// with an empty prompt (board #387).
+    /// Sessions a delivery is going to right now (paste, pause, Return):
+    /// the prompt holds that line until it ends.
+    @ObservationIgnored private var delivering: [Int64: Int] = [:]
+    /// The dialog hint each session's host last got (`syncPromptHints`).
+    @ObservationIgnored private var sentPromptHints: [Int64: Bool] = [:]
+    /// v1-only host (`typeLocally`): process runs (`runs`) where a line was
+    /// pasted and waits out the pause before the app's own Return (board
+    /// #380): another delivery meanwhile only pastes, as over a draft.
+    /// Keyed by run, so a relaunch during the pause starts with an empty
+    /// prompt (board #387).
     @ObservationIgnored private var pendingReturns: Set<Int> = []
     /// The `pendingReturns` runs where the owner's own submitting Return
-    /// came during the pause (board #388): it sent the line, so ours would
-    /// only reach an empty prompt.
+    /// came during the pause (board #388): it sent the line.
     @ObservationIgnored private var ownerReturnsInPause: Set<Int> = []
     /// Sessions whose owner's last printable prompt input was `\`, with
     /// only escape sequences or paste brackets since: a Return there inserts
@@ -259,7 +326,11 @@ final class TerminalCenter {
     }
 
     private func makeHosted(_ client: SessionHostClient) -> HostedTerminalSession {
-        HostedTerminalSession(client: client) { [weak self] in self?.sessionHostScope ?? "" }
+        HostedTerminalSession(
+            client: client,
+            scope: { [weak self] in self?.sessionHostScope ?? "" },
+            agent: { [weak self] row in self?.rows[row]?.kind.agent?.rawValue ?? "" }
+        )
     }
 
     /// Connects to the session host once per app run: a second call (the
@@ -419,9 +490,18 @@ final class TerminalCenter {
         keyboardFocusRequest.flatMap { $0.sessionID == sessionID ? $0.serial : nil }
     }
 
+    // MARK: A v1-only session host: the app types the line itself
+
+    // A host older than v2 has no `Deliver`. Sessions outlive an app update,
+    // so the host the update leaves running may be v1 until its sessions end
+    // (Go hub phase 3 Task 19 restarts it once). Its lines are typed here,
+    // exactly as before v2: the same PROJ-12 algorithm, guarded by the Swift
+    // tests that run on a v1 fake (`FakeTerminalSession.hostDelivers =
+    // false`); the v2 host's twin is `internal/sessionhost/deliver.go`.
+
     enum PromptDelivery: Equatable {
-        /// Pasted into Claude Code's input, no Return (`submitPrompt`
-        /// decides whether one follows).
+        /// Pasted into the agent's input, no Return (`typeLocally` decides
+        /// whether one follows).
         case sent
         /// Bracketed paste was off: the line is on the clipboard instead.
         case copied
@@ -429,19 +509,13 @@ final class TerminalCenter {
         case noSession
     }
 
-    /// Writes the owner's clipboard (the `.copied` delivery). A seam for tests.
-    @ObservationIgnored var copyToClipboard: (String) -> Void = { text in
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    /// The paste step of `submitPrompt`: one prompt text into a running
-    /// Claude Code session, never followed by Enter and never as
-    /// keystrokes — a bracketed paste when the session enabled that mode,
-    /// otherwise the clipboard (the owner pastes with ⌘V). Typed digits or an Enter could answer a pending Claude Code
-    /// permission prompt the owner has not seen. Never starts a session.
-    /// `keepingLineBreaks` keeps a multi-line text (a code question's
-    /// hand-off) as several lines inside the one paste.
+    /// The paste step of `typeLocally`: one prompt text into a running
+    /// session, never followed by Enter and never as keystrokes — a
+    /// bracketed paste when the session enabled that mode, otherwise the
+    /// clipboard (the owner pastes with ⌘V). Typed digits or an Enter could
+    /// answer a pending permission prompt the owner has not seen. Never
+    /// starts a session. `keepingLineBreaks` keeps a multi-line text (a code
+    /// question's hand-off) as several lines inside the one paste.
     func sendPrompt(
         _ line: String, sessionID: Int64, keepingLineBreaks: Bool = false, keepingFormatCharacters: Bool = false
     ) -> PromptDelivery {
@@ -463,103 +537,24 @@ final class TerminalCenter {
         }
     }
 
-    /// One Esc (`0x1B`) into a running session, through the app's input
-    /// path (never counted as the owner's): the phone's Interrupt (#517).
-    /// False without a running process; the caller checks the agent works.
-    func sendInterrupt(sessionID: Int64) -> Bool {
-        guard states[sessionID] == .running, let process = processes[sessionID] else { return false }
-        process.sendInput([0x1B])
-        return true
-    }
-
-    /// The pause between a hand-off's paste and its Return in a Claude Code
-    /// session (`AgentInputProfile.pasteSettle`).
-    nonisolated static let submitDelay: Duration = AgentInputProfile.claude.pasteSettle
-    /// The same pause for an ask's answer (`AgentInputProfile.submitSettle`).
-    nonisolated static let answerSubmitDelay: Duration = AgentInputProfile.claude.submitSettle
-
-    /// The agent a session runs, from its row; nil for a shell or a session
-    /// this center never started.
-    func agent(of sessionID: Int64) -> AgentKind? {
-        rows[sessionID]?.kind.agent
-    }
-
-    /// Whether the agent has a transcript for the row's stored session id:
-    /// Claude Code's under `~/.claude`, Codex's rollout. No id, no transcript.
-    /// A Codex lookup that failed reads as none here: a relaunch from the
-    /// view model decides with `codexResumes` instead and passes the answer.
-    func hasTranscript(_ session: TerminalSession) -> Bool {
-        guard let id = session.claudeSessionID else { return false }
-        switch session.kind {
-        case .claude: return transcriptExists(id)
-        case .codex: return (try? codexRolloutExists(id, session.transcriptPath, CodexRollout.home())) ?? false
-        case .shell: return false
-        }
-    }
-
-    /// Whether relaunching the Codex row (not fresh) resumes its stored id:
-    /// a valid id whose rollout exists — at its stored path, or under
-    /// `codexHome` (the login shell's, resolved by the caller; nil checks the
-    /// stored path alone). Throws when Codex's sessions folder could not be
-    /// listed, so the caller does not drop the id on it.
-    func codexResumes(_ session: TerminalSession, codexHome: URL?) throws -> Bool {
-        guard session.kind == .codex, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
-            return false
-        }
-        return try codexRolloutExists(id, session.transcriptPath, codexHome)
-    }
-
-    /// How lines are typed into the session (spec 2026-10-12 §8): its
-    /// agent's profile; Claude Code's when it runs none.
-    func inputProfile(_ sessionID: Int64) -> AgentInputProfile {
-        agent(of: sessionID).map(AgentInputProfile.for) ?? .claude
-    }
-
-    /// How a hand-off reached the session.
-    enum HandoffDelivery: Equatable {
-        /// Pasted, then Return — ours, or the owner's own during the pause.
-        case submitted
-        /// Pasted; the owner presses Return (`pasteHints`).
-        case pasted
-        /// Bracketed paste was off: on the clipboard (`clipboardHints`).
-        case copied
-        case noSession
-    }
-
-    /// "Hand to Claude Code" (spec 2026-10-02 §9.5) and an ask's answer line
-    /// (PROJ-12, board #379): `text` pasted (`sendPrompt`; a hand-off keeps
-    /// its line breaks, an answer line passes `keepingLineBreaks: false`).
-    /// A Return follows only while `canSubmit` holds and the session's
-    /// prompt held no text before the paste (`promptDrafts`: the owner's
-    /// half-typed text, or an earlier line left without its Return or still
-    /// in its pause, `pendingReturns`) — both
-    /// checked before the pause and again after it, the caller re-reading
-    /// the session's agent state (ruling R52: a hand-off only into a session
-    /// idle at its prompt; an answer only into a session whose hooks
-    /// reported this run and show no permission prompt; a Return
-    /// could answer a prompt that appeared meanwhile) — and only into the
-    /// same process run (`runs`), as a write of its own (the agent's
-    /// `AgentInputProfile.submit`) after `delay` (nil: the profile's
-    /// `pasteSettle`): a CR read
-    /// in one chunk with the paste could be taken as part of it (a line
-    /// break, not Enter). `refresh` runs after the pause, before the second
-    /// check (the caller re-reads the agent state, which its poll may hold
-    /// up to 1 s stale) and returns whether that read succeeded: after a
-    /// failed one the state is not known, so no Return. An owner's
-    /// submitting Return during the pause has sent the line — unless that
-    /// read failed or shows a permission dialog (`inputAnswersDialog`, asked
-    /// again after it): none follows, and it counts as submitted.
-    /// Otherwise the paste
-    /// waits for the owner's own Return, and the session holds a draft until
-    /// then; a line sharing the prompt with other text says so
-    /// (`sharedPrompts`).
-    func submitPrompt(
+    /// `deliver` into a run whose host is v1-only: `text` pasted
+    /// (`sendPrompt`), then a Return only while `canSubmit` holds and the
+    /// prompt held no text before the paste (`promptDrafts`, or a line in
+    /// its pause, `pendingReturns`) — both checked before the pause and
+    /// again after it, after `refresh` — and only into the same process run
+    /// (`runs`), as a write of its own after `delay` (nil: the profile's
+    /// `pasteSettle`). An owner's submitting Return during the pause sent
+    /// the line, unless the read after it failed or shows a dialog
+    /// (`inputAnswersDialog`). Otherwise the paste waits for the owner's own
+    /// Return, and the session holds a draft until then; a line sharing the
+    /// prompt with other text says so (`sharedPrompts`).
+    private func typeLocally(
         _ text: String,
         sessionID: Int64,
-        keepingLineBreaks: Bool = true,
-        keepingFormatCharacters: Bool = false,
-        delay: Duration? = nil,
-        refresh: () async -> Bool = { true },
+        keepingLineBreaks: Bool,
+        keepingFormatCharacters: Bool,
+        delay: Duration?,
+        refresh: () async -> Bool,
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
         // A running session always has its run: the line never goes
@@ -599,16 +594,6 @@ final class TerminalCenter {
         return .pasted
     }
 
-    /// Whether the session's prompt holds text not submitted right now: the
-    /// owner's draft, a line left without its Return, or a line in its pause
-    /// before its Return — what `submitPrompt` only pastes over. The phone's
-    /// lines are held instead of pasted then (PROJ-16).
-    func promptHoldsText(_ sessionID: Int64) -> Bool {
-        if promptDrafts.contains(sessionID) { return true }
-        guard let run = runs[sessionID] else { return false }
-        return pendingReturns.contains(run)
-    }
-
     /// Why the prompt held text before the paste, for the log: a bar still
     /// asking for a Return means a line of ours is what it holds.
     private func heldBackBeforePause(_ sessionID: Int64, run: Int) -> String {
@@ -617,9 +602,8 @@ final class TerminalCenter {
         return lineLeftTyped ? "an earlier line left typed" : "the owner's draft"
     }
 
-    /// `submitPrompt`'s pause, the read after it and the Return: the
-    /// delivery when the line went (or its run did), nil when it stays
-    /// typed.
+    /// `typeLocally`'s pause, the read after it and the Return: the delivery
+    /// when the line went (or its run did), nil when it stays typed.
     private func returnAfterPause(
         _ process: any TerminalSessionProcess,
         sessionID: Int64,
@@ -678,8 +662,218 @@ final class TerminalCenter {
         guard !promptDrafts.contains(sessionID) else { return .withheld("text reached the prompt during the pause") }
         return .pressReturn
     }
+    /// Writes the owner's clipboard (the `.copied` delivery). A seam for tests.
+    @ObservationIgnored var copyToClipboard: (String) -> Void = { text in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 
-    /// Why `submitPrompt` sent no Return of its own (board #396); the
+    /// One Esc (`0x1B`) into a running session, through the app's input
+    /// path (never counted as the owner's): the phone's Interrupt (#517).
+    /// False without a running process; the caller checks the agent works.
+    func sendInterrupt(sessionID: Int64) -> Bool {
+        guard states[sessionID] == .running, let process = processes[sessionID] else { return false }
+        process.sendInput([0x1B])
+        return true
+    }
+
+    /// The pause between a hand-off's paste and its Return in a Claude Code
+    /// session (`AgentInputProfile.pasteSettle`).
+    nonisolated static let submitDelay: Duration = AgentInputProfile.claude.pasteSettle
+    /// The same pause for an ask's answer (`AgentInputProfile.submitSettle`).
+    nonisolated static let answerSubmitDelay: Duration = AgentInputProfile.claude.submitSettle
+
+    /// The agent a session runs, from its row; nil for a shell or a session
+    /// this center never started.
+    func agent(of sessionID: Int64) -> AgentKind? {
+        rows[sessionID]?.kind.agent
+    }
+
+    /// Whether the agent has a transcript for the row's stored session id:
+    /// Claude Code's under `~/.claude`, Codex's rollout. No id, no transcript.
+    /// A Codex lookup that failed reads as none here: a relaunch from the
+    /// view model decides with `codexResumes` instead and passes the answer.
+    func hasTranscript(_ session: TerminalSession) -> Bool {
+        guard let id = session.claudeSessionID else { return false }
+        switch session.kind {
+        case .claude: return transcriptExists(id)
+        case .codex: return (try? codexRolloutExists(id, session.transcriptPath, CodexRollout.home())) ?? false
+        case .shell: return false
+        }
+    }
+
+    /// Whether relaunching the Codex row (not fresh) resumes its stored id:
+    /// a valid id whose rollout exists — at its stored path, or under
+    /// `codexHome` (the login shell's, resolved by the caller; nil checks the
+    /// stored path alone). Throws when Codex's sessions folder could not be
+    /// listed, so the caller does not drop the id on it.
+    func codexResumes(_ session: TerminalSession, codexHome: URL?) throws -> Bool {
+        guard session.kind == .codex, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
+            return false
+        }
+        return try codexRolloutExists(id, session.transcriptPath, codexHome)
+    }
+
+    /// How lines are typed into the session (spec 2026-10-12 §8): its
+    /// agent's profile; Claude Code's when it runs none.
+    func inputProfile(_ sessionID: Int64) -> AgentInputProfile {
+        agent(of: sessionID).map(AgentInputProfile.for) ?? .claude
+    }
+
+    /// How a line reached the session.
+    enum HandoffDelivery: Equatable {
+        /// Pasted, then Return — the host's, or the owner's own during the
+        /// pause.
+        case submitted
+        /// Pasted; the owner presses Return (`pasteHints`).
+        case pasted
+        /// Bracketed paste was off: on the clipboard (`clipboardHints`).
+        case copied
+        /// `holdIfPromptText` and the prompt held text: nothing written.
+        case held
+        /// The host took the line but its connection ended (dropped, or no
+        /// answer in time) before it said what it did: the line may be in
+        /// the prompt, submitted or not. The pane asks for Return.
+        case mayBeTyped
+        case noSession
+    }
+
+    /// "Hand to Claude Code" (spec 2026-10-02 §9.5) and every line the app
+    /// types into a session (PROJ-12, board #379) — through the session
+    /// host's `Deliver` (Go hub phase 3, spec §8 p. 4b): the host pastes
+    /// `text` as one bracketed paste (a hand-off keeps its line breaks, an
+    /// answer line passes `keepingLineBreaks: false`) and writes a Return of
+    /// its own only when `canSubmit` held before the paste and, after the
+    /// pause (`delay`, nil = the agent profile's `pasteSettle`), its
+    /// re-check finds `refresh` succeeded (the caller re-reads the agent
+    /// state, its poll may be up to 1 s stale), `canSubmit` still holds and
+    /// no permission dialog is up (`inputAnswersDialog`) — and only into the
+    /// same process run and a prompt that held nothing before and after the
+    /// pause, which the host keeps (`internal/sessionhost/deliver.go`). An
+    /// owner's submitting Return in the pause sent the line unless that
+    /// re-check failed or shows a dialog. Without bracketed paste the line
+    /// goes to the clipboard, nothing typed. The app never writes the line
+    /// to the PTY itself; the pane's hints follow the host's delivery
+    /// events (`deliveryEvent`). A second delivery while one is in its
+    /// pause is only pasted, beside it (the host's pending Return).
+    func deliver(
+        _ text: String,
+        sessionID: Int64,
+        keepingLineBreaks: Bool = true,
+        keepingFormatCharacters: Bool = false,
+        delay: Duration? = nil,
+        holdIfPromptText: Bool = false,
+        refresh: @escaping @MainActor () async -> Bool = { true },
+        submitIf canSubmit: @escaping @MainActor () -> Bool
+    ) async -> HandoffDelivery {
+        guard states[sessionID] == .running, let process = processes[sessionID] else { return .noSession }
+        guard process.hostDelivers else {
+            // A v1-only host: typed here, as before v2.
+            return await typeLocally(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks,
+                                     keepingFormatCharacters: keepingFormatCharacters, delay: delay,
+                                     refresh: refresh, submitIf: canSubmit)
+        }
+        delivering[sessionID, default: 0] += 1
+        defer {
+            delivering[sessionID, default: 1] -= 1
+            if delivering[sessionID] == 0 { delivering[sessionID] = nil }
+        }
+        // The next delivery replaces the bars of the last one.
+        clipboardHints.remove(sessionID)
+        dropPasteHint(sessionID)
+        answerHints[sessionID] = nil
+        let submitIf = canSubmit()
+        if !submitIf { logWithheld(sessionID, "the session's state, before the paste") }
+        let line = SessionDeliverLine(
+            text: text, keepLineBreaks: keepingLineBreaks, keepFormat: keepingFormatCharacters,
+            settle: delay, submitIf: submitIf, holdIfPromptText: holdIfPromptText
+        )
+        let outcome = await process.deliver(line) { [weak self] in
+            let fresh = await refresh()
+            let reply = DeliverCheckReply(
+                fresh: fresh, canSubmit: canSubmit(), answersDialog: self?.inputAnswersDialog(sessionID) ?? true
+            )
+            if !reply.fresh { self?.logWithheld(sessionID, "the state read after the pause failed") }
+            return reply
+        }
+        switch outcome {
+        case .submitted:
+            return .submitted
+        case .typed:
+            // The line sits in the prompt unsubmitted: the app's own
+            // pre-checks see it (the host's `left_typed` event says so too).
+            if processes[sessionID] === process { promptDrafts.insert(sessionID) }
+            return .pasted
+        case let .held(reason):
+            logWithheld(sessionID, "held by the session host (\(reason))")
+            return .held
+        case .noPasteMode:
+            if case let .clipboard(copy) = WorkbenchCommentPrompt.terminalPayload(
+                text, bracketedPaste: false, keepingLineBreaks: keepingLineBreaks,
+                keepingFormatCharacters: keepingFormatCharacters
+            ) {
+                copyToClipboard(copy)
+            }
+            dropPasteHint(sessionID)
+            clipboardHints.insert(sessionID)
+            return .copied
+        case .interrupted:
+            // The host had the line; it may sit in the prompt, Return or
+            // not. Never "no session": the owner checks and presses Return.
+            logWithheld(sessionID, "the delivery's connection ended before the host answered")
+            if processes[sessionID] === process {
+                promptDrafts.insert(sessionID)
+                pasteHints.insert(sessionID)
+            }
+            return .mayBeTyped
+        case .noSession:
+            return .noSession
+        }
+    }
+
+    /// A delivery event of the session's current run (the host's, for any
+    /// client's delivery — the app's or the hub's): the pane's bars.
+    private func deliveryEvent(_ sessionID: Int64, _ event: SessionHostDeliveryEvent) {
+        switch event.kind {
+        case .pasted:
+            clipboardHints.remove(sessionID)
+            dropPasteHint(sessionID)
+        case .leftTyped:
+            promptDrafts.insert(sessionID)
+            if event.besideText { sharedPrompts.insert(sessionID) }
+            // An ask's answer shows its own bar (`answerHints`).
+            if answerHints[sessionID] == nil { pasteHints.insert(sessionID) }
+        case .submitted:
+            break
+        }
+    }
+
+    /// Sends each live session's host whether a permission dialog is up
+    /// (`inputAnswersDialog`), when it changed since the last hint: the
+    /// host then counts no dialog key as a draft and withholds a Return
+    /// over one (Go `PromptHint`). Called on every read of the states.
+    func syncPromptHints() {
+        for id in liveIDs {
+            guard let process = processes[id] else { continue }
+            let dialog = inputAnswersDialog(id)
+            guard sentPromptHints[id] != dialog else { continue }
+            // Recorded only once sent: a hint the run could not take yet
+            // (not bound) goes on the next read.
+            if process.sendPromptHint(dialog: dialog) { sentPromptHints[id] = dialog }
+        }
+    }
+
+    /// Whether the session's prompt holds text not submitted right now, as
+    /// the app sees it: the owner's draft, a line the host left typed, or a
+    /// line still going to it. The phone's lines are held then (PROJ-16);
+    /// the host holds them too (`holdIfPromptText`).
+    func promptHoldsText(_ sessionID: Int64) -> Bool {
+        if promptDrafts.contains(sessionID) || delivering[sessionID] != nil { return true }
+        guard let run = runs[sessionID] else { return false }
+        return pendingReturns.contains(run)
+    }
+
+    /// Why no Return of the app's own was asked for (board #396); the
     /// caller's `canSubmit` logs its own reasons.
     private func logWithheld(_ sessionID: Int64, _ reason: String) {
         NSLog("TerminalCenter: session %lld: Return withheld — %@", sessionID, reason)
@@ -687,8 +881,13 @@ final class TerminalCenter {
 
     func dismissClipboardHint(sessionID: Int64) {
         clipboardHints.remove(sessionID)
-        pasteHints.remove(sessionID)
+        dropPasteHint(sessionID)
         answerHints[sessionID] = nil
+    }
+
+    private func dropPasteHint(_ sessionID: Int64) {
+        pasteHints.remove(sessionID)
+        sharedPrompts.remove(sessionID)
     }
 
     /// The prompt holds nothing not submitted any more.
@@ -981,13 +1180,18 @@ final class TerminalCenter {
         rows[id] = session
         process.onExit = { [weak self, weak process] code in
             guard let self else { return }
-            let closedByApp = process.map { self.processes[id] !== $0 || $0.neverStarted } ?? true
+            // The owner's stop (the host's requested exit) is the app's too.
+            let closedByApp = process.map { self.processes[id] !== $0 || $0.neverStarted || $0.exitRequested } ?? true
             states[id] = .exited(code)
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
             onRowExit?(id)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
+        process.onDeliveryEvent = { [weak self, weak process] event in
+            guard let self, let process, processes[id] === process else { return }
+            deliveryEvent(id, event)
+        }
         // A click into one terminal of a split makes it the active session.
         process.onOwnerFocus = { [weak self] in self?.focus(id) }
         processes[id] = process
@@ -1009,10 +1213,11 @@ final class TerminalCenter {
         lastRun += 1
         runs[id] = lastRun
         // A new run starts with an empty prompt: no line of the last run
-        // waits for a Return there (board #389).
+        // waits for a Return there (board #389), and its host has no hint.
         clearPromptDraft(id)
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
+        sentPromptHints[id] = nil
         states[id] = .running
     }
 
@@ -1037,6 +1242,7 @@ final class TerminalCenter {
                 earlier.onExit = nil
                 earlier.onOwnerInput = nil
                 earlier.onOwnerFocus = nil
+                earlier.onDeliveryEvent = nil
                 earlier.detach()
             }
             process = makeHosted(host)
@@ -1132,13 +1338,24 @@ final class TerminalCenter {
         }
     }
 
+    /// The owner closes the session: a hosted run gets the host's Stop
+    /// (hang-up, then kill after the host's grace; its exit is `requested`),
+    /// any other one — or a run the host cannot stop — a hang-up from here,
+    /// then a kill after `killGrace` while it is still alive. Either way its
+    /// exit is not the session's own (no PROJ-18 cleanup).
     func close(sessionID: Int64) async {
         guard let process = processes.removeValue(forKey: sessionID) else {
             forget(sessionID)
             return
         }
         let pid = process.pid
-        if pid > 0, states[sessionID] == .running {
+        if states[sessionID] == .running, process.isHosted, await process.requestStop() {
+            // The host stops it; the close returns once the run is gone, so
+            // nothing after it (a cleanup plan) runs beside a live agent.
+            if !(await process.waitForExit(timeout: Self.hostStopWait)), pid > 0 {
+                signaller.signal(pid, SIGKILL)
+            }
+        } else if pid > 0, states[sessionID] == .running {
             signaller.signal(pid, SIGHUP)
             var waited: Duration = .zero
             while waited < Self.killGrace, isRunning(sessionID, pid) {
@@ -1150,6 +1367,7 @@ final class TerminalCenter {
         process.onExit = nil
         process.onOwnerInput = nil
         process.onOwnerFocus = nil
+        process.onDeliveryEvent = nil
         process.detach()
         forget(sessionID)
     }
@@ -1207,6 +1425,7 @@ final class TerminalCenter {
         runs[sessionID] = nil
         clearPromptDraft(sessionID)
         ownerBackslashPending.remove(sessionID)
+        sentPromptHints[sessionID] = nil
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
