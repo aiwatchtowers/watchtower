@@ -156,7 +156,7 @@ type LaunchArgs struct {
 // workbench workbenchID, with bin the watchtower binary the MCP server and the
 // hooks run. The binary is cfg.CodexPath when that names a file, else find's
 // answer (an absolute path to a file). find returns ErrCodexNotFound (or any error) when it has none.
-// Args: --no-daemon, the update check off, the MCP overrides, then the hook overrides (spec §4.2).
+// Args: the update check off, the MCP overrides, then the hook overrides (spec §4.2).
 // The caller appends `[resume <id>] -- <prompt>`.
 func CodexLaunchArgs(cfg *config.Config, bin string, workbenchID int64, find func() (string, error)) (LaunchArgs, error) {
 	codexBin, err := resolveCodexBinary(cfg, find)
@@ -165,7 +165,7 @@ func CodexLaunchArgs(cfg *config.Config, bin string, workbenchID int64, find fun
 	}
 	// The update notice takes Enter as consent to `npm install -g`, and the
 	// Desktop types owner answers into the TUI with Enter.
-	args := []string{"--no-daemon", "-c", codexNoUpdateCheck}
+	args := []string{"-c", codexNoUpdateCheck}
 	args = append(args, CodexMCPOverrides(bin, workbenchID)...)
 	args = append(args, CodexHookOverrides(CodexHookSet(bin))...)
 	return LaunchArgs{Binary: codexBin, PathPrepend: filepath.Dir(codexBin), Args: args}, nil

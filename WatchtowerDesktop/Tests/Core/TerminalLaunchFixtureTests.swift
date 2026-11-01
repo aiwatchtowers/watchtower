@@ -63,7 +63,7 @@ final class TerminalLaunchFixtureTests: XCTestCase {
     private static let codexArgs = Codex(
         binary: "/opt/co'dex/bin/codex",
         pathPrepend: "/opt/co'dex/bin",
-        args: ["--no-daemon", "-c", "check_for_update_on_startup=false", "-c", "mcp_servers.w.args=['mcp']"]
+        args: ["-c", "check_for_update_on_startup=false", "-c", "mcp_servers.w.args=['mcp']"]
     )
     private static let setup = "npm ci && echo 'ready'"
 

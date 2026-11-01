@@ -422,3 +422,6 @@ What shipped differs from the text above in these points. The inline text is upd
   **Set up Codex**; the orange Repair state is only for a real failure (skill present but hooks untrusted, imported
   duplicates, or the skill copy an older shipped version) or a failed setup. A failed codex step never fails the Claude setup.
 
+- **C11/§4.2, `--no-daemon` dropped (2026-11-01).** codex-cli 0.145 removed the flag and refuses to start with it
+  ("unexpected argument '--no-daemon'"), so every new and resumed Codex session failed. `launch-args` no longer
+  passes it; the args start with `-c check_for_update_on_startup=false`.
