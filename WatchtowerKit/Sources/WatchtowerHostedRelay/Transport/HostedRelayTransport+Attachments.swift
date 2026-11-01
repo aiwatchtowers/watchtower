@@ -17,7 +17,13 @@ struct AssetMissing: Error {}
 extension HostedRelayTransport {
     /// Uploads `file` for a record of `zone`; returns the attachment id. The upload URL must pass
     /// `secureBlobURL`, and any non-2xx answer (a redirect not followed included) fails it.
+    /// A pair zone takes no attachments: in pairing mode it is `FORBIDDEN` before any request,
+    /// as the relay answers `create_upload` there.
     func upload(_ file: URL, zone: CloudZoneID) async throws -> String {
+        if case .pairing = mode {
+            Self.logger.error("relay upload: no attachments in a pair zone")
+            throw Self.forbidden
+        }
         let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
         guard let size = (attributes?[.size] as? NSNumber)?.uint64Value else { throw AssetMissing() }
         var create = Relay_V1_CreateUpload()

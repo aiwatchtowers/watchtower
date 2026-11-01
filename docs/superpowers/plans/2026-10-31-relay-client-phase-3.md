@@ -420,7 +420,7 @@ public struct HostedRelayPairing: Sendable {
 ```
 
 - The 3 in `.slotsFull` is `HostedRelayLimits.maxMacSlots = 3` (relay spec §8). A pairing-mode transport answers `FORBIDDEN` on a data-zone write to the pair zone as the relay does: the phone only writes its hello, which is relay lane.
-- Unchanged from Phase 2: cursors are per zone name in `relay_cursors`, so a store used first in pairing mode and then in hub mode keeps one monotonic local buffer (R3).
+- Cursors in `relay_cursors` are keyed by lane (`DataZone`/`RelayZone`), not by relay zone. A new table, `relay_zone_names`, records each lane's relay zone (`TransportStore.adoptRelayZones`, called by the transport's init). When a lane's zone changes, the new zone is read from 0 as a resync, which deletes the old zone's records from the buffer. A store used first in pairing mode and then in hub mode therefore keeps one monotonic local buffer (R3). On a zone change, writes still queued for an old `pair/` zone are dropped and logged. Writes queued for any other old zone throw `TransportStoreError.queuedWritesForAnotherZone`, so the caller wipes deliberately.
 
 - [ ] **Step 1: Failing tests:**
   - `testPairingModeMapsBothLanesToThePairZone`;
@@ -1229,7 +1229,7 @@ Decisions taken where the spec is silent, outdated, or contradicts the code or t
   - Why: Phase 2's transport opens its own socket per Mac. The relay displaces an older socket of the same device (close 1001), so two relay hubs, or a hub plus a pairing slot, would displace each other in a loop. The session owns the one connection and routes events by zone; transports attach and detach.
   - Cost if wrong: none for one hub; for several hubs this is required.
 - **R3. Pairing is a mode of `HostedRelayTransport` on the hub's own store.**
-  - Why: in pairing mode both lanes map to `pair/<slot>`. The hello is relay-lane and the keybox data-lane, as on CloudKit, so `SecureTransport`, the replica's keybox read and `waitForGrant` work unchanged. After promote, the same store serves hub mode; cursors are per zone name, so the local buffer tokens stay monotonic. Owner approval 6 of Phase 2 put the `pair/<slot>` mapping here.
+  - Why: in pairing mode both lanes map to `pair/<slot>`. The hello is relay-lane and the keybox data-lane, as on CloudKit, so `SecureTransport`, the replica's keybox read and `waitForGrant` work unchanged. After promote, the same store serves hub mode. Cursors are keyed by lane, and `relay_zone_names` records each lane's relay zone, so a lane whose zone changed resyncs from 0 and the local buffer tokens stay monotonic. Owner approval 6 of Phase 2 put the `pair/<slot>` mapping here.
   - Cost if wrong: a separate pairing reader, one file.
 - **R4. A code links over the hub's current transport.**
   - Why: a hub uses one transport at a time (protocol §3.1), so a phone pairing over the relay with a Mac that is on CloudKit could never read it.
