@@ -570,7 +570,8 @@ final class AutomationSessionCenterTests: XCTestCase {
         appState.wireFeatureVisibility()
         appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
         appState.terminalCenter.shell = { "/bin/zsh" }
-        appState.initWorkbenches(dbPool: pool, cliRunner: go, notifier: RecordingWorkbenchNotifier(),
+        let cli = await goStarting(appState)
+        appState.initWorkbenches(dbPool: pool, cliRunner: cli, notifier: RecordingWorkbenchNotifier(),
                                  sessionNotifier: RecordingSessionNotifier())
         defer { stopWorkbenchWiring(appState) }
         let center = try XCTUnwrap(appState.automationSessionCenter)
@@ -590,6 +591,18 @@ final class AutomationSessionCenterTests: XCTestCase {
     }
 
     // MARK: - Navigation
+
+    /// The AppState wiring's CLI since Go hub 3 Task 8: `go`, with `workbench
+    /// session start` played as Go's (the row written, its run listed in a
+    /// fake session host on `appState`'s terminal center), so a `session()`
+    /// step starts and attaches as it did when Swift launched it.
+    private func goStarting(_ appState: AppState) async -> ScriptedSessionStartRunner {
+        let host = await FakeGoSessionHost.install(on: appState.terminalCenter)
+        let runner = ScriptedSessionStartRunner(pool: pool, base: go)
+        runner.onStarted = { id in await MainActor.run { host.launch(row: id) } }
+        addTeardownBlock { @MainActor in host.detachAll(appState.terminalCenter) }
+        return runner
+    }
 
     private func stopWorkbenchWiring(_ appState: AppState) {
         appState.automationSessionCenter?.stop()
@@ -614,7 +627,8 @@ final class AutomationSessionCenterTests: XCTestCase {
         appState.terminalCenter.shell = { "/bin/zsh" }
         appState.selectedDestination = .workbench
         appState.featureVisibility.isLoaded = true
-        appState.initWorkbenches(dbPool: pool, cliRunner: go, notifier: RecordingWorkbenchNotifier(),
+        let cli = await goStarting(appState)
+        appState.initWorkbenches(dbPool: pool, cliRunner: cli, notifier: RecordingWorkbenchNotifier(),
                                  sessionNotifier: RecordingSessionNotifier())
         defer { stopWorkbenchWiring(appState) }
         let center = try XCTUnwrap(appState.automationSessionCenter)

@@ -1800,7 +1800,7 @@ final class AppState {
                 .appendingPathComponent("workchat-attachments", isDirectory: true)
         )
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() } // Settings → Workbench → Default agent (#399, D1)
-        vm.goSessionStart = GoSessionStartWait() // new sessions start in Go (Go hub 3 Task 8)
+        vm.goSessionStart = cliRunner == nil ? nil : GoSessionStartWait() // Go starts new sessions (Go hub 3 Task 8)
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)

@@ -102,6 +102,15 @@ final class StartNewSessionViaCLITests: XCTestCase {
         try await pool.read { try TerminalSessionQueries.fetch($0, id: id) }
     }
 
+    /// An automation run to start a `session()` step for (the row's
+    /// automation_run_id is a foreign key).
+    private func automationRun() async throws -> Int64 {
+        try await pool.write { db in
+            let automation = try TestDatabase.insertAutomation(db)
+            return try TestDatabase.insertAutomationRun(db, automationID: automation)
+        }
+    }
+
     private var title: String { TerminalSessionNaming.provisional(now: Date(timeIntervalSince1970: 1_760_000_000)) }
 
     func testNewSessionRunsWorkbenchSessionStart() async throws {
@@ -167,7 +176,8 @@ final class StartNewSessionViaCLITests: XCTestCase {
         XCTAssertEqual(center.states[id], .unavailable(TerminalLaunch.exitMessage(code: 127, agent: .codex)))
 
         onSleep = { [weak self] id, n in if n == 1 { self?.launchRun(row: id, exited: true, code: 127) } }
-        let request = PendingSessionRequest(stepID: 1, runID: 77, automationID: 3, projectID: projectID,
+        let run = try await automationRun()
+        let request = PendingSessionRequest(stepID: 1, runID: run, automationID: 3, projectID: projectID,
                                             automationName: "Sweep", prompt: "sweep", title: "Nightly sweep", agent: .claude)
         do {
             _ = try await vm.startAutomationSession(request)
@@ -336,7 +346,8 @@ final class StartNewSessionViaCLITests: XCTestCase {
         let workbench = projectID
         let targetID = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: workbench, text: "Ship it") }
         await vm.workOn(targetID: targetID, targetText: "Ship it", projectID: projectID, agent: .claude)
-        let request = PendingSessionRequest(stepID: 1, runID: 77, automationID: 3, projectID: projectID,
+        let run = try await automationRun()
+        let request = PendingSessionRequest(stepID: 1, runID: run, automationID: 3, projectID: projectID,
                                             automationName: "Sweep", prompt: "sweep the board", title: "Nightly sweep",
                                             agent: .claude)
         _ = try await vm.startAutomationSession(request)
@@ -347,7 +358,7 @@ final class StartNewSessionViaCLITests: XCTestCase {
         XCTAssertEqual(Self.value(of: "--title", in: work), "Ship it")
         XCTAssertTrue(work.contains("--brief-stdin"), "the work-on prompt goes on stdin")
         let step = startCalls[1]
-        XCTAssertEqual(Self.value(of: "--automation-run", in: step), "77")
+        XCTAssertEqual(Self.value(of: "--automation-run", in: step), String(run))
         XCTAssertEqual(Self.value(of: "--title", in: step), "Nightly sweep")
         XCTAssertFalse(step.contains("sweep the board"), "never on argv")
         XCTAssertEqual(runner.stdinInputs.last.flatMap { String(bytes: $0, encoding: .utf8) }, "sweep the board")
@@ -355,55 +366,5 @@ final class StartNewSessionViaCLITests: XCTestCase {
 
     private static func value(of flag: String, in args: [String]) -> String? {
         args.firstIndex(of: flag).flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
-    }
-}
-
-/// `workbench session start` as Go's Begin answers it: the row written in
-/// the workbench folder, its id in the pinned JSON. Every other call answers
-/// empty. `refusal` makes the start fail before any row.
-final class ScriptedSessionStartRunner: CLIRunnerProtocol, @unchecked Sendable {
-    private let pool: DatabasePool
-    private let lock = NSLock()
-    private var recorded: [[String]] = []
-    private var recordedStdin: [Data] = []
-    private var ids: [Int64] = []
-    var refusal: Error?
-
-    init(pool: DatabasePool) { self.pool = pool }
-
-    var invocations: [[String]] { lock.withLock { recorded } }
-    var stdinInputs: [Data] { lock.withLock { recordedStdin } }
-    var startedIDs: [Int64] { lock.withLock { ids } }
-
-    func run(args: [String]) async throws -> Data {
-        try await answer(args)
-    }
-
-    func run(args: [String], stdin: Data) async throws -> Data {
-        lock.withLock { recordedStdin.append(stdin) }
-        return try await answer(args)
-    }
-
-    private func answer(_ args: [String]) async throws -> Data {
-        lock.withLock { recorded.append(args) }
-        guard args.starts(with: ["workbench", "session", "start"]) else { return Data() }
-        if let refusal { throw refusal }
-        func value(_ flag: String) -> String? {
-            args.firstIndex(of: flag).flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
-        }
-        let workbench = Int64(value("--workbench") ?? "") ?? 0
-        let agent = value("--agent") == "codex" ? TerminalSession.Kind.codex : .claude
-        let row = try await pool.write { db -> TerminalSession in
-            let folder = try String.fetchOne(db, sql: "SELECT folder_path FROM projects WHERE id = ?", arguments: [workbench]) ?? ""
-            return try TerminalSessionQueries.create(db, .init(
-                projectID: workbench, kind: agent, title: value("--title") ?? "s",
-                targetID: value("--target").flatMap { Int64($0) }, folderPath: folder,
-                claudeSessionID: agent == .claude ? UUID().uuidString.lowercased() : nil
-            ))
-        }
-        lock.withLock { ids.append(row.id) }
-        return Data("""
-            {"session_id":\(row.id),"state":"starting","folder_path":"\(row.folderPath)","worktree_branch":""}
-            """.utf8)
     }
 }
