@@ -129,6 +129,8 @@ public actor RelayAttestor {
             turnTaken = true
         }
         defer { passTurn() }
+        // A caller cancelled while it waited gives the turn on without running.
+        try Task.checkCancellation()
         return try await body()
     }
 

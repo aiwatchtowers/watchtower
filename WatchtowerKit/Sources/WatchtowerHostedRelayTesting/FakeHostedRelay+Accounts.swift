@@ -120,8 +120,14 @@ extension FakeHostedRelay {
     /// README "Vouched hubs" (Worker `unvouchedAllowed`, `refuseUnvouched`): a Mac in no account's
     /// slots may only read its account state, close a pairing, send `vouch_hub` (to get its own
     /// `FORBIDDEN`) and use pair zones (every item of a non-empty save); else `HUB_NOT_VOUCHED`.
+    /// As the Worker's `vouched()` (the gate closes with snapshot delivery), a Mac whose removal is
+    /// not delivered yet still counts as vouched.
     func refuseUnvouched(_ op: Relay_V1_Request.OneOf_Op, _ session: Session) throws {
-        guard session.kind == .mac, !state.accounts.values.contains(where: { $0.macs.contains(session.deviceID) }) else { return }
+        let id = session.deviceID
+        let vouched = state.accounts.values.contains { account in
+            account.macs.contains(id) || account.revocations.contains { $0.macID == id && !$0.delivered }
+        }
+        guard session.kind == .mac, !vouched else { return }
         let pair = { (zone: String) in zone.hasPrefix("pair/") }
         let allowed: Bool
         switch op {

@@ -83,6 +83,9 @@ extension HostedRelayClient {
     public func vouchHub(_ request: Relay_V1_VouchHub) async throws {
         guard attestor.isSupported else { throw HostedRelayError.attestation(.notSupported) }
         var stale: String?
+        // One relogin for each reason: a refused token, and the lost-key login (a fresh attestation).
+        var reloggedForToken = false
+        var reloggedForKey = false
         while true {
             let token = try await sessionToken(stale: stale)
             do {
@@ -91,12 +94,14 @@ extension HostedRelayClient {
                 }
                 guard case .ok = response.result else { throw Self.wrongAnswer }
                 return
-            } catch HostedRelayError.server(code: .unauthenticated, _) where stale == nil {
+            } catch HostedRelayError.server(code: .unauthenticated, _) where !reloggedForToken {
                 Self.logger.info("relay vouchHub: unauthenticated, logging in again")
+                reloggedForToken = true
                 stale = token
             } catch is NoAssertionKey {
-                Self.logger.info("relay vouchHub: no App Attest key, logging in again, attesting \(stale == nil)")
-                guard stale == nil else { throw HostedRelayError.attestation(.updateRequired) }
+                Self.logger.info("relay vouchHub: no App Attest key, lost-key login \(!reloggedForKey)")
+                guard !reloggedForKey else { throw HostedRelayError.attestation(.updateRequired) }
+                reloggedForKey = true
                 stale = token
             }
         }
@@ -105,6 +110,7 @@ extension HostedRelayClient {
     /// One `vouch_hub`: a new `VOUCH` nonce, a new assertion, the op on `token`.
     private func vouchAttempt(_ request: Relay_V1_VouchHub, token: String) async throws -> Relay_V1_Response {
         var vouch = request
+        // In the turn: the challenge's own UNAVAILABLE retries (`perform`) hold it for up to ~30 s.
         vouch.nonce = try await challengeNonce(purpose: .vouch)
         let hash = RelayAuthMessages.vouchClientDataHash(
             nonce: vouch.nonce, hubDeviceID: vouch.hubDeviceID, authPub: vouch.authPub, origin: origin

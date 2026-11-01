@@ -223,8 +223,9 @@ final class FakeHostedRelayTests: XCTestCase {
         XCTAssertEqual(controls(relay, phone), [control(.slotRemoved, mac.id)])
         XCTAssertEqual(controls(relay, mac), [control(.slotRemoved, phone.id)])
         XCTAssertEqual(try errorCode(relay, phone, .removeSlot(remove)), .unavailable)
-        // Out of its last slot the Mac is unvouched: remove_slot is not among its ops (bcca870).
-        XCTAssertEqual(try errorCode(relay, mac, .removeSlot(remove)), .hubNotVouched)
+        // Until the revocation is delivered the Mac still counts as vouched (Worker `vouched()`:
+        // the gate closes with snapshot delivery), so it may remove itself too.
+        XCTAssertEqual(try errorCode(relay, mac, .removeSlot(remove)), .unavailable, "the Mac may remove itself too")
 
         relay.markRevocationsDelivered()
         XCTAssertNil(try errorCode(relay, phone, .removeSlot(remove)))

@@ -180,6 +180,8 @@ public actor HostedRelayClient {
 
     /// One login request: a `LOGIN` nonce, the attestor's assertion (or fresh attestation), `login`.
     private func loginAttempt() async throws -> LoginAttempt {
+        // In the turn: the challenge's UNAVAILABLE retries (`perform`) hold it for up to ~30 s, and so
+        // do the login's own.
         let nonce = try await challengeNonce(purpose: .login)
         let hash = RelayAuthMessages.loginClientDataHash(nonce: nonce, deviceID: deviceID, origin: origin)
 

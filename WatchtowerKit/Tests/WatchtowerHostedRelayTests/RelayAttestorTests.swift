@@ -269,6 +269,29 @@ final class RelayAttestorTests: XCTestCase {
         XCTAssertEqual(Set(gate.counters).count, 2)
     }
 
+    /// A caller cancelled while it waited for the turn does not run its body once the turn comes.
+    func testACallerCancelledWhileWaitingDoesNotRun() async throws {
+        let attestor = makeAttestor(FakeAppAttest())
+        let gate = TurnGate()
+        let first = Task { try await attestor.withAssertionTurn { await gate.wait() } }
+        while !gate.entered { await Task.yield() }
+        let ran = OverlapLog()
+        let second = Task { try await attestor.withAssertionTurn { ran.append("ran") } }
+        while await attestor.turnWaiters == 0 { await Task.yield() }
+        second.cancel()
+        gate.open()
+        try await first.value
+        do {
+            try await second.value
+            XCTFail("the cancelled caller ran")
+        } catch is CancellationError {
+        }
+        XCTAssertEqual(ran.events, [])
+        // The turn is free again.
+        try await attestor.withAssertionTurn { ran.append("next") }
+        XCTAssertEqual(ran.events, ["next"])
+    }
+
     private func makeClient(
         _ kind: Relay_V1_DeviceKind, seed: UInt8, attestor: RelayAttestor, http: any RelayHTTP, relay: FakeHostedRelay
     ) throws -> HostedRelayClient {
@@ -419,5 +442,41 @@ private final class GatedRelayHTTP: RelayHTTP, @unchecked Sendable {
 
     func get(_ url: URL, to file: URL, maxBytes: Int64, headers: [String: String]) async throws -> Int {
         try await base.get(url, to: file, maxBytes: maxBytes, headers: headers)
+    }
+}
+
+/// A body that waits inside the turn until `open()`; `entered` once it runs.
+private final class TurnGate: @unchecked Sendable {
+    private struct State {
+        var entered = false
+        var opened = false
+        var waiter: CheckedContinuation<Void, Never>?
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    var entered: Bool {
+        state.withLock { $0.entered }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let now = state.withLock { state -> Bool in
+                state.entered = true
+                if state.opened { return true }
+                state.waiter = waiter
+                return false
+            }
+            if now { waiter.resume() }
+        }
+    }
+
+    func open() {
+        let waiter = state.withLock { state -> CheckedContinuation<Void, Never>? in
+            state.opened = true
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
     }
 }

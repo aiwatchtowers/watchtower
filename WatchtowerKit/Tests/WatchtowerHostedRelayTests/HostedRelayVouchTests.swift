@@ -149,6 +149,31 @@ class HostedRelayVouchTests: HostedRelayScenarioCase {
         try await addSlot(phone, hub)
     }
 
+    /// A relogin for the token does not use up the relogin for the key: `UNAUTHENTICATED`, a login,
+    /// then no App Attest key, a lost-key login with a fresh attestation, and the vouch goes through.
+    func testNoKeyAfterAnUnauthenticatedReloginStillTakesTheLostKeyLogin() async throws {
+        let relay = try requireFake(Self.r15)
+        let keys = InMemoryAppAttestKeyStore()
+        let dropper = KeyDroppingHTTP(keys: keys)
+        let phone = try await makeClient(kind: .phone, seed: 2, keys: keys, wrapHTTP: dropper.wrap)
+        try await pay(phone)
+        let hub = try await hub(seed: 1)
+        relay.failNext("vouchHub", with: .unauthenticated)
+        dropper.armed = true
+        let mark = backend.opLog.count
+        try await pairing(phone).vouch(hubDeviceID: hub.id, authPub: hub.authPub)
+
+        XCTAssertEqual(names(since: mark), [
+            "challenge", "vouchHub", "challenge", "login", "challenge", "challenge", "login", "challenge", "vouchHub"
+        ])
+        let logins = backend.opLog.dropFirst(mark).compactMap { op -> Relay_V1_Login? in
+            guard case .login(let login) = op else { return nil }
+            return login
+        }
+        guard logins.count == 2, case .appAttest = logins[1].attestation.kind else { return XCTFail("the second login attests afresh") }
+        try await addSlot(phone, hub)
+    }
+
     func testAttestationRequiredIsUpdateRequired() async throws {
         let relay = try requireFake(Self.r15)
         let (phone, _) = try await phone()
@@ -402,5 +427,59 @@ class HostedRelayVouchTests: HostedRelayScenarioCase {
         try await addSlot(phone, hub)
         // The nonce is single use, also on dev.
         await assertRelayError(.server(code: .attestationFailed, retryAfter: nil)) { try await self.rawVouch(phone, hub, nonce: nonce) }
+    }
+}
+
+/// Drops the phone's App Attest key once the first `login` after `armed` was answered: the
+/// next vouch attempt finds no key to assert with.
+private final class KeyDroppingHTTP: @unchecked Sendable {
+    private let keys: InMemoryAppAttestKeyStore
+    private let lock = NSLock()
+    private var isArmed = false
+
+    init(keys: InMemoryAppAttestKeyStore) {
+        self.keys = keys
+    }
+
+    var armed: Bool {
+        get { lock.withLock { isArmed } }
+        set { lock.withLock { isArmed = newValue } }
+    }
+
+    func wrap(_ base: any RelayHTTP) -> any RelayHTTP {
+        Wrapped(base: base, owner: self)
+    }
+
+    /// True once: the armed dropper's first `login`.
+    fileprivate func takeLogin(_ body: Data) -> Bool {
+        guard case .login = (try? Relay_V1_Request(serializedBytes: body))?.op else { return false }
+        return lock.withLock {
+            defer { isArmed = false }
+            return isArmed
+        }
+    }
+
+    fileprivate func dropKey() async {
+        await keys.setKeyID(nil)
+    }
+
+    private struct Wrapped: RelayHTTP {
+        let base: any RelayHTTP
+        let owner: KeyDroppingHTTP
+
+        func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
+            let drop = owner.takeLogin(body)
+            let answer = try await base.post(url, body: body, headers: headers)
+            if drop { await owner.dropKey() }
+            return answer
+        }
+
+        func put(_ url: URL, file: URL, headers: [String: String]) async throws -> Int {
+            try await base.put(url, file: file, headers: headers)
+        }
+
+        func get(_ url: URL, to file: URL, maxBytes: Int64, headers: [String: String]) async throws -> Int {
+            try await base.get(url, to: file, maxBytes: maxBytes, headers: headers)
+        }
     }
 }
