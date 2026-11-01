@@ -75,6 +75,9 @@ type Deps struct {
 	// (actions.Processor.LateEcho): a held phone line that went, failed,
 	// expired or was cancelled.
 	LateEcho func(ctx context.Context, r actions.Request, o actions.Outcome) error
+	// RecordingQueued (nil = none) is told the upload id of each recording
+	// the intake queued for the transcriber (Desktop's desktop_watch).
+	RecordingQueued func(uploadID string)
 }
 
 // Handlers is the registered handler set: its in-memory state (asks being

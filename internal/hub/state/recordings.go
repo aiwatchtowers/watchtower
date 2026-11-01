@@ -62,19 +62,32 @@ const (
 	RecordingFailed  = "failed"
 )
 
+// The phases of a claimed job Desktop reports (RecordingProgress).
+const (
+	PhaseTranscribing = "transcribing"
+	PhaseDiarizing    = "diarizing"
+	PhaseSummarizing  = "summarizing"
+)
+
 // Errors of the job verbs.
 var (
 	ErrNoRecordingJob = errors.New("state: no such recording job")
 	ErrJobState       = errors.New("state: the recording job is not in a state that allows this")
+	// ErrBadProgress refuses an unknown phase, a percent outside 0...100 or a
+	// percent with a phase other than transcribing.
+	ErrBadProgress = errors.New("state: not a recording progress")
 )
 
-// RecordingJob is one queue row: ids, status, error class and times.
+// RecordingJob is one queue row: ids, status, error class, Desktop's phase
+// and percent of a claimed job, and times.
 type RecordingJob struct {
 	UploadID     string
 	DeviceID     string
 	Status       string
 	TranscriptID *int64
 	ErrorClass   string
+	Phase        string // "" until Desktop reported one
+	Percent      *int   // only while transcribing
 	CreatedAt    time.Time
 	ClaimedAt    time.Time
 	FinishedAt   time.Time
@@ -350,7 +363,8 @@ func (s *Store) FinishRecording(uploadID string, transcriptID *int64, errClass s
 		if class != "" {
 			cls = class
 		}
-		_, err = tx.Exec(`UPDATE recording_jobs SET status = ?, transcript_id = ?, error_class = ?, finished_at = ?
+		_, err = tx.Exec(`UPDATE recording_jobs SET status = ?, transcript_id = ?, error_class = ?, finished_at = ?,
+				phase = NULL, percent = NULL
 			WHERE upload_id = ?`, status, transcriptID, cls, toReal(now), uploadID)
 		return err
 	})
@@ -358,6 +372,43 @@ func (s *Store) FinishRecording(uploadID string, transcriptID *int64, errClass s
 		return RecordingJob{}, err
 	}
 	return s.RecordingJob(uploadID)
+}
+
+// RecordingProgress stores Desktop's phase of a claimed job: transcribing
+// (with percent 0...100 when known), diarizing or summarizing. A percent with
+// another phase, an unknown phase or a percent out of range is
+// ErrBadProgress; a job not claimed is ErrJobState. A new phase drops the
+// old percent. A phase is no new activity: the job's times stay.
+func (s *Store) RecordingProgress(uploadID, phase string, percent *int) error {
+	switch phase {
+	case PhaseTranscribing:
+		if percent != nil && (*percent < 0 || *percent > 100) {
+			return ErrBadProgress
+		}
+	case PhaseDiarizing, PhaseSummarizing:
+		if percent != nil {
+			return ErrBadProgress
+		}
+	default:
+		return ErrBadProgress
+	}
+	return s.write(func(tx *sql.Tx) error {
+		job, err := recordingJobTx(tx, uploadID)
+		if err != nil {
+			return err
+		}
+		if job.Status != RecordingClaimed {
+			return ErrJobState
+		}
+		var pct any
+		if percent != nil {
+			pct = *percent
+		}
+		if _, err := tx.Exec(`UPDATE recording_jobs SET phase = ?, percent = ? WHERE upload_id = ?`, phase, pct, uploadID); err != nil {
+			return fmt.Errorf("storing a recording progress: %w", err)
+		}
+		return nil
+	})
 }
 
 func equalID(a, b *int64) bool {
@@ -378,26 +429,38 @@ func (s *Store) RecordingJob(uploadID string) (RecordingJob, error) {
 }
 
 func recordingJobTx(tx *sql.Tx, uploadID string) (RecordingJob, error) {
-	var (
-		j                 RecordingJob
-		tid               sql.NullInt64
-		class             sql.NullString
-		created           float64
-		claimed, finished sql.NullFloat64
-	)
-	err := tx.QueryRow(`SELECT upload_id, device_id, status, transcript_id, error_class, created_at, claimed_at, finished_at
-		FROM recording_jobs WHERE upload_id = ?`, uploadID).
-		Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &created, &claimed, &finished)
+	j, err := scanRecordingJob(tx.QueryRow(`SELECT `+recordingJobColumns+` FROM recording_jobs WHERE upload_id = ?`, uploadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return RecordingJob{}, ErrNoRecordingJob
 	}
 	if err != nil {
 		return RecordingJob{}, fmt.Errorf("reading the recording queue: %w", err)
 	}
+	return j, nil
+}
+
+const recordingJobColumns = `upload_id, device_id, status, transcript_id, error_class, phase, percent, created_at, claimed_at, finished_at`
+
+// scanRecordingJob reads one row of recordingJobColumns.
+func scanRecordingJob(r interface{ Scan(...any) error }) (RecordingJob, error) {
+	var (
+		j                 RecordingJob
+		tid, pct          sql.NullInt64
+		class, phase      sql.NullString
+		created           float64
+		claimed, finished sql.NullFloat64
+	)
+	if err := r.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &phase, &pct, &created, &claimed, &finished); err != nil {
+		return RecordingJob{}, err
+	}
 	if tid.Valid {
 		j.TranscriptID = &tid.Int64
 	}
-	j.ErrorClass = class.String
+	if pct.Valid {
+		v := int(pct.Int64)
+		j.Percent = &v
+	}
+	j.ErrorClass, j.Phase = class.String, phase.String
 	j.CreatedAt = fromReal(created)
 	if claimed.Valid {
 		j.ClaimedAt = fromReal(claimed.Float64)
@@ -417,8 +480,7 @@ func (s *Store) RecordingJobs(ctx context.Context) ([]RecordingJob, error) {
 		return nil, fmt.Errorf("reading the recording queue: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT upload_id, device_id, status, transcript_id, error_class, created_at, claimed_at, finished_at
-		FROM recording_jobs
+	rows, err := tx.QueryContext(ctx, `SELECT `+recordingJobColumns+` FROM recording_jobs
 		ORDER BY COALESCE(finished_at, claimed_at, created_at) DESC, upload_id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading the recording queue: %w", err)
@@ -426,26 +488,9 @@ func (s *Store) RecordingJobs(ctx context.Context) ([]RecordingJob, error) {
 	defer rows.Close()
 	var out []RecordingJob
 	for rows.Next() {
-		var (
-			j                 RecordingJob
-			tid               sql.NullInt64
-			class             sql.NullString
-			created           float64
-			claimed, finished sql.NullFloat64
-		)
-		if err := rows.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &created, &claimed, &finished); err != nil {
+		j, err := scanRecordingJob(rows)
+		if err != nil {
 			return nil, fmt.Errorf("reading the recording queue: %w", err)
-		}
-		if tid.Valid {
-			j.TranscriptID = &tid.Int64
-		}
-		j.ErrorClass = class.String
-		j.CreatedAt = fromReal(created)
-		if claimed.Valid {
-			j.ClaimedAt = fromReal(claimed.Float64)
-		}
-		if finished.Valid {
-			j.FinishedAt = fromReal(finished.Float64)
 		}
 		out = append(out, j)
 	}

@@ -24,7 +24,16 @@ const (
 	hubHeartbeatVerb = "report a Desktop heartbeat"
 	hubClaimVerb     = "claim a recording job"
 	hubFinishVerb    = "finish a recording job"
+	hubProgressVerb  = "report a recording job's progress"
 )
+
+// hubProgressJSON is `hub recording progress --json` (pinned keys).
+type hubProgressJSON struct {
+	UploadID string `json:"upload_id"`
+	Status   string `json:"status"`
+	Phase    string `json:"phase"`
+	Percent  *int   `json:"percent"`
+}
 
 // hubHeartbeatJSON is `hub desktop heartbeat --json` (pinned keys).
 type hubHeartbeatJSON struct {
@@ -67,7 +76,14 @@ func init() {
 	finish.Flags().Int64("transcript", 0, "transcript id the job produced")
 	finish.Flags().String("error", "", "error class when the job failed (only the class is stored)")
 	finish.Flags().Bool("json", false, "print JSON")
-	recording.AddCommand(claim, finish)
+	// Desktop reports progress over the control socket; the verb is for tests
+	// and for a host where no hub runs (it writes the sidecar under the lock).
+	progress := &cobra.Command{Use: "progress", Short: "Report a claimed recording job's phase", Args: cobra.NoArgs, RunE: runHubRecordingProgress}
+	progress.Flags().String("upload", "", "upload id")
+	progress.Flags().String("phase", "", "transcribing, diarizing or summarizing")
+	progress.Flags().Int("percent", 0, "percent done, 0-100 (transcribing only)")
+	progress.Flags().Bool("json", false, "print JSON")
+	recording.AddCommand(claim, finish, progress)
 	hubCmd.AddCommand(desktop, recording)
 }
 
@@ -186,4 +202,33 @@ func runHubRecordingFinish(cmd *cobra.Command, _ []string) error {
 		line += " (transcript " + strconv.FormatInt(*a.TranscriptID, 10) + ")"
 	}
 	return hubPrint(cmd, asJSON, hubFinishJSON{UploadID: a.UploadID, Status: a.Status, TranscriptID: a.TranscriptID}, line)
+}
+
+func runHubRecordingProgress(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent(hubProgressVerb); err != nil {
+		return err
+	}
+	upload, _ := cmd.Flags().GetString("upload")
+	phase, _ := cmd.Flags().GetString("phase")
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if upload == "" || phase == "" {
+		return errors.New("usage: watchtower hub recording progress --upload <id> --phase transcribing|diarizing|summarizing [--percent N]")
+	}
+	var pct *int
+	if cmd.Flags().Changed("percent") {
+		v, _ := cmd.Flags().GetInt("percent")
+		pct = &v
+	}
+	req := hub.ControlRequest{Op: hub.OpRecordingProgress, Upload: upload, Phase: phase, Percent: pct}
+	a, err := hubWrite(req, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+		return hub.RecordingProgressAnswer(st, upload, phase, pct), nil
+	})
+	if err != nil {
+		return err
+	}
+	line := a.UploadID + ": " + a.Phase
+	if a.Percent != nil {
+		line += " " + strconv.Itoa(*a.Percent) + "%"
+	}
+	return hubPrint(cmd, asJSON, hubProgressJSON{UploadID: a.UploadID, Status: a.Status, Phase: a.Phase, Percent: a.Percent}, line)
 }

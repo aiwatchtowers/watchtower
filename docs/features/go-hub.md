@@ -77,6 +77,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
 | `hub recording claim --upload <id>` | `upload_id`, `audio_path`, `status` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
+| `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
 | `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
 
 `watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto]`
@@ -101,6 +102,8 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
   switch-off failure survive a restart.
 - `00007_relay_admission` — `devices.relay_admitted_at` (REAL, NULL until the relay lists the phone holding the hub in
   a slot; a re-link clears it).
+- `00008_desktop_recordings` — `recording_jobs.phase` (`transcribing|diarizing|summarizing`) and `percent` (0–100,
+  transcribing only) of a claimed job, as Desktop reports them; no file name.
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -168,10 +171,23 @@ Recorded for the owner; each was a review ruling during phase 1.
    quota or an outdated protocol waits in `control_queue` and is retried each pass; only a record too large or a
    forbidden mailbox is dropped. The relay sim's rule 7a drops them; the entitlement case is revisited in phase 3
    (sim rule 16).
-3. **The phase 3 Desktop→hub inputs are deferred to phase 3**: the Desktop's Undo batch (sessions pending a PROJ-17
-   delete), `displayOver`, and the owner-write notice from the history actor. Until then the phone may show a session
-   that waits for an Undo on the Mac. **Done (phase 3 Task 9): the owner-write notice.** Desktop announces a target's
-   done only when the newest `target_status_history` row is not `owner` (`WorkbenchOwnerNoticePolicy`, filled by
+3. **The Desktop→hub inputs arrive in phase 3.** Since plan 3 Task 5 the control socket takes:
+   - `desktop_view`: `hidden` (session ids in the Desktop's PROJ-17 Undo batch: not published, not alerted, no
+     window slot) and `display_over` (`[{id, run, reported_at}]`, the background counts the Desktop shows over,
+     #411; a count reads Stopped only while the row still holds that run start — null = not live — and that
+     `agent_background_at`, as the Swift `ShownOverCount`), each at most 10 000 (`too_many_ids` beyond). In memory
+     only; ignored while the Desktop heartbeat is stale (> 90 s), dropped when it was sent before that. The
+     `desktop_heartbeat` answer carries `view_needed: true` while the hub holds no current view (never sent, or
+     dropped); Desktop sends the view at its start, on every change and on `view_needed`. A stale → fresh heartbeat,
+     and a heartbeat going stale, republish the view's slices.
+   - `recording_progress` (`upload`, `phase`, `percent`): the `recording_job` slice then reads `transcribing` with its
+     percent, `diarizing` or `summarizing`, as the Swift slice.
+   - `desktop_watch`: the answer (`{op, ok, state, reason}`, the current status as a snapshot) is the stream's first
+     line, then `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
+     device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines.
+
+   **Done (phase 3 Task 9): the owner-write notice.** Desktop announces a target's done only when the newest
+   `target_status_history` row is not `owner` (`WorkbenchOwnerNoticePolicy`, filled by
    `WorkbenchQueries.activitySnapshot`); a rollup (`system`) row written in the same statement as a child's change
    takes that change's actor. **Accepted effect:** an unclaimed CLI status write (`watchtower targets done N`) is
    recorded as `owner` too and is no longer announced on the Mac.
