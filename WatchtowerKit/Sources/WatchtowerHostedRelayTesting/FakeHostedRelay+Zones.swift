@@ -319,12 +319,13 @@ extension FakeHostedRelay {
 
     /// README "Operations notes" and "Errors": at most `limit` records (500 when unset or larger)
     /// and 4 MiB of envelopes but at least one; `TOKEN_EXPIRED` above the zone's last seq or
-    /// below a purged tombstone. The last page's `new_seq` jumps to the zone's seq.
+    /// below a purged tombstone, the floor check skipped on a `resync` page (README "Changes").
+    /// The last page's `new_seq` jumps to the zone's seq.
     func changes(_ op: Relay_V1_Changes, _ session: Session) throws -> Relay_V1_Response {
         try access(op.zone, session, .read)
         let zone = state.zones[op.zone] ?? Zone()
         let since = op.sinceSeq
-        if since > zone.lastSeq || (since > 0 && since < zone.floorSeq) {
+        if since > zone.lastSeq || (!op.resync && since > 0 && since < zone.floorSeq) {
             throw RelayFailure(.tokenExpired, "token expired")
         }
         let max = op.limit == 0 || op.limit > 500 ? 500 : Int(op.limit)

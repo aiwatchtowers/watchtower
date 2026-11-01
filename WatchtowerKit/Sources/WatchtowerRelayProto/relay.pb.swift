@@ -33,6 +33,9 @@ public nonisolated enum Relay_V1_ControlKind: SwiftProtobuf.Enum, Swift.CaseIter
   case slotRemoved // = 3
   case pairingOpened // = 4
   case sessionExpired // = 5
+
+  /// To a hub: a phone put it into a slot (detail: the phone's device id). Best effort, not retried.
+  case slotAdded // = 6
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -47,6 +50,7 @@ public nonisolated enum Relay_V1_ControlKind: SwiftProtobuf.Enum, Swift.CaseIter
     case 3: self = .slotRemoved
     case 4: self = .pairingOpened
     case 5: self = .sessionExpired
+    case 6: self = .slotAdded
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -59,6 +63,7 @@ public nonisolated enum Relay_V1_ControlKind: SwiftProtobuf.Enum, Swift.CaseIter
     case .slotRemoved: return 3
     case .pairingOpened: return 4
     case .sessionExpired: return 5
+    case .slotAdded: return 6
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -71,6 +76,7 @@ public nonisolated enum Relay_V1_ControlKind: SwiftProtobuf.Enum, Swift.CaseIter
     .slotRemoved,
     .pairingOpened,
     .sessionExpired,
+    .slotAdded,
   ]
 
 }
@@ -103,6 +109,10 @@ public nonisolated enum Relay_V1_ErrorCode: SwiftProtobuf.Enum, Swift.CaseIterab
 
   /// An attestation check failed: signature, chain, app id, environment, counter or nonce.
   case attestationFailed // = 21
+
+  /// A hub in no slot: it may only log in, subscribe, read its account state and use its pairing slot.
+  /// From add_slot / promote_pairing: the hub has no unexpired vouch from this phone.
+  case hubNotVouched // = 22
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -133,6 +143,7 @@ public nonisolated enum Relay_V1_ErrorCode: SwiftProtobuf.Enum, Swift.CaseIterab
     case 19: self = .unavailable
     case 20: self = .attestationRequired
     case 21: self = .attestationFailed
+    case 22: self = .hubNotVouched
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -161,6 +172,7 @@ public nonisolated enum Relay_V1_ErrorCode: SwiftProtobuf.Enum, Swift.CaseIterab
     case .unavailable: return 19
     case .attestationRequired: return 20
     case .attestationFailed: return 21
+    case .hubNotVouched: return 22
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -189,6 +201,7 @@ public nonisolated enum Relay_V1_ErrorCode: SwiftProtobuf.Enum, Swift.CaseIterab
     .unavailable,
     .attestationRequired,
     .attestationFailed,
+    .hubNotVouched,
   ]
 
 }
@@ -198,6 +211,9 @@ public nonisolated enum Relay_V1_DeviceKind: SwiftProtobuf.Enum, Swift.CaseItera
   case unspecified // = 0
   case phone // = 1
   case mac // = 2
+
+  /// A headless hub (Linux, Raspberry Pi). Same rules as a Mac: no attestation, vouched by a phone.
+  case hub // = 3
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -209,6 +225,7 @@ public nonisolated enum Relay_V1_DeviceKind: SwiftProtobuf.Enum, Swift.CaseItera
     case 0: self = .unspecified
     case 1: self = .phone
     case 2: self = .mac
+    case 3: self = .hub
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -218,6 +235,7 @@ public nonisolated enum Relay_V1_DeviceKind: SwiftProtobuf.Enum, Swift.CaseItera
     case .unspecified: return 0
     case .phone: return 1
     case .mac: return 2
+    case .hub: return 3
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -227,6 +245,7 @@ public nonisolated enum Relay_V1_DeviceKind: SwiftProtobuf.Enum, Swift.CaseItera
     .unspecified,
     .phone,
     .mac,
+    .hub,
   ]
 
 }
@@ -238,6 +257,9 @@ public nonisolated enum Relay_V1_ChallengePurpose: SwiftProtobuf.Enum, Swift.Cas
   /// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
   case login // = 0
   case register // = 1
+
+  /// A single-use nonce for vouch_hub, from the phone's own device.
+  case vouch // = 2
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -248,6 +270,7 @@ public nonisolated enum Relay_V1_ChallengePurpose: SwiftProtobuf.Enum, Swift.Cas
     switch rawValue {
     case 0: self = .login
     case 1: self = .register
+    case 2: self = .vouch
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -256,6 +279,7 @@ public nonisolated enum Relay_V1_ChallengePurpose: SwiftProtobuf.Enum, Swift.Cas
     switch self {
     case .login: return 0
     case .register: return 1
+    case .vouch: return 2
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -264,6 +288,7 @@ public nonisolated enum Relay_V1_ChallengePurpose: SwiftProtobuf.Enum, Swift.Cas
   public static let allCases: [Relay_V1_ChallengePurpose] = [
     .login,
     .register,
+    .vouch,
   ]
 
 }
@@ -626,6 +651,14 @@ public nonisolated struct Relay_V1_Request: Sendable {
     set {op = .getAccountState(newValue)}
   }
 
+  public var vouchHub: Relay_V1_VouchHub {
+    get {
+      if case .vouchHub(let v)? = op {return v}
+      return Relay_V1_VouchHub()
+    }
+    set {op = .vouchHub(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Op: Equatable, Sendable {
@@ -648,6 +681,7 @@ public nonisolated struct Relay_V1_Request: Sendable {
     case sendAlert(Relay_V1_SendAlert)
     case submitTransaction(Relay_V1_SubmitTransaction)
     case getAccountState(Relay_V1_GetAccountState)
+    case vouchHub(Relay_V1_VouchHub)
 
   }
 
@@ -1015,6 +1049,11 @@ public nonisolated struct Relay_V1_Changes: Sendable {
 
   public var limit: UInt32 = 0
 
+  /// Set on every page of a full resync (a pull that started at since_seq = 0): a since_seq below the
+  /// tombstone floor then continues instead of answering TOKEN_EXPIRED. The caller computes deletions
+  /// itself (local names the resync did not return), so purged tombstones do not matter to it.
+  public var resync: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1246,6 +1285,37 @@ public nonisolated struct Relay_V1_DeviceRegistered: Sendable {
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+}
+
+/// vouch_hub (phone only): the phone vouches for a hub after the pairing code was confirmed, before
+/// add_slot or promote_pairing. attestation: an App Attest assertion over
+/// SHA256("relay/v1/vouch" ‖ nonce ‖ hub_device_id ‖ auth_pub ‖ server_origin).
+public nonisolated struct Relay_V1_VouchHub: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var hubDeviceID: String = String()
+
+  public var authPub: Data = Data()
+
+  /// From GetChallenge{purpose: VOUCH}.
+  public var nonce: Data = Data()
+
+  public var attestation: Relay_V1_Attestation {
+    get {_attestation ?? Relay_V1_Attestation()}
+    set {_attestation = newValue}
+  }
+  /// Returns true if `attestation` has been explicitly set.
+  public var hasAttestation: Bool {self._attestation != nil}
+  /// Clears the value of `attestation`. Subsequent reads from it will return its default value.
+  public mutating func clearAttestation() {self._attestation = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _attestation: Relay_V1_Attestation? = nil
 }
 
 public nonisolated struct Relay_V1_GetChallenge: Sendable {
@@ -1593,19 +1663,19 @@ public nonisolated struct Relay_V1_SlotHolder: Sendable {
 fileprivate nonisolated let _protobuf_package = "relay.v1"
 
 nonisolated extension Relay_V1_ControlKind: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CONTROL_KIND_UNSPECIFIED\0\u{1}CONTROL_KIND_ENTITLEMENT_EXPIRED\0\u{1}CONTROL_KIND_SUBSCRIPTION_MOVED\0\u{1}CONTROL_KIND_SLOT_REMOVED\0\u{1}CONTROL_KIND_PAIRING_OPENED\0\u{1}CONTROL_KIND_SESSION_EXPIRED\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CONTROL_KIND_UNSPECIFIED\0\u{1}CONTROL_KIND_ENTITLEMENT_EXPIRED\0\u{1}CONTROL_KIND_SUBSCRIPTION_MOVED\0\u{1}CONTROL_KIND_SLOT_REMOVED\0\u{1}CONTROL_KIND_PAIRING_OPENED\0\u{1}CONTROL_KIND_SESSION_EXPIRED\0\u{1}CONTROL_KIND_SLOT_ADDED\0")
 }
 
 nonisolated extension Relay_V1_ErrorCode: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ERROR_CODE_UNSPECIFIED\0\u{1}ERROR_CODE_UNSUPPORTED_VERSION\0\u{1}ERROR_CODE_UNAUTHENTICATED\0\u{1}ERROR_CODE_FORBIDDEN\0\u{1}ERROR_CODE_NOT_FOUND\0\u{1}ERROR_CODE_CONFLICT\0\u{1}ERROR_CODE_TOKEN_EXPIRED\0\u{1}ERROR_CODE_RECORD_TOO_LARGE\0\u{1}ERROR_CODE_ATTACHMENT_TOO_LARGE\0\u{1}ERROR_CODE_HUB_QUOTA_EXCEEDED\0\u{1}ERROR_CODE_MAILBOX_QUOTA_EXCEEDED\0\u{1}ERROR_CODE_TRAFFIC_LIMIT_EXCEEDED\0\u{1}ERROR_CODE_RATE_LIMITED\0\u{1}ERROR_CODE_SLOT_LIMIT\0\u{1}ERROR_CODE_SLOT_REPLACEMENT_LIMIT\0\u{1}ERROR_CODE_TRANSFER_LIMIT\0\u{1}ERROR_CODE_PAIRING_EXPIRED\0\u{1}ERROR_CODE_ENTITLEMENT_INACTIVE\0\u{1}ERROR_CODE_INVALID_TRANSACTION\0\u{1}ERROR_CODE_UNAVAILABLE\0\u{1}ERROR_CODE_ATTESTATION_REQUIRED\0\u{1}ERROR_CODE_ATTESTATION_FAILED\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ERROR_CODE_UNSPECIFIED\0\u{1}ERROR_CODE_UNSUPPORTED_VERSION\0\u{1}ERROR_CODE_UNAUTHENTICATED\0\u{1}ERROR_CODE_FORBIDDEN\0\u{1}ERROR_CODE_NOT_FOUND\0\u{1}ERROR_CODE_CONFLICT\0\u{1}ERROR_CODE_TOKEN_EXPIRED\0\u{1}ERROR_CODE_RECORD_TOO_LARGE\0\u{1}ERROR_CODE_ATTACHMENT_TOO_LARGE\0\u{1}ERROR_CODE_HUB_QUOTA_EXCEEDED\0\u{1}ERROR_CODE_MAILBOX_QUOTA_EXCEEDED\0\u{1}ERROR_CODE_TRAFFIC_LIMIT_EXCEEDED\0\u{1}ERROR_CODE_RATE_LIMITED\0\u{1}ERROR_CODE_SLOT_LIMIT\0\u{1}ERROR_CODE_SLOT_REPLACEMENT_LIMIT\0\u{1}ERROR_CODE_TRANSFER_LIMIT\0\u{1}ERROR_CODE_PAIRING_EXPIRED\0\u{1}ERROR_CODE_ENTITLEMENT_INACTIVE\0\u{1}ERROR_CODE_INVALID_TRANSACTION\0\u{1}ERROR_CODE_UNAVAILABLE\0\u{1}ERROR_CODE_ATTESTATION_REQUIRED\0\u{1}ERROR_CODE_ATTESTATION_FAILED\0\u{1}ERROR_CODE_HUB_NOT_VOUCHED\0")
 }
 
 nonisolated extension Relay_V1_DeviceKind: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0DEVICE_KIND_UNSPECIFIED\0\u{1}DEVICE_KIND_PHONE\0\u{1}DEVICE_KIND_MAC\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0DEVICE_KIND_UNSPECIFIED\0\u{1}DEVICE_KIND_PHONE\0\u{1}DEVICE_KIND_MAC\0\u{1}DEVICE_KIND_HUB\0")
 }
 
 nonisolated extension Relay_V1_ChallengePurpose: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHALLENGE_PURPOSE_LOGIN\0\u{1}CHALLENGE_PURPOSE_REGISTER\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHALLENGE_PURPOSE_LOGIN\0\u{1}CHALLENGE_PURPOSE_REGISTER\0\u{1}CHALLENGE_PURPOSE_VOUCH\0")
 }
 
 nonisolated extension Relay_V1_PushEnv: SwiftProtobuf._ProtoNameProviding {
@@ -1837,7 +1907,7 @@ nonisolated extension Relay_V1_GoingAway: SwiftProtobuf.Message, SwiftProtobuf._
 
 nonisolated extension Relay_V1_Request: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Request"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}register\0\u{1}challenge\0\u{1}login\0\u{1}save\0\u{1}delete\0\u{1}changes\0\u{1}subscribe\0\u{3}add_slot\0\u{3}remove_slot\0\u{3}open_pairing\0\u{3}close_pairing\0\u{3}promote_pairing\0\u{3}set_hub_readers\0\u{3}create_upload\0\u{3}get_download\0\u{3}register_push\0\u{3}send_alert\0\u{3}submit_transaction\0\u{3}get_account_state\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}register\0\u{1}challenge\0\u{1}login\0\u{1}save\0\u{1}delete\0\u{1}changes\0\u{1}subscribe\0\u{3}add_slot\0\u{3}remove_slot\0\u{3}open_pairing\0\u{3}close_pairing\0\u{3}promote_pairing\0\u{3}set_hub_readers\0\u{3}create_upload\0\u{3}get_download\0\u{3}register_push\0\u{3}send_alert\0\u{3}submit_transaction\0\u{3}get_account_state\0\u{3}vouch_hub\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2093,6 +2163,19 @@ nonisolated extension Relay_V1_Request: SwiftProtobuf.Message, SwiftProtobuf._Me
           self.op = .getAccountState(v)
         }
       }()
+      case 21: try {
+        var v: Relay_V1_VouchHub?
+        var hadOneofValue = false
+        if let current = self.op {
+          hadOneofValue = true
+          if case .vouchHub(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.op = .vouchHub(v)
+        }
+      }()
       default: break
       }
     }
@@ -2182,6 +2265,10 @@ nonisolated extension Relay_V1_Request: SwiftProtobuf.Message, SwiftProtobuf._Me
     case .getAccountState?: try {
       guard case .getAccountState(let v)? = self.op else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 20)
+    }()
+    case .vouchHub?: try {
+      guard case .vouchHub(let v)? = self.op else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 21)
     }()
     case nil: break
     }
@@ -2845,7 +2932,7 @@ nonisolated extension Relay_V1_DeleteConflict: SwiftProtobuf.Message, SwiftProto
 
 nonisolated extension Relay_V1_Changes: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Changes"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}zone\0\u{3}since_seq\0\u{1}limit\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}zone\0\u{3}since_seq\0\u{1}limit\0\u{1}resync\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2856,6 +2943,7 @@ nonisolated extension Relay_V1_Changes: SwiftProtobuf.Message, SwiftProtobuf._Me
       case 1: try { try decoder.decodeSingularStringField(value: &self.zone) }()
       case 2: try { try decoder.decodeSingularUInt64Field(value: &self.sinceSeq) }()
       case 3: try { try decoder.decodeSingularUInt32Field(value: &self.limit) }()
+      case 4: try { try decoder.decodeSingularBoolField(value: &self.resync) }()
       default: break
       }
     }
@@ -2871,6 +2959,9 @@ nonisolated extension Relay_V1_Changes: SwiftProtobuf.Message, SwiftProtobuf._Me
     if self.limit != 0 {
       try visitor.visitSingularUInt32Field(value: self.limit, fieldNumber: 3)
     }
+    if self.resync != false {
+      try visitor.visitSingularBoolField(value: self.resync, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -2878,6 +2969,7 @@ nonisolated extension Relay_V1_Changes: SwiftProtobuf.Message, SwiftProtobuf._Me
     if lhs.zone != rhs.zone {return false}
     if lhs.sinceSeq != rhs.sinceSeq {return false}
     if lhs.limit != rhs.limit {return false}
+    if lhs.resync != rhs.resync {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -3334,6 +3426,55 @@ nonisolated extension Relay_V1_DeviceRegistered: SwiftProtobuf.Message, SwiftPro
   public static func ==(lhs: Relay_V1_DeviceRegistered, rhs: Relay_V1_DeviceRegistered) -> Bool {
     if lhs.deviceID != rhs.deviceID {return false}
     if lhs.accountID != rhs.accountID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_V1_VouchHub: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".VouchHub"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}hub_device_id\0\u{3}auth_pub\0\u{1}nonce\0\u{1}attestation\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.hubDeviceID) }()
+      case 2: try { try decoder.decodeSingularBytesField(value: &self.authPub) }()
+      case 3: try { try decoder.decodeSingularBytesField(value: &self.nonce) }()
+      case 4: try { try decoder.decodeSingularMessageField(value: &self._attestation) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if !self.hubDeviceID.isEmpty {
+      try visitor.visitSingularStringField(value: self.hubDeviceID, fieldNumber: 1)
+    }
+    if !self.authPub.isEmpty {
+      try visitor.visitSingularBytesField(value: self.authPub, fieldNumber: 2)
+    }
+    if !self.nonce.isEmpty {
+      try visitor.visitSingularBytesField(value: self.nonce, fieldNumber: 3)
+    }
+    try { if let v = self._attestation {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_V1_VouchHub, rhs: Relay_V1_VouchHub) -> Bool {
+    if lhs.hubDeviceID != rhs.hubDeviceID {return false}
+    if lhs.authPub != rhs.authPub {return false}
+    if lhs.nonce != rhs.nonce {return false}
+    if lhs._attestation != rhs._attestation {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

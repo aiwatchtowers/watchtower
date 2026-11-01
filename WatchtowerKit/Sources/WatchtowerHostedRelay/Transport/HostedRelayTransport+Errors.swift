@@ -43,6 +43,11 @@ extension HostedRelayTransport {
             return .permanent(code: "forbidden")
         case .notFound:
             return .permanent(code: "not_found")
+        case .hubNotVouched:
+            // Never sent to a phone on a mailbox or data op; a phone's `add_slot` / `promote_pairing`
+            // answer is handled by the pairing flow, not by this table. Named so it is not read as
+            // the transient `relay_22`.
+            return .permanent(code: "hub_not_vouched")
         case .unspecified:
             return .permanent(code: "unspecified")
         default:

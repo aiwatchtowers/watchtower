@@ -41,7 +41,7 @@ The Desktop links no protobuf. After ask #802 it runs no relay code, and protobu
 
 ## Proto pin (R1, R14)
 
-The pin is relay `main` at `3a99bd7` (PR #2), the same commit as the Go hub's copy, so both ends of a hub/phone pair speak one proto.
+The Kit's pin is relay `main` at `bcca870` (relay PR #5, vouched hubs; it contains PR #3's `Changes.resync`, board #1430). The Go hub's copy moves on its own (board #1345; R14: the pins are not forced equal), so the two may differ; `make relay-proto` prints both.
 
 `WatchtowerKit/Sources/WatchtowerRelayProto/VERSION` has two lines:
 
@@ -143,7 +143,7 @@ There is no `MailboxAddressing`, because the phone has exactly one mailbox per h
 - `ConditionalTransport` calls go straight to the relay after flushing the plain queue, and send nothing if that flush stopped. They return one outcome per item, matched by index.
 - After any refusal other than a per-item conflict, the transport re-reads the zone before it returns. A failed re-read is only logged.
 
-**`TOKEN_EXPIRED` (R10).** The zone resyncs from 0. The resync's progress — its cursor and the names seen so far — is kept page by page in `relay_resync_seen`, so after a restart an interrupted resync resumes where it stopped. Only after the last page does the transport buffer a deletion for each name in `relay_records` that the resync did not return. A record this device never saw from the server is never deleted by the diff. If the relay refuses a middle page, the resync is marked stalled and the zone is held for `resyncStallHold` (1 h). `start()` ends the hold at once.
+**`TOKEN_EXPIRED` (R10).** The zone resyncs from 0. The resync's progress — its cursor and the names seen so far — is kept page by page in `relay_resync_seen`, so after a restart an interrupted resync resumes where it stopped. Only after the last page does the transport buffer a deletion for each name in `relay_records` that the resync did not return. A record this device never saw from the server is never deleted by the diff. Every page of a pull that started at 0 — the resync, and a zone's first pull — sets `Changes.resync = true`, so the relay skips its tombstone floor on the middle pages; a pull from a stored cursor never sets it. If the relay still refuses a flagged middle page (its README keeps `TOKEN_EXPIRED` for a `since_seq` above the zone's seq, e.g. a zone rebuilt mid-resync), the resync is marked stalled and the zone is held for `resyncStallHold` (1 h). `start()` ends the hold at once.
 
 **Socket events (R9).** A `zoneChanged`, with or without a record, means "pull this zone". After a connect, the transport reads `get_account_state` (an entitlement that does not pay is reported) and flushes the plain queue, so a row saved while the socket could not be dialed goes out then. A push wake (`fetchForPush`) runs its own pull of both zones: it joins a pull in flight, a socket's one-zone pull included, with both zones owed.
 
@@ -177,11 +177,12 @@ Signed URLs are never logged.
 | `RECORD_TOO_LARGE`, `ATTACHMENT_TOO_LARGE` | `.permanent("record_too_large")` |
 | `FORBIDDEN` | `.permanent("forbidden")` |
 | `NOT_FOUND` | `.permanent("not_found")` |
+| `HUB_NOT_VOUCHED` (never sent to a phone on a mailbox or data op; a phone's `add_slot` / `promote_pairing` answer is handled by the pairing flow, not by this table; named so it is not read as the transient `relay_22`) | `.permanent("hub_not_vouched")` |
 | `ERROR_CODE_UNSPECIFIED` | `.permanent("unspecified")` |
 
 **`relayEvents` (R11).** `TransportEvent` gets no new cases, and `MAILBOX_QUOTA_EXCEEDED` is today's `.quotaExceeded`. Relay-only signals go on `HostedRelayTransport.relayEvents` (`HostedRelayEvent`, newest 256 kept):
 
-- `.control(kind:detail:)`;
+- `.control(kind:detail:)` (every control as it comes; nothing on the phone acts on the hub-only `SLOT_ADDED`);
 - `.entitlementInactive`;
 - `.forbidden(zone:)`;
 - `.unsupportedVersion`;
@@ -249,17 +250,16 @@ Script settings and its stand config:
 
 **Fake-only scenarios (R15).** Some scenarios need the fake's log, faults, limits or clock, or need the server down. These skip on the stand and give their reason (`requireFake`, `SimWorld.fake`): `testSwitchToCloudKitDuringRelayOutage`, `testNoAckedWriteLostAcrossDeploy`, `…AcrossCrash`, and the 1001/4001 fault scenarios. The relay's own interop suite proves their server half against the real server. Their client half is client code, the same on the fake.
 
-Task 12's run against the stand at `3a99bd7`: 44 passed, 20 skipped, 0 failed.
+Task 12's run against the stand at `3a99bd7`: 44 passed, 20 skipped, 0 failed. Task 17's run at `bcca870` (Phase 3): 46 passed, 24 skipped, 0 failed.
 
 ## v1 limits
 
-- **Resync below the tombstone floor.** This is a relay bug. A `TOKEN_EXPIRED` resync from 0 of a zone whose tombstones were purged is refused again partway. The fix is relay PR #3 (`Changes.resync`), not merged yet and tracked as board #1430. Until it lands, the transport marks the resync stalled and holds the zone for 1 h (`resyncStallHold`). It deletes nothing, because R10's diff runs only after a complete resync. A resumed resync stalls again at its first expiry.
 - **A stalled resync is silent.** The only trace is one `relay resync stalled partway, held` log line (category `HostedRelay`, zone kind only). No `relayEvents` case or screen reports it.
-- **Macs do not attest (R18).** The relay at the pin still requires App Attest for `DEVICE_KIND_MAC` and has no `vouch_hub` or `DEVICE_KIND_HUB` (relay ask #805). Until that ships and Phase 3 vouches the hub, no production relay can admit a Watchtower hub. "A phone and its Mac on the real relay" is proven only on the fake, and on the stand with attestation off.
+- **Macs do not attest (R18).** The relay requires App Attest for `DEVICE_KIND_MAC`. The Kit's pin has `DEVICE_KIND_HUB` and `vouch_hub` (relay ask #805), but until Phase 3 vouches the hub, no production relay can admit a Watchtower hub. "A phone and its Mac on the real relay" is proven only on the fake, and on the stand with attestation off.
 - **`testAttestUnsupportedStaysOnCloudKit` (R16)** is the one attestation scenario still open. The relay's scenario promises that an unsupported device stays on CloudKit, which is `TransportFactory`'s routing. Phase 3 adds the test in `WatchtowerMobile/Tests`. Phase 2 pins only the client half, in `testAttestUnsupportedRefusesBeforeAnyRequest`.
 - **No `MailboxAddressing` and no `PagedChanges`** in the Kit (R4, R5). They served a Swift hub, which ask #802 moved to Go. A later consumer that needs server pages adds `PagedChanges` as an optional protocol.
 - **Close codes (R13).** The WebSocket runs on `URLSessionWebSocketTask`, and close codes are read from `closeCode.rawValue`. The stand confirms that 4000 and 4001 survive. If an OS release breaks this, `URLSessionRelaySocketDialer` moves to Network.framework behind the same `RelaySocketDialer` seam.
-- **The fake follows the README; where the stand disagrees, the stand wins (R20).** Task 12 found no protocol difference in the scenarios that run on both. The only stand-only difference is the register rate limit, which the fake does not model and the script raises. `send_alert` (the stand has no APNs key) and multi-page resyncs past the tombstone floor are not exercised on the stand.
+- **The fake follows the README; where the stand disagrees, the stand wins (R20).** Task 12 found no protocol difference in the scenarios that run on both. The only stand-only difference is the register rate limit, which the fake does not model and the script raises. `send_alert` (the stand has no APNs key) and multi-page resyncs past the tombstone floor (`Changes.resync`) are not exercised on the stand.
 - **Fake-only proof (R15).** The outage, deploy, crash and 1001/4001 fault scenarios are proven against the fake only. Phase 3's relay CI job, which builds the Kit client against the real server (spec §12 p. 4), will cover them.
 - **A permanently failing attachment stops its zone's pull.** A download that can never succeed (`NOT_FOUND` from `get_download`, a 403/404 from the blob store, or `ATTACHMENT_TOO_LARGE` over `maxAttachmentBytes`) fails its page, so the zone's cursor stays put and every later pull of that zone stops at the same record. The only trace is one log line per attempt (category `HostedRelay`, zone kind only).
 - **Smaller parked items.** A pull after a terminal stop redials the socket each time. A `ZoneChanged` that carries a record still costs one `changes` round trip (R9).

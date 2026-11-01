@@ -5,6 +5,9 @@ import WatchtowerSync
 /// Server pages into the local buffer (R5): one pull in flight at a time, each zone paged from
 /// its stored cursor, the cursor moving only with the page it covers; `TOKEN_EXPIRED` resyncs
 /// the zone from 0 and deletes what the server forgot only after the resync's last page (R10).
+/// Every page of a pull that started at 0 — a resync, or a zone's first pull — sets
+/// `Changes.resync`, so the relay skips its tombstone floor on the middle pages (relay README
+/// "Changes"); a pull from a stored cursor never does.
 extension HostedRelayTransport {
     /// Pulls `zones`, joining the pull in flight (which then pulls them too before it ends).
     func pullZones(_ zones: Set<CloudZoneID>) async throws {
@@ -49,20 +52,23 @@ extension HostedRelayTransport {
         }
         var resync = try store.relayResyncPending(zone)
         var since = try store.relayCursor(zone: zone)
+        var fromZero = resync || since == 0
         var buffered = false
         while true {
             var request = Relay_V1_Changes()
             request.zone = zoneName(zone)
             request.sinceSeq = since
             request.limit = Self.pageLimit
+            request.resync = fromZero
             energy?.record(zone == .data ? .dataZonePoll : .relayZonePoll)
             let page: Relay_V1_ChangesResult
             do {
                 page = try await call(zone) { try await self.client.changes(request) }
             } catch HostedRelayError.server(code: .tokenExpired, _) where since > 0 {
                 if resync {
-                    // The relay refused a middle page of the resync (relay `records.ts` checks the
-                    // tombstone floor there too): starting again would stall at the same page.
+                    // The relay refused a flagged middle page of the resync (README: a `since_seq`
+                    // above the zone's seq still expires, e.g. a zone rebuilt mid-resync): starting
+                    // again at once could stall at the same page.
                     try store.markRelayResyncStalled(zone)
                     holdResync(zone)
                     Self.logger.error("relay resync stalled partway, held, \(Self.kind(zone), privacy: .public)")
@@ -70,7 +76,7 @@ extension HostedRelayTransport {
                 }
                 Self.logger.info("relay pull: token expired, resyncing \(Self.kind(zone), privacy: .public)")
                 try store.beginRelayResync(zone)
-                (resync, since) = (true, 0)
+                (resync, fromZero, since) = (true, true, 0)
                 continue
             }
             if page.more, page.newSeq <= since {
