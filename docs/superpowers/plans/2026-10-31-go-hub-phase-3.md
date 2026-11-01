@@ -4,9 +4,9 @@
 
 **Goal:** A Mac with the Desktop app runs its phone hub in the Go daemon: CloudKit through the signed `WatchtowerCloudBridge.app`, the Swift hub's state and keys adopted once and interrupt-safely (no phone re-pairs), Desktop's Settings → Mobile, New Session, composer, recordings and notices driven over `watchtower hub …` / the control socket / `session-host` v2, the transport switch both ways (sim rules 8–16) with an epoch per switch, and the Swift hub deleted.
 
-**Architecture:** On top of Phase 1 (`internal/hub/…`, `session-host` v2, `internal/sessionstart`) and Phase 2's live mode (`hub.Resolve`, `hostkind`, `<data root>/.hub`, the recording switch). New Go: `internal/hub/transport/cloudkit` (bridge client implementing `transport.Transport` plus `Shares`/`Signals`; frames in `bridgepb`; `bridgefake` for tests; a supervisor in the hub runtime), the CloudKit shape in `actions` (one shared `RelayZone` routed by sender, `device-` records) and `link` (shares, public link, participants), `internal/hub/adopt` (one-time import of `MobileHub/` and the two-phase key hand-over), `identity.KeychainStore` (darwin cgo), `internal/hub/switcher` (dual transport, sim rules 8–16), Desktop inputs on the control socket (`desktop_view`, `recording_progress`, `desktop_watch`). New Swift: the `WatchtowerCloudBridge` executable target (wraps the Kit's `CloudKitTransport` and the share code of today's `ShareService`), `HubControlClient` + `HubCenter` (heartbeat, view, recording queue, status), the `session-host` v2 client in Desktop (`Deliver`, `Stop`), the one-time v1-host restart step, the adoption driver, and Settings → Mobile rebuilt; then `Services/MobileHub/` is deleted with a guard mapping.
+**Architecture:** On top of Phase 1 (`internal/hub/…`, `session-host` v2, `internal/sessionstart`) and Phase 2's live mode (`hub.Resolve`, `hostkind`, `<data root>/.hub`, the recording switch). New Go: `internal/hub/transport/cloudkit` (bridge client implementing `transport.Transport` plus `Shares`; frames in `bridgepb`; `bridgefake` for tests; a supervisor in the hub runtime), the CloudKit shape in `actions` (one shared `RelayZone` routed by sender, `device-` records) and `link` (shares, public link, participants), `internal/hub/adopt` (one-time import of `MobileHub/` and the two-phase key hand-over), `identity.KeychainStore` (darwin cgo), `internal/hub/switcher` (dual transport, sim rules 8–16), Desktop inputs on the control socket (`desktop_view`, `recording_progress`, `desktop_watch`). New Swift: the `CloudBridgeCore` library + `WatchtowerCloudBridge` executable targets (wrap the Kit's `CloudKitTransport` and the share code of today's `ShareService`), `HubControlClient` + `HubCenter` (heartbeat, view, recording queue, status), the `session-host` v2 client in Desktop (`Deliver`, `Stop`), the one-time v1-host restart step, the adoption driver, and Settings → Mobile rebuilt; then `Services/MobileHub/` is deleted with a guard mapping.
 
-**Tech Stack:** Go 1.26 with cgo on darwin (Security framework `SecItemAdd`/`SecItemCopyMatching`/`SecItemDelete`), `google.golang.org/protobuf` (already direct), `github.com/yuin/goldmark` (indirect → direct, Task 6); Swift 5.10 mode / Swift 6 toolchain: a new SwiftPM executable target `WatchtowerCloudBridge` in `WatchtowerDesktop/Package.swift` over `WatchtowerSync` (CloudKit, CKSyncEngine), `swift-protobuf` only if `Package.swift` already resolves it (else hand-coded frames from the `.proto`, decided in Task 4 Step 1 and pinned by the fixture), GRDB for Desktop's own DB only.
+**Tech Stack:** Go 1.26 with cgo on darwin (Security framework `SecItemAdd`/`SecItemCopyMatching`/`SecItemDelete`), `google.golang.org/protobuf` (already direct), `github.com/yuin/goldmark` (indirect → direct, Task 6); Swift 5.10 mode / Swift 6 toolchain: a new SwiftPM library target `CloudBridgeCore` (over `WatchtowerSync` only: CloudKit, CKSyncEngine) and executable target `WatchtowerCloudBridge` in `WatchtowerDesktop/Package.swift`, each with its own test target; hand-coded frames from the `.proto` (decided: `WatchtowerDesktop/Package.resolved` has no `swift-protobuf`; the bytes are pinned by the shared fixture), GRDB for Desktop's own DB only.
 
 **Spec:** `docs/superpowers/specs/2026-10-31-go-hub-design.md` — §14 row 3 (this phase), §6.2 (bridge), §8 p. 4a (recordings, heartbeat) and p. 4b (composer on `Deliver`, the v1-host one-time restart), §11 (New Session through Go, requested stops), §12 / §12.1–§12.4 (adoption, never two hubs, keys and state, screens, what phones notice), §12a (contract), §13 (tests), Decisions. Protocol: `docs/superpowers/specs/2026-10-31-hub-phone-protocol-design.md` (approved, ask #834) §3.2, §3.4, §4.2, §5.4–§5.10, §7.5–§7.9, §9. Relay client spec (`docs/superpowers/specs/2026-10-29-relay-client-design.md`, "RC §N") §5 p. 10, §8, §9, §10 (Desktop rows). Relay contract: the relay repo's `sim/README.md` rules 8–16 and "Records in a phone's mailbox". Prerequisites: Plans 1a, 1b merged; Phase 2 Tasks 1, 3, 9 merged (host kind, `hub.Resolve`, `held_uploads`, recording switch). This plan builds on their **Produces** blocks only.
 
@@ -41,14 +41,14 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - **Bridge** (spec §6.2): socket `<hub dir>/bridge.sock` (0600; dir 0700), peer UID checked; frames = u32 BE length ‖ protobuf, max 4 MiB; assets travel as file paths only (`<hub dir>/assets/…` sealed files out, `<hub dir>/downloads/…` in) — never bytes of an asset on the socket; it carries sealed envelopes and metadata only, holds no hub key, opens no envelope, logs ids/counts/classes. The daemon launches it on demand with `open -g -j` semantics (no Dock icon, `LSUIElement`), restarts it with backoff 1 s doubling to 60 s, stops it when the hub stops. **It keeps running while the hub is on the relay**: the hub polls the CloudKit mailboxes every 30 s for a switch back and for free phones (sim rule 11) — a spec §6.2 amendment ("shut down when the hub moves to the relay" is dropped), decided by agent; owner confirms on this review (Decisions). Silent pushes reach the bridge (`registerForRemoteNotifications`) and become a `pull_now` event.
 - **CloudKit cadence** (spec §9, ask #735): publish spacing `slices.CloudKitSpacing` = 2 s; mailbox pass 3 s while a phone was in touch in the last 10 minutes or a link is waiting, else 30 s (`defaultRelayActiveInterval` / `defaultRelayIdleInterval` today); push → immediate pass. The `data_version` poll and debounce rules of Plan 1b are unchanged.
 - **Transport switch** (sim rules 8–16, RC §9): only a person switches (a paying phone's `transport_switch`, or `entitlement_expired`); toward the relay at least **5 min** after the previous accepted switch; toward CloudKit always and at once; the other transport's mailboxes polled every **30 s** for controls; every accepted switch = `Keyring.Rotate(ReasonTransportSwitch)`; an old epoch's receiving keys are kept until every phone acked a newer epoch and no held action is sealed in it, at most **7 days** — the same grace as every other rotation (ask #843; sim rule 14's 14 days is not used); a switch notice in the transport being left (contract point 6a) is written before the hub stops publishing there. `hub_meta.transport` = `cloudkit|relay` (default after adoption: `cloudkit`); `hub_meta.switched_at`, `switched_by` (device id or `entitlement_expired`).
-- **Key hand-over** (spec §12.2): over an inherited pipe only (`fsutil.AttachPayloads`, `hub adopt --keys-fd N`), never a file, never the control socket; staged → adopted → Desktop deletes its items → `--confirm-deleted`. The hub stays off (`awaiting_adoption`) until the identity is adopted.
+- **Key hand-over** (spec §12.2): on stdin only (`hub adopt --keys-stdin --json`, a separate call from `--settings-stdin`; stdin is an inherited pipe — Foundation's `Process` spawns with `POSIX_SPAWN_CLOEXEC_DEFAULT`, so an extra fd such as `--keys-fd 3` would never reach the child), never a file, never argv, never the control socket; staged → adopted → Desktop deletes its items → `--confirm-deleted`. The hub stays off (`awaiting_adoption`) until the identity is adopted.
 - **Identity store on a desktop host:** daemon-owned Keychain items, service `com.watchtower.hub`, accounts `hub_sig`, `hub_kx`, `wrap`, `relay_auth`, each `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, created by the `watchtower` binary — **if Task 1's real-Mac check fails**, `identity.FileStore{<hub dir>/identity.key}` as on a headless host (owner, ask #807). The choice is recorded once in `hub_meta.identity_store` = `keychain|file` and never re-decided at runtime.
 - **Desktop over the control socket** (`<hub dir>/hub.sock`, Plan 1a Task 14): heartbeat every 30 s (fresh 90 s), recording claim/progress/finish, the view inputs (PROJ-17 hidden ids, `displayOver` ids), status/pair/recording events. Owner and Desktop verbs refused under an agent marker (Plan 1a Task 15, 1b Task 5).
 - **Recordings on the Mac** (spec §8 p. 4a): `hub.Options.RecordingsDir` = `config.AppSupportDir()/recordings` (Time Machine excluded, files 0600) — the folder Desktop's transcriber already uses; new file name `<upload_id>.m4a`.
 - **Desktop screens** (spec §12.4, `docs/design/desktop-style-guide.md`, workbench rule for screen specs): each changed screen gets (a) its mockup states in `docs/design/mockups/go-hub/index.html` (Task 3), (b) a `DesignShotCatalog` entry per state — **empty, loading, error with Retry, busy, narrow width** — on fixture data (`acme`, `example.com`), (c) every UI string defined in its model (no literal in the view) and pinned by a model test, (d) colours only through `Tone`/semantic styles, `SettingsSection` + `.kitRow`, no row separators, (e) `make desktop-shots DESKTOP_SHOTS=<dir>` compared with the mockup before review, PNGs attached to the PR.
 - **Pinned copy** (spec text, verbatim): "Mobile is run by a newer Watchtower"; "Running sessions restart once with this update; their conversations continue" + **Continue**; "N sessions wait to resume" (`1 session waits to resume` for one); "[Watchtower] the session host is not running"; "No phones linked"; "This session can't take typed text right now".
 - **Swift** follows the "Swift / Desktop conventions" of `docs/review/review-rules.md` and the `add-desktop-feature` skill; every Swift task runs `make lint-swift` (lint-diff is Go-only).
-- Sidecar migrations continue from the newest file on origin/main (`00008` expected after Phase 2's `00006_held_uploads`, `00007` vouch; re-check when the task starts).
+- Sidecar migrations continue from the newest file on origin/main: the directory ends at Phase 2's `00006_held_uploads.sql` (Phase 2 Task 10's vouch migration did not ship — blocked on relay ask #805), so Task 5 is `00007` and Task 20 is `00008`; a later vouch migration takes the next free number. Re-check when each task starts.
 - Inner loop only per task (`go test ./internal/hub/<pkg>`, `make test-swift FILTER=…`, `make kit-test FILTER=…`, `make lint-diff`, `make lint-swift`); the full gate runs once, in Task 25.
 
 ## Review Focus
@@ -134,13 +134,13 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Create: `internal/hub/transport/cloudkit/bridge.proto`, generated `internal/hub/transport/cloudkit/bridgepb/bridge.pb.go`, `internal/hub/transport/cloudkit/testdata/frames.json` (shared fixture)
-- Create: `internal/hub/transport/cloudkit/{client.go,frames.go,zones.go,supervisor.go,shares.go,signals.go}`
+- Create: `internal/hub/transport/cloudkit/{client.go,frames.go,zones.go,supervisor.go,shares.go}`
 - Create: `internal/hub/transport/cloudkit/bridgefake/bridgefake.go`
-- Modify: `internal/hub/transport/transport.go` (optional capabilities), `internal/hub/secure/sealer.go` (`Signal`)
+- Modify: `internal/hub/transport/transport.go` (optional capabilities), `internal/hub/transport/errors.go` (`ErrUnsupportedZone`)
 - Test: `internal/hub/transport/cloudkit/{client_test.go,frames_test.go,supervisor_test.go,canary_test.go}`
 
 **Interfaces:**
-- Consumes: Plan 1a `transport.Transport`, `secure.Record`, `memfake` (record model for the fake).
+- Consumes: Plan 1a `transport.Transport`, `secure.Record`, `memfake` (record model for the fake); Plan 1a's ask-alert signals unchanged — `secure.Sealer.Signal(alert Record)` / `secure.SignalName` (`internal/hub/secure/record.go`) and the publisher's `sig-` saves and deletes through ordinary `Transport.Save`/`Delete` on `KindCloudKit` (`internal/hub/slices/publisher.go`): a signal is an ordinary record to the client, so no signal capability or frame exists.
 - Produces:
   ```go
   package transport
@@ -154,25 +154,23 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
       RemoveParticipants(ctx context.Context, zone string, userRecordNames []string) error
   }
   type Participant struct{ UserRecordName string; Accepted bool }
-  type Signals interface{ SaveSignal(ctx context.Context, r secure.Record) error; DeleteSignal(ctx context.Context, wire string) error }
   // Event gains PullNow bool (a silent push reached the bridge)
-  package secure
-  func (s *Sealer) Signal(wireName string) (Record, error) // class "signal": the plaintext WatchtowerSignal (protocol §4.8), the only unsealed record kind, still built only here
+  var ErrUnsupportedZone = errors.New("transport: zone not supported on this transport") // new; only ErrUnsupportedVersion exists today
   package cloudkit
   const SocketName = "bridge.sock"; const MaxFrame = 4 << 20
   type Config struct{ Dir, HubID string; Launch func(ctx context.Context) (*os.Process, error); Clock func() time.Time }
-  func New(c Config) *Client // implements transport.Transport (Kind() == KindCloudKit), SharedMailbox, Shares, Signals
+  func New(c Config) *Client // implements transport.Transport (Kind() == KindCloudKit), SharedMailbox, Shares
   func DataZoneName(hubID string) string  // "DataZone-<hub_id>"
   func RelayZoneName(hubID string) string // "RelayZone-<hub_id>"
   type Supervisor struct{…}; func NewSupervisor(c Config) *Supervisor; func (s *Supervisor) Run(ctx context.Context) error // launch, restart 1 s → 60 s backoff, stop on ctx
   package bridgefake
   func Serve(t testing.TB, dir string, kind ...Option) *Fake // a bridge on <dir>/bridge.sock over a CloudKit-shaped memfake; Frames() [][]byte captures every frame received
   ```
-  **Frames** (`bridge.proto`, one oneof per request/answer, `id` correlates): `Hello{version=1, hub_id}`, `Save{items[{zone, name, envelope, asset_path?, expect{mode, tag_seq}}]}` → `Outcomes[{saved, tag_seq, conflict?, refused_class?}]`, `Delete{zone, items[{name, expect}]}`, `Changes{zone, since}` → `Batch{changed[{name, envelope, tag_seq, server_at, asset_id?}], deleted[], new_seq, more}`, `Download{zone, asset_id, dst}`, `AccountStatus`, `EnsureShares`, `SetPublicLink{open}`, `Participants{zone}`, `RemoveParticipants{zone, user_record_names}`, `SaveSignal{wire}`, `DeleteSignal{wire}`, server-sent `Event{zone? | pull_now | error_class}`. **CloudKit change tags never cross the socket**: the bridge maps each record's tag to a per-record `tag_seq` (u64) and each zone's change feed to a `bridge_seq` cursor in its own `transport.db`, so Go keeps `RecordSeq`/`since` as `uint64` with the memfake CloudKit rule (opaque, equality only). Zones: Go names `data/<x>` → `DataZone-<hub_id>`, `relay/<x>/<y>` → `RelayZone-<hub_id>`, `pair/<slot>` → refused (`ErrUnsupported`).
+  **Frames** (`bridge.proto`, one oneof per request/answer, `id` correlates): `Hello{version=1, hub_id}`, `Save{items[{zone, name, envelope, asset_path?, expect{mode, tag_seq}}]}` → `Outcomes[{saved, tag_seq, conflict?, refused_class?}]`, `Delete{zone, items[{name, expect}]}`, `Changes{zone, since}` → `Batch{changed[{name, envelope, tag_seq, server_at, asset_id?}], deleted[], new_seq, more}`, `Download{zone, asset_id, dst}`, `AccountStatus`, `EnsureShares`, `SetPublicLink{open}`, `Participants{zone}`, `RemoveParticipants{zone, user_record_names}`, server-sent `Event{zone? | pull_now | error_class}`. **CloudKit change tags never cross the socket**: the bridge maps each record's tag to a per-record `tag_seq` (u64) and each zone's change feed to a `bridge_seq` cursor in its own `transport.db`, so Go keeps `RecordSeq`/`since` as `uint64` with the memfake CloudKit rule (opaque, equality only). Zones: Go names `data/<x>` → `DataZone-<hub_id>`, `relay/<x>/<y>` → `RelayZone-<hub_id>`, `pair/<slot>` → refused (`ErrUnsupportedZone`). `sig-` signal records travel in ordinary `Save`/`Delete` frames; the bridge's query subscription on them is its own business (Task 10).
 - **Depends on:** none
 
-- [ ] **Step 1: Fixture** `frames.json`: one case per frame type `{name, json, hex}` (protobuf bytes), read by Go `TestFramesFixture` and Swift `BridgeFramesFixtureTests` (Task 10). Decide here: if `WatchtowerDesktop/Package.resolved` already has `swift-protobuf`, the bridge uses it; else the bridge hand-codes these few messages and the fixture pins the bytes.
-- [ ] **Step 2: Failing tests:** `TestFramesFixture`, `TestClientRefusesUnsealedRecord` (before any frame is written; `bridgefake.Frames()` empty), `TestSignalIsTheOnlyUnsealedKindAndOnlyFromTheSealer` (a `secure.Record` with class signal made outside `Sealer.Signal` is refused), `TestZonesMapToHubZones`, `TestPairZoneIsUnsupportedOnCloudKit`, `TestTagSeqIsOpaqueEqualityOnly` (memfake CloudKit rule: ordering two `tag_seq` values is never used — `TestRecordSeqNeverComparedWithCursor` reused over the client), `TestExpectAbsentConflictCarriesTheServerCopy`, `TestAssetsCrossAsPathsOnly` (a `Save` with an asset writes `asset_path` under `<dir>/assets`, a path outside is refused; no frame exceeds 64 KiB with an asset), `TestSupervisorRestartsWithBackoff` (1, 2, 4 … 60 s on a fake clock; a stub bridge process group reaped in `t.Cleanup`), `TestSocketPrivateAndPeerChecked` (0600, other-UID peer closed via the Plan 1a peer seam), `TestPullNowEventTriggersAPass`, `TestBridgeFramesCarryNoPlaintext` (Review Focus 5).
+- [ ] **Step 1: Fixture** `frames.json`: one case per frame type `{name, json, hex}` (protobuf bytes), read by Go `TestFramesFixture` and Swift `BridgeFramesFixtureTests` (Task 10). Decided: `WatchtowerDesktop/Package.resolved` has no `swift-protobuf`, so the bridge hand-codes these few messages in `CloudBridgeCore/BridgeFrames.swift` (varint, length-delimited and fixed fields only) and the fixture pins the bytes; Go uses `google.golang.org/protobuf` over `bridge.proto`.
+- [ ] **Step 2: Failing tests:** `TestFramesFixture`, `TestClientRefusesUnsealedRecord` (before any frame is written; `bridgefake.Frames()` empty), `TestSignalIsTheOnlyUnsealedKindAndOnlyFromTheSealer` (a `secure.Record` with class signal made outside `Sealer.Signal` is refused; one built by Plan 1a's `Sealer.Signal` passes as an ordinary `Save`), `TestZonesMapToHubZones`, `TestPairZoneIsUnsupportedOnCloudKit` (`ErrUnsupportedZone`), `TestTagSeqIsOpaqueEqualityOnly` (memfake CloudKit rule: ordering two `tag_seq` values is never used), `TestRecordSeqNeverComparedWithCursor` (new: no such test exists yet; written here over the client), `TestExpectAbsentConflictCarriesTheServerCopy`, `TestAssetsCrossAsPathsOnly` (a `Save` with an asset writes `asset_path` under `<dir>/assets`, a path outside is refused; no frame exceeds 64 KiB with an asset), `TestSupervisorRestartsWithBackoff` (1, 2, 4 … 60 s on a fake clock; a stub bridge process group reaped in `t.Cleanup`), `TestSocketPrivateAndPeerChecked` (0600, other-UID peer closed via the Plan 1a peer seam), `TestPullNowEventTriggersAPass`, `TestBridgeFramesCarryNoPlaintext` (Review Focus 5).
 - [ ] **Step 3:** `go test ./internal/hub/transport/... ./internal/hub/secure` → FAIL.
 - [ ] **Step 4: Implement.**
 - [ ] **Step 5:** → PASS; `make lint-diff`.
@@ -181,7 +179,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ### Task 5: Desktop inputs reach the hub — `desktop_view`, `recording_progress`, `desktop_watch`
 
 **Files:**
-- Create: `internal/hub/state/migrations/00008_desktop_recordings.sql`
+- Create: `internal/hub/state/migrations/00007_desktop_recordings.sql`
 - Modify: `internal/hub/control.go` (ops), `internal/hub/state/recordings.go`, `internal/hub/slices/sources/terminal_session.go` (hidden + displayOver), `internal/hub/slices/sources/recording_job.go` (phase, percent), `cmd/hub_recording.go` (`progress`)
 - Create: `internal/hub/desktopview.go`
 - Test: `internal/hub/desktopview_test.go`, `internal/hub/control_test.go`, `internal/hub/slices/sources/terminal_session_test.go`, `internal/hub/slices/sources/recording_job_test.go`, `internal/hub/state/columns_test.go`, `cmd/hub_recording_test.go`
@@ -201,13 +199,13 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   package state
   func (s *Store) RecordingProgress(uploadID, phase string, percent *int, now time.Time) error // phase transcribing|diarizing|summarizing; percent 0..100 only while transcribing
   ```
-  - `00008`: `ALTER TABLE recording_jobs ADD COLUMN phase TEXT CHECK (phase IN ('transcribing','diarizing','summarizing'))`, `percent INTEGER CHECK (percent BETWEEN 0 AND 100)`, — no file-name column (ask #843). Allowlist (Plan 1b Task 16): `phase: enum`, `percent: counter`.
+  - `00007`: `ALTER TABLE recording_jobs ADD COLUMN phase TEXT CHECK (phase IN ('transcribing','diarizing','summarizing'))`, `percent INTEGER CHECK (percent BETWEEN 0 AND 100)`, — no file-name column (ask #843). Allowlist (Plan 1b Task 16): `phase: enum`, `percent: counter`.
   - `recording_job` slice: `claimed` + `phase` → the Swift statuses `transcribing` (with `percent`), `diarizing`, `summarizing`, exactly as today's `RecordingJobSlice`; the phone sees no change from the Swift hub.
   - `terminal_session` (and the `workbench`/`session_timeline` sources that read its published set): a hidden id (PROJ-17 Undo batch) is not published; a `displayOver` id resolves with `displayOver: true` (#411) — the two "Known divergences" in the source's doc comment are removed.
-  - CLI (pinned): `hub recording progress --upload <id> --phase <p> [--percent N] --json` → `{"upload_id","status","phase","percent"}`; Desktop uses the socket op, the CLI is its fallback when no hub runs (then exit 1 "the hub is not running": progress needs a running hub).
+  - CLI (pinned): `hub recording progress --upload <id> --phase <p> [--percent N] --json` → `{"upload_id","status","phase","percent"}`; Desktop uses the socket op only; the CLI verb exists for tests and for `hubWrite`'s lock-free path (no hub running: it writes the sidecar under the lock as the other `hub recording` verbs do).
 - **Depends on:** none
 
-- [ ] **Step 1: Failing tests:** `TestHiddenSessionIsNotPublished` (Go twin of the Swift slice's `hiddenIDs` test, same assertion), `TestDisplayOverCountReadsAsShownOver` (twin of the `displayOver` case), `TestDesktopViewClearsWhenHeartbeatGoesStale` (91 s → hidden session published again), `TestRecordingProgressMapsToSwiftStatuses` (table: claimed+transcribing 40 → `transcribing` percent 40; diarizing; summarizing; done → transcript id), `TestPercentOnlyWhileTranscribing`, `TestDesktopWatchStreamsRecordingQueued` (an intake `received` → one `recording_queued` line with the upload id only), `TestDesktopOpsRefusedUnderAnAgentMarker`, `TestHubRecordingProgressJSONKeys`, `TestSidecarHasNoNewUnsealedContentColumns` (updated allowlist), `TestFILES01_DesktopViewLogsCountsOnly`.
+- [ ] **Step 1: Failing tests:** `TestHiddenSessionIsNotPublished` (Go twin of the Swift `testASessionInTheUndoBatchIsNotPublished`, `WatchtowerDesktop/Tests/MobileHub/TerminalSessionSliceTests.swift`, same assertion), `TestDisplayOverCountReadsAsShownOver` (twin of the `displayOver` case), `TestDesktopViewClearsWhenHeartbeatGoesStale` (91 s → hidden session published again), `TestRecordingProgressMapsToSwiftStatuses` (table: claimed+transcribing 40 → `transcribing` percent 40; diarizing; summarizing; done → transcript id), `TestPercentOnlyWhileTranscribing`, `TestDesktopWatchStreamsRecordingQueued` (an intake `received` → one `recording_queued` line with the upload id only), `TestDesktopOpsRefusedUnderAnAgentMarker`, `TestHubRecordingProgressJSONKeys`, `TestSidecarHasNoNewUnsealedContentColumns` (updated allowlist), `TestFILES01_DesktopViewLogsCountsOnly`.
 - [ ] **Step 2:** `go test ./internal/hub/... ./cmd -run 'TestHubRecording|TestDesktop'` → FAIL.
 - [ ] **Step 3: Implement.** A view change calls `Publisher.PublishSoon("terminal_session")`.
 - [ ] **Step 4:** → PASS; `make lint-diff`.
@@ -240,7 +238,8 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/Services/SessionHost/SessionHostClient.swift` (hello v2, `Deliver`/`DeliverCheck`/`Delivered`/`DeliveryEvent`/`PromptHint`/`Stop` frames), `WatchtowerDesktop/Sources/Services/SessionHost/HostedTerminalSession.swift`, `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (delivery state removed), `WatchtowerDesktop/Sources/Services/SessionLineDelivery.swift`, `WatchtowerDesktop/Sources/Services/SessionControl.swift` (the re-check answer), the Workchat composer and `OwnerAsksViewModel` answer path
-- Test: `WatchtowerDesktop/Tests/SessionHost/SessionHostV2ClientTests.swift`, `WatchtowerDesktop/Tests/Services/ComposerDeliverTests.swift`
+- Test (flat, in `WatchtowerDesktop/Tests/`): `WatchtowerDesktop/Tests/SessionHostV2ClientTests.swift`, `WatchtowerDesktop/Tests/ComposerDeliverTests.swift`
+- Delete or move (PROJ-12 delivery assertions only): `WatchtowerDesktop/Tests/TerminalCenterSubmitTests.swift`, `WatchtowerDesktop/Tests/TerminalCenterTests.swift`, `WatchtowerDesktop/Tests/SessionLineDeliveryTests.swift`, `WatchtowerDesktop/Tests/SessionLineDeliveryReviewTests.swift`, `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift` (the PROJ-12 assertions; its other tests stay)
 
 **Interfaces:**
 - Consumes: Plan 1b Tasks 11–13 frames (`ProtocolVersion = 2`, `DeliverReq`, `DeliverCheckReplyMsg`, `DeliveredMsg`, `DeliveryEventMsg`, `StopReq`, `ExitMsg.Requested`), `internal/sessionhost/testdata/paths.json`.
@@ -255,7 +254,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   The composer and ask answers call `deliver` with `holdIfPromptText: false`, `submitIf` = `SessionControl`'s pre-check; `noPasteMode` → `.copied` (pasteboard + today's hint) — Desktop is a desktop host by definition. `DeliveryEvent`s drive the pane hints `TerminalCenter` showed. An `Exit` with `requested: true` maps to `closedByApp` (no PROJ-18 cleanup). Removed from `TerminalCenter`: `promptDrafts`, `pendingReturns`, `pasteHints`, `sharedPrompts`, answer hints, per-launch `runs`, the bracketed-paste reader — the host owns them (spec §8 p. 4b).
 - **Depends on:** none
 
-- [ ] **Step 1: Failing tests:** `testHelloV2`, `testDeliverAnswersTheRecheckWithSessionControlState` (fake host frames: `DeliverCheck` → reply carries `fresh`, `canSubmit`, `answersDialog` from a stubbed `SessionControl`), `testNoPasteModeCopiesToThePasteboard`, `testDeliveryEventsShowPaneHints`, `testRequestedExitIsClosedByAppAndCleansNothing` (PROJ-18), `testComposerNeverWritesThePTYDirectly` (the composer path has no `send(bytes)` call left — a seam counts PTY writes = 0), `testAskAnswerGoesThroughDeliver`. Swift PROJ-12 guards that tested `TerminalCenter` delivery are deleted **in this task** with a mapping table in the PR body to their Go twins from Plan 1b Task 13 (`TestProj12_*`), names unchanged.
+- [ ] **Step 1: Failing tests:** `testHelloV2`, `testDeliverAnswersTheRecheckWithSessionControlState` (fake host frames: `DeliverCheck` → reply carries `fresh`, `canSubmit`, `answersDialog` from a stubbed `SessionControl`), `testNoPasteModeCopiesToThePasteboard`, `testDeliveryEventsShowPaneHints`, `testRequestedExitIsClosedByAppAndCleansNothing` (PROJ-18), `testComposerNeverWritesThePTYDirectly` (the composer path has no `send(bytes)` call left — a seam counts PTY writes = 0), `testAskAnswerGoesThroughDeliver`. Swift PROJ-12 guards that tested `TerminalCenter` delivery (in the five files under **Delete or move**) are deleted **in this task** with a mapping table in the PR body to their Go twins from Plan 1b Task 13 (`TestProj12_*` in `internal/sessionhost/deliver_test.go`), names unchanged; the mapping is one-to-one and no guard is weakened — a Swift guard without a Go twin of the same meaning blocks the deletion.
 - [ ] **Step 2:** `make test-swift FILTER='SessionHostV2ClientTests|ComposerDeliverTests'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `go test ./internal/sessionhost` unchanged; `make lint-swift`.
@@ -265,7 +264,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift` (`startNewSession` and every Desktop start path: Work on it, automations `session()`, In This Folder / In Its Own Worktree), `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (attach only)
-- Test: `WatchtowerDesktop/Tests/ViewModels/StartNewSessionViaCLITests.swift`
+- Test (flat, in `Tests/`): `WatchtowerDesktop/Tests/StartNewSessionViaCLITests.swift`
 
 **Interfaces:**
 - Consumes: Plan 1b Task 15 `workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto] --json` → `{"session_id","state","folder_path","worktree_branch"}`, `workbench session stop --session S --json`.
@@ -281,12 +280,13 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ### Task 9: The owner-write notice from the history actor
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/` workbench notice policy (the target-change notice the board's `onOwnerWrite` suppresses), `WatchtowerDesktop/Sources/App/AppState.swift` (`onOwnerWrite` wiring)
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/WorkbenchOwnerNoticePolicy.swift` (pure: newest history row's actor → announce or not)
+- Modify: `WatchtowerDesktop/Sources/Services/WorkbenchNotificationCenter.swift` (calls the policy before announcing a target change), `WatchtowerDesktop/Sources/App/AppState.swift` (`onOwnerWrite` wiring, today at the `vm.onOwnerWrite` assignment; `Views/Workbench/WorkbenchBoardView.swift` forwards it, unchanged)
 - Test: `WatchtowerDesktop/Tests/Core/WorkbenchOwnerNoticePolicyTests.swift`
 
 **Interfaces:**
-- Consumes: Go `db.ActorOwner` written by the hub's board handlers (Plan 1b Task 2) into the target history rows.
-- Produces: the notice center announces a target change only when its newest history row's actor is not `owner` (`"owner"` literal = Go `db.ActorOwner`, pinned by a dual-path test reading `internal/db` constants through a fixture line in `internal/db/testdata/actors.json`); the in-process `onOwnerWrite` stays for the Desktop's own edits (same effect, earlier).
+- Consumes: Go `db.ActorOwner` (`internal/db/target_status_history.go`) written by the hub's board handlers (Plan 1b Task 2) into the target history rows.
+- Produces: `enum WorkbenchOwnerNoticePolicy { static let ownerActor = "owner"; static func shouldAnnounce(newestActor: String?) -> Bool }`; `WorkbenchNotificationCenter` announces a target change only when its newest history row's actor is not `owner` (`"owner"` literal = Go `db.ActorOwner`, pinned by a dual-path test reading `internal/db` constants through a fixture line in `internal/db/testdata/actors.json`); the in-process `onOwnerWrite` stays for the Desktop's own edits (same effect, earlier).
 - **Depends on:** none
 
 - [ ] **Step 1: Failing tests:** `testAPhoneEditWithOwnerActorIsNotAnnounced` (a history row written as by the hub, no `onOwnerWrite` call → no notice), `testAnAgentChangeIsStillAnnounced`, `testActorLiteralMatchesGo` (fixture).
@@ -298,20 +298,20 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ### Task 10: `WatchtowerCloudBridge.app`
 
 **Files:**
-- Modify: `WatchtowerDesktop/Package.swift` (executable target `WatchtowerCloudBridge` depending on `WatchtowerSync`)
-- Create: `WatchtowerDesktop/Sources/WatchtowerCloudBridge/{main.swift,BridgeServer.swift,BridgeFrames.swift,BridgeTransport.swift,BridgeShares.swift,BridgeTagMap.swift,PushReceiver.swift}`, `WatchtowerDesktop/Resources/WatchtowerCloudBridge/{Info.plist,WatchtowerCloudBridge.entitlements}`
+- Modify: `WatchtowerDesktop/Package.swift`: a library target `CloudBridgeCore` (path `Sources/CloudBridgeCore`, depends on `WatchtowerSync` only), an executable target `WatchtowerCloudBridge` (path `Sources/WatchtowerCloudBridge`, `main.swift` only, depends on `CloudBridgeCore`), a `testTarget` `CloudBridgeTests` (path `Tests/CloudBridge`, depends on `CloudBridgeCore` only); add `CloudBridgeCore` and `WatchtowerCloudBridge` to the app target's `exclude` (it is `path: "Sources"`) and `CloudBridge` to the Desktop test target's `exclude` (it is `path: "Tests"`, excluding only `Core`, `Support`, `OCRHelperTests` today) — otherwise the app would compile the bridge and the bridge tests would link the whole app and ML stack, and the linked-modules assertion would always see the key code
+- Create: `WatchtowerDesktop/Sources/CloudBridgeCore/{BridgeServer.swift,BridgeFrames.swift,BridgeTransport.swift,BridgeShares.swift,BridgeTagMap.swift,PushReceiver.swift}`, `WatchtowerDesktop/Sources/WatchtowerCloudBridge/main.swift`, `WatchtowerDesktop/Resources/WatchtowerCloudBridge/{Info.plist,WatchtowerCloudBridge.entitlements}`
 - Modify: `scripts/build-app.sh` (build, embed at `Watchtower.app/Contents/Helpers/WatchtowerCloudBridge.app`, embed the helper's provisioning profile as `Contents/embedded.provisionprofile`, sign with the iCloud container + `aps-environment` entitlements, notarize with the app), `Makefile` (`bridge-build`)
 - Create: `scripts/check-bridge-signing.sh` (called by `build-app.sh` after signing), `scripts/tests/build-app-bridge.sh`
 - Manual prerequisite (owner, once, Apple Developer account): create the App ID for the helper's bundle id `com.watchtower.desktop.cloudbridge` with iCloud (the app's existing container) and Push Notifications, and a Developer ID provisioning profile for it; put the profile path in `.env` as `WATCHTOWER_BRIDGE_PROFILE` (gitignored, like the other signing inputs). The task's build steps stop with that remedy line when it is missing.
-- Test: `WatchtowerDesktop/Tests/CloudBridge/{BridgeFramesFixtureTests.swift,BridgeContractTests.swift,BridgeTagMapTests.swift}`
+- Test (target `CloudBridgeTests`, depends on `CloudBridgeCore` only): `WatchtowerDesktop/Tests/CloudBridge/{BridgeFramesFixtureTests.swift,BridgeContractTests.swift,BridgeTagMapTests.swift}`
 
 **Interfaces:**
-- Consumes: Task 4 `bridge.proto` + `frames.json`; Kit `CloudKitTransport` (CKSyncEngine, `TransportStore`, zones, `AskAlertSubscription`, push fetch), the share logic of today's `ShareService` (moved here), `InMemoryCloudTransport` for the contract test.
+- Consumes: Task 4 `bridge.proto` + `frames.json`; Kit `CloudKitTransport` (CKSyncEngine, `TransportStore`, zones, `AskAlertSubscription` — the query subscription on `sig-` records, the only signal work the bridge does; signals arrive as ordinary `Save`/`Delete` frames —, push fetch), the share logic of today's `ShareService` (moved here), `InMemoryCloudTransport` for the contract test.
 - Produces: an `LSUIElement` app that serves `<hub dir>/bridge.sock` (path from `--socket`), checks the peer UID (`getpeereid`), answers every Task 4 frame, keeps `tag_seq`/`bridge_seq` in `BridgeTagMap` (GRDB, `<hub dir>/cloudkit/bridge.db`, ids and numbers only), conditional saves as `modifyRecords(savePolicy: .ifServerRecordUnchanged)` with the last known change tag (`expect: absent` = no tag; conflict answers carry the server copy's envelope), receives silent pushes and emits `Event{pull_now}`; exits when the socket peer closes for 60 s and the daemon does not reconnect.
 - **Depends on:** Task 4
 
-- [ ] **Step 1: Failing tests:** `testFramesFixture` (every `frames.json` case decodes and re-encodes byte-equal), `testSaveDeleteChangesOverAFakeTransport` (the spec §13 bridge contract test, fake `CloudSyncTransport`), `testConditionalSaveConflictReturnsServerCopy`, `testExpectAbsentRefusesAnExistingRecord`, `testTagSeqStableAcrossRestarts` (`BridgeTagMapTests`), `testPeerWithAnotherUIDIsClosed`, `testAssetPathOutsideTheHubDirIsRefused`, `testBridgeNeverOpensEnvelopes` (Review Focus 5: the target's dependency graph has no `EnvelopeOpener`/`HubKeyring`/key provider symbol — checked by a test that reflects over the linked module list), `testSilentPushEmitsPullNow`.
-- [ ] **Step 2:** `make test-swift FILTER='BridgeFramesFixtureTests|BridgeContractTests|BridgeTagMapTests'` → FAIL.
+- [ ] **Step 1: Failing tests:** `testFramesFixture` (every `frames.json` case decodes and re-encodes byte-equal), `testSaveDeleteChangesOverAFakeTransport` (the spec §13 bridge contract test, fake `CloudSyncTransport`), `testConditionalSaveConflictReturnsServerCopy`, `testExpectAbsentRefusesAnExistingRecord`, `testTagSeqStableAcrossRestarts` (`BridgeTagMapTests`), `testPeerWithAnotherUIDIsClosed`, `testAssetPathOutsideTheHubDirIsRefused`, `testBridgeNeverOpensEnvelopes` (Review Focus 5: the target's dependency graph has no `EnvelopeOpener`/`HubKeyring`/key provider symbol — checked by a test that reflects over the linked module list of `CloudBridgeCore`, which links `WatchtowerSync` only), `testSilentPushEmitsPullNow`.
+- [ ] **Step 2:** `cd WatchtowerDesktop && swift test --filter CloudBridgeTests` (or `make test-swift FILTER='BridgeFramesFixtureTests|BridgeContractTests|BridgeTagMapTests'`) → FAIL.
 - [ ] **Step 3: Implement**; `scripts/build-app.sh` embeds the profile and signs the helper. `scripts/check-bridge-signing.sh` fails the build unless: the embedded profile's `Entitlements` (`security cms -D -i … | plutil`) contain `com.apple.developer.icloud-container-identifiers` with the app's container, `com.apple.developer.icloud-services` `CloudKit` and `com.apple.developer.aps-environment`; its `application-identifier` ends in `com.watchtower.desktop.cloudbridge`; the helper's `Info.plist` `CFBundleIdentifier` is that id; and `codesign -d --entitlements -` of the signed helper equals the entitlements file and is a subset of the profile's.
 - [ ] **Step 4:** → PASS; `make lint-swift`; `bash scripts/tests/build-app-bridge.sh` (dry-run build with fixture profiles: a matching profile passes; a profile missing `aps-environment`, one for another bundle id, and a missing profile each fail with their reason; the helper sits at `Contents/Helpers/WatchtowerCloudBridge.app` with `embedded.provisionprofile`).
 - [ ] **Step 5: Commit** `bridge: WatchtowerCloudBridge.app — CloudKit transport over a Unix socket, no keys`.
@@ -344,7 +344,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Create: `internal/hub/link/cloudkit.go`
-- Modify: `internal/hub/link/center.go` (`Issue` fills CloudKit fields when `Shares` is present), `internal/hub/link/hello.go` (hellos from `RelayZone`)
+- Modify: `internal/hub/link/codes.go` (`Center.Issue()` fills CloudKit fields when `Shares` is present), `internal/hub/link/hello.go` (`HandleHello(zone, wireName, env)` takes hellos from `RelayZone`)
 - Test: `internal/hub/link/cloudkit_test.go`
 
 **Interfaces:**
@@ -370,10 +370,11 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Files:**
 - Create: `internal/hub/adopt/{adopt.go,steps.go,recordings.go,settings.go,check.go}`
 - Create: `cmd/hub_adopt.go` (state part; keys in Task 16)
-- Test: `internal/hub/adopt/{adopt_test.go,steps_test.go,recordings_test.go}`, `cmd/hub_adopt_test.go`
+- Modify: `internal/hub/slices/sources/recording_job.go` (a `failed` job with class `hub_moved` publishes the fixed `hub_moved` text as `Error`; today `Error` is the clipped error class only)
+- Test: `internal/hub/adopt/{adopt_test.go,steps_test.go,recordings_test.go}`, `cmd/hub_adopt_test.go`, `internal/hub/slices/sources/recording_job_test.go`
 
 **Interfaces:**
-- Consumes: Plan 1a `state.Open`/`AcquireLock`, migrations `00001`–`00008`; Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
+- Consumes: Plan 1a `state.Open`/`AcquireLock`, every sidecar migration present (`00001`–`00007` at the time of writing); Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
 - Produces:
   ```go
   package adopt
@@ -387,9 +388,9 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   func CheckSwiftFile(path string) error // pragma_table_info: every folded-in ALTER column of 00001 present, else ErrSwiftSchema
   var ErrSwiftSchema, ErrAlreadyAdopted, ErrLaterMobileHub error
   ```
-  **Steps** (each commits `adopt_step` before the next; a re-run starts at the recorded step): `copy` — `hubstate.db` (+ `-wal`/`-shm` checkpointed first: open read-write once, `PRAGMA wal_checkpoint(TRUNCATE)`, close), slice assets dir and `transport.db` copied to `<hub dir>/adopt.tmp/`; `verify` — `CheckSwiftFile` and `PRAGMA integrity_check` on the copy; `rename` — atomic `rename` into `<hub dir>/hubstate.db`, `<hub dir>/assets/`, `<hub dir>/cloudkit/transport.db`; `migrate` — `state.Open` (goose `00001` is idempotent over the Swift tables, then `00002`–`00008`; the open switches the file DELETE → WAL); `recordings` — Swift `phone_recordings` → `recording_jobs`: `received|queued|transcribing|diarizing|summarizing` → `failed` with error class `hub_moved` (ask #843: a recording mid-transcription at adoption fails once with a clear reason; the `recording_job` slice publishes this class as the fixed text "Watchtower was updated while this recording was being transcribed. The audio is kept on your Mac; send it again if you still have it on this iPhone."; the job's audio file is moved (`rename`, same volume) to `<RecordingsDir>/<upload_id>.m4a` — the path Go already derives from the job id, so no column is needed (ask #843 holds); a missing source file just skips the move; the failed job keeps that id and the audio is removed only by the 31-day `recording_jobs` prune (`state.PruneRecordingJobs(olderThan)`, the Swift hub's 31-day rule, added here: it deletes the row and its derived file)); `done` → `done` + `transcript_id`; `failed` → `failed` + `state.ErrorClass(error)`; `created_at`/`finished_at` from `updated_at`; then the Swift table's text columns are blanked (`audio_path = ''`, `error = NULL`) — **`held_uploads` gets no row** (the Swift hub never held an upload; an upload record still in `RelayZone` is read once by the Go intake and is a repeat when its upload id is already a job); `settings` — `hub_meta.enabled`, per-device `start_sessions_granted`; `transport` — `hub_meta.transport = cloudkit`; `moved` — remove the originals from `MobileHub/`, write `MOVED`; `done` — `adopted_at` (identity adoption is Task 16; the hub stays off until both are set).
+  **Steps** (each commits `adopt_step` before the next; a re-run starts at the recorded step): `copy` — `hubstate.db` (+ `-wal`/`-shm` checkpointed first: open read-write once, `PRAGMA wal_checkpoint(TRUNCATE)`, close), slice assets dir and `transport.db` copied to `<hub dir>/adopt.tmp/`; `verify` — `CheckSwiftFile` and `PRAGMA integrity_check` on the copy; `rename` — atomic `rename` into `<hub dir>/hubstate.db`, `<hub dir>/assets/`, `<hub dir>/cloudkit/transport.db`; `migrate` — `state.Open` (goose `00001` is idempotent over the Swift tables, then every later migration present; the open switches the file DELETE → WAL); `recordings` — Swift `phone_recordings` → `recording_jobs`: `received|queued|transcribing|diarizing|summarizing` → `failed` with error class `hub_moved` (ask #843: a recording mid-transcription at adoption fails once with a clear reason; the `recording_job` slice publishes this class as the fixed text "Watchtower was updated while this recording was being transcribed. The audio is kept on your Mac; send it again if you still have it on this iPhone."; the job's audio file is moved (`rename`, same volume) to `<RecordingsDir>/<upload_id>.m4a` — the path Go already derives from the job id, so no column is needed (ask #843 holds); a missing source file just skips the move; the failed job keeps that id and the audio is removed only by the 31-day `recording_jobs` prune (`state.PruneRecordingJobs(olderThan)`, the Swift hub's 31-day rule, added here: it deletes the row and its derived file)); `done` → `done` + `transcript_id`; `failed` → `failed` + `state.ErrorClass(error)`; `created_at`/`finished_at` from `updated_at`; then the Swift table's text columns are blanked (`audio_path = ''`, `error = NULL`) — **`held_uploads` gets no row** (the Swift hub never held an upload; an upload record still in `RelayZone` is read once by the Go intake and is a repeat when its upload id is already a job); `settings` — `hub_meta.enabled`, per-device `start_sessions_granted`; `transport` — `hub_meta.transport = cloudkit`; `moved` — remove the originals from `MobileHub/`, write `MOVED`; `done` — `adopted_at` (identity adoption is Task 16; the hub stays off until both are set).
   **Once only:** `adopted_at` set → `Run` returns `ErrAlreadyAdopted` at once; a `MobileHub/hubstate.db` that appears after `adopted_at` → `ErrLaterMobileHub`, logged, nothing read.
-  CLI (pinned, owner/Desktop verb, refused under an agent marker): `hub adopt --settings-stdin --json` (the Swift dir is derived in Go as `config.AppSupportDir()/MobileHub`; `--mobile-hub <dir>` exists for tests only, so Desktop never names the path) → `{"step","imported":{"devices","jobs","skipped"},"error"}`; `hub adopt --status --json` → same keys plus `"identity"` (`none|staged|adopted|confirmed`) and `"swift_state"` (`present|absent`: a Swift sidecar waits in `MobileHub/`, never true after `adopted_at`) and `"pending_recordings"` (array of `{"upload_id","audio_name"}` for every Swift `phone_recordings` row still `received|queued|transcribing|diarizing|summarizing`, read from the Swift sidecar by Go, read-only, before the `recordings` step; `audio_name` = the base name of its `audio_path`, output only, never stored; empty once the step ran). `hub status --json` gains `"kept_recordings": {"count","remove_at","dir"}` (the `hub_moved` jobs whose file still exists; `remove_at` = the earliest `finished_at + 31 d`; `dir` = `RecordingsDir`; absent when count is 0).
+  CLI (pinned, owner/Desktop verb, refused under an agent marker): `hub adopt --settings-stdin --json` (the Swift dir is derived in Go as `config.AppSupportDir()/MobileHub`; `--mobile-hub <dir>` exists for tests only, so Desktop never names the path) → `{"step","imported":{"devices","jobs","skipped"},"error"}`; `hub adopt --status --json` → same keys plus `"hub_id"` (read by Go from the Swift sidecar's `hub_meta` before the move, from the Go sidecar after it; Desktop needs it for the Kit key store, Task 22), `"identity"` (`none|staged|adopted|confirmed`) and `"swift_state"` (`present|absent`: a Swift sidecar waits in `MobileHub/`, never true after `adopted_at`) and `"pending_recordings"` (array of `{"upload_id","audio_name"}` for every Swift `phone_recordings` row still `received|queued|transcribing|diarizing|summarizing`, read from the Swift sidecar by Go, read-only, before the `recordings` step; `audio_name` = the base name of its `audio_path`, output only, never stored; empty once the step ran). `hub status --json` gains `"kept_recordings": {"count","remove_at","dir"}` (the `hub_moved` jobs whose file still exists; `remove_at` = the earliest `finished_at + 31 d`; `dir` = `RecordingsDir`; absent when count is 0).
 - **Depends on:** Task 5
 
 - [ ] **Step 1: Fixture:** a Swift-shaped sidecar built in the test from the Swift `CREATE TABLE` text (as Plan 1a `TestSwiftShapedFileMigrates`), with rows in `devices`, `phone_recordings` (one per status), `slice_assets`, `relay_processed`, journal mode DELETE.
@@ -404,7 +405,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/HubControlClient.swift` (JSON lines over `hub.sock`), `WatchtowerDesktop/Sources/Services/HubCenter.swift`
 - Modify: `WatchtowerDesktop/Sources/App/AppState.swift` (`hubCenter`), the sessions panel (`PendingSessionDeletes` changes → `desktop_view`), `SessionBackgroundProber` (`displayOver` → `desktop_view`)
-- Test: `WatchtowerDesktop/Tests/Core/HubControlClientTests.swift`, `WatchtowerDesktop/Tests/Services/HubCenterTests.swift`
+- Test: `WatchtowerDesktop/Tests/Core/HubControlClientTests.swift`, `WatchtowerDesktop/Tests/HubCenterTests.swift` (flat, in `Tests/`)
 
 **Interfaces:**
 - Consumes: Task 5 ops; Plan 1a `hub status --json` keys (+ Phase 2 `host`, `mode`, `recordings`).
@@ -427,62 +428,60 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - [ ] **Step 4:** → PASS; `make lint-swift`.
 - [ ] **Step 5: Commit** `desktop: HubCenter over the hub control socket (heartbeat, view inputs, status)`.
 
-### Task 15: Publishing on CloudKit — spacing, mailbox cadence, ask-alert signals, pull-now
+### Task 15: Publishing on CloudKit — spacing, mailbox cadence, pull-now
 
 **Files:**
-- Modify: `internal/hub/runtime.go` (pass cadence by transport), `internal/hub/slices/publisher.go` (2 s spacing exercised), `internal/hub/slices/sources/work_alert.go` / `owner_ask.go` (signals)
-- Create: `internal/hub/slices/signals.go`
+- Modify: `internal/hub/runtime.go` (pass cadence by transport), `internal/hub/slices/publisher.go` (2 s spacing exercised)
 - Test: `internal/hub/slices/cloudkit_test.go`, `internal/hub/runtime_test.go`
 
 **Interfaces:**
-- Consumes: Task 4 `transport.Signals`, `secure.Sealer.Signal`, `Event.PullNow`; Task 11.
+- Consumes: Task 4 `Event.PullNow`; Task 11; Plan 1a's ask-alert signals as they are (`Sealer.Signal`, the publisher's `sig-` save/delete on `KindCloudKit`, tests `TestAskAlertSignalOnCloudKit`, `TestAskAlertHasNoSignalOnTheRelay`, `TestAskAlertSignalIsNeverCreatedTwice` in `internal/hub/slices/alert_signal_test.go`) — nothing to add for signals.
 - Produces:
   ```go
   const CloudKitActivePass, CloudKitIdlePass = 3 * time.Second, 30 * time.Second
-  func SignalSource(...) // `sig-<wire name>` per open ask alert, as AskAlertSignal (protocol §4.8): written on CloudKit only, deleted when the alert closes
   ```
 - **Depends on:** Task 11
 
-- [ ] **Step 1: Failing tests:** `TestAKindIsSavedAtMostOncePerSpacingOnCloudKit` (2 s — the battery rule #724 rewritten, Plan 1a constant now exercised), `TestCloudKitPassIs3sWhileInTouchElse30s`, `TestPullNowRunsAPassAtOnce`, `TestAskAlertSignalWrittenAndDeletedLikeSwift` (Go twin of `AskAlertSignal` tests, same names in Go form), `TestSignalsNeverOnTheRelay`, `TestSignalRecordCarriesOnlyTheWireName` (canary: no ask text in the signal).
+- [ ] **Step 1: Failing tests:** `TestAKindIsSavedAtMostOncePerSpacingOnCloudKit` (2 s — the battery rule #724 rewritten, Plan 1a constant now exercised), `TestCloudKitPassIs3sWhileInTouchElse30s`, `TestPullNowRunsAPassAtOnce`, `TestSignalRecordCarriesOnlyTheWireName` (canary over the `cloudkit` client: no ask text in the signal record's frame).
 - [ ] **Step 2:** `go test ./internal/hub/slices ./internal/hub -run 'CloudKit|Signal|Pass'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-diff`.
-- [ ] **Step 5: Commit** `hub: CloudKit cadence, ask-alert signals, pull-now passes`.
+- [ ] **Step 5: Commit** `hub: CloudKit cadence and pull-now passes`.
 
 ### Task 16: Two-phase key hand-over and the desktop-host identity
 
 **Files:**
-- Modify: `cmd/hub_adopt.go` (`--keys-fd`, `--confirm-deleted`), `internal/hub/adopt/keys.go` (new)
+- Modify: `cmd/hub_adopt.go` (`--keys-stdin`, `--confirm-deleted`), `internal/hub/adopt/keys.go` (new)
 - Test: `internal/hub/adopt/keys_test.go`, `cmd/hub_adopt_test.go`
 
 **Interfaces:**
-- Consumes: Task 1 `identity.ForDesktopHost`, `Staging`; Task 13 `adopt.Run`; Plan 1a `identity.NewKeyring` (opens `k_meta_sealed`/`sealed_keys` with the wrap key — `TestKeyring_OpensSwiftSealedKeys`); `fsutil.AttachPayloads` (Desktop side, Task 22).
+- Consumes: Task 1 `identity.ForDesktopHost`, `Staging`; Task 13 `adopt.Run`; Plan 1a `identity.NewKeyring` (opens `k_meta_sealed`/`sealed_keys` with the wrap key — `TestKeyring_OpensSwiftSealedKeys`); the keys arrive on stdin (Desktop side, Task 22).
 - Produces:
   ```go
   const MetaIdentity = "identity" // "staged" | "adopted" | "confirmed"
-  type KeysPayload struct{ HubSig, HubKX, Wrap []byte } // JSON on the fd, base64; relay_auth is created by the Go hub (the Swift hub had none)
-  func HandOver(ctx context.Context, hubDir string, fd *os.File, st identity.Staging) (string, error) // "adopted" | error class; zeroes the payload after use
+  type KeysPayload struct{ HubSig, HubKX, Wrap []byte } // JSON on stdin, base64; relay_auth is created by the Go hub (the Swift hub had none)
+  func HandOver(ctx context.Context, hubDir string, in io.Reader, st identity.Staging) (string, error) // "adopted" | error class; zeroes the payload after use
   func ConfirmDeleted(hubDir string) error // identity → confirmed
   ```
-  Order: read the fd to EOF (cap 4 KiB) → `SaveStaged` (overwrites) → open the sealed sidecar keys with the staged identity → on success `PromoteStaged` and `identity = adopted` in one sidecar transaction after the store write; answer `adopted` → on failure `DeleteStaged`, answer the class (`wrong_keys`, `no_sidecar`). An already `adopted`/`confirmed` identity answers `adopted` at once without reading new keys (the fd is drained and discarded). CLI: `hub adopt --keys-fd N --json` → `{"identity"}`; `hub adopt --confirm-deleted --json` → `{"identity"}`. Refused under an agent marker.
+  Order: read stdin to EOF (cap 4 KiB) → `SaveStaged` (overwrites) → open the sealed sidecar keys with the staged identity → on success `PromoteStaged` and `identity = adopted` in one sidecar transaction after the store write; answer `adopted` → on failure `DeleteStaged`, answer the class (`wrong_keys`, `no_sidecar`). An already `adopted`/`confirmed` identity answers `adopted` at once without reading new keys (stdin is drained and discarded). CLI: `hub adopt --keys-stdin --json` → `{"identity"}` (a separate call from `--settings-stdin`; the two flags together are refused); `hub adopt --confirm-deleted --json` → `{"identity"}`. Refused under an agent marker.
 - **Depends on:** Task 1, Task 13
 
-- [ ] **Step 1: Failing tests:** `TestHandOverStagesThenAdopts`, `TestWrongKeysDeleteTheStagedCopy`, `TestHandOverCrashBeforeAdoptedKeepsDesktopItems` (Review Focus 1: kill after `SaveStaged` → identity `staged`, Desktop sees no `adopted`, a re-run overwrites and adopts), `TestAdoptedAnswersAtOnce`, `TestConfirmDeletedOnlyAfterAdopted`, `TestKeysNeverTouchDisk` (a temp-dir walk during the hand-over finds no file containing the key bytes when the store is Keychain; with the file store only `identity.staged.key`/`identity.key` at 0600), `TestKeysNeverLogged` (`logcanary`), `TestPayloadZeroedAfterUse`.
+- [ ] **Step 1: Failing tests:** `TestHandOverStagesThenAdopts`, `TestWrongKeysDeleteTheStagedCopy`, `TestHandOverCrashBeforeAdoptedKeepsDesktopItems` (Review Focus 1: kill after `SaveStaged` → identity `staged`, Desktop sees no `adopted`, a re-run overwrites and adopts), `TestAdoptedAnswersAtOnce`, `TestConfirmDeletedOnlyAfterAdopted`, `TestKeysNeverTouchDisk` (a temp-dir walk during the hand-over finds no file containing the key bytes when the store is Keychain; with the file store only `identity.staged.key`/`identity.key` at 0600), `TestKeysNeverLogged` (`logcanary`), `TestPayloadZeroedAfterUse`, `TestKeysStdinAndSettingsStdinAreSeparateCalls`.
 - [ ] **Step 2:** `go test ./internal/hub/adopt ./cmd -run TestHubAdopt` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-diff`.
-- [ ] **Step 5: Commit** `hub/adopt: two-phase key hand-over over an inherited pipe`.
+- [ ] **Step 5: Commit** `hub/adopt: two-phase key hand-over on stdin`.
 
 ### Task 17: The Desktop recording queue over the control socket
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/PhoneRecordingQueue.swift` (replaces `MobileHub/PhoneRecordingJobs.swift`)
-- Modify: `WatchtowerDesktop/Sources/Services/MeetingRecorderCenter.swift` (phone ingest entry by URL), `HubCenter` (`recording_queued` events)
-- Test: `WatchtowerDesktop/Tests/Services/PhoneRecordingQueueTests.swift`
+- Modify: `WatchtowerDesktop/Sources/Services/MeetingRecorderCenter.swift` (phone ingest entry unchanged: `ingestPhoneRecording(audioURL:eventID:title:config:) async throws -> URL`, called today from `MobileHub/PhoneRecordingJobs.swift` with `config: .fromDefaults()`), `HubCenter` (`recording_queued` events)
+- Test (flat, in `Tests/`): `WatchtowerDesktop/Tests/PhoneRecordingQueueTests.swift`
 
 **Interfaces:**
 - Consumes: Task 5 `recording_progress`, `desktop_watch`; Plan 1b `recording_claim` → `{"upload_id","audio_path","status"}`, `recording_finish`; Task 13 adopted rows (in-progress ones arrive `failed`/`hub_moved`, never claimable).
-- Produces: on `recording_queued` (and once at start for jobs already `queued`/`claimed` by this Desktop — read by `hub recording list --json`, added here with pinned keys `[{"upload_id","status","phase","percent","audio_path"}]`): claim → `MeetingRecorderCenter.ingestPhoneRecording(url:)` → each processing phase → `recording_progress` → `recording_finish --transcript` or `--error <class>`. A `failed`/`hub_moved` row is never claimed or reported; the recorder's own pending job for that audio is left alone.
+- Produces: on `recording_queued` (and once at start for jobs already `queued`/`claimed` by this Desktop — read by `hub recording list --json`, added here with pinned keys `[{"upload_id","status","phase","percent","audio_path"}]`): claim → `MeetingRecorderCenter.ingestPhoneRecording(audioURL:eventID:title:config: .fromDefaults())` (the returned URL is the transcript's) → each processing phase → `recording_progress` → `recording_finish --transcript` or `--error <class>`. A `failed`/`hub_moved` row is never claimed or reported; the recorder's own pending job for that audio is left alone.
 - **Depends on:** Task 14
 
 - [ ] **Step 1: Failing tests:** `testQueuedRecordingIsClaimedAndIngested`, `testProgressPhasesReachTheHub` (transcribing 0→100, diarizing, summarizing), `testFinishCarriesTheTranscriptID`, `testFailureSendsAClassNeverText`, `testAHubMovedJobIsNeverClaimed`, `testNoHubLeavesTheQueueAlone`.
@@ -495,7 +494,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Create: `internal/hub/switcher/{switcher.go,accept.go,announce.go,marker.go}`
-- Modify: `internal/hub/runtime.go` (active + other transport), `internal/hub/actions/control.go` (`transport_switch` → switcher instead of the Plan 1a rejection), `internal/hub/identity/keyring.go` (`ReasonTransportSwitch`)
+- Modify: `internal/hub/runtime.go` (active + other transport), `internal/hub/actions/control.go` (`transport_switch` → switcher instead of the Plan 1a rejection), `internal/hub/identity/keyring.go` (`ReasonTransportSwitch`, added to `RotateWith`'s accepted reasons, which reject any unknown reason today)
 - Test: `internal/hub/switcher/{switcher_test.go,sim_switch_test.go}`
 
 **Interfaces:**
@@ -523,8 +522,8 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/SessionHost/HostRestartStep.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Models/HostRestartList.swift`, `WatchtowerDesktop/Sources/Views/Shared/HostRestartNotice.swift`
-- Modify: `WatchtowerDesktop/Sources/App/AppState+SessionHost.swift` (launch order: migrate → compact → restart step → adoption → daemon), the workspace switcher view (line), `SessionHostClient.swift` (a v1 hello used only by this step)
-- Test: `WatchtowerDesktop/Tests/SessionHost/HostRestartStepTests.swift`, `WatchtowerDesktop/Tests/Core/HostRestartListTests.swift`, DesignShots
+- Modify: the launch sequence in `WatchtowerDesktop/Sources/App/AppState.swift` (where `DatabaseCompactionStep` runs and `startDaemon` is called) and `WatchtowerDesktop/Sources/App/AppState+DaemonStart.swift` (order: migrate → compact → restart step → adoption → daemon; `AppState+SessionHost.swift` holds only `startSessionHost()` and is called from that order), the workspace switcher view (line), `SessionHostClient.swift` (a v1 hello used only by this step)
+- Test: `WatchtowerDesktop/Tests/HostRestartStepTests.swift` (flat, in `Tests/`), `WatchtowerDesktop/Tests/Core/HostRestartListTests.swift`, DesignShots
 
 **Interfaces:**
 - Consumes: spec §8 p. 4b steps 0–3 and Failures; Task 7 v2 client; `<app support>/session-host-restart.json`.
@@ -552,8 +551,8 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ### Task 20: Old-epoch keys, entitlement, no copies left (sim rules 14–16)
 
 **Files:**
-- Modify: `internal/hub/identity/keyring.go` (multi-epoch retention), `internal/hub/state/epochs.go` (per-device acked epoch, `retire_after`), `internal/hub/switcher/entitlement.go` (new), `internal/hub/actions/control.go` (resend for an unknown epoch, second-copy delete), `internal/hub/transport/relay/transport.go` (`ENTITLEMENT_EXPIRED` `Control.detail`)
-- Create: `internal/hub/state/migrations/00009_switch_epochs.sql`
+- Modify: `internal/hub/identity/keyring.go` (multi-epoch retention: today's `window()` holds the current epoch and the previous one only), `internal/hub/state/keys.go` (`Epoch`, `InsertEpoch`, `RetireEpoch` gain `reason` and `retire_after`; per-device acked epoch), `internal/hub/switcher/entitlement.go` (new), `internal/hub/actions/control.go` (resend for an unknown epoch, second-copy delete), `internal/hub/transport/relay/transport.go` (`ENTITLEMENT_EXPIRED` read from the existing `transport.Control.Detail`)
+- Create: `internal/hub/state/migrations/00008_switch_epochs.sql`
 - Test: `internal/hub/switcher/sim_entitlement_test.go`, `internal/hub/identity/retention_test.go`
 
 **Interfaces:**
@@ -564,7 +563,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   func (k *Keyring) Retained() ([]uint32, error)              // every epoch whose relay-lane keys are still accepted
   func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) error // rule 14 with the 7-day cap
   ```
-  - `00009`: `ALTER TABLE hub_epochs ADD COLUMN reason TEXT CHECK (reason IN ('age','cap','unlink','manual','transport_switch'))`, `retire_after REAL` (timestamps and an enum only).
+  - `00008`: `ALTER TABLE hub_epochs ADD COLUMN reason TEXT CHECK (reason IN ('age','cap','unlink','manual','transport_switch'))`, `retire_after REAL` (timestamps and an enum only; `hub_epochs` today has `epoch, sealed_keys, created_at, first_seq, retired_at`, no reason).
   - Rule 14: an action sealed in an epoch no longer held → `resend_from(seq)` once per record version. Rule 15: the hub deletes what it read and a second copy of a control id unread. Rule 16: `ENTITLEMENT_EXPIRED` with `detail` naming a phone → act as that phone's `transport_switch(cloudkit, reason=entitlement_expired)`; no other paying phone → move to CloudKit (rule 11); another paying phone → stay, apply none of that phone's relay actions, `hub_on_relay` over CloudKit; an echo refused on the relay (`ENTITLEMENT_INACTIVE`) is owed and written over CloudKit **before** `hub_on_relay`. Plan 1a's queued entitlement/quota controls (sim rule 7a drops) are revisited: `ENTITLEMENT_INACTIVE` on a hub write now triggers rule 16 for the phone of that mailbox.
 - **Depends on:** Task 18
 
@@ -577,8 +576,8 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ### Task 21: Desktop-host live mode — `Resolve`, the bridge, the v1-host wait, status
 
 **Files:**
-- Modify: `internal/hub/hub.go` (`Resolve` desktop branch, `Dir`), `internal/hub/status.go` (reasons, keys), `internal/hub/runtime.go` (bridge supervisor, switcher, recordings dir), `cmd/hub.go`, `cmd/sync.go` (unchanged call)
-- Test: `internal/hub/resolve_desktop_test.go`, `cmd/hub_test.go`
+- Modify: `internal/hub/hub.go` (`Resolve` desktop branch, `Dir`), `internal/hub/status.go` (reasons, keys), `internal/hub/runtime.go` (bridge supervisor, switcher, recordings dir), `cmd/hub_link.go` (`hubStatusJSON` and `hubPhoneJSON`, the pinned `hub status`/`hub phones` keys), `cmd/hub_recording.go` (`hub desktop heartbeat` is refused today unless `WATCHTOWER_HUB_DIR` is set, so `hub recordings on` is refused before a heartbeat: the gate is lifted on a desktop host in live mode), `cmd/sync.go` (unchanged call)
+- Test: `internal/hub/resolve_desktop_test.go`, `cmd/hub_test.go`, `cmd/hub_recording_test.go`
 
 **Interfaces:**
 - Consumes: Phase 2 `hub.Resolve`/`Dir`/`Mode`/`hostkind.Detect`; Tasks 1, 4, 10, 13, 15, 16, 18; Plan 1b `sessionhost.Dial` (`ErrHostV1`).
@@ -594,10 +593,10 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   // Dir: on a desktop host returns DefaultDir (ErrDesktopHost removed)
   // Status gains: Adoption ("none"|"in_progress"|"failed"|"done"), Bridge ("running"|"restarting"|"unavailable"), Identity ("keychain"|"file")
   ```
-  `hub status --json` keys: Phase 2's set plus `"adoption","bridge","identity","switched_at","switched_by"` (additive). `hub phones --json` rows gain `"transport"` (`cloudkit|relay`, the phone's current one as the hub knows it) — the RC §10 transport indicator; the other §10 indicators are phase 4.
+  `hub status --json` keys: Phase 2's set plus `"adoption","bridge","identity","switched_at","switched_by"` (additive). `hub phones --json` rows gain `"transport"` with the full value set `cloudkit|relay|pending` (`cloudkit`/`relay` = the phone's current one as the hub knows it; `pending` = a relay link not yet vouched, Phase 2 Task 10's planned value, so the two tasks share one key and one set) — the RC §10 transport indicator; the other §10 indicators are phase 4.
 - **Depends on:** Task 10, Task 15, Task 16, Task 18
 
-- [ ] **Step 1: Failing tests:** `TestDesktopHostOffUntilAdopted`, `TestResolveIgnoresALaterMobileHub` (Review Focus 2), `TestFreshDesktopHostStartsWhenEnabled` (no `MobileHub/`, `hub enable` → live, new `hub_id`, identity in the recorded store), `TestDaemonWaitsWhileAV1HostAnswers` (no hub, no `session-host` spawned; a v2 host appears → the hub starts within one cycle), `TestDesktopHostAnnouncesBothTransports`, `TestRecordingsDirIsAppSupport` (test seam: `config.AppSupportDir()` under `t.TempDir()`), `TestBridgeUnavailableSaysSoInStatus`, `TestHubStatusJSONKeys`, `TestHubPhonesJSONKeys` (with `transport`), `TestPolicy03_OffStopsDesktopHostHubKeepsSetting` (desktop host variant of the Plan 1a guard, same meaning).
+- [ ] **Step 1: Failing tests:** `TestDesktopHostOffUntilAdopted`, `TestResolveIgnoresALaterMobileHub` (Review Focus 2), `TestFreshDesktopHostStartsWhenEnabled` (no `MobileHub/`, `hub enable` → live, new `hub_id`, identity in the recorded store), `TestDaemonWaitsWhileAV1HostAnswers` (no hub, no `session-host` spawned; a v2 host appears → the hub starts within one cycle), `TestDesktopHostAnnouncesBothTransports`, `TestRecordingsDirIsAppSupport` (test seam: `config.AppSupportDir()` under `t.TempDir()`), `TestBridgeUnavailableSaysSoInStatus`, `TestHubStatusJSONKeys`, `TestHubPhonesJSONKeys` (with `transport`, each of `cloudkit|relay|pending`), `TestDesktopHeartbeatAcceptedOnALiveDesktopHost` (no `WATCHTOWER_HUB_DIR`; `hub recordings on` accepted after it), `TestPolicy03_OffStopsDesktopHostHubKeepsSetting` (desktop host variant of the Plan 1a guard, same meaning).
 - [ ] **Step 2:** `go test ./internal/hub ./cmd -run 'TestHub|TestResolve|TestDesktopHost|TestDaemonWaits'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; Phase 2's `TestResolve_DesktopHostNeverStartsALiveHub` is rewritten as `TestResolve_DesktopHostNeverStartsBeforeAdoption` (same meaning: no live hub beside Swift state); `make lint-diff`.
@@ -608,21 +607,21 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/HubAdoptionDriver.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Models/HubAdoptionState.swift`
 - Modify: `WatchtowerDesktop/Sources/Services/MeetingRecorderCenter.swift` and `WatchtowerDesktop/Sources/Services/MeetingRecorderCenter+Upgrade.swift` (`cancelPhoneRecordingJobs(audioNames:)`: cancel and forget the pending and running processing jobs of those files — never resumed, never completed, the `pending_transcripts` rows removed), `WatchtowerDesktop/Sources/App/AppState+MobileHub.swift` (rewritten: start order after Task 19's step), `WatchtowerDesktop/Sources/WatchtowerCore/Utilities/Constants.swift` (`mobileSyncEnabled` read once for adoption, then removed from defaults), `WatchtowerDesktop/Sources/App/AppState.swift`
-- Test: `WatchtowerDesktop/Tests/Services/HubAdoptionDriverTests.swift`, `WatchtowerDesktop/Tests/Core/HubAdoptionStateTests.swift`, `WatchtowerDesktop/Tests/Services/MeetingRecorderCancelPhoneJobsTests.swift`, DesignShots
+- Test: `WatchtowerDesktop/Tests/HubAdoptionDriverTests.swift`, `WatchtowerDesktop/Tests/Core/HubAdoptionStateTests.swift`, `WatchtowerDesktop/Tests/MeetingRecorderCancelPhoneJobsTests.swift` (flat, in `Tests/`), DesignShots
 
 **Interfaces:**
-- Consumes: Task 13 `hub adopt --settings-stdin --json`, `--status` (`step`, `identity`, `swift_state`, `pending_recordings`); Task 16 `--keys-fd N`, `--confirm-deleted`; Kit `KeychainKeyStore.hubIdentity`/`deleteHubIdentity`; `fsutil.AttachPayloads` Swift twin (`Process` with an inherited pipe, the Files-outside-DB Stage A pattern).
+- Consumes: Task 13 `hub adopt --settings-stdin --json`, `--status` (`step`, `hub_id`, `identity`, `swift_state`, `pending_recordings`); Task 16 `--keys-stdin`, `--confirm-deleted`; Kit `HubKeyStore` (`WatchtowerSync/Secure/KeyStore.swift`), implemented by `KeychainHubKeyStore`: `hubIdentity(hubID:) -> (keys, created: Bool)` (creates a fresh identity when none exists) and `deleteHubIdentity(hubID:)`; `Process` with stdin as a pipe (the Files-outside-DB Stage A stdin pattern).
 - Produces:
   ```swift
   enum HubAdoptionState: Equatable { case notNeeded, inProgress(step: String), failed(reason: String), done
       var title: String; var detail: String?; var retryTitle: String? } // copy in the model, pinned by tests
   @MainActor final class HubAdoptionDriver { func run() async -> HubAdoptionState; func retry() async -> HubAdoptionState }
   ```
-  Sequence (spec §12.1–§12.2): the adoption state comes only from `watchtower hub adopt --status --json` (`step`, `identity`, plus a `swift_state` key `present|absent` added to that verb's pinned keys in Task 13) — Desktop never names a `hubstate.db` path, so Task 24's guard stays strict; skip when `swift_state` is `absent` and `step` is not in progress; **first cancel Desktop's own transcription of every pending phone recording**: `MeetingRecorderCenter.cancelPhoneRecordingJobs(audioNames:)` with the status answer's `pending_recordings[].audio_name`, awaited until no job of those files runs — only then `hub adopt` (which moves the audio and fails the job with `hub_moved`); the cancel is idempotent and runs on every launch whose status still lists pending recordings, so a crash between the cancel and the adoption repeats it; `hub adopt` with settings `{enabled: mobileSyncEnabled, start_session_allows}` on stdin → `hub adopt --keys-fd 3` with the three items from `HubKeyStore` on the pipe → only on `{"identity":"adopted"}` delete the Desktop items, then `--confirm-deleted`; a missing confirm retries the delete at the next launch; any failure → `.failed(reason)` with **Retry**, the hub stays off (no Swift fallback). Settings → Mobile's toggle calls `hub enable|disable` (Task 23); `mobileSyncEnabled` readers (`Constants.swift`, `AppState.swift`, `AppState+MobileHub.swift`) read `hub status --json` instead.
+  Sequence (spec §12.1–§12.2): the adoption state comes only from `watchtower hub adopt --status --json` (`step`, `identity`, plus a `swift_state` key `present|absent` added to that verb's pinned keys in Task 13) — Desktop never names a `hubstate.db` path, so Task 24's guard stays strict; skip when `swift_state` is `absent` and `step` is not in progress; **first cancel Desktop's own transcription of every pending phone recording**: `MeetingRecorderCenter.cancelPhoneRecordingJobs(audioNames:)` with the status answer's `pending_recordings[].audio_name`, awaited until no job of those files runs — only then `hub adopt` (which moves the audio and fails the job with `hub_moved`); the cancel is idempotent and runs on every launch whose status still lists pending recordings, so a crash between the cancel and the adoption repeats it; `hub adopt` with settings `{enabled: mobileSyncEnabled, start_session_allows}` on stdin → `HubKeyStore.hubIdentity(hubID:)` with the status answer's `hub_id`: `created == true` means the Mac had no keys — the driver deletes that fresh item (`deleteHubIdentity`), ends in `.failed("no_keys")` and never hands it to Go — else `hub adopt --keys-stdin --json` (a separate call) with the three items on stdin → only on `{"identity":"adopted"}` delete the Desktop items, then `--confirm-deleted`; a missing confirm retries the delete at the next launch; any failure → `.failed(reason)` with **Retry**, the hub stays off (no Swift fallback). Settings → Mobile's toggle calls `hub enable|disable` (Task 23); `mobileSyncEnabled` readers (`Constants.swift`, `AppState.swift`, `AppState+MobileHub.swift`) read `hub status --json` instead.
 - **Depends on:** Task 14, Task 16, Task 19, Task 21, Task 3 (mockup approved)
 
 - [ ] **Step 1: DesignShots:** `mobileHandOverInProgress` (busy), `mobileAdoptionFailed` (error with **Retry**), `mobileAdoptionLoading`, narrow width of each.
-- [ ] **Step 2: Failing tests:** `testKeysOnlyOverTheInheritedPipe` (no temp file, argv carries no key; a fake `Process` seam records fds), `testDesktopItemsDeletedOnlyAfterAdopted`, `testCrashBeforeConfirmRetriesTheDeleteNextLaunch`, `testFailureShowsRetryAndKeepsTheHubOff`, `testRunsAfterTheRestartStep` (order: restart step `finished` or `notNeeded` first), `testNoSwiftStateSkips` (status answer `swift_state: absent`), `testStateReadOnlyThroughHubAdoptStatus` (no file path under `MobileHub/` is read by the driver), `testInFlightTranscriptionIsCancelledBeforeAdopt` (a recorder job running on a listed file is cancelled and awaited before `hub adopt` is spawned; it never completes, never writes a transcript, never opens the moved path), `testCancelRepeatsAfterAnInterruption` (crash after the cancel, before `hub adopt`: the next launch cancels again — a no-op on already cancelled jobs — then adopts; a job the recorder re-queued at launch from `pending_transcripts` is cancelled too), `testSettingsCarryEnabledAndAllows`, `testStateCopy` (every `title`/`detail`/`retryTitle`).
+- [ ] **Step 2: Failing tests:** `testKeysOnlyOnStdin` (no temp file, argv carries no key, no extra fd; a fake `Process` seam records stdin and argv; keys and settings are two separate calls), `testAFreshlyCreatedIdentityIsNoKeys` (`created == true` → the item is deleted, `.failed("no_keys")`, no `--keys-stdin` call), `testDesktopItemsDeletedOnlyAfterAdopted`, `testCrashBeforeConfirmRetriesTheDeleteNextLaunch`, `testFailureShowsRetryAndKeepsTheHubOff`, `testRunsAfterTheRestartStep` (order: restart step `finished` or `notNeeded` first), `testNoSwiftStateSkips` (status answer `swift_state: absent`), `testStateReadOnlyThroughHubAdoptStatus` (no file path under `MobileHub/` is read by the driver), `testInFlightTranscriptionIsCancelledBeforeAdopt` (a recorder job running on a listed file is cancelled and awaited before `hub adopt` is spawned; it never completes, never writes a transcript, never opens the moved path), `testCancelRepeatsAfterAnInterruption` (crash after the cancel, before `hub adopt`: the next launch cancels again — a no-op on already cancelled jobs — then adopts; a job the recorder re-queued at launch from `pending_transcripts` is cancelled too), `testSettingsCarryEnabledAndAllows`, `testStateCopy` (every `title`/`detail`/`retryTitle`).
 - [ ] **Step 3:** `make test-swift FILTER='HubAdoptionDriverTests|HubAdoptionStateTests|MeetingRecorderCancelPhoneJobsTests'` → FAIL (`MeetingRecorderCancelPhoneJobsTests`: cancelling twice is a no-op; a cancelled job is never picked up again by the upgrade/resume path).
 - [ ] **Step 4: Implement**; colours via `Tone`.
 - [ ] **Step 5:** → PASS; `make desktop-shots DESKTOP_SHOTS=<dir>` vs the mockup; `make lint-swift`.
@@ -633,7 +632,8 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Files:**
 - Create: `WatchtowerDesktop/Sources/ViewModels/MobileSettingsModel.swift`, `WatchtowerDesktop/Sources/ViewModels/MobilePairingModel.swift`
 - Modify (rewrite): `WatchtowerDesktop/Sources/Views/Settings/MobileSettingsView.swift`, `WatchtowerDesktop/Sources/Views/Settings/MobileLinkSheet.swift`
-- Test: `WatchtowerDesktop/Tests/ViewModels/MobileSettingsModelTests.swift`, `WatchtowerDesktop/Tests/ViewModels/MobilePairingModelTests.swift`, DesignShots
+- Delete: `WatchtowerDesktop/Sources/ViewModels/MobileSettingsViewModel.swift`, `WatchtowerDesktop/Sources/ViewModels/MobileLinkSheetViewModel.swift` (outside `Services/MobileHub/`, replaced by the two models above; their tests `Tests/MobileHub/MobileSettingsViewModelTests.swift`, `MobileLinkSheetViewModelTests.swift`, `MobileSettingsViewTests.swift` and `MobileSettingsTestSupport.swift` are rewritten onto the new models or mapped in Task 24's table)
+- Test (flat, in `Tests/`): `WatchtowerDesktop/Tests/MobileSettingsModelTests.swift`, `WatchtowerDesktop/Tests/MobilePairingModelTests.swift`, DesignShots
 
 **Interfaces:**
 - Consumes: `hub status|phones --json` (Task 21 keys), `hub unlink|allow|name|enable|disable --json`, `hub recordings on|off --json` → `{"recordings","stored"}` (Phase 2 Task 9), `hub pair --json --stream` events `qr|waiting|sas|linked|refused` + `{"confirm":…}` on stdin (Plan 1a Task 15), `HubCenter.status` and `desktop_watch` `pair`/`switched` events.
@@ -667,15 +667,16 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ### Task 24: Delete the Swift hub; guards, inventory, docs, guide
 
 **Files:**
-- Delete: `WatchtowerDesktop/Sources/Services/MobileHub/` (all), `WatchtowerDesktop/Sources/WatchtowerCore/Services/MobileHubMovedGuard.swift` (Task 2's guard is for older releases; this build has no Swift hub to guard), their tests under `WatchtowerDesktop/Tests/MobileHub/` (except `HubKeyringVectorTests.swift`, kept as the vector writer), `TrayAppDelegate`'s remote-notification forwarding to the hub, Swift `TerminalLaunch`/`SessionStartPlacement` start-path code left by Task 8 (their fixture tests stay as the Go dual-path check)
+- Delete: `WatchtowerDesktop/Sources/Services/MobileHub/` (all), `WatchtowerDesktop/Sources/WatchtowerCore/Services/MobileHubMovedGuard.swift` (Task 2's guard is for older releases; this build has no Swift hub to guard), their tests under `WatchtowerDesktop/Tests/MobileHub/` (except `HubKeyringVectorTests.swift`, kept as the vector writer; the Mobile view-model tests are handled by Task 23), `TrayAppDelegate`'s remote-notification forwarding to the hub, Swift `TerminalLaunch`/`SessionStartPlacement` start-path code left by Task 8 (their fixture tests stay as the Go dual-path check)
 - Create: `WatchtowerDesktop/Tests/Core/DesktopNeverOpensTheSidecarTests.swift`
+- Modify: `WatchtowerDesktop/Sources/App/AppState.swift` (`mobileSyncPolicy` / `MobileSyncPolicyBox` over `Services/MobileHub/MobileSyncPolicy.swift` → `HubCenter.status` reason `policy_off` from `hub status --json`; `MobileHubPolicyTests` maps to the Go twins `TestPolicy03_OffStopsHubKeepsSetting` / `TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` in `internal/hub/hub_test.go` and Task 21's `TestPolicy03_OffStopsDesktopHostHubKeepsSetting`)
 - Modify: `docs/inventory/workbench.md` (PROJ-12/16/21 Swift paths → Go files; PROJ-17 note: the Undo batch reaches the hub, Task 5), `docs/inventory/session-feed.md` (FEED Swift hub paths → Go), `docs/inventory/policy.md` (`MobileSyncPolicy.swift` → Go), `docs/inventory/README.md` (module paths), each with a changelog line citing spec approval and asks #807, #812, #813, #814
 - Modify: `docs/features/go-hub.md` (phase 3: bridge, adoption, desktop live mode, switch, the Task 1 Keychain result), `docs/features/mobile-companion.md` (Swift hub sections replaced by a pointer; full rewrite is phase 4), `CLAUDE.md` (Mobile line), `docs/guide/features/iphone.md` (downgrade note: "after this update, an older Watchtower can't run Mobile — update instead"), the guide's privacy page (hub keys in the Keychain or a 0600 file per Task 1)
 
 **Interfaces:** none new.
 - **Depends on:** Task 6, Task 9, Task 17, Task 20, Task 22, Task 23
 
-- [ ] **Step 1: Mapping table** in the PR body: every Swift hub test with a behavioural assertion → its Go twin (name, file); a Swift test without a twin blocks the deletion (spec §13 "Ported guards"). PROJ-16/21, FEED-05, POLICY-03 Swift guards → their Plan 1b Go twins, names unchanged.
+- [ ] **Step 1: Mapping table** in the PR body: every Swift hub test with a behavioural assertion → its Go twin (name, file); a Swift test without a twin blocks the deletion (spec §13 "Ported guards"). PROJ-16/21, FEED-05, POLICY-03 Swift guards → their Plan 1b Go twins, names unchanged; the Mobile view-model tests of Task 23 (`MobileSettingsViewModelTests`, `MobileLinkSheetViewModelTests`, `MobileSettingsViewTests`) → `MobileSettingsModelTests` / `MobilePairingModelTests`; `MobileHubPolicyTests` → the Go `TestPolicy03_*` twins.
 - [ ] **Step 2: Failing test** `testDesktopNeverOpensTheSidecar`: no Swift string literal in `WatchtowerDesktop/Sources` contains `hubstate.db` or `MobileHub`, **with no exception** — the adoption driver (Task 22) reads the adoption state only through `hub adopt --status --json`, Go derives the Swift dir itself (Task 13), and `MobileHubMovedGuard` is deleted here. Type and file names such as `AppState+MobileHub.swift` are not string literals and are not matched. Today's one other literal, the `Logger` category `"MobileHub"` in `AppState.swift`, is renamed to `"Mobile"` in this task.
 - [ ] **Step 3: Delete and re-point**; `go test ./docs/guide` (8 KB cap).
 - [ ] **Step 4:** `make test-swift FILTER='DesktopNeverOpensTheSidecarTests|MobileSettingsModelTests|HubCenterTests'`, `go test ./internal/hub/...`, `make lint-swift`, `make lint-diff` → PASS.
@@ -692,7 +693,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - [ ] **Step 1: Automated gate:** `make test`, `make test-swift`, `make lint-all`, `make relay-interop RELAY=../relay`, `make kit-test`, `make mobile-test` (phone unchanged, must still pass) → all PASS.
 - [ ] **Step 2: Manual checks on a real Mac** (owner's machine, a **copy** of the live data root first: `cp -R` into a scratch user account or a second macOS user — never the live install before the copy passes):
   - M1 Adoption: a Mac with today's release and a linked phone → install the build → the v1-host notice appears, **Continue** → sessions resume → Settings → Mobile shows "hand-over in progress" then the phone list; `hub status --json` `adoption: done`, same `hub_id`; the phone (today's App Store/TestFlight build) keeps working without re-pairing: asks, board move, session line typed, permission answer, recording upload (received, transcribed, progress phases on the phone).
-  - M2 Interrupt: kill Desktop during the hand-over (after `hub adopt` state, before `--keys-fd`) → relaunch finishes; Keychain shows the Desktop items deleted only after `adopted`.
+  - M2 Interrupt: kill Desktop during the hand-over (after `hub adopt` state, before `--keys-stdin`) → relaunch finishes; Keychain shows the Desktop items deleted only after `adopted`.
   - M3 Downgrade: install the previous release with the Task 2 guard → "Mobile is run by a newer Watchtower", no Swift hub runs; re-upgrade → the adopted links intact.
   - M4 Bridge: quit Desktop → the phone still gets updates (the daemon and bridge run); a silent push wakes a pass within seconds.
   - M5 FILES-01: `watchtower.log`, the bridge's log lines and `Console.app` for the bridge show ids, counts and classes only.
@@ -736,11 +737,20 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 5. **Desktop never opens `hubstate.db`**, not even read-only: the sidecar keeps one writer and has no reader races. Every Desktop read goes through `hub … --json` or the control socket (Global Constraints, Task 24 guard).
 6. **A desktop host without a relay origin runs CloudKit only.** Release builds pin a default origin (Phase 2 Task 3), so this affects only dev builds or an origin cleared on purpose (Task 21).
 
+### Pre-start review (decided by agent, 2026-11-01)
+
+7. **Keys on stdin.** `hub adopt --keys-stdin --json`, a separate call from `--settings-stdin`: Foundation's `Process` spawns with `POSIX_SPAWN_CLOEXEC_DEFAULT`, so an inherited fd 3 never reaches the child. Still an inherited pipe, never a file, argv or the control socket (Global Constraints, Tasks 16, 22, 25 M2).
+8. **Signals reused from Plan 1a.** `Sealer.Signal` and the publisher's `sig-` save/delete on CloudKit already exist; no `Signals` capability, no signal frames, no `SignalSource`. The bridge only keeps its query subscription on `sig-` records (Tasks 4, 10, 15).
+9. **Migration numbering.** The sidecar ends at `00006_held_uploads.sql` (Phase 2 Task 10's vouch did not ship): Task 5 is `00007`, Task 20 is `00008`; a later vouch migration takes the next free number.
+10. **`CloudBridgeCore` library + own test target.** The bridge code is a library over `WatchtowerSync` only, the executable is `main.swift`, the tests are their own target; both bridge folders are excluded from the app and Desktop test targets. Frames are hand-coded (no `swift-protobuf` in `Package.resolved`) (Tasks 4, 10).
+11. **`transport` value set** in `hub phones --json`: `cloudkit|relay|pending` (`pending` = Phase 2 Task 10's not-yet-vouched relay link), one set for both tasks (Task 21).
+
 ## Known limits
 
 - The other RC §10 indicators (Relay unavailable, quota errors, undelivered count, Diagnostics, latency samples) and `send_alert` pushes are phase 4. Phase 3 shows only the transport per phone and who switched it last.
 - A CLI-only Mac's `<data root>/.hub` relay links are not merged into a later Desktop adoption (Phase 2 Known limits). On such a Mac, Desktop finds no `MobileHub/`, so it starts the existing Go hub as a desktop host: the relay links stay and CloudKit is offered to new links only (spec §7.3).
 - A phone whose Kit predates control records (today's App Store build) cannot read a switch notice. It shows the Mac as not updating until it is updated, and then reads the marker left in the old transport (contract point 6a).
+- Phone-side screens of spec §12.4 — the headless hub in the switcher, "This hub needs Relay", the hidden record button, "A free phone can't link this hub" — are in neither Phase 2 nor this plan: phone work, with the relay client phases.
 - The bridge implements CloudKit conditional saves itself, over change tags. When the Kit's `ConditionalTransport` arrives with relay client Phase 1, both implementations exist until the bridge moves onto it (Later).
 
 ## Later (not in this plan)
@@ -751,7 +761,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 ## Self-review (done while writing)
 
 - **Spec coverage, §14 row 3:**
-  - CloudKit bridge, §6.2: Tasks 4, 10, 15, 21.
+  - CloudKit bridge, §6.2: Tasks 4, 10, 15, 21 (§6.2's `PhoneAccessService` is `ShareService`; the spec line was amended with the pre-start review, Task 0).
   - Adoption, §12.1–§12.2: sidecar move, `MOVED`, once only, a later `MobileHub/` ignored, resumable (Task 13); two-phase keys (Task 16); Keychain or file (Task 1); CloudKit state moves to the bridge (Task 13 `transport.db`); mobile settings (Tasks 13, 22); downgrade guard ahead of the Go hub (Task 2).
   - Screens, §12.4: mockups (Task 3); Settings → Mobile (Tasks 22, 23); v1 notice and switcher line (Task 19).
   - New Session through Go, §11: Task 8. Requested stops: Task 7.
@@ -773,9 +783,10 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   - `held_uploads` on adoption: explicitly empty, with a test (Task 13).
   - Recordings mid-transcription at adoption fail once as `hub_moved`, with no file-name column; the audio moves to its derived path and leaves with the 31-day prune (Tasks 5, 13, 17; asks #843, #851).
   - Review round 2 (ask #855): Desktop cancels its own transcription of pending phone recordings before adoption, idempotently (Task 22); Settings → Mobile shows the kept recordings with **Show in Finder** and the removal date (Tasks 13, 23, 3); the Task 24 guard has no exception.
+  - Pre-start review (2026-11-01): keys on stdin (Tasks 16, 22, 25); Plan 1a signals reused, Task 4/15 signal work removed; sidecar migrations `00007`/`00008`; `CloudBridgeCore` + own test target in `Package.swift`; `hub_id` in `adopt --status` and the `created` key-store case; Mobile view models, `MobileSyncPolicy` and the heartbeat gate covered; corrected file names and signatures (`codes.go`, `keys.go`, `hub_link.go`, `ingestPhoneRecording`, the launch-order files, `WorkbenchOwnerNoticePolicy`); flat test paths.
   - Review round 1 (ask #851): the moved screen has its own shot in Task 2 and a section in Task 3; the bridge profile and its signing check are in Task 10; Task 22 reads the adoption state only through `hub adopt --status`.
 - **Types across tasks:**
-  - `transport.SharedMailbox`/`Shares`/`Signals`, `Sealer.Signal`: Task 4 → 10, 11, 12, 15.
+  - `transport.SharedMailbox`/`Shares`, `transport.ErrUnsupportedZone`: Task 4 → 10, 11, 12. Plan 1a `Sealer.Signal` (unchanged) → 4, 15.
   - `cloudkit.New`/`Supervisor`: Task 4 → 21.
   - `OpDesktopView`/`OpRecordingProgress`/`OpDesktopWatch`: Task 5 → 14, 17.
   - `identity.ForDesktopHost`/`Staging`: Task 1 → 16, 21.

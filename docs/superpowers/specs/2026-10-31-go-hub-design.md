@@ -96,10 +96,11 @@ The Swift hub's layers map one-to-one; the Go names are the builder's, the bound
 
 Apple offers CloudKit only through its frameworks; a Go process cannot write the owner's private database and shares. The bridge is a small signed Swift helper, **`WatchtowerCloudBridge.app`**, embedded in the Desktop bundle with the iCloud container entitlement:
 
-- It wraps the Kit's existing `CloudKitTransport` (CKSyncEngine, `transport.db` state, shares, query subscriptions for `sig-` alert records) and exposes exactly the transport operations — save (incl. conditional), delete, changes, share/participant operations of `PhoneAccessService`, alert subscription — as length-prefixed protobuf frames over a Unix socket in the hub's state dir (0700 dir, 0600 socket, peer UID check).
+- It wraps the Kit's existing `CloudKitTransport` (CKSyncEngine, `transport.db` state, shares, query subscriptions for `sig-` alert records) and exposes exactly the transport operations — save (incl. conditional), delete, changes, share/participant operations of `ShareService`, alert subscription — as length-prefixed protobuf frames over a Unix socket in the hub's state dir (0700 dir, 0600 socket, peer UID check).
 - It carries only sealed envelopes and metadata — the same bytes it would hand CloudKit. It holds no hub keys and never opens an envelope.
 - The daemon launches it on demand (CloudKit transport selected) and supervises it (restart with backoff, shut down when the hub stops — see the amendment below). It does not depend on Desktop running. Silent pushes to the Mac (today `TrayAppDelegate`) are received by the bridge and forwarded as a "pull now" event.
 - **Amendment (phase 3 plan, decided by agent; owner confirms on the plan review, ask #851):** the bridge is not shut down when the hub moves to the relay. The hub keeps polling its phones' CloudKit mailboxes every 30 s for a switch back and for free phones (sim rule 11), so the bridge runs whenever the hub runs on a desktop host.
+- **Amendment (phase 3 plan pre-start review, 2026-11-01):** the share/participant code the bridge takes over is Desktop's `Services/MobileHub/ShareService.swift`; no `PhoneAccessService` type exists (the name above is corrected).
 - A headless host never has it: a headless host supports the relay only (§7.3).
 
 ## 7. Identity on the relay: vouched hubs
