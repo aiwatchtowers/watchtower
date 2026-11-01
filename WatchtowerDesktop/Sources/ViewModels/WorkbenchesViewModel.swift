@@ -83,6 +83,8 @@ final class WorkbenchesViewModel {
     /// read: menus label themselves with it. A launch reads it afresh
     /// (`currentDefaultAgent`), since Settings saves from another window.
     private(set) var defaultAgent: AgentKind = .claude
+    /// Opens only a confined, decoded raster mockup selected in an ask.
+    @ObservationIgnored var openAskImage: @MainActor (URL) -> Bool = { NSWorkspace.shared.open($0) }
     /// Reads `workbench.default_agent`; AppState wires the config file. A
     /// test VM launches Claude Code unless it sets this.
     @ObservationIgnored var readDefaultAgent: @MainActor () -> AgentKind = { .claude }

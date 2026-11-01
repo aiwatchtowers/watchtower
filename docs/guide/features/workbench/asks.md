@@ -18,6 +18,8 @@ The agent files an ask through a Watchtower tool. There are three kinds, and two
 
 **Full** asks open in a drawer next to the session's terminal. A **Quick** ask is one question with two or three short options; it never opens the drawer by itself. It shows as buttons on a banner over the terminal. Reviews and checks are always Full.
 
+In a review document, click a text-file link to open it in **Files** beside the terminal. PNG, JPEG, GIF and WebP mockups open in your image app. Relative paths and local `file://` links work when the file is inside the ask session’s folder. Missing files and links outside that folder open nothing; web links open in your browser. You can still select text to comment on it.
+
 ### How the answer reaches the agent
 
 Your answer is saved first. Then one line is typed into that session's terminal and sent, for example "Ask #12 answered (review: approved) — read it with get_ask 12 using the watchtower-workbench skill." If the agent is still working, Claude Code queues the line for its next turn.
