@@ -394,11 +394,12 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         XCTAssertEqual(status, 200)
         XCTAssertEqual(try Data(contentsOf: out), bytes)
 
-        // The phone's own pull stashes the attachment beside its event.
+        // The phone's own pull buffers the record without downloading its own attachment (#1469;
+        // `testAPullNeverDownloadsTheDevicesOwnAttachment`).
         try await transport.pull()
         let event = try XCTUnwrap(try buffered(store, .relay).changed.first)
         XCTAssertEqual(event.recordName, "upload-1")
-        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(event.assetFileURL)), bytes)
+        XCTAssertNil(event.assetFileURL)
     }
 
     func testDownloadCappedAndRedirectsChecked() async throws {

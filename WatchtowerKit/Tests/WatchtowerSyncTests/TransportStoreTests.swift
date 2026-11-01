@@ -724,7 +724,7 @@ extension TransportStoreTests {
         let queue = try DatabaseQueue(path: path)
         defer { try? queue.close() }
         try queue.read { db in
-            for table in ["relay_cursors", "relay_records", "relay_resync_seen", "relay_binding"] {
+            for table in ["relay_cursors", "relay_records", "relay_resync_seen", "relay_binding", "relay_own_attachments"] {
                 XCTAssertTrue(try db.tableExists(table), table)
                 XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)"), 0, table)
             }
@@ -772,6 +772,36 @@ extension TransportStoreTests {
         XCTAssertThrowsError(try store.bufferRelayPage(zone: .data, changed: [relayRecord("b", seq: 4)], deleted: [], newSeq: 4, resync: false))
         try store.failInserts(false)
         XCTAssertEqual(try store.relayCursor(zone: .data), 3, "a page that could not be buffered leaves the cursor")
+    }
+
+    /// The own-attachment ledger (#1469): an upload matches its record name and id only; the newest
+    /// upload of a name replaces the older; a pulled deletion, a resync that no longer finds the
+    /// record, and a wipe drop it.
+    func testTheOwnAttachmentLedgerFollowsTheRecord() throws {
+        let store = try TransportStore.inMemory()
+        try store.noteRelayOwnAttachment("att-1", name: "rec", zone: .relay)
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-1", name: "rec", zone: .relay))
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-1", name: "other", zone: .relay))
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-1", name: "rec", zone: .data))
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-x", name: "rec", zone: .relay))
+
+        try store.noteRelayOwnAttachment("att-2", name: "rec", zone: .relay)
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-1", name: "rec", zone: .relay), "a re-save's upload replaces it")
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-2", name: "rec", zone: .relay))
+
+        try store.bufferRelayPage(zone: .relay, changed: [], deleted: ["rec"], newSeq: 1, resync: false)
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-2", name: "rec", zone: .relay), "a pulled deletion drops it")
+
+        try store.noteRelayOwnAttachment("att-3", name: "kept", zone: .relay)
+        try store.bufferRelayPage(
+            zone: .relay, changed: [relayRecord("kept", seq: 2, zone: .relay)], deleted: [], newSeq: 2, resync: false)
+        try store.beginRelayResync(.relay)
+        XCTAssertEqual(try store.finishRelayResync(.relay), ["kept"])
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-3", name: "kept", zone: .relay), "gone after a resync")
+
+        try store.noteRelayOwnAttachment("att-4", name: "wiped", zone: .relay)
+        try store.wipe()
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-4", name: "wiped", zone: .relay))
     }
 
     /// A finished resync deletes the names the server once returned and this resync did not.

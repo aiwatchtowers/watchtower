@@ -777,6 +777,7 @@ public final class TransportStore: Sendable {
         try db.execute(sql: "DELETE FROM relay_records")
         try db.execute(sql: "DELETE FROM relay_resync_seen")
         try db.execute(sql: "DELETE FROM relay_zone_names")
+        try db.execute(sql: "DELETE FROM relay_own_attachments")
     }
 
     /// Drops buffered events at or below a consumer's floor token for one zone.
@@ -1092,6 +1093,12 @@ extension TransportStore {
                 zone TEXT PRIMARY KEY,
                 server_zone TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS relay_own_attachments (
+                zone TEXT NOT NULL,
+                name TEXT NOT NULL,
+                attachment_id TEXT NOT NULL,
+                PRIMARY KEY (zone, name)
+            );
             """)
     }
 
@@ -1130,6 +1137,7 @@ extension TransportStore {
             for name in deleted {
                 try db.execute(
                     sql: "DELETE FROM relay_records WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
+                try Self.forgetOwnAttachment(name, zone: zone, db)
             }
             if resync {
                 for name in changed.map(\.recordName) + deleted {
@@ -1204,12 +1212,45 @@ extension TransportStore {
             for name in gone {
                 try db.execute(
                     sql: "DELETE FROM relay_records WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
+                try Self.forgetOwnAttachment(name, zone: zone, db)
             }
             try db.execute(
                 sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
                 arguments: [zone.rawValue, Self.resyncMarkerZone(zone)])
             return gone
         }
+    }
+
+    /// Records that this device uploaded `attachmentID` for its record `name` of `zone` (a relay
+    /// save, before it goes out). A record ledgered here is the device's own: a pull keeps it
+    /// without downloading the blob (#1469). One row per record name, the newest upload's; a
+    /// deletion of the record (pulled, or found gone by a resync) or a wipe drops it.
+    package func noteRelayOwnAttachment(_ attachmentID: String, name: String, zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO relay_own_attachments (zone, name, attachment_id) VALUES (?, ?, ?)
+                    ON CONFLICT(zone, name) DO UPDATE SET attachment_id = excluded.attachment_id
+                    """,
+                arguments: [zone.rawValue, name, attachmentID])
+        }
+    }
+
+    /// Whether `attachmentID` of the record `name` of `zone` is this device's own upload
+    /// (`noteRelayOwnAttachment`). Relay attachment ids are single-use, so an id that matches
+    /// is the device's own bytes, whoever wrote the record since.
+    package func isRelayOwnAttachment(_ attachmentID: String, name: String, zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS (SELECT 1 FROM relay_own_attachments WHERE zone = ? AND name = ? AND attachment_id = ?)",
+                arguments: [zone.rawValue, name, attachmentID]) ?? false
+        }
+    }
+
+    private static func forgetOwnAttachment(_ name: String, zone: CloudZoneID, _ db: Database) throws {
+        try db.execute(
+            sql: "DELETE FROM relay_own_attachments WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
     }
 
     private static func writeRelayCursor(_ seq: UInt64, zone: CloudZoneID, _ db: Database) throws {
