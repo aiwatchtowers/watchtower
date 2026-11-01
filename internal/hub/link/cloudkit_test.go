@@ -1513,3 +1513,47 @@ func TestAFailedIssueNeverClosesAnotherIssuesLink(t *testing.T) {
 		t.Errorf("the second code does not link: %+v %v", got, err)
 	}
 }
+
+// A shared phone's own unlink (its device record, unlinked: true) on
+// CloudKit is RemoveCloudKit: its iCloud user leaves both shares at once,
+// without waiting for a pass; a failed removal unlinks it all the same and
+// is left to the sweep.
+func TestAPhonesOwnUnlinkOnCloudKitDropsTheParticipant(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	a := newPhone(t)
+	r.linkCK(a, code.Nonce, sharedHello("_colleague-a"))
+	unlinked := true
+	rec := DeviceRecord{
+		Payload: wire.DevicePayload{DeviceID: a.id.String(), Scope: wire.ScopeShared, UserRecordName: "_colleague-a", Unlinked: &unlinked},
+		Creator: "_colleague-a", Shares: r.s,
+	}
+	if err := r.c.ApplyDeviceRecord(r.ctx, a.id.String(), rec); err != nil {
+		t.Fatalf("ApplyDeviceRecord: %v", err)
+	}
+	if r.linked(a) {
+		t.Fatal("still linked")
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); len(got) != 0 {
+			t.Errorf("%s: %v", z, got)
+		}
+	}
+
+	code = r.issueCK()
+	r.s.join("_colleague-b")
+	b := newPhone(t)
+	r.linkCK(b, code.Nonce, sharedHello("_colleague-b"))
+	r.s.setFailing("remove_participants")
+	rec.Payload.DeviceID, rec.Payload.UserRecordName, rec.Creator = b.id.String(), "_colleague-b", "_colleague-b"
+	if err := r.c.ApplyDeviceRecord(r.ctx, b.id.String(), rec); err != nil {
+		t.Fatalf("a failed participant removal after the unlink is no error: %v", err)
+	}
+	if r.linked(b) {
+		t.Fatal("still linked after a failed removal")
+	}
+	if r.sweepMark() != "1" {
+		t.Fatal("the failed removal is not left to the sweep")
+	}
+}

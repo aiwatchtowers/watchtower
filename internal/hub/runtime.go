@@ -123,6 +123,9 @@ type hubRuntime struct {
 	// wasVouched is the vouch state the last link upkeep saw (worker only).
 	subRetry   map[string]*subRetry
 	wasVouched bool
+	// lastPass is when the last mailbox pass started (worker only): the
+	// CloudKit cadence counts from it (cloudkit_runtime.go).
+	lastPass time.Time
 
 	passKick, linkKick, houseKick chan struct{}
 	// soonKick opens the link check's short-retry window (linkSoonFor).
@@ -285,6 +288,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
+		Hello: h.cloudKitHello,
 	})
 	sweepTemps(o, st)
 	if o.DB != nil {
@@ -557,7 +561,8 @@ func (h *hubRuntime) setUnreachable(v bool) {
 // work is the hub's one worker: transport events, mailbox passes, link
 // upkeep and housekeeping, one at a time.
 func (h *hubRuntime) work(ctx context.Context) {
-	passes := time.NewTicker(h.sup.o.passEvery)
+	h.cloudKitStart(ctx)
+	passes := time.NewTicker(h.passTickEvery())
 	defer passes.Stop()
 	links := time.NewTicker(h.sup.o.linkEvery)
 	defer links.Stop()
@@ -574,7 +579,7 @@ func (h *hubRuntime) work(ctx context.Context) {
 		case <-h.passKick:
 			h.pass(ctx)
 		case <-passes.C:
-			h.pass(ctx)
+			h.passTick(ctx)
 		case <-h.linkKick:
 			h.linkUpkeep(ctx)
 		case <-links.C:
@@ -596,6 +601,9 @@ func (h *hubRuntime) work(ctx context.Context) {
 
 // onEvent handles one transport event.
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
+	if h.cloudKitEvent(ctx, ev) {
+		return
+	}
 	h.noteNotVouched(ev.Err)
 	if h.paying != nil {
 		h.paying.Observe(ev, nil)
@@ -669,6 +677,8 @@ func (h *hubRuntime) pass(ctx context.Context) {
 	if h.sup.o.onPass != nil {
 		h.sup.o.onPass()
 	}
+	h.lastPass = h.sup.o.Clock()
+	defer h.sweepShares(ctx)
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
 		rep, err := h.proc.Pass(pctx)

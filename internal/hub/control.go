@@ -670,7 +670,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if r.Device == "" {
 			return ControlAnswer{Error: ErrClassBadRequest}
 		}
-		if err := h.center.Unlink(r.Device); err != nil {
+		if err := h.removePhone(r.Device); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
@@ -700,6 +700,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if err := h.center.Confirm(r.Device, code, r.Confirm); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
+		h.afterConfirm(r.Device)
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
