@@ -7,7 +7,7 @@ The phone shows "Mac offline", never finds the Mac, an answered ask stays on **W
 - On **Now**: "Mac online · 12s", "Mac offline · 13m" or "Mac not connected".
 - A change that stays at **Waiting for your Mac**.
 - While linking: "This code expired", "This code can't be used", or "Sign in to iCloud on this iPhone to use Watchtower".
-- On the Mac, **Settings → Mobile** shows **Needs a signed build** or "iCloud is slowing sync down".
+- On the Mac, **Settings → Mobile** shows **Needs a signed build**, "iCloud is slowing sync down" or "Mobile is run by a newer Watchtower".
 - "<Mac> hasn't synced for a day" or "<Mac> removed this phone".
 
 ## Why
@@ -25,6 +25,7 @@ The Mac is the hub. It publishes your data into your iCloud and applies the phon
 7. **Hasn't synced for a day:** if the Mac changed its iCloud account, link again.
 8. **Removed this phone:** that hub is frozen. Tap **Forget** on the phone and link again with **Add Mac**.
 9. **iCloud is slowing sync down:** wait; it clears on its own.
+10. **Mobile is run by a newer Watchtower:** you opened an older Watchtower after an update moved the iPhone sync to the new version. This older app leaves the phone alone. Install the latest Watchtower and open it; the phone keeps its link.
 
 ## How to check
 

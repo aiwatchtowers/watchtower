@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 import WatchtowerSync
 
 /// What Settings → Mobile reads and drives on the app: the opt-in toggle
@@ -13,6 +14,8 @@ protocol MobileSettingsHost: AnyObject {
     var isMobileKeepAwakeEnabled: Bool { get set }
     /// The organization's `MobileSync = off` decides the toggle (#608).
     var mobileSyncLockedByPolicy: Bool { get }
+    /// A newer Watchtower runs the phone hub (`MobileHubMovedGuard`, spec §12.1).
+    var isMobileHubMoved: Bool { get }
 }
 
 extension MobileSettingsHost {
@@ -34,6 +37,15 @@ final class MobileSettingsViewModel {
     nonisolated static let corpNotice = "Work data from this Mac will be stored in your personal iCloud account."
     nonisolated static let needsSignedBuild = "Needs a signed build"
     nonisolated static let slowingLine = "iCloud is slowing sync down"
+    /// The one section's title once Mobile moved to a newer Watchtower.
+    nonisolated static let movedSectionTitle = "iPhone"
+
+    /// What the tab shows: today's screen, or the one line after a newer
+    /// Watchtower took the phone hub over (no toggle, nothing polled).
+    enum State: Equatable {
+        case regular
+        case movedToNewerApp(message: String)
+    }
     /// D9/F18: a removed same-Apple-ID phone keeps what it already holds but gets no newer keys.
     nonisolated static func removedSameAppleID(_ name: String) -> String {
         "Removed \(name). It can no longer read anything new from this Mac."
@@ -175,6 +187,10 @@ final class MobileSettingsViewModel {
         checkedAt = now()
     }
 
+    var state: State {
+        host.isMobileHubMoved ? .movedToNewerApp(message: MobileHubMovedGuard.message) : .regular
+    }
+
     var hub: MobileHubService? { host.mobileHub }
     var hubInitError: String? { host.mobileHubInitError }
     var devices: [HubSyncState.LinkedDevice] { hub?.linkCenter?.devices ?? [] }
@@ -241,7 +257,7 @@ final class MobileSettingsViewModel {
     /// or closed window also closes an open QR and its link, as leaving the
     /// tab does, instead of leaving the link open until it expires.
     func windowVisibility(_ visible: Bool) async {
-        guard visible else {
+        guard visible, state == .regular else {
             await linkSheetDismissed()
             return
         }
@@ -260,7 +276,7 @@ final class MobileSettingsViewModel {
     /// Reads the polled parts of the hub and the iCloud account.
     func refresh() async {
         isOn = host.isMobileSyncEnabled
-        guard isOn, let hub else {
+        guard isOn, state == .regular, let hub else {
             account = nil
             lastPublishAt = nil
             relayBacklog = 0
