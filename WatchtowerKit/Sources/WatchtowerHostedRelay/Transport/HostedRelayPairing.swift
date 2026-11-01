@@ -91,10 +91,12 @@ public struct HostedRelayPairing: Sendable {
         var request = Relay_V1_RemoveMacSlot()
         request.phoneDeviceID = client.deviceID
         request.macDeviceID = mac
-        do {
-            try await refusing("removeSlot") { try await client.removeSlot(request) }
-        } catch HostedRelayError.server(code: .notFound, _) {
-            Self.logger.info("relay remove_slot: not in the slots, done")
+        try await refusing("removeSlot") {
+            do {
+                try await client.removeSlot(request)
+            } catch HostedRelayError.server(code: .notFound, _) {
+                Self.logger.info("relay remove_slot: not in the slots, done")
+            }
         }
     }
 

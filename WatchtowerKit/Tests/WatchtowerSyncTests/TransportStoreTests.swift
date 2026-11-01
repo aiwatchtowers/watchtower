@@ -826,4 +826,34 @@ extension TransportStoreTests {
         XCTAssertFalse(try store.relayResyncStalled(.data))
         XCTAssertTrue(try store.relayResyncPending(.data))
     }
+
+    /// A lane's relay zone changing from another non-pair zone with writes queued for it is not
+    /// adopted: the queued writes stay, and the caller wipes deliberately.
+    func testAZoneChangeWithQueuedWritesOutsidePairingThrowsAndKeepsThem() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 0)
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertThrowsError(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-2"])) {
+            XCTAssertEqual($0 as? TransportStoreError, .queuedWritesForAnotherZone)
+        }
+        XCTAssertTrue(try store.isPending(recordName: "device-1", zone: .relay), "the queued write is kept")
+        XCTAssertFalse(try store.relayResyncPending(.relay), "nothing changed")
+        // The same zones again are fine.
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 0)
+    }
+
+    /// Leaving a pair zone drops the hello still queued for it (counted and logged) and
+    /// resyncs the lane from 0.
+    func testLeavingAPairZoneDropsItsQueuedHello() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        XCTAssertEqual(try store.adoptRelayZones([.data: "pair/slot-1", .relay: "pair/slot-1"]), 0)
+        try store.enqueueSave([record("hello-1", zone: .relay)])
+        try store.bufferRelayPage(zone: .relay, changed: [], deleted: [], newSeq: 3, resync: false)
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 1)
+        XCTAssertFalse(try store.isPending(recordName: "hello-1", zone: .relay))
+        XCTAssertEqual(try store.relayCursor(zone: .relay), 0)
+        XCTAssertTrue(try store.relayResyncPending(.relay))
+    }
 }

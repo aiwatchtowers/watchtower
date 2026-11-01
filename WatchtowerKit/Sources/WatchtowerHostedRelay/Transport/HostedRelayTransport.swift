@@ -94,7 +94,9 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// On the device's shared `session` (R2): its socket carries this transport's zones.
     /// `mode` `.pairing(slot:)`: both lanes are `pair/<slot>` (R3), on the same store binding (the
     /// Mac), so after `promote_pairing` a `.hub` transport goes on with the same store; a lane whose
-    /// relay zone changed starts the new zone from 0 (`TransportStore.adoptRelayZones`).
+    /// relay zone changed starts the new zone from 0 (`TransportStore.adoptRelayZones`: a hello
+    /// still queued for a pair zone is dropped; writes queued for another old zone throw
+    /// `TransportStoreError.queuedWritesForAnotherZone` before any request).
     public init(
         session: HostedRelaySession,
         store: TransportStore,
