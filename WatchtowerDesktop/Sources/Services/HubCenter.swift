@@ -40,6 +40,13 @@ final class HubCenter {
 
     private(set) var status: Status?
 
+    /// A watch connection got its snapshot: the hub serves its socket, so
+    /// what it queued while no watch listened is read again (the phone
+    /// recording queue's rescan).
+    @ObservationIgnored var onWatchConnected: (() -> Void)?
+    /// The hub queued a phone recording (`recording_queued`, the upload id only).
+    @ObservationIgnored var onRecordingQueued: ((String) -> Void)?
+
     @ObservationIgnored private let client: any HubControlClienting
     @ObservationIgnored private let cli: (any CLIRunnerProtocol)?
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
@@ -210,9 +217,12 @@ final class HubCenter {
                 case let .snapshot(next):
                     connected = true
                     watchedStatus(next)
+                    onWatchConnected?()
                 case let .status(next):
                     watchedStatus(next)
-                case .recordingQueued, .pair, .switched, .unknown:
+                case let .recordingQueued(uploadID):
+                    if !uploadID.isEmpty { onRecordingQueued?(uploadID) }
+                case .pair, .switched, .unknown:
                     break
                 }
             }

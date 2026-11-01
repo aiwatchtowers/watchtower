@@ -48,7 +48,9 @@ func TestRecordingJobProgress(t *testing.T) {
 	if _, err := st.ClaimRecording("up-1", t0.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if p := jobPayloads(t, st, t0)["up-1"]; p["status"] != "transcribing" || num(p["updated_at"]) != 1_800_000_001 {
+	// Claimed but not started by the transcriber yet: queued, as the Swift
+	// hub's job read until the transcriber's first report.
+	if p := jobPayloads(t, st, t0)["up-1"]; p["status"] != "queued" || num(p["updated_at"]) != 1_800_000_001 {
 		t.Errorf("claimed = %v", p)
 	}
 	tid := int64(42)
@@ -74,6 +76,37 @@ func TestRecordingJobFailedCarriesOnlyTheErrorClass(t *testing.T) {
 	}
 	if _, ok := p["transcript_id"]; ok {
 		t.Error("a failed job has no transcript")
+	}
+}
+
+// TestRecordingFailureTextsPinned: the classes Desktop finishes a phone
+// recording with (PhoneRecordingQueue.FailureClass, a Go↔Swift dual path)
+// read on the phone as the Swift hub's sentences for the same failures,
+// byte for byte; an unknown class still reads as itself.
+func TestRecordingFailureTextsPinned(t *testing.T) {
+	want := map[string]string{
+		state.ClassNoSpeech:            "No speech recognized",
+		state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording.",
+		state.ClassNotAudio:            "Your Mac could not save this recording: The file is not an audio recording.",
+		state.ClassUnreadable:          "Your Mac could not read this recording.",
+		state.ClassIngestFailed:        "Your Mac could not save this recording.",
+		state.ClassMissingAudio:        "The recording's audio did not reach your Mac. Send it again.",
+		"something_new":                "something_new",
+	}
+	st := openSidecar(t)
+	t0 := time.Unix(1_800_000_000, 0)
+	for class := range want {
+		_ = st.QueueRecording(class, jobDevice, t0)
+		_, _ = st.ClaimRecording(class, t0)
+		if _, err := st.FinishRecording(class, nil, class, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := jobPayloads(t, st, t0)
+	for class, text := range want {
+		if got[class]["error"] != text {
+			t.Errorf("%s reads %q, want %q", class, got[class]["error"], text)
+		}
 	}
 }
 

@@ -75,7 +75,8 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub pair [--stream]` | JSON lines: `{event: qr, url, expires_at}`, `{event: waiting}`, `{event: sas, device_id, name, code}`, `{event: linked, device_id}`, `{event: refused, reason}`; the owner's `{confirm: true\|false}` on stdin |
 | `hub desktop heartbeat` (darwin only) | `desktop_at` |
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
-| `hub recording claim --upload <id>` | `upload_id`, `audio_path`, `status` |
+| `hub recording claim --upload <id>` (a failed job claims again for the owner's Retry; `done` and `hub_moved` never) | `upload_id`, `audio_path`, `status` |
+| `hub recording list` (read only; refused under an agent marker) | array of `upload_id`, `status`, `phase`, `percent`, `audio_path` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
 | `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
 | `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
@@ -190,7 +191,21 @@ Recorded for the owner; each was a review ruling during phase 1.
      dropped); Desktop sends the view at its start, on every change and on `view_needed`. A stale → fresh heartbeat,
      and a heartbeat going stale, republish the view's slices.
    - `recording_progress` (`upload`, `phase`, `percent`): the `recording_job` slice then reads `transcribing` with its
-     percent, `diarizing` or `summarizing`, as the Swift slice.
+     percent, `diarizing` or `summarizing`, as the Swift slice; a claimed job with no phase yet reads `queued` (it
+     waits in the Mac's transcriber queue, as the Swift hub's job did).
+   - `recording_claim`'s answer carries `audio_path` (Desktop never derives it).
+
+   **Done (phase 3 Task 17): the Desktop recording queue.** `PhoneRecordingQueue` (beside the Swift hub's
+   `PhoneRecordingJobs` until Task 24) claims a job on `recording_queued` and on a rescan of `hub recording list
+   --json` at every watch snapshot (queued jobs, and claimed ones this Desktop never ingested), ingests the audio
+   through `MeetingRecorderCenter.ingestPhoneRecording`, removes the hub's plaintext copy, follows the transcriber
+   through `addJobObserver` into `recording_progress` and finishes with the transcript or a class: `no_speech`,
+   `transcription_failed`, `not_audio`, `unreadable`, `ingest_failed`, `missing_audio` (a database not open yet is
+   retried, never reported). The slice shows the Swift hub's sentence for each class (`failureTexts`, pinned by
+   `TestRecordingFailureTextsPinned`; Swift `testFailureClassesPinned` pins the classes). A failed row is never
+   claimed from the list; the owner's Retry of a failure the queue reported claims it again. The uploads it took
+   (ids, the Mac's recording path, an unsent finish) are remembered in the app's defaults. Not carried yet: the
+   upload's `event_id` and `title_hint` (the Go intake reads neither), so a phone recording saves ad-hoc.
    - `desktop_watch`: the answer (`{op, ok, state, reason}`, the current status as a snapshot) is the stream's first
      line, then `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
      device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines.

@@ -65,6 +65,41 @@ func TestRecordingJobLifecycle(t *testing.T) {
 	}
 }
 
+// TestAFailedJobIsClaimedAgainForARetry: the owner's Retry of a failed
+// transcription on the Mac claims the job again (the Swift hub's job went
+// back to queued the same way), its class, finish and phase cleared; a
+// hub_moved job (adoption) and a done one are never claimed.
+func TestAFailedJobIsClaimedAgainForARetry(t *testing.T) {
+	s := openTest(t)
+	now := time.Unix(1_800_000_000, 0)
+	for _, id := range []string{"u1", "u2"} {
+		if err := s.QueueRecording(id, "aabb", now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimRecording(id, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.FinishRecording("u1", nil, ClassTranscriptionFailed, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimRecording("u1", now.Add(time.Hour))
+	if err != nil || job.Status != RecordingClaimed || job.ErrorClass != "" || !job.FinishedAt.IsZero() ||
+		job.ClaimedAt.Unix() != now.Add(time.Hour).Unix() {
+		t.Fatalf("claim of a failed job: %+v %v", job, err)
+	}
+	tid := int64(9)
+	if job, err := s.FinishRecording("u1", &tid, "", now.Add(2*time.Hour)); err != nil || job.Status != RecordingDone {
+		t.Fatalf("the retry's finish: %+v %v", job, err)
+	}
+	if _, err := s.FinishRecording("u2", nil, ClassHubMoved, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimRecording("u2", now); !errors.Is(err, ErrJobState) {
+		t.Fatalf("claim of a hub_moved job: %v", err)
+	}
+}
+
 func TestRecordingJobsHoldNoContent(t *testing.T) {
 	s := openTest(t)
 	now := time.Unix(1_800_000_000, 0)

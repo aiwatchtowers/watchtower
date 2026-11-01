@@ -124,19 +124,58 @@ package struct HubControlRequest: Encodable, Equatable, Sendable {
     /// Each list of a `desktop_view` holds at most this many entries (Go
     /// `hub.MaxViewIDs`; more is refused `too_many_ids`).
     package static let maxViewIDs = 10_000
+    package static let recordingClaim = "recording_claim"
+    package static let recordingProgress = "recording_progress"
+    package static let recordingFinish = "recording_finish"
 
     package let op: String
     package let hidden: [Int64]?
     package let displayOver: [HubShownOver]?
+    /// A recording job's upload id (claim, progress, finish).
+    package let upload: String?
+    /// A finish: the transcript, or the failure's class (never text).
+    package let transcriptID: Int64?
+    package let errorClass: String?
+    /// A progress: `transcribing` (with `percent` when known), `diarizing`, `summarizing`.
+    package let phase: String?
+    package let percent: Int?
 
-    package init(op: String, hidden: [Int64]? = nil, displayOver: [HubShownOver]? = nil) {
+    package init(
+        op: String,
+        hidden: [Int64]? = nil,
+        displayOver: [HubShownOver]? = nil,
+        upload: String? = nil,
+        transcriptID: Int64? = nil,
+        errorClass: String? = nil,
+        phase: String? = nil,
+        percent: Int? = nil
+    ) {
         self.op = op
         self.hidden = hidden
         self.displayOver = displayOver
+        self.upload = upload
+        self.transcriptID = transcriptID
+        self.errorClass = errorClass
+        self.phase = phase
+        self.percent = percent
     }
 
     package static var heartbeat: Self { Self(op: desktopHeartbeat) }
     package static var watch: Self { Self(op: desktopWatch) }
+
+    package static func claim(_ upload: String) -> Self { Self(op: recordingClaim, upload: upload) }
+
+    package static func progress(_ upload: String, phase: String, percent: Int? = nil) -> Self {
+        Self(op: recordingProgress, upload: upload, phase: phase, percent: percent)
+    }
+
+    package static func finish(_ upload: String, transcriptID: Int64) -> Self {
+        Self(op: recordingFinish, upload: upload, transcriptID: transcriptID)
+    }
+
+    package static func finish(_ upload: String, errorClass: String) -> Self {
+        Self(op: recordingFinish, upload: upload, errorClass: errorClass)
+    }
 
     /// The whole view: ids sorted, so an unchanged view is the same line.
     /// Each list keeps at most `maxViewIDs` entries, the highest session
@@ -150,8 +189,10 @@ package struct HubControlRequest: Encodable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case op, hidden
+        case op, hidden, upload, phase, percent
         case displayOver = "display_over"
+        case transcriptID = "transcript_id"
+        case errorClass = "error_class"
     }
 }
 
@@ -167,6 +208,10 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
     package let uploadID: String?
     package let pair: String?
     package let deviceID: String?
+    /// A recording job after a claim, progress or finish: its queue status
+    /// (`queued`, `claimed`, `done`, `failed`); the claim's audio file.
+    package let status: String?
+    package let audioPath: String?
 
     package init(
         op: String? = nil,
@@ -178,7 +223,9 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         viewNeeded: Bool = false,
         uploadID: String? = nil,
         pair: String? = nil,
-        deviceID: String? = nil
+        deviceID: String? = nil,
+        status: String? = nil,
+        audioPath: String? = nil
     ) {
         self.op = op
         self.event = event
@@ -190,13 +237,16 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         self.uploadID = uploadID
         self.pair = pair
         self.deviceID = deviceID
+        self.status = status
+        self.audioPath = audioPath
     }
 
     private enum CodingKeys: String, CodingKey {
-        case op, event, ok, error, state, reason, pair
+        case op, event, ok, error, state, reason, pair, status
         case viewNeeded = "view_needed"
         case uploadID = "upload_id"
         case deviceID = "device_id"
+        case audioPath = "audio_path"
     }
 
     package init(from decoder: any Decoder) throws {
@@ -211,7 +261,9 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
             viewNeeded: try c.decodeIfPresent(Bool.self, forKey: .viewNeeded) ?? false,
             uploadID: try c.decodeIfPresent(String.self, forKey: .uploadID),
             pair: try c.decodeIfPresent(String.self, forKey: .pair),
-            deviceID: try c.decodeIfPresent(String.self, forKey: .deviceID)
+            deviceID: try c.decodeIfPresent(String.self, forKey: .deviceID),
+            status: try c.decodeIfPresent(String.self, forKey: .status),
+            audioPath: try c.decodeIfPresent(String.self, forKey: .audioPath)
         )
     }
 }

@@ -120,6 +120,30 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 	}
 }
 
+// TestRecordingClaimAnswerCarriesTheAudioPath: Desktop never derives the
+// audio's place itself (it never reads the sidecar): the claim's answer
+// names the file, <recordings dir>/<upload id>.m4a; a finish names none,
+// nor does a hub with no recordings dir.
+func TestRecordingClaimAnswerCarriesTheAudioPath(t *testing.T) {
+	r := newViewRig(t)
+	st, s := r.s.st, r.s
+	s.o.RecordingsDir = filepath.Join(t.TempDir(), "recordings")
+	_ = st.QueueRecording("u1", "AAAAAAAA-0000-4000-8000-000000000001", time.Now())
+	a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u1"}, nil)
+	if !a.OK || a.Status != state.RecordingClaimed || a.AudioPath != filepath.Join(s.o.RecordingsDir, "u1.m4a") {
+		t.Errorf("claim = %+v", a)
+	}
+	tid := int64(3)
+	if a := s.handle(ControlRequest{Op: OpRecordingFinish, Upload: "u1", TranscriptID: &tid}, nil); !a.OK || a.AudioPath != "" {
+		t.Errorf("finish = %+v, want no audio path", a)
+	}
+	s.o.RecordingsDir = ""
+	_ = st.QueueRecording("u2", "AAAAAAAA-0000-4000-8000-000000000001", time.Now())
+	if a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u2"}, nil); !a.OK || a.AudioPath != "" {
+		t.Errorf("claim without a recordings dir = %+v", a)
+	}
+}
+
 // TestRecordingProgressOverTheSocket: recording_progress stores the phase of
 // a claimed job, answers it and republishes the recording_job slice; a bad
 // progress is a bad request and republishes nothing.
