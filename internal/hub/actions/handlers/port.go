@@ -59,11 +59,15 @@ type LiveRun struct {
 // TerminalLaunch.planFirstSuffix; OpenExisting answers (and resumes) the
 // target's session when it has one, sending neither. Refusals:
 // ErrStartNotOnBoard, ErrStartInProgress, ErrStartCleaningUp,
-// *AgentNotFoundError.
+// *AgentNotFoundError. Title "" is the target's text (else a provisional
+// title); AutomationRunID (0 = none) is the automation run whose session()
+// step starts it — stored on the row and carried by every launch.
 type StartRequest struct {
 	Workbench               int64
 	Target                  *int64
 	Agent, Place, Brief     string
+	Title                   string
+	AutomationRunID         int64
 	PlanFirst, OpenExisting bool
 }
 

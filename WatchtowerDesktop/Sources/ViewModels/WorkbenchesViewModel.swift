@@ -323,6 +323,12 @@ final class WorkbenchesViewModel {
     /// makes the worktree: the pane shows "Starting…" instead of a Resume
     /// button until the launch.
     var preparingSessions: Set<Int64> = []
+    /// Set (by AppState): new workbench agent sessions start in Go —
+    /// `workbench session start`, then the pane attaches to the run Go
+    /// launched (Go hub 3 Task 8, `startInGo`). Unset, the Swift launch path
+    /// starts them; it stays for the Swift hub's phone starts and its tests
+    /// until Go hub 3 Task 24 removes both.
+    @ObservationIgnored var goSessionStart: GoSessionStartWait?
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]

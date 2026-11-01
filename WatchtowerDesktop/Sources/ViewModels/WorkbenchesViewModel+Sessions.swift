@@ -350,11 +350,12 @@ extension WorkbenchesViewModel {
         mode: TargetStartMode,
         placement: Placement,
         planFirst: Bool = false,
-        worktree: WorktreeChoice = .auto
+        worktree: WorktreeChoice = .auto,
+        throughGo: Bool = true
     ) async throws -> TerminalSession {
         try await startTarget(
             targetID, title: nil, prompt: prompt, mode: mode, placement: placement,
-            askedIn: selectedWorkbenchID, planFirst: planFirst, checkLaunch: true, worktree: worktree
+            askedIn: selectedWorkbenchID, planFirst: planFirst, checkLaunch: true, worktree: worktree, throughGo: throughGo
         )
     }
 
@@ -372,7 +373,7 @@ extension WorkbenchesViewModel {
         let agent = currentDefaultAgent()
         return try await startInWorkbench(
             projectID, prompt: planFirst ? "\(prompt) \(TerminalLaunch.planFirstSuffix)" : prompt, placement: placement,
-            ticket: placement == .background ? nil : beginSwitch(projectID: projectID)
+            ticket: placement == .background ? nil : beginSwitch(projectID: projectID), throughGo: false
         ) { project in
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: TerminalSessionNaming.provisional(now: self.now()),
                   folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil)
@@ -400,11 +401,13 @@ extension WorkbenchesViewModel {
     /// workbench read here, started with `prompt`. Every failure — no
     /// terminal, the workbench gone or unreadable, a launch that did not
     /// run — throws and is reported for `ticket` (nil: logged only).
+    /// `throughGo`: see `createAndActivate`.
     private func startInWorkbench(
         _ projectID: Int64,
         prompt: String,
         placement: Placement,
         ticket: Int?,
+        throughGo: Bool = true,
         makeRow: (Workbench) -> TerminalSessionQueries.NewSession
     ) async throws -> TerminalSession {
         func fail(_ message: String) -> TargetStartError {
@@ -421,7 +424,7 @@ extension WorkbenchesViewModel {
         guard let project = fetched else { throw fail("Workbench #\(projectID) is gone.") }
         return try await createAndActivate(
             makeRow(project), prompt: prompt, placement: placement, ticket: ticket, checkLaunch: true,
-            placing: (project, .auto, nil)
+            placing: (project, .auto, nil), throughGo: throughGo
         )
     }
 
@@ -441,7 +444,8 @@ extension WorkbenchesViewModel {
         planFirst: Bool = false,
         checkLaunch: Bool = false,
         agent: AgentKind? = nil,
-        worktree: WorktreeChoice = .auto
+        worktree: WorktreeChoice = .auto,
+        throughGo: Bool = true
     ) async throws -> TerminalSession {
         guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
@@ -484,7 +488,8 @@ extension WorkbenchesViewModel {
             placement: placement,
             ticket: ticket,
             checkLaunch: checkLaunch,
-            placing: (found.project, worktree, text)
+            placing: (found.project, worktree, text),
+            throughGo: throughGo
         )
     }
 
@@ -870,13 +875,18 @@ extension WorkbenchesViewModel {
     /// meanwhile. A row placed in a new worktree runs the workbench's setup
     /// command before its agent's first start — when that launch does not
     /// run, `startNotice` gives the command to run by hand.
+    /// With `goSessionStart` set, a workbench agent row (`placing`) is
+    /// started by Go instead (`startInGo`) unless `throughGo` is false — the
+    /// Swift hub's phone starts, which keep the Swift path until Go hub 3
+    /// Task 24 removes it with that hub.
     private func createAndActivate(
         _ new: TerminalSessionQueries.NewSession,
         prompt: String?,
         placement: Placement,
         ticket: Int?,
         checkLaunch: Bool,
-        placing: SessionPlacing? = nil
+        placing: SessionPlacing? = nil,
+        throughGo: Bool = true
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
         // Every new agent session passes here (New Session, Work on It, the
@@ -886,6 +896,12 @@ extension WorkbenchesViewModel {
            let refusal = ConnectionTest.policyRefusal(provider: agent.rawValue, policy: managedPolicy()) {
             reportStartError(refusal, projectID: new.projectID, ticket: ticket)
             throw TargetStartError.failed(refusal)
+        }
+        if throughGo, let placing, let wait = goSessionStart {
+            return try await startInGo(
+                new, prompt: prompt, placement: placement, ticket: ticket, checkLaunch: checkLaunch,
+                choice: placing.choice, wait: wait
+            )
         }
         // A failed insert leaves no notice of an earlier start beside its error.
         if placing != nil, let projectID = new.projectID { startNotice[projectID] = nil }
@@ -962,6 +978,130 @@ extension WorkbenchesViewModel {
             startingRows[placed.id] = placed
             return placed
         }
+    }
+
+    // MARK: New sessions through Go (Go hub 3 Task 8)
+
+    /// A new workbench agent session started by Go: `workbench session
+    /// start` writes the row and answers at once, the row goes on screen as
+    /// Starting… (instant start, #942) while Go's detached finish places it
+    /// — the folder or its own worktree, as `choice` and the live runs say —
+    /// and launches it in the session host; the pane then attaches to that
+    /// run (the reattach path: nothing launches from Swift). A start Go
+    /// refused before any row is reported for `ticket`; a failure Go
+    /// recorded on the row shows in its pane and the row stays (nothing is
+    /// cleaned up here). The workbench's placement turn spans the call and
+    /// the wait: Go decides a place from the runs the host lists, so the next
+    /// start of the workbench waits for this one's run before it asks.
+    private func startInGo(
+        _ new: TerminalSessionQueries.NewSession,
+        prompt: String?,
+        placement: Placement,
+        ticket: Int?,
+        checkLaunch: Bool,
+        choice: WorktreeChoice,
+        wait: GoSessionStartWait
+    ) async throws -> TerminalSession {
+        func fail(_ message: String) -> TargetStartError {
+            reportStartError(message, projectID: new.projectID, ticket: ticket)
+            return .failed(message)
+        }
+        guard let projectID = new.projectID, let agent = new.kind.agent else {
+            throw fail("Only a workbench agent session starts this way.")
+        }
+        guard let cli else { throw fail("No CLI is available to start the session.") }
+        startNotice[projectID] = nil
+        let request = SessionStartRequest(
+            workbenchID: projectID, targetID: new.targetID, agent: agent, place: choice, title: new.title,
+            brief: prompt, automationRunID: new.automationRunID
+        )
+        return try await inPlacementTurn(projectID) {
+            let started: SessionStartResult
+            do {
+                started = try await cli.sessionStart(request)
+            } catch {
+                throw fail("Could not start the session: \(Self.cliReason(error))")
+            }
+            let id = started.sessionID
+            guard var row = try? await dbPool.read({ try TerminalSessionQueries.fetch($0, id: id) }) else {
+                throw TargetStartError.failed(Self.deletedBeforeStart(id))
+            }
+            startingRows[id] = row
+            preparingSessions.insert(id)
+            defer {
+                startingRows[id] = nil
+                preparingSessions.remove(id)
+            }
+            placeInLayout(row, fresh: true, placement: placement, ticket: ticket)
+            await loadSessions(projectID: projectID)
+            await hostReattach?.value
+            let outcome = await awaitGoLaunch(id, wait: wait)
+            if case .gone = outcome { throw TargetStartError.failed(Self.deletedBeforeStart(id)) }
+            // Go moved it into its worktree meanwhile, when it did.
+            if let placed = try? await dbPool.read({ try TerminalSessionQueries.fetch($0, id: id) }) { row = placed }
+            let isLatest = ticket.map { isLatestSwitch($0, projectID: projectID) } ?? false
+            let previous = terminalCenter?.focusOrder.last
+            if ticket != nil { notYetTitledStreak[id] = nil }
+            if case let .launched(info) = outcome, let center = terminalCenter, center.sessionHost != nil {
+                center.adopt(row, info: info)
+                if isLatest { center.focus(id) }
+            } else {
+                let reason = if case let .failed(why) = outcome { why } else { HostedTerminalSession.hostNotRunningReason }
+                terminalCenter?.refuseLaunch(row, reason: Self.goStartPaneLine(reason))
+            }
+            placeInLayout(row, fresh: true, placement: placement, ticket: ticket)
+            await loadSessions(projectID: projectID)
+            if isLatest, let previous, previous != id { await refreshTitle(sessionID: previous) }
+            if checkLaunch {
+                if case let .failed(why) = outcome, why == "\(agent.rawValue) was not found" {
+                    throw TargetStartError.agentNotFound(agent)
+                }
+                try launchCheck(row)
+            }
+            return row
+        }
+    }
+
+    /// Where Go's start of row `id` stands: its run in the session host (this
+    /// workspace's scope; the newest when the host holds several), the
+    /// failure Go recorded on the row, or the row gone. Asked every
+    /// `wait.poll` up to `wait.polls` times; past that it failed. A list or
+    /// row read that fails is asked again on the next poll.
+    private func awaitGoLaunch(_ id: Int64, wait: GoSessionStartWait) async -> GoLaunchOutcome {
+        guard let host = terminalCenter?.sessionHost else { return .failed(HostedTerminalSession.hostNotRunningReason) }
+        let scope = terminalCenter?.sessionHostScope ?? ""
+        for _ in 0..<wait.polls {
+            if let listed = try? await host.list(),
+               let info = listed.filter({ $0.row == id && ($0.scope.isEmpty || $0.scope == scope) })
+                   .max(by: { $0.startedAtMs < $1.startedAtMs }) {
+                return .launched(info)
+            }
+            let state = try? await dbPool.read { try TerminalSessionQueries.goStartState($0, id: id) }
+            switch state {
+            case .gone?: return .gone
+            case let .failed(reason)?: return .failed(reason)
+            case .pending?, nil: break
+            }
+            await wait.sleep(wait.poll)
+        }
+        return .failed(GoSessionStartWait.timedOutReason)
+    }
+
+    /// The pane line of a start Go could not finish: Go's reason
+    /// (`agent_error`) after the app's prefix, as the host-down line is.
+    static func goStartPaneLine(_ reason: String) -> String {
+        let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "[Watchtower] " + (reason.isEmpty ? GoSessionStartWait.noReason : reason)
+    }
+
+    /// The CLI's own sentence for a refused start (its stderr), else the
+    /// error's description.
+    private static func cliReason(_ error: Error) -> String {
+        if case let .nonZeroExit(_, stderr)? = error as? CLIRunnerError {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        return error.localizedDescription
     }
 
     /// Whether the owner deleted the new row while its start placed it: it

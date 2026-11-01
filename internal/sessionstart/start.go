@@ -334,10 +334,10 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 	if err != nil {
 		return err
 	}
-	var wbID, targetID sql.NullInt64
+	var wbID, targetID, runID sql.NullInt64
 	var kind, claudeID string
-	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, '')
-		FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&wbID, &kind, &targetID, &claudeID)
+	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, ''), automation_run_id
+		FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&wbID, &kind, &targetID, &claudeID, &runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("terminal session %d: %w", sessionID, db.ErrTerminalSessionNotFound)
 	}
@@ -348,7 +348,7 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 	if !wbID.Valid || !ok {
 		return fmt.Errorf("terminal session %d is not a workbench agent session", sessionID)
 	}
-	st := &newStart{d: d, agent: agent, choice: choice, claudeID: claudeID, id: sessionID}
+	st := &newStart{d: d, agent: agent, choice: choice, claudeID: claudeID, id: sessionID, automationRun: runID.Int64}
 	if st.wb, err = loadWorkbench(ctx, d.DB, wbID.Int64); err != nil {
 		return err
 	}
@@ -421,7 +421,8 @@ func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, 
 			return nil, nil, res, err
 		}
 	}
-	st = &newStart{d: d, wb: wb, target: target, agent: agent, choice: choice}
+	st = &newStart{d: d, wb: wb, target: target, agent: agent, choice: choice, title: strings.TrimSpace(r.Title),
+		automationRun: r.AutomationRunID}
 	if st.codex, err = codexArgs(ctx, d, agent, wb.id); err != nil {
 		release()
 		return nil, nil, res, err
@@ -488,6 +489,9 @@ type newStart struct {
 	prompt   string
 	claudeID string
 	id       int64
+	// title "" = the default (Begin only); automationRun 0 = none.
+	title         string
+	automationRun int64
 }
 
 // firstPrompt is the brief, else the work-on prompt (the group wording for a
@@ -515,6 +519,10 @@ func (s *newStart) insert(ctx context.Context) error {
 			n.Title = "Target #" + strconv.FormatInt(s.target.id, 10)
 		}
 	}
+	if s.title != "" {
+		n.Title = s.title
+	}
+	n.AutomationRunID = s.automationRun
 	if s.agent == agentkind.Claude {
 		s.claudeID = NewSessionID()
 		n.ClaudeSessionID = s.claudeID
@@ -563,7 +571,7 @@ func (s *newStart) finish(ctx context.Context) error {
 		}
 		return fmt.Errorf("reading session %d: %w", s.id, err)
 	}
-	m := Mode{Agent: string(s.agent), SessionID: s.claudeID}
+	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun}
 	if s.prompt != "" {
 		p := s.prompt
 		m.Prompt = &p

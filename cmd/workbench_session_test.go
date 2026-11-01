@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -65,17 +66,22 @@ func runSession(t *testing.T, args ...string) (string, error) {
 	resetSetFlags(workbenchSessionCmd.Commands()...)
 	sessionFlagWorkbench, sessionFlagTarget, sessionFlagSession = 0, 0, 0
 	sessionFlagAgent, sessionFlagPlace, sessionFlagJSON = "", "auto", false
+	sessionFlagTitle, sessionFlagAutomationRun, sessionFlagBriefStdin = "", 0, false
 	return out, err
 }
 
 // spawnedFinishes replaces the detached finish with a record of its
-// arguments.
+// arguments (and the brief, after a "|", when one is handed on).
 func spawnedFinishes(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
 	prev := workbenchSessionFinishSpawn
-	workbenchSessionFinishSpawn = func(id int64, place string) error {
-		got = append(got, strconv.FormatInt(id, 10)+" "+place)
+	workbenchSessionFinishSpawn = func(id int64, place, brief string) error {
+		line := strconv.FormatInt(id, 10) + " " + place
+		if brief != "" {
+			line += "|" + brief
+		}
+		got = append(got, line)
 		return nil
 	}
 	t.Cleanup(func() { workbenchSessionFinishSpawn = prev })
@@ -181,4 +187,63 @@ func TestWorkbenchSessionRefusesAnotherWorkbenchUnderAnAgent(t *testing.T) {
 	t.Setenv("CLAUDECODE", "1")
 	_, err = runSession(t, "start", "--workbench", strconv.FormatInt(own, 10), "--json")
 	require.ErrorContains(t, err, "under an AI agent")
+}
+
+// The Desktop's starts (Go hub 3 Task 8): --title and --automation-run land
+// on the row, the brief comes on stdin (never argv) and is handed to the
+// detached finish, which launches with it.
+func TestWorkbenchSessionStartTitleRunAndBriefFromStdin(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	res, err := database.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	require.NoError(t, err)
+	aid, _ := res.LastInsertId()
+	res, err = database.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'manual', 'running')`, aid)
+	require.NoError(t, err)
+	run, _ := res.LastInsertId()
+	sessionHostForTest(t)
+	spawned := spawnedFinishes(t)
+
+	rootCmd.SetIn(strings.NewReader("sweep the board\n"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--place", "folder",
+		"--title", "Nightly sweep", "--automation-run", strconv.FormatInt(run, 10), "--brief-stdin", "--json")
+	require.NoError(t, err, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	sid := int64(m["session_id"].(float64))
+	assert.Equal(t, []string{strconv.FormatInt(sid, 10) + " folder|sweep the board\n"}, *spawned)
+	var title string
+	var stored int64
+	require.NoError(t, database.QueryRow(`SELECT title, automation_run_id FROM terminal_sessions WHERE id = ?`, sid).
+		Scan(&title, &stored))
+	assert.Equal(t, "Nightly sweep", title)
+	assert.Equal(t, run, stored)
+}
+
+// A finish reads its brief from stdin with --brief-stdin.
+func TestWorkbenchSessionFinishReadsTheBriefFromStdin(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	socket := sessionHostForTest(t)
+	spawnedFinishes(t)
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
+	require.NoError(t, err, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	sid := int64(m["session_id"].(float64))
+
+	rootCmd.SetIn(strings.NewReader("sweep the board"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	_, err = runSession(t, "finish", "--session", strconv.FormatInt(sid, 10), "--brief-stdin")
+	require.NoError(t, err)
+	c, err := sessionhost.Dial(context.Background(), socket)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+	list, err := c.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, sid, list[0].Row)
 }

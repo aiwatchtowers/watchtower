@@ -1788,8 +1788,8 @@ final class AppState {
             root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
                 .appendingPathComponent("workchat-attachments", isDirectory: true)
         )
-        // Settings → Workbench → Default agent (board #399, D1), read at each launch.
-        vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
+        vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() } // Settings → Workbench → Default agent (#399, D1)
+        vm.goSessionStart = GoSessionStartWait() // new sessions start in Go (Go hub 3 Task 8)
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
