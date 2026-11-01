@@ -9,7 +9,7 @@
 # (the list is in internal/hub/interop_kit_test.go):
 #
 #   go test -tags interop -run '^TestInterop_KitPhone$' ./internal/hub -relay=<origin> -kit-dir=<dir>
-#   WATCHTOWER_RELAY_INTEROP_URL=<origin> WT_GO_HUB_INTEROP_DIR=<dir> make kit-test FILTER=GoHubInteropTests
+#   WATCHTOWER_RELAY_INTEROP_URL=<origin> WT_GO_HUB_INTEROP_DIR=<dir> make kit-test FILTER=KitGoHubInteropTests
 #
 # Before the stand starts, both are built (the Go test run with -run '^$', the
 # Kit class without the variables, where it skips), so neither half waits on
@@ -138,7 +138,7 @@ cd "$ROOT" || exit 1
 echo "relay-interop-kit-hub: building the Go test and the Kit tests" >&2
 go test -count=1 -tags interop -run '^$' ./internal/hub >"$STATE/go-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/go-build.log" >&2; die "the Go interop test does not build"; }
-env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR make kit-test FILTER=GoHubInteropTests \
+env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR make kit-test FILTER=KitGoHubInteropTests \
 	>"$STATE/kit-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/kit-build.log" >&2; die "the Kit tests do not build"; }
 
@@ -208,7 +208,7 @@ set -m
 go test -count=1 -timeout 30m -tags interop -run '^TestInterop_KitPhone$' -v ./internal/hub \
 	-relay="$ORIGIN" -kit-dir="$HANDOFF" </dev/null &
 GOPID=$!
-WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" make kit-test FILTER=GoHubInteropTests </dev/null &
+WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" make kit-test FILTER=KitGoHubInteropTests </dev/null &
 KPID=$!
 set +m
 
