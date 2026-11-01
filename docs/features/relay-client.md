@@ -177,7 +177,7 @@ Signed URLs are never logged.
 | `RECORD_TOO_LARGE`, `ATTACHMENT_TOO_LARGE` | `.permanent("record_too_large")` |
 | `FORBIDDEN` | `.permanent("forbidden")` |
 | `NOT_FOUND` | `.permanent("not_found")` |
-| `HUB_NOT_VOUCHED` (a hub-only answer; named so it is not a `relay_22` transient) | `.permanent("hub_not_vouched")` |
+| `HUB_NOT_VOUCHED` (never sent to a phone on a mailbox or data op; a phone's `add_slot` / `promote_pairing` answer is handled by the pairing flow, not by this table; named so it is not read as the transient `relay_22`) | `.permanent("hub_not_vouched")` |
 | `ERROR_CODE_UNSPECIFIED` | `.permanent("unspecified")` |
 
 **`relayEvents` (R11).** `TransportEvent` gets no new cases, and `MAILBOX_QUOTA_EXCEEDED` is today's `.quotaExceeded`. Relay-only signals go on `HostedRelayTransport.relayEvents` (`HostedRelayEvent`, newest 256 kept):

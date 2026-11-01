@@ -937,6 +937,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         var limits = try relay.limits
         limits.changesPageBytes = 1
         try relay.limits = limits
+        let before = try changesFlags(zone).count
         try await transport.pull()
         XCTAssertFalse(try store.relayResyncStalled(.data))
         XCTAssertFalse(try store.relayResyncPending(.data))
@@ -944,8 +945,9 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         let after = try buffered(store, .data, since: floor)
         XCTAssertEqual(after.changed.map(\.recordName), ["a", "b"], "the resync buffers the live set again")
         XCTAssertEqual(after.deletedRecordNames, ["x"], "the purged record is deleted here too")
-        XCTAssertTrue(try changesFlags(zone).filter { $0.since < 3 && $0.since > 0 }.allSatisfy(\.resync),
-                      "the middle pages below the floor carried the flag")
+        // [3, 3] expired (repeated after the login the 31 days cost), then the resync's two pages;
+        // the middle one (since 1) is below the floor and carries the flag.
+        XCTAssertEqual(try changesFlags(zone).dropFirst(before).map(\.description), ["3", "3", "0r", "1r"])
     }
 
     /// A flagged resync page that still expires (README: a `since_seq` above the zone's seq, e.g. the
