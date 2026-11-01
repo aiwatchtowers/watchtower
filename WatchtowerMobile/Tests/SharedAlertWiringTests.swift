@@ -46,7 +46,7 @@ final class SharedAlertWiringTests: XCTestCase {
         let session = try HubSession(
             transport: transport,
             replicaPath: try replicaPath ?? makeReplicaPath(),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: hubID,
             keys: try TestPhone.keys(),
             defaults: try defaults ?? makeDefaults(),

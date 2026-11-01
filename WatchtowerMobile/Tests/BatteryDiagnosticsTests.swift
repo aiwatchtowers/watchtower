@@ -221,7 +221,7 @@ final class BatteryDiagnosticsTests: XCTestCase {
         let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
             now: { clock.now },

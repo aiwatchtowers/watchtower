@@ -576,7 +576,7 @@ final class SettingsWiringTests: XCTestCase {
         let env = try HubSession(
             transport: transport,
             replicaPath: try makeReplicaPath(),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: TestE2E.hubID.uuidString,
             linkedDevice: linked,
             keys: try TestPhone.keys(),
@@ -701,7 +701,7 @@ final class SettingsWiringTests: XCTestCase {
             let session = try HubSession(
                 transport: InMemoryCloudTransport(),
                 replicaPath: paths.replicaPath(hubID),
-                transportKind: .cloudKit,
+                backend: .live,
                 hubID: hubID,
                 linkedDevice: device,
                 keys: try TestHub.keys(hubID),

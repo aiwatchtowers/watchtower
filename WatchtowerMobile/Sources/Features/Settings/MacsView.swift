@@ -52,7 +52,7 @@ struct MacsView: View {
                 }
                 .moveDisabled(linking.isBusy)
             }
-            if Self.offersAdd(transportKind: env.transportKind) {
+            if Self.offersAdd(backend: env.backend) {
                 Section {
                     Button {
                         linking.startScan()
@@ -76,20 +76,20 @@ struct MacsView: View {
 
     /// The demo has no link to end: only a live build offers Unlink and
     /// Forget; reorder stays in both.
-    static func offersRemoval(transportKind: TransportKind) -> Bool {
-        transportKind != .inMemoryDemo
+    static func offersRemoval(backend: SessionBackend) -> Bool {
+        backend != .inMemoryDemo
     }
 
     /// Nor a link to make: a scan in the demo would run the real link flow
     /// against the owner's iCloud (the signed build's tour, #174) before
     /// failing, so only a live build offers Add Mac.
-    static func offersAdd(transportKind: TransportKind) -> Bool {
-        transportKind != .inMemoryDemo
+    static func offersAdd(backend: SessionBackend) -> Bool {
+        backend != .inMemoryDemo
     }
 
     /// The row's one destructive action (`MacsModel.action`).
     @ViewBuilder private func actions(_ item: HubListItem) -> some View {
-        if Self.offersRemoval(transportKind: env.transportKind) {
+        if Self.offersRemoval(backend: env.backend) {
             let action = MacsModel.action(for: item)
             Button(action == .unlink ? "Unlink" : "Forget", role: .destructive) {
                 asking = MacsModel.Ask(action: action, item: item)

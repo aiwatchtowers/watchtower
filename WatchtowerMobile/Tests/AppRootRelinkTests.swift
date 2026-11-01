@@ -69,7 +69,7 @@ final class AppRootRelinkTests: XCTestCase {
             let session = try HubSession(
                 transport: zone,
                 replicaPath: paths.replicaPath(hubID),
-                transportKind: .cloudKit,
+                backend: .live,
                 hubID: hubID,
                 linkedDevice: device,
                 keys: PhoneKeys(store: keyStore, hubID: hubID),

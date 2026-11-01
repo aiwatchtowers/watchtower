@@ -206,7 +206,7 @@ final class HubSwitcherTests: XCTestCase {
         let session = try HubSession(
             transport: transport,
             replicaPath: paths.replicaPath(hubID),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: hubID,
             linkedDevice: device,
             // The test hub's keys whatever the hub id: tests seal through the test hub.
@@ -228,7 +228,7 @@ final class HubSwitcherTests: XCTestCase {
     }
 
     private func makeEnvironment(_ sessions: [HubSession]) throws -> AppEnvironment {
-        let env = AppEnvironment(transportKind: .cloudKit, defaults: try makeDefaults()) { _ in }
+        let env = AppEnvironment(backend: .live, defaults: try makeDefaults()) { _ in }
         for session in sessions {
             env.add(session)
         }

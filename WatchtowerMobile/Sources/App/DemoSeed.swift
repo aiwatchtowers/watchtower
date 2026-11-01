@@ -7,7 +7,7 @@ import WatchtowerSync
 /// every decode path run end to end. Sub-projects B and C extend it with
 /// their slices.
 ///
-/// Runs ONLY on the `.inMemoryDemo` transport kind: the `.cloudKit` kind
+/// Runs ONLY on the `.inMemoryDemo` backend: the `.live` backend
 /// starts empty and hydrates from the user's own zone (the gate lives in
 /// `HubSession.startTransport`). Record names are fixed, so a
 /// re-seed upserts instead of adding rows (ReplicaWiringTests pins the tally).

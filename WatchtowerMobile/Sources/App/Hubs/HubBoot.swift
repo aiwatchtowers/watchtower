@@ -9,8 +9,10 @@ import WatchtowerSync
 struct HubSessionFactory {
     let make: @MainActor (_ row: HubRow?, _ hubID: String, _ route: HubRoute, _ device: LinkedDevice?) throws -> HubSession
 
-    /// The live app: a `CloudKitTransport` on the hub's own transport store
-    /// and a session on the hub's replica and recordings folder, sharing
+    /// The live app: the route's transport (`transports`: CloudKit, or the
+    /// relay on the process's shared session) on the hub's own store for that
+    /// route (`HubPaths.transportStorePath(_:route:)`, R12) and a session on
+    /// the hub's replica and recordings folder, sharing
     /// the hold, with the battery counter and the boot's background work.
     /// The session seals and opens with `keys` (the Keychain) for its hub
     /// (mobile E2E); the transport store's folder and stash take class C
@@ -20,12 +22,14 @@ struct HubSessionFactory {
             try paths.prepare(hubID)
             let energy = BatteryDiagnostics.shared.counter
             let active = UIApplication.shared.applicationState == .active
-            let transportStore = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID))
+            // Refused before the route's store is opened: no empty file for a route the factory cannot serve.
+            guard transports.serves(route) else { throw UnsupportedRouteError(route: route) }
+            let transportStore = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID, route: route))
             let transport = try transports.make(route, transportStore, hubID, energy)
             return try HubSession(
                 transport: transport,
                 replicaPath: paths.replicaPath(hubID),
-                transportKind: .cloudKit,
+                backend: .live,
                 transportStore: transportStore,
                 hubID: hubID,
                 linkedDevice: device,
@@ -33,7 +37,8 @@ struct HubSessionFactory {
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
                 route: route,
-                pushWake: transports.isAvailable() ? transports.wake : nil,
+                // The work-alert push is CloudKit's alone until Phase 4's relay pushes.
+                pushWake: route.cloudKitScope != nil && transports.isAvailable() ? transports.wake : nil,
                 startsActive: active,
                 uploadRetriesAllowed: active,
                 replicaObservesSuspension: true,

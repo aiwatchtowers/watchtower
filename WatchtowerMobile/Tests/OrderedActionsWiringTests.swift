@@ -366,7 +366,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let env = try HubSession(
             transport: transport,
             replicaPath: try path ?? makeReplicaPath(),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: hubID,
             linkedDevice: device,
             keys: try keys ?? TestPhone.keys(),

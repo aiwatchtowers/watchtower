@@ -68,7 +68,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let session = try HubSession(
             transport: transport,
             replicaPath: paths.replicaPath(hubID),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: hubID,
             linkedDevice: device,
             // The test hub's keys whatever the hub id: tests seal through the test hub.
@@ -97,7 +97,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         _ sessions: [HubSession],
         setBadge: @escaping @MainActor (Int) -> Void = { _ in }
     ) throws -> AppEnvironment {
-        let env = AppEnvironment(transportKind: .cloudKit, defaults: try makeDefaults(), setBadge: setBadge)
+        let env = AppEnvironment(backend: .live, defaults: try makeDefaults(), setBadge: setBadge)
         for session in sessions {
             env.add(session)
         }
@@ -228,7 +228,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let mixed = await env.handlePush(inForeground: true, scope: nil)
         XCTAssertEqual(mixed, .noData, "one failure among no news is no news")
 
-        let empty = AppEnvironment(transportKind: .cloudKit, defaults: try makeDefaults()) { _ in }
+        let empty = AppEnvironment(backend: .live, defaults: try makeDefaults()) { _ in }
         let none = await empty.handlePush(inForeground: false, scope: .private)
         XCTAssertEqual(none, .noData)
     }

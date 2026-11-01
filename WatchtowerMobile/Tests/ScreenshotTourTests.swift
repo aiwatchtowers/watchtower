@@ -70,7 +70,7 @@ final class ScreenshotTourTests: XCTestCase {
     private func makeDemoRoot() throws -> (AppRoot, DemoHub) {
         let defaults = try makeDefaults()
         var primary: InMemoryCloudTransport?
-        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults)
+        let env = AppEnvironment(backend: .inMemoryDemo, defaults: defaults)
         for hub in DemoSeed.hubs {
             // The demo Mac allows typing; the phone's own toggle is on, so the
             // workchat shows its composer.
@@ -82,7 +82,7 @@ final class ScreenshotTourTests: XCTestCase {
             let session = try HubSession(
                 transport: transport,
                 replicaPath: try makeReplicaPath(),
-                transportKind: .inMemoryDemo,
+                backend: .inMemoryDemo,
                 hubID: hub.hubID,
                 defaults: defaults,
                 recordingsDirectory: try makeRecordingsDirectory()
@@ -132,7 +132,7 @@ final class ScreenshotTourTests: XCTestCase {
         let session = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory()
         ) { uploader in
@@ -177,7 +177,7 @@ final class ScreenshotTourTests: XCTestCase {
         let session = try HubSession(
             transport: transport,
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             keys: try DemoSeed.phoneKeys(),
             defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory(),
