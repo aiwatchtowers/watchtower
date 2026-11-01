@@ -1118,24 +1118,6 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(acks.sorted { ($0 ?? 0) < ($1 ?? 0) }, [3, 5])
     }
 
-    /// The epoch the ordered path turned on in is known to the hub: only a newer one is acknowledged, and the
-    /// baseline never moves a recorded ack back.
-    func testTheBaselineEpochIsNotAcknowledged() async throws {
-        let phone = try await makePhone()
-        try await phone.outbox.setEpochAckBaseline(1)
-        let known = try await phone.outbox.enqueueEpochAck(epoch: 1)
-        XCTAssertFalse(known)
-        try raiseEpoch(phone, to: 2)
-        let raised = try await phone.outbox.enqueueEpochAck(epoch: 2)
-        XCTAssertTrue(raised)
-        try await phone.outbox.setEpochAckBaseline(1)
-        let again = try await phone.outbox.enqueueEpochAck(epoch: 2)
-        XCTAssertFalse(again)
-        await phone.outbox.drain()
-        let acks = try await epochAcks(phone)
-        XCTAssertEqual(acks, [2])
-    }
-
     func testNoEpochAckToALegacyHub() async throws {
         let phone = try await makePhone(ordered: false)
         try raiseEpoch(phone, to: 2)

@@ -203,12 +203,6 @@ extension ActionOutbox {
         return queued
     }
 
-    /// The epoch the hub already knows when the ordered path turns on (the link's keybox): recorded as acknowledged
-    /// unless an ack was ever recorded, so the next `enqueueEpochAck` goes out only for a newer one.
-    public func setEpochAckBaseline(_ epoch: UInt32) throws {
-        try store.setEpochAckBaseline(epoch)
-    }
-
     private func queueEpochAck(_ epoch: UInt32) async throws -> Bool {
         guard try orderedPath(), try store.epochAckDue(epoch) else { return false }
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }

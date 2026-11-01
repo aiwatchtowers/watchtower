@@ -346,15 +346,6 @@ extension ReplicaStore {
         try writer.read { db in try Self.ackedEpoch(db).map { epoch > $0 } ?? true }
     }
 
-    /// Records `epoch` as acknowledged when no ack was recorded yet; an existing record is kept.
-    func setEpochAckBaseline(_ epoch: UInt32) throws {
-        try writer.write { db in
-            try db.execute(
-                sql: "INSERT OR IGNORE INTO replica_meta (key, value) VALUES (?, ?)",
-                arguments: [Self.epochAckKey, String(epoch)])
-        }
-    }
-
     /// Queues the sealed `epoch_ack` for `epoch` in place of any unsent one (always for a lower epoch) and records
     /// the epoch, in one transaction; false, nothing written, when `epoch` is not above the recorded one.
     func queueEpochAck(_ control: QueuedControl, epoch: UInt32) throws -> Bool {

@@ -1161,9 +1161,9 @@ final class HubSession {
     }
 
     /// Queues `epoch_ack` for the Keychain's newest epoch when it is above the last one acknowledged (the outbox
-    /// decides, and sends none to a hub on today's path). Also at boot and after the unlock, so a raise made while
-    /// no session was up or the Keychain was locked is still acknowledged (the epoch the ordered path turned on in
-    /// is the baseline, `adoptOrderedActions`). Kept in `epochAckWork` (tests).
+    /// decides, and sends none to a hub on today's path). Also when the ordered path turns on (one ack for the link's
+    /// epoch), at boot and after the unlock, so a raise made while no session was up or the Keychain was locked is
+    /// still acknowledged. Kept in `epochAckWork` (tests).
     private func acknowledgeNewestEpoch() {
         guard !stopped, linkedDevice != nil else { return }
         let previous = epochAckWork
@@ -1241,8 +1241,8 @@ final class HubSession {
                   try await !outbox.orderedActions() else { return }
             try await outbox.enableOrderedActions()
             Self.logger.notice("the hub runs ordered actions: the ordered path is on")
-            // The grant comes with the link's keybox: the hub knows this epoch, so only a later raise is acknowledged.
-            try await outbox.setEpochAckBaseline(secure.currentEpoch())
+            // The hub takes an ack at or below its epoch as a no-op: from here on its acked epoch matches this phone's.
+            acknowledgeNewestEpoch()
         } catch {
             Self.logger.notice("ordered-actions grant check skipped: \(error.localizedDescription, privacy: .public)")
         }

@@ -224,7 +224,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await fetch(env)
         let written = await transport.conditionalSaves.dropFirst(mark)
         XCTAssertEqual(written.count, 1, "only the skip")
-        let controls = try await phoneControls(in: transport)
+        let controls = try await phoneControls(in: transport).filter { $0.kind != .epochAck }
         XCTAssertEqual(controls.map(\.kind), [.skipTo])
         XCTAssertEqual(controls.first?.seq, 5)
         XCTAssertEqual(controls.first?.hubID, hubID)
@@ -281,8 +281,8 @@ final class OrderedActionsWiringTests: XCTestCase {
         env.keysMerged(newestEpochRaised: false)
         await env.epochAckWork?.value
         await env.outbox.drain()
-        let none = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
-        XCTAssertTrue(none.isEmpty, "no raise, no ack")
+        let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
+        XCTAssertEqual(adopted.map(\.epoch), [1], "the adoption's ack only: no raise, no new ack")
 
         var link = try XCTUnwrap(try keys.store.hubLink(hubID))
         link.epochs.append(EpochKeys(
@@ -296,9 +296,33 @@ final class OrderedActionsWiringTests: XCTestCase {
         await env.outbox.drain()
 
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
-        XCTAssertEqual(acks.map(\.epoch), [2], "one ack for the raise")
-        XCTAssertEqual(acks.first?.deviceID, deviceID)
-        XCTAssertEqual(acks.first?.hubID, hubID)
+        XCTAssertEqual(acks.compactMap(\.epoch).sorted(), [1, 2], "one ack for the raise")
+        XCTAssertEqual(Set(acks.compactMap(\.deviceID)), [deviceID])
+        XCTAssertEqual(Set(acks.compactMap(\.hubID)), [hubID])
+    }
+
+    /// Turning the ordered path on sends one ack for the link's epoch; a later boot with no raise sends none.
+    func testAdoptionAcknowledgesOnceAndABootWithoutARaiseSendsNone() async throws {
+        let transport = SwitchableTransport()
+        let path = try makeReplicaPath()
+        let keys = try TestPhone.keys()
+        let first = try session(over: transport, path: path, closing: false, keys: keys)
+        await first.waitForBoot()
+        try await publishGrant(orderedActions: 1, over: transport)
+        await fetch(first)
+        await first.epochAckWork?.value
+        await first.shutDown()
+        first.closeDatabases()
+        let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
+        XCTAssertEqual(adopted.map(\.epoch), [1])
+
+        let second = try session(over: transport, path: path, keys: keys)
+        await second.waitForBoot()
+        await fetch(second)
+        await second.epochAckWork?.value
+        await second.outbox.drain()
+        let after = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
+        XCTAssertEqual(after.map(\.epoch), [1], "no raise: no second ack")
     }
 
     /// A raise the session never heard of (made while no session was up, or while the Keychain was locked) is
@@ -367,6 +391,9 @@ final class OrderedActionsWiringTests: XCTestCase {
         await fetch(env)
         let on = try await env.outbox.orderedActions()
         XCTAssertTrue(on)
+        // The adoption's epoch_ack is written before the test starts counting saves.
+        await env.epochAckWork?.value
+        await env.outbox.drain()
         return env
     }
 
