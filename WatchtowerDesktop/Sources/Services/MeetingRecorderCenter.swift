@@ -214,6 +214,19 @@ final class MeetingRecorderCenter {
     /// transcript id the save returned. Same keying as `onJobPhase`.
     var onJobFinished: ((_ audioURL: URL, _ transcriptID: Int64) -> Void)?
 
+    /// Observers of the same two events (`addJobObserver`).
+    @ObservationIgnored var jobObservers: [UUID: JobObserver] = [:]
+
+    private func jobPhaseChanged(_ audioURL: URL, _ phase: ProcessingJob.Phase) {
+        onJobPhase?(audioURL, phase)
+        jobObservers.values.forEach { $0.phase(audioURL, phase) }
+    }
+
+    private func jobFinished(_ audioURL: URL, _ transcriptID: Int64) {
+        onJobFinished?(audioURL, transcriptID)
+        jobObservers.values.forEach { $0.finished(audioURL, transcriptID) }
+    }
+
     /// `.waiting` = a recording is capturing but something else still owns
     /// the engine slot (a batch job transcribing, the previous recording's draining tail,
     /// a resident dictation engine), so the live engine is deliberately not
@@ -1813,7 +1826,7 @@ final class MeetingRecorderCenter {
             } else {
                 notifier.sendTranscriptReadyNotification(title: title)
             }
-            onJobFinished?(job.audioURL, result.transcriptID)
+            jobFinished(job.audioURL, result.transcriptID)
             await persistRegistry(registry, transcriptID: result.transcriptID, title: title,
                                   notify: voiceNotifications)
         } catch {
@@ -1875,7 +1888,7 @@ final class MeetingRecorderCenter {
         mutate(&jobs[index])
         let job = jobs[index]
         if job.phase != before {
-            onJobPhase?(job.audioURL, job.phase)
+            jobPhaseChanged(job.audioURL, job.phase)
         }
     }
 

@@ -6,6 +6,25 @@ import WatchtowerCore
 /// row, copying the phone's audio in, and the audio check that gates it.
 /// `ingestPhoneRecording` itself lives with the queue it enqueues into.
 extension MeetingRecorderCenter {
+    /// An observer of the job events beside `onJobPhase`/`onJobFinished`
+    /// (the Go hub's phone recording queue), removed by its token: a closure
+    /// chain would lose one when the Swift hub hands its closures back out
+    /// of order.
+    struct JobObserver {
+        let phase: (_ audioURL: URL, _ phase: ProcessingJob.Phase) -> Void
+        let finished: (_ audioURL: URL, _ transcriptID: Int64) -> Void
+    }
+
+    func addJobObserver(_ observer: JobObserver) -> UUID {
+        let token = UUID()
+        jobObservers[token] = observer
+        return token
+    }
+
+    func removeJobObserver(_ token: UUID) {
+        jobObservers[token] = nil
+    }
+
     /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by inserting
     /// its `pending_transcripts` row EXCLUSIVELY (`PendingTranscriptStore.reserve`):
     /// when a concurrent reserver took the name first, the insert does

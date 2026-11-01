@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
@@ -136,11 +137,13 @@ type ControlAnswer struct {
 	Code      string     `json:"code,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
 	// At is when a desktop heartbeat was written; UploadID, Status and
-	// TranscriptID a recording job after a claim or finish.
+	// TranscriptID a recording job after a claim or finish; AudioPath the
+	// claimed job's audio file (claim only: Desktop never derives it).
 	At           *time.Time `json:"at,omitempty"`
 	UploadID     string     `json:"upload_id,omitempty"`
 	Status       string     `json:"status,omitempty"`
 	TranscriptID *int64     `json:"transcript_id,omitempty"`
+	AudioPath    string     `json:"audio_path,omitempty"`
 	// Recordings is the switch after a recordings request: "on" | "off".
 	Recordings string `json:"recordings,omitempty"`
 	// Phase and Percent are a job's progress after a recording_progress;
@@ -594,7 +597,11 @@ func (s *supervisor) recordingJob(r ControlRequest) ControlAnswer {
 		return ControlAnswer{Error: ErrClassFailed}
 	}
 	s.poke()
-	return ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
+	a := ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
+	if r.Op == OpRecordingClaim && s.o.RecordingsDir != "" {
+		a.AudioPath = handlers.RecordingAudioPath(s.o.RecordingsDir, job.UploadID)
+	}
+	return a
 }
 
 // offlineLink is unlink or allow while the lock holder runs no hub

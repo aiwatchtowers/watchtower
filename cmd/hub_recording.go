@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,7 +26,19 @@ const (
 	hubClaimVerb     = "claim a recording job"
 	hubFinishVerb    = "finish a recording job"
 	hubProgressVerb  = "report a recording job's progress"
+	hubListVerb      = "list the recording jobs"
 )
+
+// hubListJSON is one row of `hub recording list --json` (pinned keys):
+// Desktop's read of the queue when it starts following it. Phase is "" and
+// Percent null until Desktop reported one.
+type hubListJSON struct {
+	UploadID  string `json:"upload_id"`
+	Status    string `json:"status"`
+	Phase     string `json:"phase"`
+	Percent   *int   `json:"percent"`
+	AudioPath string `json:"audio_path"`
+}
 
 // hubProgressJSON is `hub recording progress --json` (pinned keys).
 type hubProgressJSON struct {
@@ -83,7 +96,9 @@ func init() {
 	progress.Flags().String("phase", "", "transcribing, diarizing or summarizing")
 	progress.Flags().Int("percent", 0, "percent done, 0-100 (transcribing only)")
 	progress.Flags().Bool("json", false, "print JSON")
-	recording.AddCommand(claim, finish, progress)
+	list := &cobra.Command{Use: "list", Short: "List the phone recording jobs", Args: cobra.NoArgs, RunE: runHubRecordingList}
+	list.Flags().Bool("json", false, "print JSON")
+	recording.AddCommand(claim, finish, progress, list)
 	hubCmd.AddCommand(desktop, recording)
 }
 
@@ -160,7 +175,10 @@ func runHubRecordingClaim(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	path := handlers.RecordingAudioPath(handlers.RecordingsDirUnder(dir), a.UploadID)
+	path := a.AudioPath // a running hub names it
+	if path == "" {
+		path = handlers.RecordingAudioPath(handlers.RecordingsDirUnder(dir), a.UploadID)
+	}
 	return hubPrint(cmd, asJSON, hubClaimJSON{UploadID: a.UploadID, AudioPath: path, Status: a.Status},
 		"claimed "+a.UploadID+": "+path)
 }
@@ -231,4 +249,53 @@ func runHubRecordingProgress(cmd *cobra.Command, _ []string) error {
 		line += " " + strconv.Itoa(*a.Percent) + "%"
 	}
 	return hubPrint(cmd, asJSON, hubProgressJSON{UploadID: a.UploadID, Status: a.Status, Phase: a.Phase, Percent: a.Percent}, line)
+}
+
+// runHubRecordingList prints the queue, read only (the hub may run): ids,
+// statuses, Desktop's phases and where each job's audio lives. Refused
+// under an agent marker like the other recording verbs: the paths lead to
+// plaintext audio. No sidecar (or no queue table) yet is an empty queue.
+func runHubRecordingList(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent(hubListVerb); err != nil {
+		return err
+	}
+	asJSON, _ := cmd.Flags().GetBool("json")
+	dir, err := hubDir()
+	if err != nil {
+		return err
+	}
+	jobs, err := hubRecordingJobs(cmd, dir)
+	if err != nil {
+		return err
+	}
+	recordings := handlers.RecordingsDirUnder(dir)
+	rows := make([]hubListJSON, 0, len(jobs))
+	for _, j := range jobs {
+		rows = append(rows, hubListJSON{UploadID: j.UploadID, Status: j.Status, Phase: j.Phase, Percent: j.Percent,
+			AudioPath: handlers.RecordingAudioPath(recordings, j.UploadID)})
+	}
+	if asJSON {
+		return hubPrint(cmd, true, rows, "")
+	}
+	for _, r := range rows {
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), r.UploadID+": "+r.Status); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hubRecordingJobs(cmd *cobra.Command, dir string) ([]state.RecordingJob, error) {
+	st, err := state.OpenReadOnly(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = st.Close() }()
+	if ready, err := st.RecordingQueueReady(); err != nil || !ready {
+		return nil, err
+	}
+	return st.RecordingJobs(cmd.Context())
 }

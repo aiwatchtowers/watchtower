@@ -303,20 +303,27 @@ func (s *Store) QueueRecording(uploadID, deviceID string, now time.Time) error {
 }
 
 // ClaimRecording moves a queued job to claimed (Desktop took it). A claimed
-// job claims again unchanged (Desktop restarted); a finished one is
-// ErrJobState.
+// job claims again unchanged (Desktop restarted). A failed one claims again
+// with its class, finish and phase cleared: the owner retried the
+// transcription on the Mac (the Swift hub's job went back to queued the same
+// way). A done job and a hub_moved one (adoption) are ErrJobState.
 func (s *Store) ClaimRecording(uploadID string, now time.Time) (RecordingJob, error) {
 	err := s.write(func(tx *sql.Tx) error {
 		job, err := recordingJobTx(tx, uploadID)
 		if err != nil {
 			return err
 		}
-		switch job.Status {
-		case RecordingClaimed:
+		switch {
+		case job.Status == RecordingClaimed:
 			return nil
-		case RecordingQueued:
+		case job.Status == RecordingQueued:
 			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ? WHERE upload_id = ?`,
 				toReal(now), uploadID)
+			return err
+		case job.Status == RecordingFailed && job.ErrorClass != ClassHubMoved:
+			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ?, error_class = NULL,
+					finished_at = NULL, phase = NULL, percent = NULL
+				WHERE upload_id = ?`, toReal(now), uploadID)
 			return err
 		}
 		return ErrJobState
@@ -518,6 +525,18 @@ func (j RecordingJob) UpdatedAt() time.Time {
 // transcribed when the Go hub adopted the Swift hub's state (ask #843): it
 // fails once, and the recording_job slice shows a fixed text for it.
 const ClassHubMoved = "hub_moved"
+
+// The classes Desktop finishes a phone recording with (Swift
+// PhoneRecordingQueue.FailureClass, a Go↔Swift dual path); the
+// recording_job slice shows the Swift hub's sentence for each.
+const (
+	ClassNoSpeech            = "no_speech"
+	ClassTranscriptionFailed = "transcription_failed"
+	ClassNotAudio            = "not_audio"
+	ClassUnreadable          = "unreadable"
+	ClassIngestFailed        = "ingest_failed"
+	ClassMissingAudio        = "missing_audio"
+)
 
 // RecordingJobKeptFor is how long a finished job (and its audio file) is
 // kept: the Swift hub's 31-day rule.

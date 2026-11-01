@@ -197,6 +197,25 @@ final class HubCenterTests: XCTestCase {
         await waitUntil("only status events change it") { center.status == HubCenter.Status(state: "paused", reason: "locked") }
     }
 
+    /// The phone recording queue's two inputs: each snapshot (a rescan) and
+    /// each `recording_queued` with its upload id.
+    func testRecordingEventsReachTheQueue() async {
+        let center = makeCenter()
+        var connected = 0
+        var queued: [String] = []
+        center.onWatchConnected = { connected += 1 }
+        center.onRecordingQueued = { queued.append($0) }
+        center.start()
+        await waitUntil("the stream is open") { client.watches == 1 }
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        client.emit(.recordingQueued(uploadID: "u-1"))
+        client.emit(.recordingQueued(uploadID: ""))
+        client.emit(.recordingQueued(uploadID: "u-2"))
+        await waitUntil("the events") { queued.count == 2 }
+        XCTAssertEqual(connected, 1)
+        XCTAssertEqual(queued, ["u-1", "u-2"], "an event with no id is dropped")
+    }
+
     func testNoHubFallsBackToCLIStatus() async throws {
         client.reachable = false
         let cli = FakeCLIRunner(stdout: Data(#"{"state":"off","reason":"desktop_host","host":"desktop","recordings":"off"}"#.utf8))
