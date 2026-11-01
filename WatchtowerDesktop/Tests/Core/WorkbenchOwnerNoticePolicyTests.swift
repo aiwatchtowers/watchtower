@@ -62,6 +62,27 @@ final class WorkbenchOwnerNoticePolicyTests: XCTestCase {
         XCTAssertEqual(sent, ["Feature done"])
     }
 
+    /// The cause of a `system` row is looked for in its own workbench only:
+    /// an owner write in workbench B in the same second never silences a
+    /// standalone system close in workbench A.
+    func testAnOwnerWriteInAnotherWorkbenchDoesNotSilenceASystemClose() throws {
+        try db.write { d in
+            let a = try TestDatabase.insertWorkbench(d)
+            let b = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
+            let x = try TestDatabase.insertWorkbenchTarget(d, projectID: a, text: "Task A")
+            let y = try TestDatabase.insertWorkbenchTarget(d, projectID: b, text: "Task B")
+            // A's own last owner row is from another second.
+            try d.execute(sql: "UPDATE target_status_history SET changed_at = '2026-01-01T00:00:00Z' WHERE target_id = ?",
+                          arguments: [x])
+            let project = try XCTUnwrap(WorkbenchQueries.fetch(d, id: a))
+            let previous = try WorkbenchQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            try d.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [y])
+            try d.execute(sql: "UPDATE targets SET status = 'done', status_actor = 'system' WHERE id = ?", arguments: [x])
+            let current = try WorkbenchQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            XCTAssertEqual(Policy.decide(previous: previous, current: current).map(\.title), ["Task A done"])
+        }
+    }
+
     func testOnlyTheNewestRowDecides() {
         XCTAssertFalse(WorkbenchOwnerNoticePolicy.shouldAnnounce(newestActor: "owner"))
         XCTAssertTrue(WorkbenchOwnerNoticePolicy.shouldAnnounce(newestActor: "agent"))

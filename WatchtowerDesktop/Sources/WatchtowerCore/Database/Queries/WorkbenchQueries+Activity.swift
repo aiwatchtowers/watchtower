@@ -76,7 +76,11 @@ extension WorkbenchQueries {
     /// rollup (PROJ-05) wrote in the same statement as a child's change takes
     /// that change's actor: the triggers write the child's row first and the
     /// parents' right after it, so the nearest earlier non-`system` row with
-    /// the same `changed_at` is its cause. A target with no row is absent.
+    /// the same `changed_at` in the same workbench is its cause. A target
+    /// with no row is absent. Relies on `targets_status_history_au` writing
+    /// the child's row before the rollup trigger's (trigger creation order,
+    /// migration 00143); the rollup tests in WorkbenchOwnerNoticePolicyTests
+    /// pin it.
     package static func newestStatusActors(_ db: Database, projectID: Int64) throws -> [Int64: String] {
         var actors: [Int64: String] = [:]
         for row in try Row.fetchAll(db, sql: """
@@ -89,7 +93,8 @@ extension WorkbenchQueries {
             LEFT JOIN target_status_history o
               ON h.actor = 'system'
              AND o.id = (SELECT MAX(o2.id) FROM target_status_history o2
-                         WHERE o2.id < h.id AND o2.actor != 'system')
+                         JOIN targets t2 ON t2.id = o2.target_id
+                         WHERE o2.id < h.id AND o2.actor != 'system' AND t2.project_id = t.project_id)
             WHERE t.project_id = ? AND t.status = 'done'
             """, arguments: [projectID]) {
             actors[row["id"]] = row["actor"]
