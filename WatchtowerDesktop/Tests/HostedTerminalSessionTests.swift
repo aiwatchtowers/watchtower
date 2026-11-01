@@ -17,6 +17,8 @@ final class FakeSessionHostTransport: SessionHostTransport {
     /// How many Forgets are refused (as for a run not reaped yet) before
     /// they are answered.
     var refusedForgets = 0
+    /// The protocol version the host answers a Hello with.
+    var helloVersion = SessionHostHello.protocolVersion
     private var onFrame: ((SessionHostFrame) -> Void)?
     private var onClose: (() -> Void)?
 
@@ -31,7 +33,8 @@ final class FakeSessionHostTransport: SessionHostTransport {
         sent.append(frame)
         guard autoReply else { return }
         switch frame.type {
-        case .hello: push(.json(.helloOK, SessionHostHello(version: 1, pid: 99)))
+        case .hello: push(.json(.helloOK, SessionHostHello(version: helloVersion, pid: 99)))
+        case .stop: push(.json(.stopping, ["already_exited": false]))
         case .list: push(.json(.listed, SessionHostListResponse(sessions: listed)))
         case .forget where refusedForgets > 0:
             refusedForgets -= 1
@@ -115,7 +118,7 @@ final class HostedTerminalSessionTests: XCTestCase {
     func testStartSendsLaunchWithRowEnvAndSize() async throws {
         let (session, transport) = try await startedSession()
         XCTAssertEqual(transport.sent.map(\.type), [.hello, .launch])
-        XCTAssertEqual(try transport.sent[0].decoded(SessionHostHello.self).version, 1)
+        XCTAssertEqual(try transport.sent[0].decoded(SessionHostHello.self).version, 2, "v2: Deliver, PromptHint, Stop")
         let request = try transport.sent[1].decoded(SessionHostLaunchRequest.self)
         XCTAssertEqual(request.row, 7)
         XCTAssertEqual(request.run, session.key?.run)

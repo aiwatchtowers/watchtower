@@ -26,7 +26,9 @@ enum SessionHostError: Error, Equatable {
 
 /// Hello and Error payloads (Go `HelloMsg`/`ErrorMsg`, a dual path).
 struct SessionHostHello: Codable, Equatable {
-    static let protocolVersion = 1
+    /// v2: `Deliver`, `PromptHint` and `Stop` (Go `ProtocolVersion`). A v2
+    /// host answers any hello with 2; a v1 host answers 1 and has none.
+    static let protocolVersion = 2
 
     let version: Int
     var pid: Int?
@@ -141,6 +143,54 @@ final class SessionHostClient {
         makeTransport(socketPath)
     }
 
+    // MARK: Protocol v2
+
+    /// How long a delivery waits for the host's answer: its pause (Go
+    /// `MaxSettle`, 5 s) and the re-check (`CheckTimeout`, 5 s), with room.
+    static let deliverTimeout: Duration = .seconds(15)
+    private var lastDeliveryID = 0
+
+    /// Asks the host to type `request.text` into the session `request`
+    /// names (PROJ-12): the host pastes it, and only after its pause and a
+    /// re-check — `check`, the caller's fresh read — writes a Return of its
+    /// own. A delivery holds a connection of its own for its whole run, so
+    /// the control connection's requests never wait behind its pause. An
+    /// empty `id` is filled in. Throws when the host cannot be reached,
+    /// speaks protocol 1, refuses the request or does not answer within
+    /// `deliverTimeout`; nothing is known to be typed then.
+    func deliver(_ request: DeliverRequest, check: @escaping @MainActor () async -> DeliverCheckReply) async throws -> DeliverOutcome {
+        var request = request
+        if request.id.isEmpty {
+            lastDeliveryID += 1
+            request.id = "d\(lastDeliveryID)"
+        }
+        let transport = makeTransport(socketPath)
+        let call = DeliverCall(request: request, transport: transport, check: check)
+        defer { transport.close() }
+        do {
+            try await transport.open(
+                onFrame: { [weak call] frame in call?.received(frame) },
+                onClose: { [weak call] in call?.finish(.failure(SessionHostError.disconnected)) }
+            )
+        } catch {
+            throw SessionHostError.disconnected
+        }
+        let watchdog = Task { [weak call] in
+            try? await Task.sleep(for: Self.deliverTimeout)
+            guard !Task.isCancelled else { return }
+            call?.finish(.failure(SessionHostError.disconnected))
+        }
+        defer { watchdog.cancel() }
+        return try await call.run()
+    }
+
+    /// Asks the host to stop a run (SIGHUP to its group, SIGKILL after the
+    /// host's grace); its Exit then carries `requested`. Returns once the
+    /// host took the request.
+    func stop(row: Int64, run: String, launch: UInt64) async throws {
+        _ = try await request(.json(.stop, SessionHostStopRequest(row: row, run: run, launch: launch)), expecting: .stopping)
+    }
+
     // MARK: Control connection
 
     private func connectOrSpawn() async -> Bool {
@@ -231,7 +281,7 @@ final class SessionHostClient {
 
     private func reply(_ frame: SessionHostFrame) {
         switch frame.type {
-        case .helloOK, .listed, .forgot, .error:
+        case .helloOK, .listed, .forgot, .stopping, .error:
             guard !waiters.isEmpty else { return }
             let waiter = waiters.removeFirst()
             if frame.type == .error {
@@ -291,6 +341,72 @@ final class SessionHostClient {
         process.standardOutput = log
         process.standardError = log
         try process.run()
+    }
+}
+
+/// One `SessionHostClient.deliver` on its own connection: Hello, Deliver,
+/// each DeliverCheck of this request answered by `check`, then the
+/// Delivered that ends it. A Hello answered below v2, an Error frame or a
+/// closed connection ends it with an error.
+@MainActor
+private final class DeliverCall {
+    private let request: DeliverRequest
+    private let transport: any SessionHostTransport
+    private let check: @MainActor () async -> DeliverCheckReply
+    private var continuation: CheckedContinuation<DeliverOutcome, any Error>?
+    private var result: Result<DeliverOutcome, any Error>?
+
+    init(request: DeliverRequest, transport: any SessionHostTransport, check: @escaping @MainActor () async -> DeliverCheckReply) {
+        self.request = request
+        self.transport = transport
+        self.check = check
+    }
+
+    func run() async throws -> DeliverOutcome {
+        try await withCheckedThrowingContinuation { continuation in
+            if let result {
+                continuation.resume(with: result)
+                return
+            }
+            self.continuation = continuation
+            transport.send(.json(.hello, SessionHostHello(version: SessionHostHello.protocolVersion)))
+            transport.send(.json(.deliver, request))
+        }
+    }
+
+    func received(_ frame: SessionHostFrame) {
+        switch frame.type {
+        case .helloOK:
+            let version = (try? frame.decoded(SessionHostHello.self))?.version ?? 0
+            if version < SessionHostHello.protocolVersion {
+                finish(.failure(SessionHostError.host("the session host speaks protocol \(version)")))
+            }
+        case .deliverCheck:
+            guard (try? frame.decoded(DeliverCheck.self))?.id == request.id else { return }
+            Task { [weak self] in
+                guard let self else { return }
+                var reply = await check()
+                reply.id = request.id
+                guard result == nil else { return }
+                transport.send(.json(.deliverCheckReply, reply))
+            }
+        case .delivered:
+            guard let message = try? frame.decoded(DeliveredMessage.self), message.id == request.id else { return }
+            finish(.success(DeliverOutcome(message)))
+        case .error:
+            let message = (try? frame.decoded(SessionHostErrorMessage.self).message) ?? "unreadable error"
+            finish(.failure(SessionHostError.host(message)))
+        default:
+            break
+        }
+    }
+
+    /// Ends the call once; later results are dropped.
+    func finish(_ result: Result<DeliverOutcome, any Error>) {
+        guard self.result == nil else { return }
+        self.result = result
+        continuation?.resume(with: result)
+        continuation = nil
     }
 }
 

@@ -6,23 +6,40 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 /// A process that runs a probe on every input, so a test can see what the
-/// DB held at the moment the line was typed.
+/// DB held at the moment the line was typed — by the stand-in session host
+/// (`FakeHostDelivery`), the only way a line reaches it.
 @MainActor
 private final class ProbedInputSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
     var onOwnerInput: (([UInt8]) -> Void)?
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
     var onInput: (() -> Void)?
+    let host = FakeHostDelivery()
 
-    func start(_ launch: TerminalLaunch) {}
+    init() {
+        host.write = { [weak self] in self?.sendInput($0) }
+        host.bracketedPaste = { [weak self] in self?.bracketedPasteMode ?? false }
+        host.event = { [weak self] in self?.onDeliveryEvent?($0) }
+    }
+
+    func start(_ launch: TerminalLaunch) { host.newRun() }
     func detach() {}
     func sendInput(_ bytes: [UInt8]) {
         onInput?()
         inputs.append(bytes)
     }
+
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
+        onDeliver?(line)
+        return await host.deliver(line, check: check)
+    }
+
+    /// Runs when the app asks the host to type a line.
+    var onDeliver: ((SessionDeliverLine) -> Void)?
 }
 
 @MainActor
@@ -51,13 +68,11 @@ final class OwnerAsksViewModelTests: XCTestCase {
         center = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = ProbedInputSession()
+                process.host.pause = { [weak self] _ in await self?.onPause?() }
                 self?.processes.append(process)
                 return process
             },
-            signaller: ProcessGroupSignaller(
-                signal: { _, _ in }, isAlive: { _ in false },
-                sleep: { [weak self] _ in await self?.onPause?() }
-            )
+            signaller: ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
         )
         center.shell = { "/bin/zsh" }
         center.copyToClipboard = { [weak self] in self?.copied.append($0) }
@@ -209,8 +224,12 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         var statusWhenTyped: String?
+        var statusWhenAsked: String?
         processes[0].onInput = { [pool] in
             statusWhenTyped = try? pool?.read { try String.fetchOne($0, sql: "SELECT status FROM owner_asks WHERE id = ?", arguments: [askID]) }
+        }
+        processes[0].onDeliver = { [pool] _ in
+            statusWhenAsked = try? pool?.read { try String.fetchOne($0, sql: "SELECT status FROM owner_asks WHERE id = ?", arguments: [askID]) }
         }
         let vm = makeVM()
         let ask = try await openAsk(vm, project: p, id: askID)
@@ -218,7 +237,17 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         await vm.asks.answer(ask)
 
+        XCTAssertEqual(statusWhenAsked, "answered", "stored before the host is asked to type it")
         XCTAssertEqual(statusWhenTyped, "answered")
+        // The host types it (PROJ-12, Go `TestProj12_AnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn`):
+        // one line, with its Return asked for after the answer's pause.
+        let asked = try XCTUnwrap(processes[0].host.lines.first)
+        XCTAssertEqual(processes[0].host.lines.count, 1)
+        XCTAssertFalse(asked.keepLineBreaks)
+        XCTAssertFalse(asked.keepFormat)
+        XCTAssertTrue(asked.submitIf)
+        XCTAssertFalse(asked.holdIfPromptText)
+        XCTAssertEqual(asked.settle, TerminalCenter.answerSubmitDelay)
         XCTAssertEqual(typed.count, 2)
         let pasteStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E]
         let pasteEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
@@ -273,63 +302,6 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         await vm.asks.deliverHeldAnswers()
         XCTAssertEqual(typed.count, 2, "delivered once")
-    }
-
-    /// PROJ-12 (amended 2026-10-04): a Return would submit what the owner
-    /// half-typed in Claude Code's prompt with the answer, so over such text
-    /// the line is only pasted — at once or after a hold. Keys answering the
-    /// permission dialog leave no draft; the owner's own Return ends one.
-    func testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted() async throws {
-        let (p, s, askID) = try await seed()
-        let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
-        center.start(s, fresh: true)
-        let vm = makeVM()
-        await vm.asks.load(projectID: p)
-        let asks = try XCTUnwrap(vm.asks.openAsks[p])
-        pick(vm, askID)
-        pick(vm, otherID)
-        processes[0].onOwnerInput?(Array("fix the".utf8))
-
-        let first = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == askID }))
-
-        XCTAssertEqual(first, .typed)
-        XCTAssertEqual(typed.count, 1, "the paste, no Return")
-        XCTAssertEqual(center.answerHints[s.id], .typed)
-
-        processes[0].onOwnerInput?([0x0D])
-        var approval = true
-        vm.asks.needsApproval = { _ in approval }
-        center.inputAnswersDialog = { _ in approval }
-        let second = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == otherID }))
-        XCTAssertEqual(second, .held)
-        processes[0].onOwnerInput?(Array("1".utf8))
-        approval = false
-        processes[0].onOwnerInput?(Array("next step".utf8))
-        await vm.asks.deliverHeldAnswers()
-
-        XCTAssertEqual(typed.count, 2, "the held line pasted over the new draft, no Return")
-        XCTAssertFalse(typed.contains([0x0D]))
-        XCTAssertEqual(vm.asks.answerNotices[otherID]?.text, OwnerAsksViewModel.answerTypedNote)
-    }
-
-    /// The owner's own Return ends a draft, and a key into the permission
-    /// dialog starts none: the line is submitted.
-    func testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted() async throws {
-        let (p, s, askID) = try await seed()
-        center.start(s, fresh: true)
-        let vm = makeVM()
-        center.inputAnswersDialog = { _ in true }
-        processes[0].onOwnerInput?(Array("1".utf8))
-        center.inputAnswersDialog = { _ in false }
-        processes[0].onOwnerInput?(Array("done".utf8))
-        processes[0].onOwnerInput?([0x0D])
-        let ask = try await openAsk(vm, project: p, id: askID)
-        pick(vm, askID)
-
-        let delivery = await vm.asks.answer(ask)
-
-        XCTAssertEqual(delivery, .submitted)
-        XCTAssertEqual(typed.last, [0x0D])
     }
 
     /// PROJ-12 (amended 2026-10-04 and 2026-10-07, board #396): only the
@@ -453,27 +425,6 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(center.answerHints[s.id])
     }
 
-    /// Board #388: the owner pressed Return while the line waited out its
-    /// pause — that sent it. No Return of ours follows into the empty
-    /// prompt, and no "press Return" bar is left behind.
-    func testTheOwnersReturnDuringThePauseSendsTheAnswer() async throws {
-        let (p, s, askID) = try await seed()
-        center.start(s, fresh: true)
-        let vm = makeVM()
-        onPause = { [weak self] in self?.processes[0].onOwnerInput?([0x0D]) }
-        let ask = try await openAsk(vm, project: p, id: askID)
-        pick(vm, askID)
-
-        let delivery = await vm.asks.answer(ask)
-
-        XCTAssertEqual(delivery, .submitted)
-        XCTAssertEqual(typed.count, 1, "the paste only")
-        XCTAssertFalse(typed.contains([0x0D]))
-        XCTAssertNil(center.answerHints[s.id])
-        XCTAssertFalse(center.pasteHints.contains(s.id))
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
-    }
-
     /// Board #387: a relaunch of the session while the line waits for its
     /// Return reuses the process object; the Return never goes into the new
     /// run, and the answer is left for that run's brief.
@@ -573,7 +524,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
-        let handOff = await center.submitPrompt("From a Watchtower code question", sessionID: s.id) { false }
+        let handOff = await center.deliver("From a Watchtower code question", sessionID: s.id) { false }
         XCTAssertEqual(handOff, .pasted)
         let ask = try await openAsk(vm, project: p, id: askID)
         pick(vm, askID)
@@ -997,14 +948,21 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(typed.count, 6)
         XCTAssertEqual(typed[5], [0x0D])
 
-        // Over the owner's half-typed text the line is only pasted.
+        // Over the owner's half-typed text the line is only pasted: the
+        // host's prompt holds the draft (its half is the Go twin
+        // `TestProj12_OverTheOwnersDraftSubmitPromptOnlyPastes`); the quick
+        // answer asks the host exactly as the drawer's did.
         processes[0].onOwnerInput?(Array("fix the".utf8))
+        processes[0].host.leftTyped = true
         let (third, thirdRow) = try await quickRow(vm, project: p, id: quickIDs[2])
         let thirdDelivery = await vm.answerQuick(third, with: thirdRow.answer(picking: "Yes"))
         XCTAssertEqual(thirdDelivery, .delivered(.typed))
         XCTAssertEqual(typed.count, 7, "the paste, no Return")
         XCTAssertNotEqual(typed.last, [0x0D])
         XCTAssertEqual(center.answerHints[s.id], .typed)
+        let shapes = processes[0].host.lines.map { [$0.keepLineBreaks, $0.keepFormat, $0.submitIf, $0.holdIfPromptText] }
+        XCTAssertEqual(Set(shapes), [[false, false, true, false]], "the drawer's and the banner's lines ask the host alike")
+        XCTAssertEqual(Set(processes[0].host.lines.map(\.settle)), [TerminalCenter.answerSubmitDelay])
     }
 
     /// PROJ-12 (spec 2026-10-10 Part 11.2): a Reply goes as the question's

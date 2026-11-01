@@ -166,6 +166,8 @@ final class SessionLineDelivery {
     /// again — unless a delivery's own read did it (each try would set off
     /// the next one without end).
     func statesRead() {
+        // Each read tells the hosts whether a dialog is up (Go `PromptHint`).
+        terminalCenter?.syncPromptHints()
         guard ownReads == 0 else { return }
         Task { [weak self] in await self?.deliverHeld() }
     }
@@ -269,11 +271,15 @@ final class SessionLineDelivery {
             NSLog("%@: session %lld: %@ dropped — it is over", key.logSource, sessionID, key.logNoun)
             return .noSession
         }
-        let reread: () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
-        let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: key.keepsLineBreaks,
-                                               keepingFormatCharacters: key.keepsFormatCharacters,
-                                               delay: center.inputProfile(sessionID).submitSettle,
-                                               refresh: reread) { [weak self] in
+        // The session host types it (`Deliver`): the pre-check and the
+        // re-check after the pause are this side's, the paste, the pause,
+        // the run and the prompt state the host's.
+        let reread: @MainActor () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
+        let result = await center.deliver(line, sessionID: sessionID, keepingLineBreaks: key.keepsLineBreaks,
+                                          keepingFormatCharacters: key.keepsFormatCharacters,
+                                          delay: center.inputProfile(sessionID).submitSettle,
+                                          holdIfPromptText: key.holdsOverPromptText,
+                                          refresh: reread) { [weak self] in
             self?.mayReturn(key: key, sessionID: sessionID) ?? false
         }
         switch result {
@@ -282,6 +288,7 @@ final class SessionLineDelivery {
             return .submitted
         case .pasted: return .typed
         case .copied: return .copied
+        case .held: return .held
         case .noSession: return .noSession
         }
     }
@@ -340,6 +347,13 @@ extension SessionLineDelivery.LineKey {
         case .input, .workchat: true
         case .ask, .review, .specReview: false
         }
+    }
+
+    /// Only the phone's lines are held by the host, nothing written, while
+    /// the prompt holds text (PROJ-16); every other line is typed beside
+    /// it without its Return (PROJ-12).
+    var holdsOverPromptText: Bool {
+        if case .input = self { true } else { false }
     }
 
     /// Only the Workchat's lines keep their paragraphs (owner ask #421,

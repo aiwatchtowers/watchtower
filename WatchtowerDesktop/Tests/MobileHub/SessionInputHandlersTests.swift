@@ -18,10 +18,27 @@ private final class InputProbeSession: TerminalSessionProcess {
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
     private(set) var launches: [TerminalLaunch] = []
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?
+    /// The stand-in session host: the only way a line reaches the process.
+    let host = FakeHostDelivery()
 
-    func start(_ launch: TerminalLaunch) { launches.append(launch) }
+    init() {
+        host.write = { [weak self] in self?.inputs.append($0) }
+        host.bracketedPaste = { [weak self] in self?.bracketedPasteMode ?? false }
+        host.event = { [weak self] in self?.onDeliveryEvent?($0) }
+    }
+
+    func start(_ launch: TerminalLaunch) {
+        launches.append(launch)
+        host.newRun()
+    }
+
     func detach() {}
     func sendInput(_ bytes: [UInt8]) { inputs.append(bytes) }
+
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
+        await host.deliver(line, check: check)
+    }
 }
 
 /// Counts the state reads.

@@ -340,6 +340,39 @@ func TestProj12_CodexMultilineAnswerOnePrompt(t *testing.T) {
 		cat(paste("first\nsecond\nthird"), []byte{0x0D}, paste("line oneline two"), []byte{0x0D}), "codex")
 }
 
+// Twin of testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted (Go hub
+// phase 3, Task 7): the row is relaunched while an older line waits out its
+// pause; a line into the new run, sent before that pause ends, is submitted
+// with its own Return — the new run's prompt held nothing — and the old
+// line gets no Return.
+func TestALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	var next *stubSession
+	var second DeliveredMsg
+	out := st.deliver(st.hub(), st.req("x"), func(context.Context) DeliverCheckReplyMsg {
+		_ = syscall.Kill(-st.info.Pid, syscall.SIGKILL)
+		ctl := dial(t, st.path)
+		deadline := time.Now().Add(ioTimeout)
+		for {
+			if l := ctl.list(); len(l) == 1 && l[0].Exited {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the old run never exited")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		ctl.send(Forget, AttachReq{Row: 1, Run: "r1"})
+		ctl.expect(Forgot)
+		next = launchStub(t, st.srv, st.path, 1, "claude", rawEchoAgent)
+		second = next.deliver(next.hub(), next.req("y"), nil)
+		return okCheck(context.Background())
+	})
+	wantOutcome(t, out, OutcomeNoSession, "")
+	wantOutcome(t, second, OutcomeSubmitted, "")
+	wantBytes(t, next.written(), cat(paste("y"), []byte{0x0D}), "the new run: its own line and one Return")
+}
+
 func (st *stubSession) phoneReq(text string) DeliverReq {
 	r := st.req(text)
 	r.HoldIfPromptText = true

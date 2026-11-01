@@ -21,10 +21,22 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// The workspace scope a launch carries (`SessionHostPaths.scope`), read
     /// at each launch.
     private let scope: () -> String
+    /// The agent a launch of a row runs (`claude`, `codex`, "" for a shell),
+    /// read at each launch: the host types lines with its input profile.
+    private let agent: (Int64) -> String
     private let terminal: PalettedTerminalView
     private var transport: (any SessionHostTransport)?
     /// The host's key of the current run.
     private(set) var key: SessionHostAttachRequest?
+    /// The host's launch counter of the current run (Launched/Attached);
+    /// 0 until the host reported it, or from a v1 host. A delivery and a
+    /// stop name it.
+    private(set) var launch: UInt64 = 0
+    /// The host's delivery events for the current run (v2): the pane's
+    /// hints. Main thread.
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?
+    /// The current run's exit followed a host Stop (the owner stopped it).
+    private(set) var exitRequested = false
     /// The Launch or Attach went out on `transport`: input and resizes may
     /// follow it.
     private var requested = false
@@ -72,9 +84,10 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// The pane's reason when the host cannot be reached or started.
     static let hostNotRunningReason = "the session host is not running"
 
-    init(client: SessionHostClient, scope: @escaping () -> String = { "" }) {
+    init(client: SessionHostClient, scope: @escaping () -> String = { "" }, agent: @escaping (Int64) -> String = { _ in "" }) {
         self.client = client
         self.scope = scope
+        self.agent = agent
         terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         terminal.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         terminal.hostInput = { [weak self] bytes in self?.sendToHost(bytes) }
@@ -100,11 +113,12 @@ final class HostedTerminalSession: TerminalSessionProcess {
         neverStarted = true
         terminal.dropsTerminalReplies = false
         let scope = scope()
+        let agent = agent(row)
         connect(key) { [terminal] in
             .json(.launch, SessionHostLaunchRequest(
                 row: key.row, run: key.run, executable: launch.executable, args: launch.args,
                 env: launch.processEnvironment, cwd: launch.currentDirectory,
-                cols: terminal.getTerminal().cols, rows: terminal.getTerminal().rows, scope: scope
+                cols: terminal.getTerminal().cols, rows: terminal.getTerminal().rows, scope: scope, agent: agent
             ))
         }
     }
@@ -161,11 +175,64 @@ final class HostedTerminalSession: TerminalSessionProcess {
         terminal.setAskLinks(lookUp: lookUp, open: open)
     }
 
+    // MARK: Protocol v2
+
+    /// The host types `line` into the current run (`SessionHostClient.deliver`,
+    /// PROJ-12): nothing here writes the PTY. No bound run, or a run whose
+    /// launch the host has not reported, is no session; so is a host that
+    /// could not be reached or refused the request (logged).
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
+        guard let key, bound, !exited, launch > 0 else { return .noSession }
+        let request = DeliverRequest(
+            row: key.row, run: key.run, launch: launch, text: line.text,
+            keepLineBreaks: line.keepLineBreaks, keepFormat: line.keepFormat,
+            settleMs: line.settle.map(Self.milliseconds) ?? 0,
+            submitIf: line.submitIf, holdIfPromptText: line.holdIfPromptText
+        )
+        do {
+            return try await client.deliver(request, check: check)
+        } catch {
+            Self.logger.error("deliver row \(key.row): \(String(describing: error), privacy: .public)")
+            return .noSession
+        }
+    }
+
+    /// Asks the host to stop the current run (`SessionHostClient.stop`);
+    /// its Exit then carries `requested`. False when there is no run the
+    /// host reported, or the host could not take the request: the caller
+    /// signals the process group itself.
+    func requestStop() async -> Bool {
+        guard let key, bound, !exited, launch > 0 else { return false }
+        do {
+            try await client.stop(row: key.row, run: key.run, launch: launch)
+            return true
+        } catch {
+            Self.logger.error("stop row \(key.row): \(String(describing: error), privacy: .public)")
+            return false
+        }
+    }
+
+    /// Tells the host whether a permission dialog is up in the run, so it
+    /// counts no dialog key as a draft and withholds a Return over one.
+    func sendPromptHint(dialog: Bool) {
+        // Only on a bound connection: before Launched an Error frame would
+        // read as the launch failing.
+        guard let key, let transport, bound, !exited, launch > 0 else { return }
+        transport.send(.json(.promptHint, SessionHostPromptHint(row: key.row, run: key.run, dialog: dialog)))
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int {
+        let (seconds, attoseconds) = duration.components
+        return Int(seconds) * 1000 + Int(attoseconds / 1_000_000_000_000_000)
+    }
+
     // MARK: Host connection
 
     private func connect(_ key: SessionHostAttachRequest, request: @escaping () -> SessionHostFrame) {
         closeTransport()
         self.key = key
+        launch = 0
+        exitRequested = false
         exited = false
         hangUpOnBind = false
         keepAlive = self
@@ -206,6 +273,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         case .launched, .attached:
             guard let info = try? frame.decoded(SessionHostSessionInfo.self) else { return }
             pid = info.exited ? 0 : pid_t(info.pid)
+            launch = info.launch
             bound = true
             neverStarted = false
             if hangUpOnBind, pid > 0 {
@@ -220,8 +288,14 @@ final class HostedTerminalSession: TerminalSessionProcess {
             terminal.feedOutput(frame.payload[...])
         case .exit:
             neverStarted = false // the host ran it
-            let code = (try? frame.decoded(SessionHostExit.self))?.code
-            finishRun(code: code.map { Int32(clamping: $0) }, forget: true)
+            let exit = try? frame.decoded(SessionHostExit.self)
+            // A requested exit is the owner's stop: no PROJ-18 cleanup.
+            exitRequested = exit?.requested == true
+            finishRun(code: exit?.code.map { Int32(clamping: $0) }, forget: true)
+        case .deliveryEvent:
+            guard let event = try? frame.decoded(SessionHostDeliveryEvent.self),
+                  event.row == key?.row, event.run == key?.run else { return }
+            onDeliveryEvent?(event)
         case .error:
             let message = (try? frame.decoded(SessionHostErrorMessage.self).message) ?? "unreadable error"
             Self.logger.error("session host: \(message, privacy: .public)")
