@@ -77,9 +77,15 @@ const LaterMobileHubLog = "hub: ignoring a later MobileHub (pre-guard app)"
 
 // Errors.
 var (
-	// ErrSwiftSchema: the Swift file lacks a column 00001 folds in (an app
-	// older than the last Swift schema change); nothing is moved.
-	ErrSwiftSchema = errors.New("adopt: the Swift hub's file is missing a column")
+	// ErrSwiftSchema: the Swift file's schema is one the migrations cannot
+	// take (a base column missing, a folded-in column that cannot be added);
+	// refused before the commit point, nothing is moved.
+	ErrSwiftSchema = errors.New("adopt: the Swift hub's file has a schema this hub cannot take")
+	// ErrSwiftHubID: the Swift file has no valid hub_meta.hub_id.
+	ErrSwiftHubID = errors.New("adopt: the Swift hub's file has no hub id")
+	// ErrSwiftBusy: another connection holds the Swift file (the Swift hub
+	// still runs): its WAL could not be checkpointed or its lock taken.
+	ErrSwiftBusy = errors.New("adopt: the Swift hub's file is in use")
 	// ErrSwiftCorrupt: the copy fails PRAGMA integrity_check.
 	ErrSwiftCorrupt = errors.New("adopt: the Swift hub's file is damaged")
 	// ErrAlreadyAdopted: adopted_at is set; nothing is done.
@@ -95,6 +101,8 @@ var (
 const (
 	ClassSwiftSchema    = "swift_schema"
 	ClassSwiftCorrupt   = "swift_corrupt"
+	ClassSwiftHubID     = "swift_hub_id"
+	ClassSwiftBusy      = "swift_busy"
 	ClassAlreadyAdopted = "already_adopted"
 	ClassLaterMobileHub = "later_mobile_hub"
 	ClassNothingToAdopt = "no_swift_state"
@@ -103,6 +111,7 @@ const (
 	identityNone        = "none"
 	swiftPresent        = "present"
 	swiftAbsent         = "absent"
+	swiftIgnored        = "ignored"
 )
 
 // Settings is what Desktop reads from its defaults and sends on stdin.
@@ -116,6 +125,10 @@ type Counts struct {
 	Devices int `json:"devices"`
 	Jobs    int `json:"jobs"`
 	Skipped int `json:"skipped"`
+	// AudioLeft counts the in-progress recordings whose audio was not moved
+	// (outside the transcriber's recordings dir, or the move failed): their
+	// Swift row keeps its audio path and their audio stays where it was.
+	AudioLeft int `json:"audio_left"`
 }
 
 // Result is where an adoption stands: the step reached (done when finished,
@@ -139,9 +152,12 @@ type PendingRecording struct {
 // during the hand-over.
 type Report struct {
 	Result
-	HubID             string             `json:"hub_id"`
-	Identity          string             `json:"identity"`    // none|staged|adopted|confirmed
-	SwiftState        string             `json:"swift_state"` // present|absent
+	HubID    string `json:"hub_id"`
+	Identity string `json:"identity"` // none|staged|adopted|confirmed
+	// SwiftState: present = a Swift sidecar waits in MobileHub/ and Run
+	// would adopt it; ignored = one is there but Run refuses it (a later
+	// MobileHub beside the Go hub's own state); absent = none.
+	SwiftState        string             `json:"swift_state"`
 	PendingRecordings []PendingRecording `json:"pending_recordings"`
 }
 
@@ -218,12 +234,18 @@ func Run(ctx context.Context, mobileHubDir, hubDir, recordingsDir string, s Sett
 // startStep is the step a run starts at, or why it does not run.
 func (r *run) startStep() (Step, error) {
 	if !exists(r.goFile()) {
-		if !exists(r.swiftFile()) {
-			return "", ErrNothingToAdopt
+		if exists(r.swiftFile()) {
+			return StepCopy, nil
 		}
-		return StepCopy, nil
+		// The Swift sidecar is gone but a verified copy waits: go on with it.
+		if exists(r.tmpFile()) {
+			if m, err := readMeta(r.tmpFile(), false, MetaAdoptStep); err == nil && m[MetaAdoptStep] == string(StepRename) {
+				return StepRename, nil
+			}
+		}
+		return "", ErrNothingToAdopt
 	}
-	m, err := readMeta(r.goFile(), MetaAdoptedAt, MetaAdoptStep)
+	m, err := readMeta(r.goFile(), false, MetaAdoptedAt, MetaAdoptStep)
 	if err != nil {
 		return "", err
 	}
@@ -254,6 +276,10 @@ func classOf(err error) string {
 		return ClassSwiftSchema
 	case errors.Is(err, ErrSwiftCorrupt):
 		return ClassSwiftCorrupt
+	case errors.Is(err, ErrSwiftHubID):
+		return ClassSwiftHubID
+	case errors.Is(err, ErrSwiftBusy):
+		return ClassSwiftBusy
 	case errors.Is(err, ErrAlreadyAdopted):
 		return ClassAlreadyAdopted
 	case errors.Is(err, ErrLaterMobileHub):
@@ -270,10 +296,10 @@ func Status(mobileHubDir, hubDir string) (Report, error) {
 	r := &run{mobile: mobileHubDir, hub: hubDir}
 	rep := Report{Identity: identityNone, SwiftState: swiftAbsent, PendingRecordings: []PendingRecording{}}
 	keys := []string{MetaAdoptStep, MetaAdoptedAt, MetaAdoptError, MetaAdoptCounts, MetaIdentity, state.MetaHubID}
-	adopted := false
 	var pendingFrom string
+	pendingSwift := false
 	if exists(r.goFile()) {
-		m, err := readMeta(r.goFile(), keys...)
+		m, err := readMeta(r.goFile(), false, keys...)
 		if err != nil {
 			return Report{}, err
 		}
@@ -286,31 +312,35 @@ func Status(mobileHubDir, hubDir string) (Report, error) {
 				return Report{}, fmt.Errorf("adopt: reading the imported counts: %w", err)
 			}
 		}
-		adopted = m[MetaAdoptedAt] != ""
 		if rep.Step == StepRename || rep.Step == StepMigrate || rep.Step == StepRecordings {
 			pendingFrom = r.goFile()
+		}
+		if exists(r.swiftFile()) {
+			// Adopted, or a Go hub of its own: Run refuses it (ErrLaterMobileHub).
+			rep.SwiftState = swiftIgnored
+			if m[MetaAdoptedAt] == "" && rep.Step != "" {
+				rep.SwiftState = swiftPresent // an adoption in progress
+			}
 		}
 	} else {
 		if exists(r.tmpFile()) {
 			// A copy in progress or refused: its step and error, when readable.
-			if m, err := readMeta(r.tmpFile(), MetaAdoptStep, MetaAdoptError); err == nil {
+			if m, err := readMeta(r.tmpFile(), false, MetaAdoptStep, MetaAdoptError); err == nil {
 				rep.Step, rep.Error = Step(m[MetaAdoptStep]), m[MetaAdoptError]
 			}
 		}
 		if exists(r.swiftFile()) {
-			m, err := readMeta(r.swiftFile(), state.MetaHubID)
+			m, err := readMeta(r.swiftFile(), true, state.MetaHubID)
 			if err != nil {
 				return Report{}, err
 			}
 			rep.HubID = m[state.MetaHubID]
-			pendingFrom = r.swiftFile()
+			rep.SwiftState = swiftPresent
+			pendingFrom, pendingSwift = r.swiftFile(), true
 		}
 	}
-	if !adopted && exists(r.swiftFile()) {
-		rep.SwiftState = swiftPresent
-	}
 	if pendingFrom != "" {
-		p, err := pendingRecordings(pendingFrom)
+		p, err := pendingRecordings(pendingFrom, pendingSwift)
 		if err != nil {
 			return Report{}, err
 		}

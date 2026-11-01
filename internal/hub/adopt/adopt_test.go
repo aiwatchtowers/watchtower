@@ -31,33 +31,36 @@ const (
 var swiftStatuses = []string{"received", "queued", "transcribing", "diarizing", "summarizing", "done", "failed"}
 
 // fixture is a Mac with a Swift hub: <root>/support/MobileHub (the Swift
-// sidecar, transport.db, SliceAssets/), <root>/support/pending (the
-// transcriber's audio the Swift rows point at), <root>/data/.hub (the Go
-// hub dir) and <root>/support/recordings.
+// sidecar, transport.db, SliceAssets/), <root>/support/recordings (the
+// transcriber's folder, where the Swift rows' audio is and where adoption
+// moves it), <root>/support/elsewhere (one row's audio outside it) and
+// <root>/data/.hub (the Go hub dir).
 type fixture struct {
-	root, mobile, hub, rec, pending string
+	root, mobile, hub, rec, outside string
 	now                             time.Time
 	updated                         float64 // every phone_recordings row's updated_at
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	return newFixtureIn(t, t.TempDir(), swiftfixture.Schema)
+	return newFixtureIn(t, t.TempDir(), nil)
 }
 
-func newFixtureIn(t *testing.T, root string, schema []string) *fixture {
+// newFixtureIn builds the fixture under root; mutate (nil = none) then
+// changes the Swift file, e.g. to drop a column.
+func newFixtureIn(t *testing.T, root string, mutate func(*sql.DB) error) *fixture {
 	t.Helper()
 	f := &fixture{
 		root: root, mobile: filepath.Join(root, "support", "MobileHub"), hub: filepath.Join(root, "data", ".hub"),
-		rec: filepath.Join(root, "support", "recordings"), pending: filepath.Join(root, "support", "pending"),
+		rec: filepath.Join(root, "support", "recordings"), outside: filepath.Join(root, "support", "elsewhere"),
 		now: time.Unix(1_800_000_000, 0).UTC(), updated: 1_799_990_000.5,
 	}
-	for _, d := range []string{f.mobile, f.pending, filepath.Join(f.mobile, "SliceAssets", "rec_one")} {
+	for _, d := range []string{f.mobile, f.rec, f.outside, filepath.Join(f.mobile, "SliceAssets", "rec_one")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	db, err := swiftfixture.Create(filepath.Join(f.mobile, state.FileName), fixtureHubID, schema)
+	db, err := swiftfixture.Create(filepath.Join(f.mobile, state.FileName), fixtureHubID, swiftfixture.Schema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,21 +71,18 @@ func newFixtureIn(t *testing.T, root string, schema []string) *fixture {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	devCols := "device_id, name, scope, user_record_name, linked_at, typing_allowed, start_sessions_granted, signing_key, agreement_key, link_nonce"
-	if hasColumn(schema, "last_seq") {
-		devCols += ", last_seq"
-		exec(`INSERT INTO devices (`+devCols+`) VALUES (?, 'phone A', 'shared', '_acme', 1700000000.5, 1, 0, x'0102', x'0304', 'nonce1', 9)`, phoneA)
-		exec(`INSERT INTO devices (`+devCols+`) VALUES (?, 'phone B', 'private', '_acme', 1700000001.5, 0, 1, x'0506', x'0708', 'nonce2', 3)`, phoneB)
-	} else {
-		exec(`INSERT INTO devices (`+devCols+`) VALUES (?, 'phone A', 'shared', '_acme', 1700000000.5, 1, 0, x'0102', x'0304', 'nonce1')`, phoneA)
-	}
+	devCols := "device_id, name, scope, user_record_name, linked_at, typing_allowed, start_sessions_granted, signing_key, agreement_key, link_nonce, last_seq"
+	exec(`INSERT INTO devices (`+devCols+`) VALUES (?, 'phone A', 'shared', '_acme', 1700000000.5, 1, 0, x'0102', x'0304', 'nonce1', 9)`, phoneA)
+	exec(`INSERT INTO devices (`+devCols+`) VALUES (?, 'phone B', 'private', '_acme', 1700000001.5, 0, 1, x'0506', x'0708', 'nonce2', 3)`, phoneB)
 	exec(`INSERT INTO hub_epochs (epoch, sealed_keys, created_at, first_seq) VALUES (1, x'aa01', 1700000000, 1), (2, x'aa02', 1700000500, 40)`)
 	exec(`INSERT INTO relay_processed (record_name, phase, outcome, updated_at, echo, done_seq) VALUES ('a-upload-1', 'done', 'received', 1700000100, x'e0e1e2', 12)`)
 	exec(`INSERT INTO slice_state (record_name, payload_hash, pushed_at) VALUES ('workbench-1', 'hash-1', 1700000200), ('timeline-today', 'hash-2', 1700000300)`)
 	exec(`INSERT INTO slice_assets (file_path, descriptor) VALUES ('rec_one/asset.bin', x'd0d1')`)
 	exec(`INSERT INTO work_alerts (key, seen_at, generation) VALUES ('alert-1', 1700000400, 2)`)
+	// Milestones with a rowid gap: the copy keeps the rowids.
+	exec(`INSERT INTO session_milestones (rowid, session_id, at, kind, text) VALUES (1, 4, 1700000000, 'state', 'a'), (3, 4, 1700000001, 'state', 'b'), (7, 5, 1700000002, 'state', 'c')`)
 	for _, s := range swiftStatuses {
-		audio := filepath.Join(f.pending, "acme standup "+s+".m4a")
+		audio := filepath.Join(f.rec, "acme standup "+s+".m4a")
 		var tid any
 		var errText any
 		switch s {
@@ -93,11 +93,22 @@ func newFixtureIn(t *testing.T, root string, schema []string) *fixture {
 		}
 		exec(`INSERT INTO phone_recordings (upload_id, audio_path, transcript_id, status, percent, error, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)`,
 			"rec-"+s, audio, tid, s, errText, f.updated)
-		if err := os.WriteFile(audio, []byte("audio of "+s), 0o600); err != nil {
+		if err := os.WriteFile(audio, []byte("audio of "+s), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// In progress, its audio outside the transcriber's folder: left there.
+	outsideAudio := filepath.Join(f.outside, "acme outside.m4a")
+	exec(`INSERT INTO phone_recordings (upload_id, audio_path, status, updated_at) VALUES ('rec-outside', ?, 'queued', ?)`, outsideAudio, f.updated)
+	if err := os.WriteFile(outsideAudio, []byte("outside audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	exec(`INSERT INTO phone_recordings (upload_id, audio_path, status, updated_at) VALUES ('bad/id', '', 'queued', ?)`, f.updated)
+	if mutate != nil {
+		if err := mutate(db); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(f.mobile, "SliceAssets", "rec_one", "asset.bin"), []byte("sealed asset"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +123,8 @@ func newFixtureIn(t *testing.T, root string, schema []string) *fixture {
 	return f
 }
 
-func hasColumn(schema []string, col string) bool {
-	for _, s := range schema {
-		if strings.Contains(s, "ADD COLUMN "+col+" ") {
-			return true
-		}
-	}
-	return false
-}
+// wantCounts is what the fixture's adoption imports.
+var wantCounts = Counts{Devices: 2, Jobs: 8, Skipped: 1, AudioLeft: 1}
 
 func (f *fixture) settings() Settings {
 	return Settings{Enabled: true, StartSessionAllows: map[string]bool{strings.ToLower(phoneA): true, phoneB: false, "FFFFFFFF-0000-4000-8000-000000000000": true}}
@@ -142,7 +147,7 @@ func (f *fixture) mustRun(t *testing.T) Result {
 // goDB opens the Go sidecar raw for assertions.
 func (f *fixture) goDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := rawOpen(filepath.Join(f.hub, state.FileName), true)
+	db, err := rawOpen(filepath.Join(f.hub, state.FileName), openRO)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +208,7 @@ func (f *fixture) snapshot(t *testing.T) string {
 		fmt.Fprintf(&b, "file %s %v %q\n", rel, fi.Mode().Perm(), strings.ReplaceAll(string(data), f.root, "<root>"))
 		return nil
 	})
-	return b.String()
+	return strings.ReplaceAll(b.String(), f.root, "<root>")
 }
 
 func tableNames(t *testing.T, db *sql.DB) []string {
@@ -257,7 +262,7 @@ func tableRows(t *testing.T, db *sql.DB, q string) []string {
 func TestAdoptImportsEveryTable(t *testing.T) {
 	f := newFixture(t)
 	res := f.mustRun(t)
-	if res.Step != StepDone || res.Error != "" || res.Imported != (Counts{Devices: 2, Jobs: 7, Skipped: 1}) {
+	if res.Step != StepDone || res.Error != "" || res.Imported != wantCounts {
 		t.Fatalf("result = %+v", res)
 	}
 	db := f.goDB(t)
@@ -284,6 +289,9 @@ func TestAdoptImportsEveryTable(t *testing.T) {
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM work_alerts`); n != 1 {
 		t.Errorf("work alerts = %d", n)
+	}
+	if v := scalar[string](t, db, `SELECT group_concat(rowid || text, ',') FROM (SELECT rowid, text FROM session_milestones ORDER BY rowid)`); v != "1a,3b,7c" {
+		t.Errorf("milestone rowids = %q", v)
 	}
 	// Every migration on the branch applied (derived from the embedded FS).
 	mfs, err := state.Migrations()
@@ -318,7 +326,7 @@ func TestAdoptImportsEveryTable(t *testing.T) {
 	if err != nil || ck.Mode().Perm() != 0o700 {
 		t.Fatalf("cloudkit dir = %v %v", ck, err)
 	}
-	tdb, err := rawOpen(filepath.Join(f.hub, "cloudkit", "transport.db"), true)
+	tdb, err := rawOpen(filepath.Join(f.hub, "cloudkit", "transport.db"), openRO)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +361,7 @@ func TestAdoptImportsEveryTable(t *testing.T) {
 
 func TestAdoptSwitchesToWAL(t *testing.T) {
 	f := newFixture(t)
-	sdb, err := rawOpen(filepath.Join(f.mobile, state.FileName), true)
+	sdb, err := rawOpen(filepath.Join(f.mobile, state.FileName), openRO)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +459,8 @@ func TestALaterMobileHubIsNeverImported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.HubID != fixtureHubID || rep.SwiftState != "absent" || rep.Step != StepDone {
+	// Run refuses it, so it reads ignored (no Retry that cannot succeed).
+	if rep.HubID != fixtureHubID || rep.SwiftState != "ignored" || rep.Step != StepDone {
 		t.Fatalf("status = %+v", rep)
 	}
 
@@ -468,6 +477,9 @@ func TestALaterMobileHubIsNeverImported(t *testing.T) {
 	if !exists(filepath.Join(g.mobile, state.FileName)) || exists(filepath.Join(g.mobile, "MOVED")) {
 		t.Fatal("the Swift sidecar beside a Go hub of its own was touched")
 	}
+	if rep, err := Status(g.mobile, g.hub); err != nil || rep.SwiftState != "ignored" {
+		t.Fatalf("status beside a Go hub of its own = %+v %v", rep, err)
+	}
 }
 
 func TestAdoptWithNothingToAdopt(t *testing.T) {
@@ -478,11 +490,30 @@ func TestAdoptWithNothingToAdopt(t *testing.T) {
 	}
 }
 
+// TestAdoptFinishesFromALeftoverCopy: a verified copy in adopt.tmp whose
+// Swift sidecar has gone is adopted from the copy, not dropped.
+func TestAdoptFinishesFromALeftoverCopy(t *testing.T) {
+	f := newFixture(t)
+	killAt(t, "verify")
+	if _, err := f.run(t); !errors.Is(err, errKilled) {
+		t.Fatalf("killed run = %v", err)
+	}
+	if err := os.Remove(filepath.Join(f.mobile, state.FileName)); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := f.run(t); err != nil || res.Step != StepDone {
+		t.Fatalf("Run from the copy = %+v %v", res, err)
+	}
+	if v := scalar[string](t, f.goDB(t), `SELECT value FROM hub_meta WHERE key = 'hub_id'`); v != fixtureHubID {
+		t.Fatalf("hub_id = %q", v)
+	}
+}
+
 func TestFILES01_AdoptLogsCountsOnly(t *testing.T) {
 	sink := logcanary.Capture(t)
 	canary := logcanary.Text("path")
-	f := newFixtureIn(t, filepath.Join(t.TempDir(), canary), swiftfixture.Schema)
-	sdb, err := rawOpen(filepath.Join(f.mobile, state.FileName), false)
+	f := newFixtureIn(t, filepath.Join(t.TempDir(), canary), nil)
+	sdb, err := rawOpen(filepath.Join(f.mobile, state.FileName), openRW)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,10 +532,10 @@ func TestFILES01_AdoptLogsCountsOnly(t *testing.T) {
 	f.rec = filepath.Join(blocked, canary)
 	f.mustRun(t)
 	// A refused adoption logs its class only.
-	g := newFixtureIn(t, filepath.Join(t.TempDir(), canary), withoutColumn("last_seq"))
+	g := newFixtureIn(t, filepath.Join(t.TempDir(), canary), dropColumn("devices", "scope"))
 	_, _ = g.run(t)
 	sink.AssertClean(t)
-	if !strings.Contains(sink.String(), "2 phones, 7 recording jobs, 1 skipped") {
+	if !strings.Contains(sink.String(), "2 phones, 8 recording jobs, 1 skipped") {
 		t.Errorf("log = %q", sink.String())
 	}
 }

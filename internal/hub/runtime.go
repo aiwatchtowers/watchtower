@@ -907,6 +907,7 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 			wipe(ctx, h.st, h.tr, h.data, left)
 		}
 	}
+	pruneRecordingJobs(h.sup.o, h.st)
 	if rep, err := h.proc.Hygiene(ctx); err != nil {
 		log.Printf("hub: hygiene failed (%s)", errClass(err))
 	} else if rep.Ran {

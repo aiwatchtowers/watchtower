@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -13,6 +12,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/state"
 )
@@ -92,7 +92,7 @@ func runHubAdopt(cmd *cobra.Command, _ []string) error {
 // Desktop's transcriber uses.
 func hubAdoptDirs() (dir, recordings string, err error) {
 	if d := os.Getenv(hubDirEnv); d != "" {
-		return d, filepath.Join(d, "recordings"), nil
+		return d, handlers.RecordingsDirUnder(d), nil
 	}
 	if dir, err = hub.DefaultDir(); err != nil {
 		return "", "", err
@@ -105,19 +105,17 @@ func hubAdoptDirs() (dir, recordings string, err error) {
 }
 
 // hubKeptRecordings is `hub status`'s kept_recordings: nil when no hub_moved
-// recording keeps its audio (or there is no sidecar).
-func hubKeptRecordings(cmd *cobra.Command, dir, recordings string) (*adopt.KeptRecordings, error) {
+// recording keeps its audio, when there is no sidecar, or when it cannot be
+// read (mid-adoption): the status itself never fails on it.
+func hubKeptRecordings(cmd *cobra.Command, dir, recordings string) *adopt.KeptRecordings {
 	st, err := state.OpenReadOnly(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	defer func() { _ = st.Close() }()
 	k, err := adopt.Kept(cmd.Context(), st, recordings)
 	if err != nil || k.Count == 0 {
-		return nil, err
+		return nil
 	}
-	return &k, nil
+	return &k
 }

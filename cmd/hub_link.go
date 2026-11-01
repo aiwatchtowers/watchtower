@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
@@ -170,16 +170,14 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	}
 	line += ", recordings " + rec
 	// The recordings an adoption kept on the Mac: the hub dir's, or on a
-	// desktop host the live dir an adoption fills.
-	keptDir, keptRec := dir, filepath.Join(dir, "recordings")
+	// desktop host the live dir an adoption fills. Never fails the status.
+	keptDir, keptRec := dir, handlers.RecordingsDirUnder(dir)
+	var kept *adopt.KeptRecordings
 	if dir == "" {
-		if keptDir, keptRec, err = hubAdoptDirs(); err != nil {
-			return err
-		}
+		keptDir, keptRec, err = hubAdoptDirs()
 	}
-	kept, err := hubKeptRecordings(cmd, keptDir, keptRec)
-	if err != nil {
-		return err
+	if err == nil {
+		kept = hubKeptRecordings(cmd, keptDir, keptRec)
 	}
 	if kept != nil {
 		line += fmt.Sprintf(", %d recording(s) kept in %s", kept.Count, kept.Dir)

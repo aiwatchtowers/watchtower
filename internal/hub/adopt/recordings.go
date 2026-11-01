@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,12 +42,15 @@ type swiftRecording struct {
 const inProgressSQL = `('received', 'queued', 'transcribing', 'diarizing', 'summarizing')`
 
 // importRecordings maps the Swift phone_recordings rows to recording_jobs
-// (one per upload, kept on a second run): in progress → failed/hub_moved
-// with its audio moved to <RecordingsDir>/<upload_id>.m4a, done → done with
-// the transcript id, failed → failed with its error's class; created_at and
-// finished_at are the row's updated_at. Then the Swift rows' text is blanked
-// (audio_path emptied, error NULL, written over on disk) and the counts and
-// the next step are committed with the jobs. held_uploads gets no row.
+// (one per upload, kept on a second run): in progress → failed/hub_moved,
+// finished at the adoption (so the phone shows the text and the 31-day
+// window starts now), its audio moved to <RecordingsDir>/<upload_id>.m4a;
+// done → done with the transcript id; failed → failed with its error's
+// class; created_at (and a done or failed job's finished_at) is the row's
+// updated_at. Then the Swift rows' text is blanked on a secure_delete
+// connection (error NULL; audio_path emptied unless the audio stayed where
+// it was), and the counts and the next step are committed with the jobs.
+// held_uploads gets no row.
 func (r *run) importRecordings() error {
 	st, err := r.store()
 	if err != nil {
@@ -70,22 +75,20 @@ func (r *run) importRecordings() error {
 	if err != nil {
 		return fmt.Errorf("adopt: reading the phone recordings: %w", err)
 	}
+	left := map[string]bool{}
 	for _, s := range recs {
-		if inProgress[s.status] && uploadIDRE.MatchString(s.id) {
-			r.moveAudio(s)
+		if inProgress[s.status] && uploadIDRE.MatchString(s.id) && !r.moveAudio(s) {
+			left[s.id] = true
 		}
 	}
 	if err := hook("recordings:files"); err != nil {
 		return err
 	}
 	var c Counts
-	err = r.inTx(StepSettings, func(tx *sql.Tx) error {
-		// The blanked text must not stay in freed pages.
-		if _, err := tx.Exec(`PRAGMA secure_delete = ON`); err != nil {
-			return err
-		}
+	now := r.now()
+	err = st.WithSecureDeleteTx(r.ctx, func(tx *sql.Tx) error {
 		for _, s := range recs {
-			j, ok := jobOf(s)
+			j, ok := jobOf(s, now)
 			if !ok {
 				c.Skipped++
 				continue
@@ -98,8 +101,15 @@ func (r *run) importRecordings() error {
 				c.Jobs++
 			}
 		}
-		if _, err := tx.Exec(`UPDATE phone_recordings SET audio_path = '', error = NULL`); err != nil {
-			return err
+		for _, s := range recs {
+			q := `UPDATE phone_recordings SET audio_path = '', error = NULL WHERE upload_id = ?`
+			if left[s.id] {
+				c.AudioLeft++
+				q = `UPDATE phone_recordings SET error = NULL WHERE upload_id = ?`
+			}
+			if _, err := tx.Exec(q, s.id); err != nil {
+				return err
+			}
 		}
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM devices`).Scan(&c.Devices); err != nil {
 			return err
@@ -108,18 +118,24 @@ func (r *run) importRecordings() error {
 		if err != nil {
 			return err
 		}
-		return state.SetMetaTx(tx, MetaAdoptCounts, string(b))
+		if err := state.SetMetaTx(tx, MetaAdoptCounts, string(b)); err != nil {
+			return err
+		}
+		return state.SetMetaTx(tx, MetaAdoptStep, string(StepSettings))
 	})
 	if err != nil {
 		return fmt.Errorf("adopt: importing the phone recordings: %w", err)
 	}
 	r.counts = c
+	if c.AudioLeft > 0 {
+		log.Printf("hub adopt: %d recordings' audio left where it was", c.AudioLeft)
+	}
 	return st.Checkpoint()
 }
 
 // jobOf maps one Swift row; ok is false for a row that is not imported (an
 // id that is no file name, an unknown status).
-func jobOf(s swiftRecording) (state.RecordingJob, bool) {
+func jobOf(s swiftRecording, adoptedAt time.Time) (state.RecordingJob, bool) {
 	if !uploadIDRE.MatchString(s.id) {
 		return state.RecordingJob{}, false
 	}
@@ -127,7 +143,7 @@ func jobOf(s swiftRecording) (state.RecordingJob, bool) {
 	j := state.RecordingJob{UploadID: s.id, CreatedAt: at, FinishedAt: at}
 	switch {
 	case inProgress[s.status]:
-		j.Status, j.ErrorClass = state.RecordingFailed, state.ClassHubMoved
+		j.Status, j.ErrorClass, j.FinishedAt = state.RecordingFailed, state.ClassHubMoved, adoptedAt
 	case s.status == swiftDone:
 		j.Status = state.RecordingDone
 		if s.transcriptID.Valid {
@@ -142,41 +158,91 @@ func jobOf(s swiftRecording) (state.RecordingJob, bool) {
 	return j, true
 }
 
+// renameFile is os.Rename (a test seam for the cross-volume path).
+var renameFile = os.Rename
+
 // moveAudio moves an in-progress recording's audio to the path Go derives
-// from its upload id (rename, same volume). A missing source, a symlink or
-// a destination already there (a resumed run) skips the move; a failure is
-// logged by class and never stops the adoption.
-func (r *run) moveAudio(s swiftRecording) {
-	if r.recordings == "" || s.audioPath == "" {
-		return
-	}
-	fi, err := os.Lstat(s.audioPath)
-	if err != nil || !fi.Mode().IsRegular() {
-		return
+// from its upload id, made durable. It reports false when the audio stays
+// where it was (the row keeps its path): a file outside the transcriber's
+// recordings dir, a symlink or other non-regular file, or a failed move
+// (logged by class). A missing source or a destination already there (a
+// resumed run) reports true: nothing is left behind.
+func (r *run) moveAudio(s swiftRecording) bool {
+	if s.audioPath == "" {
+		return true
 	}
 	dst := filepath.Join(r.recordings, s.id+".m4a")
-	if exists(dst) {
-		return
+	if r.recordings != "" && exists(dst) {
+		return true
 	}
-	if err := os.MkdirAll(r.recordings, 0o700); err != nil {
-		log.Print("hub adopt: the recordings dir is unavailable")
-		return
+	fi, err := os.Lstat(s.audioPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
 	}
-	if err := os.Rename(s.audioPath, dst); err != nil {
-		cls := "failed"
-		if errors.Is(err, syscall.EXDEV) {
-			cls = "cross_device"
-		}
-		log.Printf("hub adopt: a recording's audio was not moved (%s)", cls)
-		return
+	if err != nil || !fi.Mode().IsRegular() || r.recordings == "" || !under(r.recordings, s.audioPath) {
+		return false
 	}
-	_ = os.Chmod(dst, 0o600)
+	if err := os.Chmod(s.audioPath, 0o600); err != nil {
+		log.Print("hub adopt: a recording's audio was not moved (chmod)")
+		return false
+	}
+	err = renameFile(s.audioPath, dst)
+	if errors.Is(err, syscall.EXDEV) {
+		err = copyAcross(s.audioPath, dst)
+	}
+	if err != nil {
+		log.Print("hub adopt: a recording's audio was not moved (failed)")
+		return false
+	}
+	if err := syncFile(dst); err != nil {
+		log.Print("hub adopt: a moved recording's audio was not synced")
+	}
+	if err := syncDir(r.recordings); err != nil {
+		log.Print("hub adopt: the recordings dir was not synced")
+	}
+	return true
+}
+
+// copyAcross moves src to dst across volumes: copied to a temp file beside
+// dst, synced, renamed into place, then src removed.
+func copyAcross(src, dst string) error {
+	tmp := filepath.Join(filepath.Dir(dst), ".adopt-"+filepath.Base(dst))
+	if err := copyFile(src, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := syncDir(filepath.Dir(dst)); err != nil {
+		return err
+	}
+	return os.Remove(src)
+}
+
+// under reports whether path's folder is dir or inside it, symlinks resolved.
+func under(dir, path string) bool {
+	d, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	p, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(d, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // pendingRecordings lists the in-progress Swift rows of the file at path,
 // read-only: the upload id and the audio file's base name.
-func pendingRecordings(path string) ([]PendingRecording, error) {
-	db, err := rawOpen(path, true)
+func pendingRecordings(path string, swift bool) ([]PendingRecording, error) {
+	mode := openRO
+	if swift {
+		mode = openSwiftRO
+	}
+	db, err := rawOpen(path, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -213,11 +279,15 @@ type KeptRecordings struct {
 // exists; RemoveAt is the earliest finished_at + 31 days. Count 0 means
 // there is nothing to show.
 func Kept(ctx context.Context, st *state.Store, recordingsDir string) (KeptRecordings, error) {
+	k := KeptRecordings{Dir: recordingsDir}
+	// Mid-adoption the sidecar may not have its queue yet: nothing kept.
+	if ready, err := st.RecordingQueueReady(); err != nil || !ready {
+		return k, err
+	}
 	jobs, err := st.RecordingJobs(ctx)
 	if err != nil {
 		return KeptRecordings{}, err
 	}
-	k := KeptRecordings{Dir: recordingsDir}
 	for _, j := range jobs {
 		if j.Status != state.RecordingFailed || j.ErrorClass != state.ClassHubMoved || recordingsDir == "" {
 			continue

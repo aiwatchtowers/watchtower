@@ -551,17 +551,20 @@ func ImportRecordingJobTx(tx *sql.Tx, j RecordingJob) (ok bool, err error) {
 }
 
 // PruneRecordingJobs deletes every finished job that ended at or before
-// olderThan, and its audio file <recordingsDir>/<upload_id>.m4a (a missing
-// file is no error). The file goes first, so a crash between the two leaves
-// a row the next prune finishes. It returns the number of rows deleted.
+// olderThan (the Swift hub's 31-day rule: rows only). A hub_moved job's
+// audio, which adoption kept at <recordingsDir>/<upload_id>.m4a, goes with
+// it (a missing file is no error); every other job's audio is Desktop's and
+// is never touched here. The file goes first, so a crash between the two
+// leaves a row the next prune finishes. It returns the rows deleted.
 func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (int, error) {
-	ids, err := s.finishedJobsBefore(olderThan)
+	jobs, err := s.finishedJobsBefore(olderThan)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
-	for _, id := range ids {
-		if recordingsDir != "" && id != "" && filepath.Base(id) == id {
+	for _, j := range jobs {
+		id := j.id
+		if j.class == ClassHubMoved && recordingsDir != "" && id != "" && filepath.Base(id) == id {
 			if err := os.Remove(filepath.Join(recordingsDir, id+".m4a")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return n, fmt.Errorf("removing a recording's audio: %w", err)
 			}
@@ -578,24 +581,36 @@ func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (i
 	return n, nil
 }
 
-// finishedJobsBefore lists the upload ids of the jobs finished at or before t.
-func (s *Store) finishedJobsBefore(t time.Time) ([]string, error) {
-	rows, err := s.db.Query(`SELECT upload_id FROM recording_jobs
+type finishedJob struct{ id, class string }
+
+// finishedJobsBefore lists the jobs finished at or before t.
+func (s *Store) finishedJobsBefore(t time.Time) ([]finishedJob, error) {
+	rows, err := s.db.Query(`SELECT upload_id, COALESCE(error_class, '') FROM recording_jobs
 		WHERE status IN ('done', 'failed') AND finished_at IS NOT NULL AND finished_at <= ?`, toReal(t))
 	if err != nil {
 		return nil, fmt.Errorf("reading the recording queue: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	var ids []finishedJob
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var j finishedJob
+		if err := rows.Scan(&j.id, &j.class); err != nil {
 			return nil, fmt.Errorf("reading the recording queue: %w", err)
 		}
-		ids = append(ids, id)
+		ids = append(ids, j)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading the recording queue: %w", err)
 	}
 	return ids, nil
+}
+
+// RecordingQueueReady reports whether the sidecar has its recording_jobs
+// table yet (an adopted Swift file before its migrations has not).
+func (s *Store) RecordingQueueReady() (bool, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'recording_jobs'`).Scan(&n); err != nil {
+		return false, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	return n == 1, nil
 }

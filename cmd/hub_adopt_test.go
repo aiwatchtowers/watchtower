@@ -17,15 +17,16 @@ import (
 const (
 	adoptHubID  = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
 	adoptPhone  = "0B0B0B0B-0B0B-4B0B-8B0B-0B0B0B0B0B0B"
-	adoptUpdate = 1_799_990_000.0
+	adoptUpdate = 1_700_000_000.0
 )
 
 // swiftMobileHub builds a Swift-shaped MobileHub/ beside the test hub dir:
-// one phone, one queued recording (its audio in pending/) and one done.
+// one phone, one recording being transcribed (its audio in the
+// transcriber's folder, here the hub dir's recordings/) and one done.
 func swiftMobileHub(t *testing.T, hubDir string) string {
 	t.Helper()
 	root := filepath.Dir(hubDir)
-	mobile, pending := filepath.Join(root, "MobileHub"), filepath.Join(root, "pending")
+	mobile, pending := filepath.Join(root, "MobileHub"), filepath.Join(hubDir, "recordings")
 	require.NoError(t, os.MkdirAll(mobile, 0o700))
 	require.NoError(t, os.MkdirAll(pending, 0o700))
 	db, err := swiftfixture.Create(filepath.Join(mobile, state.FileName), adoptHubID, swiftfixture.Schema)
@@ -67,7 +68,7 @@ func TestHubAdoptJSONKeys(t *testing.T) {
 	assert.Equal(t, "rec-1", p["upload_id"])
 	assert.Equal(t, "acme sync.m4a", p["audio_name"])
 	imported, _ := m["imported"].(map[string]any)
-	assert.ElementsMatch(t, []string{"devices", "jobs", "skipped"}, hubKeysOf(imported))
+	assert.ElementsMatch(t, []string{"devices", "jobs", "skipped", "audio_left"}, hubKeysOf(imported))
 
 	withStdin(t, adoptSettings)
 	out, err = runHub(t, "adopt", "--settings-stdin", "--json", "--mobile-hub", mobile)
@@ -77,7 +78,7 @@ func TestHubAdoptJSONKeys(t *testing.T) {
 	assert.Equal(t, "done", m["step"])
 	assert.Equal(t, "", m["error"])
 	imported, _ = m["imported"].(map[string]any)
-	assert.Equal(t, map[string]any{"devices": 1.0, "jobs": 2.0, "skipped": 0.0}, imported)
+	assert.Equal(t, map[string]any{"devices": 1.0, "jobs": 2.0, "skipped": 0.0, "audio_left": 0.0}, imported)
 
 	st, err := state.Open(dir)
 	require.NoError(t, err)
@@ -149,17 +150,34 @@ func TestHubStatusKeptRecordings(t *testing.T) {
 	assert.ElementsMatch(t, []string{"count", "remove_at", "dir"}, hubKeysOf(kept))
 	assert.Equal(t, 1.0, kept["count"])
 	assert.Equal(t, filepath.Join(dir, "recordings"), kept["dir"])
-	finished := time.Unix(int64(adoptUpdate), 0).UTC()
-	assert.Equal(t, finished.Add(31*24*time.Hour).Format(time.RFC3339Nano), kept["remove_at"])
+	// 31 days from the adoption.
+	removeAt, err := time.Parse(time.RFC3339Nano, kept["remove_at"].(string))
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now().Add(31*24*time.Hour), removeAt, time.Minute)
 
 	// The prune removes the job and its audio: the key goes.
 	st, err := state.Open(dir)
 	require.NoError(t, err)
-	n, err := st.PruneRecordingJobs(filepath.Join(dir, "recordings"), finished)
+	n, err := st.PruneRecordingJobs(filepath.Join(dir, "recordings"), time.Now().Add(time.Second))
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)
 	require.NoError(t, st.Close())
 	out, err = runHub(t, "status", "--json")
+	require.NoError(t, err)
+	assert.NotContains(t, decodeKeys(t, out), "kept_recordings")
+}
+
+// TestHubStatusMidAdoption: a sidecar not migrated yet (a kill right after
+// the rename) never fails hub status; kept_recordings is just absent.
+func TestHubStatusMidAdoption(t *testing.T) {
+	dir := hubTestDir(t)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	db, err := swiftfixture.Create(filepath.Join(dir, state.FileName), adoptHubID, swiftfixture.Schema)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO hub_meta (key, value) VALUES ('adopt_step', 'migrate')`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	out, err := runHub(t, "status", "--json")
 	require.NoError(t, err)
 	assert.NotContains(t, decodeKeys(t, out), "kept_recordings")
 }

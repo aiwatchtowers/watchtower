@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 func TestPhoneRecordingsMapToRecordingJobs(t *testing.T) {
 	f := newFixture(t)
 	f.mustRun(t)
-	at := fromReal(f.updated)
+	updated := fromReal(f.updated)
 	jobs := map[string]state.RecordingJob{}
 	list, err := f.store(t).RecordingJobs(context.Background())
 	if err != nil {
@@ -26,7 +27,7 @@ func TestPhoneRecordingsMapToRecordingJobs(t *testing.T) {
 	for _, j := range list {
 		jobs[j.UploadID] = j
 	}
-	if len(jobs) != len(swiftStatuses) {
+	if len(jobs) != len(swiftStatuses)+1 {
 		t.Fatalf("jobs = %+v", list)
 	}
 	for _, tc := range []struct {
@@ -48,8 +49,14 @@ func TestPhoneRecordingsMapToRecordingJobs(t *testing.T) {
 		if (tc.tid == 0) != (j.TranscriptID == nil) || (j.TranscriptID != nil && *j.TranscriptID != tc.tid) {
 			t.Errorf("%s transcript = %v", tc.swift, j.TranscriptID)
 		}
-		if !j.CreatedAt.Equal(at) || !j.FinishedAt.Equal(at) {
-			t.Errorf("%s times = %v %v, want %v", tc.swift, j.CreatedAt, j.FinishedAt, at)
+		// A hub_moved job finishes at the adoption: the phone sees the
+		// text and its 31 days start then.
+		finished := updated
+		if tc.class == "hub_moved" {
+			finished = f.now
+		}
+		if !j.CreatedAt.Equal(updated) || !j.FinishedAt.Equal(finished) {
+			t.Errorf("%s times = %v %v, want %v %v", tc.swift, j.CreatedAt, j.FinishedAt, updated, finished)
 		}
 	}
 	if _, ok := jobs["bad/id"]; ok {
@@ -70,14 +77,21 @@ func TestRecordingMidTranscriptionAtAdoptionFailsOnceWithHubMoved(t *testing.T) 
 		if fi, err := os.Stat(dst); err == nil && fi.Mode().Perm() != 0o600 {
 			t.Errorf("%s audio mode = %v", s, fi.Mode().Perm())
 		}
-		if exists(filepath.Join(f.pending, "acme standup "+s+".m4a")) {
+		if exists(filepath.Join(f.rec, "acme standup "+s+".m4a")) {
 			t.Errorf("%s: the Swift name is still there", s)
 		}
 	}
 	for _, s := range []string{"done", "failed"} {
-		if !exists(filepath.Join(f.pending, "acme standup "+s+".m4a")) || exists(filepath.Join(f.rec, "rec-"+s+".m4a")) {
+		if !exists(filepath.Join(f.rec, "acme standup "+s+".m4a")) || exists(filepath.Join(f.rec, "rec-"+s+".m4a")) {
 			t.Errorf("%s: a finished recording's audio moved", s)
 		}
+	}
+	// The audio outside the transcriber's folder stays, its path kept.
+	if !exists(filepath.Join(f.outside, "acme outside.m4a")) || exists(filepath.Join(f.rec, "rec-outside.m4a")) {
+		t.Error("the outside audio moved")
+	}
+	if v := scalar[string](t, f.goDB(t), `SELECT audio_path FROM phone_recordings WHERE upload_id = 'rec-outside'`); v != filepath.Join(f.outside, "acme outside.m4a") {
+		t.Errorf("outside row path = %q", v)
 	}
 	snap := f.snapshot(t)
 	if _, err := f.run(t); !errors.Is(err, ErrAlreadyAdopted) {
@@ -85,7 +99,7 @@ func TestRecordingMidTranscriptionAtAdoptionFailsOnceWithHubMoved(t *testing.T) 
 	}
 	// Later passes: the slice publishes the fixed text; nothing changes.
 	st := f.store(t)
-	src, err := sources.RecordingJob(st, func() time.Time { return fromReal(f.updated).Add(time.Hour) })
+	src, err := sources.RecordingJob(st, func() time.Time { return f.now.Add(time.Hour) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +114,7 @@ func TestRecordingMidTranscriptionAtAdoptionFailsOnceWithHubMoved(t *testing.T) 
 				n++
 			}
 		}
-		if n != len(inProgress) {
+		if n != len(inProgress)+1 {
 			t.Fatalf("hub_moved items = %d", n)
 		}
 	}
@@ -108,9 +122,62 @@ func TestRecordingMidTranscriptionAtAdoptionFailsOnceWithHubMoved(t *testing.T) 
 	if after := f.snapshot(t); after != snap {
 		t.Fatalf("a later pass changed the state:\n%s\nvs\n%s", after, snap)
 	}
-	// The recording_upload echo in the ledger is untouched.
 	if v := scalar[string](t, f.goDB(t), `SELECT hex(echo) || outcome FROM relay_processed WHERE record_name = 'a-upload-1'`); v != "E0E1E2received" {
 		t.Fatalf("echo = %q", v)
+	}
+}
+
+// TestAudioMovesAcrossVolumes: a rename refused with EXDEV is a copy, a
+// sync and an unlink.
+func TestAudioMovesAcrossVolumes(t *testing.T) {
+	prev := renameFile
+	renameFile = func(from, to string) error {
+		if strings.HasSuffix(to, ".m4a") && !strings.Contains(filepath.Base(to), ".adopt-") {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+		}
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { renameFile = prev })
+	f := newFixture(t)
+	res := f.mustRun(t)
+	if res.Imported.AudioLeft != 1 {
+		t.Fatalf("counts = %+v", res.Imported)
+	}
+	b, err := os.ReadFile(filepath.Join(f.rec, "rec-queued.m4a"))
+	if err != nil || string(b) != "audio of queued" {
+		t.Fatalf("copied audio = %q %v", b, err)
+	}
+	if exists(filepath.Join(f.rec, "acme standup queued.m4a")) {
+		t.Fatal("the source was kept")
+	}
+}
+
+// TestAudioThatCannotMoveKeepsItsPath: a failed move leaves the audio and
+// the row's path, is counted, and is not "kept".
+func TestAudioThatCannotMoveKeepsItsPath(t *testing.T) {
+	prev := renameFile
+	renameFile = func(from, to string) error {
+		if strings.HasSuffix(to, "rec-diarizing.m4a") {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EACCES}
+		}
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { renameFile = prev })
+	f := newFixture(t)
+	res := f.mustRun(t)
+	if res.Imported.AudioLeft != 2 {
+		t.Fatalf("counts = %+v", res.Imported)
+	}
+	src := filepath.Join(f.rec, "acme standup diarizing.m4a")
+	if !exists(src) {
+		t.Fatal("the audio went")
+	}
+	if v := scalar[string](t, f.goDB(t), `SELECT audio_path FROM phone_recordings WHERE upload_id = 'rec-diarizing'`); v != src {
+		t.Fatalf("path = %q", v)
+	}
+	k, err := Kept(context.Background(), f.store(t), f.rec)
+	if err != nil || k.Count != 4 {
+		t.Fatalf("kept = %+v %v", k, err)
 	}
 }
 
@@ -118,23 +185,36 @@ func TestHubMovedAudioIsPrunedWithItsJobAfter31Days(t *testing.T) {
 	f := newFixture(t)
 	f.mustRun(t)
 	st := f.store(t)
-	finished := fromReal(f.updated)
 	day := 24 * time.Hour
-	if n, err := st.PruneRecordingJobs(f.rec, finished.Add(30*day).Add(-state.RecordingJobKeptFor)); err != nil || n != 0 {
+	// A Go-queued job's audio beside them: Desktop's, never pruned here.
+	if err := os.WriteFile(filepath.Join(f.rec, "rec-done.m4a"), []byte("desktop's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 30 days after the adoption everything stays.
+	n, err := st.PruneRecordingJobs(f.rec, f.now.Add(30*day).Add(-state.RecordingJobKeptFor))
+	if err != nil || n != 0 {
 		t.Fatalf("prune at 30 d = %d %v", n, err)
 	}
 	if !exists(filepath.Join(f.rec, "rec-queued.m4a")) {
 		t.Fatal("the audio went before 31 days")
 	}
-	// The done job has no file in the recordings dir: no error.
-	n, err := st.PruneRecordingJobs(f.rec, finished.Add(31*day).Add(-state.RecordingJobKeptFor))
-	if err != nil || n != len(swiftStatuses) {
+	// 31 days: every row goes; only the hub_moved jobs' audio with them.
+	n, err = st.PruneRecordingJobs(f.rec, f.now.Add(31*day).Add(-state.RecordingJobKeptFor))
+	if err != nil || n != len(swiftStatuses)+1 {
 		t.Fatalf("prune at 31 d = %d %v", n, err)
 	}
-	for _, s := range swiftStatuses {
+	for _, s := range swiftStatuses[:5] {
 		if exists(filepath.Join(f.rec, "rec-"+s+".m4a")) {
 			t.Errorf("%s audio kept", s)
 		}
+	}
+	for _, name := range []string{"rec-done.m4a", "acme standup done.m4a", "acme standup failed.m4a"} {
+		if !exists(filepath.Join(f.rec, name)) {
+			t.Errorf("%s removed with a row that is not hub_moved", name)
+		}
+	}
+	if !exists(filepath.Join(f.outside, "acme outside.m4a")) {
+		t.Error("the audio left outside was removed")
 	}
 	if jobs, _ := st.RecordingJobs(context.Background()); len(jobs) != 0 {
 		t.Fatalf("jobs left = %+v", jobs)
@@ -145,11 +225,11 @@ func TestAdoptedJobsHoldNoText(t *testing.T) {
 	f := newFixture(t)
 	f.mustRun(t)
 	db := f.goDB(t)
-	if n := scalar[int](t, db, `SELECT count(*) FROM phone_recordings WHERE audio_path != '' OR error IS NOT NULL`); n != 0 {
+	if n := scalar[int](t, db, `SELECT count(*) FROM phone_recordings WHERE (audio_path != '' AND upload_id != 'rec-outside') OR error IS NOT NULL`); n != 0 {
 		t.Fatalf("%d phone_recordings rows keep text", n)
 	}
 	_ = db.Close()
-	needles := []string{"acme standup", errCanary, f.pending}
+	needles := []string{"acme standup", errCanary}
 	ents, _ := os.ReadDir(f.hub)
 	for _, e := range ents {
 		if !strings.HasPrefix(e.Name(), state.FileName) {
@@ -174,23 +254,22 @@ func TestAdoptStatusListsPendingRecordingsBeforeTheStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []PendingRecording{
+		{"bad/id", ""},
 		{"rec-diarizing", "acme standup diarizing.m4a"},
+		{"rec-outside", "acme outside.m4a"},
 		{"rec-queued", "acme standup queued.m4a"},
 		{"rec-received", "acme standup received.m4a"},
 		{"rec-summarizing", "acme standup summarizing.m4a"},
 		{"rec-transcribing", "acme standup transcribing.m4a"},
 	}
-	// The invalid-id row is in progress too: listed, its empty path gives no name.
-	want = append([]PendingRecording{{"bad/id", ""}}, want...)
 	if !equalPending(rep.PendingRecordings, want) || rep.SwiftState != "present" || rep.HubID != fixtureHubID || rep.Identity != "none" || rep.Step != "" {
 		t.Fatalf("status before = %+v", rep)
 	}
-	// Killed right before the recordings step: read from the Go file now.
 	killAt(t, "migrate")
 	if _, err := f.run(t); err == nil {
 		t.Fatal("no kill")
 	}
-	if rep, _ = Status(f.mobile, f.hub); !equalPending(rep.PendingRecordings, want) || rep.Step != StepRecordings {
+	if rep, _ = Status(f.mobile, f.hub); !equalPending(rep.PendingRecordings, want) || rep.Step != StepRecordings || rep.SwiftState != "present" {
 		t.Fatalf("status before the step = %+v", rep)
 	}
 	f.mustRun(t)
@@ -199,7 +278,7 @@ func TestAdoptStatusListsPendingRecordingsBeforeTheStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rep.PendingRecordings) != 0 || rep.PendingRecordings == nil || rep.SwiftState != "absent" || rep.Step != StepDone ||
-		rep.Imported != (Counts{Devices: 2, Jobs: 7, Skipped: 1}) {
+		rep.Imported != wantCounts {
 		t.Fatalf("status after = %+v", rep)
 	}
 }
@@ -224,7 +303,7 @@ func TestKeptRecordings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k.Count != 5 || !k.RemoveAt.Equal(fromReal(f.updated).Add(31*24*time.Hour)) || k.Dir != f.rec {
+	if k.Count != 5 || !k.RemoveAt.Equal(f.now.Add(31*24*time.Hour)) || k.Dir != f.rec {
 		t.Fatalf("kept = %+v", k)
 	}
 	_ = os.Remove(filepath.Join(f.rec, "rec-queued.m4a"))
