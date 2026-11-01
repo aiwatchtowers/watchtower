@@ -371,6 +371,31 @@ final class HubRegistry {
         }
     }
 
+    // MARK: Pending slot removals (relay client Phase 3 Task 10)
+
+    /// The relay Macs whose `remove_slot` failed and is retried at launch, oldest first.
+    func pendingSlotRemovals() throws -> [String] {
+        try queue.read { db in
+            try String.fetchAll(db, sql: "SELECT mac_device_id FROM pending_slot_removals ORDER BY since")
+        }
+    }
+
+    /// Keeps `macDeviceID`'s slot removal for the next launch (one row per Mac; a second keeps the first's date).
+    func keepSlotRemoval(_ macDeviceID: String, since: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO pending_slot_removals (mac_device_id, since) VALUES (?, ?)",
+                arguments: [macDeviceID, since.timeIntervalSince1970]
+            )
+        }
+    }
+
+    func removeSlotRemoval(_ macDeviceID: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM pending_slot_removals WHERE mac_device_id = ?", arguments: [macDeviceID])
+        }
+    }
+
     // MARK: Helpers
 
     private static func exists(_ db: Database, _ hubID: String) throws -> Bool {

@@ -118,3 +118,40 @@ enum DemoSeed {
             + (try calendarRecords(now: now))
     }
 }
+
+// MARK: - Linking over Relay (relay client Phase 3 Task 10)
+
+extension DemoSeed {
+    /// The relay link states the tour shows (mockup section 7): a confirmed link still finishing to "build-box",
+    /// and the relay ids of the Macs in the demo account's slots. Never written to a live phone's store.
+    enum Relay {
+        static let finishingHubID = "demo-hub-build"
+        static let finishingName = "build-box"
+        /// The demo Macs' relay device ids: 52 characters a–z2–7, made up.
+        static let finishingMac = String(repeating: "b", count: 52)
+        static let workMac = String(repeating: "w", count: 52)
+        static let unknownMac = String(repeating: "u", count: 52)
+
+        /// The finishing link in `state`.
+        static func finishingLink(_ state: PromotedLink.State, now: Date) -> PromotedLink {
+            var record = LinkRecord(
+                hubID: finishingHubID, macName: finishingName, scope: .private, ownerName: "", userRecordName: "",
+                nonce: "demo", dataShareURL: nil, relayShareURL: nil, deviceID: device.deviceID, linkedAt: now
+            )
+            record.setRelay(mac: finishingMac)
+            // Made-up key bytes: the demo's vouch is never sent.
+            record.relayAuthPub = WireBytes.base64URL(Data(repeating: 0x42, count: 32))
+            return PromotedLink(link: record, slot: "demo-slot", slotExpiresAt: now.addingTimeInterval(600), state: state, since: now)
+        }
+
+        /// "Work Mac" linked on this iPhone over Relay.
+        static func workLink(now: Date) -> LinkRecord {
+            var record = LinkRecord(
+                hubID: "demo-hub-work", macName: "Work Mac", scope: .private, ownerName: "", userRecordName: "", nonce: "demo",
+                dataShareURL: nil, relayShareURL: nil, deviceID: device.deviceID, linkedAt: now
+            )
+            record.setRelay(mac: workMac)
+            return record
+        }
+    }
+}

@@ -61,6 +61,29 @@ final class ScreenshotHost {
         }
     }
 
+    /// The narrow variant's size: an iPhone SE's screen, at the largest Dynamic Type size.
+    static let narrowSize = CGSize(width: 375, height: 667)
+
+    /// Writes `<name>-light.png`, `<name>-dark.png` and `<name>-narrow.png` (light, `narrowSize`, the largest
+    /// accessibility text size): the relay client mockups' three frames per state.
+    func captureThree(_ name: String, _ view: some View) async throws {
+        try await capture(name, view)
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+            throw ShotError.noWindowScene
+        }
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(origin: .zero, size: Self.narrowSize)
+        window.overrideUserInterfaceStyle = .light
+        window.rootViewController = UIHostingController(
+            rootView: view.environment(env).environment(linking).dynamicTypeSize(.accessibility5)
+        )
+        window.makeKeyAndVisible()
+        try await Task.sleep(for: .milliseconds(600))
+        try render(window, as: "\(name)-narrow")
+        window.isHidden = true
+        window.rootViewController = nil
+    }
+
     /// The first scroll view, breadth first, that can scroll: its content
     /// plus its adjusted top and bottom insets (navigation bar, tab bar) is
     /// taller than its bounds.

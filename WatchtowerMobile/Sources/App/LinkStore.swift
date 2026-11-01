@@ -1,5 +1,6 @@
 import Foundation
 import os
+import WatchtowerHostedRelay
 import WatchtowerSync
 
 /// The Mac this phone is linked to (mobile POC spec §2.3): the hub, the
@@ -184,13 +185,26 @@ struct PendingLink: Codable, Equatable, Sendable {
     /// a `linked` keybox decided before it is an older link, not this scan's
     /// confirmation. nil in a value an older build saved.
     let issuedAt: Date?
+    /// A Relay link's pairing slot (`open_pairing`) and when it expires; nil for an iCloud link.
+    let relaySlot: String?
+    let relaySlotExpiresAt: Date?
 
-    init(link: LinkRecord, deadline: Date, baseline: DeviceGrant?, baselineCaptured: Bool, issuedAt: Date? = nil) {
+    init(
+        link: LinkRecord,
+        deadline: Date,
+        baseline: DeviceGrant?,
+        baselineCaptured: Bool,
+        issuedAt: Date? = nil,
+        relaySlot: String? = nil,
+        relaySlotExpiresAt: Date? = nil
+    ) {
         self.link = link
         self.deadline = deadline
         self.baseline = baseline
         self.baselineCaptured = baselineCaptured
         self.issuedAt = issuedAt
+        self.relaySlot = relaySlot
+        self.relaySlotExpiresAt = relaySlotExpiresAt
     }
 
     init(from decoder: any Decoder) throws {
@@ -200,7 +214,74 @@ struct PendingLink: Codable, Equatable, Sendable {
         baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
         baselineCaptured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
         issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt)
+        relaySlot = try container.decodeIfPresent(String.self, forKey: .relaySlot)
+        relaySlotExpiresAt = try container.decodeIfPresent(Date.self, forKey: .relaySlotExpiresAt)
     }
+}
+
+/// A Relay link the owner confirmed on the Mac (relay client Phase 3 Task 10, point 9): it left the link screen,
+/// holds its keys until it completes or the owner cancels it, and is resumed by `PromotedLinkResumer` at every
+/// launch, on every foreground and on Try Again. Kept in `LinkStore.promoted` by hub id.
+struct PromotedLink: Codable, Equatable, Sendable {
+    /// Why a confirmed link waits for the owner, from a definite refusal of `vouch` or `promote`.
+    enum Reason: String, Codable, CaseIterable, Sendable {
+        /// `PAIRING_EXPIRED`: the slot passed its 600 s.
+        case slotExpired
+        /// `SLOT_LIMIT`: the account holds 3 other Macs.
+        case slotsFull
+        /// `SLOT_REPLACEMENT_LIMIT`.
+        case replacementLimit
+        /// `ENTITLEMENT_INACTIVE`.
+        case notPaying
+        /// `NOT_FOUND` from `vouch`: the hub is not registered on the relay.
+        case hubNotOnRelay
+        /// The relay did not confirm the link (a second `HUB_NOT_VOUCHED`, a `NOT_FOUND` re-promote, `FORBIDDEN`).
+        case notConfirmed
+        /// `ATTESTATION_REQUIRED`, or `ATTESTATION_FAILED` after the retries.
+        case updateApp
+
+        /// The Settings → Macs row's line (and the link screen's notice, before "See Settings → Macs.").
+        func message(macName: String) -> String {
+            switch self {
+            case .slotExpired: "The link timed out on Relay. Try again, or cancel it."
+            case .slotsFull: "Relay already has \(HostedRelayLimits.maxMacSlots) Macs. Remove one, then try again, or cancel this link."
+            case .replacementLimit: "Too many Mac changes on Relay. Try again later, or cancel this link."
+            case .notPaying: "Relay isn't active on this iPhone. Try again when it is, or cancel this link."
+            case .hubNotOnRelay: "\(macName) isn't on Relay yet. Keep Watchtower open on it and try again, or cancel this link."
+            case .notConfirmed: "Relay didn't confirm the link. Try again, or cancel it."
+            case .updateApp: "Update Watchtower to finish this link, or cancel it."
+            }
+        }
+
+        /// Try Again opens a new slot first (no hello: the keys are held).
+        var needsNewSlot: Bool { self == .slotExpired || self == .notConfirmed }
+    }
+
+    enum State: Codable, Equatable, Sendable {
+        /// The keys are held, no vouch yet.
+        case confirmed
+        /// `promote_pairing` was sent and its answer is unknown.
+        case promoteSent
+        /// The Mac holds a slot: only `prepare` and `linked` are left.
+        case promoted
+        /// Nothing automatic: the owner's Try Again, Manage Macs or Cancel.
+        case needsOwner(Reason)
+    }
+
+    /// The link to save once it completes: a `.relay` link to `link.relayMacDeviceID`.
+    var link: LinkRecord
+    var slot: String
+    var slotExpiresAt: Date
+    var state: State
+    /// When the owner confirmed it.
+    var since: Date
+    /// The last successful `vouch_hub`: a promote more than 10 minutes after it vouches first again.
+    var vouchedAt: Date?
+
+    var hubID: String { link.hubID }
+    var macName: String { link.macName }
+    /// The Mac's relay device id (a `.relay` link always has it).
+    var macDeviceID: String { link.relayMacDeviceID ?? "" }
 }
 
 /// The link flow's state in `UserDefaults`: a link waiting for its grant,
@@ -215,6 +296,7 @@ final class LinkStore {
         static let legacyLink = "link.record"
         static let pending = "link.pending"
         static let legacyGrantMissingSince = "link.grantMissingSince"
+        static let promoted = "link.promoted"
     }
 
     init(defaults: UserDefaults) {
@@ -248,6 +330,41 @@ final class LinkStore {
     var pending: PendingLink? {
         get { read(PendingLink.self, key: Keys.pending) }
         set { write(newValue, key: Keys.pending) }
+    }
+
+    /// The confirmed Relay links still finishing, by hub id.
+    var promoted: [String: PromotedLink] {
+        get { read([String: PromotedLink].self, key: Keys.promoted) ?? [:] }
+        set { write(newValue.isEmpty ? nil : newValue, key: Keys.promoted) }
+    }
+
+    /// Why `confirm` did not keep the link.
+    struct NotKept: Error {}
+
+    /// The owner confirmed `link`: it is kept in `promoted` and leaves `pending`, the promoted write first and
+    /// checked, so a failed write keeps the link in `pending` (a relaunch resumes it and writes this again).
+    func confirm(_ link: PromotedLink) throws {
+        var all = promoted
+        all[link.hubID] = link
+        promoted = all
+        guard promoted[link.hubID] == link else { throw NotKept() }
+        if pending?.link.hubID == link.hubID {
+            pending = nil
+        }
+    }
+
+    /// Updates a promoted link that is still kept (a cancel meanwhile is never undone).
+    func update(_ link: PromotedLink) {
+        var all = promoted
+        guard all[link.hubID] != nil else { return }
+        all[link.hubID] = link
+        promoted = all
+    }
+
+    func removePromoted(_ hubID: String) {
+        var all = promoted
+        guard all.removeValue(forKey: hubID) != nil else { return }
+        promoted = all
     }
 
     /// Plain JSON (local state, not wire format: RelayCoder's snake-case

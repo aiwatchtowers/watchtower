@@ -197,6 +197,8 @@ final class HubSession {
     /// Where this session's link lives, which a silent push names
     /// (`AppEnvironment.handlePush`); nil for the demo.
     let route: HubRoute?
+    /// A `hub_on_relay` control reached this session's mailbox (relay client Phase 3 Task 10).
+    @ObservationIgnored private let hubOnRelay = HubOnRelaySighting()
     /// Recordings a wipe carried over (board #63), outside the replica,
     /// shared by every hub; nil holds nothing.
     @ObservationIgnored let hold: RecordingHold?
@@ -493,7 +495,7 @@ final class HubSession {
         if !startsActive {
             recorder.setForeground(false)
         }
-        feed = RelayFeed(transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrateAfterEcho)
+        feed = Self.makeFeed(secure, store, outbox, uploader, hydrateAfterEcho, hubOnRelay)
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: backend, hubID: hubID, device: device,
@@ -531,6 +533,21 @@ final class HubSession {
 
     /// The poster of a shared-scope hub's work alerts, over this phone's keys for the hub; nil in any other scope or
     /// without keys. A private-scope hub never posts locally: its push subscription delivers.
+    /// The relay feed: echoes, controls, and a `hub_on_relay` noted in `sighting`.
+    private static func makeFeed(
+        _ secure: SecureTransport,
+        _ store: ReplicaStore,
+        _ outbox: ActionOutbox,
+        _ uploader: RecordingUploader,
+        _ hydrate: @escaping @Sendable () async -> Void,
+        _ sighting: HubOnRelaySighting
+    ) -> RelayFeed {
+        RelayFeed(
+            transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrate,
+            onHubOnRelay: sighting.note
+        )
+    }
+
     private static func makeSharedAlerts(
         hubID: String,
         route: HubRoute?,
@@ -1295,6 +1312,38 @@ final class HubSession {
         return sealed
     }
 
+    /// Seals `record` with this hub's keys without sending it (a confirmed Relay link's farewell, which goes
+    /// straight into the mailbox).
+    func seal(_ record: CloudRecord) async throws -> CloudRecord {
+        try await secure.seal(record)
+    }
+
+    /// This session has seen its hub run over Relay (relay client Phase 3 Task 10, R4): a `hub_on_relay` control
+    /// in its mailbox, or the newest transport marker in its data zone (plain kind `transport`, id `marker`) with
+    /// `target: relay`. Rows stored but not opened yet are opened first.
+    func runsOnRelay() -> Bool {
+        if hubOnRelay.seen { return true }
+        indexStoredRows()
+        let store = store
+        do {
+            return try store.reader.read { db in
+                guard let payload = try store.payload(forRecordName: Self.transportMarkerName, from: db) else { return false }
+                return try RelayCoder.makeDecoder().decode(TransportMarkerTarget.self, from: payload).target == TransportKind.relay.rawValue
+            }
+        } catch {
+            Self.logger.warning("transport marker unreadable: \(String(describing: type(of: error)), privacy: .public)")
+            return false
+        }
+    }
+
+    /// The hub's transport marker's plain record name.
+    static let transportMarkerName = "transport-marker"
+
+    /// The one field of the marker the link flow reads.
+    private struct TransportMarkerTarget: Decodable {
+        let target: String?
+    }
+
     /// This phone's keybox as the replica holds it (the epoch keys
     /// included); nil when absent. A locked keychain throws.
     func keybox(deviceID: UUID) throws -> Keybox? {
@@ -1560,5 +1609,17 @@ extension PhoneRecording {
     /// and waiting for the Mac's receipt, while it still retries by itself.
     var needsUpload: Bool {
         (state == .waiting || state == .uploading) && !isUploadStuck
+    }
+}
+
+/// Whether a `hub_on_relay` control was read, set from the relay feed's actor.
+final class HubOnRelaySighting: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var seen: Bool { lock.withLock { value } }
+
+    func note() {
+        lock.withLock { value = true }
     }
 }

@@ -122,3 +122,46 @@ final class SharedRelaySession: @unchecked Sendable {
         }
     }
 }
+
+/// The link flow's relay ops on the process's one relay session (`HostedRelayPairing`): nothing is built until the
+/// first op, and nothing at all while the relay is off (every op then throws `.unreachable`).
+struct HostedRelayLinkOps: RelayLinkOps {
+    let relay: SharedRelaySession
+
+    var availability: RelayAvailability { relay.availability }
+
+    private func pairing() throws -> HostedRelayPairing {
+        guard let session = try relay.session() else { throw HostedRelayPairing.Refusal.unreachable }
+        return HostedRelayPairing(session: session)
+    }
+
+    func phoneDeviceID() throws -> String {
+        guard let session = try relay.session() else { throw HostedRelayPairing.Refusal.unreachable }
+        return session.client.deviceID
+    }
+
+    func accountState() async throws -> (paying: Bool, macs: [String]) {
+        try await pairing().accountState()
+    }
+
+    func open(mac: String) async throws -> (slot: String, expiresAt: Date) {
+        try await pairing().open(mac: mac)
+    }
+
+    func vouch(hubDeviceID: String, authPub: Data) async throws {
+        try await pairing().vouch(hubDeviceID: hubDeviceID, authPub: authPub)
+    }
+
+    func promote(slot: String) async throws {
+        try await pairing().promote(slot: slot)
+    }
+
+    func close(slot: String) async {
+        guard let pairing = try? pairing() else { return }
+        await pairing.close(slot: slot)
+    }
+
+    func removeSlot(mac: String) async throws {
+        try await pairing().removeSlot(mac: mac)
+    }
+}
