@@ -25,6 +25,9 @@
 	     entitlements' second keychain-access-groups entry; the NotifyService extension reads it too. -->
 	<key>WTKeychainAlertGroup</key>
 	<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts</string>
+	<!-- The hosted relay's origin (RelayConfig). Empty in every committed build: the relay is off. -->
+	<key>WTRelayOrigin</key>
+	<string>$(WATCHTOWER_RELAY_ORIGIN)</string>
 	<!-- The link flow scans the QR code shown on the Mac. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Watchtower uses the camera to scan the code shown on your Mac.</string>

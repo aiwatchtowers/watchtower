@@ -1,10 +1,18 @@
 import Foundation
+import os
 
 /// Why `ActionOutbox.enqueue` refused to ship an action.
 public enum ActionOutboxError: Error, Equatable {
     /// No linked device id yet: the hub fails every record without one as
     /// `device_not_linked` (spec §5.2 rule 4), so nothing is sent.
     case notLinked
+    /// The ordered path lost the race for the next `action_seq` three times in a row (other enqueues drew it while
+    /// this one sealed): nothing was stored or sent; trying again is safe.
+    case busy
+    /// A `skip_to` needs the hub's id (`setHubID`) and none is set.
+    case noHubID
+    /// `retry(id:)` on a row that is unknown or not failed (still on its way, say).
+    case notRetryable
 }
 
 /// The phone's action producer: enqueues ActionRequests into the relay zone
@@ -26,6 +34,10 @@ public enum ActionOutboxError: Error, Equatable {
 /// 3. No echo within ~24 h (Plan 3 notes: an undecodable payload can never
 ///    be echoed — the desktop has no addressable id) — `sweepSilentPending`
 ///    fails the row locally so the user learns instead of trusting a chip.
+///
+/// For a hub whose grant carries `ordered_actions` (the replica's sticky flag) over a conditional transport, the
+/// outbox runs the ordered path instead (relay client Phase 1, `ActionOutbox+Ordered.swift`): gapless seqs, one
+/// flush at a time, `resend_from`/`skip_to`, and Not delivered after a permanent refusal or 24 h without an answer.
 public actor ActionOutbox {
     /// Overlay error text for actions the desktop never echoed.
     static let silentPendingMessage =
@@ -37,25 +49,43 @@ public actor ActionOutbox {
     /// per Apple's docs, so a shared instance is fine.
     private static let snoozeFormatter = ISO8601DateFormatter()
 
-    private let transport: SecureTransport
-    private let store: ReplicaStore
-    private let now: @Sendable () -> Date
+    let transport: SecureTransport
+    let store: ReplicaStore
+    let now: @Sendable () -> Date
     /// The linked phone's device id, stamped on every enqueued action. nil
     /// until linking finishes (or after an unlink): enqueue then refuses.
     /// An empty (or whitespace-only) id is stored as nil — no link.
-    private var deviceID: String?
+    var deviceID: String?
     /// Told about each `applied` echo whose overlay row it removed.
-    private var appliedObserver: (@Sendable (ActionRequestPayload) -> Void)?
+    var appliedObserver: (@Sendable (ActionRequestPayload) -> Void)?
+    /// Told about each flush pass that ran to its end (`ActionOutbox+Ordered.swift`).
+    var flushReportObserver: (@Sendable (OutboxFlushReport) -> Void)?
+    /// The ordered path's state (`ActionOutbox+Ordered.swift`): the hub's id (an ordered payload's and a control's
+    /// `hub_id`), the route (a control's outer bound exists only on the hosted relay), and the one serial chain
+    /// that flushes, `resend_from` handling and the 24 h withdrawal run on.
+    var hubID: String?
+    let route: HubRoute
+    /// The last operation queued on the chain; the next one awaits it before it starts.
+    var chainTail: Task<Void, Never>?
+    /// A flush queued on the chain that has not started yet: a `flush()` meanwhile joins it.
+    var queuedFlush: Task<OutboxFlushReport, Error>?
+    /// The failed rows a `retry(id:)` is re-enqueueing now: a second Retry of one of them does nothing.
+    var retrying: Set<String> = []
+    /// Tests only: awaited by `retry(id:)` right after it claims the row, so a test can hold one Retry there.
+    var retryClaimedHook: (@Sendable () async -> Void)?
+    let logger = Logger(subsystem: "WatchtowerKit", category: "ActionOutbox")
 
     public init(
         transport: SecureTransport,
         store: ReplicaStore,
         deviceID: String? = nil,
+        route: HubRoute = .cloudKit(.private),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.store = store
         self.deviceID = linkedDeviceID(deviceID)
+        self.route = route
         self.now = now
     }
 
@@ -71,6 +101,18 @@ public actor ActionOutbox {
     /// redelivered echo or an unknown action id.
     public func setAppliedObserver(_ observer: (@Sendable (ActionRequestPayload) -> Void)?) {
         appliedObserver = observer
+    }
+
+    /// Every flush pass's report, called on this actor once the pass ends: an explicit `flush()`, the one an
+    /// enqueue starts and the one a `resend_from` runs alike, so the app's "last flush stopped" never misses one.
+    /// A pass that throws (a store error) reports nothing.
+    public func setFlushReportObserver(_ observer: (@Sendable (OutboxFlushReport) -> Void)?) {
+        flushReportObserver = observer
+    }
+
+    /// Tests only: see `retryClaimedHook`.
+    func setRetryClaimedHook(_ hook: (@Sendable () async -> Void)?) {
+        retryClaimedHook = hook
     }
 
     /// The `snooze_until` param in the wire's frozen form: plain ISO8601 UTC,
@@ -109,6 +151,10 @@ public actor ActionOutbox {
         params: [String: JSONValue] = [:]
     ) async throws -> String {
         guard let deviceID else { throw ActionOutboxError.notLinked }
+        if try orderedPath() {
+            return try await enqueueOrdered(
+                kind: kind, entityRecordName: entityRecordName, params: params, deviceID: deviceID)
+        }
         let action = ActionRequestPayload(
             id: UUID().uuidString,
             kind: kind,
@@ -132,7 +178,14 @@ public actor ActionOutbox {
     /// Echoes for unknown action_ids are no-ops — redelivery after a sweep
     /// removed the row, or the phantom case documented on `enqueue`. A
     /// still-`pending` payload is our own enqueue reflecting back: inert.
-    public func applyEcho(_ action: ActionRequestPayload) throws {
+    ///
+    /// An ordered echo (`actionSeq` set, or an ordered row) goes the ordered way (`applyOrderedEcho`). Returns
+    /// whether it was the final echo of an ordered action, so the feed deletes it; a legacy echo returns false.
+    @discardableResult
+    public func applyEcho(_ action: ActionRequestPayload) throws -> Bool {
+        if try action.actionSeq != nil || store.isOrderedAction(id: action.id) {
+            return try applyOrderedEcho(action)
+        }
         switch action.status {
         case .pending:
             // Our own enqueue reflecting back.
@@ -142,7 +195,7 @@ public actor ActionOutbox {
             // remembers how far the Mac got.
             try store.markPendingActionEcho(id: action.id, status: action.status, reason: action.reason)
         case .applied:
-            if try store.removePendingAction(id: action.id) {
+            if try store.dismissAction(id: action.id) {
                 appliedObserver?(action)
             }
         case .failed, .expired, .cancelled:
@@ -153,14 +206,22 @@ public actor ActionOutbox {
                 result: action.result
             )
         }
+        return false
     }
 
-    /// Fails (locally) every row still `pending` after `age` — default 24 h,
-    /// the Plan 3 notes' silent-pending rule. Returns the swept ids. Also
-    /// prunes the relay rollback guard's rows older than 8 days (past the
-    /// 7-day action age window, F3).
+    /// Fails (locally) every legacy row still `pending` after `age` — default
+    /// 24 h, the Plan 3 notes' silent-pending rule — and withdraws every
+    /// ordered row with no answer for as long (Ruling 5, `withdrawUnanswered`).
+    /// Returns the swept and the withdrawn ids. Also prunes the relay rollback
+    /// guard's rows older than 8 days (past the 7-day action age window, F3).
+    /// Runs as one operation on the outbox's chain, so a withdrawal never
+    /// overlaps a flush or a `resend_from`.
     @discardableResult
-    public func sweepSilentPending(olderThan age: Duration = .seconds(86_400)) throws -> [String] {
+    public func sweepSilentPending(olderThan age: Duration = .seconds(86_400)) async throws -> [String] {
+        try await onChain { try await self.sweep(olderThan: age) }.value
+    }
+
+    private func sweep(olderThan age: Duration) async throws -> [String] {
         let seconds = TimeInterval(age.components.seconds)
             + TimeInterval(age.components.attoseconds) / 1e18
         let swept = try store.sweepPendingActions(
@@ -168,7 +229,8 @@ public actor ActionOutbox {
             errorMessage: Self.silentPendingMessage
         )
         try store.pruneRelaySeen(before: now().addingTimeInterval(-Self.relaySeenRetention))
-        return swept
+        guard transport.isConditional else { return swept }
+        return swept + (try await withdrawUnanswered(before: now().addingTimeInterval(-seconds)))
     }
 
     /// How long the relay rollback guard remembers a record (F3).
@@ -179,7 +241,7 @@ public actor ActionOutbox {
     /// hyphen is the id — even if the id itself contains hyphens. A name
     /// without a hyphen passes through unchanged; the desktop rejects a
     /// non-numeric id with a `failed` echo, so a malformed name self-surfaces.
-    private static func entityID(from recordName: String?) -> String? {
+    static func entityID(from recordName: String?) -> String? {
         guard let recordName else { return nil }
         guard let hyphen = recordName.firstIndex(of: "-") else { return recordName }
         return String(recordName[recordName.index(after: hyphen)...])

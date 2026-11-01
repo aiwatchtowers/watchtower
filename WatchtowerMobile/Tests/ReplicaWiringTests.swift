@@ -76,7 +76,7 @@ final class ReplicaWiringTests: XCTestCase {
         return managed(try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: path,
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
             sleep: sleep
@@ -169,8 +169,8 @@ final class ReplicaWiringTests: XCTestCase {
     /// The demo has no link to end: Settings → Macs offers no Unlink or
     /// Forget there, and does in a live build.
     func testTheDemoOffersNoMacRemoval() {
-        XCTAssertFalse(MacsView.offersRemoval(transportKind: .inMemoryDemo))
-        XCTAssertTrue(MacsView.offersRemoval(transportKind: .cloudKit))
+        XCTAssertFalse(MacsView.offersRemoval(backend: .inMemoryDemo))
+        XCTAssertTrue(MacsView.offersRemoval(backend: .live))
     }
 
     /// The demo heartbeat is fresh and the demo grant belongs to the demo
@@ -268,18 +268,18 @@ final class ReplicaWiringTests: XCTestCase {
             "an unsigned simulator host must probe false, or the demo path is dead"
         )
         let env = try managed(AppEnvironment.demoSingle(recordingsDirectory: try makeRecordingsDirectory()))
-        XCTAssertEqual(env.transportKind, .inMemoryDemo)
+        XCTAssertEqual(env.backend, .inMemoryDemo)
         XCTAssertEqual(env.linkedDevice, DemoSeed.device)
     }
 
     /// A real-transport install starts EMPTY and unlinked: DemoSeed never
-    /// runs on the `.cloudKit` kind. Forced through the designated init with
+    /// runs on the `.live` backend. Forced through the designated init with
     /// an in-memory stand-in on an isolated path.
     func testCloudKitKindSeedsNothingAndStartsUnlinked() async throws {
         let env = try managed(HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .cloudKit,
+            backend: .live,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory()
         ))
@@ -305,7 +305,7 @@ final class ReplicaWiringTests: XCTestCase {
         managed(try HubSession(
             transport: transport,
             replicaPath: try makeReplicaPath(),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: TestE2E.hubID.uuidString,
             keys: keys,
             defaults: try makeDefaults(),

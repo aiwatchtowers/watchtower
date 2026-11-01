@@ -413,6 +413,12 @@ final class WorkbenchesViewModel {
     private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
     var deleteError: String?
+    /// Why the last **Session Target** change failed (board #1352); the
+    /// sessions panel shows it in an alert.
+    var sessionTargetError: String?
+    /// Each workbench's board tree for the row menu's **Session Target ▸**,
+    /// read when its session rows come on screen.
+    var sessionTargetRoots: [Int64: [WorkbenchBoardNode]] = [:]
     /// The worktrees the last delete kept because work was in them
     /// (`keptWorktreesNotice`): a neutral line under the list, not an error,
     /// until the owner dismisses it or the next delete replaces it.

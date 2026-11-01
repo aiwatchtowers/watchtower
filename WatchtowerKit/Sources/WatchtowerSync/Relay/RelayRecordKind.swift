@@ -13,6 +13,9 @@ public enum RelayRecordKind: String, CaseIterable {
     case device
     /// The phone's link record sealed to `hub_kx` (`hello-<device_id>`, mobile E2E spec §2.3).
     case hello
+    /// A control record `c-<uuid>` (`ControlPayload`): the order's resend/skip and transport messages. Accepted
+    /// only in the phone role; the Desktop hub drops it as an unknown kind.
+    case control
 }
 
 /// Cross-platform CloudKit constants.

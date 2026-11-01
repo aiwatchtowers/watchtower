@@ -7,6 +7,22 @@ public enum CloudRecordFactory {
         try relayRecord(name: action.recordName, kind: .action, payload: action, modifiedAt: modifiedAt)
     }
 
+    /// An ordered action (relay client Phase 1): `actionSeq` set in the payload, named `a-<DEVICE_ID>-<action_seq>`.
+    public static func orderedRecord(
+        for action: ActionRequestPayload, actionSeq: UInt64, deviceID: UUID, modifiedAt: Date
+    ) throws -> CloudRecord {
+        var ordered = action
+        ordered.actionSeq = actionSeq
+        return try relayRecord(
+            name: ActionRequestPayload.orderedRecordName(deviceID: deviceID, actionSeq: actionSeq), kind: .action,
+            payload: ordered, modifiedAt: modifiedAt)
+    }
+
+    /// A control record `c-<uuid>` (`ControlPayload`).
+    public static func record(for control: ControlPayload, modifiedAt: Date) throws -> CloudRecord {
+        try relayRecord(name: control.recordName, kind: .control, payload: control, modifiedAt: modifiedAt)
+    }
+
     /// The phone's link record (spec §5.1), `device-<device_id>` in RelayZone.
     public static func record(for device: DevicePayload, modifiedAt: Date) throws -> CloudRecord {
         try relayRecord(name: device.recordName, kind: .device, payload: device, modifiedAt: modifiedAt)

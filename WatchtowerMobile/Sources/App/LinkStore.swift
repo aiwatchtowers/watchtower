@@ -30,9 +30,139 @@ struct LinkRecord: Codable, Equatable, Sendable {
     /// newer than it.
     var linkedAt: Date?
 
-    /// Where the phone's transport syncs this link: a CloudKit database.
+    // The hosted relay (relay client Phase 3). Every key is optional and
+    // absent in a link saved before it, and in every CloudKit link.
+
+    /// The transport this link talks over; nil = `.cloudKit`. Set with the
+    /// Mac's relay id (`setRelay(mac:)`), never alone.
+    private(set) var transport: TransportKind?
+    /// The Mac's relay device id: the route of a `.relay` link, which never
+    /// saves or reads without it.
+    private(set) var relayMacDeviceID: String?
+    /// The Mac's `relay_auth` public key, base64url, from the code.
+    var relayAuthPub: String?
+    /// Every transport the hub offers, raw wire values, from the code or grant.
+    var hubTransports: [String]?
+    /// Who switched the hub's transport last, and when (R13: Phase 4 shows them).
+    var switchedBy: String?
+    var switchedAt: Date?
+    /// A transport the link left whose mailbox is still to drain (rule 15).
+    var leftTransport: TransportKind?
+
+    /// A `.relay` transport needs `relayMacDeviceID` (it is the route).
+    init(
+        hubID: String,
+        macName: String,
+        scope: DeviceScope,
+        ownerName: String,
+        userRecordName: String,
+        nonce: String,
+        dataShareURL: String?,
+        relayShareURL: String?,
+        deviceID: String? = nil,
+        linkedAt: Date? = nil,
+        transport: TransportKind? = nil,
+        relayMacDeviceID: String? = nil,
+        relayAuthPub: String? = nil,
+        hubTransports: [String]? = nil,
+        switchedBy: String? = nil,
+        switchedAt: Date? = nil,
+        leftTransport: TransportKind? = nil
+    ) {
+        precondition(transport != .relay || relayMacDeviceID != nil, Self.relayWithoutMac)
+        self.hubID = hubID
+        self.macName = macName
+        self.scope = scope
+        self.ownerName = ownerName
+        self.userRecordName = userRecordName
+        self.nonce = nonce
+        self.dataShareURL = dataShareURL
+        self.relayShareURL = relayShareURL
+        self.deviceID = deviceID
+        self.linkedAt = linkedAt
+        self.transport = transport
+        self.relayMacDeviceID = relayMacDeviceID
+        self.relayAuthPub = relayAuthPub
+        self.hubTransports = hubTransports
+        self.switchedBy = switchedBy
+        self.switchedAt = switchedAt
+        self.leftTransport = leftTransport
+    }
+
+    /// A `.relay` link without its Mac's relay id does not decode: the row is
+    /// unreadable (listed with Forget), never routed anywhere.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hubID = try container.decode(String.self, forKey: .hubID)
+        macName = try container.decode(String.self, forKey: .macName)
+        scope = try container.decode(DeviceScope.self, forKey: .scope)
+        ownerName = try container.decode(String.self, forKey: .ownerName)
+        userRecordName = try container.decode(String.self, forKey: .userRecordName)
+        nonce = try container.decode(String.self, forKey: .nonce)
+        dataShareURL = try container.decodeIfPresent(String.self, forKey: .dataShareURL)
+        relayShareURL = try container.decodeIfPresent(String.self, forKey: .relayShareURL)
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        linkedAt = try container.decodeIfPresent(Date.self, forKey: .linkedAt)
+        transport = try container.decodeIfPresent(TransportKind.self, forKey: .transport)
+        relayMacDeviceID = try container.decodeIfPresent(String.self, forKey: .relayMacDeviceID)
+        relayAuthPub = try container.decodeIfPresent(String.self, forKey: .relayAuthPub)
+        hubTransports = try container.decodeIfPresent([String].self, forKey: .hubTransports)
+        switchedBy = try container.decodeIfPresent(String.self, forKey: .switchedBy)
+        switchedAt = try container.decodeIfPresent(Date.self, forKey: .switchedAt)
+        leftTransport = try container.decodeIfPresent(TransportKind.self, forKey: .leftTransport)
+        if lacksRelayMac {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: Self.relayWithoutMac))
+        }
+    }
+
+    /// Never saved as a `.relay` link without its Mac's relay id.
+    func encode(to encoder: any Encoder) throws {
+        if lacksRelayMac {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: Self.relayWithoutMac))
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(hubID, forKey: .hubID)
+        try container.encode(macName, forKey: .macName)
+        try container.encode(scope, forKey: .scope)
+        try container.encode(ownerName, forKey: .ownerName)
+        try container.encode(userRecordName, forKey: .userRecordName)
+        try container.encode(nonce, forKey: .nonce)
+        try container.encodeIfPresent(dataShareURL, forKey: .dataShareURL)
+        try container.encodeIfPresent(relayShareURL, forKey: .relayShareURL)
+        try container.encodeIfPresent(deviceID, forKey: .deviceID)
+        try container.encodeIfPresent(linkedAt, forKey: .linkedAt)
+        try container.encodeIfPresent(transport, forKey: .transport)
+        try container.encodeIfPresent(relayMacDeviceID, forKey: .relayMacDeviceID)
+        try container.encodeIfPresent(relayAuthPub, forKey: .relayAuthPub)
+        try container.encodeIfPresent(hubTransports, forKey: .hubTransports)
+        try container.encodeIfPresent(switchedBy, forKey: .switchedBy)
+        try container.encodeIfPresent(switchedAt, forKey: .switchedAt)
+        try container.encodeIfPresent(leftTransport, forKey: .leftTransport)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hubID, macName, scope, ownerName, userRecordName, nonce, dataShareURL, relayShareURL, deviceID, linkedAt
+        case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport
+    }
+
+    private static let relayWithoutMac = "a relay link without its Mac's relay device id"
+
+    private var lacksRelayMac: Bool { transport == .relay && relayMacDeviceID == nil }
+
+    /// Moves the link to the relay Mac `mac`.
+    mutating func setRelay(mac: String) {
+        transport = .relay
+        relayMacDeviceID = mac
+    }
+
+    /// Where the phone's transport syncs this link: the relay Mac of a
+    /// `.relay` link, else a CloudKit database.
     var route: HubRoute {
-        scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
+        guard transport == .relay else {
+            return scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
+        }
+        guard let relayMacDeviceID else { preconditionFailure(Self.relayWithoutMac) }
+        return .hostedRelay(macDeviceID: relayMacDeviceID)
     }
 }
 

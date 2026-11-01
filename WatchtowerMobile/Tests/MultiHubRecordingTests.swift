@@ -60,7 +60,7 @@ final class MultiHubRecordingTests: XCTestCase {
         let session = try HubSession(
             transport: transport,
             replicaPath: replicaPath ?? paths.replicaPath(hubID),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: hubID,
             linkedDevice: linked ? device : nil,
             // The test hub's keys whatever the hub id: tests seal through the test hub.
@@ -82,7 +82,7 @@ final class MultiHubRecordingTests: XCTestCase {
     }
 
     private func makeEnvironment(_ hubs: [Hub]) throws -> AppEnvironment {
-        let env = AppEnvironment(transportKind: .cloudKit, defaults: try makeDefaults()) { _ in }
+        let env = AppEnvironment(backend: .live, defaults: try makeDefaults()) { _ in }
         for hub in hubs {
             env.add(hub.session)
         }

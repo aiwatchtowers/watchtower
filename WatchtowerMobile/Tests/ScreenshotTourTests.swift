@@ -46,12 +46,13 @@ final class ScreenshotTourTests: XCTestCase {
         }
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
         let recorderRows = try await captureRecorder(into: dir, linking: root.linking)
-        try ScreenshotHost.writeIndex(Self.indexRows(shots) + asleepRows + recorderRows, to: dir)
+        let outboxRows = try await captureOutbox(into: dir, linking: root.linking)
+        try ScreenshotHost.writeIndex(Self.indexRows(shots) + asleepRows + recorderRows + outboxRows, to: dir)
 
         let pngs = try FileManager.default
             .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
             .filter { $0.pathExtension == "png" }
-        XCTAssertEqual(pngs.count, 2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count))
+        XCTAssertEqual(pngs.count, 2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count))
         for png in pngs {
             XCTAssertGreaterThan(try png.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0, 0, png.lastPathComponent)
         }
@@ -69,7 +70,7 @@ final class ScreenshotTourTests: XCTestCase {
     private func makeDemoRoot() throws -> (AppRoot, DemoHub) {
         let defaults = try makeDefaults()
         var primary: InMemoryCloudTransport?
-        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults)
+        let env = AppEnvironment(backend: .inMemoryDemo, defaults: defaults)
         for hub in DemoSeed.hubs {
             // The demo Mac allows typing; the phone's own toggle is on, so the
             // workchat shows its composer.
@@ -81,7 +82,7 @@ final class ScreenshotTourTests: XCTestCase {
             let session = try HubSession(
                 transport: transport,
                 replicaPath: try makeReplicaPath(),
-                transportKind: .inMemoryDemo,
+                backend: .inMemoryDemo,
                 hubID: hub.hubID,
                 defaults: defaults,
                 recordingsDirectory: try makeRecordingsDirectory()
@@ -131,7 +132,7 @@ final class ScreenshotTourTests: XCTestCase {
         let session = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory()
         ) { uploader in
@@ -164,6 +165,54 @@ final class ScreenshotTourTests: XCTestCase {
                 reached: "leaf view, fake audio engine"
             )
         }
+    }
+
+    /// 37–38r (relay client mockup 5a): the demo outbox state on its own demo session — three actions waiting to
+    /// send behind a stopped flush, two Not delivered (one withdrawn after 24 h, one refused) — on Now, then the
+    /// list, its Dismiss All confirmation, and a retry running under the last one's "Unlock your iPhone" error.
+    private func captureOutbox(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+        let clock = MutableClock()
+        let transport = RefusingTransport()
+        let defaults = try makeDefaults()
+        let session = try HubSession(
+            transport: transport,
+            replicaPath: try makeReplicaPath(),
+            backend: .inMemoryDemo,
+            keys: try DemoSeed.phoneKeys(),
+            defaults: defaults,
+            recordingsDirectory: try makeRecordingsDirectory(),
+            now: { clock.now } // swiftlint:disable:this trailing_closure
+        )
+        addTeardownBlock { @MainActor in session.stop() }
+        try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the outbox demo booted")
+        await session.outboxWork?.value
+        let now = Date()
+        try await DemoSeed.loadOutboxDemo(
+            outbox: session.outbox, now: now,
+            setClock: { clock.advance($0.timeIntervalSince(clock.now)) },
+            refuse: { await transport.refuse($0) })
+        try await poll(timeout: 20, {
+            let backlog = session.outboxBacklog
+            return backlog.queued == 3 && backlog.undelivered == 2 && backlog.lastFlushStopped
+                && OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2
+        }, "the outbox demo state landed")
+        let env = AppEnvironment.single(session, defaults: defaults)
+        let host = ScreenshotHost(directory: dir, env: env, linking: linking)
+        let first = try XCTUnwrap(OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).first).id
+
+        try await host.capture("37-now-outbox", Self.app(.now)(env))
+        try await host.capture("38-not-delivered-list", NavigationStack { NotDeliveredView() })
+        try await host.capture("38c-not-delivered-dismiss-confirm", NavigationStack { NotDeliveredView(confirming: true) })
+        try await host.capture("38r-not-delivered-retry-error", NavigationStack {
+            NotDeliveredView(retrying: [first], errors: [first: NotDeliveredModel.lockedRetryError])
+        })
+        let source = "Features/Now/NotDeliveredView.swift"
+        return [
+            ScreenshotHost.IndexRow(number: "37", view: "NowView", source: "Features/Now/NowView.swift", reached: "full app, outbox demo"),
+            ScreenshotHost.IndexRow(number: "38", view: "NotDeliveredView", source: source, reached: "bare stack, outbox demo"),
+            ScreenshotHost.IndexRow(number: "38c", view: "NotDeliveredView", source: source, reached: "bare stack, Dismiss All confirmation"),
+            ScreenshotHost.IndexRow(number: "38r", view: "NotDeliveredView", source: source, reached: "bare stack, a retry over a failed one")
+        ]
     }
 
     private static func indexRows(_ shots: [Shot]) -> [ScreenshotHost.IndexRow] {
@@ -366,5 +415,38 @@ final class ScreenshotTourTests: XCTestCase {
         root.addSubview(inset)
         XCTAssertTrue(ScreenshotHost.tallScrollView(in: root) === inset, "80 + 30 is taller than 100")
         XCTAssertEqual(ScreenshotHost.endOffset(of: inset), -20, "10 pt past the resting offset of -30")
+    }
+}
+
+/// The outbox demo's transport: the in-memory one, whose conditional saves are refused while a refusal is set.
+private actor RefusingTransport: ConditionalTransport {
+    private let inner = InMemoryCloudTransport()
+    private var refusal: TransportRefusal?
+
+    func refuse(_ refusal: TransportRefusal?) {
+        self.refusal = refusal
+    }
+
+    func save(_ records: [CloudRecord]) async throws {
+        try await inner.save(records)
+    }
+
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+        try await inner.delete(recordNames: recordNames, in: zone)
+    }
+
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        try await inner.changes(in: zone, since: token)
+    }
+
+    func save(_ items: [ConditionalSave]) async throws -> [SaveOutcome] {
+        if let refusal {
+            return items.map { _ in .refused(refusal) }
+        }
+        return try await inner.save(items)
+    }
+
+    func delete(_ items: [ConditionalDelete]) async throws -> [DeleteOutcome] {
+        try await inner.delete(items)
     }
 }

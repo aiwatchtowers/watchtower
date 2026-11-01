@@ -244,7 +244,7 @@ final class NotificationRouterTests: XCTestCase {
         let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
             alertCleaner: cleaner,
@@ -286,7 +286,7 @@ final class NotificationRouterTests: XCTestCase {
         let defaults = try makeDefaults()
         let sleeper = TickSleeper()
         let env = try HubSession(
-            transport: transport, replicaPath: try makeReplicaPath(), transportKind: .inMemoryDemo, defaults: defaults,
+            transport: transport, replicaPath: try makeReplicaPath(), backend: .inMemoryDemo, defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory(), alertCleaner: cleaner,
             sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
         )

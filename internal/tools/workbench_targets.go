@@ -84,7 +84,7 @@ func NewCreateTargets(store workbenchfiles.Store, sessionEnv func() string) *Too
 			for _, c := range created {
 				ids = append(ids, c.TargetID)
 			}
-			linkSession(d, call.Binding, sessionEnv, out, ids...)
+			linkSession(d, call.Binding, sessionEnv, out, true, ids...)
 			return out, nil
 		},
 	}
@@ -317,12 +317,12 @@ func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_target args: %w", err)
 			}
-			out, err := applyTargetUpdate(d, store, call.Binding.WorkbenchID, a)
+			out, statusWritten, err := applyTargetUpdate(d, store, call.Binding.WorkbenchID, a)
 			if err != nil {
 				return nil, err
 			}
 			addTargetProcedure(d, call.Binding.WorkbenchID, a, out)
-			linkSession(d, call.Binding, sessionEnv, out, a.TargetID)
+			linkSession(d, call.Binding, sessionEnv, out, statusWritten, a.TargetID)
 			return out, nil
 		},
 	}
@@ -388,26 +388,28 @@ func nothingToUpdate(a updateTargetArgs) bool {
 // change re-derives a leaf's progress — and the image rows in one
 // transaction, so a failure part-way leaves the target untouched. A detached
 // image's copy is removed once no row names it.
-func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, a updateTargetArgs) (map[string]any, error) {
+func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, a updateTargetArgs) (out map[string]any, statusWritten bool, err error) {
 	t, err := targetInWorkbench(d, workbenchID, a.TargetID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// Read before the write transaction: the column definition and the
 	// target's stored column.
 	move, err := resolveTargetColumn(d, t, a)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	images, err := ingestImages(d, store, workbenchID, a.AddImages)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var detached []string
 	err = d.WithTx(func(tx *sql.Tx) error {
-		if err := applyTargetFields(d, tx, t, a, move); err != nil {
+		written, err := applyTargetFields(d, tx, t, a, move)
+		if err != nil {
 			return err
 		}
+		statusWritten = written
 		for _, id := range a.RemoveImageIDs {
 			path, err := db.RemoveWorkbenchTargetImageTx(tx, workbenchID, int64(t.ID), id)
 			if err != nil {
@@ -418,49 +420,52 @@ func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, 
 		return images.attach(tx, workbenchID, int64(t.ID), a.AddImages)
 	})
 	if err != nil {
-		return nil, images.undo(d, workbenchID, err)
+		return nil, false, images.undo(d, workbenchID, err)
 	}
-	out := map[string]any{"target_id": a.TargetID}
+	out = map[string]any{"target_id": a.TargetID}
 	// The write is committed; a copy left behind is reported, never undone.
 	if err := discardUnreferenced(d, store, workbenchID, detached); err != nil {
 		out["cleanup_warning"] = "detached image files could not all be removed: " + err.Error()
 	}
-	return out, nil
+	return out, statusWritten, nil
 }
 
 // applyTargetFields writes a's fields; move is a resolved column (nil = none),
-// written in place of the plain status write.
-func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs, move *columnMove) error {
+// written in place of the plain status write. statusWritten reports a changed
+// status (the session link's stamp, PROJ-14).
+func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs, move *columnMove) (statusWritten bool, err error) {
 	if err := applyTargetMove(d, tx, t, a.ParentID); err != nil {
-		return err
+		return false, err
 	}
 	if err := applyTargetText(d, tx, t, a); err != nil {
-		return err
+		return false, err
 	}
 	if a.Priority != "" && a.Priority != t.Priority {
 		if err := d.UpdateTargetPriorityTx(tx, t.ID, a.Priority); err != nil {
-			return fmt.Errorf("updating priority: %w", err)
+			return false, fmt.Errorf("updating priority: %w", err)
 		}
 	}
 	if err := d.UpdateTargetGitLinksTx(tx, t.ID, trimmed(a.Branch), trimmed(a.PR)); err != nil {
-		return err
+		return false, err
 	}
 	switch {
 	case move != nil:
 		if err := applyColumnMove(d, tx, t, move); err != nil {
-			return err
+			return false, err
 		}
+		statusWritten = move.status != t.Status
 	case a.Status != "" && a.Status != t.Status:
 		if err := d.UpdateTargetStatusAsTx(tx, t.ID, a.Status, db.ActorAgent); err != nil {
-			return fmt.Errorf("updating status: %w", err)
+			return false, fmt.Errorf("updating status: %w", err)
 		}
+		statusWritten = true
 	}
 	if a.Progress != nil {
 		if err := d.SetTargetProgressTx(tx, t.ID, *a.Progress); err != nil {
-			return fmt.Errorf("updating progress: %w", err)
+			return false, fmt.Errorf("updating progress: %w", err)
 		}
 	}
-	return nil
+	return statusWritten, nil
 }
 
 // scopeTargetMove refuses a parent_id outside the workbench or inside the

@@ -68,11 +68,11 @@ struct SettingsView: View {
             }
             CardRowDivider()
             SettingsRow(title: "Queued") { Text("\(model.snapshot.queuedCount)") }
-            if env.transportKind == .inMemoryDemo {
+            if env.backend == .inMemoryDemo {
                 CardRowDivider()
                 SettingsRow(title: "Sync") { Text("Demo") }
             }
-            if env.transportKind == .cloudKit || !linking.links.isEmpty {
+            if env.backend == .live || !linking.links.isEmpty {
                 CardRowDivider()
                 NavigationLink {
                     MacsView()
@@ -215,8 +215,8 @@ struct SettingsView: View {
     // MARK: - Unlink
 
     /// A live link only: the demo has no link to end.
-    static func offersUnlink(transportKind: TransportKind, link: LinkRecord?) -> Bool {
-        transportKind == .cloudKit && link != nil
+    static func offersUnlink(backend: SessionBackend, link: LinkRecord?) -> Bool {
+        backend == .live && link != nil
     }
 
     /// The saved link of the hub on screen.
@@ -237,7 +237,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var unlinkSection: some View {
-        if let link = activeLink, Self.offersUnlink(transportKind: env.transportKind, link: link),
+        if let link = activeLink, Self.offersUnlink(backend: env.backend, link: link),
            let ask = Self.removalAsk(for: activeItem) {
             VStack(alignment: .leading, spacing: 0) {
                 Button(role: .destructive) {

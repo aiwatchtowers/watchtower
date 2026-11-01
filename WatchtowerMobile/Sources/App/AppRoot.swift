@@ -44,8 +44,8 @@ final class AppRoot {
         /// that cannot be read, reads as settled: the removal does not wait
         /// on what it cannot see. A kept farewell goes out by a direct save
         /// of its sealed record within `cap` (`resendDirectly`,
-        /// `TransportFactory.sendDirectly`).
-        static var live: Self {
+        /// `transports.sendDirectly`, on the farewell's own route).
+        static func live(transports: TransportFactory) -> Self {
             var delivery = Self { session, record in
                 guard let store = session.transportStore else { return false }
                 do {
@@ -57,7 +57,7 @@ final class AppRoot {
             }
             delivery.resend = { [cap = delivery.cap] farewell in
                 await AppRoot.resendDirectly(farewell, cap: cap) { farewell in
-                    try await TransportFactory.cloudKit.sendDirectly(farewell.record, farewell.route, farewell.hubID)
+                    try await transports.sendDirectly(farewell.record, farewell.route, farewell.hubID)
                 }
             }
             return delivery
@@ -139,7 +139,7 @@ final class AppRoot {
         }
     }
 
-    var isDemo: Bool { env.transportKind == .inMemoryDemo }
+    var isDemo: Bool { env.backend == .inMemoryDemo }
 
     /// The tour's hand-off of a link URL to the live root (`DemoTour`); nil
     /// on every other root.
@@ -222,8 +222,13 @@ final class AppRoot {
             defaults: defaults,
             now: Date()
         )
-        let factory = HubSessionFactory.live(paths: paths, keys: keys)
-        let env = try AppEnvironment.live(registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults)
+        // The process's one relay session (built on first use, never while the relay is off) and the transports on it.
+        let relay = AppEnvironment.liveRelay()
+        let transports = TransportFactory.live(relay: relay)
+        let factory = HubSessionFactory.live(paths: paths, keys: keys, transports: transports)
+        let env = try AppEnvironment.live(
+            registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults, relay: relay
+        )
         let root = AppRoot(
             env: env,
             registry: registry,
@@ -233,7 +238,7 @@ final class AppRoot {
             defaults: defaults,
             linking: LinkingViewModel(access: CloudKitLinkAccess(), store: store, identity: identity, keys: keys),
             startWork: BackgroundWork.starter(),
-            farewellDelivery: .live
+            farewellDelivery: .live(transports: transports)
         )
         root.launch { store.pending?.link.hubID }
         return root
@@ -659,6 +664,8 @@ final class AppRoot {
     /// compare-and-swap over the server's copy, so a save cancelled at the
     /// cap that lands late never replaces a relink's record, #261): the
     /// record is already sealed, so the deleted hub keys are not needed.
+    /// On a relay route the save (`HostedRelayTransport.saveDirectly`) is
+    /// unconditional: the relay has no compare-and-swap over a copy read.
     /// True once the save returned; a failure, or a save still running at
     /// `cap` (cancelled), reads false (logged) and the farewell stays kept.
     static func resendDirectly(
@@ -712,10 +719,13 @@ final class AppRoot {
     }
 
     /// Outbox items still waiting for the Mac: what a removal loses besides
-    /// recordings it could not keep ("Not sent").
-    private static func pendingActionCount(_ session: HubSession) -> Int {
+    /// recordings it could not keep ("Not sent"). An ordered action is one
+    /// while `queued` (not written) or `sent` (no final answer yet).
+    static func pendingActionCount(_ session: HubSession) -> Int {
         do {
-            return try session.store.pendingActions().filter { $0.state == .pending }.count
+            return try session.store.pendingActions().filter {
+                $0.state == .pending || $0.delivery == .queued || $0.delivery == .sent
+            }.count
         } catch {
             logger.error("not-sent count failed: \(error.localizedDescription, privacy: .public)")
             return 0
@@ -815,8 +825,8 @@ extension AppRoot: LinkHost {
         }
     }
 
-    func keysMerged(hubID: String) {
-        env.session(hubID)?.indexStoredRows()
+    func keysMerged(hubID: String, newestEpochRaised: Bool) {
+        env.session(hubID)?.keysMerged(newestEpochRaised: newestEpochRaised)
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {

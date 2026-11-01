@@ -79,7 +79,7 @@ final class SessionInputSender {
             enqueue: { kind, entity, params in
                 try await outbox.enqueue(kind: kind, entityRecordName: entity, params: params)
             },
-            remove: { try store.removePendingAction(id: $0) }
+            remove: { try store.dismissAction(id: $0) }
         )
     }
 

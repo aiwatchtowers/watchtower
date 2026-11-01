@@ -190,6 +190,12 @@ final class LinkingViewModel {
             phase = .failed(.refused)
             return
         }
+        // The Kit reads v4 now, but which route a v4 code links over is relay client Phase 3 Task 10's: until then
+        // a v4 code reads as it did before the Kit could read v4. A v3 code always carries its owner.
+        guard payload.v <= LinkPayload.currentVersion, let ownerUser = payload.ownerUser else {
+            phase = .failed(.updateApp)
+            return
+        }
         // The hub id names the hub's directories: only a plain name.
         guard HubPaths.isValidHubID(payload.hubID) else {
             Self.logger.warning("link code with an unusable hub id")
@@ -248,7 +254,7 @@ final class LinkingViewModel {
         if let row = row(payload.hubID), !ending.contains(row.hubID) {
             report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
         }
-        await connect(payload, hubKeys: hubKeys, userRecordName: userRecordName)
+        await connect(payload, ownerUser: ownerUser, hubKeys: hubKeys, userRecordName: userRecordName)
     }
 
     /// "Linked to <Mac name>" → the notification prompt → Now.
@@ -260,12 +266,12 @@ final class LinkingViewModel {
     }
 
     /// Steps 3–5 for a valid code.
-    private func connect(_ payload: LinkPayload, hubKeys: ScannedHubKeys, userRecordName: String) async {
+    private func connect(_ payload: LinkPayload, ownerUser: String, hubKeys: ScannedHubKeys, userRecordName: String) async {
         // Step 3: same Apple ID → the private database, share URLs ignored
         // (an owner cannot accept their own share). Another Apple ID → both
         // shares, then the shared database.
         let route: HubRoute
-        if userRecordName == payload.ownerUser {
+        if userRecordName == ownerUser {
             route = .cloudKit(.private)
         } else {
             guard payload.dataShare.flatMap(URL.init(string:)) != nil,
@@ -277,13 +283,13 @@ final class LinkingViewModel {
             do {
                 try await access.join(
                     LinkInvitation(dataShare: payload.dataShare, relayShare: payload.relayShare),
-                    route: .cloudKit(.shared(ownerName: payload.ownerUser)), hubID: payload.hubID)
+                    route: .cloudKit(.shared(ownerName: ownerUser)), hubID: payload.hubID)
             } catch {
                 Self.logger.error("share accept failed: \(error.localizedDescription, privacy: .public)")
                 phase = .failed(.cannotShare)
                 return
             }
-            route = .cloudKit(.shared(ownerName: payload.ownerUser))
+            route = .cloudKit(.shared(ownerName: ownerUser))
         }
         // The device keys (created here, in the foreground, on the first scan:
         // F14; one identity for every hub) and the hub's keys from the code.
@@ -303,7 +309,7 @@ final class LinkingViewModel {
             hubID: payload.hubID,
             macName: payload.macName,
             scope: shared ? .shared : .private,
-            ownerName: payload.ownerUser,
+            ownerName: ownerUser,
             userRecordName: userRecordName,
             nonce: payload.nonce,
             dataShareURL: shared ? payload.dataShare : nil,
@@ -628,14 +634,18 @@ final class LinkingViewModel {
     }
 
     /// Adds `keybox`'s epoch keys to `link`'s stored hub keys when that changes which epochs the Keychain holds
-    /// (epoch numbers are compared, never key material), then has the host open the rows they unlock.
+    /// (epoch numbers are compared, never key material), then has the host open the rows they unlock. Every epoch
+    /// but the newest carries when it was superseded (the previous newest stamped now; one stored before the stamp
+    /// existed too), which the Keychain's 7-day retention reads; the host hears whether the newest epoch went up.
     private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async {
         guard keybox.grant.hubID == link.hubID, keybox.grant.linked, keybox.grant.revoked != true,
               let boxKeys = keybox.keys else { return }
+        let raised: Bool
         do {
             guard let current = try keys.hubLink(link.hubID) else { return }
-            let merged = try current.adding(boxKeys)
+            let merged = try current.adding(boxKeys).stampingSuperseded(from: current, now: clock.now())
             guard merged.epochs.map(\.epoch) != current.epochs.map(\.epoch) else { return }
+            raised = merged.newestEpochRaised(over: current)
             try keys.saveHubLink(merged)
         } catch KeyStoreError.locked {
             Self.logger.notice("keybox keys wait for the unlock")
@@ -645,7 +655,7 @@ final class LinkingViewModel {
             return
         }
         Self.logger.notice("epoch keys merged from the keybox")
-        host?.keysMerged(hubID: link.hubID)
+        host?.keysMerged(hubID: link.hubID, newestEpochRaised: raised)
     }
 
     /// At launch: a link saved before encryption (no hub keys in the

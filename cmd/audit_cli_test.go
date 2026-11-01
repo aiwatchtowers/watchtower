@@ -427,6 +427,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench session-probe":          true,
 	"workbench session finish":         true,
 	"workbench session-report":         true,
+	"workbench session-target":         true,
 	"workbench session-state":          true,
 	"workbench session start":          true,
 	"workbench session stop":           true,

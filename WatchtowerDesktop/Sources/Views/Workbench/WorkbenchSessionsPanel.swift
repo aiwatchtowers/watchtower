@@ -95,6 +95,17 @@ struct WorkbenchSessionsPanel: View {
         // A swipe right over the panel goes back to the list (board #743).
         .background(WorkbenchBackSwipeCatcher(isEnabled: !paletteOpen, onBack: switcherActions.showAll))
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
+        .alert(
+            SessionTargetMenu.title,
+            isPresented: Binding(
+                get: { vm.sessionTargetError != nil },
+                set: { if !$0 { vm.sessionTargetError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(vm.sessionTargetError ?? "")
+        }
     }
 
     /// The main list (drag to reorder), then the "▸ N finished" header and
@@ -176,6 +187,11 @@ struct SessionRowActions {
     /// A workbench agent session's Open in Terminal (false) / Open in
     /// Workchat (true), #711; nil = no menu items.
     var openIn: ((TerminalSession, Bool) -> Void)?
+    /// A workbench agent session's Session Target ▸ (board #1352): the
+    /// chosen target, nil = None; nil closure = no submenu.
+    var setTarget: ((TerminalSession, Int64?) -> Void)?
+    /// The board tree the submenu is built from, per workbench.
+    var targetRoots: (Int64) -> [WorkbenchBoardNode] = { _ in [] }
 }
 
 /// The last start's one line (board #229): why a session started in the

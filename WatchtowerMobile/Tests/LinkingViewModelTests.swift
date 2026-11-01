@@ -1885,6 +1885,10 @@ final class LinkingViewModelTests: XCTestCase {
 
         XCTAssertEqual(try keyStore.hubLink(acme)?.epochs.map(\.epoch), [1, 2])
         XCTAssertEqual(host.keyMergeHubIDs, [acme], "the hub's stored rows are indexed after the merge")
+        XCTAssertEqual(host.keyMergeRaised, [true], "a newer epoch: an ordered hub gets epoch_ack")
+        XCTAssertEqual(
+            try keyStore.hubLink(acme)?.epochs.map(\.supersededAt), [start, nil],
+            "the previous newest is stamped when the newer one merges (relay client Phase 3)")
         XCTAssertEqual(model.links.first?.state, .linked)
 
         let deviceID = TestE2E.deviceID.uuidString

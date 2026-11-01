@@ -35,7 +35,7 @@ final class KitFixtureTests: XCTestCase {
     func testRelayRecordKindsAreFrozen() {
         XCTAssertEqual(
             RelayRecordKind.allCases.map(\.rawValue),
-            ["action", "heartbeat", "recording_upload", "device", "hello"]
+            ["action", "heartbeat", "recording_upload", "device", "hello", "control"]
         )
     }
 

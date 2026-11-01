@@ -61,12 +61,27 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let linkCodeTag: String?
     /// Removed on the Mac (D9); absent otherwise.
     public let revoked: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The version of ordered actions the hub runs (relay client Phase 1); absent on an older hub.
+    public let orderedActions: Int?
+    /// Every transport the hub offers, raw wire values (`"cloudkit"`, `"relay"`); absent on a hub before the relay.
+    public let transports: [String]?
+    /// The hub's hosted-relay device id; absent on a hub without the relay.
+    public let relayDeviceID: String?
+    /// The hub's `relay_auth` public key, base64url; absent on a hub without the relay.
+    public let relayAuthPub: String?
 
     public var recordName: String { SliceKind.deviceGrant.recordName(id: deviceID) }
     /// Default false.
     public var permissionsAllowed: Bool { permissionsGranted ?? false }
     /// Whether the hub takes a `session_start` from this phone (#565; an older hub: its `startSessionsAllowed`).
     public var mayStartSessions: Bool { startSessionsGranted ?? startSessionsAllowed }
+    /// Whether this hub takes numbered actions (`a-<device>-<seq>`); false keeps the legacy path.
+    public var runsOrderedActions: Bool { (orderedActions ?? 0) >= 1 }
+    /// The transports this build knows among `transports`; absent means an iCloud-only hub.
+    public var hubTransports: Set<TransportKind> {
+        guard let transports else { return [.cloudKit] }
+        return Set(transports.compactMap(TransportKind.init(rawValue:)))
+    }
 
     // convertFromSnakeCase maps "device_id" -> "deviceId" and "hub_id" ->
     // "hubId" (lowercase d), so the CodingKey stringValues use that form.
@@ -87,6 +102,10 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case confirmNonce
         case linkCodeTag
         case revoked
+        case orderedActions
+        case transports
+        case relayDeviceID = "relayDeviceId"
+        case relayAuthPub
     }
 
     public init(
@@ -105,7 +124,11 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         confirmNonce: String? = nil,
         linkCodeTag: String? = nil,
-        revoked: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+        revoked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        orderedActions: Int? = nil,
+        transports: [String]? = nil,
+        relayDeviceID: String? = nil,
+        relayAuthPub: String? = nil
     ) {
         self.deviceID = deviceID
         self.hubID = hubID
@@ -123,5 +146,9 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.confirmNonce = confirmNonce
         self.linkCodeTag = linkCodeTag
         self.revoked = revoked
+        self.orderedActions = orderedActions
+        self.transports = transports
+        self.relayDeviceID = relayDeviceID
+        self.relayAuthPub = relayAuthPub
     }
 }

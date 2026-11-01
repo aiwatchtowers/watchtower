@@ -473,7 +473,7 @@ func indexAndLinkFiledAsk(ctx context.Context, d *db.DB, p *db.Workbench, ask db
 		}
 	}
 	if ask.SessionID.Valid && ask.TargetID.Valid {
-		reportLinkFailure(out, linkTargets(d, ask.SessionID.Int64, []int64{ask.TargetID.Int64}))
+		reportLinkFailure(out, linkTargets(d, ask.SessionID.Int64, false, []int64{ask.TargetID.Int64}))
 	}
 }
 

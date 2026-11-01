@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// A screen pushed on Now's stack: Settings, from the gear (design pass
-/// spec §5).
+/// spec §5); the Not delivered list, from its row (relay client mockup 5a).
 enum NowRoute: Hashable, CaseIterable {
     case settings
+    case notDelivered
 }
 
 /// The Now tab (spec §5.5, mockup 1): the Mac status chip, Waiting for you
@@ -21,7 +22,13 @@ struct NowView: View {
             // The working timers tick, and the Mac turns asleep by the clock
             // alone.
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                content(NowModel(snapshot: replica.snapshot, linked: env.linkedDevice != nil, now: context.date), date: context.date)
+                content(
+                    NowModel(
+                        snapshot: replica.snapshot, linked: env.linkedDevice != nil, now: context.date,
+                        lastFlushStopped: env.activeSession.outboxBacklog.lastFlushStopped
+                    ),
+                    date: context.date
+                )
             }
             .navigationTitle("Now")
             .toolbar {
@@ -33,7 +40,12 @@ struct NowView: View {
                 }
             }
             .hubSwitcher()
-            .navigationDestination(for: NowRoute.self) { _ in SettingsView() }
+            .navigationDestination(for: NowRoute.self) { route in
+                switch route {
+                case .settings: SettingsView()
+                case .notDelivered: NotDeliveredView()
+                }
+            }
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
             // An event detail pushed here opens its recap here (Open recap).
             .navigationDestination(for: CalendarRoute.self) { route in
@@ -64,6 +76,9 @@ struct NowView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 MacStatusChip(model: model.chip)
+                if let outbox = model.outbox {
+                    NowOutboxGroup(rows: outbox)
+                }
                 SectionHeader("Waiting for you", count: model.waitingCount, tone: model.waitingHeaderTone)
                 waiting(model)
                 if !model.working.isEmpty {
@@ -154,6 +169,47 @@ struct NowView: View {
             } catch {
                 answerError = BoardWriteText.sendError(error)
             }
+        }
+    }
+}
+
+/// Waiting to send and the Not delivered row (relay client mockup 5a): the
+/// header with the count over the oldest queued actions, then the red row
+/// that opens the list. Rows are spaced, never divided.
+private struct NowOutboxGroup: View {
+    let rows: NowOutboxRows
+
+    var body: some View {
+        if let count = rows.waitingCount {
+            SectionHeader(rows.waitingTitle, count: count)
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                ForEach(rows.queued) { row in
+                    VStack(alignment: .leading, spacing: Spacing.tight) {
+                        Text(row.summary).font(TypeScale.rowTitle).lineLimit(1)
+                        Text(row.time).font(TypeScale.meta).foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                if let more = rows.moreText {
+                    Text(more).font(TypeScale.meta).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
+        }
+        if let text = rows.notDeliveredText {
+            NavigationLink(value: NowRoute.notDelivered) {
+                HStack(spacing: Spacing.medium) {
+                    Text(text).font(TypeScale.rowTitle).foregroundStyle(PhoneTone.red.color)
+                    Spacer(minLength: Spacing.medium)
+                    Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
+                }
+                .frame(minHeight: PhoneMetrics.minTouch)
+                .contentShape(Rectangle())
+                .card(padding: EdgeInsets(top: Spacing.tight, leading: Spacing.medium, bottom: Spacing.tight, trailing: Spacing.medium))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, rows.waitingCount == nil ? Spacing.large : Spacing.regular)
         }
     }
 }

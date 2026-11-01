@@ -33,7 +33,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let env = try HubSession(
             transport: gate ?? transport,
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             keys: keys,
             defaults: try makeDefaults(),
             recordingsDirectory: directory,
@@ -118,7 +118,7 @@ final class RecordingUploadWiringTests: XCTestCase {
             let env = try HubSession(
                 transport: transport,
                 replicaPath: path,
-                transportKind: .inMemoryDemo,
+                backend: .inMemoryDemo,
                 defaults: defaults,
                 recordingsDirectory: directory,
                 uploadRetriesAllowed: true,
@@ -372,7 +372,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let env = try HubSession(
             transport: transport,
             replicaPath: replicaPath,
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: TestE2E.hubID.uuidString,
             linkedDevice: device,
             keys: try TestPhone.keys(),

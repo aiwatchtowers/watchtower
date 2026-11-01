@@ -1,3 +1,4 @@
+import CloudKit
 import GRDB
 import XCTest
 @testable import WatchtowerSync
@@ -529,6 +530,140 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertFalse(try reopened.adoptScope(.private, hubID: "hub-a"))
     }
 
+    /// Relay client Phase 1 (Task 2): every system-fields write is a new local version of the record, and a
+    /// fetched event names the version its batch stored.
+    func testRecordSeqBumpsWithEachSystemFieldsWrite() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay))
+
+        try store.saveSystemFields(Data("garbage".utf8), recordName: "c-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay)?.changeTag, "no decodable tag")
+
+        try store.bufferFetched(
+            changed: [record("c-1", zone: .relay)],
+            systemFields: [(name: "c-1", zone: .relay, data: Data("again".utf8))],
+            deleted: [:])
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 2)
+        XCTAssertEqual(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, 2)
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.first?.recordSeq, 2)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .data), "zone scoped")
+
+        try store.deleteSystemFields(recordNames: ["c-1"], zone: .relay)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay))
+        try store.bufferDeleted(recordNames: ["c-1"], zone: .relay)
+        XCTAssertNil(try store.latestEvent(recordName: "c-1", zone: .relay), "a deletion is no current record")
+    }
+
+    /// The phone fetching its own write back (the same change tag) is not a new version.
+    func testReBufferingTheSameChangeTagKeepsTheRecordSeq() throws {
+        let store = try TransportStore.inMemory()
+        let tagged = FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "c-1")), changeTag: "tag-1")
+        let archive = CloudKitTransport.archivedSystemFields(of: tagged)
+        XCTAssertEqual(try store.saveSystemFields(archive, recordName: "c-1", zone: .relay), 1)
+        try store.bufferFetched(
+            changed: [record("c-1", zone: .relay)], systemFields: [(name: "c-1", zone: .relay, data: archive)], deleted: [:])
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.changeTag, "tag-1")
+        XCTAssertEqual(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+
+        let newer = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(tagged, changeTag: "tag-2"))
+        XCTAssertEqual(try store.saveSystemFields(newer, recordName: "c-1", zone: .relay), 2)
+    }
+
+    /// Only relay records (RelayZone, or an `a-`/`c-` name) pay the archive decode at write: the hub's DataZone
+    /// buffering stores no `change_tag`, and a read still finds the tag in the archive.
+    func testOnlyRelayRecordsStoreTheirChangeTag() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+        let archive = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "x")), changeTag: "tag-1"))
+        let store = try TransportStore(path: path)
+        try store.saveSystemFields(archive, recordName: "target-1", zone: .data)
+        try store.saveSystemFields(archive, recordName: "a-1", zone: .data)
+        try store.saveSystemFields(archive, recordName: "wire-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "target-1", zone: .data)?.changeTag, "tag-1", "read from the archive")
+        try store.close()
+
+        let stored = try DatabaseQueue(path: path).read { db in
+            try Dictionary(uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT record_name, change_tag FROM system_fields")
+                .map { ($0["record_name"] as String, $0["change_tag"] as String?) })
+        }
+        XCTAssertEqual(stored["target-1"], .some(nil), "no decode for a DataZone record")
+        XCTAssertEqual(stored["a-1"], "tag-1")
+        XCTAssertEqual(stored["wire-1"], "tag-1")
+    }
+
+    /// A row from before `change_tag` reads the tag out of its archive.
+    func testALegacyRowReadsItsChangeTagFromTheArchive() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+        let archive = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "c-1")), changeTag: "tag-9"))
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE system_fields (
+                        record_name TEXT NOT NULL, zone TEXT NOT NULL, data BLOB NOT NULL,
+                        PRIMARY KEY (record_name, zone)
+                    )
+                    """)
+                try db.execute(sql: "INSERT INTO system_fields (record_name, zone, data) VALUES ('c-1', 'RelayZone', ?)",
+                               arguments: [archive])
+            }
+        }
+        let store = try TransportStore(path: path)
+        let version = try XCTUnwrap(try store.recordVersion(recordName: "c-1", zone: .relay))
+        XCTAssertEqual(version.recordSeq, 0)
+        XCTAssertEqual(version.changeTag, "tag-9")
+    }
+
+    func testAStoreFromBeforeRecordSeqOpensWithZero() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE system_fields (
+                        record_name TEXT NOT NULL,
+                        zone TEXT NOT NULL,
+                        data BLOB NOT NULL,
+                        PRIMARY KEY (record_name, zone)
+                    );
+                    INSERT INTO system_fields (record_name, zone, data) VALUES ('c-1', 'RelayZone', x'00');
+                    CREATE TABLE events (
+                        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                        zone TEXT NOT NULL,
+                        record_name TEXT NOT NULL,
+                        kind TEXT NOT NULL DEFAULT '',
+                        modified_at REAL NOT NULL DEFAULT 0,
+                        payload BLOB,
+                        deleted INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT INTO events (zone, record_name, kind, payload) VALUES ('RelayZone', 'c-1', 'envelope', x'01');
+                    """)
+            }
+        }
+
+        let store = try TransportStore(path: path)
+        let version = try XCTUnwrap(try store.recordVersion(recordName: "c-1", zone: .relay))
+        XCTAssertEqual(version.recordSeq, 0)
+        XCTAssertNil(version.changeTag)
+        XCTAssertNil(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, "an old event names no version")
+        try store.saveSystemFields(Data("next".utf8), recordName: "c-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+    }
+
     func testAdoptingABrandNewStoreReportsNoWipe() throws {
         let store = try TransportStore.inMemory()
         XCTAssertFalse(try store.adoptScope(.private, hubID: "hub-a"), "nothing to wipe")
@@ -556,5 +691,169 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.changes(in: .relay, since: nil))
         XCTAssertNoThrow(try store.close(), "closing again does nothing")
         XCTAssertTrue(try TransportStore(path: path).isPending(recordName: "device-1", zone: .relay), "the file is intact")
+    }
+}
+
+// MARK: - Hosted relay tables (#1240)
+
+extension TransportStoreTests {
+    private func storeFile(_ name: String) -> String {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString).sqlite").path
+        addTeardownBlock {
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
+        }
+        return path
+    }
+
+    private func relayRecord(_ name: String, seq: UInt64, zone: CloudZoneID = .data) -> CloudRecord {
+        CloudRecord(
+            recordName: name, zone: zone, kind: WireKind.envelope, modifiedAt: stamp, payload: Data(name.utf8),
+            origin: RecordOrigin(serverAt: stamp), recordSeq: seq)
+    }
+
+    /// The four relay tables exist on every store and stay empty while CloudKit uses it.
+    func testRelayTablesAreEmptyOnACloudKitStore() throws {
+        let path = storeFile("transport-cloudkit")
+        let store = try TransportStore(path: path)
+        try store.adoptScope(.private, hubID: "hub-a")
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        try store.bufferChanged([record("target-1")])
+        _ = try store.changes(in: .data, since: nil)
+        try store.close()
+
+        let queue = try DatabaseQueue(path: path)
+        defer { try? queue.close() }
+        try queue.read { db in
+            for table in ["relay_cursors", "relay_records", "relay_resync_seen", "relay_binding"] {
+                XCTAssertTrue(try db.tableExists(table), table)
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)"), 0, table)
+            }
+        }
+    }
+
+    /// A store serves one route: bound to a relay Mac, it refuses a CloudKit scope and another Mac.
+    func testARelayBoundStoreRefusesACloudKitScope() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil), "a new binding")
+        XCTAssertFalse(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil), "the same binding again")
+
+        XCTAssertThrowsError(try store.adoptScope(.private, hubID: "hub-a")) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+        XCTAssertThrowsError(try store.saveScope(.private, hubID: "hub-a")) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+        XCTAssertThrowsError(try store.adoptRelayBinding(macDeviceID: "mac-b", hubID: nil)) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+        XCTAssertNil(try store.storedScope())
+
+        let cloudKit = try TransportStore.inMemory()
+        try cloudKit.adoptScope(.private, hubID: "hub-a")
+        XCTAssertThrowsError(try cloudKit.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil)) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+    }
+
+    /// One page: its events (with the record's seq and the writer's clock), the cursor.
+    func testARelayPageBuffersEventsAndMovesTheCursor() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertEqual(try store.relayCursor(zone: .data), 0)
+        try store.bufferRelayPage(zone: .data, changed: [relayRecord("a", seq: 1)], deleted: ["gone"], newSeq: 3, resync: false)
+        XCTAssertEqual(try store.relayCursor(zone: .data), 3)
+        XCTAssertEqual(try store.relayCursor(zone: .relay), 0)
+        let batch = try store.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.map(\.recordName), ["a"])
+        XCTAssertEqual(batch.changed.first?.recordSeq, 1)
+        XCTAssertEqual(batch.changed.first?.origin, RecordOrigin(serverAt: stamp))
+        XCTAssertEqual(batch.deletedRecordNames, ["gone"])
+
+        try store.failInserts(true)
+        XCTAssertThrowsError(try store.bufferRelayPage(zone: .data, changed: [relayRecord("b", seq: 4)], deleted: [], newSeq: 4, resync: false))
+        try store.failInserts(false)
+        XCTAssertEqual(try store.relayCursor(zone: .data), 3, "a page that could not be buffered leaves the cursor")
+    }
+
+    /// A finished resync deletes the names the server once returned and this resync did not.
+    func testAFinishedResyncDeletesOnlyUnseenKnownNames() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferRelayPage(
+            zone: .data, changed: [relayRecord("a", seq: 1), relayRecord("b", seq: 2)], deleted: [], newSeq: 2, resync: false)
+        let floor = try store.changes(in: .data, since: nil).newToken
+        XCTAssertFalse(try store.relayResyncPending(.data))
+
+        try store.beginRelayResync(.data)
+        XCTAssertTrue(try store.relayResyncPending(.data))
+        XCTAssertFalse(try store.relayResyncPending(.relay))
+        XCTAssertEqual(try store.relayCursor(zone: .data), 0)
+        try store.bufferRelayPage(zone: .data, changed: [relayRecord("a", seq: 1)], deleted: [], newSeq: 5, resync: true)
+        XCTAssertEqual(try store.changes(in: .data, since: floor).deletedRecordNames, [], "nothing deleted before the end")
+
+        XCTAssertEqual(try store.finishRelayResync(.data), ["b"])
+        XCTAssertFalse(try store.relayResyncPending(.data))
+        XCTAssertEqual(try store.changes(in: .data, since: floor).deletedRecordNames, ["b"])
+        XCTAssertEqual(try store.relayCursor(zone: .data), 5)
+
+        try store.beginRelayResync(.data)
+        XCTAssertEqual(try store.finishRelayResync(.data), ["a"], "b is no longer known")
+    }
+
+    /// A store holding another route's state (here, a CloudKit send queue with no scope recorded) is not adopted.
+    func testARelayBindingRefusesAStoreWithState() throws {
+        let store = try TransportStore.inMemory()
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertThrowsError(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil)) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+
+        // A bound store keeps its binding once it holds state of its own.
+        let bound = try TransportStore.inMemory()
+        XCTAssertTrue(try bound.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        try bound.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertFalse(try bound.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+    }
+
+    /// A resync that expired partway is marked on its marker row; a new resync clears the mark.
+    func testAStalledResyncIsMarkedUntilTheNextResync() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertFalse(try store.relayResyncStalled(.data))
+        try store.beginRelayResync(.data)
+        try store.markRelayResyncStalled(.data)
+        XCTAssertTrue(try store.relayResyncStalled(.data))
+        XCTAssertTrue(try store.relayResyncPending(.data), "still a resync in progress")
+        XCTAssertFalse(try store.relayResyncStalled(.relay))
+        try store.beginRelayResync(.data)
+        XCTAssertFalse(try store.relayResyncStalled(.data))
+        XCTAssertTrue(try store.relayResyncPending(.data))
+    }
+
+    /// A lane's relay zone changing from another non-pair zone with writes queued for it is not
+    /// adopted: the queued writes stay, and the caller wipes deliberately.
+    func testAZoneChangeWithQueuedWritesOutsidePairingThrowsAndKeepsThem() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 0)
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertThrowsError(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-2"])) {
+            XCTAssertEqual($0 as? TransportStoreError, .queuedWritesForAnotherZone)
+        }
+        XCTAssertTrue(try store.isPending(recordName: "device-1", zone: .relay), "the queued write is kept")
+        XCTAssertFalse(try store.relayResyncPending(.relay), "nothing changed")
+        // The same zones again are fine.
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 0)
+    }
+
+    /// Leaving a pair zone drops the hello still queued for it (counted and logged) and
+    /// resyncs the lane from 0.
+    func testLeavingAPairZoneDropsItsQueuedHello() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        XCTAssertEqual(try store.adoptRelayZones([.data: "pair/slot-1", .relay: "pair/slot-1"]), 0)
+        try store.enqueueSave([record("hello-1", zone: .relay)])
+        try store.bufferRelayPage(zone: .relay, changed: [], deleted: [], newSeq: 3, resync: false)
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 1)
+        XCTAssertFalse(try store.isPending(recordName: "hello-1", zone: .relay))
+        XCTAssertEqual(try store.relayCursor(zone: .relay), 0)
+        XCTAssertTrue(try store.relayResyncPending(.relay))
     }
 }
