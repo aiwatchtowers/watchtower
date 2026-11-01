@@ -2727,6 +2727,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     worktree_branch   TEXT, -- non-NULL = Watchtower created the worktree this row's folder_path is in, on this wt/<slug> branch; #535's cleanup owns that worktree and branch by record; NULL = every other row (00114)
     worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run that started the session (00122); NULL = none
+    start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00169)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );

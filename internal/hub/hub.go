@@ -52,6 +52,7 @@ import (
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit"
 	"watchtower/internal/policy"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
@@ -174,6 +175,7 @@ type Options struct {
 	writeTimeout time.Duration
 	pairQueue    int // events one pairing stream may have waiting (0 = pairQueue)
 	trace        func(step string)
+	onPass       func()              // called as a mailbox pass starts
 	reportFetch  sources.ReportFetch // nil = the in-process report
 	gitFetch     sources.GitFetch    // nil = the in-process git status
 	laneBackstop time.Duration       // 0 = laneBackstop
@@ -211,7 +213,7 @@ func (o Options) withDefaults() Options {
 		o.openStore = state.Open
 	}
 	if o.peerUID == nil {
-		o.peerUID = socketPeerUID
+		o.peerUID = platform.PeerUID
 	}
 	if o.mobileSync == nil {
 		o.mobileSync = policy.MobileSync
@@ -653,7 +655,8 @@ func errClass(err error) string {
 		{transport.ErrNotVouched, "not_vouched"},
 		{identity.ErrSealedKeyUnreadable, "sealed_key_unreadable"}, {identity.ErrInsecureMode, "insecure_mode"},
 		{identity.ErrKeysUnavailable, "keys_unavailable"}, {state.ErrNoDevice, "no_device"},
-		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"},
+		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"}, {cloudkit.ErrBridgeRefused, "bridge_refused"},
+		{transport.ErrUnsupportedZone, "unsupported_zone"},
 	} {
 		if errors.Is(err, c.err) {
 			return c.class

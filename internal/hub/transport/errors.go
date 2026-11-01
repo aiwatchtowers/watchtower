@@ -23,6 +23,9 @@ var (
 	ErrRecordTooLarge = errors.New("transport: record too large")
 	// ErrUnsupportedVersion: the server no longer speaks this protocol.
 	ErrUnsupportedVersion = errors.New("transport: unsupported protocol version")
+	// ErrUnsupportedZone: the zone has no place on this transport (a
+	// pairing zone on CloudKit, where linking runs over shares).
+	ErrUnsupportedZone = errors.New("transport: zone not supported on this transport")
 	// ErrRateLimited: too many requests; back off.
 	ErrRateLimited = errors.New("transport: rate limited")
 	// ErrNotVouched: the relay has not admitted this hub (HUB_NOT_VOUCHED):

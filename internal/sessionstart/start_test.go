@@ -63,6 +63,7 @@ func newWorld(t *testing.T) *world {
 	writeScript(t, w.shell, "PATH='"+bin+":/usr/bin:/bin'; export PATH\nshift\nexec /bin/sh \"$@\"\n")
 	writeScript(t, filepath.Join(bin, "claude"), "out='"+w.stub+"'\nrow=\"$"+SessionRowEnv+"\"\n"+
 		"printf '%s\\n' \"$@\" > \"$out/argv.$row\"\npwd -P > \"$out/cwd.$row\"\n"+
+		"printf '%s' \"$"+AutomationRunEnv+"\" > \"$out/run.$row\"\n"+
 		"stty raw -echo\nprintf '\\033[?2004h'\nexec cat >> \"$out/pty.$row\"\n")
 
 	l, err := sessionhost.Listen(w.socket)
@@ -441,4 +442,35 @@ func mustJSON(t *testing.T, v any) []byte {
 	b, err := json.Marshal(v)
 	require.NoError(t, err)
 	return b
+}
+
+// The Desktop's starts through the CLI (Go hub 3 Task 8): a title and an
+// automation run given to Begin land on the row, and Finish, rebuilt from
+// the row, launches with the run marker and the brief it is handed.
+func TestSessionStartTitleAndAutomationRunReachTheRowAndTheLaunch(t *testing.T) {
+	w := newWorld(t)
+	res, err := w.db.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	require.NoError(t, err)
+	aid, _ := res.LastInsertId()
+	res, err = w.db.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'manual', 'running')`, aid)
+	require.NoError(t, err)
+	run, _ := res.LastInsertId()
+
+	begun, err := Begin(context.Background(), w.deps(), handlers.StartRequest{
+		Workbench: w.wb, Title: "Nightly sweep", AutomationRunID: run,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Nightly sweep", w.row(begun.SessionID).title)
+	var stored sql.NullInt64
+	require.NoError(t, w.db.QueryRow(`SELECT automation_run_id FROM terminal_sessions WHERE id = ?`, begun.SessionID).Scan(&stored))
+	assert.Equal(t, run, stored.Int64)
+
+	require.NoError(t, Finish(context.Background(), w.deps(), begun.SessionID, "folder", "sweep the board", false))
+	w.launched(begun.SessionID)
+	eventually(t, "the stub ran", func() bool {
+		_, err := os.Stat(filepath.Join(w.stub, "run."+strconv.FormatInt(begun.SessionID, 10)))
+		return err == nil
+	})
+	assert.Equal(t, strconv.FormatInt(run, 10), w.stubFile("run", begun.SessionID))
+	assert.Contains(t, w.stubFile("argv", begun.SessionID), "sweep the board")
 }

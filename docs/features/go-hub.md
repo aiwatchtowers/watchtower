@@ -27,11 +27,11 @@ One runtime (`internal/hub`, `Run`) inside the daemon joins these packages:
 | `internal/hub/secure` | The one sealing choke point: envelopes (X25519/Ed25519/HKDF/ChaCha20-Poly1305/HPKE, the Swift `SecureTransport`'s twin), wire record names, keyboxes, asset encryption, the four-digit SAS. Everything that leaves the hub is a `secure.Record` from the `Sealer`; the transports refuse anything else. Pinned by the shared Kit E2E vectors (`make e2e-vectors`). |
 | `internal/hub/state` | The sidecar `hubstate.db` (own goose migrations, below), the hub lock `hub.lock`, the stored rows (devices, ledger, control queue, held actions, zone tokens, slice hashes, milestones, recording jobs). |
 | `internal/hub/identity` | The hub's keys (`hub_sig`, `hub_kx`, wrap key) in a 0600 file `<hub dir>/identity.key` in phase 1; the keyring (epochs, `K_data`/`K_alert`, the per-phone relay keys), wiped when the hub stops. |
-| `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`) — and `memfake`, the in-memory relay/CloudKit stand-in for tests. |
+| `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`) — `memfake`, the in-memory relay/CloudKit stand-in for tests, and `cloudkit` (phase 3) — the client of `WatchtowerCloudBridge.app` over `<hub dir>/bridge.sock` (`bridge.proto`/`bridgepb`, frames pinned by `testdata/frames.json` for the Swift bridge; runtime zone names mapped onto `DataZone-<hub_id>`/`RelayZone-<hub_id>`, every phone on the one shared mailbox `relay/<relay id>/*`; the bridge's generation in `<hub dir>/bridge.generation` so a lost `bridge.db` resets cursors and refuses old tags), its `Supervisor` and the `bridgefake` test bridge. |
 | `internal/hub/link` | Linking: link codes, the pair zone hello, the awaiting keybox, the SAS confirmation (`Confirm(device, code, ok)`), grants (`typing`, `permissions`, `start_sessions`), unlink and the revoke hook. |
 | `internal/hub/actions` | The processor (ordered actions per phone by `action_seq`: hold ahead of a gap, one `resend_from` per gap, `skip_to`, the exactly-once ledger, `received`/final echoes, the legacy unordered path, controls) and the dispatcher; `actions/handlers` holds every action handler (asks, board, session start/stop, session input and Interrupt, permission answers, chat/report requests, recording uploads). |
 | `internal/hub/slices` | The publisher (hash per record, urgent/full ticks, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms for 10 min after a change, else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
-| `internal/hub/platform` | Darwin/Linux specifics: the owner-away signal and keeping the machine awake. |
+| `internal/hub/platform` | Darwin/Linux specifics: the owner-away signal, keeping the machine awake, and `PeerUID` (the unix-socket peer check of the control socket and the bridge client). |
 | `internal/hub/hubtest` | Test-only: the Go phone emulator (`Phone`) and its hosted-relay store. Never imported by production code. |
 | `internal/sessionstart` | Sessions created in Go: `Begin`/`Finish`/`Start`, placement (folder or own worktree), `Launch` (the Swift `TerminalLaunch` twin) and `Port`, the hub's `handlers.SessionPort` over `session-host`. |
 | `internal/sessionhost` | `watchtower session-host`, protocol v2 (below). |
@@ -80,10 +80,19 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
 | `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
 
-`watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto]`
-answers at once (instant start, `session_id`, `state`, `folder_path`, `worktree_branch`) and a detached hidden
-`workbench session finish` places and launches the row in `session-host`; `workbench session stop --session N` is the
-host's Stop request (`session_id`, `stopped`). Both refuse another workbench inside an agent's terminal session.
+`watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto]
+[--title T] [--automation-run R] [--brief-stdin] --json` answers at once (instant start, `session_id`, `state`,
+`folder_path`, `worktree_branch`) and a detached hidden `workbench session finish` places and launches the row in
+`session-host`. The first prompt comes on stdin only (`--brief-stdin`) and reaches the finish over an inherited pipe. A
+missing agent binary answers exit 3 with `{"error":"agent_not_found","agent":"…"}` and writes no row. The finish holds
+the workbench's placement lock (`<workspace>/workbench-<id>.place.lock`, `sessionstart.PlacementLockPath`; the
+Desktop's own launch path takes the same flock) from the place decision until the run is in the host, at most 60 s
+(then the row fails with "another start of this workbench is still placing"). It writes the owner's line about the
+place on the row (`terminal_sessions.start_notice`, migration 00169), fails a row it could not move into its worktree
+with `Could not move the session into its worktree: …` instead of deleting it, and watches the launch 3 s for an
+exit 127 (`<agent> was not found`). The Desktop's reasons are pinned by `internal/sessionstart/testdata/desktop_contract.json`.
+`workbench session stop --session N` is the host's Stop request (`session_id`, `stopped`). Both refuse another workbench
+inside an agent's terminal session.
 
 ## Sidecar ownership and migrations
 
@@ -140,7 +149,7 @@ checked against the code named).
 |---|---|---|
 | `internal/sessionhost` socket (`DefaultSocket` → `socketDirFor`) | the user's temp folder (unchanged, `testdata/paths.json`) | `/run/user/<uid>` when it is a real folder owned by the uid with mode 0700, else `<data root>/.run` (created 0700, checked and tightened through one `O_NOFOLLOW` descriptor; a symlink, a file, another owner or a socket path too long for `sockaddr_un` → `run_dir_unusable`; a data root that cannot be determined fails before `/run/user` is tried); computed from the uid alone, no `XDG_RUNTIME_DIR`, never `/tmp` |
 | `config.AppSupportDir` (`appSupportDirFor`) | `~/Library/Application Support/Watchtower` | `<data root>/.support`; `RecordingsDir`'s default follows (`<data root>/.support/recordings`, where a Linux host keeps none) |
-| Hub control socket peer check (`peer_darwin.go` / `peer_linux.go`) | `LOCAL_PEERCRED` | `SO_PEERCRED`; a failed read closes the connection before any request (`TestControlSocketClosesWhenPeerCredentialsFail`); other OSes refuse every client (`peer_other.go`) |
+| Hub control socket and bridge client peer check (`platform/peer_darwin.go` / `platform/peer_linux.go`) | `LOCAL_PEERCRED` | `SO_PEERCRED`; a failed read closes the connection before any request (`TestControlSocketClosesWhenPeerCredentialsFail`); other OSes refuse every client (`platform/peer_other.go`) |
 | Live hub dir (`hub.DefaultDir`) | `<data root>/.hub` | the same; `.hub` is never a workspace name (`ValidWorkspaceRe`) |
 | `internal/policy` (`reader_other.go`) | MDM managed preferences | no reader: no profile, no restriction (POLICY-01) |
 | `internal/backupexclude` (`backupexclude_other.go`) | Time Machine exclusion attribute | no-op |
