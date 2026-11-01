@@ -56,6 +56,12 @@ type Config struct {
 	HubRelayID string
 	Transport  Records
 	Clock      func() time.Time
+	// Mailbox, when set, is the phone's mailbox zone instead of
+	// relay/<HubRelayID>/<its relay id>: transport.SharedMailboxZone for a
+	// phone on CloudKit's one RelayZone, which every phone of the hub shares
+	// (the phone skips the records it cannot open, so it never deletes or
+	// answers another phone's).
+	Mailbox string
 }
 
 type sent struct {
@@ -92,6 +98,9 @@ type Phone struct {
 	Controls []wire.Control
 	// Undelivered lists the actions a skip_to gave up on.
 	Undelivered []uint64
+	// Creator, when set, is the iCloud user WriteDeviceRecord writes as
+	// (Stored.Creator, on a transport with WriteAs such as the memfake).
+	Creator string
 }
 
 // New makes a phone with fresh keys.
@@ -112,9 +121,13 @@ func New(cfg Config) (*Phone, error) {
 		return nil, err
 	}
 	relayID := identity.RelayDeviceID(pub)
+	zone := cfg.Mailbox
+	if zone == "" {
+		zone = transport.MailboxZone(cfg.HubRelayID, relayID)
+	}
 	return &Phone{
 		cfg: cfg, sig: sig, kx: kx, id: secure.DeviceID(pub), nonce: nonce, relayID: relayID,
-		zone:       transport.MailboxZone(cfg.HubRelayID, relayID),
+		zone:       zone,
 		nextAction: 1, history: map[uint64]sent{}, Echoes: map[uint64]wire.ActionRequest{},
 		legacy: map[string]sent{}, LegacyEchoes: map[string]wire.ActionRequest{},
 	}, nil
@@ -312,6 +325,33 @@ func (p *Phone) WriteFrame(kind, id string, payload []byte) (string, error) {
 		return "", err
 	}
 	_, err = p.cfg.Transport.Write(p.zone, name, env, transport.Expect{Mode: transport.ExpectAbsent})
+	return name, err
+}
+
+// WriteDeviceRecord seals d as a device record (the Kit's
+// RelayRecordKind.device) with plain id — "" is this phone's own
+// device-<id> — over whatever holds its name, as the phone rewrites it.
+func (p *Phone) WriteDeviceRecord(d wire.DevicePayload, id string) (string, error) {
+	if id == "" {
+		id = "device-" + p.id.String()
+	}
+	payload, err := wire.Marshal(d)
+	if err != nil {
+		return "", err
+	}
+	prefix, rest, _ := strings.Cut(id, "-")
+	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, prefix, rest)
+	env, err := p.seal(name, secure.InnerFrame{Kind: "device", ID: id, Payload: payload})
+	if err != nil {
+		return "", err
+	}
+	if as, ok := p.cfg.Transport.(interface {
+		WriteAs(creator, zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error)
+	}); ok && p.Creator != "" {
+		_, err = as.WriteAs(p.Creator, p.zone, name, env, transport.Expect{Mode: transport.ExpectNone})
+		return name, err
+	}
+	_, err = p.cfg.Transport.Write(p.zone, name, env, transport.Expect{Mode: transport.ExpectNone})
 	return name, err
 }
 

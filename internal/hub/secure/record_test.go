@@ -750,3 +750,26 @@ func TestSealer_SignalOnlyForAnAlert(t *testing.T) {
 		t.Errorf("an unsealed record got a signal: %v", err)
 	}
 }
+
+// OwnEchoFor attributes the hub's own record to the one phone whose h2p key
+// opens it: another linked phone's key answers ErrNoRelayKey.
+func TestOpener_OwnEchoForOpensOnlyUnderItsPhonesKey(t *testing.T) {
+	ks := newKeySource(t)
+	other := ID{0x42}
+	ks.devices = append(ks.devices, other)
+	s := NewSealer(ks)
+	dev := ks.k.deviceID
+	plain := "a-" + dev.String() + "-1"
+	wire, _ := s.WireName(ZoneRelay, plain)
+	echo, err := s.ToPhone("mb", dev, wire, "action", plain, []byte(`{"status":"applied"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := NewOpener(ks, newGuard())
+	if opened, err := o.OwnEchoFor(dev, wire, echo.Envelope()); err != nil || opened.Frame.ID != plain || opened.Sender != fixtureHubID {
+		t.Fatalf("own echo for its phone: %+v, %v", opened, err)
+	}
+	if _, err := o.OwnEchoFor(other, wire, echo.Envelope()); !errors.Is(err, ErrNoRelayKey) {
+		t.Fatalf("own echo for another phone: %v", err)
+	}
+}

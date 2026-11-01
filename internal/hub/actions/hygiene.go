@@ -68,11 +68,11 @@ func (p *Processor) Hygiene(ctx context.Context) (HygieneReport, error) {
 		if err != nil {
 			return rep, err
 		}
-		for _, b := range boxes {
-			n, err := p.sweepMailbox(ctx, b, now)
+		for _, g := range byZone(boxes) { // the shared RelayZone once
+			n, err := p.sweepZone(ctx, g, now)
 			rep.Deleted += n
 			if err != nil {
-				log.Printf("hub: hygiene of device %s's mailbox: %s", b.id, errClass(err))
+				log.Printf("hub: hygiene of device %s's mailbox: %s", g.boxes[0].id, errClass(err))
 				errs = append(errs, err)
 			}
 		}
@@ -89,18 +89,18 @@ func (p *Processor) Hygiene(ctx context.Context) (HygieneReport, error) {
 	return rep, p.cfg.Store.SetMeta(hygieneStampKey, strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64))
 }
 
-// sweepMailbox scans b's whole mailbox (from 0, apart from the pass's cursor)
-// and deletes its stale records, each under the version scanned.
-func (p *Processor) sweepMailbox(ctx context.Context, b mailbox, now time.Time) (int, error) {
+// sweepZone scans g's whole zone (from 0, apart from the pass's cursor) and
+// deletes its stale records, each under the version scanned.
+func (p *Processor) sweepZone(ctx context.Context, g zoneGroup, now time.Time) (int, error) {
 	var stale []transport.DeleteItem
 	var since uint64
 	for {
-		batch, err := p.cfg.Transport.Changes(ctx, b.zone, since)
+		batch, err := p.cfg.Transport.Changes(ctx, g.zone, since)
 		if err != nil {
 			return 0, err
 		}
 		for _, rec := range batch.Changed {
-			ok, err := p.isStale(b, rec, now)
+			ok, err := p.isStale(g, rec, now)
 			if err != nil {
 				return 0, err
 			}
@@ -116,7 +116,7 @@ func (p *Processor) sweepMailbox(ctx context.Context, b mailbox, now time.Time) 
 	if len(stale) == 0 {
 		return 0, nil
 	}
-	out, err := p.cfg.Transport.Delete(ctx, b.zone, stale)
+	out, err := p.cfg.Transport.Delete(ctx, g.zone, stale)
 	if err != nil {
 		return 0, err
 	}
@@ -131,13 +131,33 @@ func (p *Processor) sweepMailbox(ctx context.Context, b mailbox, now time.Time) 
 
 // isStale reports whether rec is older than ActionMaxAge and has no work
 // left: a phone action already decided, any phone control (it is deleted once
-// read), a record of another phone, the hub's own records, or bytes nobody
-// here can open. A pending action still undecided waits for its expired echo,
-// and the records of other lanes (device, recording_upload, future kinds)
-// are kept, as the Swift hub keeps them.
-func (p *Processor) isStale(b mailbox, rec transport.Stored, now time.Time) (bool, error) {
+// read), a record of a phone with no mailbox in the zone, the hub's own
+// records, or bytes nobody here can open. A phone's record is judged as its
+// sender's (in the shared RelayZone, never as another phone's). A pending
+// action still undecided waits for its expired echo, and the records of
+// other lanes (device, recording_upload, future kinds) are kept, as the
+// Swift hub keeps them.
+func (p *Processor) isStale(g zoneGroup, rec transport.Stored, now time.Time) (bool, error) {
 	if now.Sub(rec.ServerAt) <= ActionMaxAge {
 		return false, nil
+	}
+	sender, ok := phoneSender(rec.Envelope)
+	if g.shared {
+		// A device record is rewritten in place, and CloudKit deletes by
+		// fetch-then-delete: deleting one could take the phone's newer
+		// rewrite with it. Whoever sealed it, a record at a device name is
+		// kept (the Swift hub kept device records too).
+		keep, err := p.atDeviceName(g, rec.Name, sender, ok)
+		if err != nil || keep {
+			return false, err
+		}
+	}
+	if !ok {
+		return true, nil // the hub's own records, hellos and bytes that are no envelope
+	}
+	b, ok := g.box(sender)
+	if !ok {
+		return true, nil
 	}
 	o, err := p.cfg.Opener.FromPhone(b.zone, rec.Name, rec.Envelope)
 	if err != nil {
@@ -154,6 +174,28 @@ func (p *Processor) isStale(b mailbox, rec transport.Stored, now time.Time) (boo
 		return true, nil
 	case kindAction:
 		return p.decided(b, o)
+	}
+	return false, nil
+}
+
+// atDeviceName reports whether name is the wire name of the device record
+// (device-<id>) of a phone of g or of the record's sender (when it has one).
+func (p *Processor) atDeviceName(g zoneGroup, name string, sender secure.ID, hasSender bool) (bool, error) {
+	ids := make([]secure.ID, 0, len(g.boxes)+1)
+	for _, b := range g.boxes {
+		ids = append(ids, b.id)
+	}
+	if hasSender {
+		ids = append(ids, sender)
+	}
+	for _, id := range ids {
+		wire, err := p.cfg.Sealer.WireName(secure.ZoneRelay, devicePrefix+id.String())
+		if err != nil {
+			return false, err
+		}
+		if wire == name {
+			return true, nil
+		}
 	}
 	return false, nil
 }

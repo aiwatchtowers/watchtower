@@ -194,7 +194,7 @@ Fixture: `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` `device_gra
 
 ### 5.5 The phone's `device` record
 
-`device-<DEVICE_ID>` (`relayToHub`) carries `DevicePayload` = `{device_id, name, model, app_version, scope, user_record_name, link_nonce?, unlinked?, typing_requested, start_sessions, permissions_requested? (true or absent), seen_at?, updated_at}`. It states what the phone asks for; it never grants anything. `start_sessions` is mirrored into `start_sessions_allowed`; `typing_requested` and `permissions_requested` show the owner a request to allow. `unlinked: true` is the phone's own unlink. The Go hub does not read `device` records yet (Swift hub only).
+`device-<DEVICE_ID>` (`relayToHub`) carries `DevicePayload` = `{device_id, name, model, app_version, scope, user_record_name, link_nonce?, unlinked?, typing_requested, start_sessions, permissions_requested? (true or absent), seen_at?, updated_at}`. It states what the phone asks for; it never grants anything. `start_sessions` is mirrored into `start_sessions_allowed`; `typing_requested` and `permissions_requested` show the owner a request to allow. `unlinked: true` is the phone's own unlink. The Go hub reads `device` records in the CloudKit `RelayZone` (the link's scope checked first, as the Swift hub does); on the hosted relay it does not read them yet.
 
 ### 5.6 Unlink and revoke
 
