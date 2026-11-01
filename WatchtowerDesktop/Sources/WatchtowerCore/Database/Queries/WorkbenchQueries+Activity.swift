@@ -4,7 +4,9 @@ import GRDB
 extension WorkbenchQueries {
     /// What the notification policy compares between polls (spec §6.5).
     /// `questions` = agent root comments on targets with id > the watermark;
-    /// `openAsks` = the workbench's `owner_asks` still `open`.
+    /// `openAsks` = the workbench's `owner_asks` still `open`;
+    /// `ownerTouched` = the done targets the owner's own write closed, read
+    /// from the history actor (`WorkbenchOwnerNoticePolicy`).
     package static func activitySnapshot(
         _ db: Database,
         project: Workbench,
@@ -59,23 +61,38 @@ extension WorkbenchQueries {
         }
         return WorkbenchNotificationPolicy.Snapshot(
             projectID: project.id, projectName: project.name, lastAgentCommentID: last,
-            questions: questions, targets: targets, ownerTouched: [], openAsks: asks,
+            questions: questions, targets: targets,
+            ownerTouched: WorkbenchOwnerNoticePolicy.ownerWritten(
+                newestActors: try newestStatusActors(db, projectID: project.id)
+            ),
+            openAsks: asks,
             lastActionID: lastAction, pendingActions: pending
         )
     }
 
-    /// The actor of each workbench target's newest `target_status_history`
-    /// row (by id), for `WorkbenchOwnerNoticePolicy`. A target with no row is
-    /// absent.
+    /// For each workbench target that is `done` now (the only change the
+    /// policy announces), the actor of its newest `target_status_history`
+    /// row (by id), for `WorkbenchOwnerNoticePolicy`. A `system` row the
+    /// rollup (PROJ-05) wrote in the same statement as a child's change takes
+    /// that change's actor: the triggers write the child's row first and the
+    /// parents' right after it, so the nearest earlier non-`system` row with
+    /// the same `changed_at` is its cause. A target with no row is absent.
     package static func newestStatusActors(_ db: Database, projectID: Int64) throws -> [Int64: String] {
         var actors: [Int64: String] = [:]
         for row in try Row.fetchAll(db, sql: """
-            SELECT h.target_id, h.actor FROM target_status_history h
-            JOIN (SELECT MAX(h2.id) AS id FROM target_status_history h2
-                  JOIN targets t ON t.id = h2.target_id
-                  WHERE t.project_id = ? GROUP BY h2.target_id) n ON n.id = h.id
+            SELECT t.id,
+                   CASE WHEN h.actor = 'system' AND o.changed_at = h.changed_at THEN o.actor
+                        ELSE h.actor END AS actor
+            FROM targets t
+            JOIN target_status_history h
+              ON h.id = (SELECT MAX(h2.id) FROM target_status_history h2 WHERE h2.target_id = t.id)
+            LEFT JOIN target_status_history o
+              ON h.actor = 'system'
+             AND o.id = (SELECT MAX(o2.id) FROM target_status_history o2
+                         WHERE o2.id < h.id AND o2.actor != 'system')
+            WHERE t.project_id = ? AND t.status = 'done'
             """, arguments: [projectID]) {
-            actors[row["target_id"]] = row["actor"]
+            actors[row["id"]] = row["actor"]
         }
         return actors
     }

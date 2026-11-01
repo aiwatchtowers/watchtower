@@ -154,12 +154,11 @@ final class BoardHandlersTests: XCTestCase {
         XCTAssertTrue(notifier.sent.isEmpty, "the owner's own edit is never announced: \(notifier.sent.map(\.title))")
     }
 
-    /// The control for the test above: the same change not reported as the
-    /// owner's is announced, so the silence there is the report's doing.
-    /// Since the history-actor rule (`WorkbenchOwnerNoticePolicy`) the leaf
-    /// itself stays quiet; what is announced is the parents the rollup closed
-    /// (actor `system`), which only the report covers.
-    func testAnUnreportedDoneIsAnnounced() async throws {
+    /// The same change not reported as the owner's (the Go hub's path: no
+    /// `onOwnerWrite`) is silent too: the history actor says it is the
+    /// owner's, and the parents the rollup closed in the same statement take
+    /// that actor (`WorkbenchOwnerNoticePolicy`, Go hub 3 T9).
+    func testAnUnreportedOwnerDoneIsSilentByItsHistory() async throws {
         let (p, _, _, leaf) = try seedChain()
         let suite = "BoardHandlersTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -171,7 +170,7 @@ final class BoardHandlersTests: XCTestCase {
         _ = try await makeHandlers().handle(statusAction(leaf, workbench: p, to: "done", from: "todo"))
         await notices.poll()
 
-        XCTAssertFalse(notifier.sent.isEmpty)
+        XCTAssertEqual(notifier.sent.map(\.title), [])
     }
 
     /// PROJ-05: a group's status follows its sub-tasks and is never written.

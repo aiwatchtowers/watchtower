@@ -6,7 +6,8 @@ import WatchtowerTestSupport
 /// A board edit made on the phone reaches the database through the Go hub,
 /// which records it as `db.ActorOwner` in `target_status_history` and never
 /// calls the Desktop's in-process `onOwnerWrite`. The newest history row's
-/// actor keeps the owner's own edit from coming back as a notice.
+/// actor (a rollup row: its cause's) keeps the owner's own edit from coming
+/// back as a notice.
 final class WorkbenchOwnerNoticePolicyTests: XCTestCase {
     typealias Policy = WorkbenchNotificationPolicy
 
@@ -16,36 +17,49 @@ final class WorkbenchOwnerNoticePolicyTests: XCTestCase {
         db = try TestDatabase.create()
     }
 
-    /// Two polls around `change`, the second one fed the owner-written
-    /// targets exactly as `WorkbenchNotificationCenter.poll` does.
-    private func notices(after change: (Database, Int64) throws -> Void) throws -> [WorkbenchNotice] {
+    /// A Feature → Task chain (two targets: under the coalescing threshold),
+    /// two `activitySnapshot` reads around `change` (given the leaf), and the
+    /// titles the policy sends between them.
+    private func notices(after change: (Database, Int64) throws -> Void) throws -> [String] {
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
-            let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Task 1", status: "in_progress")
+            let parent = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Feature")
+            let leaf = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Task", parentID: parent)
             let project = try XCTUnwrap(WorkbenchQueries.fetch(d, id: p))
             let previous = try WorkbenchQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
-            try change(d, t)
-            var current = try WorkbenchQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
-            current.ownerTouched.formUnion(WorkbenchOwnerNoticePolicy.ownerWritten(
-                newestActors: try WorkbenchQueries.newestStatusActors(d, projectID: p)
-            ))
-            return Policy.decide(previous: previous, current: current)
+            try change(d, leaf)
+            let current = try WorkbenchQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            XCTAssertEqual(try String.fetchOne(d, sql: "SELECT status FROM targets WHERE id = ?", arguments: [parent]), "done",
+                           "PROJ-05: the chain rolled up")
+            return Policy.decide(previous: previous, current: current).map(\.title)
         }
     }
 
     func testAPhoneEditWithOwnerActorIsNotAnnounced() throws {
-        // The hub's board handler: an unclaimed status write, recorded as the owner.
-        let sent = try notices { d, t in
-            try d.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [t])
+        // The hub's board handler: an unclaimed status write, recorded as the
+        // owner; the parent it closed is recorded as `system` right after.
+        let sent = try notices { d, leaf in
+            try d.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [leaf])
         }
-        XCTAssertTrue(sent.isEmpty, "the owner's own phone edit is not announced: \(sent.map(\.title))")
+        XCTAssertEqual(sent, [], "neither the owner's phone edit nor the parent it rolled up is announced")
     }
 
     func testAnAgentChangeIsStillAnnounced() throws {
-        let sent = try notices { d, t in
-            try d.execute(sql: "UPDATE targets SET status = 'done', status_actor = 'agent' WHERE id = ?", arguments: [t])
+        let sent = try notices { d, leaf in
+            try d.execute(sql: "UPDATE targets SET status = 'done', status_actor = 'agent' WHERE id = ?", arguments: [leaf])
         }
-        XCTAssertEqual(sent.map(\.title), ["Task 1 done"])
+        XCTAssertEqual(sent, ["Feature done", "Task done"],
+                       "the agent's close and the parent it rolled up are announced")
+    }
+
+    /// A rollup row takes its cause's actor only within the same statement:
+    /// an earlier owner row from another second does not silence it.
+    func testARollupLaterThanTheOwnersRowIsAnnounced() throws {
+        let sent = try notices { d, leaf in
+            try d.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [leaf])
+            try d.execute(sql: "UPDATE target_status_history SET changed_at = '2026-01-01T00:00:00Z' WHERE actor = 'owner'")
+        }
+        XCTAssertEqual(sent, ["Feature done"])
     }
 
     func testOnlyTheNewestRowDecides() {

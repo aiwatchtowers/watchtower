@@ -140,19 +140,17 @@ final class WorkbenchNotificationCenter {
         let touchedBefore = ownerTouched[project.id] ?? []
         let watermark = previous?.lastAgentCommentID ?? 0
         let reader = activityReader
-        let (snapshot, newestActors) = try await dbPool.read { db in
-            (try reader.snapshot(db, project: project, afterAgentCommentID: watermark),
-             try WorkbenchQueries.newestStatusActors(db, projectID: project.id))
+        var current = try await dbPool.read {
+            try reader.snapshot($0, project: project, afterAgentCommentID: watermark)
         }
-        var current = snapshot
         guard run == generation else { return }
         // Writes recorded while the read ran stay pending for the next poll
         // too: their effect may or may not be in this snapshot.
-        current.ownerTouched = ownerTouched[project.id] ?? []
-        ownerTouched[project.id] = current.ownerTouched.subtracting(touchedBefore)
-        // The owner's edits made outside this process (the phone through the
-        // hub, the CLI) carry no `onOwnerWrite`; their history row does.
-        current.ownerTouched.formUnion(WorkbenchOwnerNoticePolicy.ownerWritten(newestActors: newestActors))
+        let inProcess = ownerTouched[project.id] ?? []
+        ownerTouched[project.id] = inProcess.subtracting(touchedBefore)
+        // The reader filled what the history says the owner wrote (the phone
+        // through the hub carries no `onOwnerWrite`); add this process's own.
+        current.ownerTouched.formUnion(inProcess)
         if let previous, sending {
             for notice in WorkbenchNotificationPolicy.decide(previous: previous, current: current) {
                 notifier.sendWorkbenchNotice(notice)

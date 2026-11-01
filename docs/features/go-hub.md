@@ -168,7 +168,11 @@ Recorded for the owner; each was a review ruling during phase 1.
    (sim rule 16).
 3. **The phase 3 Desktop→hub inputs are deferred to phase 3**: the Desktop's Undo batch (sessions pending a PROJ-17
    delete), `displayOver`, and the owner-write notice from the history actor. Until then the phone may show a session
-   that waits for an Undo on the Mac.
+   that waits for an Undo on the Mac. **Done (phase 3 Task 9): the owner-write notice.** Desktop announces a target's
+   done only when the newest `target_status_history` row is not `owner` (`WorkbenchOwnerNoticePolicy`, filled by
+   `WorkbenchQueries.activitySnapshot`); a rollup (`system`) row written in the same statement as a child's change
+   takes that change's actor. **Accepted effect:** an unclaimed CLI status write (`watchtower targets done N`) is
+   recorded as `owner` too and is no longer announced on the Mac.
 4. **Test mode is a `hubtest-*` test workspace** (`WATCHTOWER_HUB_TEST_WORKSPACE`). Since phase 2 a headless host also
    runs the live mode (see "Phase 2 — headless hosts"); a desktop host gets the Go hub only in phase 3.
 5. **The refusing session port (test mode only).** In test mode, unless `WATCHTOWER_SESSION_HOST_SOCKET` is set, the hub
