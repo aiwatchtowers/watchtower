@@ -7,6 +7,16 @@ CODE_SIGNING_ALLOWED = NO
 CODE_SIGNING_REQUIRED = NO
 CODE_SIGN_IDENTITY =
 
+// The hosted relay's origin (Info.plist WTRelayOrigin, read by RelayConfig). Empty in every committed
+// build, so Release ships dark: no relay object, Keychain item, DeviceCheck call or connection. A stand
+// origin goes into the gitignored Signing.xcconfig only. In an xcconfig `//` starts a comment, so write
+// an origin as `https:/$()/host` (the empty `$()` keeps the slashes apart).
+WATCHTOWER_RELAY_ORIGIN =
+
+// App Attest environment for the entitlement (WatchtowerMobile.entitlements). project.yml sets
+// production for Release; the relay checks the attestation's environment against its own.
+WT_APP_ATTEST_ENV = development
+
 // Optional signing overrides: Signing.xcconfig (gitignored — copy
 // Signing.xcconfig.template) re-enables signing with a real DEVELOPMENT_TEAM
 // for device/archive builds. `#include?` silently skips a missing file, so the

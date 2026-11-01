@@ -64,6 +64,9 @@ targets:
       # Stroke, Tone, Motion …), re-exported by DesignSystem/Metrics.swift.
       - package: WatchtowerKit
         product: WatchtowerDesign
+      # The hosted relay client. The app only: the extensions never link it (R20).
+      - package: WatchtowerKit
+        product: WatchtowerHostedRelay
       - package: GRDB
         product: GRDB
       # App extensions are embedded into the app's PlugIns folder.
@@ -96,6 +99,9 @@ targets:
         # action builds; scoped to Debug so Release stays lean.
         Debug:
           ENABLE_TESTABILITY: YES
+        # The App Attest entitlement's environment (Base.xcconfig: development).
+        Release:
+          WT_APP_ATTEST_ENV: production
 
   # Notification Service Extension (spec §2.1). Fills an ask alert from its
   # sealed record (mobile E2E Task 18, `AlertOpener`); the rest of A13 is

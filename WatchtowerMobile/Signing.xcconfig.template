@@ -26,3 +26,14 @@ CODE_SIGNING_REQUIRED = YES
 // Found in Archive" at export). Automatic signing picks the development
 // certificate for the archive and re-signs with distribution at export.
 CODE_SIGN_IDENTITY = Apple Development
+
+// Optional: a hosted relay stand for a Debug phone (empty in Base.xcconfig, so
+// the relay is off). `//` starts an xcconfig comment, so write the origin as
+// `https:/$()/host`. Plain http only to loopback or a LAN address of the Mac
+// running the stand (that also needs a local, uncommitted ATS exception).
+// WATCHTOWER_RELAY_ORIGIN = https:/$()/relay.example.com
+// WATCHTOWER_RELAY_ORIGIN = http:/$()/192.168.1.20:8787
+
+// Optional: the App Attest environment (Base.xcconfig: development; Release
+// builds set production in project.yml). Match the stand's expectation.
+// WT_APP_ATTEST_ENV = development
