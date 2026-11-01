@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -40,7 +41,15 @@ var (
 	sessionFlagAgent     string
 	sessionFlagPlace     string
 	sessionFlagJSON      bool
+	// The Desktop's starts (Go hub 3 Task 8): the row's title, the
+	// automation run of a session() step, and the first prompt on stdin.
+	sessionFlagTitle         string
+	sessionFlagAutomationRun int64
+	sessionFlagBriefStdin    bool
 )
+
+// maxBriefBytes bounds a brief read from stdin.
+const maxBriefBytes = 1 << 20
 
 // workbenchSessionShell is the login shell a start launches in ("" =
 // $SHELL); a test seam.
@@ -50,10 +59,17 @@ var workbenchSessionShell = ""
 // the launch.
 const finishBudget = 3 * time.Minute
 
+// finishLaunchWatch is how long a finish watches its launch for the agent's
+// exit 127 (a test seam).
+var finishLaunchWatch = 3 * time.Second
+
 // workbenchSessionFinishSpawn continues a start in a detached
-// `workbench session finish` (its own session, no terminal, stdio to
-// /dev/null) so start answers at once; a test seam.
-var workbenchSessionFinishSpawn = func(sessionID int64, place string) error {
+// `workbench session finish` (its own session, no terminal, stdout and
+// stderr to /dev/null) so start answers at once. A non-empty brief goes to
+// it over an inherited pipe on its stdin (`--brief-stdin`), never argv; the
+// finish reads it before anything else, so the write does not wait long. A
+// test seam.
+var workbenchSessionFinishSpawn = func(sessionID int64, place, brief string) error {
 	bin, err := workbenchExecutable()
 	if err != nil {
 		return fmt.Errorf("determining the watchtower binary path: %w", err)
@@ -63,12 +79,48 @@ var workbenchSessionFinishSpawn = func(sessionID int64, place string) error {
 	if flagWorkspace != "" {
 		args = append(args, "--workspace", flagWorkspace)
 	}
+	if brief != "" {
+		args = append(args, "--brief-stdin")
+	}
 	c := exec.Command(bin, args...)
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var in io.WriteCloser
+	if brief != "" {
+		if in, err = c.StdinPipe(); err != nil {
+			return fmt.Errorf("continuing the start: %w", err)
+		}
+	}
 	if err := c.Start(); err != nil {
 		return fmt.Errorf("continuing the start: %w", err)
 	}
+	if in != nil {
+		_, werr := io.WriteString(in, brief)
+		if cerr := in.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			// A finish with half a brief must not launch.
+			_ = c.Process.Kill()
+			_, _ = c.Process.Wait()
+			return fmt.Errorf("handing the brief to the start: %w", werr)
+		}
+	}
 	return c.Process.Release() //nolint:wrapcheck // never fails for a started process
+}
+
+// readBrief is the brief on stdin when --brief-stdin was given, else "".
+func readBrief(cmd *cobra.Command) (string, error) {
+	if !sessionFlagBriefStdin {
+		return "", nil
+	}
+	b, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), maxBriefBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading the brief from stdin: %w", err)
+	}
+	if len(b) > maxBriefBytes {
+		return "", usageError("--brief-stdin: the brief is over %d bytes", maxBriefBytes)
+	}
+	return string(b), nil
 }
 
 func init() {
@@ -77,10 +129,16 @@ func init() {
 	start.Flags().Int64Var(&sessionFlagTarget, "target", 0, "the target the session works on (optional)")
 	start.Flags().StringVar(&sessionFlagAgent, "agent", "", "claude or codex (default: workbench.default_agent)")
 	start.Flags().StringVar(&sessionFlagPlace, "place", "auto", "folder, worktree or auto")
+	start.Flags().StringVar(&sessionFlagTitle, "title", "", "the session's title (default: the target's text, else New session · HH:MM)")
+	start.Flags().Int64Var(&sessionFlagAutomationRun, "automation-run", 0, "the automation run whose session() step starts it")
 	finish := &cobra.Command{Use: "finish", Short: "Place and launch a row start wrote (run by start, detached)",
 		Hidden: true, Args: cobra.NoArgs, RunE: runWorkbenchSessionFinish}
 	finish.Flags().Int64Var(&sessionFlagSession, "session", 0, "terminal session id")
 	finish.Flags().StringVar(&sessionFlagPlace, "place", "auto", "folder, worktree or auto")
+	for _, c := range []*cobra.Command{start, finish} {
+		c.Flags().BoolVar(&sessionFlagBriefStdin, "brief-stdin", false,
+			"read the first prompt from stdin (default: the target's work-on prompt, else none)")
+	}
 	workbenchSessionCmd.AddCommand(finish)
 	stop := &cobra.Command{Use: "stop", Short: "Stop a session (the host's Stop request)", Args: cobra.NoArgs, RunE: runWorkbenchSessionStop}
 	stop.Flags().Int64Var(&sessionFlagSession, "session", 0, "terminal session id")
@@ -115,18 +173,33 @@ func runWorkbenchSessionStart(cmd *cobra.Command, _ []string) error {
 	if err := checkSessionCaller(database, sessionFlagWorkbench); err != nil {
 		return err
 	}
+	brief, err := readBrief(cmd)
+	if err != nil {
+		return err
+	}
 	ctx := cmdContext(cmd)
-	r := handlers.StartRequest{Workbench: sessionFlagWorkbench, Agent: sessionFlagAgent, Place: sessionFlagPlace}
+	r := handlers.StartRequest{Workbench: sessionFlagWorkbench, Agent: sessionFlagAgent, Place: sessionFlagPlace,
+		Title: sessionFlagTitle, AutomationRunID: sessionFlagAutomationRun}
 	if sessionFlagTarget > 0 {
 		r.Target = &sessionFlagTarget
 	}
 	d := sessionStartDeps(cfg, database)
 	res, err := sessionstart.Begin(ctx, d, r)
+	var notFound *handlers.AgentNotFoundError
+	if errors.As(err, &notFound) {
+		// The Desktop's pinned answer (testdata/desktop_contract.json): no row.
+		if werr := writeJSON(cmd.OutOrStdout(), map[string]string{
+			"error": sessionstart.AgentNotFoundClass, "agent": notFound.Agent,
+		}); werr != nil {
+			return werr
+		}
+		return &exitCodeError{code: sessionstart.AgentNotFoundExit, err: err}
+	}
 	if err != nil {
 		return err
 	}
 	if res.State == sessionstart.StateStarting {
-		if err := workbenchSessionFinishSpawn(res.SessionID, sessionFlagPlace); err != nil {
+		if err := workbenchSessionFinishSpawn(res.SessionID, sessionFlagPlace, brief); err != nil {
 			_ = database.SetTerminalSessionLaunchError(ctx, res.SessionID, "the start could not continue", time.Now())
 			return err
 		}
@@ -151,6 +224,10 @@ func runWorkbenchSessionFinish(cmd *cobra.Command, _ []string) error {
 	if sessionFlagSession <= 0 {
 		return usageError("--session: a positive terminal session id is required")
 	}
+	brief, err := readBrief(cmd)
+	if err != nil {
+		return err
+	}
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
@@ -165,7 +242,11 @@ func runWorkbenchSessionFinish(cmd *cobra.Command, _ []string) error {
 	}
 	ctx, cancel := context.WithTimeout(cmdContext(cmd), finishBudget)
 	defer cancel()
-	return sessionstart.Finish(ctx, sessionStartDeps(cfg, database), sessionFlagSession, sessionFlagPlace, "", false)
+	d := sessionStartDeps(cfg, database)
+	// An agent that exits 127 right after the launch records
+	// "<agent> was not found" on the row for the Desktop.
+	d.LaunchWatch = finishLaunchWatch
+	return sessionstart.Finish(ctx, d, sessionFlagSession, sessionFlagPlace, brief, false)
 }
 
 func runWorkbenchSessionStop(cmd *cobra.Command, _ []string) error {

@@ -164,7 +164,8 @@ final class SessionStartStopHandlers {
             // type (spec §6.5); otherwise the work-on prompt goes.
             session = try await workbenches.startForTarget(
                 targetID: targetID, prompt: grant.typingAllowed ? brief : nil, mode: mode,
-                placement: forward ? .keeping(.board) : .background, planFirst: planFirst
+                placement: forward ? .keeping(.board) : .background, planFirst: planFirst,
+                throughGo: false // the Swift hub's start keeps the Swift path until Go hub 3 Task 24
             )
         } catch let error as WorkbenchesViewModel.TargetStartError {
             return Self.outcome(error)

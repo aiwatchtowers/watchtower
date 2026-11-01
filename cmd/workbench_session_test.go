@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -51,11 +52,14 @@ func sessionHostForTest(t *testing.T) string {
 		}
 	})
 	t.Setenv(sessionhost.SocketEnv, socket)
+	// The stub records its arguments and the first prompt it was handed
+	// (WATCHTOWER_FIRST_PROMPT) in args.txt beside the socket, then sleeps.
 	shell := filepath.Join(dir, "loginshell")
-	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0o700))
-	prev := workbenchSessionShell
-	workbenchSessionShell = shell
-	t.Cleanup(func() { workbenchSessionShell = prev })
+	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" \"$WATCHTOWER_FIRST_PROMPT\" > \""+
+		filepath.Join(dir, "args.txt")+"\"\nexec /bin/sleep 30\n"), 0o700))
+	prev, prevWatch := workbenchSessionShell, finishLaunchWatch
+	workbenchSessionShell, finishLaunchWatch = shell, 300*time.Millisecond
+	t.Cleanup(func() { workbenchSessionShell, finishLaunchWatch = prev, prevWatch })
 	return socket
 }
 
@@ -65,17 +69,22 @@ func runSession(t *testing.T, args ...string) (string, error) {
 	resetSetFlags(workbenchSessionCmd.Commands()...)
 	sessionFlagWorkbench, sessionFlagTarget, sessionFlagSession = 0, 0, 0
 	sessionFlagAgent, sessionFlagPlace, sessionFlagJSON = "", "auto", false
+	sessionFlagTitle, sessionFlagAutomationRun, sessionFlagBriefStdin = "", 0, false
 	return out, err
 }
 
 // spawnedFinishes replaces the detached finish with a record of its
-// arguments.
+// arguments (and the brief, after a "|", when one is handed on).
 func spawnedFinishes(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
 	prev := workbenchSessionFinishSpawn
-	workbenchSessionFinishSpawn = func(id int64, place string) error {
-		got = append(got, strconv.FormatInt(id, 10)+" "+place)
+	workbenchSessionFinishSpawn = func(id int64, place, brief string) error {
+		line := strconv.FormatInt(id, 10) + " " + place
+		if brief != "" {
+			line += "|" + brief
+		}
+		got = append(got, line)
 		return nil
 	}
 	t.Cleanup(func() { workbenchSessionFinishSpawn = prev })
@@ -181,4 +190,111 @@ func TestWorkbenchSessionRefusesAnotherWorkbenchUnderAnAgent(t *testing.T) {
 	t.Setenv("CLAUDECODE", "1")
 	_, err = runSession(t, "start", "--workbench", strconv.FormatInt(own, 10), "--json")
 	require.ErrorContains(t, err, "under an AI agent")
+}
+
+// The Desktop's starts (Go hub 3 Task 8): --title and --automation-run land
+// on the row, the brief comes on stdin (never argv) and is handed to the
+// detached finish, which launches with it.
+func TestWorkbenchSessionStartTitleRunAndBriefFromStdin(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	res, err := database.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	require.NoError(t, err)
+	aid, _ := res.LastInsertId()
+	res, err = database.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'manual', 'running')`, aid)
+	require.NoError(t, err)
+	run, _ := res.LastInsertId()
+	sessionHostForTest(t)
+	spawned := spawnedFinishes(t)
+
+	rootCmd.SetIn(strings.NewReader("sweep the board\n"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--place", "folder",
+		"--title", "Nightly sweep", "--automation-run", strconv.FormatInt(run, 10), "--brief-stdin", "--json")
+	require.NoError(t, err, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	sid := int64(m["session_id"].(float64))
+	assert.Equal(t, []string{strconv.FormatInt(sid, 10) + " folder|sweep the board\n"}, *spawned)
+	var title string
+	var stored int64
+	require.NoError(t, database.QueryRow(`SELECT title, automation_run_id FROM terminal_sessions WHERE id = ?`, sid).
+		Scan(&title, &stored))
+	assert.Equal(t, "Nightly sweep", title)
+	assert.Equal(t, run, stored)
+}
+
+// A finish reads its brief from stdin with --brief-stdin.
+func TestWorkbenchSessionFinishReadsTheBriefFromStdin(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	socket := sessionHostForTest(t)
+	spawnedFinishes(t)
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
+	require.NoError(t, err, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	sid := int64(m["session_id"].(float64))
+
+	rootCmd.SetIn(strings.NewReader("sweep the board"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	_, err = runSession(t, "finish", "--session", strconv.FormatInt(sid, 10), "--brief-stdin")
+	require.NoError(t, err)
+	c, err := sessionhost.Dial(context.Background(), socket)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+	list, err := c.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, sid, list[0].Row)
+	args := filepath.Join(filepath.Dir(socket), "args.txt")
+	require.Eventually(t, func() bool { _, err := os.Stat(args); return err == nil }, 5*time.Second, 20*time.Millisecond)
+	b, err := os.ReadFile(args)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "sweep the board", "the brief reached the launch")
+}
+
+// A missing agent before any row: the pinned class on stdout and exit 3
+// (sessionstart.AgentNotFoundExit), nothing written.
+func TestWorkbenchSessionStartAnswersAgentNotFound(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	sessionHostForTest(t)
+	spawned := spawnedFinishes(t)
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "codex", "--json")
+	var exit *exitCodeError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 3, exit.code)
+	assert.JSONEq(t, `{"error":"agent_not_found","agent":"codex"}`, out)
+	assert.Empty(t, *spawned)
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM terminal_sessions`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+// An agent that exits 127 at once: the finish's launch watch records
+// "<agent> was not found" on the row.
+func TestWorkbenchSessionFinishRecordsAMissingAgent(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	socket := sessionHostForTest(t)
+	spawnedFinishes(t)
+	missing := filepath.Join(filepath.Dir(socket), "exit127")
+	require.NoError(t, os.WriteFile(missing, []byte("#!/bin/sh\nexit 127\n"), 0o700))
+	workbenchSessionShell = missing // restored by sessionHostForTest's cleanup
+	finishLaunchWatch = 3 * time.Second
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
+	require.NoError(t, err, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	sid := strconv.FormatInt(int64(m["session_id"].(float64)), 10)
+	_, err = runSession(t, "finish", "--session", sid)
+	require.Error(t, err)
+	var failure string
+	require.NoError(t, database.QueryRow(`SELECT agent_error FROM terminal_sessions WHERE id = ?`, sid).Scan(&failure))
+	assert.Equal(t, "claude was not found", failure)
 }

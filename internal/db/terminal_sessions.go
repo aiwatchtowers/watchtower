@@ -826,6 +826,26 @@ func (db *DB) CreateTerminalSession(ctx context.Context, n NewTerminalSession) (
 	return id, nil
 }
 
+// SetTerminalSessionStartNotice records the owner's line about a start's
+// place on the row (start_notice, 00169); "" stores NULL (nothing to say).
+// ErrTerminalSessionNotFound when the row is gone.
+func (db *DB) SetTerminalSessionStartNotice(ctx context.Context, id int64, notice string) error {
+	var v any
+	if notice != "" {
+		v = notice
+	}
+	res, err := db.ExecContext(ctx, `UPDATE terminal_sessions SET start_notice = ? WHERE id = ?`, v, id)
+	if err != nil {
+		return fmt.Errorf("recording the start notice of terminal session %d: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("recording the start notice of terminal session %d: %w", id, err)
+	} else if n == 0 {
+		return ErrTerminalSessionNotFound
+	}
+	return nil
+}
+
 // PlaceTerminalSession moves a new row, inserted in the workbench folder
 // before its first launch, into the worktree its start made — the SQL of
 // TerminalSessionQueries.place. created_at becomes now: a placed row owns its

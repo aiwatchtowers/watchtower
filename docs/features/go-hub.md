@@ -80,10 +80,19 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
 | `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
 
-`watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto]`
-answers at once (instant start, `session_id`, `state`, `folder_path`, `worktree_branch`) and a detached hidden
-`workbench session finish` places and launches the row in `session-host`; `workbench session stop --session N` is the
-host's Stop request (`session_id`, `stopped`). Both refuse another workbench inside an agent's terminal session.
+`watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto]
+[--title T] [--automation-run R] [--brief-stdin] --json` answers at once (instant start, `session_id`, `state`,
+`folder_path`, `worktree_branch`) and a detached hidden `workbench session finish` places and launches the row in
+`session-host`. The first prompt comes on stdin only (`--brief-stdin`) and reaches the finish over an inherited pipe. A
+missing agent binary answers exit 3 with `{"error":"agent_not_found","agent":"…"}` and writes no row. The finish holds
+the workbench's placement lock (`<workspace>/workbench-<id>.place.lock`, `sessionstart.PlacementLockPath`; the
+Desktop's own launch path takes the same flock) from the place decision until the run is in the host, at most 60 s
+(then the row fails with "another start of this workbench is still placing"). It writes the owner's line about the
+place on the row (`terminal_sessions.start_notice`, migration 00169), fails a row it could not move into its worktree
+with `Could not move the session into its worktree: …` instead of deleting it, and watches the launch 3 s for an
+exit 127 (`<agent> was not found`). The Desktop's reasons are pinned by `internal/sessionstart/testdata/desktop_contract.json`.
+`workbench session stop --session N` is the host's Stop request (`session_id`, `stopped`). Both refuse another workbench
+inside an agent's terminal session.
 
 ## Sidecar ownership and migrations
 
