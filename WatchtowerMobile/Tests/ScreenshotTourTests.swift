@@ -391,7 +391,8 @@ final class ScreenshotTourTests: XCTestCase {
         try await poll(timeout: 20, { OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2 }, "both listed")
         let env = AppEnvironment.single(session, defaults: defaults)
         let host = ScreenshotHost(directory: dir, env: env, linking: linking)
-        try await host.captureThree("R30-not-delivered-hub-on-relay", NavigationStack { NotDeliveredView() })
+        // The narrow frame scrolls past the title and the footer to the two rows (mockup 7.7's SE frame shows them).
+        try await host.captureThree("R30-not-delivered-hub-on-relay", NavigationStack { NotDeliveredView() }, narrowScroll: 480)
         return [
             ScreenshotHost.IndexRow(
                 number: "R30", view: "NotDeliveredView", source: "Features/Now/NotDeliveredView.swift",

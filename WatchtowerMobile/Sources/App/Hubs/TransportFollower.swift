@@ -160,6 +160,11 @@ final class TransportFollower {
     ) async -> Bool {
         let plan = Self.plan(commands)
         let moves = plan.move.map { $0.to != (link.transport ?? .cloudKit) } ?? false
+        if let move = plan.move, let refusal = Self.refusal(move.to, link: link) {
+            // Before anything moves: the outbox is neither held nor emptied, and the control stays.
+            Self.logger.error("\(refusal, privacy: .public)")
+            return false
+        }
         guard await moveOutbox(plan, moves: moves) else { return false }
         if let move = plan.move, !persist(move, next: next, link: link, host: host) { return false }
         if plan.merge {
@@ -171,6 +176,11 @@ final class TransportFollower {
         }
         if moves {
             Self.logger.notice("the hub moved to \(next.route.rawValue, privacy: .public) in epoch \(next.newestEpoch, privacy: .public)")
+        }
+        // Whenever the policy moved the route, not only when this pass changed the row: a pass that persisted the move
+        // and then failed (a keybox merge, say) left the session on the old route, and the next pass finds the row
+        // already moved. The host skips a session already on the row's route.
+        if plan.move != nil {
             host.moveSession(hubID: hubID)
         }
         if case .marker = input { return true }
@@ -200,9 +210,21 @@ final class TransportFollower {
         }
     }
 
-    /// The row takes the route, who switched and when, and the transport left, in one write. A move to the relay
-    /// needs the Mac's relay id (`relayUse` is `.no` without it, so the policy never asks); a move to CloudKit needs a
-    /// hub that offers it.
+    /// Why the link cannot take `target`, or nil: a move to the relay needs the Mac's relay id (`relayUse` is `.no`
+    /// without it, so the policy never asks); a move to CloudKit needs a hub that offers it (a relay-only hub's
+    /// CloudKit zones do not exist, and a missing zone would end the link).
+    private static func refusal(_ target: TransportKind, link: LinkRecord) -> String? {
+        switch target {
+        case .relay:
+            return link.relayMacDeviceID == nil ? "a move to the relay without the Mac's relay id, refused" : nil
+        case .cloudKit:
+            guard let offered = link.hubTransports, !offered.contains(TransportKind.cloudKit.rawValue) else { return nil }
+            return "a move to CloudKit for a hub that offers only the relay, refused"
+        }
+    }
+
+    /// The row takes the route, who switched and when, and the transport left, in one write (`refusal` checked
+    /// first).
     private func persist(
         _ move: (to: TransportKind, by: String, at: Date),
         next: FollowerState,
@@ -212,10 +234,7 @@ final class TransportFollower {
         var moved = link
         switch move.to {
         case .relay:
-            guard let mac = link.relayMacDeviceID else {
-                Self.logger.error("a move to the relay without the Mac's relay id")
-                return false
-            }
+            guard let mac = link.relayMacDeviceID else { return false }
             moved.setRelay(mac: mac)
             moved.leftTransport = next.leftTransport
         case .cloudKit:

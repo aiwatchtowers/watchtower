@@ -65,8 +65,11 @@ final class ScreenshotHost {
     static let narrowSize = CGSize(width: 375, height: 667)
 
     /// Writes `<name>-light.png`, `<name>-dark.png` and `<name>-narrow.png` (light, `narrowSize`, the largest
-    /// accessibility text size): the relay client mockups' three frames per state.
-    func captureThree(_ name: String, _ view: some View, settle: Duration = .milliseconds(600)) async throws {
+    /// accessibility text size): the relay client mockups' three frames per state. `narrowScroll` scrolls the narrow
+    /// frame down by that many points (clamped to the end) before it is drawn, for a state below the fold.
+    func captureThree(
+        _ name: String, _ view: some View, settle: Duration = .milliseconds(600), narrowScroll: CGFloat? = nil
+    ) async throws {
         try await capture(name, view, settle: settle)
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
             throw ShotError.noWindowScene
@@ -79,6 +82,10 @@ final class ScreenshotHost {
         )
         window.makeKeyAndVisible()
         try await Task.sleep(for: settle)
+        if let narrowScroll, let scroll = Self.tallScrollView(in: window) {
+            scroll.contentOffset.y = min(narrowScroll - scroll.adjustedContentInset.top, Self.endOffset(of: scroll))
+            try await Task.sleep(for: .milliseconds(300))
+        }
         try render(window, as: "\(name)-narrow")
         window.isHidden = true
         window.rootViewController = nil

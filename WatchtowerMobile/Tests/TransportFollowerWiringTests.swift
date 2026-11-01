@@ -101,6 +101,12 @@ final class TransportFollowerWiringTests: XCTestCase {
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertTrue(bed.root.env.session(hubID) === first)
+
+        // The marker channel is live: a newer one in the same bed moves the phone.
+        try await bed.writeMarker(target: .relay, epoch: 2)
+        let second = try await bed.fetchAndFollow(first)
+        XCTAssertEqual(try bed.row()?.link.transport, .relay)
+        XCTAssertEqual(second.route, .hostedRelay(macDeviceID: bed.mac.deviceID))
     }
 
     // MARK: - R32
@@ -220,20 +226,70 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1, 2])
     }
 
+    /// In one batch: another phone's switch (it does not open here) is neither answered nor deleted, while this
+    /// phone's own switch is followed and deleted.
     func testAnotherPhonesControlIsLeftAlone() async throws {
         let bed = try await Bed.make(self, on: .cloudKit)
         let first = try await bed.orderedSession()
 
         let wire = try await bed.writeSwitchForAStranger()
-        await bed.fetch(first)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+        let second = try await bed.fetchAndFollow(first)
 
         let names = try await bed.cloudMailboxNames()
         XCTAssertTrue(names.contains(wire), "neither deleted nor answered")
-        XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
-        XCTAssertTrue(bed.root.env.session(hubID) === first)
+        XCTAssertFalse(names.contains(try bed.switchWire), "this phone's own switch is deleted")
+        XCTAssertTrue(try Bed.handled(second, bed.switchID))
+        XCTAssertEqual(second.route, .hostedRelay(macDeviceID: bed.mac.deviceID))
         let deletes = await bed.cloud.conditionalDeletes
         XCTAssertFalse(deletes.contains { $0.recordName == wire })
+    }
+
+    /// Review round 1: a keybox merge that fails after the move was written leaves the control undecided; the next
+    /// pass finds the row already moved, merges, and still moves the session.
+    func testAFailedMergeAfterThePersistedMoveRecoversNextPass() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let first = try await bed.orderedSession()
+        let envelopes = try await bed.sendTwoActions(first)
+        let flaky = FlakyMergeHost(root: bed.root)
+        let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: flaky)
+        first.transportSignals.onControl = { control in await follower.handle(control: control, on: .cloudKit) }
+
+        try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+        await bed.fetch(first)
+        XCTAssertEqual(try bed.row()?.link.transport, .relay, "the move was written")
+        XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1], "the merge failed")
+        XCTAssertFalse(try Bed.handled(first, bed.switchID))
+        XCTAssertTrue(bed.root.env.session(hubID) === first)
+
+        let second = try await bed.fetchAndFollow(first)
+        XCTAssertEqual(flaky.merges, 2)
+        XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1, 2])
+        XCTAssertEqual(second.route, .hostedRelay(macDeviceID: bed.mac.deviceID))
+        let onRelay = try await bed.relayMailbox()
+        for envelope in envelopes {
+            XCTAssertTrue(onRelay.contains { $0.envelope == envelope }, "flushed on the relay")
+        }
+    }
+
+    /// Review round 1: a relay-only hub (its transports exclude CloudKit) is never moved to CloudKit, whose zones it
+    /// does not have; the outbox is neither held nor emptied and the control stays.
+    func testARelayOnlyHubIsNeverMovedToCloudKit() async throws {
+        let bed = try await Bed.make(self, on: .relay, hubTransports: ["relay"])
+        let first = try await bed.orderedSession()
+        try await bed.sendTwoActions(first)
+        bed.relayOps.paying = false
+
+        let control = try await bed.writeHubControl(.hubOnRelay, on: .relay)
+        await bed.fetch(first)
+        await bed.root.routeMoves[hubID]?.value
+
+        XCTAssertEqual(try bed.row()?.link.transport, .relay)
+        XCTAssertNil(try bed.row()?.link.leftTransport)
+        XCTAssertTrue(bed.root.env.session(hubID) === first)
+        XCTAssertFalse(try Bed.handled(first, control.id))
+        XCTAssertTrue(try Bed.rows(first, .undelivered).isEmpty, "nothing listed")
+        XCTAssertEqual(try Bed.rows(first, .sent).count, 2)
     }
 
     /// The follower writes the move before it reports the control handled: a kill between the two leaves the move on
@@ -312,7 +368,9 @@ private final class Bed {
         self.registry = registry
     }
 
-    static func make(_ test: XCTestCase, on route: TransportKind) async throws -> Bed {
+    static func make(
+        _ test: XCTestCase, on route: TransportKind, hubTransports: [String] = ["cloudkit", "relay"]
+    ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
         let parts = RelayParts(
@@ -350,7 +408,7 @@ private final class Bed {
             hubID: TestE2E.hubID.uuidString, macName: "Work Mac", scope: .private, ownerName: "",
             userRecordName: "_owner-acme", nonce: "nonce", dataShareURL: nil, relayShareURL: nil,
             deviceID: TestE2E.deviceID.uuidString, linkedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            transport: .cloudKit, relayMacDeviceID: mac.deviceID, hubTransports: ["cloudkit", "relay"]
+            transport: .cloudKit, relayMacDeviceID: mac.deviceID, hubTransports: hubTransports
         )
         if route == .relay { link.setRelay(mac: mac.deviceID) }
         try registry.upsert(link, now: Date())
@@ -694,5 +752,28 @@ actor RecordingCloud: ConditionalTransport {
     func delete(_ items: [ConditionalDelete]) async throws -> [DeleteOutcome] {
         conditionalDeletes += items
         return try await inner.delete(items)
+    }
+}
+
+/// `AppRoot` as the follower's host, except that the first keybox merge fails (a Keychain error, say).
+@MainActor
+private final class FlakyMergeHost: TransportFollowerHost {
+    private let root: AppRoot
+    private(set) var merges = 0
+
+    init(root: AppRoot) {
+        self.root = root
+    }
+
+    func followerLink(hubID: String) -> LinkRecord? { root.followerLink(hubID: hubID) }
+    func newestEpoch(hubID: String) -> UInt32? { root.newestEpoch(hubID: hubID) }
+    func relayUse(for link: LinkRecord) async -> RelayUse { await root.relayUse(for: link) }
+    func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? { await root.openSwitchKeybox(sealed, hubID: hubID) }
+    func persistRoute(_ link: LinkRecord) -> Bool { root.persistRoute(link) }
+    func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
+
+    func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
+        merges += 1
+        return merges > 1 ? await root.mergeSwitchKeys(keybox, hubID: hubID) : false
     }
 }
