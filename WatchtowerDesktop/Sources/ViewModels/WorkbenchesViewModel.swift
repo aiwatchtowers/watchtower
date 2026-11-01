@@ -352,6 +352,7 @@ final class WorkbenchesViewModel {
         didSet {
             if oldValue.ids != pendingDeletes.ids {
                 onPendingDeletesChanged?(pendingDeletes.ids)
+                onHiddenSessionsChanged?(pendingDeletes.ids)
                 cleanupKeptNotices = cleanupKeptNotices.filter { pendingDeletes.ids.contains($0.key) }
             }
         }
@@ -359,6 +360,8 @@ final class WorkbenchesViewModel {
     /// The hidden ids changed (MobileHub: the `terminal_session` slice
     /// leaves them out until Undo or the commit).
     @ObservationIgnored var onPendingDeletesChanged: ((Set<Int64>) -> Void)?
+    /// The same change for the Go hub's `desktop_view` (`HubCenter.follow`).
+    @ObservationIgnored var onHiddenSessionsChanged: ((Set<Int64>) -> Void)?
     /// Waits out the Undo window, then commits the batch; re-armed by every
     /// delete, cancelled by Undo and the quit commit.
     @ObservationIgnored var deleteCommitTask: Task<Void, Never>?

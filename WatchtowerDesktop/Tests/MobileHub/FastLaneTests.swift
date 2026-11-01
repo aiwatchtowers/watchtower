@@ -322,6 +322,8 @@ final class FastLaneTests: XCTestCase {
         let publisher = SlicePublisher(
             dbPool: pool, state: try HubSyncState.inMemory(), transport: transport.sealing(), sources: [terminalSlice(liveness)]
         )
+        var reported: [[Int64: ShownOverCount]] = []
+        center.onDisplayOverChange = { reported.append($0) }
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
         lane.start()
         await center.poll()
@@ -336,6 +338,9 @@ final class FastLaneTests: XCTestCase {
             center.statuses[row.id]?.state == .live(.stopped)
         }
         XCTAssertEqual(Set(liveness.current.displayOver.keys), [row.id], "the lane copied the center's over set")
+        // The Go hub's desktop_view (HubCenter.follow) gets the same judged counts.
+        XCTAssertEqual(reported, [center.displayOver])
+        XCTAssertEqual(reported.last?[row.id]?.run, terminals.startedAt[row.id])
         try await publisher.publishOnce(kinds: [.terminalSession])
         let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
         XCTAssertEqual(published["state_kind"] as? String, "stopped")
