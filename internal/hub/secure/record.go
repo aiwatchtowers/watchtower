@@ -443,6 +443,32 @@ func (o *Opener) OwnEcho(_, wireName string, envelope []byte) (Opened, error) {
 	return Opened{}, ErrNoRelayKey
 }
 
+// OwnEchoFor is OwnEcho under device's h2p key only: in a mailbox zone
+// several phones share (CloudKit's RelayZone) the hub's own record read back
+// belongs to the one phone whose key opens it, never to the phone a payload
+// names (a phone holds its own h2p key too, so it could seal a "hub" record
+// naming another phone). ErrNoRelayKey when device's key does not open it.
+func (o *Opener) OwnEchoFor(device ID, wireName string, envelope []byte) (Opened, error) {
+	h, err := o.header(envelope)
+	if err != nil {
+		return Opened{}, err
+	}
+	if h.Class != ClassRelayToPhone {
+		return Opened{}, fmt.Errorf("%w: %d", ErrWrongClass, h.Class)
+	}
+	if h.Sender != h.Hub {
+		return Opened{}, ErrWrongSender
+	}
+	opened, f, err := o.openRelay(envelope, wireName, ClassRelayToPhone, HubToPhone, device, h.Epoch)
+	if errors.Is(err, ErrAuthenticationFailed) || errors.Is(err, ErrEpochNotAccepted) {
+		return Opened{}, ErrNoRelayKey
+	}
+	if err != nil {
+		return Opened{}, err
+	}
+	return o.accept(wireName, opened, f)
+}
+
 // Requeue rebuilds the Record of a relayToPhone envelope the hub sealed
 // earlier for device and kept (the control queue holds sealed envelopes, not
 // Records): it must open as the hub's own record under wireName with

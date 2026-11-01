@@ -7,6 +7,7 @@ import (
 	"log"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,9 @@ type Config struct {
 	HubRelayID string
 	Clock      func() time.Time
 	Nudge      func(kinds []string)
+	// Links applies the phones' device records (device_record.go); nil
+	// leaves them alone.
+	Links Links
 }
 
 // Processor reads the phones' mailboxes and applies their actions. Pass and
@@ -83,11 +87,15 @@ func NewProcessor(c Config) *Processor {
 	return &Processor{cfg: c}
 }
 
-// mailbox is one linked phone's mailbox, read under one link: link is the
+// mailbox is one linked phone's mailbox, read under one link: zone is where
+// its records live (its own relay/<hub>/<phone>, or the one shared mailbox on
+// CloudKit), queue its control_queue key (the zone, or zone@<device> in a
+// shared mailbox, so one phone's flush never meets another's rows), link the
 // link's nonce (a re-link changes it) and linkedAt keys the ledger.
 type mailbox struct {
 	id       secure.ID
 	zone     string
+	queue    string
 	link     string
 	linkedAt time.Time
 }
@@ -111,16 +119,19 @@ func (b mailbox) ledgerKey(plain string, seq uint64) string {
 	return b.ledger(plain)
 }
 
-// mailboxes lists the linked phones with a relay device id, oldest link
-// first.
+// mailboxes lists the linked phones that have a mailbox, oldest link first:
+// on CloudKit every linked phone (the shared RelayZone needs no relay device
+// id), elsewhere the phones with a relay device id.
 func (p *Processor) mailboxes() ([]mailbox, error) {
 	devices, err := p.cfg.Store.Devices()
 	if err != nil {
 		return nil, err
 	}
+	shared := transport.SharedMailboxZone(p.cfg.HubRelayID)
 	var out []mailbox
 	for _, d := range devices {
-		if d.RelayDeviceID == "" {
+		zone, ok := p.mailboxZone(d)
+		if !ok {
 			continue
 		}
 		id, err := secure.ParseID(d.ID)
@@ -128,9 +139,62 @@ func (p *Processor) mailboxes() ([]mailbox, error) {
 			log.Printf("hub: a linked device id is not a UUID")
 			continue
 		}
-		out = append(out, mailbox{id: id, zone: transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID), link: d.LinkNonce, linkedAt: d.LinkedAt})
+		queue := zone
+		if zone == shared {
+			queue = zone + "@" + id.String()
+		}
+		out = append(out, mailbox{id: id, zone: zone, queue: queue, link: d.LinkNonce, linkedAt: d.LinkedAt})
 	}
 	return out, nil
+}
+
+// mailboxZone is d's mailbox zone: the transport's (transport.SharedMailbox)
+// or relay/<hub>/<relay device id>; ok is false for a phone without a relay
+// device id on a transport other than CloudKit.
+func (p *Processor) mailboxZone(d state.Device) (string, bool) {
+	sm, named := p.cfg.Transport.(transport.SharedMailbox)
+	switch {
+	case named && p.cfg.Transport.Kind() == transport.KindCloudKit:
+		return sm.MailboxFor(p.cfg.HubRelayID, d.RelayDeviceID), true
+	case d.RelayDeviceID == "":
+		return "", false
+	case named:
+		return sm.MailboxFor(p.cfg.HubRelayID, d.RelayDeviceID), true
+	}
+	return transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID), true
+}
+
+// zoneGroup is one mailbox zone and the phones whose mailbox it is: one on
+// the hosted relay, every phone of the hub on CloudKit's shared RelayZone.
+type zoneGroup struct {
+	zone  string
+	boxes []mailbox
+}
+
+// byZone groups boxes by zone, in the order the zones first appear.
+func byZone(boxes []mailbox) []zoneGroup {
+	var out []zoneGroup
+	at := map[string]int{}
+	for _, b := range boxes {
+		i, ok := at[b.zone]
+		if !ok {
+			i = len(out)
+			at[b.zone] = i
+			out = append(out, zoneGroup{zone: b.zone})
+		}
+		out[i].boxes = append(out[i].boxes, b)
+	}
+	return out
+}
+
+// box is the phone of g whose device id is id.
+func (g zoneGroup) box(id secure.ID) (mailbox, bool) {
+	for _, b := range g.boxes {
+		if b.id == id {
+			return b, true
+		}
+	}
+	return mailbox{}, false
 }
 
 // pass carries one pass's counters and budget.
@@ -161,33 +225,49 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 		return ps.report, err
 	}
 	var errs []error
+	// Held actions that are next in line first: a drain an earlier pass
+	// left at the batch limit (or a crash) resumes here. A zone with a
+	// phone whose drain stopped is read next pass.
+	stopped := map[string]bool{}
 	for _, b := range boxes {
-		// Held actions that are next in line first: a drain an earlier
-		// pass left at the batch limit (or a crash) resumes here.
 		err := p.drainHeld(ctx, b, ps)
 		if err == nil {
 			err = p.retryUploads(ctx, b, ps)
 		}
-		if err == nil {
-			err = p.readMailbox(ctx, b, ps)
-		}
-		if errors.Is(err, errBudget) { // the rest is read next pass (Remaining counts it)
-			continue
-		}
-		if errors.Is(err, errRelinked) {
-			log.Printf("hub: device %s was re-linked or unlinked during a pass: its mailbox is read again next pass", b.id)
-			continue
-		}
 		if err != nil {
-			// One phone's failure never holds back the other phones.
-			log.Printf("hub: reading device %s's mailbox: %s", b.id, errClass(err))
-			errs = append(errs, err)
+			stopped[b.zone] = true
+			errs = passError(b, err, errs)
+		}
+	}
+	// Each zone once: on CloudKit the one RelayZone for every phone.
+	for _, g := range byZone(boxes) {
+		if stopped[g.zone] {
+			continue
+		}
+		if b, err := p.readZone(ctx, g, ps); err != nil {
+			errs = passError(b, err, errs)
 		}
 	}
 	written, _, err := p.flushAll(ctx)
 	ps.report.ControlsWritten = written
 	p.nudge(ps)
 	return ps.report, errors.Join(append(errs, err)...)
+}
+
+// passError logs the error that stopped b's phone (or a zone read at one of
+// b's records) and adds it to errs. The batch limit and a re-link are no
+// errors: the rest is read next pass (Remaining counts the first).
+func passError(b mailbox, err error, errs []error) []error {
+	switch {
+	case errors.Is(err, errBudget):
+		return errs
+	case errors.Is(err, errRelinked):
+		log.Printf("hub: device %s was re-linked or unlinked during a pass: its mailbox is read again next pass", b.id)
+		return errs
+	}
+	// One phone's failure never holds back the other phones' own work.
+	log.Printf("hub: reading device %s's mailbox: %s", b.id, errClass(err))
+	return append(errs, err)
 }
 
 func (p *Processor) nudge(ps *pass) {
@@ -247,52 +327,135 @@ func (p *Processor) pull(ctx context.Context, zone string, apply func(transport.
 	}
 }
 
-// readMailbox pulls b's changes page by page. After TOKEN_EXPIRED the whole
-// mailbox comes again from 0 (Batch.Reset): every surviving action is then a
-// repeat. The processor mirrors nothing per zone (held actions are the
-// hub's own state, not a copy of the mailbox), so a Reset drops nothing. A
-// pull stopped by the batch limit or by a re-link stores no token for the
-// page: the rest of it (a re-linked phone's new records included) is read
-// again next pass.
-func (p *Processor) readMailbox(ctx context.Context, b mailbox, ps *pass) error {
-	err := p.pull(ctx, b.zone, func(batch transport.Batch) error {
+// readZone pulls g's zone page by page, each record routed to the phone it
+// belongs to. After TOKEN_EXPIRED the whole zone comes again from 0
+// (Batch.Reset): every surviving action is then a repeat. The processor
+// mirrors nothing per zone (held actions are the hub's own state, not a copy
+// of the mailbox), so a Reset drops nothing. A pull stopped by the batch
+// limit or by a re-link stores no token for the page: the rest of it (a
+// re-linked phone's new records included) is read again next pass. at is the
+// phone whose record stopped the read (the zone's first phone otherwise).
+func (p *Processor) readZone(ctx context.Context, g zoneGroup, ps *pass) (at mailbox, err error) {
+	at = g.boxes[0]
+	err = p.pull(ctx, g.zone, func(batch transport.Batch) error {
 		for i, rec := range batch.Changed {
 			if ps.budget <= 0 {
 				ps.report.Remaining += len(batch.Changed) - i
 				return errBudget
 			}
-			if err := p.handle(ctx, b, rec, ps); err != nil {
+			b, err := p.route(ctx, g, rec, ps)
+			if err != nil {
+				at = b
 				return err
 			}
 		}
 		return nil
 	})
 	if errors.Is(err, errBudget) {
-		return nil
+		return at, nil
 	}
 	if err != nil {
-		return fmt.Errorf("actions: reading a mailbox: %w", err)
+		return at, fmt.Errorf("actions: reading a mailbox: %w", err)
 	}
-	return nil
+	return at, nil
 }
 
-// handle opens one mailbox record and routes it. A record that does not
-// open as this phone's (no linked key, another phone's, the hub's own echo,
-// rolled back) is dropped with no answer (D9).
+// route hands one record of g's zone to the phone it belongs to (spec §12a
+// point 1): a phone's record (relayToHub) to the phone its envelope's
+// sender names, which FromPhone then authenticates with that phone's key
+// alone — so a record is never attributed to another phone than the one
+// that sealed it; the hub's own record read back (relayToPhone: an echo, a
+// control) to the one phone whose key opens it. A sender with no mailbox in
+// the zone, a hello (the link lane's) and bytes that are no envelope are
+// left alone with no answer (D9). b is the phone the record went to.
+func (p *Processor) route(ctx context.Context, g zoneGroup, rec transport.Stored, ps *pass) (b mailbox, err error) {
+	h, err := secure.ParseHeader(rec.Envelope)
+	if err != nil {
+		log.Printf("hub: dropped a mailbox record: %s", errClass(err))
+		return g.boxes[0], nil
+	}
+	switch h.Class {
+	case secure.ClassRelayToHub:
+		b, ok := g.box(h.Sender)
+		if !ok {
+			log.Printf("hub: dropped a record of device %s, which has no mailbox here", h.Sender)
+			return g.boxes[0], nil
+		}
+		return b, p.handle(ctx, b, rec, ps)
+	case secure.ClassRelayToPhone:
+		for _, b := range g.boxes {
+			o, err := p.cfg.Opener.OwnEchoFor(b.id, rec.Name, rec.Envelope)
+			if errors.Is(err, secure.ErrNoRelayKey) {
+				continue // another phone's record
+			}
+			if err != nil {
+				if droppable(err) {
+					return b, nil
+				}
+				return b, err
+			}
+			return b, p.ownReceived(ctx, b, rec, o, ps)
+		}
+	case secure.ClassHello, secure.ClassData, secure.ClassAlert, secure.ClassKeybox:
+		// A hello is the link lane's; the rest never belongs in a mailbox.
+	}
+	return g.boxes[0], nil
+}
+
+// phoneSender is the sender of a phone's record (a relayToHub envelope) as
+// its header names it, unauthenticated until FromPhone opens it; ok is false
+// for any other class and for bytes that are no envelope.
+func phoneSender(env []byte) (secure.ID, bool) {
+	h, err := secure.ParseHeader(env)
+	if err != nil || h.Class != secure.ClassRelayToHub {
+		return secure.ID{}, false
+	}
+	return h.Sender, true
+}
+
+// namedDevice is the device a phone record's plain name names —
+// a-<device>-<seq>, device-<device>, hello-<device> — or names=false for one
+// that names none (action-<uuid>, c-<uuid>, recupload-<id>). ok is false for
+// a name of those kinds whose device part does not parse.
+func namedDevice(plain string) (id secure.ID, names, ok bool) {
+	var dev string
+	switch {
+	case strings.HasPrefix(plain, "a-"):
+		rest := plain[len("a-"):]
+		if len(rest) < 38 || rest[36] != '-' {
+			return id, true, false
+		}
+		dev = rest[:36]
+	case strings.HasPrefix(plain, devicePrefix):
+		dev = plain[len(devicePrefix):]
+	case strings.HasPrefix(plain, "hello-"):
+		dev = plain[len("hello-"):]
+	default:
+		return id, false, true
+	}
+	id, err := secure.ParseID(dev)
+	return id, true, err == nil
+}
+
+// handle opens one record of b's phone and routes it. A record that does not
+// open as this phone's (no linked key, rolled back) is dropped with no answer
+// (D9), and so is one whose name names another device than its sender
+// (class sender_mismatch: protocol §7.5 point 1).
 func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored, ps *pass) error {
 	opened, err := p.cfg.Opener.FromPhone(b.zone, rec.Name, rec.Envelope)
 	if err != nil {
 		if !droppable(err) {
 			return err
 		}
-		if errors.Is(err, secure.ErrWrongClass) { // the hub's own records come back through the feed
-			return p.ownReceived(ctx, b, rec, ps)
-		}
 		log.Printf("hub: dropped a mailbox record of device %s: %s", b.id, errClass(err))
 		return nil
 	}
 	if opened.Sender != b.id {
 		log.Printf("hub: dropped a record of device %s found in device %s's mailbox", opened.Sender, b.id)
+		return nil
+	}
+	if named, names, ok := namedDevice(opened.Frame.ID); names && (!ok || named != opened.Sender) {
+		log.Printf("hub: dropped a record of device %s: sender_mismatch", b.id)
 		return nil
 	}
 	if p.fault != nil {
@@ -310,9 +473,11 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 	case kindRecordingUpload:
 		ps.report.Read++
 		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, rec.AttachmentID, ps)
+	case kindDevice:
+		ps.report.Read++
+		err = p.handleDeviceRecord(ctx, b, rec, opened)
 	default:
-		// device records belong to another lane; an unknown kind has no work
-		// (the Kit's RelayRecordKind decoding).
+		// An unknown kind has no work (the Kit's RelayRecordKind decoding).
 		return nil
 	}
 	return err

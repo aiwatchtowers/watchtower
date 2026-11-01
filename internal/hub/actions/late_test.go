@@ -67,7 +67,7 @@ func TestLateEchoToARemovedPhoneWritesNothing(t *testing.T) {
 	if !errors.Is(err, ErrNotDecided) {
 		t.Fatalf("err = %v, want ErrNotDecided", err)
 	}
-	if rows, _ := w.st.PendingControls(w.phone.Zone()); len(rows) != 0 {
+	if rows, _ := w.st.PendingControls(w.queue(w.phone)); len(rows) != 0 {
 		t.Fatalf("%d writes queued for a removed phone", len(rows))
 	}
 }
@@ -116,7 +116,7 @@ func TestLateEchoWithoutASealerFailsClosed(t *testing.T) {
 	if err := w.proc.LateEcho(w.ctx, *seen, Outcome{Status: wire.StatusApplied}); err == nil {
 		t.Fatal("a late echo without a sealer must fail")
 	}
-	if rows, _ := w.st.PendingControls(w.phone.Zone()); len(rows) != 0 {
+	if rows, _ := w.st.PendingControls(w.queue(w.phone)); len(rows) != 0 {
 		t.Fatalf("%d writes queued", len(rows))
 	}
 }

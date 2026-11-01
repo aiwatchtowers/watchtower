@@ -212,7 +212,7 @@ func (p *Processor) readHeldEchoes(ctx context.Context, b mailbox, due map[strin
 			}
 			delete(found, rec.Name) // a later change of the same record wins
 			delete(rewritten, rec.Name)
-			o, err := p.cfg.Opener.OwnEcho(b.zone, rec.Name, rec.Envelope)
+			o, err := p.cfg.Opener.OwnEchoFor(b.id, rec.Name, rec.Envelope)
 			if errors.Is(err, secure.ErrWrongClass) || errors.Is(err, secure.ErrWrongSender) {
 				rewritten[rec.Name] = true // the phone's own record: the mailbox read answers it
 				continue
@@ -390,7 +390,7 @@ func (p *Processor) echoUpload(ctx context.Context, h *heldUpload, plain string,
 		if err := mark(tx, b, r.name, h.o); err != nil {
 			return err
 		}
-		return state.Enqueue(tx, q.control(b.zone))
+		return state.Enqueue(tx, q.control(b.queue))
 	}); err != nil {
 		return err
 	}

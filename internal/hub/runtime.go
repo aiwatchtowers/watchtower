@@ -283,7 +283,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	}
 	h.proc = actions.NewProcessor(actions.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
-		HubRelayID: h.relayID, Clock: o.Clock,
+		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
 	})
 	sweepTemps(o)

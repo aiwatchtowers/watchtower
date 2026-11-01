@@ -84,7 +84,7 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 		if err := state.MarkDone(tx, key, ledgerOutcome(o), stored, nil, p.cfg.Clock()); err != nil {
 			return err
 		}
-		return state.Enqueue(tx, q.control(b.zone))
+		return state.Enqueue(tx, q.control(b.queue))
 	}); err != nil {
 		if errors.Is(err, errRelinked) {
 			return ErrNotDecided
