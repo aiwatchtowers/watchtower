@@ -152,6 +152,10 @@ type Center struct {
 	sweep     Sweep
 	ck        ckState
 	retired   retiredCode
+	// linkMu lets one public-link write run at a time (cloudkit.go setLink):
+	// the only lock held across a bridge call; LinkUrgent and Sharing never
+	// take it.
+	linkMu sync.Mutex
 }
 
 // NewCenter builds a Center over c.
@@ -218,14 +222,15 @@ func (c *Center) OnRevoke(fn func(device string)) {
 // request, rollback marks and held actions go, and it gets a revoked row so
 // its keybox reads revoked (no keys) for RevokedLifetime. A shared-scope
 // phone marks the CloudKit participant sweep pending in the same
-// transaction, so its iCloud user leaves the shares at the next close even
-// when nobody calls RemoveCloudKit (the phone's own unlink). A phone that only
+// transaction (bumping its epoch, so a sweep running meanwhile keeps the
+// mark) and due at the next SweepShares pass, so its iCloud user leaves the
+// shares even when nobody calls RemoveCloudKit. A phone that only
 // waits for the owner is refused not_confirmed instead (it never had keys,
 // nothing rotates). state.ErrNoDevice when neither.
 func (c *Center) Unlink(device string) error {
 	c.mu.Lock()
 	defer c.unlock()
-	removed := false
+	removed, shared := false, false
 	err := c.keys.RotateWith(identity.ReasonUnlink, func(tx *sql.Tx) error {
 		var scope string
 		if err := tx.QueryRow(`SELECT scope FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(&scope); err != nil &&
@@ -241,7 +246,8 @@ func (c *Center) Unlink(device string) error {
 		}
 		removed = true
 		if scope == wire.ScopeShared {
-			return state.SetMetaTx(tx, MetaShareSweepPending, "1")
+			shared = true
+			return markSweepTx(tx)
 		}
 		return nil
 	})
@@ -249,6 +255,9 @@ func (c *Center) Unlink(device string) error {
 		return fmt.Errorf("unlinking a phone: %w", err)
 	}
 	if removed {
+		if shared {
+			c.sweepSoon() // its participant goes at the next pass, as in Swift
+		}
 		log.Printf("hub link: phone %s unlinked, epoch rotated", strings.ToUpper(device))
 		c.changed()
 		c.revoked = append(c.revoked, device)

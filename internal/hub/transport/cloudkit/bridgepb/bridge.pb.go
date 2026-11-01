@@ -1932,14 +1932,18 @@ func (x *Failure) GetClass() string {
 }
 
 // Event is server-sent (Response id 0): a zone that may have changed, a
-// silent push (pull_now), or a transport-level error class.
+// silent push (pull_now), a transport-level error class, or
+// account_changed: the Mac's iCloud account changed
+// (CKAccountChanged; the hub drops what names the old user and closes an
+// open link code).
 type Event struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Zone          string                 `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
-	PullNow       bool                   `protobuf:"varint,2,opt,name=pull_now,json=pullNow,proto3" json:"pull_now,omitempty"`
-	ErrorClass    string                 `protobuf:"bytes,3,opt,name=error_class,json=errorClass,proto3" json:"error_class,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Zone           string                 `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
+	PullNow        bool                   `protobuf:"varint,2,opt,name=pull_now,json=pullNow,proto3" json:"pull_now,omitempty"`
+	ErrorClass     string                 `protobuf:"bytes,3,opt,name=error_class,json=errorClass,proto3" json:"error_class,omitempty"`
+	AccountChanged bool                   `protobuf:"varint,4,opt,name=account_changed,json=accountChanged,proto3" json:"account_changed,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Event) Reset() {
@@ -1991,6 +1995,13 @@ func (x *Event) GetErrorClass() string {
 		return x.ErrorClass
 	}
 	return ""
+}
+
+func (x *Event) GetAccountChanged() bool {
+	if x != nil {
+		return x.AccountChanged
+	}
+	return false
 }
 
 var File_bridge_proto protoreflect.FileDescriptor
@@ -2117,12 +2128,13 @@ const file_bridge_proto_rawDesc = "" +
 	"\x0fParticipantList\x127\n" +
 	"\x05items\x18\x01 \x03(\v2!.watchtower.bridge.v1.ParticipantR\x05items\"\x1f\n" +
 	"\aFailure\x12\x14\n" +
-	"\x05class\x18\x01 \x01(\tR\x05class\"W\n" +
+	"\x05class\x18\x01 \x01(\tR\x05class\"\x80\x01\n" +
 	"\x05Event\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12\x19\n" +
 	"\bpull_now\x18\x02 \x01(\bR\apullNow\x12\x1f\n" +
 	"\verror_class\x18\x03 \x01(\tR\n" +
-	"errorClass*@\n" +
+	"errorClass\x12'\n" +
+	"\x0faccount_changed\x18\x04 \x01(\bR\x0eaccountChanged*@\n" +
 	"\n" +
 	"ExpectMode\x12\x0f\n" +
 	"\vEXPECT_NONE\x10\x00\x12\x11\n" +

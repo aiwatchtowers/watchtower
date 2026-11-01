@@ -60,7 +60,14 @@ type Fake struct {
 	publicLink   bool
 	participants map[string][]transport.Participant
 	fail         map[string][]string
+	gates        map[string]*gate
 	accepted     int
+}
+
+// gate holds an op's requests until released.
+type gate struct {
+	arrived chan struct{}
+	release chan struct{}
 }
 
 type fakeConn struct {
@@ -88,7 +95,8 @@ func Serve(t testing.TB, dir string, opts ...Option) *Fake {
 	f := &Fake{
 		t: t, dir: dir, version: cloudkit.ProtocolVersion, clock: time.Now, account: transport.AccountAvailable,
 		conns: map[*fakeConn]bool{}, participants: map[string][]transport.Participant{}, fail: map[string][]string{},
-		stop: make(chan struct{}), reset: make(chan struct{}, 1), gen: newGeneration(t),
+		gates: map[string]*gate{},
+		stop:  make(chan struct{}), reset: make(chan struct{}, 1), gen: newGeneration(t),
 	}
 	for _, o := range opts {
 		o(f)
@@ -192,6 +200,29 @@ func (f *Fake) HubID() string {
 
 // PullNow sends a pull_now event (a silent push reached the bridge).
 func (f *Fake) PullNow() { f.broadcast(&bridgepb.Event{PullNow: true}) }
+
+// AccountChanged sends the account_changed event.
+func (f *Fake) AccountChanged() { f.broadcast(&bridgepb.Event{AccountChanged: true}) }
+
+// Block holds every request of op (FailNext's names) until release is
+// called; arrived is closed when the first one is held. A held request
+// holds its connection, as one slow CloudKit call holds the real bridge's
+// answer to it.
+func (f *Fake) Block(op string) (arrived <-chan struct{}, release func()) {
+	g := &gate{arrived: make(chan struct{}), release: make(chan struct{})}
+	f.mu.Lock()
+	f.gates[op] = g
+	f.mu.Unlock()
+	var once sync.Once
+	return g.arrived, func() {
+		once.Do(func() {
+			f.mu.Lock()
+			delete(f.gates, op)
+			f.mu.Unlock()
+			close(g.release)
+		})
+	}
+}
 
 // SendError sends a transport-level error event of class.
 func (f *Fake) SendError(class string) { f.broadcast(&bridgepb.Event{ErrorClass: class}) }
@@ -418,6 +449,21 @@ func (f *Fake) handle(c *fakeConn, req *bridgepb.Request) *bridgepb.Response {
 		return failure("bad_request")
 	}
 	op := opName(req)
+	f.mu.Lock()
+	g := f.gates[op]
+	f.mu.Unlock()
+	if g != nil {
+		select {
+		case <-g.arrived:
+		default:
+			close(g.arrived)
+		}
+		select {
+		case <-g.release:
+		case <-f.stop:
+			return failure("unavailable")
+		}
+	}
 	if class, ok := f.failed(op); ok {
 		return failure(class)
 	}

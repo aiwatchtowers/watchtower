@@ -233,9 +233,13 @@ message Failure {
 }
 
 // Event is server-sent (Response id 0): a zone that may have changed, a
-// silent push (pull_now), or a transport-level error class.
+// silent push (pull_now), a transport-level error class, or
+// account_changed: the Mac's iCloud account changed
+// (CKAccountChanged; the hub drops what names the old user and closes an
+// open link code).
 message Event {
   string zone = 1;
   bool pull_now = 2;
   string error_class = 3;
+  bool account_changed = 4;
 }

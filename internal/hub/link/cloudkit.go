@@ -3,9 +3,9 @@ package link
 // Linking over CloudKit (Go hub phase 3 Task 12; the share half of the Swift
 // MobileLinkCenter): the account check, the two zone shares and their public
 // link window, the participant sweep, and hellos read from the shared
-// RelayZone with the participant check. The share calls go through
-// transport.Shares (the CloudKit bridge); share URLs are opaque and never
-// parsed or logged, and log lines carry device ids, counts and error
+// RelayZone with the creator and participant checks. The share calls go
+// through transport.Shares (the CloudKit bridge); share URLs are opaque and
+// never parsed or logged, and log lines carry device ids, counts and error
 // classes only — never a code, a URL, a nonce, a phone name or a user
 // record name (FILES-01).
 //
@@ -15,6 +15,18 @@ package link
 // pass; the "sweep needed" mark itself is the Swift hub_meta key
 // (MetaShareSweepPending), so a crash with the link open is still closed by
 // the next run's CloseLink(CloseRestart).
+//
+// Concurrency, as on the Swift main actor whose share calls interleave: no
+// lock is held across a bridge call except linkMu, which lets one public-link
+// write run at a time (the Swift single link writer, #262). The share state
+// (ckState) is read and changed under ck.mu for a moment only, so LinkUrgent
+// and Sharing never wait on the bridge. Interleavings are settled by
+// compare-and-set: a sweep clears the mark only if no unlink marked it again
+// meanwhile (the sweep epoch in hub_meta, the Swift sweepEpoch); a deferred
+// sweep stands down once a code is being issued or on screen (the Swift
+// yieldsToIssue); a public-link write yields to a newer wanted state; an
+// owner lookup or an issue that ran across an account change is not kept
+// (the account epoch, the Swift ownerEpoch).
 
 import (
 	"context"
@@ -23,10 +35,12 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
@@ -38,9 +52,13 @@ const CloudKitContainer = "iCloud.com.aiwatchtowers.watchtower"
 
 // MetaShareSweepPending is the Swift hub's hub_meta key: "1" while the
 // shares need a close-and-sweep (from just before the public link opens, or
-// after an unlink whose participant was not removed) until a sweep
-// succeeds; "0" after it.
+// after an unlink of a shared phone) until a sweep succeeds; "0" after it.
 const MetaShareSweepPending = "share_sweep_pending"
+
+// MetaShareSweepEpoch counts the marks (Go only; absent reads 0): every
+// write of the pending mark bumps it in the same transaction, and a sweep
+// clears the mark only while it still reads the epoch the sweep started on.
+const MetaShareSweepEpoch = "share_sweep_epoch"
 
 // ShareTimeout bounds every share call (the Swift MobileHubService
 // defaultCloudTimeout): offline CloudKit waits for connectivity.
@@ -52,6 +70,7 @@ type Sweep struct {
 	// CloseSheetClosed) keeps the unbound participants: a phone that
 	// accepted the public link but had not written its hello yet still
 	// reads its refusal in the data zone. The public link closes at once.
+	// Zero in a Config means DefaultSweep.
 	AnswerGrace time.Duration
 }
 
@@ -91,6 +110,10 @@ func (r CloseReason) answersLateHellos() bool {
 	return r == CloseUsed || r == CloseExpired || r == CloseSheetClosed
 }
 
+// voidsCode: the close ends a code being issued too (the Swift voidsCode),
+// so its public-link close does not yield to that code.
+func (r CloseReason) voidsCode() bool { return r == CloseIssueFailed || r == CloseAccountChanged }
+
 // refusal is what a request still waiting at this close reads.
 func (r CloseReason) refusal() string {
 	switch r {
@@ -109,30 +132,47 @@ const (
 	SharingUnavailable = "unavailable"
 )
 
+// AccountUnreadable is the account state when the bridge could not report
+// one (the Swift CloudAvailability.unavailable for a failed read).
+const AccountUnreadable transport.Account = "unavailable"
+
 var (
 	// ErrOwnerUnknown: the Mac's iCloud user could not be read; no code.
 	ErrOwnerUnknown = errors.New("link: the Mac's iCloud user is unknown")
+	// ErrAccountChanged: the Mac's iCloud account changed while a code was
+	// being issued; the code would name the old user, so it was not issued
+	// and the link it opened was closed.
+	ErrAccountChanged = errors.New("link: the iCloud account changed")
 	// ErrNoRelayID: the center has no relay device id to name the zones.
 	ErrNoRelayID = errors.New("link: no relay device id names the hub's zones")
+	// errSuperseded: a public-link open that a close replaced meanwhile.
+	errSuperseded = errors.New("link: the public link was closed meanwhile")
 )
 
 // AccountError refuses a CloudKit code: the Mac's iCloud account is not
-// available (Account is its state, the error class).
-type AccountError struct{ Account transport.Account }
+// available. Account is its state (AccountUnreadable when the read failed,
+// with Err the failure), the error class.
+type AccountError struct {
+	Account transport.Account
+	Err     error
+}
 
 func (e *AccountError) Error() string { return "link: the iCloud account is " + string(e.Account) }
 
-// ckState is the share calls' state, guarded by mu, which also runs the
-// CloudKit linking calls one at a time (they do I/O; never held by a holder
-// of Center.mu).
+func (e *AccountError) Unwrap() error { return e.Err }
+
+// ckState is the CloudKit link's state, guarded by mu (never held across a
+// bridge call, and never held while taking Center.mu).
 type ckState struct {
 	mu sync.Mutex
 	// open is the code on screen, nil once it was used, expired or closed.
 	open *openCode
+	// issuing counts the IssueCloudKit calls running (the Swift issuing).
+	issuing int
 	// graceEnd: an answering close's grace runs until then.
 	graceEnd time.Time
-	// sweepAt: a deferred sweep (the grace's end, or a retry) is due then;
-	// zero when none. sweepTries counts the retries spent.
+	// sweepAt: a deferred sweep (the grace's end, a retry, an unlink) is due
+	// then; zero when none. sweepTries counts the retries spent.
 	sweepAt    time.Time
 	sweepTries int
 	// linkCloseAt: a failed public-link close is retried then; zero when
@@ -142,6 +182,12 @@ type ckState struct {
 	// sharing: what the last issue left (SharingAvailable/Unavailable), ""
 	// before any.
 	sharing string
+	// owner is the Mac's iCloud user as last read, "" when not cached;
+	// accountEpoch counts the account changes (the Swift ownerEpoch).
+	owner        string
+	accountEpoch uint64
+	// linkWanted is the public link the center wants (the Swift linkWanted).
+	linkWanted bool
 }
 
 type openCode struct {
@@ -154,24 +200,35 @@ type openCode struct {
 type retiredCode struct{ nonce, reason string }
 
 // IssueCloudKit makes a CloudKit QR code (the Swift issueCode): it refuses
-// without an available iCloud account (*AccountError, no share call) or the
-// Mac's user (ErrOwnerUnknown; read from s when it is a
-// transport.CloudUser, as the CloudKit client is); creates the zone shares if missing, marks
-// the sweep pending and opens their public link — a failure there leaves the
-// share URLs out (only a same-Apple-ID phone can link then); and stores the
-// code like Issue (v4, container, owner_user, data_share, relay_share,
-// transport cloudkit, transports ["cloudkit","relay"]). A pending grace
-// sweep or retry is cancelled: the new code's own close sweeps. A code that
-// cannot be stored closes the link it opened.
+// without an available iCloud account (*AccountError, no share call; a
+// failed read is AccountUnreadable) or the Mac's user (ErrOwnerUnknown; read
+// from s, a transport.CloudUser such as the CloudKit client, and cached
+// until the account changes); creates the zone shares if missing, marks the
+// sweep pending and opens their public link — a failure there leaves the
+// share URLs out (only a same-Apple-ID phone can link then); then checks
+// the owner again: an account change meanwhile (AccountChanged, or another
+// owner) closes the link with CloseAccountChanged and returns
+// ErrAccountChanged. Otherwise it stores the code like Issue (v4, container,
+// owner_user, data_share, relay_share, transport cloudkit, transports
+// ["cloudkit","relay"]). A pending grace sweep or retry is cancelled: the
+// new code's own close sweeps. A code that cannot be stored closes the link
+// it opened.
 func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.LinkPayload, string, error) {
 	c.ck.mu.Lock()
-	defer c.ck.mu.Unlock()
+	c.ck.issuing++
 	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt, c.ck.linkCloseTries = time.Time{}, 0, time.Time{}, 0
+	epoch := c.ck.accountEpoch
+	c.ck.mu.Unlock()
+	defer func() {
+		c.ck.mu.Lock()
+		c.ck.issuing--
+		c.ck.mu.Unlock()
+	}()
 	c.setRetired(retiredCode{}) // the new code retires every open one: their hellos read expired_code
 	account, err := bounded(ctx, s.AccountStatus)
 	if err != nil {
 		log.Printf("hub link: iCloud account unreadable (%s): no code", shareErrorClass(err))
-		return wire.LinkPayload{}, "", fmt.Errorf("link: reading the iCloud account: %w", err)
+		return wire.LinkPayload{}, "", &AccountError{Account: AccountUnreadable, Err: err}
 	}
 	if account != transport.AccountAvailable {
 		log.Printf("hub link: iCloud account %s: no code", account)
@@ -185,29 +242,85 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	if data, relay, ok := c.openPublicLink(ctx, s); ok {
 		fields.dataShare, fields.relayShare = &data, &relay
 	}
+	if c.accountMoved(ctx, s, epoch, owner) {
+		log.Printf("hub link: the iCloud account changed while a code was issued: link closed, no code")
+		_ = c.closeLink(ctx, s, CloseAccountChanged, nil)
+		return wire.LinkPayload{}, "", ErrAccountChanged
+	}
 	p, url, err := c.issue(fields)
 	if err != nil {
 		// No code links, so the link just opened must not stay open.
-		_ = c.closeLinkLocked(ctx, s, CloseIssueFailed)
+		_ = c.closeLink(ctx, s, CloseIssueFailed, nil)
 		return wire.LinkPayload{}, "", err
 	}
+	c.ck.mu.Lock()
 	c.ck.open = &openCode{nonce: p.Nonce, exp: time.Unix(p.Exp, 0).UTC()}
+	c.ck.mu.Unlock()
 	return p, url, nil
 }
 
-// owner is the Mac's iCloud user record name from the bridge, "" when
-// unknown (s is no transport.CloudUser, or the lookup failed).
+// owner is the Mac's iCloud user record name, "" when unknown (s is no
+// transport.CloudUser, or the lookup failed). A name read across an account
+// change is used but not cached.
 func (c *Center) owner(ctx context.Context, s transport.Shares) string {
-	u, ok := s.(transport.CloudUser)
+	c.ck.mu.Lock()
+	cached, epoch := c.ck.owner, c.ck.accountEpoch
+	c.ck.mu.Unlock()
+	if cached != "" {
+		return cached
+	}
+	name, ok := c.readOwner(ctx, s)
 	if !ok {
 		return ""
+	}
+	c.ck.mu.Lock()
+	if epoch == c.ck.accountEpoch {
+		c.ck.owner = name
+	}
+	c.ck.mu.Unlock()
+	return name
+}
+
+// readOwner asks the bridge for the Mac's user; false when it cannot tell.
+func (c *Center) readOwner(ctx context.Context, s transport.Shares) (string, bool) {
+	u, ok := s.(transport.CloudUser)
+	if !ok {
+		return "", false
 	}
 	name, err := bounded(ctx, u.OwnerUser)
 	if err != nil {
 		log.Printf("hub link: the Mac's iCloud user unreadable (%s)", shareErrorClass(err))
-		return ""
+		return "", false
 	}
-	return name
+	return name, name != ""
+}
+
+// accountMoved: the account changed since epoch, or the bridge now names
+// another owner than owner (a failed re-read leaves it to the epoch). A
+// moved owner drops the cache.
+func (c *Center) accountMoved(ctx context.Context, s transport.Shares, epoch uint64, owner string) bool {
+	now, ok := c.readOwner(ctx, s)
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	if ok && now != owner {
+		c.ck.owner = ""
+		c.ck.accountEpoch++
+	}
+	return c.ck.accountEpoch != epoch
+}
+
+// AccountChanged handles the bridge's account_changed event (the Swift
+// account-change close): the cached owner is dropped, a lookup or an issue
+// running across it is not kept, and the open code and its link are closed
+// with CloseAccountChanged (waiting requests refused not_confirmed, the
+// participants swept at once).
+func (c *Center) AccountChanged(ctx context.Context, s transport.Shares) error {
+	c.ck.mu.Lock()
+	c.ck.owner = ""
+	c.ck.accountEpoch++
+	c.ck.mu.Unlock()
+	log.Printf("hub link: the iCloud account changed: the open link is closed")
+	return c.CloseLink(ctx, s, CloseAccountChanged)
 }
 
 // openPublicLink creates the shares if needed, marks the sweep pending (a
@@ -216,7 +329,7 @@ func (c *Center) owner(ctx context.Context, s transport.Shares) string {
 func (c *Center) openPublicLink(ctx context.Context, s transport.Shares) (data, relay string, ok bool) {
 	fail := func(step string, err error) (string, string, bool) {
 		log.Printf("hub link: zone shares unavailable at %s (%s): QR without share URLs", step, shareErrorClass(err))
-		c.ck.sharing = SharingUnavailable
+		c.setSharing(SharingUnavailable)
 		return "", "", false
 	}
 	type urls struct{ data, relay string }
@@ -227,18 +340,26 @@ func (c *Center) openPublicLink(ctx context.Context, s transport.Shares) (data, 
 	if err != nil {
 		return fail("ensure_shares", err)
 	}
-	if err := c.st.SetMeta(MetaShareSweepPending, "1"); err != nil {
+	if err := c.st.WithTx(ctx, markSweepTx); err != nil {
 		return fail("sweep_mark", err)
 	}
-	if err := boundedDo(ctx, func(ctx context.Context) error { return s.SetPublicLink(ctx, true) }); err != nil {
+	if written, err := c.setLink(ctx, s, true, CloseRestart); err != nil {
 		return fail("set_public_link", err)
+	} else if !written {
+		return fail("set_public_link", errSuperseded)
 	}
-	c.ck.sharing = SharingAvailable
+	c.setSharing(SharingAvailable)
 	return got.data, got.relay, true
 }
 
+func (c *Center) setSharing(v string) {
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	c.ck.sharing = v
+}
+
 // Sharing is what the last CloudKit issue left: SharingAvailable,
-// SharingUnavailable, or "" before any.
+// SharingUnavailable, or "" before any. It never waits on the bridge.
 func (c *Center) Sharing() string {
 	c.ck.mu.Lock()
 	defer c.ck.mu.Unlock()
@@ -247,11 +368,39 @@ func (c *Center) Sharing() string {
 
 // LinkUrgent reports that a CloudKit code is on screen or an answering
 // close's grace runs: the relay pass runs at its active cadence (a late
-// hello is read and refused within the grace).
+// hello is read and refused within the grace). It never waits on the
+// bridge.
 func (c *Center) LinkUrgent() bool {
 	c.ck.mu.Lock()
 	defer c.ck.mu.Unlock()
 	return c.ck.open != nil || c.now().Before(c.ck.graceEnd)
+}
+
+// setLink writes the public link through the one writer (the Swift
+// setPublicLink(open:reason:)): open or closed becomes the wanted state; a
+// close yields to a code being issued unless reason voids it; the write
+// runs only if it is still wanted when its turn comes (a newer wanted state
+// supersedes it). written false: no call was made.
+func (c *Center) setLink(ctx context.Context, s transport.Shares, open bool, reason CloseReason) (bool, error) {
+	c.ck.mu.Lock()
+	if !open && c.ck.issuing > 0 && !reason.voidsCode() {
+		c.ck.mu.Unlock()
+		return false, nil
+	}
+	c.ck.linkWanted = open
+	c.ck.mu.Unlock()
+	c.linkMu.Lock()
+	defer c.linkMu.Unlock()
+	c.ck.mu.Lock()
+	wanted := c.ck.linkWanted
+	c.ck.mu.Unlock()
+	if wanted != open {
+		return false, nil
+	}
+	if err := boundedDo(ctx, func(ctx context.Context) error { return s.SetPublicLink(ctx, open) }); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // CloseLink closes the CloudKit link (the Swift closeLink): every request
@@ -268,19 +417,22 @@ func (c *Center) LinkUrgent() bool {
 // the next close; the error is returned.
 func (c *Center) CloseLink(ctx context.Context, s transport.Shares, reason CloseReason) error {
 	c.ck.mu.Lock()
-	defer c.ck.mu.Unlock()
-	return c.closeLinkLocked(ctx, s, reason)
-}
-
-func (c *Center) closeLinkLocked(ctx context.Context, s transport.Shares, reason CloseReason) error {
 	closed := c.ck.open
 	c.ck.open = nil
+	c.ck.mu.Unlock()
+	return c.closeLink(ctx, s, reason, closed)
+}
+
+// closeLink is CloseLink once the open code (closed, or nil) was taken.
+func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason CloseReason, closed *openCode) error {
 	if err := c.refuseWaiting(reason); err != nil {
 		log.Printf("hub link: waiting link requests not refused (%s, %s)", reason, shareErrorClass(err))
 	}
 	if !reason.answersLateHellos() {
-		if err := c.sweepShares(ctx, s, reason); err != nil {
+		if _, err := c.sweepShares(ctx, s, reason, false); err != nil {
+			c.ck.mu.Lock()
 			c.scheduleSweepRetry(0)
+			c.ck.mu.Unlock()
 			return err
 		}
 		return nil
@@ -294,71 +446,99 @@ func (c *Center) closeLinkLocked(ctx context.Context, s transport.Shares, reason
 	} else if !pending {
 		return nil
 	}
-	now := c.now()
-	c.ck.graceEnd = now.Add(c.sweep.AnswerGrace)
+	c.ck.mu.Lock()
+	c.ck.graceEnd = c.now().Add(c.sweep.AnswerGrace)
 	c.ck.sweepAt, c.ck.sweepTries = c.ck.graceEnd, 0
-	var closeErr error
-	if err := boundedDo(ctx, func(ctx context.Context) error { return s.SetPublicLink(ctx, false) }); err != nil {
+	c.ck.mu.Unlock()
+	if _, err := c.setLink(ctx, s, false, reason); err != nil {
 		log.Printf("hub link: share link not closed (%s, %s), retried", reason, shareErrorClass(err))
-		c.ck.linkCloseAt, c.ck.linkCloseTries = now.Add(linkCloseRetryDelays[0]), 1
-		closeErr = fmt.Errorf("link: closing the public link: %w", err)
+		c.ck.mu.Lock()
+		c.ck.linkCloseAt, c.ck.linkCloseTries = c.now().Add(linkCloseRetryDelays[0]), 1
+		c.ck.mu.Unlock()
+		return fmt.Errorf("link: closing the public link: %w", err)
 	}
-	if c.sweep.AnswerGrace <= 0 {
-		return errors.Join(closeErr, c.sweepDue(ctx, s))
-	}
-	return closeErr
+	return nil
 }
 
 // SweepShares is the CloudKit link's per-pass housekeeping, called by the
 // runtime on every relay pass: it closes an open code at its expiry
 // (CloseExpired), retries a failed public-link close, and runs a due
-// deferred sweep (the answer grace's end, or a retry). While a code is on
-// screen it does nothing else: that code's own close sweeps.
+// deferred sweep (the answer grace's end, a retry, an unlink). While a code
+// is being issued or on screen it does nothing else: that code's own close
+// sweeps.
 func (c *Center) SweepShares(ctx context.Context, s transport.Shares) error {
-	c.ck.mu.Lock()
-	defer c.ck.mu.Unlock()
-	return c.sweepDue(ctx, s)
-}
-
-// sweepDue is SweepShares with ck.mu held.
-func (c *Center) sweepDue(ctx context.Context, s transport.Shares) error {
 	now := c.now()
-	if c.ck.open != nil {
-		if now.Before(c.ck.open.exp) {
+	c.ck.mu.Lock()
+	if open := c.ck.open; open != nil {
+		if now.Before(open.exp) {
+			c.ck.mu.Unlock()
 			return nil
 		}
-		return c.closeLinkLocked(ctx, s, CloseExpired)
+		c.ck.open = nil
+		c.ck.mu.Unlock()
+		return c.closeLink(ctx, s, CloseExpired, open)
 	}
+	if c.ck.issuing > 0 {
+		c.ck.mu.Unlock()
+		return nil
+	}
+	linkDue := !c.ck.linkCloseAt.IsZero() && !now.Before(c.ck.linkCloseAt)
+	sweepDue := !c.ck.sweepAt.IsZero() && !now.Before(c.ck.sweepAt)
+	c.ck.mu.Unlock()
+
 	var linkErr error
-	if !c.ck.linkCloseAt.IsZero() && !now.Before(c.ck.linkCloseAt) {
-		if pending, err := c.sweepPending(); err == nil && !pending {
-			c.ck.linkCloseAt = time.Time{}
-		} else if err := boundedDo(ctx, func(ctx context.Context) error { return s.SetPublicLink(ctx, false) }); err != nil {
-			log.Printf("hub link: share link not closed on retry (%s)", shareErrorClass(err))
-			linkErr = fmt.Errorf("link: closing the public link: %w", err)
-			if c.ck.linkCloseTries < len(linkCloseRetryDelays) {
-				c.ck.linkCloseAt = now.Add(linkCloseRetryDelays[c.ck.linkCloseTries])
-				c.ck.linkCloseTries++
-			} else {
-				c.ck.linkCloseAt = time.Time{}
-			}
-		} else {
-			c.ck.linkCloseAt = time.Time{}
-		}
+	if linkDue {
+		linkErr = c.retryLinkClose(ctx, s, now)
 	}
-	if c.ck.sweepAt.IsZero() || now.Before(c.ck.sweepAt) {
+	if !sweepDue {
 		return linkErr
 	}
-	if err := c.sweepShares(ctx, s, CloseRestart); err != nil {
+	cleared, err := c.sweepShares(ctx, s, CloseRestart, true)
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	switch {
+	case err != nil:
 		c.scheduleSweepRetry(c.ck.sweepTries)
 		return errors.Join(linkErr, err)
+	case cleared:
+		c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt = time.Time{}, 0, time.Time{}
+	default:
+		// Stood down for a code, or an unlink marked the sweep again
+		// meanwhile: the next pass looks again.
+		c.ck.sweepAt = c.now()
 	}
-	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt = time.Time{}, 0, time.Time{}
 	return linkErr
 }
 
+// retryLinkClose retries a failed public-link close while the sweep is
+// still pending, after each of linkCloseRetryDelays.
+func (c *Center) retryLinkClose(ctx context.Context, s transport.Shares, now time.Time) error {
+	if pending, err := c.sweepPending(); err == nil && !pending {
+		c.ck.mu.Lock()
+		c.ck.linkCloseAt = time.Time{}
+		c.ck.mu.Unlock()
+		return nil
+	}
+	_, err := c.setLink(ctx, s, false, CloseRestart)
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	if err == nil {
+		c.ck.linkCloseAt = time.Time{}
+		return nil
+	}
+	log.Printf("hub link: share link not closed on retry (%s)", shareErrorClass(err))
+	if c.ck.linkCloseTries < len(linkCloseRetryDelays) {
+		c.ck.linkCloseAt = now.Add(linkCloseRetryDelays[c.ck.linkCloseTries])
+		c.ck.linkCloseTries++
+	} else {
+		c.ck.linkCloseAt = time.Time{}
+	}
+	return fmt.Errorf("link: closing the public link: %w", err)
+}
+
 // scheduleSweepRetry plans the retry after the tries already spent; past the
-// last delay the sweep is left to the next close (the mark stays).
+// last delay the sweep is left to the next close (the mark stays). ck.mu is
+// held.
 func (c *Center) scheduleSweepRetry(spent int) {
 	if spent >= len(sweepRetryDelays) {
 		c.ck.sweepAt, c.ck.sweepTries = time.Time{}, 0
@@ -367,57 +547,159 @@ func (c *Center) scheduleSweepRetry(spent int) {
 	c.ck.sweepAt, c.ck.sweepTries = c.now().Add(sweepRetryDelays[spent]), spent+1
 }
 
-// sweepShares closes the public link and removes the participants not bound
-// to a linked shared phone while the sweep is pending, then clears the mark;
-// nothing when it is not pending.
-func (c *Center) sweepShares(ctx context.Context, s transport.Shares, reason CloseReason) error {
-	pending, err := c.sweepPending()
-	if err != nil {
-		return err
+// sweepSoon makes a deferred sweep due at the next pass (an unlinked shared
+// phone's participant goes at once, as in Swift; RemoveCloudKit removes it
+// even sooner).
+func (c *Center) sweepSoon() {
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	if now := c.now(); c.ck.sweepAt.IsZero() || c.ck.sweepAt.After(now) {
+		c.ck.sweepAt, c.ck.sweepTries = now, 0
 	}
-	if !pending {
-		return nil
+}
+
+// sweepSnapshot is what a sweep starts from, read in one transaction: the
+// mark, its epoch and the linked shared phones' users.
+type sweepSnapshot struct {
+	pending bool
+	epoch   uint64
+	bound   map[string]bool
+}
+
+func (c *Center) readSweep(ctx context.Context) (sweepSnapshot, error) {
+	snap := sweepSnapshot{bound: map[string]bool{}}
+	err := c.st.ReadTx(ctx, func(tx *sql.Tx) error {
+		v, _, err := state.MetaTx(tx, MetaShareSweepPending)
+		if err != nil {
+			return err
+		}
+		snap.pending = v == "1"
+		if snap.epoch, err = sweepEpochTx(tx); err != nil {
+			return err
+		}
+		rows, err := tx.Query(`SELECT user_record_name FROM devices WHERE scope = ?`, wire.ScopeShared)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			snap.bound[name] = true
+		}
+		return rows.Err()
+	})
+	return snap, err
+}
+
+// sweepShares closes the public link and removes the participants not bound
+// to a linked shared phone while the sweep is pending, then clears the mark
+// — only if its epoch did not move meanwhile (an unlink during the sweep
+// keeps it pending). A deferred sweep stands down, the mark kept, once a
+// code is being issued or on screen. cleared: the mark was cleared (or was
+// not pending).
+func (c *Center) sweepShares(ctx context.Context, s transport.Shares, reason CloseReason, deferred bool) (bool, error) {
+	snap, err := c.readSweep(ctx)
+	if err != nil {
+		return false, fmt.Errorf("link: reading the share sweep: %w", err)
+	}
+	if !snap.pending {
+		return true, nil
 	}
 	zones, err := c.shareZones()
 	if err != nil {
-		return err
+		return false, err
 	}
-	fail := func(step string, err error) error {
+	yields := func() bool {
+		if !deferred {
+			return false
+		}
+		c.ck.mu.Lock()
+		defer c.ck.mu.Unlock()
+		return c.ck.issuing > 0 || c.ck.open != nil
+	}
+	fail := func(step string, err error) (bool, error) {
 		log.Printf("hub link: share sweep failed at %s (%s, %s), retried later", step, reason, shareErrorClass(err))
-		return fmt.Errorf("link: sweeping the shares: %s: %w", step, err)
+		return false, fmt.Errorf("link: sweeping the shares: %s: %w", step, err)
 	}
-	if err := boundedDo(ctx, func(ctx context.Context) error { return s.SetPublicLink(ctx, false) }); err != nil {
+	if yields() {
+		return false, nil
+	}
+	if written, err := c.setLink(ctx, s, false, reason); err != nil {
 		return fail("set_public_link", err)
-	}
-	bound, err := c.boundUsers()
-	if err != nil {
-		return fail("bound_users", err)
+	} else if !written {
+		return false, nil // a code being issued keeps its link: its own close sweeps
 	}
 	removed := 0
 	for _, zone := range zones {
+		if yields() {
+			return false, nil
+		}
 		ps, err := bounded(ctx, func(ctx context.Context) ([]transport.Participant, error) { return s.Participants(ctx, zone) })
 		if err != nil {
 			return fail("participants", err)
 		}
 		var leaving []string
 		for _, p := range ps {
-			if !bound[p.UserRecordName] && !slices.Contains(leaving, p.UserRecordName) {
+			if !snap.bound[p.UserRecordName] && !slices.Contains(leaving, p.UserRecordName) {
 				leaving = append(leaving, p.UserRecordName)
 			}
 		}
 		if len(leaving) == 0 {
 			continue
 		}
+		if yields() {
+			return false, nil
+		}
 		if err := boundedDo(ctx, func(ctx context.Context) error { return s.RemoveParticipants(ctx, zone, leaving) }); err != nil {
 			return fail("remove_participants", err)
 		}
 		removed += len(leaving)
 	}
-	if err := c.st.SetMeta(MetaShareSweepPending, "0"); err != nil {
+	var cleared bool
+	err = c.st.WithTx(ctx, func(tx *sql.Tx) error {
+		epoch, err := sweepEpochTx(tx)
+		if err != nil || epoch != snap.epoch {
+			return err
+		}
+		cleared = true
+		return state.SetMetaTx(tx, MetaShareSweepPending, "0")
+	})
+	if err != nil {
 		return fail("sweep_mark", err)
 	}
+	if !cleared {
+		log.Printf("hub link: shares swept (%s): %d participants removed; marked again meanwhile, kept pending", reason, removed)
+		return false, nil
+	}
 	log.Printf("hub link: shares swept (%s): %d participants removed", reason, removed)
-	return nil
+	return true, nil
+}
+
+// markSweepTx marks the sweep pending and bumps its epoch, in tx.
+func markSweepTx(tx *sql.Tx) error {
+	epoch, err := sweepEpochTx(tx)
+	if err != nil {
+		return err
+	}
+	if err := state.SetMetaTx(tx, MetaShareSweepEpoch, strconv.FormatUint(epoch+1, 10)); err != nil {
+		return err
+	}
+	return state.SetMetaTx(tx, MetaShareSweepPending, "1")
+}
+
+func sweepEpochTx(tx *sql.Tx) (uint64, error) {
+	v, ok, err := state.MetaTx(tx, MetaShareSweepEpoch)
+	if err != nil || !ok {
+		return 0, err
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("hub_meta %s unreadable: %w", MetaShareSweepEpoch, err)
+	}
+	return n, nil
 }
 
 // HandleCloudKitHello decides a hello read from the shared RelayZone (the
@@ -526,11 +808,12 @@ func (c *Center) acceptedBothShares(ctx context.Context, s transport.Shares, use
 	return true
 }
 
-// RemoveCloudKit is the owner's Remove on a CloudKit hub (the Swift
-// remove): Unlink, then, for a shared-scope phone, its iCloud user leaves
-// both shares unless another linked shared phone is on it. A failed removal
-// is returned with the phone already unlinked (the gate refuses it at once);
-// Unlink marked the sweep pending, so the next close removes it.
+// RemoveCloudKit is the owner's Remove on a CloudKit hub, and the phone's
+// own unlink (the Swift remove and handleLinkedRewrite): Unlink, then, for a
+// shared-scope phone, its iCloud user leaves both shares at once unless
+// another linked shared phone is on it. A failed removal is returned with
+// the phone already unlinked (the gate refuses it at once); Unlink marked
+// the sweep pending and due, so the next pass removes it.
 func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device string) error {
 	var scope, user string
 	err := c.st.ReadTx(ctx, func(tx *sql.Tx) error {
@@ -549,13 +832,11 @@ func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device 
 	if scope != wire.ScopeShared || user == "" {
 		return nil
 	}
-	c.ck.mu.Lock()
-	defer c.ck.mu.Unlock()
-	bound, err := c.boundUsers()
+	snap, err := c.readSweep(ctx)
 	if err != nil {
 		return fmt.Errorf("link: reading the linked phones: %w", err)
 	}
-	if bound[user] {
+	if snap.bound[user] {
 		return nil
 	}
 	zones, err := c.shareZones()
@@ -631,32 +912,12 @@ func (c *Center) sweepPending() (bool, error) {
 	return v == "1", err
 }
 
-// boundUsers are the linked shared phones' iCloud users.
-func (c *Center) boundUsers() (map[string]bool, error) {
-	bound := map[string]bool{}
-	err := c.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT user_record_name FROM devices WHERE scope = ?`, wire.ScopeShared)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				return err
-			}
-			bound[name] = true
-		}
-		return rows.Err()
-	})
-	return bound, err
-}
-
 // shareZones are the runtime names of the two shared zones: the data zone
 // and the shared RelayZone, in that order.
 func (c *Center) shareZones() ([2]string, error) {
 	rid := c.host.RelayDeviceID
 	if rid == "" {
+		log.Printf("hub link: no relay device id names the hub's zones: share call refused")
 		return [2]string{}, ErrNoRelayID
 	}
 	return [2]string{transport.DataZone(rid), transport.SharedMailboxZone(rid)}, nil
@@ -682,6 +943,8 @@ func shareErrorClass(err error) string {
 		return "timed_out"
 	case errors.Is(err, context.Canceled):
 		return "cancelled"
+	case errors.Is(err, errSuperseded):
+		return "superseded"
 	}
 	for _, s := range []error{transport.ErrUnavailable, transport.ErrForbidden, transport.ErrRateLimited,
 		transport.ErrUnsupportedZone, transport.ErrUnsupportedVersion, transport.ErrHubQuota, transport.ErrMailboxQuota,

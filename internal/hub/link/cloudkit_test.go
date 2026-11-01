@@ -43,6 +43,8 @@ type fakeShares struct {
 	parts    map[string][]transport.Participant
 	failing  map[string]bool
 	calls    []string
+	// on runs once, before the next call of its op answers (outside mu).
+	on map[string]func()
 }
 
 func newFakeShares() *fakeShares {
@@ -54,12 +56,44 @@ func newFakeShares() *fakeShares {
 
 func (f *fakeShares) call(op string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, op)
-	if f.failing[op] {
+	hook := f.on[op]
+	delete(f.on, op)
+	failing := f.failing[op]
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if failing {
 		return transport.ErrUnavailable
 	}
 	return nil
+}
+
+// once runs fn inside the next call of op.
+func (f *fakeShares) once(op string, fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.on == nil {
+		f.on = map[string]func(){}
+	}
+	f.on[op] = fn
+}
+
+func (f *fakeShares) count(calls []string, op string) int {
+	n := 0
+	for _, c := range calls {
+		if c == op {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeShares) setOwner(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.owner = name
 }
 
 func (f *fakeShares) AccountStatus(context.Context) (transport.Account, error) {
@@ -956,23 +990,22 @@ func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 	if CloudKitContainer != "iCloud.com.aiwatchtowers.watchtower" {
 		t.Errorf("container %q", CloudKitContainer)
 	}
-	if src, err := os.ReadFile("../../../WatchtowerKit/Sources/WatchtowerSync/Link/LinkPayload.swift"); err == nil {
-		var swiftKeys []string
-		block := regexp.MustCompile(`(?s)enum CodingKeys: String, CodingKey \{(.*?)\}`).FindSubmatch(src)
-		for _, m := range regexp.MustCompile(`case (\w+)(?: = "(\w+)")?`).FindAllSubmatch(block[1], -1) {
-			key := string(m[1])
-			if len(m[2]) > 0 {
-				key = string(m[2])
-			}
-			swiftKeys = append(swiftKeys, key)
+	src := readSource(t, "../../../WatchtowerKit/Sources/WatchtowerSync/Link/LinkPayload.swift")
+	var swiftKeys []string
+	for _, m := range regexp.MustCompile(`case (\w+)(?: = "(\w+)")?`).FindAllSubmatch(
+		submatch(t, `(?s)enum CodingKeys: String, CodingKey \{(.*?)\}`, src), -1) {
+		key := string(m[1])
+		if len(m[2]) > 0 {
+			key = string(m[2])
 		}
-		slices.Sort(swiftKeys)
-		if !slices.Equal(swiftKeys, kitKeys) {
-			t.Errorf("the Kit's LinkPayload keys are %v, pinned %v", swiftKeys, kitKeys)
-		}
+		swiftKeys = append(swiftKeys, key)
 	}
-	if src, err := os.ReadFile("../../../WatchtowerKit/Sources/WatchtowerSync/Relay/RelayRecordKind.swift"); err == nil &&
-		!strings.Contains(string(src), `containerID = "`+CloudKitContainer+`"`) {
+	slices.Sort(swiftKeys)
+	if !slices.Equal(swiftKeys, kitKeys) {
+		t.Errorf("the Kit's LinkPayload keys are %v, pinned %v", swiftKeys, kitKeys)
+	}
+	if src := readSource(t, "../../../WatchtowerKit/Sources/WatchtowerSync/Relay/RelayRecordKind.swift"); !strings.Contains(string(src),
+		`containerID = "`+CloudKitContainer+`"`) {
 		t.Error("the Kit's WatchtowerCloud.containerID differs")
 	}
 
@@ -983,22 +1016,21 @@ func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 		!slices.Equal(linkCloseRetryDelays, []time.Duration{15 * time.Second, time.Minute}) {
 		t.Error("a constant changed")
 	}
+	// The Swift hub's sources (Task 24 deletes them and these reads with them; the literals above stay).
 	const swiftHub = "../../../WatchtowerDesktop/Sources/Services/MobileHub/"
-	if src, err := os.ReadFile(swiftHub + "MobileLinkCenter.swift"); err == nil {
-		for _, line := range []string{
-			`sweepPendingKey = "share_sweep_pending"`,
-			`answerGrace: Duration = .seconds(120)`,
-			`sweepRetryDelays: [Duration] = [.seconds(60), .seconds(300), .seconds(900), .seconds(3600)]`,
-			`linkCloseRetryDelays: [Duration] = [.seconds(15), .seconds(60)]`,
-			`case sheetClosed = "sheet_closed"`, `case issueFailed = "issue_failed"`, `case accountChanged = "account_changed"`,
-		} {
-			if !strings.Contains(string(src), line) {
-				t.Errorf("MobileLinkCenter.swift no longer has %q", line)
-			}
+	center := string(readSource(t, swiftHub+"MobileLinkCenter.swift"))
+	for _, line := range []string{
+		`sweepPendingKey = "share_sweep_pending"`,
+		`answerGrace: Duration = .seconds(120)`,
+		`sweepRetryDelays: [Duration] = [.seconds(60), .seconds(300), .seconds(900), .seconds(3600)]`,
+		`linkCloseRetryDelays: [Duration] = [.seconds(15), .seconds(60)]`,
+		`case sheetClosed = "sheet_closed"`, `case issueFailed = "issue_failed"`, `case accountChanged = "account_changed"`,
+	} {
+		if !strings.Contains(center, line) {
+			t.Errorf("MobileLinkCenter.swift no longer has %q", line)
 		}
 	}
-	if src, err := os.ReadFile(swiftHub + "MobileHubService.swift"); err == nil &&
-		!strings.Contains(string(src), "defaultCloudTimeout: Duration = .seconds(30)") {
+	if !strings.Contains(string(readSource(t, swiftHub+"MobileHubService.swift")), "defaultCloudTimeout: Duration = .seconds(30)") {
 		t.Error("the Swift share timeout changed")
 	}
 
@@ -1015,17 +1047,36 @@ func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 	if !slices.Equal(goOps, shareOps) {
 		t.Errorf("transport.Shares %v, ShareService %v", goOps, shareOps)
 	}
-	if src, err := os.ReadFile(swiftHub + "ShareService.swift"); err == nil {
-		block := regexp.MustCompile(`(?s)protocol ShareService: Sendable \{(.*?)\n\}`).FindSubmatch(src)
-		var swiftOps []string
-		for _, m := range regexp.MustCompile(`func (\w+)\(`).FindAllSubmatch(block[1], -1) {
-			swiftOps = append(swiftOps, string(m[1]))
-		}
-		slices.Sort(swiftOps)
-		if !slices.Equal(swiftOps, shareOps) {
-			t.Errorf("ShareService is %v, pinned %v", swiftOps, shareOps)
-		}
+	var swiftOps []string
+	for _, m := range regexp.MustCompile(`func (\w+)\(`).FindAllSubmatch(
+		submatch(t, `(?s)protocol ShareService: Sendable \{(.*?)\n\}`, readSource(t, swiftHub+"ShareService.swift")), -1) {
+		swiftOps = append(swiftOps, string(m[1]))
 	}
+	slices.Sort(swiftOps)
+	if !slices.Equal(swiftOps, shareOps) {
+		t.Errorf("ShareService is %v, pinned %v", swiftOps, shareOps)
+	}
+}
+
+// readSource reads a Swift source the parity check compares with; a missing
+// file fails the test (a moved source must move its pin, never skip it).
+func readSource(t *testing.T, path string) []byte {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("parity source missing: %v", err)
+	}
+	return src
+}
+
+// submatch is re's first group in src; no match fails the test.
+func submatch(t *testing.T, re string, src []byte) []byte {
+	t.Helper()
+	m := regexp.MustCompile(re).FindSubmatch(src)
+	if m == nil {
+		t.Fatalf("parity source no longer matches %s", re)
+	}
+	return m[1]
 }
 
 func jsonKeys(t *testing.T, v any) []string {
@@ -1080,5 +1131,250 @@ func TestFILES01_CloudKitLinkLogsNoCodesURLsOrNames(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Errorf("%q reached the log", secret)
 		}
+	}
+}
+
+// F1, the Swift sweepEpoch: an unlink that lands while a sweep runs (after
+// the sweep read the linked phones) keeps the mark pending, so its phone's
+// participant still goes at the next pass.
+func TestASweepKeepsTheMarkWhenAnUnlinkRunsDuringIt(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	a := newPhone(t)
+	r.linkCK(a, code.Nonce, sharedHello("_colleague-a"))
+	if err := r.c.CloseLink(r.ctx, r.s, CloseUsed); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(DefaultSweep.AnswerGrace)
+	// The grace sweep read "_colleague-a" as bound; the phone is unlinked mid-sweep.
+	r.s.once("participants", func() {
+		if err := r.c.Unlink(a.id.String()); err != nil {
+			t.Errorf("Unlink: %v", err)
+		}
+	})
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.sweepMark() != "1" {
+		t.Fatalf("mark %q: an unlink during the sweep must keep it pending", r.sweepMark())
+	}
+	if got := r.s.names(ckZones[1]); !slices.Equal(got, []string{"_colleague-a"}) {
+		t.Fatalf("participants %v", got)
+	}
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); len(got) != 0 {
+			t.Errorf("%s: %v", z, got)
+		}
+	}
+	if r.sweepMark() != "0" {
+		t.Errorf("mark %q after the next pass", r.sweepMark())
+	}
+}
+
+// F3: a shared phone's own unlink (Center.Unlink, as the device record
+// calls it) makes its participant leave at the next pass, as in Swift.
+func TestAnUnlinkedSharedPhonesParticipantGoesAtTheNextPass(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	a := newPhone(t)
+	r.linkCK(a, code.Nonce, sharedHello("_colleague-a"))
+	if err := r.c.CloseLink(r.ctx, r.s, CloseUsed); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(DefaultSweep.AnswerGrace)
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.s.names(ckZones[1]); !slices.Equal(got, []string{"_colleague-a"}) {
+		t.Fatalf("bound phone swept: %v", got)
+	}
+	if err := r.c.Unlink(a.id.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil { // no time passes
+		t.Fatal(err)
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); len(got) != 0 {
+			t.Errorf("%s: %v", z, got)
+		}
+	}
+}
+
+// F2: no lock is held across a bridge call: while the bridge holds a share
+// call, Sharing and LinkUrgent answer at once.
+func TestShareStateNeverWaitsOnTheBridge(t *testing.T) {
+	r := newRig(t)
+	r.c = r.ckCenter(DefaultSweep)
+	dir := bridgefake.Dir(t)
+	bridge := bridgefake.Serve(t, dir)
+	bridge.SetOwnerUser(ownerUser)
+	hub := r.kr.HubID().String()
+	client := cloudkit.New(cloudkit.Config{Dir: dir, HubID: hub, RelayID: testRelayID})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+	answersAtOnce := func(what string) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			_, _ = r.c.Sharing(), r.c.LinkUrgent()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Sharing/LinkUrgent waited on the bridge during %s", what)
+		}
+	}
+	for _, op := range []string{"ensure_shares", "set_public_link"} {
+		arrived, release := bridge.Block(op)
+		issued := make(chan error, 1)
+		go func() {
+			_, _, err := r.c.IssueCloudKit(ctx, client)
+			issued <- err
+		}()
+		<-arrived
+		answersAtOnce(op)
+		release()
+		if err := <-issued; err != nil {
+			t.Fatalf("IssueCloudKit: %v", err)
+		}
+	}
+	bridge.SetParticipants(cloudkit.RelayZoneName(hub), []transport.Participant{{UserRecordName: "_stranger", Accepted: true}})
+	arrived, release := bridge.Block("remove_participants")
+	closed := make(chan error, 1)
+	go func() { closed <- r.c.CloseLink(ctx, client, CloseRestart) }()
+	<-arrived
+	answersAtOnce("the sweep")
+	release()
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if bridge.PublicLink() || len(bridge.ParticipantsOf(cloudkit.RelayZoneName(hub))) != 0 {
+		t.Error("the close did not land")
+	}
+}
+
+// F4: the bridge's account_changed closes the open code and its link at
+// once, refuses the waiting phone and drops the cached owner.
+func TestAnAccountChangeClosesTheOpenCodeAndItsLink(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_stranger")
+	a := newPhone(t)
+	if got, err := r.ckHello(a, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	r.s.setOwner("_new-owner")
+	if err := r.c.AccountChanged(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() || r.c.LinkUrgent() || len(r.s.names(ckZones[1])) != 0 {
+		t.Errorf("open %v urgent %v participants %v", r.s.isOpen(), r.c.LinkUrgent(), r.s.names(ckZones[1]))
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed || kb.Keys != nil {
+		t.Errorf("waiting phone %+v", kb.Grant)
+	}
+	if err := r.c.Confirm(a.id.String(), "", true); !errors.Is(err, ErrNoRequest) {
+		t.Errorf("the closed code still links: %v", err)
+	}
+	if next := r.issueCK(); next.OwnerUser != "_new-owner" {
+		t.Errorf("the next code names %q: the cached owner was kept", next.OwnerUser)
+	}
+}
+
+// F4: a code being issued across an account change — the bridge's event,
+// or a new owner on the re-read — is not issued, and its link is closed.
+func TestACodeBeingIssuedAcrossAnAccountChangeIsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(r *ckRig)
+	}{
+		{"event", func(r *ckRig) {
+			if err := r.c.AccountChanged(r.ctx, r.s); err != nil {
+				r.t.Errorf("AccountChanged: %v", err)
+			}
+		}},
+		{"owner moved", func(r *ckRig) { r.s.setOwner("_new-owner") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCKRig(t)
+			r.s.once("ensure_shares", func() { tc.change(r) })
+			if _, _, err := r.c.IssueCloudKit(r.ctx, r.s); !errors.Is(err, ErrAccountChanged) {
+				t.Fatalf("err %v", err)
+			}
+			if r.s.isOpen() || r.c.LinkUrgent() {
+				t.Errorf("open %v urgent %v", r.s.isOpen(), r.c.LinkUrgent())
+			}
+			if codes, err := r.c.keptCodes(); err != nil || len(codes) != 0 {
+				t.Errorf("codes %v %v", codes, err)
+			}
+			r.s.setOwner("_new-owner")
+			if next := r.issueCK(); next.OwnerUser != "_new-owner" || !r.s.isOpen() {
+				t.Errorf("next code names %q, open %v", next.OwnerUser, r.s.isOpen())
+			}
+		})
+	}
+}
+
+// F6: an account the bridge cannot read refuses as an *AccountError, as in
+// Swift (CloudAvailability.unavailable).
+func TestAFailedAccountReadIsAnAccountError(t *testing.T) {
+	r := newCKRig(t)
+	r.s.setFailing("account_status")
+	_, _, err := r.c.IssueCloudKit(r.ctx, r.s)
+	var ae *AccountError
+	if !errors.As(err, &ae) || ae.Account != AccountUnreadable || !errors.Is(err, transport.ErrUnavailable) {
+		t.Errorf("err %v", err)
+	}
+	if calls := r.s.takeCalls(); !slices.Equal(calls, []string{"account_status"}) {
+		t.Errorf("calls %v", calls)
+	}
+}
+
+// F9: the owner is read once and cached until the account changes; an
+// issue only re-reads it once to check for a change.
+func TestTheOwnerIsCachedUntilTheAccountChanges(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	if n := r.s.count(r.s.takeCalls(), "owner_user"); n != 2 {
+		t.Errorf("first issue: %d owner reads, want the lookup and the re-check", n)
+	}
+	a := newPhone(t)
+	r.linkCK(a, code.Nonce)
+	if n := r.s.count(r.s.takeCalls(), "owner_user"); n != 0 {
+		t.Errorf("a private hello read the owner %d times: not cached", n)
+	}
+	if err := r.c.AccountChanged(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	r.s.takeCalls()
+	b := newPhone(t)
+	code = r.issueCK()
+	r.linkCK(b, code.Nonce)
+	if n := r.s.count(r.s.takeCalls(), "owner_user"); n != 2 {
+		t.Errorf("after the change: %d owner reads, want a fresh lookup and the re-check", n)
+	}
+}
+
+// F8: a center without a relay device id refuses the share calls and logs
+// it (class only).
+func TestNoRelayIDRefusesTheSweepAndIsLogged(t *testing.T) {
+	sink := logcanary.Capture(t)
+	r := newCKRig(t)
+	r.c.host.RelayDeviceID = ""
+	if err := r.st.SetMeta(MetaShareSweepPending, "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.CloseLink(r.ctx, r.s, CloseRestart); !errors.Is(err, ErrNoRelayID) {
+		t.Errorf("err %v", err)
+	}
+	if !strings.Contains(sink.String(), "no relay device id") {
+		t.Error("the refusal was not logged")
 	}
 }

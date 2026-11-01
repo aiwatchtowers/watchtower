@@ -413,6 +413,16 @@
         }
       },
       "hex": "520d1a0b756e617661696c61626c65"
+    },
+    {
+      "name": "event_account_changed",
+      "message": "Response",
+      "json": {
+        "event": {
+          "account_changed": true
+        }
+      },
+      "hex": "52022001"
     }
   ]
 }
