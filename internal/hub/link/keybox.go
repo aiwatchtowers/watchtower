@@ -129,6 +129,12 @@ func linkPending(tx *sql.Tx, p pendingDevice, now time.Time) error {
 	if err := state.LinkDevice(tx, d); err != nil {
 		return err
 	}
+	// The iCloud user the participant sweep spares (CloudKit only; state.LinkDevice writes it empty).
+	if p.userRecordName != "" {
+		if _, err := tx.Exec(`UPDATE devices SET user_record_name = ? WHERE device_id = ?`, p.userRecordName, id); err != nil {
+			return err
+		}
+	}
 	if decided.Valid {
 		if _, err := tx.Exec(`UPDATE devices SET decided_at = ? WHERE device_id = ?`, decided.Float64, id); err != nil {
 			return err

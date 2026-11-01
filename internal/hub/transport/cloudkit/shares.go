@@ -86,6 +86,20 @@ func (c *Client) RemoveParticipants(ctx context.Context, zoneName string, userRe
 	return nil
 }
 
+// OwnerUser implements transport.CloudUser: the Mac's iCloud user record
+// name (never logged).
+func (c *Client) OwnerUser(ctx context.Context) (string, error) {
+	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_OwnerUser{OwnerUser: &bridgepb.OwnerUser{}}}, false)
+	if err != nil {
+		return "", fmt.Errorf("cloudkit: owner user: %w", err)
+	}
+	u := resp.GetOwnerUser()
+	if u == nil {
+		return "", fmt.Errorf("cloudkit: owner user: %w", errUnexpected)
+	}
+	return u.GetUserRecordName(), nil
+}
+
 // done0 sends req and expects Done.
 func (c *Client) done0(ctx context.Context, req *bridgepb.Request, mailbox bool) error {
 	resp, err := c.do(ctx, req, mailbox)

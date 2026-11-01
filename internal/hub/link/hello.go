@@ -53,14 +53,26 @@ type openedHello struct {
 // one waits for the owner with a fresh confirm nonce (SAS v2: drawn only after
 // the hello was accepted). Each code draws at most MaxNoncesPerCode nonces,
 // a re-sent unchanged hello draws none. ErrHelloDropped when the hello is
-// left unanswered (no kept code opens it, or a check fails).
+// left unanswered (no kept code opens it, or a check fails). zone is the
+// zone the hello was read from: a pairing zone on the hosted relay, or the
+// shared RelayZone on CloudKit (HandleCloudKitHello, which checks the
+// shares first and calls decideHello itself).
 func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error) {
-	c.mu.Lock()
-	defer c.unlock()
 	opened, err := c.openHello(zone, wireName, env)
 	if err != nil {
 		return Pending{}, err
 	}
+	return c.decideHello(opened, "")
+}
+
+// decideHello is HandleHello after the hello opened: user is the iCloud
+// user the request is bound to on CloudKit ("" elsewhere), kept with it so
+// the participant sweep spares a linked shared phone's user. A code an
+// answering CloudKit close retired reads that close's refusal (retired),
+// not expired_code.
+func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
+	c.mu.Lock()
+	defer c.unlock()
 	payload := opened.hello.Device
 	now := c.now()
 	out := Pending{DeviceID: opened.device, Name: displayName(payload.Name), ReceivedAt: now}
@@ -76,10 +88,10 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 		signingKey: opened.sigPub, agreementKey: opened.kxPub.Bytes(), linkNonce: opened.code.nonce,
 		sas: sas, confirmNonce: append([]byte(nil), confirm...), receivedAt: now,
 		typingRequested: payload.TypingRequested, startSessions: payload.StartSessions,
-		relayDeviceID: opened.relayID,
+		relayDeviceID: opened.relayID, userRecordName: user,
 	}
 	waiting := false
-	err = c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		code, ok, err := linkCodeTx(tx, opened.code.nonce)
 		if err != nil {
 			return err
@@ -88,6 +100,9 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 		case decisionUsedByThisDevice:
 			return nil
 		case decisionRefused:
+			if reason == wire.RefusedExpiredCode && c.retired.nonce != "" && c.retired.nonce == opened.code.nonce {
+				reason = c.retired.reason
+			}
 			out.Refused = reason
 			answered, err := refuseHello(tx, request, reason, opened.code.nonce, now)
 			out.Unanswered = !answered
@@ -296,10 +311,12 @@ type pendingDevice struct {
 	startSessions                bool
 	// relayDeviceID is the phone's hosted-relay device id from its hello, or "".
 	relayDeviceID string
+	// userRecordName is the iCloud user a CloudKit request is bound to, or "".
+	userRecordName string
 }
 
 const pendingColumns = `device_id, name, model, scope, signing_key, agreement_key, link_nonce, sas,
-	confirm_nonce, received_at, typing_requested, start_sessions, relay_device_id`
+	confirm_nonce, received_at, typing_requested, start_sessions, relay_device_id, user_record_name`
 
 // scanPending reads a row; ok is false for a row missing a key column or the
 // confirm nonce (a request from before SAS v2 is never offered for a link).
@@ -308,11 +325,11 @@ func scanPending(r interface{ Scan(...any) error }) (pendingDevice, bool, error)
 		p                  pendingDevice
 		name, model, scope sql.NullString
 		nonce, sas         sql.NullString
-		relayID            sql.NullString
+		relayID, user      sql.NullString
 		received           sql.NullFloat64
 	)
 	if err := r.Scan(&p.deviceID, &name, &model, &scope, &p.signingKey, &p.agreementKey, &nonce, &sas,
-		&p.confirmNonce, &received, &p.typingRequested, &p.startSessions, &relayID); err != nil {
+		&p.confirmNonce, &received, &p.typingRequested, &p.startSessions, &relayID, &user); err != nil {
 		return pendingDevice{}, false, err
 	}
 	if p.signingKey == nil || p.agreementKey == nil || !nonce.Valid || !sas.Valid || p.confirmNonce == nil || !received.Valid {
@@ -323,7 +340,7 @@ func scanPending(r interface{ Scan(...any) error }) (pendingDevice, bool, error)
 		p.scope = wire.ScopePrivate
 	}
 	p.linkNonce, p.sas, p.receivedAt = nonce.String, sas.String, fromReal(received.Float64)
-	p.relayDeviceID = relayID.String
+	p.relayDeviceID, p.userRecordName = relayID.String, user.String
 	return p, true, nil
 }
 
@@ -403,9 +420,9 @@ func savePending(tx *sql.Tx, p pendingDevice) (pendingSave, error) {
 	if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
 		return 0, err
 	}
-	_, err = tx.Exec(`INSERT INTO pending_devices (`+pendingColumns+`, user_record_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+	_, err = tx.Exec(`INSERT INTO pending_devices (`+pendingColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.ToUpper(p.deviceID), p.name, p.model, p.scope, p.signingKey, p.agreementKey, p.linkNonce, p.sas,
-		p.confirmNonce, secs(p.receivedAt), p.typingRequested, p.startSessions, nullText(p.relayDeviceID))
+		p.confirmNonce, secs(p.receivedAt), p.typingRequested, p.startSessions, nullText(p.relayDeviceID), p.userRecordName)
 	return pendingSaved, err
 }
 
