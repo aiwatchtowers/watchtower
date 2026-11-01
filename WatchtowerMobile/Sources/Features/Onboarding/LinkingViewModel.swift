@@ -634,14 +634,18 @@ final class LinkingViewModel {
     }
 
     /// Adds `keybox`'s epoch keys to `link`'s stored hub keys when that changes which epochs the Keychain holds
-    /// (epoch numbers are compared, never key material), then has the host open the rows they unlock.
+    /// (epoch numbers are compared, never key material), then has the host open the rows they unlock. Every epoch
+    /// but the newest carries when it was superseded (the previous newest stamped now; one stored before the stamp
+    /// existed too), which the Keychain's 7-day retention reads; the host hears whether the newest epoch went up.
     private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async {
         guard keybox.grant.hubID == link.hubID, keybox.grant.linked, keybox.grant.revoked != true,
               let boxKeys = keybox.keys else { return }
+        let raised: Bool
         do {
             guard let current = try keys.hubLink(link.hubID) else { return }
-            let merged = try current.adding(boxKeys)
+            let merged = try current.adding(boxKeys).stampingSuperseded(from: current, now: clock.now())
             guard merged.epochs.map(\.epoch) != current.epochs.map(\.epoch) else { return }
+            raised = merged.newestEpochRaised(over: current)
             try keys.saveHubLink(merged)
         } catch KeyStoreError.locked {
             Self.logger.notice("keybox keys wait for the unlock")
@@ -651,7 +655,7 @@ final class LinkingViewModel {
             return
         }
         Self.logger.notice("epoch keys merged from the keybox")
-        host?.keysMerged(hubID: link.hubID)
+        host?.keysMerged(hubID: link.hubID, newestEpochRaised: raised)
     }
 
     /// At launch: a link saved before encryption (no hub keys in the

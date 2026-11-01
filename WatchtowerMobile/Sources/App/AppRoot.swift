@@ -818,8 +818,8 @@ extension AppRoot: LinkHost {
         }
     }
 
-    func keysMerged(hubID: String) {
-        env.session(hubID)?.indexStoredRows()
+    func keysMerged(hubID: String, newestEpochRaised: Bool) {
+        env.session(hubID)?.keysMerged(newestEpochRaised: newestEpochRaised)
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {

@@ -270,10 +270,13 @@ final class FakeLinkHost: LinkHost {
     private(set) var keyMerges = 0
     /// The hub of each merge report, in call order.
     private(set) var keyMergeHubIDs: [String] = []
+    /// Whether each merge raised the newest epoch, in call order.
+    private(set) var keyMergeRaised: [Bool] = []
 
-    func keysMerged(hubID: String) {
+    func keysMerged(hubID: String, newestEpochRaised: Bool) {
         keyMerges += 1
         keyMergeHubIDs.append(hubID)
+        keyMergeRaised.append(newestEpochRaised)
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {

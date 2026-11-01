@@ -180,6 +180,8 @@ final class HubSession {
     @ObservationIgnored private var backlogObservation: ResilientObservation?
     /// The last flush (and sweep) the session started without waiting for it (`startOutboxWork`).
     @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
+    /// The last `epoch_ack` the session queued after a raised epoch (`keysMerged`), not awaited (tests wait on it).
+    @ObservationIgnored private(set) var epochAckWork: Task<Void, Never>?
     /// How long `shutDown()` waits for the outbox's chain before it goes on; tests shorten it.
     @ObservationIgnored var outboxDrainCap: Duration = .seconds(10)
     /// The phone recorder (record a meeting or a voice note), owned for the
@@ -703,6 +705,8 @@ final class HubSession {
                 askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter
             )
         )
+        // A raise this phone has not acknowledged yet (no session was up, or the Keychain was locked).
+        acknowledgeNewestEpoch()
         switch transportKind {
         case .inMemoryDemo:
             do {
@@ -1143,11 +1147,39 @@ final class HubSession {
         await readoptHeldIfNeeded()
         await recorder.uploadPending()
         startOutboxWork(sweep: false)
+        acknowledgeNewestEpoch()
+    }
+
+    /// The link flow merged new epoch keys into the Keychain (`AppRoot.keysMerged`): the rows they unlock are
+    /// opened, and when the newest epoch went up an ordered hub gets `epoch_ack` for it (the outbox sends none to a
+    /// hub on today's path, and never one for an epoch it already acknowledged). A locked keychain or a missing
+    /// link leaves it to the next raise.
+    func keysMerged(newestEpochRaised: Bool) {
+        indexStoredRows()
+        guard newestEpochRaised else { return }
+        acknowledgeNewestEpoch()
+    }
+
+    /// Queues `epoch_ack` for the Keychain's newest epoch when it is above the last one acknowledged (the outbox
+    /// decides, and sends none to a hub on today's path). Also when the ordered path turns on (one ack for the link's
+    /// epoch), at boot and after the unlock, so a raise made while no session was up or the Keychain was locked is
+    /// still acknowledged. Kept in `epochAckWork` (tests).
+    private func acknowledgeNewestEpoch() {
+        guard !stopped, linkedDevice != nil else { return }
+        let previous = epochAckWork
+        epochAckWork = Task { [outbox, secure] in
+            await previous?.value
+            do {
+                try await outbox.enqueueEpochAck(epoch: secure.currentEpoch())
+            } catch {
+                Self.logger.warning("epoch_ack not queued: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
-    /// by a fetch does. Rows that still cannot open stay for the next pass. Also the link flow's call once new
-    /// epoch keys joined the Keychain (`AppRoot.keysMerged`).
+    /// by a fetch does. Rows that still cannot open stay for the next pass. Also run once new epoch keys joined
+    /// the Keychain (`keysMerged`).
     func indexStoredRows() {
         do {
             let indexed = try store.indexPending()
@@ -1209,6 +1241,8 @@ final class HubSession {
                   try await !outbox.orderedActions() else { return }
             try await outbox.enableOrderedActions()
             Self.logger.notice("the hub runs ordered actions: the ordered path is on")
+            // The hub takes an ack at or below its epoch as a no-op: from here on its acked epoch matches this phone's.
+            acknowledgeNewestEpoch()
         } catch {
             Self.logger.notice("ordered-actions grant check skipped: \(error.localizedDescription, privacy: .public)")
         }

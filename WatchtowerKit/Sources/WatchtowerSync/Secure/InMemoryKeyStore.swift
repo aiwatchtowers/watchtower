@@ -64,8 +64,9 @@ public final class InMemoryPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     private let backend = InMemoryKeychainBackend()
     private let store: KeychainPhoneKeyStore
 
-    public init() {
-        store = KeychainPhoneKeyStore(backend: backend, privateGroup: nil, alertGroup: nil)
+    /// `now` dates the epoch retention of `saveHubLink`.
+    public init(now: @escaping @Sendable () -> Date = { Date() }) {
+        store = KeychainPhoneKeyStore(backend: backend, privateGroup: nil, alertGroup: nil, now: now)
     }
 
     /// A store whose device identity is `identity` (a fixed test pairing) instead of a fresh one.

@@ -224,7 +224,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await fetch(env)
         let written = await transport.conditionalSaves.dropFirst(mark)
         XCTAssertEqual(written.count, 1, "only the skip")
-        let controls = try await phoneControls(in: transport)
+        let controls = try await phoneControls(in: transport).filter { $0.kind != .epochAck }
         XCTAssertEqual(controls.map(\.kind), [.skipTo])
         XCTAssertEqual(controls.first?.seq, 5)
         XCTAssertEqual(controls.first?.hubID, hubID)
@@ -270,10 +270,97 @@ final class OrderedActionsWiringTests: XCTestCase {
         XCTAssertEqual(AppRoot.pendingActionCount(env), 2, "queued and sent are not sent; Not delivered is listed")
     }
 
+    // MARK: - Epoch keys (relay client Phase 3, Task 6)
+
+    /// A keybox with a newer epoch merged into the Keychain: an ordered hub gets `epoch_ack` for it, once.
+    func testANewerKeyboxSendsEpochAck() async throws {
+        let transport = SwitchableTransport()
+        let keys = try TestPhone.keys()
+        let env = try await orderedSession(over: transport, keys: keys)
+
+        env.keysMerged(newestEpochRaised: false)
+        await env.epochAckWork?.value
+        await env.outbox.drain()
+        let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
+        XCTAssertEqual(adopted.map(\.epoch), [1], "the adoption's ack only: no raise, no new ack")
+
+        var link = try XCTUnwrap(try keys.store.hubLink(hubID))
+        link.epochs.append(EpochKeys(
+            epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
+        try keys.store.saveHubLink(link)
+        env.keysMerged(newestEpochRaised: true)
+        await env.epochAckWork?.value
+        await env.outbox.drain()
+        env.keysMerged(newestEpochRaised: true)
+        await env.epochAckWork?.value
+        await env.outbox.drain()
+
+        let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
+        XCTAssertEqual(acks.compactMap(\.epoch).sorted(), [1, 2], "one ack for the raise")
+        XCTAssertEqual(Set(acks.compactMap(\.deviceID)), [deviceID])
+        XCTAssertEqual(Set(acks.compactMap(\.hubID)), [hubID])
+    }
+
+    /// Turning the ordered path on sends one ack for the link's epoch; a later boot with no raise sends none.
+    func testAdoptionAcknowledgesOnceAndABootWithoutARaiseSendsNone() async throws {
+        let transport = SwitchableTransport()
+        let path = try makeReplicaPath()
+        let keys = try TestPhone.keys()
+        let first = try session(over: transport, path: path, closing: false, keys: keys)
+        await first.waitForBoot()
+        try await publishGrant(orderedActions: 1, over: transport)
+        await fetch(first)
+        await first.epochAckWork?.value
+        await first.shutDown()
+        first.closeDatabases()
+        let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
+        XCTAssertEqual(adopted.map(\.epoch), [1])
+
+        let second = try session(over: transport, path: path, keys: keys)
+        await second.waitForBoot()
+        await fetch(second)
+        await second.epochAckWork?.value
+        await second.outbox.drain()
+        let after = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
+        XCTAssertEqual(after.map(\.epoch), [1], "no raise: no second ack")
+    }
+
+    /// A raise the session never heard of (made while no session was up, or while the Keychain was locked) is
+    /// acknowledged at the next boot of an ordered session: the newest epoch is above the last acknowledged one.
+    func testABootAcknowledgesAnEpochRaisedMeanwhile() async throws {
+        let transport = SwitchableTransport()
+        let path = try makeReplicaPath()
+        let keys = try TestPhone.keys()
+        let first = try session(over: transport, path: path, closing: false, keys: keys)
+        await first.waitForBoot()
+        try await publishGrant(orderedActions: 1, over: transport)
+        await fetch(first)
+        await first.epochAckWork?.value
+        await first.shutDown()
+        first.closeDatabases()
+
+        var link = try XCTUnwrap(try keys.store.hubLink(hubID))
+        link.epochs.append(EpochKeys(
+            epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
+        try keys.store.saveHubLink(link)
+
+        let second = try session(over: transport, path: path, keys: keys)
+        await second.waitForBoot()
+        await second.epochAckWork?.value
+        await second.outbox.drain()
+        let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }.compactMap(\.epoch)
+        XCTAssertEqual(acks.max(), 2, "the boot acknowledged the raise")
+        XCTAssertEqual(acks.filter { $0 == 2 }.count, 1)
+    }
+
     // MARK: - Helpers
 
     private func session(
-        over transport: SwitchableTransport, path: String? = nil, clock: MutableClock = MutableClock(), closing: Bool = true
+        over transport: SwitchableTransport,
+        path: String? = nil,
+        clock: MutableClock = MutableClock(),
+        closing: Bool = true,
+        keys: PhoneKeys? = nil
     ) throws -> HubSession {
         let sleeper = TickSleeper()
         let env = try HubSession(
@@ -282,7 +369,7 @@ final class OrderedActionsWiringTests: XCTestCase {
             transportKind: .cloudKit,
             hubID: hubID,
             linkedDevice: device,
-            keys: try TestPhone.keys(),
+            keys: try keys ?? TestPhone.keys(),
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
             now: { clock.now },
@@ -295,13 +382,18 @@ final class OrderedActionsWiringTests: XCTestCase {
     }
 
     /// A booted session whose grant turned the ordered path on.
-    private func orderedSession(over transport: SwitchableTransport, clock: MutableClock = MutableClock()) async throws -> HubSession {
-        let env = try session(over: transport, clock: clock)
+    private func orderedSession(
+        over transport: SwitchableTransport, clock: MutableClock = MutableClock(), keys: PhoneKeys? = nil
+    ) async throws -> HubSession {
+        let env = try session(over: transport, clock: clock, keys: keys)
         await env.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
         await fetch(env)
         let on = try await env.outbox.orderedActions()
         XCTAssertTrue(on)
+        // The adoption's epoch_ack is written before the test starts counting saves.
+        await env.epochAckWork?.value
+        await env.outbox.drain()
         return env
     }
 

@@ -68,8 +68,9 @@ protocol LinkHost: AnyObject {
     /// `hubID`'s keybox as its replica holds it, without a fetch.
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
     /// Epoch keys of `hubID` joined the Keychain: the rows its replica
-    /// stored but could not open yet are opened now.
-    func keysMerged(hubID: String)
+    /// stored but could not open yet are opened now. `newestEpochRaised`:
+    /// the newest epoch went up, so an ordered hub gets `epoch_ack`.
+    func keysMerged(hubID: String, newestEpochRaised: Bool)
     /// The link completed: adds or updates the row, sets the device on the
     /// session (writes on) and activates it. Throws `HubRegistryError.full`
     /// for a new hub when every slot is taken.

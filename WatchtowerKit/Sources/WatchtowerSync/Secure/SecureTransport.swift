@@ -189,6 +189,35 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             hubID: hubID, senderID: deviceID, epoch: epoch, seq: try keys.nextSeq(), context: context, signer: nil)
     }
 
+    /// Sim rule 14: this phone's own stored p2h envelope, opened with its relay key at the envelope's epoch (derived
+    /// from the static link keys, so no kept epoch key is needed) and sealed again under the current epoch with a
+    /// fresh envelope seq, under the same wire name; the plain frame (an action's `action_seq` with it) is unchanged.
+    /// nil when it does not open as this phone's own relay record. A locked keychain throws `keysUnavailable`.
+    func reseal(ownEnvelope envelope: Data, wireName: String, modifiedAt: Date) throws -> CloudRecord? {
+        guard case let .phone(hubID, deviceID) = keys.role else { throw SecureTransportError.wrongRole }
+        do {
+            guard let header = try? Envelope.parse(envelope).header, header.hubID == hubID, header.senderID == deviceID,
+                  header.envelopeClass == .relayToHub
+            else { return nil }
+            let key = try keys.relayKey(.phoneToHub, deviceID: deviceID, epoch: header.epoch)
+            let frame: InnerFrame
+            do {
+                frame = try EnvelopeSealer.openSymmetric(
+                    envelope, accepting: [.relayToHub], context: EnvelopeContext(zone: .relay, wireName: wireName),
+                    verifier: nil) { _ in key }.frame
+            } catch is EnvelopeError {
+                return nil
+            }
+            guard Self.phoneRelayKinds.contains(frame.kind), try self.wireName(plain: frame.id, zone: .relay) == wireName
+            else { return nil }
+            return try seal(CloudRecord(
+                recordName: frame.id, zone: .relay, kind: frame.kind, modifiedAt: modifiedAt, payload: frame.payload,
+                notifyLevel: frame.notifyLevel, asset: frame.asset))
+        } catch KeyStoreError.locked {
+            throw SecureTransportError.keysUnavailable
+        }
+    }
+
     // MARK: - CloudSyncTransport
 
     /// Sends already-sealed wire records unchanged (stored envelopes: outbox rows, uploads; Review Focus 2).

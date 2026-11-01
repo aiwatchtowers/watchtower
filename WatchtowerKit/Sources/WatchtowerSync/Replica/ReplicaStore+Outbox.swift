@@ -54,6 +54,8 @@ enum ReplicaOutboxError: Error, Equatable {
 extension ReplicaStore {
     static let orderedActionsKey = "ordered_actions"
     static let actionSeqNextKey = "action_seq_next"
+    /// The highest epoch an `epoch_ack` was queued for (relay client Phase 3): a lower or equal one never is.
+    static let epochAckKey = "epoch_ack_epoch"
     /// How long a handled hub control id is remembered (sim "Bounded state").
     static let handledControlRetention: TimeInterval = 15 * 86_400
 
@@ -235,6 +237,18 @@ extension ReplicaStore {
         }
     }
 
+    /// Sim rule 14: a `queued` row resealed under a newer epoch takes the new envelope and its epoch; its wire name,
+    /// `action_seq` and `record_seq` (the version the overwrite goes under) stay. Any other state is left alone.
+    /// Returns whether exactly one row took it.
+    func replaceOutboxEnvelope(actionID: String, envelope: Data, epoch: UInt32) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE pending_actions SET payload = ?, epoch = ? WHERE action_id = ? AND delivery = 'queued'",
+                arguments: [envelope, Int64(epoch), actionID])
+            return db.changesCount == 1
+        }
+    }
+
     /// `sent` rows at or above `seq` become `queued` (keeping their `record_seq`); returns the first `queued` seq at
     /// or above it, nil when none.
     func requeue(fromSeq seq: UInt64) throws -> UInt64? {
@@ -327,6 +341,31 @@ extension ReplicaStore {
         }
     }
 
+    /// Whether an `epoch_ack` for `epoch` is due: above every epoch one was queued for.
+    func epochAckDue(_ epoch: UInt32) throws -> Bool {
+        try writer.read { db in try Self.ackedEpoch(db).map { epoch > $0 } ?? true }
+    }
+
+    /// Queues the sealed `epoch_ack` for `epoch` in place of any unsent one (always for a lower epoch) and records
+    /// the epoch, in one transaction; false, nothing written, when `epoch` is not above the recorded one.
+    func queueEpochAck(_ control: QueuedControl, epoch: UInt32) throws -> Bool {
+        try writer.write { db in
+            if let acked = try Self.ackedEpoch(db), epoch <= acked { return false }
+            try db.execute(
+                sql: "DELETE FROM outbound_controls WHERE kind = ?", arguments: [ControlKind.epochAck.rawValue])
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
+                ])
+            try Self.setMeta(db, Self.epochAckKey, String(epoch))
+            return true
+        }
+    }
+
     /// The queued controls in insertion order.
     func queuedControls() throws -> [QueuedControl] {
         try writer.read { db in
@@ -404,6 +443,11 @@ extension ReplicaStore {
         guard let raw = try meta(db, actionSeqNextKey) else { return 1 }
         guard let seq = UInt64(raw), seq >= 1 else { throw ReplicaOutboxError.unreadableCounter(raw) }
         return seq
+    }
+
+    /// nil when no ack was queued yet, or the stored value does not read (the next ack then goes out).
+    private static func ackedEpoch(_ db: Database) throws -> UInt32? {
+        try meta(db, epochAckKey).flatMap { UInt32($0) }
     }
 
     private static func meta(_ db: Database, _ key: String) throws -> String? {

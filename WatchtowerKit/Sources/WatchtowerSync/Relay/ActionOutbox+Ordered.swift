@@ -151,9 +151,12 @@ extension ActionOutbox {
         // Checked before anything moves: a lost skip would stall the order (the hub asks once per gap).
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        _ = try store.requeue(fromSeq: seq)
+        // Before `first` is read: a row of an older epoch that does not open is listed here, so the skip covers it.
+        try await resealOlderEpochs(from: seq)
         // Seqs in [seq, first) are settled, already Not delivered (each keeps its first reason) or gone (an
         // `applied` echo or the owner's Dismiss): nothing to list (Ruling 1).
-        let first = try store.requeue(fromSeq: seq) ?? store.nextActionSeq()
+        let first = try store.outboxRows([.queued]).first { $0.actionSeq >= seq }?.actionSeq ?? store.nextActionSeq()
         if first > seq {
             let control = ControlPayload.skipTo(first, deviceID: device, hubID: hub)
             let at = now()
@@ -163,6 +166,56 @@ extension ActionOutbox {
                 queuedAt: at))
         }
         return try await reportedFlush()
+    }
+
+    /// Sim rule 14 (the hub asks again for what it can no longer open), after the requeue and before the skip is
+    /// decided: every queued row from `seq` on that was
+    /// sealed in an epoch below the current one is resealed under the current epoch, the same `action_seq` and wire
+    /// name, a fresh envelope seq; the flush then overwrites its record under the version of its last write. Rows
+    /// already in the current epoch keep their bytes. A row whose own envelope does not open is Not delivered.
+    private func resealOlderEpochs(from seq: UInt64) async throws {
+        let current = try transport.currentEpoch()
+        for row in try store.outboxRows([.queued]) where row.actionSeq >= seq && row.epoch < current {
+            guard let resealed = try await transport.reseal(
+                ownEnvelope: row.envelope, wireName: row.wireName, modifiedAt: row.createdAt)
+            else {
+                logger.error(
+                    "action \(row.actionSeq, privacy: .public) of epoch \(row.epoch, privacy: .public) does not open: not delivered")
+                try store.markUndelivered(actionIDs: [row.actionID], reason: .refused, message: Self.refusedMessage)
+                continue
+            }
+            let epoch = try Envelope.parse(resealed.payload).header.epoch
+            if try !store.replaceOutboxEnvelope(actionID: row.actionID, envelope: resealed.payload, epoch: epoch) {
+                logger.error("resealed action \(row.actionSeq, privacy: .public) is no longer queued: envelope not replaced")
+            }
+        }
+    }
+
+    // MARK: epoch_ack
+
+    /// Confirms the phone's newest epoch to an ordered hub (sim rule 13): an `epoch_ack{epoch}` queued once per
+    /// raise, never for an epoch at or below one already acknowledged, in place of an unsent ack for a lower one,
+    /// then a flush. A hub on today's path gets none. Returns whether an ack was queued.
+    @discardableResult
+    public func enqueueEpochAck(epoch: UInt32) async throws -> Bool {
+        let queued = try await onChain { try await self.queueEpochAck(epoch) }.value
+        if queued { requestFlush() }
+        return queued
+    }
+
+    private func queueEpochAck(_ epoch: UInt32) async throws -> Bool {
+        guard try orderedPath(), try store.epochAckDue(epoch) else { return false }
+        guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
+        guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        let control = ControlPayload(
+            id: UUID().uuidString, kind: .epochAck, deviceID: device.uuidString, hubID: hub.uuidString, epoch: epoch)
+        let at = now()
+        let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
+        let queued = try store.queueEpochAck(
+            QueuedControl(id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at),
+            epoch: epoch)
+        if queued { logger.notice("epoch_ack for epoch \(epoch, privacy: .public) queued") }
+        return queued
     }
 
     // MARK: Retry and Dismiss All
