@@ -131,13 +131,15 @@ type Control struct {
 // runtime should see (the connection is gone, a login failed). Resync marks
 // a zone event that may stand for missed changes (the hosted relay's marker
 // after a reconnect or a folded overflow): the runtime republishes what the
-// phones wait for. Events are best effort: a consumer still pulls on its own
-// backstop timer.
+// phones wait for. PullNow means a silent push reached the CloudKit bridge:
+// pull every zone now. Events are best effort: a consumer still pulls on its
+// own backstop timer.
 type Event struct {
 	Zone    string
 	Control *Control
 	Err     error
 	Resync  bool
+	PullNow bool
 }
 
 // Transport is the record store under the sealer.
@@ -162,4 +164,45 @@ type Transport interface {
 	// zone to dst, a hub-owned path (written 0600, replaced whole). The
 	// caller names the zone from the record it holds.
 	Download(ctx context.Context, zone, attachmentID, dst string) error
+}
+
+// The optional capabilities below are type-asserted by callers.
+
+// SharedMailbox names the zone a phone's mailbox lives in. On CloudKit every
+// phone of a hub shares the one RelayZone (records are routed by sender); on
+// the hosted relay each phone has its own MailboxZone.
+type SharedMailbox interface {
+	MailboxFor(hub, phone string) string
+}
+
+// Account is the iCloud account state the CloudKit bridge reports.
+type Account string
+
+// The account states.
+const (
+	AccountAvailable              Account = "available"
+	AccountNoAccount              Account = "no_account"
+	AccountRestricted             Account = "restricted"
+	AccountTemporarilyUnavailable Account = "temporarily_unavailable"
+	AccountNoEntitlement          Account = "no_entitlement"
+)
+
+// Shares is CloudKit's linking surface (today's ShareService): the account
+// state, the zone shares a phone accepts, the share's public link and its
+// participants.
+type Shares interface {
+	AccountStatus(ctx context.Context) (Account, error)
+	// EnsureShares creates the data and relay zone shares if missing and
+	// returns their URLs (opaque: never parsed or logged).
+	EnsureShares(ctx context.Context) (dataURL, relayURL string, err error)
+	// SetPublicLink opens or closes the shares' public read-write link.
+	SetPublicLink(ctx context.Context, open bool) error
+	Participants(ctx context.Context, zone string) ([]Participant, error)
+	RemoveParticipants(ctx context.Context, zone string, userRecordNames []string) error
+}
+
+// Participant is one participant of a zone share.
+type Participant struct {
+	UserRecordName string
+	Accepted       bool
 }

@@ -196,7 +196,7 @@ func (o Options) withDefaults() Options {
 		o.openStore = state.Open
 	}
 	if o.peerUID == nil {
-		o.peerUID = socketPeerUID
+		o.peerUID = platform.PeerUID
 	}
 	if o.mobileSync == nil {
 		o.mobileSync = policy.MobileSync
