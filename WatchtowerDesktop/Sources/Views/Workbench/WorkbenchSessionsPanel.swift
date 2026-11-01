@@ -122,8 +122,10 @@ struct WorkbenchSessionsPanel: View {
                 openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0,
                 hoveredRow: $hoveredRow, panelHasKeyboard: hasKeyboard
             )
+            .sessionRowDrag(session: row.session, listID: project.id, displayed: mainSessions) {
+                vm.moveSessions(mainSessions, projectID: project.id, from: $0, to: $1)
+            }
         }
-        .onMove { vm.moveSessions(mainSessions, projectID: project.id, from: $0, to: $1) }
         if sections.finishedCount > 0 {
             PanelFoldHeader(count: sections.finishedCount, label: "finished", itemName: "session", expanded: sections.expanded) {
                 vm.setFinishedGroupExpanded(!sections.expanded, projectID: project.id)
