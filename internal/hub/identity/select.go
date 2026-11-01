@@ -66,6 +66,30 @@ func ForDesktopHost(st *state.Store, dir string, keychainWorks bool) (Staging, e
 	if err != nil {
 		return nil, fmt.Errorf("identity: recording the identity store: %w", err)
 	}
+	return storeFor(chosen, dir)
+}
+
+// DesktopHostChoice is ForDesktopHost without the write: the recorded store
+// when hub_meta has one (recorded true), else the one ForDesktopHost would
+// record. The key hand-over records its choice only with the adopted
+// identity (MetaIdentityStore in the same transaction), so a refused
+// hand-over leaves no record.
+func DesktopHostChoice(st *state.Store, dir string, keychainWorks bool) (s Staging, kind string, recorded bool, err error) {
+	kind, recorded, err = st.Meta(MetaIdentityStore)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("identity: reading the identity store: %w", err)
+	}
+	if !recorded {
+		kind = IdentityStoreFile
+		if keychainWorks && keychainAvailable {
+			kind = IdentityStoreKeychain
+		}
+	}
+	s, err = storeFor(kind, dir)
+	return s, kind, recorded, err
+}
+
+func storeFor(chosen, dir string) (Staging, error) {
 	switch chosen {
 	case IdentityStoreKeychain:
 		if !keychainAvailable {

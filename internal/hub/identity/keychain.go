@@ -26,17 +26,17 @@ var (
 	errMalformedKeychain = errors.New("identity: the hub identity Keychain item is malformed")
 )
 
-// keychainOps is the Keychain seam: the system Keychain in production, a
+// KeychainOps is the Keychain seam: the system Keychain in production, a
 // map in tests (crash points included).
-type keychainOps interface {
-	// put adds the item or replaces its data, in one call.
-	put(service, account string, data []byte) error
-	// get copies the item's data into buf and returns its full length (more
+type KeychainOps interface {
+	// Put adds the item or replaces its data, in one call.
+	Put(service, account string, data []byte) error
+	// Get copies the item's data into buf and returns its full length (more
 	// than len(buf) means it did not fit and buf is untouched); found is
 	// false when the item does not exist.
-	get(service, account string, buf []byte) (n int, found bool, err error)
-	// del removes the item; a missing item is not an error.
-	del(service, account string) error
+	Get(service, account string, buf []byte) (n int, found bool, err error)
+	// Del removes the item; a missing item is not an error.
+	Del(service, account string) error
 }
 
 // KeychainError is a failed Security call: the operation and its OSStatus,
@@ -89,10 +89,16 @@ func OSStatusClass(status int32) string {
 // refusal comes back as a KeychainError.
 type KeychainStore struct {
 	Service string
-	ops     keychainOps // nil = the system Keychain
+	ops     KeychainOps // nil = the system Keychain
 }
 
-func (s KeychainStore) kc() keychainOps {
+// NewKeychainStoreWith is a KeychainStore over ops instead of the system
+// Keychain: the tests of other packages (identitytest.MemKeychain).
+func NewKeychainStoreWith(service string, ops KeychainOps) KeychainStore {
+	return KeychainStore{Service: service, ops: ops}
+}
+
+func (s KeychainStore) kc() KeychainOps {
 	if s.ops != nil {
 		return s.ops
 	}
@@ -116,7 +122,7 @@ func (s KeychainStore) Load() (Identity, error) {
 func (s KeychainStore) Save(id Identity) error { return s.write(keychainAccount, id) }
 
 // Delete removes the identity item; a missing item is not an error.
-func (s KeychainStore) Delete() error { return s.kc().del(s.Service, keychainAccount) }
+func (s KeychainStore) Delete() error { return s.kc().Del(s.Service, keychainAccount) }
 
 // Staged reads the staged identity; ok is false when none is staged or the
 // staged item is not a complete, valid identity (SaveStaged overwrites it).
@@ -136,7 +142,7 @@ func (s KeychainStore) Staged() (Identity, bool, error) {
 func (s KeychainStore) SaveStaged(id Identity) error { return s.write(keychainStagedAccount, id) }
 
 // DeleteStaged removes the staged item; a missing item is not an error.
-func (s KeychainStore) DeleteStaged() error { return s.kc().del(s.Service, keychainStagedAccount) }
+func (s KeychainStore) DeleteStaged() error { return s.kc().Del(s.Service, keychainStagedAccount) }
 
 // PromoteStaged makes the staged identity the live one: the live item is
 // written from the staged blob (one call), then the staged item is removed.
@@ -164,7 +170,7 @@ func (s KeychainStore) read(account string) (Identity, bool, error) {
 	// truncated.
 	var buf [fileLen + 1]byte
 	defer clear(buf[:])
-	n, found, err := s.kc().get(s.Service, account, buf[:])
+	n, found, err := s.kc().Get(s.Service, account, buf[:])
 	if err != nil || !found {
 		return Identity{}, false, err
 	}
@@ -184,5 +190,5 @@ func (s KeychainStore) write(account string, id Identity) error {
 		return err
 	}
 	defer clear(blob)
-	return s.kc().put(s.Service, account, blob)
+	return s.kc().Put(s.Service, account, blob)
 }

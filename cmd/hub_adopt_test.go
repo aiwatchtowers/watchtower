@@ -230,11 +230,12 @@ func TestHubAdoptKeysStdin(t *testing.T) {
 	dir := hubTestDir(t)
 	payload := adoptedWithKeys(t, dir)
 
-	_, err := runHub(t, "adopt", "--confirm-deleted", "--json")
+	out, err := runHub(t, "adopt", "--confirm-deleted", "--json")
 	require.Error(t, err, "confirm before adopted")
+	assert.Equal(t, map[string]any{"identity": "not_adopted"}, decodeKeys(t, out))
 
 	withStdin(t, payload)
-	out, err := runHub(t, "adopt", "--keys-stdin", "--json")
+	out, err = runHub(t, "adopt", "--keys-stdin", "--json")
 	require.NoError(t, err)
 	m := decodeKeys(t, out)
 	assert.Equal(t, []string{"identity"}, hubKeysOf(m))
@@ -270,6 +271,21 @@ func TestHubAdoptWrongKeys(t *testing.T) {
 	assert.Equal(t, map[string]any{"identity": "wrong_keys"}, decodeKeys(t, out))
 	_, err = os.Stat(filepath.Join(dir, identity.StagedFileName))
 	assert.True(t, os.IsNotExist(err), "the staged copy is deleted")
+}
+
+// TestHubAdoptKeysTestModeRefusesARecordedKeychain: in test mode a
+// recorded Keychain store is refused, never the login Keychain.
+func TestHubAdoptKeysTestModeRefusesARecordedKeychain(t *testing.T) {
+	dir := hubTestDir(t)
+	payload := adoptedWithKeys(t, dir)
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	require.NoError(t, st.SetMeta(identity.MetaIdentityStore, identity.IdentityStoreKeychain))
+	require.NoError(t, st.Close())
+	withStdin(t, payload)
+	out, err := runHub(t, "adopt", "--keys-stdin", "--json")
+	require.Error(t, err)
+	assert.Equal(t, map[string]any{"identity": "keychain_refused"}, decodeKeys(t, out))
 }
 
 func TestHubAdoptKeysWithoutASidecar(t *testing.T) {

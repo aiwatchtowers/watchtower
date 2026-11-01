@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/identity/identitytest"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/logcanary"
 )
@@ -128,15 +130,15 @@ func (f *keysFixture) adoptedOK(t *testing.T) bool {
 // builds) and the Keychain store over the in-memory Keychain.
 type storeKind struct {
 	name string
-	make func(hubDir string) (identity.Staging, *identity.MemKeychain)
+	make func(hubDir string) (identity.Staging, *identitytest.MemKeychain)
 }
 
 var storeKinds = []storeKind{
-	{"file", func(hubDir string) (identity.Staging, *identity.MemKeychain) {
+	{"file", func(hubDir string) (identity.Staging, *identitytest.MemKeychain) {
 		return identity.FileStore{Path: filepath.Join(hubDir, identity.FileName)}, nil
 	}},
-	{"keychain", func(string) (identity.Staging, *identity.MemKeychain) {
-		s, m := identity.NewMemKeychainStore("watchtower-hub-test")
+	{"keychain", func(string) (identity.Staging, *identitytest.MemKeychain) {
+		s, m := identitytest.NewKeychainStore("watchtower-hub-test")
 		return s, m
 	}},
 }
@@ -234,6 +236,24 @@ func TestHandOverRefusesBadPayloads(t *testing.T) {
 func TestHandOverWithoutAnAdoptedSidecar(t *testing.T) {
 	hub := filepath.Join(t.TempDir(), ".hub")
 	st := identity.FileStore{Path: filepath.Join(hub, identity.FileName)}
+	// A live identity of its own: never touched by a refused hand-over.
+	if err := st.Save(mustIdentity(t)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(st.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged := func(at string) {
+		t.Helper()
+		after, err := os.ReadFile(st.Path)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("%s: the live identity changed (%v)", at, err)
+		}
+		if _, err := os.Stat(filepath.Join(hub, identity.StagedFileName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s: a staged copy was written", at)
+		}
+	}
 	ans, err := HandOver(context.Background(), hub, strings.NewReader(newSwiftKeys(t).payload(t)), st)
 	if !errors.Is(err, ErrNoSidecar) || ans != ClassNoSidecar {
 		t.Fatalf("HandOver = %q, %v", ans, err)
@@ -241,8 +261,9 @@ func TestHandOverWithoutAnAdoptedSidecar(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(hub, state.FileName)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("a sidecar was created")
 	}
-	if _, err := DesktopStore(hub, false); !errors.Is(err, ErrNoSidecar) {
-		t.Fatalf("DesktopStore = %v", err)
+	unchanged("no sidecar")
+	if err := ConfirmDeleted(hub); !errors.Is(err, ErrNoSidecar) {
+		t.Fatalf("ConfirmDeleted = %v", err)
 	}
 
 	// A Go hub of its own (no adoption) never takes handed-over keys.
@@ -257,6 +278,7 @@ func TestHandOverWithoutAnAdoptedSidecar(t *testing.T) {
 	if ans, err := HandOver(context.Background(), hub, strings.NewReader(newSwiftKeys(t).payload(t)), st); !errors.Is(err, ErrNoSidecar) {
 		t.Fatalf("HandOver over a Go hub = %q, %v", ans, err)
 	}
+	unchanged("a Go hub of its own")
 }
 
 func mustIdentity(t *testing.T) identity.Identity {
@@ -603,5 +625,184 @@ func TestPayloadZeroedAfterUse(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// failingStore fails the named store operations.
+type failingStore struct {
+	identity.Staging
+	save, promote, delete bool
+}
+
+var errStore = errors.New("store refused")
+
+func (f failingStore) SaveStaged(id identity.Identity) error {
+	if f.save {
+		return errStore
+	}
+	return f.Staging.SaveStaged(id)
+}
+
+func (f failingStore) PromoteStaged() error {
+	if f.promote {
+		return errStore
+	}
+	return f.Staging.PromoteStaged()
+}
+
+func (f failingStore) DeleteStaged() error {
+	if f.delete {
+		return errStore
+	}
+	return f.Staging.DeleteStaged()
+}
+
+func failAt(t *testing.T, step string) {
+	t.Helper()
+	prev := failPoint
+	failPoint = func(s string) error {
+		if s == step {
+			return errStore
+		}
+		return nil
+	}
+	t.Cleanup(func() { failPoint = prev })
+}
+
+// TestHandOverFailureCleansUp: a failure (not a kill) at any step after the
+// staged copy may exist deletes it and the identity record; a delete that
+// fails too answers cleanup_failed, never adopted, so Desktop keeps its
+// items.
+func TestHandOverFailureCleansUp(t *testing.T) {
+	for _, step := range []string{"save_staged", "set_staged", "verify", "promote", "adopted"} {
+		for _, deleteFails := range []bool{false, true} {
+			eachStore(t, func(t *testing.T, kind storeKind) {
+				t.Run(fmt.Sprintf("%s/delete_fails=%v", step, deleteFails), func(t *testing.T) {
+					f := newKeysFixture(t)
+					inner, _ := kind.make(f.hub)
+					st := failingStore{Staging: inner, save: step == "save_staged", promote: step == "promote", delete: deleteFails}
+					payload := f.keys.payload(t)
+					want := ClassFailed
+					switch step {
+					case "set_staged", "adopted":
+						failAt(t, step)
+					case "verify":
+						payload, want = newSwiftKeys(t).payload(t), ClassWrongKeys
+					}
+					if deleteFails {
+						want = ClassCleanupFailed
+					}
+					ans, err := f.handOver(t, st, payload)
+					if err == nil || ans != want || ans == IdentityAdopted {
+						t.Fatalf("HandOver = %q, %v; want %s", ans, err, want)
+					}
+					if !strings.Contains(err.Error(), step) {
+						t.Errorf("the error names no step: %v", err)
+					}
+					if deleteFails && KeysClass(err) != ClassCleanupFailed {
+						t.Errorf("KeysClass = %s", KeysClass(err))
+					}
+					if got := f.identityMeta(t); got != identityNone {
+						t.Errorf("identity = %q after the failure", got)
+					}
+					// Before SaveStaged and after the promotion there is no staged copy.
+					wantLeft := deleteFails && step != "save_staged" && step != "adopted"
+					if _, ok, _ := inner.Staged(); ok != wantLeft {
+						t.Errorf("staged copy left = %v, want %v", ok, wantLeft)
+					}
+					if f.adoptedOK(t) {
+						t.Error("the hub may start after a failed hand-over")
+					}
+				})
+			})
+		}
+	}
+}
+
+// TestHandOverRequiresAFinishedAdoption: at every Task 13 kill point but the
+// last one (done) the hand-over answers adoption_unfinished, reading
+// nothing as keys and writing nothing.
+func TestHandOverRequiresAFinishedAdoption(t *testing.T) {
+	var points []string
+	ref := newFixture(t)
+	prev := stepHook
+	stepHook = func(p string) error { points = append(points, p); return nil }
+	ref.mustRun(t)
+	stepHook = prev
+	if len(points) == 0 || points[len(points)-1] != string(StepDone) {
+		t.Fatalf("points = %v", points)
+	}
+	for _, point := range points[:len(points)-1] {
+		t.Run(point, func(t *testing.T) {
+			f := newFixture(t)
+			killAt(t, point)
+			if _, err := f.run(t); !errors.Is(err, errKilled) {
+				t.Fatalf("Run = %v", err)
+			}
+			st := identity.FileStore{Path: filepath.Join(f.hub, identity.FileName)}
+			ans, err := HandOver(context.Background(), f.hub, strings.NewReader(newSwiftKeys(t).payload(t)), st)
+			if !errors.Is(err, ErrAdoptionUnfinished) || ans != ClassAdoptionUnfinished {
+				t.Fatalf("HandOver = %q, %v", ans, err)
+			}
+			if _, ok, _ := st.Staged(); ok {
+				t.Fatal("a staged copy was written")
+			}
+			if err := ConfirmDeleted(f.hub); !errors.Is(err, ErrAdoptionUnfinished) {
+				t.Fatalf("ConfirmDeleted = %v", err)
+			}
+		})
+	}
+}
+
+func identityStoreMeta(t *testing.T, hub string) (string, bool) {
+	t.Helper()
+	m, err := readMeta(filepath.Join(hub, state.FileName), false, identity.MetaIdentityStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := m[identity.MetaIdentityStore]
+	return v, ok
+}
+
+// TestHandOverDesktopRecordsTheStoreOnlyWhenAdopted: a refused call never
+// records identity_store; the adopted one records it with the identity.
+func TestHandOverDesktopRecordsTheStoreOnlyWhenAdopted(t *testing.T) {
+	f := newKeysFixture(t)
+	for _, in := range []string{"{", newSwiftKeys(t).payload(t)} {
+		if _, err := HandOverDesktop(context.Background(), f.hub, strings.NewReader(in), false, true); err == nil {
+			t.Fatal("a refused hand-over answered adopted")
+		}
+		if v, ok := identityStoreMeta(t, f.hub); ok {
+			t.Fatalf("identity_store recorded by a refused call: %q", v)
+		}
+	}
+	ans, err := HandOverDesktop(context.Background(), f.hub, strings.NewReader(f.keys.payload(t)), false, true)
+	if err != nil || ans != IdentityAdopted {
+		t.Fatalf("HandOverDesktop = %q, %v", ans, err)
+	}
+	if v, _ := identityStoreMeta(t, f.hub); v != identity.IdentityStoreFile {
+		t.Fatalf("identity_store = %q", v)
+	}
+	live, err := identity.FileStore{Path: filepath.Join(f.hub, identity.FileName)}.Load()
+	if err != nil || !sameKeys(live, f.keys) {
+		t.Fatalf("live identity: %v", err)
+	}
+}
+
+// TestTestModeRefusesARecordedKeychainStore: test mode never reaches the
+// login Keychain, even when hub_meta records it.
+func TestTestModeRefusesARecordedKeychainStore(t *testing.T) {
+	f := newKeysFixture(t)
+	st := f.store(t)
+	if err := st.SetMeta(identity.MetaIdentityStore, identity.IdentityStoreKeychain); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	ans, err := HandOverDesktop(context.Background(), f.hub, strings.NewReader(f.keys.payload(t)), true, true)
+	if !errors.Is(err, ErrKeychainRefused) || ans != ClassKeychainRefused {
+		t.Fatalf("HandOverDesktop = %q, %v", ans, err)
+	}
+	if got := f.identityMeta(t); got != identityNone {
+		t.Fatalf("identity = %q", got)
 	}
 }

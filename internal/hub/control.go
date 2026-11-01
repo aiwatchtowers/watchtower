@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
@@ -61,6 +62,10 @@ const (
 	// line per event: EventStatus, EventRecordingQueued, EventPair,
 	// EventSwitched).
 	OpDesktopView, OpRecordingProgress, OpDesktopWatch = "desktop_view", "recording_progress", "desktop_watch"
+	// OpConfirmDeleted records that Desktop deleted its own Keychain items
+	// after the key hand-over (plan 3 Task 16): identity adopted ->
+	// confirmed, written by the running hub, the sidecar's one writer.
+	OpConfirmDeleted = "confirm_deleted"
 )
 
 // The desktop_watch events.
@@ -93,6 +98,7 @@ const (
 	ErrClassNoTranscriber = "no_transcriber"
 	ErrClassFailed        = "failed"
 	ErrClassTooManyIDs    = "too_many_ids"
+	ErrClassNotAdopted    = adopt.ClassNotAdopted
 )
 
 // ControlRequest is one request on the control socket. Device names a phone
@@ -424,7 +430,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 func opClass(op string) string {
 	for _, known := range []string{OpUnlink, OpAllow, OpName, OpEnable, OpDisable, OpPair, OpConfirm,
 		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish, OpRecordings,
-		OpDesktopView, OpRecordingProgress, OpDesktopWatch} {
+		OpDesktopView, OpRecordingProgress, OpDesktopWatch, OpConfirmDeleted} {
 		if op == known {
 			return known
 		}
@@ -477,6 +483,13 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		ok := ControlAnswer{OK: true}
 		return s.withHubOr(func(h *hubRuntime) ControlAnswer { h.SetDesktopView(v); return ok },
 			func() ControlAnswer { s.storeDesktopView(v, nil); return ok })
+	case OpConfirmDeleted:
+		if err := adopt.ConfirmDeletedStore(s.st); errors.Is(err, adopt.ErrNotAdopted) {
+			return ControlAnswer{Error: ErrClassNotAdopted}
+		} else if err != nil {
+			return ControlAnswer{Error: ErrClassFailed}
+		}
+		return ControlAnswer{OK: true}
 	case OpDesktopWatch:
 		// A second watch on one connection: its stream is already there
 		// (serveConn answers the first one itself, ahead of any event).

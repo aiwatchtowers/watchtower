@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -118,21 +119,25 @@ func runHubAdoptKeys(cmd *cobra.Command, asJSON, keysIn bool) error {
 	if err != nil {
 		return err
 	}
+	testMode := os.Getenv(hubDirEnv) != ""
 	var ans string
 	var opErr error
 	if keysIn {
-		st, err := adopt.DesktopStore(dir, identity.KeychainUsable && os.Getenv(hubDirEnv) == "")
-		if err != nil {
-			// Drain stdin so the app's write never blocks on a refusal.
-			_, _ = io.Copy(io.Discard, io.LimitReader(cmd.InOrStdin(), hubAdoptSettingsMax))
-			ans, opErr = adopt.KeysClass(err), err
-		} else {
-			ans, opErr = adopt.HandOver(cmd.Context(), dir, cmd.InOrStdin(), st)
-		}
+		// Under the hub lock inside; an identity already adopted answers
+		// read-only, so it works beside a running hub.
+		ans, opErr = adopt.HandOverDesktop(cmd.Context(), dir, cmd.InOrStdin(), identity.KeychainUsable && !testMode, testMode)
 	} else {
+		// One writer: direct under the hub lock, else the running hub.
+		_, opErr = hubWriteAt(dir, hub.ControlRequest{Op: hub.OpConfirmDeleted}, func(lock *state.Lock) (hub.ControlAnswer, error) {
+			defer func() { _ = lock.Release() }()
+			if err := adopt.ConfirmDeleted(dir); err != nil {
+				return hub.ControlAnswer{Error: adopt.KeysClass(err)}, nil
+			}
+			return hub.ControlAnswer{OK: true}, nil
+		})
 		ans = adopt.IdentityConfirmed
-		if opErr = adopt.ConfirmDeleted(dir); opErr != nil {
-			ans = adopt.KeysClass(opErr)
+		if opErr != nil {
+			ans = confirmClass(opErr)
 		}
 	}
 	line := "identity: " + ans
@@ -143,6 +148,17 @@ func runHubAdoptKeys(cmd *cobra.Command, asJSON, keysIn bool) error {
 		return err
 	}
 	return opErr
+}
+
+// confirmClass is the class a refused --confirm-deleted answers: the hub's
+// or ConfirmDeleted's class (hubAnswerError's "(class)" text), else failed.
+func confirmClass(err error) string {
+	for _, c := range []string{adopt.ClassNotAdopted, adopt.ClassNoSidecar, adopt.ClassAdoptionUnfinished, adopt.ClassLocked} {
+		if strings.Contains(err.Error(), "("+c+")") {
+			return c
+		}
+	}
+	return adopt.ClassFailed
 }
 
 // hubAdoptDirs is the Go hub dir an adoption fills and its recordings dir:
