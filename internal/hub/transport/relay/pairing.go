@@ -84,6 +84,12 @@ func (t *Transport) SetLinkedReaders(ctx context.Context, linked []string) error
 	if err != nil {
 		return fmt.Errorf("relay: readers: account state: %w", err)
 	}
+	return t.SetReadersFrom(ctx, st, linked)
+}
+
+// SetReadersFrom is SetLinkedReaders over an account state the caller read
+// (the hub runtime reads it through its one account-state door).
+func (t *Transport) SetReadersFrom(ctx context.Context, st *relayv1.AccountState, linked []string) error {
 	slotted := map[string]bool{}
 	for _, p := range st.GetPhones() {
 		slotted[p.GetPhoneDeviceId()] = true

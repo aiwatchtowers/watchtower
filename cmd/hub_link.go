@@ -217,13 +217,22 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// hubPhoneTransportPending is `hub phones`' transport for a phone linked over
+// the relay that the relay has not yet listed as holding the hub in a slot
+// (no vouch_hub + promote_pairing seen yet).
+const hubPhoneTransportPending = "pending"
+
 // hubPhone is a linked devices row as `hub phones` shows it; a phone that
-// came over the relay has its relay device id, one adopted from the Swift
-// hub's sidecar does not.
+// came over the relay has its relay device id (relay once the relay admitted
+// the hub for it, pending before), one adopted from the Swift hub's sidecar
+// does not.
 func hubPhone(d state.Device) hubPhoneJSON {
 	tr := wire.TransportCloudKit
-	if d.RelayDeviceID != "" {
+	switch {
+	case d.RelayDeviceID != "" && !d.RelayAdmittedAt.IsZero():
 		tr = wire.TransportRelay
+	case d.RelayDeviceID != "":
+		tr = hubPhoneTransportPending
 	}
 	return hubPhoneJSON{
 		DeviceID: d.ID, Name: d.Name, Scope: d.Scope, LinkedAt: d.LinkedAt.UTC().Format(time.RFC3339),

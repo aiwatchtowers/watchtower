@@ -40,9 +40,9 @@ import (
 )
 
 // smokeStep bounds one wait of the smoke test; admitWait bounds the admission
-// after promote_pairing, which the relay announces to the hub by no event:
-// the hub's short link retry after a pairing (every 2 s) must see it, not
-// the minute backstop.
+// after vouch_hub + promote_pairing, which the relay announces to the hub by
+// a best-effort SLOT_ADDED; the hub's polls (at most every 30 s while
+// unvouched) are the fallback.
 const (
 	smokeStep = 2 * time.Minute
 	admitWait = 30 * time.Second
@@ -304,6 +304,10 @@ func (s *smoke) pair() *hubtest.Phone {
 		kb, ok, err := phone.ReadKeybox(pair)
 		return err == nil && ok && kb.Keys != nil
 	})
+	// Phone contract point 3: vouch for the hub's key, then promote.
+	if err := phone.VouchLink(t.Context(), lp); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.PromotePairing(t.Context(), slot); err != nil {
 		t.Fatal(err)
 	}

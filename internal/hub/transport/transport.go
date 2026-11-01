@@ -117,6 +117,9 @@ const (
 	SlotRemoved
 	PairingOpened
 	SessionExpired
+	// SlotAdded: a phone put the hub into a slot (best effort; Detail is
+	// the phone's relay device id). It may repeat.
+	SlotAdded
 )
 
 // Control is a server control event; Detail is the kind's detail (a device id,

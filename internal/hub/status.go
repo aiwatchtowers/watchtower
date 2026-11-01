@@ -32,8 +32,13 @@ const (
 	ReasonLocked            = "locked"
 	ReasonNotTestWorkspace  = "not_test_workspace"
 	ReasonSidecarUnreadable = "sidecar_unreadable"
-	ReasonNotAdmitted       = "not_admitted"
-	ReasonRelayUnreachable  = "relay_unreachable"
+	// ReasonNotAdmitted: in a slot, but no phone holding the hub pays.
+	ReasonNotAdmitted = "not_admitted"
+	// ReasonNotVouched: in no phone's slot yet; only pairing goes on.
+	ReasonNotVouched = "not_vouched"
+	// ReasonVouchRevoked: in no slot any more after an admission.
+	ReasonVouchRevoked     = "vouch_revoked"
+	ReasonRelayUnreachable = "relay_unreachable"
 	// ReasonNeedsRelay: paused, no phone holding the hub in a slot pays
 	// (the phone shows "This hub needs Relay").
 	ReasonNeedsRelay = "needs_relay"
