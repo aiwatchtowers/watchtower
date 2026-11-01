@@ -95,8 +95,8 @@ func TestFileStoreStagedIsPrivate(t *testing.T) {
 	if _, ok, err := s.Staged(); ok || err != nil {
 		t.Fatalf("Staged before SaveStaged = %v, %v; want none", ok, err)
 	}
-	if err := s.PromoteStaged(); !errors.Is(err, ErrNoIdentity) {
-		t.Fatalf("PromoteStaged with nothing staged = %v, want ErrNoIdentity", err)
+	if err := s.PromoteStaged(); !errors.Is(err, ErrNothingStaged) {
+		t.Fatalf("PromoteStaged with nothing staged = %v, want ErrNothingStaged", err)
 	}
 	id, err := New()
 	if err != nil {
@@ -167,5 +167,22 @@ func TestKeychainErrorNamesOnlyTheStatus(t *testing.T) {
 	}
 	if !strings.Contains((&KeychainError{Op: "save", Status: 1}).Error(), "(other)") {
 		t.Fatal("an unknown status is not classed as other")
+	}
+}
+
+func TestFileStoreMalformedStagedIsNotStaged(t *testing.T) {
+	dir := t.TempDir()
+	s := FileStore{Path: filepath.Join(dir, FileName)}
+	if err := os.WriteFile(filepath.Join(dir, StagedFileName), []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.Staged(); ok || err != nil {
+		t.Fatalf("Staged with a malformed file = %v, %v; want nothing staged", ok, err)
+	}
+	if err := s.PromoteStaged(); !errors.Is(err, ErrNothingStaged) {
+		t.Fatalf("PromoteStaged = %v, want ErrNothingStaged", err)
+	}
+	if _, err := s.Load(); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("a malformed staged file was promoted: %v", err)
 	}
 }

@@ -49,8 +49,9 @@ static OSStatus wt_kc_put(const char *svc, const char *acct, const void *data, i
 	return st;
 }
 
-// wt_kc_get copies the item's data into buf (cap bytes); *n is its length.
-// The CFData copy is overwritten before release.
+// wt_kc_get copies the item's data into buf (cap bytes) when it fits; *n is
+// its full length. The CFData Security returns is immutable, so its copy
+// cannot be overwritten here: it is only released. The Go caller clears buf.
 static OSStatus wt_kc_get(const char *svc, const char *acct, void *buf, int cap, int *n) {
 	CFMutableDictionaryRef q = wt_kc_query(svc, acct);
 	CFDictionarySetValue(q, kSecReturnData, kCFBooleanTrue);
@@ -117,6 +118,9 @@ const (
 	errSecItemNotFound = -25300
 )
 
+// systemKeychain is keychainOps over the Security framework.
+type systemKeychain struct{}
+
 // keychainCall runs one call with C copies of the service and account.
 func keychainCall(service, account string, fn func(svc, acct *C.char) C.OSStatus) int32 {
 	svc, acct := C.CString(service), C.CString(account)
@@ -125,10 +129,9 @@ func keychainCall(service, account string, fn func(svc, acct *C.char) C.OSStatus
 	return int32(fn(svc, acct))
 }
 
-// keychainPut adds the item or replaces its data.
-func keychainPut(service, account string, data []byte) error {
+func (systemKeychain) put(service, account string, data []byte) error {
 	if len(data) == 0 {
-		return errors.New("identity: refusing to store an empty key")
+		return errors.New("identity: refusing to store an empty item")
 	}
 	st := keychainCall(service, account, func(svc, acct *C.char) C.OSStatus {
 		return C.wt_kc_put(svc, acct, unsafe.Pointer(&data[0]), C.int(len(data)))
@@ -139,27 +142,21 @@ func keychainPut(service, account string, data []byte) error {
 	return nil
 }
 
-// keychainGet reads exactly len(buf) bytes of the item into buf; found is
-// false when the item does not exist. A different length is malformed.
-func keychainGet(service, account string, buf []byte) (found bool, err error) {
+func (systemKeychain) get(service, account string, buf []byte) (int, bool, error) {
 	var n C.int
 	st := keychainCall(service, account, func(svc, acct *C.char) C.OSStatus {
 		return C.wt_kc_get(svc, acct, unsafe.Pointer(&buf[0]), C.int(len(buf)), &n)
 	})
 	switch {
 	case st == errSecItemNotFound:
-		return false, nil
+		return 0, false, nil
 	case st != errSecSuccess:
-		return false, &KeychainError{Op: "load", Status: st}
-	case int(n) != len(buf):
-		clear(buf)
-		return false, errMalformedKeychain
+		return 0, false, &KeychainError{Op: "load", Status: st}
 	}
-	return true, nil
+	return int(n), true, nil
 }
 
-// keychainDelete removes the item; a missing item is not an error.
-func keychainDelete(service, account string) error {
+func (systemKeychain) del(service, account string) error {
 	st := keychainCall(service, account, func(svc, acct *C.char) C.OSStatus {
 		return C.wt_kc_delete(svc, acct)
 	})

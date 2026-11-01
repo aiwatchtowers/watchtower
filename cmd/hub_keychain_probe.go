@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +20,10 @@ const hubKeychainProbeVerb = "probe the Keychain"
 
 // hubKeychainProbeDefaultService is the probe's throwaway service.
 const hubKeychainProbeDefaultService = "watchtower-hub-keychain-probe"
+
+// hubKeychainProbeRefusedPrefix: the probe refuses every service starting
+// with it, in any case — the hub's and any other app service's items.
+const hubKeychainProbeRefusedPrefix = "com.watchtower"
 
 func init() {
 	probe := &cobra.Command{
@@ -37,8 +42,9 @@ func runHubKeychainProbe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	service, _ := cmd.Flags().GetString("service")
-	if service == "" || service == identity.KeychainService {
-		return fmt.Errorf("the probe never touches the hub's Keychain service %q; pass a throwaway --service", identity.KeychainService)
+	if service == "" || strings.HasPrefix(strings.ToLower(service), hubKeychainProbeRefusedPrefix) {
+		return fmt.Errorf("the probe never touches a %s* Keychain service (the hub's is %q); pass a throwaway --service",
+			hubKeychainProbeRefusedPrefix, identity.KeychainService)
 	}
 	store := identity.KeychainStore{Service: service}
 	var err error

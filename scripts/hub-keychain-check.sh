@@ -12,7 +12,7 @@
 # Terminal (this shell) and a LaunchAgent (a temporary user agent in a temp
 # plist, removed afterwards):
 #
-#   older build: write   — creates four throwaway items
+#   older build: write   — creates a throwaway identity item
 #   newer build: read    — what every daemon start after an update does
 #   newer build: delete  — what a newer build's hand-over or reset does
 #
@@ -39,10 +39,16 @@ LABEL="com.watchtower.hub-keychain-check.$$"
 PLIST="$WORK/$LABEL.plist"
 STEP_TIMEOUT=30
 
+# bounded <cmd…>: runs the command under STEP_TIMEOUT (a Keychain prompt
+# would block); a timeout exits 142.
+bounded() {
+    perl -e 'alarm shift; exec @ARGV' "$STEP_TIMEOUT" "$@"
+}
+
 cleanup() {
     launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
     if [ -x "$WORK/watchtower-a" ]; then
-        "$WORK/watchtower-a" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1 || true
+        bounded "$WORK/watchtower-a" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1 || true
     fi
     rm -rf "$WORK"
 }
@@ -78,12 +84,17 @@ if cmp -s "$WORK/watchtower-a" "$WORK/watchtower-b"; then
     exit 2
 fi
 
-# probe <binary> <step>: one step, bounded (a Keychain prompt would block).
+# probe <binary> <step>: one step, bounded; prints exactly one line, the
+# probe's last line or "timed out (a Keychain prompt?)".
 probe() {
-    perl -e 'alarm shift; exec @ARGV' "$STEP_TIMEOUT" \
-        "$1" hub keychain-probe "$2" --service "$SERVICE" 2>&1 | tail -1
-    local rc=${PIPESTATUS[0]}
-    [ "$rc" -eq 142 ] && echo "$2: timed out (a Keychain prompt?)"
+    local out rc
+    out="$(bounded "$1" hub keychain-probe "$2" --service "$SERVICE" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 142 ]; then
+        echo "timed out (a Keychain prompt?)"
+    else
+        printf '%s\n' "$out" | tail -1
+    fi
 }
 
 # The steps of one context; the caller reads three lines.
@@ -92,7 +103,7 @@ STEPS='printf "write %s\n" "$(probe "$A" write)"; printf "read %s\n" "$(probe "$
 run_terminal() {
     A="$WORK/watchtower-a" B="$WORK/watchtower-b"
     eval "$STEPS"
-    "$A" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1 || true
+    bounded "$A" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1 || true
 }
 
 run_launchagent() {
@@ -100,10 +111,10 @@ run_launchagent() {
     {
         echo '#!/usr/bin/env bash'
         echo "SERVICE='$SERVICE' STEP_TIMEOUT=$STEP_TIMEOUT"
-        declare -f probe
+        declare -f bounded probe
         echo "A='$WORK/watchtower-a' B='$WORK/watchtower-b'"
         echo "$STEPS"
-        echo '"$A" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1'
+        echo 'bounded "$A" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1'
         echo 'echo done'
     } >"$runner"
     chmod 700 "$runner"
@@ -132,7 +143,7 @@ EOF
     launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
     rm -f "$PLIST"
     grep -v '^done$' "$out" 2>/dev/null || echo "write produced no output"
-    "$WORK/watchtower-a" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1 || true
+    bounded "$WORK/watchtower-a" hub keychain-probe delete --service "$SERVICE" >/dev/null 2>&1 || true
 }
 
 result=ok

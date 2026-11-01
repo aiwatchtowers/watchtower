@@ -289,10 +289,18 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
 ## Phase 3 — the identity store on a desktop host
 
 `identity.ForDesktopHost(st, dir, identity.KeychainUsable)` picks the store once and records it in `hub_meta`
-`identity_store` (`keychain` | `file`); later starts follow the record and never re-decide. `KeychainStore` keeps four
-generic-password items (service `com.watchtower.hub`, accounts `hub_sig`, `hub_kx`, `wrap`, `relay_auth`, staged copies
-`<name>.staged`), never synchronizable, with every query set to fail instead of prompting. `FileStore` gained the same
-staged trio (`identity.staged.key`, 0600; promote = one rename). `KeychainUsable` comes from the string ldflag
+`identity_store` (`keychain` | `file`); later starts follow the record and never re-decide. `KeychainStore` keeps the whole
+identity as one generic-password item (service `com.watchtower.hub`, account `identity`; the staged copy is a second item,
+`identity.staged`), its data one blob in the identity file's format (`WTHUBID` + version byte, then the four raw keys),
+never synchronizable, with every query set to fail instead of prompting. Save, SaveStaged and the promote's write are
+each one `SecItemAdd`/`SecItemUpdate`; promote = write the live item from the staged blob, then delete the staged item,
+so a crash in between leaves two equal items and a repeat finishes. A staged item that is missing or not a valid blob
+reads as nothing staged (SaveStaged overwrites it) and `PromoteStaged` answers `identity.ErrNothingStaged` (wraps
+`ErrNoIdentity`) without touching the live item; Task 16 treats it as done when the identity is already adopted. Items
+are requested `AfterFirstUnlockThisDeviceOnly`, but the file-based login keychain keeps no accessibility class, so
+nothing relies on it. `FileStore` gained the same staged trio (`identity.staged.key`, 0600; promote = one rename; a
+malformed staged file is nothing staged too). The probe refuses every service starting with `com.watchtower` (any
+case). `KeychainUsable` comes from the string ldflag
 `identity.KeychainBuildFlag` (`-X` sets strings only); a plain `go build` defaults to the Keychain.
 
 ### Keychain check (2026-11-01, Task 1 Step 1)

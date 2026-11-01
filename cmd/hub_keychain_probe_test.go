@@ -25,8 +25,14 @@ func TestHubKeychainProbeRefusedUnderAnAgentMarker(t *testing.T) {
 }
 
 func TestHubKeychainProbeNeverUsesTheHubService(t *testing.T) {
-	hubTestDir(t)
-	_, err := runHub(t, "keychain-probe", "delete", "--service", identity.KeychainService)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "never touches the hub's Keychain service")
+	for _, service := range []string{
+		identity.KeychainService, "com.watchtower.hub.staged", "COM.Watchtower.Hub", "com.watchtowerx", "com.watchtower.desktop", "",
+	} {
+		t.Run(service, func(t *testing.T) {
+			hubTestDir(t)
+			_, err := runHub(t, "keychain-probe", "delete", "--service", service)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "never touches a com.watchtower* Keychain service")
+		})
+	}
 }

@@ -6,6 +6,10 @@ package identity
 // ErrNoKeychain and ForDesktopHost always chooses the file store.
 const keychainAvailable = false
 
-func keychainPut(string, string, []byte) error         { return ErrNoKeychain }
-func keychainGet(string, string, []byte) (bool, error) { return false, ErrNoKeychain }
-func keychainDelete(string, string) error              { return ErrNoKeychain }
+type systemKeychain struct{}
+
+func (systemKeychain) put(string, string, []byte) error { return ErrNoKeychain }
+func (systemKeychain) get(string, string, []byte) (int, bool, error) {
+	return 0, false, ErrNoKeychain
+}
+func (systemKeychain) del(string, string) error { return ErrNoKeychain }

@@ -39,11 +39,6 @@ func testKeychain(t *testing.T) KeychainStore {
 	return s
 }
 
-func sameIdentity(a, b Identity) bool {
-	return a.Signing.Equal(b.Signing) && a.RelayAuth.Equal(b.RelayAuth) && a.Wrap == b.Wrap &&
-		bytes.Equal(a.Agreement.Bytes(), b.Agreement.Bytes())
-}
-
 func TestKeychainRoundTripThisDeviceOnly(t *testing.T) {
 	s := testKeychain(t)
 	if _, err := s.Load(); !errors.Is(err, ErrNoIdentity) {
@@ -63,21 +58,20 @@ func TestKeychainRoundTripThisDeviceOnly(t *testing.T) {
 	if !sameIdentity(got, id) {
 		t.Fatal("loaded identity differs from the saved one")
 	}
-	for _, acct := range keychainAccounts {
-		res, err := keychainAccessible(s.Service, acct)
-		if err != nil {
-			t.Fatalf("%s attributes: %v", acct, err)
-		}
-		switch res {
-		case 1:
-		case -1:
-			// The file-based login keychain (the only one a binary without a
-			// keychain-access-groups entitlement reaches) keeps no
-			// accessibility attribute; the item is device-local there.
-			t.Logf("%s: kSecAttrAccessible not reported (file-based login keychain)", acct)
-		default:
-			t.Fatalf("%s: kSecAttrAccessible is not AfterFirstUnlockThisDeviceOnly", acct)
-		}
+	// The class is checked only where the keychain reports one: the
+	// file-based login keychain (the only one a binary without a
+	// keychain-access-groups entitlement reaches) keeps none, and nothing
+	// relies on it there.
+	res, err := keychainAccessible(s.Service, keychainAccount)
+	if err != nil {
+		t.Fatalf("item attributes: %v", err)
+	}
+	switch res {
+	case 1:
+	case -1:
+		t.Log("kSecAttrAccessible not reported (file-based login keychain)")
+	default:
+		t.Fatal("kSecAttrAccessible is reported and is not AfterFirstUnlockThisDeviceOnly")
 	}
 
 	// Save over an existing identity replaces every item.
@@ -103,26 +97,32 @@ func TestKeychainRoundTripThisDeviceOnly(t *testing.T) {
 	}
 }
 
-func TestKeychainPartialItemsAreRefused(t *testing.T) {
+func TestKeychainMalformedItems(t *testing.T) {
 	s := testKeychain(t)
-	id, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Save(id); err != nil {
-		t.Fatal(err)
-	}
-	if err := keychainDelete(s.Service, "wrap"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Load(); !errors.Is(err, errPartialKeychain) {
-		t.Fatalf("Load with a missing item = %v, want errPartialKeychain", err)
-	}
-	if err := keychainPut(s.Service, "wrap", []byte("short")); err != nil {
+	if err := (systemKeychain{}).put(s.Service, keychainAccount, []byte("short")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Load(); !errors.Is(err, errMalformedKeychain) {
 		t.Fatalf("Load with a short item = %v, want errMalformedKeychain", err)
+	}
+	if err := (systemKeychain{}).put(s.Service, keychainStagedAccount, make([]byte, 4*fileLen)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.Staged(); ok || err != nil {
+		t.Fatalf("Staged with a long item = %v, %v; want nothing staged", ok, err)
+	}
+	if err := s.PromoteStaged(); !errors.Is(err, ErrNothingStaged) {
+		t.Fatalf("PromoteStaged with a malformed staged item = %v, want ErrNothingStaged", err)
+	}
+	id, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveStaged(id); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Staged(); err != nil || !ok || !sameIdentity(got, id) {
+		t.Fatalf("SaveStaged did not overwrite the malformed item: %v, %v", ok, err)
 	}
 }
 
@@ -131,8 +131,8 @@ func TestKeychainStagedPromoteAndDelete(t *testing.T) {
 	if _, ok, err := s.Staged(); ok || err != nil {
 		t.Fatalf("Staged before SaveStaged = %v, %v; want none", ok, err)
 	}
-	if err := s.PromoteStaged(); !errors.Is(err, ErrNoIdentity) {
-		t.Fatalf("PromoteStaged with nothing staged = %v, want ErrNoIdentity", err)
+	if err := s.PromoteStaged(); !errors.Is(err, ErrNothingStaged) {
+		t.Fatalf("PromoteStaged with nothing staged = %v, want ErrNothingStaged", err)
 	}
 	live, err := New()
 	if err != nil {
@@ -190,7 +190,7 @@ func TestKeychainNeverLogsKeys(t *testing.T) {
 	errs = append(errs, s.Save(id), s.SaveStaged(id), s.PromoteStaged())
 	_, err = s.Load()
 	errs = append(errs, err)
-	errs = append(errs, keychainPut(s.Service, "wrap", []byte("short")))
+	errs = append(errs, (systemKeychain{}).put(s.Service, keychainAccount, []byte("short")))
 	_, err = s.Load()
 	errs = append(errs, err, s.Delete())
 	for _, err := range errs {
