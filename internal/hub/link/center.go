@@ -152,10 +152,16 @@ type Center struct {
 	sweep     Sweep
 	ck        ckState
 	retired   retiredCode
-	// linkMu lets one public-link write run at a time (cloudkit.go setLink):
-	// the only lock held across a bridge call; LinkUrgent and Sharing never
-	// take it.
-	linkMu sync.Mutex
+	// linkMu lets one public-link write run at a time (cloudkit.go setLink)
+	// and issueMu one IssueCloudKit: the only locks held across a bridge
+	// call; LinkUrgent and Sharing never take them.
+	linkMu  sync.Mutex
+	issueMu sync.Mutex
+	// Test seams (cloudkit.go): beforeIssueStore runs before a CloudKit code
+	// is stored (an error fails the store); afterSweep runs after a deferred
+	// sweep returned, before its outcome is recorded.
+	beforeIssueStore func() error
+	afterSweep       func()
 }
 
 // NewCenter builds a Center over c.

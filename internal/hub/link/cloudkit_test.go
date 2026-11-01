@@ -1378,3 +1378,138 @@ func TestNoRelayIDRefusesTheSweepAndIsLogged(t *testing.T) {
 		t.Error("the refusal was not logged")
 	}
 }
+
+// Verify round (1): an unlink that lands after a deferred sweep committed
+// (the mark cleared) but before the sweep recorded its outcome keeps the
+// sweep due, so that phone's participant goes at the next pass.
+func TestAnUnlinkRightAfterASweepCommitsKeepsItDue(t *testing.T) {
+	r := newCKRig(t)
+	r.s.join("_colleague-a")
+	r.s.join("_colleague-b")
+	a, b := newPhone(t), newPhone(t)
+	code := r.issueCK()
+	r.linkCK(a, code.Nonce, sharedHello("_colleague-a"))
+	code = r.issueCK()
+	r.linkCK(b, code.Nonce, sharedHello("_colleague-b"))
+	if err := r.c.CloseLink(r.ctx, r.s, CloseUsed); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(DefaultSweep.AnswerGrace)
+	r.c.afterSweep = func() {
+		r.c.afterSweep = nil
+		if err := r.c.Unlink(b.id.String()); err != nil {
+			t.Errorf("Unlink: %v", err)
+		}
+	}
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.s.names(ckZones[1]); !slices.Equal(got, []string{"_colleague-a", "_colleague-b"}) {
+		t.Fatalf("participants after the first pass %v", got)
+	}
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil { // no time passes
+		t.Fatal(err)
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); !slices.Equal(got, []string{"_colleague-a"}) {
+			t.Errorf("%s: %v: the unlinked phone's participant stayed", z, got)
+		}
+	}
+	if r.sweepMark() != "0" {
+		t.Errorf("mark %q", r.sweepMark())
+	}
+}
+
+// Verify round (2): overlapping issues run one at a time; the second waits
+// for the first and its code is the one on screen (the newest links).
+func TestOverlappingIssuesRunOneAtATime(t *testing.T) {
+	r := newCKRig(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	r.s.once("ensure_shares", func() {
+		close(entered)
+		<-release
+	})
+	type result struct {
+		p   wire.LinkPayload
+		err error
+	}
+	first, second := make(chan result, 1), make(chan result, 1)
+	go func() {
+		p, _, err := r.c.IssueCloudKit(r.ctx, r.s)
+		first <- result{p, err}
+	}()
+	<-entered
+	go func() {
+		p, _, err := r.c.IssueCloudKit(r.ctx, r.s)
+		second <- result{p, err}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if n := r.s.count(r.s.takeCalls(), "account_status"); n != 1 {
+		t.Errorf("%d account reads while the first issue is in flight: the second did not wait", n)
+	}
+	close(release)
+	one, two := <-first, <-second
+	if one.err != nil || two.err != nil {
+		t.Fatalf("issues: %v %v", one.err, two.err)
+	}
+	if !r.s.isOpen() || !r.c.LinkUrgent() {
+		t.Error("the second code's link is not open")
+	}
+	r.c.ck.mu.Lock()
+	onScreen := r.c.ck.open.nonce
+	r.c.ck.mu.Unlock()
+	if onScreen != two.p.Nonce {
+		t.Error("the code on screen is not the newest")
+	}
+	a, b := newPhone(t), newPhone(t)
+	if _, err := r.ckHello(a, one.p.Nonce); err != nil {
+		t.Fatal(err)
+	}
+	if got := refusal(r.mustKeybox(a)); got != wire.RefusedExpiredCode {
+		t.Errorf("the first code reads %q, want expired_code", got)
+	}
+	if got, err := r.ckHello(b, two.p.Nonce); err != nil || got.Code == "" {
+		t.Errorf("the newest code does not link: %+v %v", got, err)
+	}
+}
+
+// Verify round (2): an issue whose code cannot be stored closes only the
+// link it opened, never the link of the issue that waited behind it.
+func TestAFailedIssueNeverClosesAnotherIssuesLink(t *testing.T) {
+	r := newCKRig(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	failed := false
+	r.c.beforeIssueStore = func() error {
+		if failed {
+			return nil
+		}
+		failed = true
+		close(entered)
+		<-release
+		return errors.New("store full")
+	}
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() { _, _, err := r.c.IssueCloudKit(r.ctx, r.s); first <- err }()
+	<-entered
+	var p wire.LinkPayload
+	go func() {
+		var err error
+		p, _, err = r.c.IssueCloudKit(r.ctx, r.s)
+		second <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // an unserialised second issue would open and store its code now
+	close(release)
+	if err := <-first; err == nil {
+		t.Error("the failed store was not reported")
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("second issue: %v", err)
+	}
+	if !r.s.isOpen() || !r.c.LinkUrgent() {
+		t.Error("the failed issue's close shut the second issue's link")
+	}
+	a := newPhone(t)
+	if got, err := r.ckHello(a, p.Nonce); err != nil || got.Code == "" {
+		t.Errorf("the second code does not link: %+v %v", got, err)
+	}
+}

@@ -172,9 +172,12 @@ type ckState struct {
 	// graceEnd: an answering close's grace runs until then.
 	graceEnd time.Time
 	// sweepAt: a deferred sweep (the grace's end, a retry, an unlink) is due
-	// then; zero when none. sweepTries counts the retries spent.
+	// then; zero when none. sweepTries counts the retries spent. sweepGen
+	// counts the unlinks that made it due (sweepSoon): a sweep that ran
+	// across one never cancels it.
 	sweepAt    time.Time
 	sweepTries int
+	sweepGen   uint64
 	// linkCloseAt: a failed public-link close is retried then; zero when
 	// none. linkCloseTries counts the retries spent.
 	linkCloseAt    time.Time
@@ -212,8 +215,12 @@ type retiredCode struct{ nonce, reason string }
 // owner_user, data_share, relay_share, transport cloudkit, transports
 // ["cloudkit","relay"]). A pending grace sweep or retry is cancelled: the
 // new code's own close sweeps. A code that cannot be stored closes the link
-// it opened.
+// it opened. Issues run one at a time: a second call waits for the one in
+// flight, then issues the newest code (the one that links), as two New code
+// clicks did in Swift — so one issue's close never shuts another's link.
 func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.LinkPayload, string, error) {
+	c.issueMu.Lock()
+	defer c.issueMu.Unlock()
 	c.ck.mu.Lock()
 	c.ck.issuing++
 	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt, c.ck.linkCloseTries = time.Time{}, 0, time.Time{}, 0
@@ -247,7 +254,15 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 		_ = c.closeLink(ctx, s, CloseAccountChanged, nil)
 		return wire.LinkPayload{}, "", ErrAccountChanged
 	}
-	p, url, err := c.issue(fields)
+	var p wire.LinkPayload
+	var url string
+	err = nil
+	if c.beforeIssueStore != nil {
+		err = c.beforeIssueStore()
+	}
+	if err == nil {
+		p, url, err = c.issue(fields)
+	}
 	if err != nil {
 		// No code links, so the link just opened must not stay open.
 		_ = c.closeLink(ctx, s, CloseIssueFailed, nil)
@@ -484,6 +499,7 @@ func (c *Center) SweepShares(ctx context.Context, s transport.Shares) error {
 	}
 	linkDue := !c.ck.linkCloseAt.IsZero() && !now.Before(c.ck.linkCloseAt)
 	sweepDue := !c.ck.sweepAt.IsZero() && !now.Before(c.ck.sweepAt)
+	gen := c.ck.sweepGen
 	c.ck.mu.Unlock()
 
 	var linkErr error
@@ -494,9 +510,16 @@ func (c *Center) SweepShares(ctx context.Context, s transport.Shares) error {
 		return linkErr
 	}
 	cleared, err := c.sweepShares(ctx, s, CloseRestart, true)
+	if c.afterSweep != nil {
+		c.afterSweep()
+	}
 	c.ck.mu.Lock()
 	defer c.ck.mu.Unlock()
 	switch {
+	case c.ck.sweepGen != gen:
+		// An unlink made the sweep due again while this one ran: keep it due.
+		c.ck.sweepAt = c.now()
+		return errors.Join(linkErr, err)
 	case err != nil:
 		c.scheduleSweepRetry(c.ck.sweepTries)
 		return errors.Join(linkErr, err)
@@ -553,6 +576,7 @@ func (c *Center) scheduleSweepRetry(spent int) {
 func (c *Center) sweepSoon() {
 	c.ck.mu.Lock()
 	defer c.ck.mu.Unlock()
+	c.ck.sweepGen++
 	if now := c.now(); c.ck.sweepAt.IsZero() || c.ck.sweepAt.After(now) {
 		c.ck.sweepAt, c.ck.sweepTries = now, 0
 	}
