@@ -811,7 +811,7 @@ type readersCounting struct {
 	sets atomic.Int32
 }
 
-func (r *readersCounting) SetLinkedReaders(context.Context, []string) error {
+func (r *readersCounting) SetReadersFrom(context.Context, *relayv1.AccountState, []string) error {
 	r.sets.Add(1)
 	return nil
 }

@@ -11,9 +11,10 @@ import (
 )
 
 // Errors of the hosted relay that the neutral transport errors do not cover.
-// The attestation errors also match transport.ErrForbidden: until the relay
-// admits hubs by a phone's vouch (Go hub design §7, relay ask #805) a hub that
-// registers as a Mac without App Attest is simply not let in.
+// The attestation errors also match transport.ErrForbidden. A hub never
+// attests (it registers as DEVICE_KIND_HUB with an empty attestation and is
+// admitted by a phone's vouch_hub, Go hub design §7), so it sees them only
+// from an old relay or, in a test, on a phone's vouch_hub.
 var (
 	// ErrAttestationRequired: the relay wants an attestation this hub cannot
 	// give (attestation is on and the hub is not exempt). Do not retry in a
@@ -80,6 +81,8 @@ func classOf(code relayv1.ErrorCode) error {
 		return ErrAttestationFailed
 	case relayv1.ErrorCode_ERROR_CODE_SLOT_LIMIT, relayv1.ErrorCode_ERROR_CODE_SLOT_REPLACEMENT_LIMIT:
 		return ErrSlotLimit
+	case relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED:
+		return transport.ErrNotVouched
 	default:
 		return nil
 	}
