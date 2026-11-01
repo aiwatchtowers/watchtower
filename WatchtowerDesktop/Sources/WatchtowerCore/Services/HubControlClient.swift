@@ -36,6 +36,15 @@ package struct HubStatus: Decodable, Equatable, Sendable {
         self.adoption = value(adoption)
     }
 
+    /// This status with a newer `state` and `reason` (a watch event), the
+    /// other fields kept.
+    package func with(state: String, reason: String?) -> Self {
+        Self(
+            state: state, reason: reason, hubID: hubID, transport: transport, host: host, mode: mode,
+            recordings: recordings, adoption: adoption
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case state, reason, transport, host, mode, recordings, adoption
         case hubID = "hub_id"
@@ -71,6 +80,10 @@ package struct HubShownOver: Encodable, Equatable, Sendable {
         self.id = id
         self.run = run
         self.reportedAt = reportedAt
+    }
+
+    package init(id: Int64, _ count: ShownOverCount) {
+        self.init(id: id, run: count.run, reportedAt: count.reportedAt)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -126,8 +139,14 @@ package struct HubControlRequest: Encodable, Equatable, Sendable {
     package static var watch: Self { Self(op: desktopWatch) }
 
     /// The whole view: ids sorted, so an unchanged view is the same line.
-    package static func view(hidden: Set<Int64>, displayOver: [HubShownOver]) -> Self {
-        Self(op: desktopView, hidden: hidden.sorted(), displayOver: displayOver.sorted { $0.id < $1.id })
+    /// Each list keeps at most `maxViewIDs` entries, the highest session
+    /// ids (the newest sessions, the ones on screen); `capped` says whether
+    /// any was left out.
+    package static func view(hidden: Set<Int64>, displayOver: [HubShownOver]) -> (request: Self, capped: Bool) {
+        let ids = hidden.sorted()
+        let over = displayOver.sorted { $0.id < $1.id }
+        let capped = ids.count > maxViewIDs || over.count > maxViewIDs
+        return (Self(op: desktopView, hidden: Array(ids.suffix(maxViewIDs)), displayOver: Array(over.suffix(maxViewIDs))), capped)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -255,9 +274,19 @@ package protocol HubControlClienting: Sendable {
 package final class HubControlClient: HubControlClienting {
     /// The socket's name in the hub dir (Go `hub.SocketName`).
     package static let socketName = "hub.sock"
-    /// The live hub's dir: `<data root>/.hub` (Go `hub.DefaultDir`).
-    package static var defaultSocketPath: String {
-        (Constants.databasePath as NSString).appendingPathComponent(".hub/\(socketName)")
+    /// The hub dir's override (Go `hub.EnvHubDir`, test mode).
+    package static let hubDirEnv = "WATCHTOWER_HUB_DIR"
+
+    /// The socket in the hub dir as Go's `hub.Dir` picks it: an absolute
+    /// `WATCHTOWER_HUB_DIR`, else the live hub's `<data root>/.hub`
+    /// (`hub.DefaultDir`). A relative override, which Go refuses, is ignored.
+    package static func defaultSocketPath(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        if let dir = environment[hubDirEnv], dir.hasPrefix("/") {
+            return (dir as NSString).appendingPathComponent(socketName)
+        }
+        return (Constants.databasePath as NSString).appendingPathComponent(".hub/\(socketName)")
     }
 
     /// One request's whole exchange gives up after this.
@@ -282,25 +311,66 @@ package final class HubControlClient: HubControlClienting {
         }
     }
 
+    /// The stream runs on a thread of its own, blocked in `read` with no
+    /// timer; ending the stream (the consumer cancelled or stopped) shuts the
+    /// socket down, which wakes the read, and the thread closes it.
     package func watch() -> AsyncThrowingStream<HubEvent, Error> {
         let path = socketPath
-        let stopped = OSAllocatedUnfairLock(initialState: false)
+        let socket = WatchSocket()
         return AsyncThrowingStream { continuation in
-            continuation.onTermination = { _ in stopped.withLock { $0 = true } }
-            queue.async {
+            continuation.onTermination = { _ in socket.stop() }
+            let thread = Thread {
                 do {
                     let fd = try Self.connect(path)
-                    defer { close(fd) }
+                    guard socket.adopt(fd) else {
+                        close(fd)
+                        continuation.finish()
+                        return
+                    }
+                    defer { socket.close() }
                     try Self.write(fd, try Self.line(.watch), deadline: Date().addingTimeInterval(Self.requestTimeout))
                     var reader = LineReader(fd: fd)
-                    while !stopped.withLock({ $0 }) {
-                        guard let next = try reader.next(timeout: 0.5) else { continue }
+                    while true {
+                        guard let next = try reader.next(timeout: nil) else { continue }
                         continuation.yield(try HubEvent(try Self.decode(next)))
                     }
-                    continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    if socket.isStopped { continuation.finish() } else { continuation.finish(throwing: error) }
                 }
+            }
+            thread.name = "hub-control.watch"
+            thread.start()
+        }
+    }
+
+    /// The watch's socket: `stop` shuts it down (waking a blocked read) as
+    /// long as it is open; only the watch thread closes it, under the same
+    /// lock, so a shutdown never reaches a reused descriptor.
+    private final class WatchSocket: Sendable {
+        private let state = OSAllocatedUnfairLock(initialState: (fd: Int32(-1), stopped: false))
+
+        var isStopped: Bool { state.withLock { $0.stopped } }
+
+        /// Keeps `fd` unless the stream already ended (then false: the caller closes it).
+        func adopt(_ fd: Int32) -> Bool {
+            state.withLock {
+                guard !$0.stopped else { return false }
+                $0.fd = fd
+                return true
+            }
+        }
+
+        func stop() {
+            state.withLock {
+                $0.stopped = true
+                if $0.fd >= 0 { Darwin.shutdown($0.fd, SHUT_RDWR) }
+            }
+        }
+
+        func close() {
+            state.withLock {
+                if $0.fd >= 0 { Darwin.close($0.fd) }
+                $0.fd = -1
             }
         }
     }
@@ -390,11 +460,12 @@ package final class HubControlClient: HubControlClienting {
         let fd: Int32
         var buffer = Data()
 
-        /// The next whole line, nil when none arrived within `timeout`.
-        mutating func next(timeout: TimeInterval) throws -> Data? {
+        /// The next whole line, nil when none arrived within `timeout`
+        /// (nil: waits for data or the end, with no timer).
+        mutating func next(timeout: TimeInterval?) throws -> Data? {
             if let line = take() { return line }
             var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let ready = poll(&pfd, 1, Int32(max(1, timeout * 1000)))
+            let ready = poll(&pfd, 1, timeout.map { Int32(max(1, $0 * 1000)) } ?? -1)
             if ready < 0, errno != EINTR { throw HubControlError.io(errno) }
             guard ready > 0 else { return nil }
             var chunk = [UInt8](repeating: 0, count: 4096)

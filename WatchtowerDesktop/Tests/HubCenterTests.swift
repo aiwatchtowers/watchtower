@@ -58,7 +58,28 @@ private final class FakeHubClient: HubControlClienting, @unchecked Sendable {
         get { lock.withLock { isReachable } }
         set { lock.withLock { isReachable = newValue } }
     }
-    var heartbeatAnswer = HubControlAnswer(op: HubControlRequest.desktopHeartbeat, ok: true)
+    private var answer = HubControlAnswer(op: HubControlRequest.desktopHeartbeat, ok: true)
+    var heartbeatAnswer: HubControlAnswer {
+        get { lock.withLock { answer } }
+        set { lock.withLock { answer = newValue } }
+    }
+    /// While set, a view send waits in `held` until `releaseViews()`.
+    private var hold = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    var holdViews: Bool {
+        get { lock.withLock { hold } }
+        set { lock.withLock { hold = newValue } }
+    }
+    var heldViews: Int { lock.withLock { held.count } }
+
+    func releaseViews() {
+        let due = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            hold = false
+            defer { held = [] }
+            return held
+        }
+        due.forEach { $0.resume() }
+    }
 
     var sent: [HubControlRequest] { lock.withLock { requests } }
     var views: [HubControlRequest] { sent.filter { $0.op == HubControlRequest.desktopView } }
@@ -68,7 +89,17 @@ private final class FakeHubClient: HubControlClienting, @unchecked Sendable {
     func send(_ request: HubControlRequest) async throws -> HubControlAnswer {
         guard reachable else { throw HubControlError.noHub }
         lock.withLock { requests.append(request) }
-        if request.op == HubControlRequest.desktopHeartbeat { return lock.withLock { heartbeatAnswer } }
+        if request.op == HubControlRequest.desktopHeartbeat { return heartbeatAnswer }
+        if holdViews {
+            await withCheckedContinuation { continuation in
+                let parked = lock.withLock { () -> Bool in
+                    guard hold else { return false }
+                    held.append(continuation)
+                    return true
+                }
+                if !parked { continuation.resume() }
+            }
+        }
         return HubControlAnswer(op: request.op, ok: true)
     }
 
@@ -274,6 +305,46 @@ final class HubCenterTests: XCTestCase {
         XCTAssertEqual(client.views.last?.hidden, [])
     }
 
+    /// F10: `initWorkbenches` builds the center through the factory and
+    /// follows the view; a rebuild stops the previous one; the quit stops it.
+    func testAppStateReplacesAndStopsTheHubCenter() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let appState = AppState()
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
+        appState.terminalCenter.shell = { "/bin/zsh" }
+        var built: [HubCenter] = []
+        appState.makeHubCenter = { [weak self] cli in
+            guard let center = self?.makeCenter(cli: cli) else { return nil }
+            built.append(center)
+            return center
+        }
+        func initWorkbenches() {
+            appState.initWorkbenches(
+                dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),
+                sessionNotifier: RecordingSessionNotifier()
+            )
+        }
+        defer {
+            appState.sessionAgentStateCenter?.stop()
+            appState.workbenchNotificationCenter?.stop()
+        }
+        initWorkbenches()
+        let first = try XCTUnwrap(appState.hubCenter)
+        XCTAssertTrue(first.isRunning)
+        XCTAssertNotNil(appState.workbenchesViewModel?.onHiddenSessionsChanged, "follows the Undo batch")
+        XCTAssertNotNil(appState.sessionAgentStateCenter?.onDisplayOverChange, "follows the shown-over counts")
+
+        initWorkbenches()
+        XCTAssertFalse(first.isRunning, "a rebuild stops the previous center")
+        let second = try XCTUnwrap(appState.hubCenter)
+        XCTAssertTrue(second !== first && second.isRunning)
+        XCTAssertEqual(built.count, 2)
+
+        appState.stopHubCenterForQuit()
+        XCTAssertFalse(second.isRunning)
+    }
+
     /// #411: a count shown over goes as `{id, run, reported_at}` with the
     /// run and the report stamp it was judged for.
     func testDisplayOverReachesTheHub() async {
@@ -289,6 +360,98 @@ final class HubCenterTests: XCTestCase {
             HubShownOver(id: 5, run: run, reportedAt: "2027-01-15T07:43:21.000Z"),
             HubShownOver(id: 6, run: nil, reportedAt: nil)
         ])
+    }
+
+    /// F1: a view changed while no hub answered goes with the first beat
+    /// answered again.
+    func testViewMadeWhileNoHubAnswersGoesWhenItAnswersAgain() async {
+        let center = makeCenter()
+        center.start()
+        await waitUntil("the start view") { client.views.count == 1 && sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
+        client.reachable = false
+        sleeper.release(HubCenter.heartbeatInterval)
+        await waitUntil("a failed beat") { sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
+        center.publishView(hidden: [4], displayOver: [:])
+        await waitUntil("the coalesce wait") { sleeper.parkedCount(HubCenter.viewCoalesce) == 1 }
+        sleeper.release(HubCenter.viewCoalesce)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(client.views.count, 1, "nothing sent while no hub answers")
+
+        client.reachable = true
+        sleeper.release(HubCenter.heartbeatInterval)
+        await waitUntil("the view after the hub answers") { client.views.count == 2 }
+        XCTAssertEqual(client.views.last?.hidden, [4])
+    }
+
+    /// F2: the heartbeat owns reachability. A watch that ends while beats
+    /// answer only reconnects: no CLI fallback over the status, and views
+    /// still go.
+    func testAWatchEndingWhileHeartbeatsAnswerOnlyReconnects() async {
+        let cli = FakeCLIRunner(stdout: Data(#"{"state":"running","hub_id":"hub-acme"}"#.utf8))
+        let center = makeCenter(cli: cli)
+        center.start()
+        await waitUntil("the start view") { client.views.count == 1 }
+        await waitUntil("the stream is open") { client.watches == 1 }
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        // One read when the beat first answered, one after the snapshot.
+        await waitUntil("the full status") { center.status?.hubID == "hub-acme" && cli.invocations.count == 2 }
+        let reads = cli.invocations.count
+
+        client.endStream()
+        await waitUntil("a reconnect wait") { sleeper.parkedCount(HubCenter.firstBackoff) == 1 }
+        XCTAssertEqual(center.status, HubCenter.Status(state: "running", hubID: "hub-acme"), "the status is kept")
+        XCTAssertEqual(cli.invocations.count, reads, "no fallback read for a dropped stream")
+        center.publishView(hidden: [8], displayOver: [:])
+        await waitUntil("the coalesce wait") { sleeper.parkedCount(HubCenter.viewCoalesce) == 1 }
+        sleeper.release(HubCenter.viewCoalesce)
+        await waitUntil("the view still goes") { client.views.count == 2 }
+        XCTAssertEqual(client.views.last?.hidden, [8])
+        sleeper.release(HubCenter.firstBackoff)
+        await waitUntil("the watch reconnects") { client.watches == 2 }
+    }
+
+    /// F4: a `view_needed` during a send in flight sends the view once more
+    /// after it, even unchanged.
+    func testViewNeededDuringASendKeepsItsForce() async {
+        let center = makeCenter()
+        center.start()
+        await waitUntil("the start view") { client.views.count == 1 && sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
+        client.holdViews = true
+        center.publishView(hidden: [2], displayOver: [:])
+        await waitUntil("the coalesce wait") { sleeper.parkedCount(HubCenter.viewCoalesce) == 1 }
+        sleeper.release(HubCenter.viewCoalesce)
+        await waitUntil("the change is in flight") { client.heldViews == 1 }
+
+        client.heartbeatAnswer = HubControlAnswer(op: HubControlRequest.desktopHeartbeat, ok: true, viewNeeded: true)
+        sleeper.release(HubCenter.heartbeatInterval)
+        await waitUntil("the beat answered") { client.heartbeats == 2 }
+        client.releaseViews()
+        await waitUntil("the view again after the send") { client.views.count == 3 }
+        XCTAssertEqual(client.views[2], client.views[1], "the same view, forced")
+    }
+
+    /// F5: while the hub answers, the full status comes from the CLI (on
+    /// connect and after each watch status), its state and reason the watch's.
+    func testFullStatusFromTheCLIWhileTheHubAnswers() async {
+        let cli = FakeCLIRunner(stdout: Data("""
+            {"state":"off","reason":"desktop_host","hub_id":"hub-acme","transport":"cloudkit","host":"desktop",
+             "mode":"live","recordings":"on","adoption":"done"}
+            """.utf8))
+        let center = makeCenter(cli: cli)
+        center.start()
+        await waitUntil("the stream is open") { client.watches == 1 }
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        await waitUntil("the full status") { center.status?.state == "running" && cli.invocations.count == 2 }
+        XCTAssertEqual(center.status, HubCenter.Status(
+            state: "running", hubID: "hub-acme", transport: "cloudkit", host: "desktop", mode: "live",
+            recordings: "on", adoption: "done"
+        ))
+        let reads = cli.invocations.count
+        client.emit(.status(HubCenter.Status(state: "paused", reason: "locked")))
+        await waitUntil("re-read after a status event") { cli.invocations.count > reads }
+        await waitUntil("the state is the watch's") { center.status?.state == "paused" }
+        XCTAssertEqual(center.status?.reason, "locked")
+        XCTAssertEqual(center.status?.recordings, "on")
     }
 
     func testStopEndsHeartbeatAndWatch() async {

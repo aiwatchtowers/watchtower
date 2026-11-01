@@ -375,6 +375,8 @@ final class AppState {
     /// The Go hub over its control socket (heartbeat, view inputs, status;
     /// go hub plan 3 Task 14); none under XCTest.
     private(set) var hubCenter: HubCenter?
+    /// Builds the hub center for a workbench state (a seam for tests).
+    @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
     /// Every line the app types into a workbench session's prompt — an
     /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
     /// one queue per session (PROJ-12).
@@ -759,7 +761,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch were deleted in the
                     // quit's async phase (PROJ-17, `QuitCoordinator`).
                     self?.mobileHub?.stop()
-                    self?.hubCenter?.stop()
+                    self?.stopHubCenterForQuit()
                     self?.automationsViewModel?.stop()
                     self?.automationSessionCenter?.stop()
                     self?.homeCenter.endReading()
@@ -1877,9 +1879,14 @@ final class AppState {
         cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
     ) {
         hubCenter?.stop()
-        hubCenter = HubCenter.live(cli: cliRunner)
+        hubCenter = makeHubCenter(cliRunner)
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.start()
+    }
+
+    /// The app quits: no more heartbeats, so the hub's view goes stale.
+    func stopHubCenterForQuit() {
+        hubCenter?.stop()
     }
 
     /// Agent analytics (#298): the previous center stopped, a new one built.

@@ -16,11 +16,12 @@ final class FakeHubSocket: @unchecked Sendable {
     private var watchers: [Int32] = []
     private var open: [Int32] = []
     private var stopped = false
+    private var closedConnections = 0
     var answer: @Sendable ([String: Any]) -> [String] = { _ in [#"{"ok":true}"#] }
 
     init() throws {
-        // Short: sockaddr_un holds 104 bytes.
-        dir = "/tmp/wt-hc-\(UUID().uuidString.prefix(8))"
+        // A short name: sockaddr_un holds 104 bytes.
+        dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("wthc-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         path = dir + "/hub.sock"
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -37,6 +38,8 @@ final class FakeHubSocket: @unchecked Sendable {
 
     var received: [[String: Any]] { lock.withLock { requests } }
     var watcherCount: Int { lock.withLock { watchers.count } }
+    /// Connections the client closed (its side hung up).
+    var closedCount: Int { lock.withLock { closedConnections } }
 
     func push(_ line: String) {
         for w in lock.withLock({ watchers }) { Self.send(w, line) }
@@ -58,6 +61,7 @@ final class FakeHubSocket: @unchecked Sendable {
         dropConnections()
         Darwin.shutdown(fd, SHUT_RDWR)
         close(fd)
+        unlink(path)
         try? FileManager.default.removeItem(atPath: dir)
     }
 
@@ -76,7 +80,15 @@ final class FakeHubSocket: @unchecked Sendable {
         var chunk = [UInt8](repeating: 0, count: 4096)
         while true {
             let n = read(c, &chunk, chunk.count)
-            guard n > 0 else { close(c); return }
+            guard n > 0 else {
+                lock.withLock {
+                    closedConnections += 1
+                    open.removeAll { $0 == c }
+                    watchers.removeAll { $0 == c }
+                }
+                close(c)
+                return
+            }
             buffer.append(contentsOf: chunk[0..<n])
             while let end = buffer.firstIndex(of: UInt8(ascii: "\n")) {
                 let line = Data(buffer[buffer.startIndex..<end])
@@ -142,7 +154,7 @@ final class HubControlClientTests: XCTestCase {
 
     func testPairEventsBeforeTheAnswerAreSkipped() async throws {
         server.answer = { _ in [#"{"event":"pair","ok":false,"pair":"waiting"}"#, #"{"op":"desktop_view","ok":true}"#] }
-        let answer = try await HubControlClient(socketPath: server.path).send(.view(hidden: [], displayOver: []))
+        let answer = try await HubControlClient(socketPath: server.path).send(.view(hidden: [], displayOver: []).request)
         XCTAssertEqual(answer.op, "desktop_view")
         XCTAssertTrue(answer.ok)
     }
@@ -151,10 +163,11 @@ final class HubControlClientTests: XCTestCase {
     /// spelled out, the run in the agent-state stamp layout.
     func testViewWireShape() async throws {
         let run = Date(timeIntervalSince1970: 1_799_999_000.123_9)
-        let request = HubControlRequest.view(hidden: [9, 4], displayOver: [
+        let (request, capped) = HubControlRequest.view(hidden: [9, 4], displayOver: [
             HubShownOver(id: 6, run: nil, reportedAt: nil),
-            HubShownOver(id: 5, run: run, reportedAt: "2027-01-15T07:43:21.000Z")
+            HubShownOver(id: 5, ShownOverCount(run: run, reportedAt: "2027-01-15T07:43:21.000Z"))
         ])
+        XCTAssertFalse(capped)
         _ = try await HubControlClient(socketPath: server.path).send(request)
         let sent = try XCTUnwrap(server.received.first)
         XCTAssertEqual(sent["op"] as? String, "desktop_view")
@@ -194,6 +207,41 @@ final class HubControlClientTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? HubControlError, .closed)
         }
+    }
+
+    /// Cancelling the consumer shuts the socket down at once (no timer):
+    /// the hub sees the connection closed and the stream's thread ends.
+    func testCancellingTheWatchClosesItsSocket() async throws {
+        server.answer = { _ in [#"{"op":"desktop_watch","ok":true,"state":"running"}"#] }
+        let stream = HubControlClient(socketPath: server.path).watch()
+        let consumer = Task {
+            var count = 0
+            for try await _ in stream { count += 1 }
+            return count
+        }
+        await waitUntil("the watch is registered") { server.watcherCount == 1 }
+        consumer.cancel()
+        await waitUntil("the client closed its side") { server.closedCount == 1 }
+        let count = try await consumer.value
+        XCTAssertEqual(count, 1, "the snapshot, then a clean end")
+    }
+
+    func testViewListsAreCappedToTheNewestIDs() {
+        let ids = Set((1...Int64(HubControlRequest.maxViewIDs + 5)))
+        let (request, capped) = HubControlRequest.view(hidden: ids, displayOver: [HubShownOver(id: 1, run: nil, reportedAt: nil)])
+        XCTAssertTrue(capped)
+        XCTAssertEqual(request.hidden?.count, HubControlRequest.maxViewIDs)
+        XCTAssertEqual(request.hidden?.first, 6, "the lowest ids go")
+        XCTAssertEqual(request.displayOver?.map(\.id), [1])
+    }
+
+    func testSocketPathHonoursTheHubDirOverride() {
+        XCTAssertEqual(HubControlClient.defaultSocketPath(environment: ["WATCHTOWER_HUB_DIR": "/tmp/hubtest-acme"]),
+                       "/tmp/hubtest-acme/hub.sock")
+        let live = (Constants.databasePath as NSString).appendingPathComponent(".hub/hub.sock")
+        XCTAssertEqual(HubControlClient.defaultSocketPath(environment: [:]), live)
+        XCTAssertEqual(HubControlClient.defaultSocketPath(environment: ["WATCHTOWER_HUB_DIR": "relative"]), live,
+                       "a relative dir, refused by Go, is ignored")
     }
 
     func testNoSocketIsNoHub() async {
