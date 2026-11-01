@@ -212,7 +212,7 @@ func (p *Processor) readHeldEchoes(ctx context.Context, b mailbox, due map[strin
 			}
 			delete(found, rec.Name) // a later change of the same record wins
 			delete(rewritten, rec.Name)
-			o, err := p.cfg.Opener.OwnEchoFor(b.id, rec.Name, rec.Envelope)
+			o, err := p.ownEcho(b, rec.Name, rec.Envelope)
 			if errors.Is(err, secure.ErrWrongClass) || errors.Is(err, secure.ErrWrongSender) {
 				rewritten[rec.Name] = true // the phone's own record: the mailbox read answers it
 				continue

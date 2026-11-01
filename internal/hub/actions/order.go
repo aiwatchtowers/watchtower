@@ -434,6 +434,11 @@ func sameID(s string, id secure.ID) bool {
 // copy rolled it back) is dropped and its gap asked for again.
 func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 	device := b.id.String()
+	if p.fault != nil {
+		if err := p.fault("drain " + device); err != nil {
+			return err
+		}
+	}
 	for {
 		dev, linked, err := p.cfg.Store.Device(device)
 		if err != nil || !linked {

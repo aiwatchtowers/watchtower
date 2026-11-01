@@ -5,12 +5,20 @@ import (
 	"testing"
 
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
 
 // Go twins of the Swift hub's device-record tests (RelayProcessor →
 // MobileLinkCenter.handleDevice: MobileLinkCenterTests+Permissions,
-// +StartSessions and the typing-request tests), on every memfake kind.
+// +StartSessions and the typing-request tests), on CloudKit's shared mailbox:
+// the relay path reads no device records.
+
+// onShared runs fn on the shared CloudKit mailbox.
+func onShared(t *testing.T, fn func(t *testing.T, w *world)) {
+	t.Helper()
+	fn(t, newWorld(t, kindShared))
+}
 
 // rewrite is the phone's own device record with the toggles given.
 func (w *world) rewrite(d wire.DevicePayload) {
@@ -30,7 +38,7 @@ func (w *world) rewrite(d wire.DevicePayload) {
 }
 
 func TestDeviceRecordUnlinkedUnlinks(t *testing.T) {
-	eachKind(t, func(t *testing.T, w *world) {
+	onShared(t, func(t *testing.T, w *world) {
 		epoch, err := w.keys.CurrentEpoch()
 		if err != nil {
 			t.Fatal(err)
@@ -54,7 +62,7 @@ func TestDeviceRecordUnlinkedUnlinks(t *testing.T) {
 // nothing (decided_at stays), and the phone's start-sessions toggle is only
 // its opt-out, never the owner's grant.
 func TestDeviceRecordRequestsAreNotGrants(t *testing.T) {
-	eachKind(t, func(t *testing.T, w *world) {
+	onShared(t, func(t *testing.T, w *world) {
 		on := true
 		w.rewrite(wire.DevicePayload{TypingRequested: true, PermissionsRequested: &on, StartSessions: true,
 			Name: "Ana's\niPhone", UserRecordName: "_user-a"})
@@ -79,8 +87,8 @@ func TestDeviceRecordRequestsAreNotGrants(t *testing.T) {
 		if decided.Valid {
 			t.Fatalf("a request decided at %v", decided.Float64)
 		}
-		if user != "_user-a" {
-			t.Fatalf("user_record_name %q", user)
+		if user == "_user-a" { // the payload's claim only checks the record's creator
+			t.Fatalf("user_record_name taken from the payload")
 		}
 		grants, err := w.links.Grants()
 		if err != nil {
@@ -98,7 +106,7 @@ func TestDeviceRecordRequestsAreNotGrants(t *testing.T) {
 // The phone's toggle going from on to off revokes that grant; a rewrite for
 // another toggle keeps it.
 func TestDeviceRecordToggleOffRevokesTheGrant(t *testing.T) {
-	eachKind(t, func(t *testing.T, w *world) {
+	onShared(t, func(t *testing.T, w *world) {
 		on, off := true, false
 		w.rewrite(wire.DevicePayload{TypingRequested: true, PermissionsRequested: &on, StartSessions: true})
 		device := w.phone.ID().String()
@@ -126,11 +134,45 @@ func TestDeviceRecordToggleOffRevokesTheGrant(t *testing.T) {
 // A device record carrying a link nonce asks for a link, which only a hello
 // makes: it changes nothing.
 func TestDeviceRecordWithACodeIsIgnored(t *testing.T) {
-	eachKind(t, func(t *testing.T, w *world) {
+	onShared(t, func(t *testing.T, w *world) {
 		nonce := "a-code"
 		w.rewrite(wire.DevicePayload{LinkNonce: &nonce, TypingRequested: true, Name: "Renamed"})
 		if d := w.device(w.phone); d.TypingRequested || d.Name != "Test Phone" {
 			t.Fatalf("device %+v", d)
 		}
 	})
+}
+
+// A device record not written in the link's scope changes nothing: an
+// unlink in it does not unlink, a rewrite does not rename (Swift
+// handleLinkedRewrite's guard runs before the unlink).
+func TestDeviceRecordInAnotherScopeIsIgnored(t *testing.T) {
+	onShared(t, func(t *testing.T, w *world) {
+		epoch, err := w.keys.CurrentEpoch()
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlinked := true
+		w.rewrite(wire.DevicePayload{Scope: "shared", Unlinked: &unlinked})
+		w.rewrite(wire.DevicePayload{Scope: "shared", Name: "Renamed", TypingRequested: true})
+		d := w.device(w.phone) // still linked
+		if d.Name != "Test Phone" || d.TypingRequested {
+			t.Fatalf("device %+v", d)
+		}
+		if now, err := w.keys.CurrentEpoch(); err != nil || now != epoch {
+			t.Fatalf("epoch %d → %d (%v)", epoch, now, err)
+		}
+	})
+}
+
+// The relay path is phase 1's: a device record in a phone's own relay
+// mailbox is read with no effect, an unlink in it included.
+func TestDeviceRecordOnTheRelayChangesNothing(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	unlinked := true
+	w.rewrite(wire.DevicePayload{Unlinked: &unlinked})
+	w.rewrite(wire.DevicePayload{TypingRequested: true, Name: "Renamed"})
+	if d := w.device(w.phone); d.Name != "Test Phone" || d.TypingRequested {
+		t.Fatalf("device %+v", d)
+	}
 }

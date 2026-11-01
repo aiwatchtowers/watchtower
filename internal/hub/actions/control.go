@@ -254,6 +254,14 @@ func (p *Processor) flushAll(ctx context.Context) (written, failed int, err erro
 // land this time (the first one stops the mailbox).
 func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, failed int, err error) {
 	zone := b.zone
+	// Rows queued while the phone's mailbox had the other shape (its own
+	// zone ↔ the shared one) join its queue, in their order: their envelopes
+	// are bound to the relay zone, not to a transport's zone name.
+	if n, err := p.cfg.Store.RekeyControls(b.oldQueues, b.queue); err != nil {
+		return 0, 0, err
+	} else if n > 0 {
+		log.Printf("hub: %d queued records of device %s moved to its current mailbox", n, b.id)
+	}
 	rows, err := p.cfg.Store.PendingControls(b.queue)
 	if err != nil {
 		return 0, 0, err
@@ -344,6 +352,6 @@ func (p *Processor) writeQueued(ctx context.Context, b mailbox, c state.Control,
 
 // ownRecord reports whether s is a record the hub wrote for b (one of its echoes).
 func (p *Processor) ownRecord(b mailbox, s *transport.Stored) bool {
-	_, err := p.cfg.Opener.OwnEchoFor(b.id, s.Name, s.Envelope)
+	_, err := p.ownEcho(b, s.Name, s.Envelope)
 	return err == nil
 }

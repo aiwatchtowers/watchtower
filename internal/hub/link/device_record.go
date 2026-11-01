@@ -8,49 +8,78 @@ import (
 	"log"
 	"strings"
 
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 )
 
-// PhoneRewrite applies a linked phone's own rewrite of its device record
-// (protocol §5.5; the Swift MobileLinkCenter.handleLinkedRewrite) other than
-// an unlink, which is Unlink: its name replaces the stored one, its
-// start_sessions toggle becomes start_sessions_allowed (its opt-out, never
-// the owner's grant), its typing and permission requests are stored for the
-// owner to decide — a request is never a grant — and a request going from on
-// to off revokes that grant (the phone's own revoke, spec §10). A rewrite for
-// another toggle keeps a grant. user_record_name is kept for the participant
-// sweep. The caller has bound p to device (the record's authenticated
-// sender). A device that is not linked, or a payload whose scope is not the
-// link's, changes nothing.
-func (c *Center) PhoneRewrite(device string, p wire.DevicePayload) error {
+// DeviceRecord is a linked phone's own device record (protocol §5.5) as the
+// processor read it: the payload, already bound to the record's
+// authenticated sender. What the transport tells about who wrote the record
+// joins it here, for the checks the Swift hub makes on it.
+type DeviceRecord struct {
+	Payload wire.DevicePayload
+}
+
+// ApplyDeviceRecord applies a linked phone's own rewrite of its device
+// record (the Swift MobileLinkCenter.handleLinkedRewrite). It acts only when
+// device is linked and the record passes accepts (the link's scope); then
+// unlinked: true is the phone's own unlink (Unlink: its keys rotate out),
+// and any other rewrite replaces its name, mirrors its start_sessions toggle
+// into start_sessions_allowed (its opt-out, never the owner's grant), stores
+// its typing and permission requests for the owner — a request is never a
+// grant — and revokes a grant whose request goes from on to off (the phone's
+// own revoke, spec §10). A rewrite for another toggle keeps a grant.
+func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceRecord) error {
+	row, linked, err := c.st.Device(device)
+	if err != nil {
+		return fmt.Errorf("reading a phone's link: %w", err)
+	}
+	if !linked {
+		return nil
+	}
+	if !accepts(row, r) {
+		log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
+		return nil
+	}
+	if r.Payload.Unlinked != nil && *r.Payload.Unlinked {
+		log.Printf("hub link: phone %s unlinked itself", strings.ToUpper(device))
+		if err := c.Unlink(device); err != nil && !errors.Is(err, state.ErrNoDevice) {
+			return err
+		}
+		return nil
+	}
+	return c.rewrite(ctx, device, r.Payload)
+}
+
+// accepts is the Swift hub's check that a device record comes from the
+// phone's link: written in the link's scope.
+func accepts(row state.Device, r DeviceRecord) bool {
+	return r.Payload.Scope == row.Scope
+}
+
+// rewrite is ApplyDeviceRecord's rewrite of a linked phone.
+func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayload) error {
 	c.mu.Lock()
 	defer c.unlock()
 	var asked, typingRevoked, permsRevoked, changed bool
-	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err := c.st.WithTx(ctx, func(tx *sql.Tx) error {
 		var (
-			name, scope, userRecord                 string
+			name                                    string
 			typingAllowed, typingReq                bool
 			permsAllowed, permsReq, startAllowedNow bool
 		)
-		err := tx.QueryRow(`SELECT name, scope, user_record_name, typing_allowed, typing_requested,
+		err := tx.QueryRow(`SELECT name, typing_allowed, typing_requested,
 			permissions_allowed, permissions_requested, start_sessions_allowed
 			FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(
-			&name, &scope, &userRecord, &typingAllowed, &typingReq, &permsAllowed, &permsReq, &startAllowedNow)
+			&name, &typingAllowed, &typingReq, &permsAllowed, &permsReq, &startAllowedNow)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+			return nil // unlinked meanwhile
 		}
 		if err != nil {
 			return err
 		}
-		if p.Scope != scope {
-			log.Printf("hub link: device record of phone %s not written in its link's scope: ignored", strings.ToUpper(device))
-			return nil
-		}
 		permsWanted := p.PermissionsRequested != nil && *p.PermissionsRequested
 		newName := displayName(p.Name)
-		if p.UserRecordName != "" {
-			userRecord = p.UserRecordName
-		}
 		revokeTyping := !p.TypingRequested && typingReq && typingAllowed
 		revokePerms := !permsWanted && permsReq && permsAllowed
 		asked = p.TypingRequested && !typingAllowed && !typingReq
@@ -60,12 +89,12 @@ func (c *Center) PhoneRewrite(device string, p wire.DevicePayload) error {
 		// A grant column the phone changed stamps decided_at, as the Swift
 		// setGrant does; a request alone decides nothing.
 		decided := revokeTyping || revokePerms || p.StartSessions != startAllowedNow
-		_, err = tx.Exec(`UPDATE devices SET name = ?, user_record_name = ?, start_sessions_allowed = ?,
+		_, err = tx.Exec(`UPDATE devices SET name = ?, start_sessions_allowed = ?,
 			typing_requested = ?, permissions_requested = ?,
 			typing_allowed = typing_allowed AND NOT ?, permissions_allowed = permissions_allowed AND NOT ?,
 			decided_at = CASE WHEN ? THEN ? ELSE decided_at END
 			WHERE device_id = ? COLLATE NOCASE`,
-			newName, userRecord, p.StartSessions, p.TypingRequested, permsWanted, revokeTyping, revokePerms,
+			newName, p.StartSessions, p.TypingRequested, permsWanted, revokeTyping, revokePerms,
 			decided, secs(c.now()), device)
 		return err
 	})
