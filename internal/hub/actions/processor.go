@@ -43,7 +43,7 @@ type Processor struct {
 	cfg Config
 	mu  sync.Mutex
 	// fault, when set (tests), is called at named points; an error stops
-	// the pass there as a crash would: "opened" (then "opened <device>")
+	// the pass there as a crash would: "opened" (then "opened <device> <wire name>")
 	// after a record opened and before any decision commits, "done" inside
 	// the done transaction just before its commit (the transaction then
 	// rolls back), "drain <device>" as a phone's held actions are drained.
@@ -54,9 +54,9 @@ type Processor struct {
 	batch int
 	// paused (SetPaused) is read under mu by every transport-facing entry.
 	paused atomic.Bool
-	// strikes counts, per record version of a shared zone, the passes that
-	// left it unhandled (its phone failed); guarded by mu (shared.go).
-	strikes map[string]int
+	// strikes holds, per record version of a shared zone, the failures of
+	// its content (shared.go); guarded by mu.
+	strikes map[string]*strikeEntry
 }
 
 // SetPaused pauses the processor (spec §7.3, a headless hub with no paying
@@ -95,9 +95,9 @@ func NewProcessor(c Config) *Processor {
 // CloudKit), queue its control_queue key (the zone, or zone@<device> in a
 // shared mailbox, so one phone's flush never meets another's rows), link the
 // link's nonce (a re-link changes it) and linkedAt keys the ledger. shared
-// marks the shared mailbox (CloudKit's RelayZone, shared.go); oldQueues are
-// the keys its queue had under the other mailbox shape, moved to queue before
-// a flush.
+// marks the shared mailbox (CloudKit's RelayZone, shared.go); there oldQueues is
+// the key its queue had as a phone's own zone, moved to queue before a flush
+// (a phone's own zone keeps its key: none).
 type mailbox struct {
 	id        secure.ID
 	zone      string
@@ -148,14 +148,11 @@ func (p *Processor) mailboxes() ([]mailbox, error) {
 			continue
 		}
 		b := mailbox{id: id, zone: zone, queue: zone, link: d.LinkNonce, linkedAt: d.LinkedAt}
-		sharedQueue := shared + "@" + id.String()
 		if zone == shared {
-			b.queue, b.shared = sharedQueue, true
+			b.queue, b.shared = shared+"@"+id.String(), true
 			if d.RelayDeviceID != "" {
 				b.oldQueues = []string{transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID)}
 			}
-		} else {
-			b.oldQueues = []string{sharedQueue}
 		}
 		out = append(out, b)
 	}
@@ -407,7 +404,7 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		if err := p.fault("opened"); err != nil {
 			return err
 		}
-		if err := p.fault("opened " + b.id.String()); err != nil {
+		if err := p.fault("opened " + b.id.String() + " " + rec.Name); err != nil {
 			return err
 		}
 	}
