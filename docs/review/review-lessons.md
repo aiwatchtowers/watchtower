@@ -2530,3 +2530,12 @@ Entry format:
 - weak-dimension: 7. The pure table test fails on revert, but the VM-level guards (`testBoardOnlyPageUsesTheMainFolder`, the PROJ-10 branch test) stay green only because their fixtures have no live session; their names now overstate what they pin.
 - rule-gap (candidate, dim 8): *a change to a pure policy with more than one consumer names every consumer in the PR description and either covers or excludes each; a guard test whose fixture cannot reach the new branch is extended with that fixture.*
 - outcome: TBD
+
+## 2026-11-01 — fix/codex-no-daemon (PR #573: drop `--no-daemon` from the codex launch args — codex-cli 0.145 removed the flag and refuses to start; `devpack.CodexLaunchArgs`, golden, `launch_cases.json`, Swift fixtures, help text, spec §15 note; panel: prosecutor (2) + codex (0), 3 specialists DOWN (not installed); judge verified against 9a7d0e281 by reading the diff and grep, no runs) — verdict: approve
+
+- contested (F1, held minor): the prosecutor said the new §15 note does not explain why dropping the flag is safe for line 293. It does ("the TUI never started a shared daemon (C11) … a daemon starts only through `codex remote-control start`"), so that half was dismissed. The other half holds: §15's preamble promises "inline text is updated where plainly wrong", and lines 119/127 (§4.2 args shape) now are. [5]
+- false-positive: none dismissed outright; F1's "note lacks rationale" half did not survive a read of the note.
+- miss: none; the fix's Go assertions (`Args[:2]`, golden) and the trust-hash golden loop index (`i := 1`) both fail on the pre-fix code, so §6's regression-test rule is met without a new test.
+- weak-dimension: none on a 20-file mechanical flag removal.
+- rule-gap (candidate, dim 5): *a spec whose amendments section promises inline fixes gets its inline text fixed (or struck through with a pointer) in the same PR that adds the amendment.*
+- outcome: TBD

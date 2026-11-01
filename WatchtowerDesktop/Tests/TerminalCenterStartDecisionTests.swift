@@ -522,10 +522,10 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
     // MARK: - The CLI call
 
     func testLaunchArgsCallAndExit3() async throws {
-        let json = #"{"binary":"/opt/codex","path_prepend":"/opt","args":["-c"]}"#
+        let json = #"{"binary":"/opt/codex","path_prepend":"/opt","args":["-c","a=b"]}"#
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let args = try await WorkbenchCLI(runner: runner).launchArgs(agent: .codex, workbenchID: 7)
-        XCTAssertEqual(args, CodexLaunchArgs(binary: "/opt/codex", pathPrepend: "/opt", args: ["-c"]))
+        XCTAssertEqual(args, CodexLaunchArgs(binary: "/opt/codex", pathPrepend: "/opt", args: ["-c", "a=b"]))
         XCTAssertEqual(runner.invocations, [["workbench", "launch-args", "--agent", "codex", "--workbench", "7", "--json"]])
 
         let missing = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 3, stderr: ""))
