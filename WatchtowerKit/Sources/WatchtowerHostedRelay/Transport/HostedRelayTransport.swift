@@ -8,7 +8,8 @@ import WatchtowerSync
 /// (`relay/<mac>/<phone>`). Server pages are buffered into `TransportStore` (R5), so consumers
 /// keep local change tokens, compaction and the asset stash. Plain `save`/`delete` queue durably
 /// and go out on a flush; `ConditionalTransport` calls go straight to the relay after the queue
-/// (R8). Mirrors the Go hub's `internal/hub/transport/relay` (same relay commit).
+/// (R8). Mirrors the Go hub's `internal/hub/transport/relay` (same relay commit). In
+/// `.pairing(slot:)` mode both lanes are `pair/<slot>` (R3 of Phase 3; `HostedRelayTransportMode`).
 ///
 /// After an App Attest `.notSupported`/`.updateRequired` the transport is stopped until
 /// `start()`: no login, register or request; queued writes stay queued. After `.retryLater`
@@ -33,6 +34,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     let energy: EnergyCounter?
     let maxAttachmentBytes: Int64
     let clock: any RelayClock
+    nonisolated let mode: HostedRelayTransportMode
     nonisolated let dataZone: String
     nonisolated let mailboxZone: String
 
@@ -86,21 +88,25 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         let events = AsyncStream.makeStream(of: HostedRelayEvent.self, bufferingPolicy: .bufferingNewest(Self.eventBuffer))
         try self.init(
             session: HostedRelaySession(client: client, mirror: events.continuation), events: events, store: store,
-            macDeviceID: macDeviceID, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
+            macDeviceID: macDeviceID, mode: .hub, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
     }
 
-    /// On the device's shared `session` (R2): its socket carries this transport's two zones.
+    /// On the device's shared `session` (R2): its socket carries this transport's zones.
+    /// `mode` `.pairing(slot:)`: both lanes are `pair/<slot>` (R3), on the same store binding (the
+    /// Mac), so after `promote_pairing` a `.hub` transport goes on with the same store; a lane whose
+    /// relay zone changed starts the new zone from 0 (`TransportStore.adoptRelayZones`).
     public init(
         session: HostedRelaySession,
         store: TransportStore,
         macDeviceID: String,
+        mode: HostedRelayTransportMode = .hub,
         energy: EnergyCounter? = nil,
         maxAttachmentBytes: Int64 = 100 << 20
     ) throws {
         try self.init(
             session: session,
             events: AsyncStream.makeStream(of: HostedRelayEvent.self, bufferingPolicy: .bufferingNewest(Self.eventBuffer)),
-            store: store, macDeviceID: macDeviceID, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
+            store: store, macDeviceID: macDeviceID, mode: mode, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
     }
 
     private init(
@@ -108,18 +114,27 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         events: (stream: AsyncStream<HostedRelayEvent>, continuation: AsyncStream<HostedRelayEvent>.Continuation),
         store: TransportStore,
         macDeviceID: String,
+        mode: HostedRelayTransportMode,
         energy: EnergyCounter?,
         maxAttachmentBytes: Int64
     ) throws {
+        let zones: (data: String, mailbox: String)
+        switch mode {
+        case .hub:
+            zones = (HostedRelayZones.data(mac: macDeviceID), HostedRelayZones.mailbox(mac: macDeviceID, phone: session.client.deviceID))
+        case .pairing(let slot):
+            zones = (HostedRelayZones.pair(slot: slot), HostedRelayZones.pair(slot: slot))
+        }
         _ = try store.adoptRelayBinding(macDeviceID: macDeviceID, hubID: nil)
+        try store.adoptRelayZones([.data: zones.data, .relay: zones.mailbox])
         self.client = session.client
         self.session = session
         self.store = store
         self.energy = energy
         self.maxAttachmentBytes = maxAttachmentBytes
         self.clock = session.client.clock
-        self.dataZone = HostedRelayZones.data(mac: macDeviceID)
-        self.mailboxZone = HostedRelayZones.mailbox(mac: macDeviceID, phone: session.client.deviceID)
+        self.mode = mode
+        (self.dataZone, self.mailboxZone) = zones
         (relayEvents, relayEventSink) = events
     }
 
@@ -245,14 +260,16 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     func handle(_ event: HostedRelayClientEvent, generation: Int? = nil) async {
         switch event {
         case .zoneChanged(let zone, _):
-            guard let id = cloudZone(zone) else { return }
+            let lanes = cloudZones(zone)
+            guard !lanes.isEmpty else { return }
             do {
-                try await pullZones([id])
+                try await pullZones(Set(lanes))
             } catch {
-                Self.logger.error("relay pull after a zone event failed, \(Self.kind(id), privacy: .public)")
+                Self.logger.error("relay pull after a zone event failed, \(Self.kind(lanes[0]), privacy: .public)")
             }
         case let .zoneRefused(zone, error):
-            await note(error, zone: cloudZone(zone))
+            // A pair zone is both lanes: the refusal is noted once, for the relay lane (the hello's).
+            await note(error, zone: cloudZones(zone).last)
         case .control:
             break
         case .connected:
@@ -284,7 +301,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         attachGeneration += 1
         let generation = attachGeneration
         let id = ObjectIdentifier(owner)
-        await session.attach(owner: id, zones: [dataZone, mailboxZone]) { [weak self] event in
+        let zones = dataZone == mailboxZone ? [dataZone] : [dataZone, mailboxZone]
+        await session.attach(owner: id, zones: zones) { [weak self] event in
             await self?.handle(event, generation: generation)
         }
         // A `stop()` while attaching.
@@ -308,12 +326,14 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         zone == .data ? dataZone : mailboxZone
     }
 
+    /// The lanes reading relay zone `name`, in `CloudZoneID.allCases` order: both for a pair zone.
+    nonisolated func cloudZones(_ name: String) -> [CloudZoneID] {
+        CloudZoneID.allCases.filter { zoneName($0) == name }
+    }
+
+    /// The first lane reading relay zone `name` (in hub mode, the one).
     nonisolated func cloudZone(_ name: String) -> CloudZoneID? {
-        switch name {
-        case dataZone: return .data
-        case mailboxZone: return .relay
-        default: return nil
-        }
+        cloudZones(name).first
     }
 
     /// A zone's kind for logs (never the device ids in its name).
