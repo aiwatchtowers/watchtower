@@ -650,6 +650,7 @@ func errClass(err error) string {
 		{transport.ErrUnavailable, "unavailable"}, {transport.ErrForbidden, "forbidden"},
 		{transport.ErrEntitlementInactive, "entitlement_inactive"}, {transport.ErrRateLimited, "rate_limited"},
 		{transport.ErrTokenExpired, "token_expired"}, {transport.ErrUnsupportedVersion, "unsupported_version"},
+		{transport.ErrNotVouched, "not_vouched"},
 		{identity.ErrSealedKeyUnreadable, "sealed_key_unreadable"}, {identity.ErrInsecureMode, "insecure_mode"},
 		{identity.ErrKeysUnavailable, "keys_unavailable"}, {state.ErrNoDevice, "no_device"},
 		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"},
@@ -668,6 +669,8 @@ func startFailure(err error) string {
 		return ReasonSidecarUnreadable
 	case errors.Is(err, ErrStartFailed):
 		return ReasonStartFailed
+	case errors.Is(err, transport.ErrNotVouched):
+		return ReasonNotVouched
 	case errors.Is(err, transport.ErrForbidden), errors.Is(err, transport.ErrEntitlementInactive):
 		return ReasonNotAdmitted
 	default:

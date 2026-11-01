@@ -78,6 +78,8 @@ var sidecarColumns = map[string]string{
 	"devices.agreement_key":    classPublicKey,
 	"devices.link_nonce":       classLinkSecret,
 	"devices.relay_device_id":  classID,
+	// devices.relay_admitted_at is REAL, a timestamp (not text, so not
+	// listed; TestRelayAdmittedAtIsATimestamp pins its type).
 
 	"link_refusals.device_id":     classID,
 	"link_refusals.name":          classLabel,
