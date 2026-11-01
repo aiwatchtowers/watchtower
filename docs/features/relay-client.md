@@ -20,7 +20,7 @@ The phone side of the paid relay transport. The hub side is the Go hub (`interna
 **Does not ship.** Nothing is wired into the app: no phone code constructs the client or the transport (R19), and nothing reaches a screen, a setting or a notification, so no guide page changed. Phase 3 brings:
 
 - the relay identity (`relay_auth` keys and their storage);
-- the App Attest key id's Keychain store and the `com.apple.developer.devicecheck.appattest-environment` entitlement (R2);
+- the App Attest key id's Keychain store and the `com.apple.developer.devicecheck.appattest-environment` entitlement (R2), in Debug only (`WatchtowerMobile-Release.entitlements` has no App Attest key): Phase 4 adds the key to Release, and enabling App Attest on the App ID is the owner's portal step at that point;
 - linking over the relay (`pair/<slot>`, `LinkPayload` v4);
 - hub vouching (`vouch_hub`);
 - `TransportFactory` choosing the relay.

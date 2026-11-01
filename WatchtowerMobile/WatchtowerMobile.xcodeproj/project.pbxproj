@@ -1533,7 +1533,7 @@
 			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = WatchtowerMobile.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "WatchtowerMobile-Release.entitlements";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Watchtower;
@@ -1550,7 +1550,7 @@
 				PRODUCT_NAME = WatchtowerMobile;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = 1;
-				WT_APP_ATTEST_ENV = production;
+				WATCHTOWER_RELAY_ORIGIN = "";
 			};
 			name = Release;
 		};

@@ -28,8 +28,9 @@
 		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile</string>
 		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts</string>
 	</array>
-	<!-- App Attest for the hosted relay's device registration. $(WT_APP_ATTEST_ENV): development in Debug
-	     (Base.xcconfig), production in Release (project.yml); the relay's environment check
+	<!-- App Attest for the hosted relay's device registration. Debug only: $(WT_APP_ATTEST_ENV) = development
+	     (Base.xcconfig). Release signs with WatchtowerMobile-Release.entitlements, this file without the key, until
+	     Phase 4 adds it there (production) and the owner enables App Attest on the App ID. The relay's environment check
 	     (relay proto/README.md, "Attestation (App Attest)") refuses an attestation from the other environment. -->
 	<key>com.apple.developer.devicecheck.appattest-environment</key>
 	<string>$(WT_APP_ATTEST_ENV)</string>

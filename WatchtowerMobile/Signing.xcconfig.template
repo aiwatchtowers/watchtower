@@ -28,12 +28,13 @@ CODE_SIGNING_REQUIRED = YES
 CODE_SIGN_IDENTITY = Apple Development
 
 // Optional: a hosted relay stand for a Debug phone (empty in Base.xcconfig, so
-// the relay is off). `//` starts an xcconfig comment, so write the origin as
-// `https:/$()/host`. Plain http only to loopback or a LAN address of the Mac
-// running the stand (that also needs a local, uncommitted ATS exception).
-// WATCHTOWER_RELAY_ORIGIN = https:/$()/relay.example.com
-// WATCHTOWER_RELAY_ORIGIN = http:/$()/192.168.1.20:8787
+// the relay is off; Release forces it empty in project.yml whatever is set
+// here). `//` starts an xcconfig comment, so write the origin as
+// `http:/$()/host`. Plain http only to loopback or a LAN address of the Mac
+// running the stand (a LAN address also needs a local, uncommitted ATS
+// exception).
+// WATCHTOWER_RELAY_ORIGIN[config=Debug] = http:/$()/127.0.0.1:8787
 
-// Optional: the App Attest environment (Base.xcconfig: development; Release
-// builds set production in project.yml). Match the stand's expectation.
+// Optional: the Debug App Attest environment (Base.xcconfig: development).
+// Release entitlements carry no App Attest key until Phase 4.
 // WT_APP_ATTEST_ENV = development

@@ -99,9 +99,14 @@ targets:
         # action builds; scoped to Debug so Release stays lean.
         Debug:
           ENABLE_TESTABILITY: YES
-        # The App Attest entitlement's environment (Base.xcconfig: development).
         Release:
-          WT_APP_ATTEST_ENV: production
+          # No relay in Release: the origin is forced empty here, which beats
+          # any xcconfig value (a local Signing.xcconfig included).
+          WATCHTOWER_RELAY_ORIGIN: ""
+          # The Debug file without the App Attest key. Phase 4 adds the key
+          # (production) to Release; enabling App Attest on the App ID is the
+          # owner's portal step then, so archives need none before it.
+          CODE_SIGN_ENTITLEMENTS: WatchtowerMobile-Release.entitlements
 
   # Notification Service Extension (spec §2.1). Fills an ask alert from its
   # sealed record (mobile E2E Task 18, `AlertOpener`); the rest of A13 is
