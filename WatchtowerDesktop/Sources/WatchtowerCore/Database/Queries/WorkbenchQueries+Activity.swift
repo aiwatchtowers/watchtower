@@ -63,4 +63,20 @@ extension WorkbenchQueries {
             lastActionID: lastAction, pendingActions: pending
         )
     }
+
+    /// The actor of each workbench target's newest `target_status_history`
+    /// row (by id), for `WorkbenchOwnerNoticePolicy`. A target with no row is
+    /// absent.
+    package static func newestStatusActors(_ db: Database, projectID: Int64) throws -> [Int64: String] {
+        var actors: [Int64: String] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT h.target_id, h.actor FROM target_status_history h
+            JOIN (SELECT MAX(h2.id) AS id FROM target_status_history h2
+                  JOIN targets t ON t.id = h2.target_id
+                  WHERE t.project_id = ? GROUP BY h2.target_id) n ON n.id = h.id
+            """, arguments: [projectID]) {
+            actors[row["target_id"]] = row["actor"]
+        }
+        return actors
+    }
 }

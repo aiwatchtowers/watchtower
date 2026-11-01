@@ -156,6 +156,9 @@ final class BoardHandlersTests: XCTestCase {
 
     /// The control for the test above: the same change not reported as the
     /// owner's is announced, so the silence there is the report's doing.
+    /// Since the history-actor rule (`WorkbenchOwnerNoticePolicy`) the leaf
+    /// itself stays quiet; what is announced is the parents the rollup closed
+    /// (actor `system`), which only the report covers.
     func testAnUnreportedDoneIsAnnounced() async throws {
         let (p, _, _, leaf) = try seedChain()
         let suite = "BoardHandlersTests-\(UUID().uuidString)"
