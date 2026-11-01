@@ -17,6 +17,12 @@ const (
 	maxRecordingError     = 300
 )
 
+// HubMovedText is a failed job's error for class hub_moved (ask #843): a
+// phone recording that was being transcribed when the Go hub took over the
+// Swift hub's state. Pinned verbatim by TestHubMovedTextPinned.
+const HubMovedText = "Watchtower was updated while this recording was being transcribed. " +
+	"The audio is kept on your Mac; send it again if you still have it on this iPhone."
+
 // RecordingJob is the recording_job slice (RecordingJobSlice, mobile POC spec
 // §4.12), record recording_job-<upload id>: the hub-side progress of one phone
 // upload, read from the sidecar's recording_jobs queue (ids, statuses and
@@ -24,7 +30,7 @@ const (
 // queued, claimed (Desktop took it) is Desktop's reported phase —
 // transcribing (with its percent when reported; also before any report),
 // diarizing or summarizing, as RecordingJobSlice —, done carries the
-// transcript id, failed carries the error class as its error. A
+// transcript id, failed carries the error class as its error (class hub_moved: HubMovedText). A
 // job is published until 7 days after it ended; an unfinished one stays. At
 // most 100, the latest updated first. now nil is time.Now.
 func RecordingJob(st *state.Store, now func() time.Time) (hubslices.Source, error) {
@@ -87,7 +93,11 @@ func (s *recordingJobSource) Items(ctx context.Context) ([]hubslices.Item, error
 			p.Status, p.TranscriptID = "done", j.TranscriptID
 		case state.RecordingFailed:
 			p.Status = "failed"
-			p.Error, _ = clipText(state.ErrorClass(j.ErrorClass), maxRecordingError)
+			if j.ErrorClass == state.ClassHubMoved {
+				p.Error = HubMovedText
+			} else {
+				p.Error, _ = clipText(state.ErrorClass(j.ErrorClass), maxRecordingError)
+			}
 		default:
 			p.Status = "queued"
 		}

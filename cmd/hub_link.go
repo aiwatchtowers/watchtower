@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
@@ -167,17 +169,32 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	line += ", recordings " + rec
+	// The recordings an adoption kept on the Mac: the hub dir's, or on a
+	// desktop host the live dir an adoption fills. Never fails the status.
+	keptDir, keptRec := dir, handlers.RecordingsDirUnder(dir)
+	var kept *adopt.KeptRecordings
+	if dir == "" {
+		keptDir, keptRec, err = hubAdoptDirs()
+	}
+	if err == nil {
+		kept = hubKeptRecordings(cmd, keptDir, keptRec)
+	}
+	if kept != nil {
+		line += fmt.Sprintf(", %d recording(s) kept in %s", kept.Count, kept.Dir)
+	}
 	if mode == hub.ModeLive && s.Reason == hub.ReasonNoRelayOrigin {
 		line += "\n" + hubRelayOriginRemedy
 	}
-	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec}, line)
+	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept}, line)
 }
 
 // hubStatusJSON is `hub status --json`: the runtime's status plus the
-// recording switch (additive key).
+// recording switch and the recordings an adoption kept (additive keys;
+// kept_recordings absent at count 0).
 type hubStatusJSON struct {
 	hub.Status
-	Recordings string `json:"recordings"`
+	Recordings     string                `json:"recordings"`
+	KeptRecordings *adopt.KeptRecordings `json:"kept_recordings,omitempty"`
 }
 
 func runHubPhones(cmd *cobra.Command, _ []string) error {
