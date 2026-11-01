@@ -13,6 +13,10 @@ import WatchtowerSync
 /// After an App Attest `.notSupported`/`.updateRequired` the transport is stopped until
 /// `start()`: no login, register or request; queued writes stay queued. After `.retryLater`
 /// every call answers without the attestor or the network until the deadline.
+///
+/// The socket is the device's one `HostedRelaySession` (R2): `init(session:…)` shares it with
+/// every other relay object of the process, and account-level signals go to `session.events`;
+/// `init(client:…)` builds a private session whose account-level signals are also `relayEvents`.
 public actor HostedRelayTransport: LiveTransport, ConditionalTransport, CompactingTransport {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     /// How long a resync the relay refused partway waits before it starts again (`start()` ends
@@ -24,6 +28,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     static let eventBuffer = 256
 
     let client: HostedRelayClient
+    let session: HostedRelaySession
     let store: TransportStore
     let energy: EnergyCounter?
     let maxAttachmentBytes: Int64
@@ -31,12 +36,17 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     nonisolated let dataZone: String
     nonisolated let mailboxZone: String
 
-    /// Relay-only signals (R11), for one reader.
+    /// Relay-only signals (R11), for one reader: `.forbidden(zone:)` and `.reachable`, plus the
+    /// account-level ones when the session is private (`init(client:…)`).
     nonisolated public let relayEvents: AsyncStream<HostedRelayEvent>
     let relayEventSink: AsyncStream<HostedRelayEvent>.Continuation
 
-    var connection: HostedRelayConnection?
-    var socketReader: Task<Void, Never>?
+    /// This transport's owner identity on the session; kept alive by the deinit's detach.
+    let owner = SessionOwner()
+    /// Attached to the session (its socket wanted); cleared by `stop()` and by a `.stopped` socket.
+    var attached = false
+    /// Counts this transport's attaches: a `.stopped` routed to an earlier one is stale.
+    var attachGeneration = 0
     /// Set by an App Attest `.notSupported`/`.updateRequired`; cleared by `start()`.
     var stoppedBy: HostedRelayAttestError?
     /// Set by an App Attest `.retryLater`; cleared by `start()` and by an op that reached the relay.
@@ -65,6 +75,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// another Mac throws `TransportStoreError.boundToAnotherRoute` before any request.
     /// `maxAttachmentBytes`: the largest attachment a pull downloads (the relay's default cap,
     /// Go `MaxAttachmentBytes`).
+    /// With a private session: the socket is this transport's alone (Phase 2's shape).
     public init(
         client: HostedRelayClient,
         store: TransportStore,
@@ -72,21 +83,50 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         energy: EnergyCounter? = nil,
         maxAttachmentBytes: Int64 = 100 << 20
     ) throws {
+        let events = AsyncStream.makeStream(of: HostedRelayEvent.self, bufferingPolicy: .bufferingNewest(Self.eventBuffer))
+        try self.init(
+            session: HostedRelaySession(client: client, mirror: events.continuation), events: events, store: store,
+            macDeviceID: macDeviceID, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
+    }
+
+    /// On the device's shared `session` (R2): its socket carries this transport's two zones.
+    public init(
+        session: HostedRelaySession,
+        store: TransportStore,
+        macDeviceID: String,
+        energy: EnergyCounter? = nil,
+        maxAttachmentBytes: Int64 = 100 << 20
+    ) throws {
+        try self.init(
+            session: session,
+            events: AsyncStream.makeStream(of: HostedRelayEvent.self, bufferingPolicy: .bufferingNewest(Self.eventBuffer)),
+            store: store, macDeviceID: macDeviceID, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
+    }
+
+    private init(
+        session: HostedRelaySession,
+        events: (stream: AsyncStream<HostedRelayEvent>, continuation: AsyncStream<HostedRelayEvent>.Continuation),
+        store: TransportStore,
+        macDeviceID: String,
+        energy: EnergyCounter?,
+        maxAttachmentBytes: Int64
+    ) throws {
         _ = try store.adoptRelayBinding(macDeviceID: macDeviceID, hubID: nil)
-        self.client = client
+        self.client = session.client
+        self.session = session
         self.store = store
         self.energy = energy
         self.maxAttachmentBytes = maxAttachmentBytes
-        self.clock = client.clock
+        self.clock = session.client.clock
         self.dataZone = HostedRelayZones.data(mac: macDeviceID)
-        self.mailboxZone = HostedRelayZones.mailbox(mac: macDeviceID, phone: client.deviceID)
-        (relayEvents, relayEventSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(Self.eventBuffer))
+        self.mailboxZone = HostedRelayZones.mailbox(mac: macDeviceID, phone: session.client.deviceID)
+        (relayEvents, relayEventSink) = events
     }
 
     deinit {
         relayEventSink.finish()
-        socketReader?.cancel()
-        if let connection { Task { await connection.close() } }
+        // `owner` rides along, so its identifier is not reused before the detach.
+        Task { [session, owner] in await session.detach(owner: ObjectIdentifier(owner)) }
     }
 
     // MARK: - CloudSyncTransport
@@ -121,7 +161,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         loginNotBefore = nil
         wantsSocket = true
         for zone in CloudZoneID.allCases { resyncHolds[zone] = .distantPast }
-        if connection == nil, await client.accountID == nil {
+        if !attached, await client.accountID == nil {
             do {
                 _ = try await call(nil) { try await self.client.register() }
             } catch {
@@ -138,10 +178,10 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         }
     }
 
-    /// Closes the socket. Queued writes stay queued.
+    /// Detaches from the session (the last owner's detach closes the socket). Queued writes stay queued.
     public func stop() async {
         wantsSocket = false
-        await closeConnection()
+        await detachFromSession()
     }
 
     /// Flushes the plain queue; a stopped flush re-reads its zone.
@@ -197,11 +237,12 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
 
     // MARK: - The socket
 
-    /// A socket event: a zone change is a pull of that zone (R9; the connection sends a
-    /// record-less one per zone after every connect, so a reconnect pulls both), a connect
-    /// reads the account state and flushes the plain queue, controls and refusals go to
-    /// `relayEvents`.
-    func handle(_ event: HostedRelayClientEvent) async {
+    /// A socket event the session routed here: a zone change is a pull of that zone (R9; the
+    /// connection sends a record-less one per zone after every connect, so a reconnect pulls
+    /// both), a connect flushes the plain queue, a refusal goes to `relayEvents`. Controls and the
+    /// account state are the session's (`session.events`).
+    /// `generation`: the attach the event was routed to (nil: the current one).
+    func handle(_ event: HostedRelayClientEvent, generation: Int? = nil) async {
         switch event {
         case .zoneChanged(let zone, _):
             guard let id = cloudZone(zone) else { return }
@@ -212,58 +253,53 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
             }
         case let .zoneRefused(zone, error):
             await note(error, zone: cloudZone(zone))
-        case let .control(kind, detail):
-            emit(.control(kind: kind, detail: detail))
+        case .control:
+            break
         case .connected:
             setReachable(true)
-            await readAccountState()
             // Rows queued while the socket was down go out now (the flush is single-flight).
             await sendNow()
         case .disconnected:
             setReachable(false)
         case .stopped(let error):
-            connection = nil
-            socketReader = nil
-            if error == .unsupportedVersion { wantsSocket = false }
-            await note(error, zone: nil)
+            // A stop of an earlier attach: the current one is still attached.
+            if let generation, generation != attachGeneration { return }
+            // The session detached every owner and reported the stop on `session.events`.
+            attached = false
+            stopped(by: error)
         }
     }
 
-    /// `get_account_state` after a connect: an entitlement that does not pay is reported.
+    /// `get_account_state` (the session reads it after every connect): an entitlement that does
+    /// not pay is reported.
     func readAccountState() async {
         guard held() == nil else { return }
-        do {
-            let state = try await call(nil) { try await self.client.accountState() }
-            let inactive: [Relay_V1_EntitlementKind] = [Relay_V1_EntitlementKind.none, .expired, .revoked]
-            if inactive.contains(state.entitlement.state) { emit(.entitlementInactive) }
-        } catch {
-            Self.logger.error("relay account state failed")
-        }
+        await session.readAccountState()
     }
 
-    /// Dials the socket when `start()` wants one and none is open, unless stopped or held.
+    /// Attaches to the session when `start()` wants the socket, unless stopped or held.
     func connectIfWanted() async {
-        guard wantsSocket, connection == nil, held() == nil else { return }
-        let connection = await client.connect(zones: [dataZone, mailboxZone])
-        guard wantsSocket, self.connection == nil else {
-            await connection.close()
-            return
+        guard wantsSocket, !attached, held() == nil else { return }
+        attached = true
+        attachGeneration += 1
+        let generation = attachGeneration
+        let id = ObjectIdentifier(owner)
+        await session.attach(owner: id, zones: [dataZone, mailboxZone]) { [weak self] event in
+            await self?.handle(event, generation: generation)
         }
-        self.connection = connection
-        let events = connection.events
-        socketReader = Task { [weak self] in
-            for await event in events {
-                await self?.handle(event)
-            }
-        }
+        // A `stop()` while attaching.
+        if !wantsSocket || !attached { await session.detach(owner: id) }
     }
 
-    func closeConnection() async {
-        socketReader?.cancel()
-        socketReader = nil
-        let connection = connection
-        self.connection = nil
-        await connection?.close()
+    func detachFromSession() async {
+        guard attached else { return }
+        attached = false
+        await session.detach(owner: ObjectIdentifier(owner))
+    }
+
+    /// The socket of this transport, when attached (the sim's `isLive`).
+    var connection: HostedRelayConnection? {
+        get async { attached ? await session.connection : nil }
     }
 
     // MARK: - Zones
@@ -287,3 +323,6 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
 
     static let forbidden = HostedRelayError.server(code: .forbidden, retryAfter: nil)
 }
+
+/// A transport's identity as a session owner (`HostedRelaySession.attach`).
+final class SessionOwner: Sendable {}

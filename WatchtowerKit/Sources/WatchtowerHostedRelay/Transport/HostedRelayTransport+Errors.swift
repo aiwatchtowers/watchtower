@@ -70,8 +70,8 @@ extension HostedRelayTransport {
     }
 
     /// The side signals of a failed call: `MAILBOX_QUOTA_EXCEEDED` → `TransportEvent.quotaExceeded`,
-    /// `ENTITLEMENT_INACTIVE` / `FORBIDDEN` / `UNSUPPORTED_VERSION` → `relayEvents`, no answer →
-    /// `reachable(false)`, an App Attest outcome → a stop or a backoff.
+    /// `FORBIDDEN` → `relayEvents`, `ENTITLEMENT_INACTIVE` / `UNSUPPORTED_VERSION` →
+    /// `session.events`, no answer → `reachable(false)`, an App Attest outcome → a stop or a backoff.
     func note(_ error: any Error, zone: CloudZoneID?) async {
         guard let error = error as? HostedRelayError else { return }
         switch error {
@@ -80,13 +80,13 @@ extension HostedRelayTransport {
             Self.logger.error("relay call refused: \(String(describing: code), privacy: .public)")
             switch code {
             case .mailboxQuotaExceeded: eventHandler?(.quotaExceeded)
-            case .entitlementInactive: emit(.entitlementInactive)
+            case .entitlementInactive: emitAccount(.entitlementInactive)
             case .forbidden: if let zone { emit(.forbidden(zone: zone)) }
             default: break
             }
         case .unsupportedVersion:
             setReachable(false)
-            emit(.unsupportedVersion)
+            emitAccount(.unsupportedVersion)
         case .unreachable:
             setReachable(false)
         case .undecodable(let status):
@@ -103,14 +103,33 @@ extension HostedRelayTransport {
         case .retryLater(let after):
             loginNotBefore = clock.now().addingTimeInterval(Self.seconds(after))
             Self.logger.error("relay login: app attest retry later")
-            emit(.attestation(outcome))
+            emitAccount(.attestation(outcome))
         case .notSupported, .updateRequired:
             guard stoppedBy == nil else { return }
             stoppedBy = outcome
             Self.logger.error("relay stopped: app attest \(String(describing: outcome), privacy: .public)")
             setReachable(false)
-            emit(.attestation(outcome))
-            await closeConnection()
+            emitAccount(.attestation(outcome))
+            await detachFromSession()
+        }
+    }
+
+    /// The bookkeeping of a socket the session reported `.stopped` (the session reported the
+    /// signal itself): an unsupported version wants no socket until `start()`, an App Attest
+    /// stop stops the transport as a call's would.
+    func stopped(by error: HostedRelayError) {
+        setReachable(false)
+        switch error {
+        case .unsupportedVersion:
+            wantsSocket = false
+        case .attestation(let outcome):
+            // Never comes: a socket stops only on `.notSupported`/`.updateRequired`.
+            if case .retryLater = outcome { return }
+            guard stoppedBy == nil else { return }
+            stoppedBy = outcome
+            Self.logger.error("relay stopped: app attest \(String(describing: outcome), privacy: .public)")
+        default:
+            break
         }
     }
 
@@ -134,8 +153,14 @@ extension HostedRelayTransport {
         }
     }
 
+    /// A signal of this transport (`relayEvents`).
     func emit(_ event: HostedRelayEvent) {
         relayEventSink.yield(event)
+    }
+
+    /// An account-level signal (`session.events`; also `relayEvents` with a private session).
+    func emitAccount(_ event: HostedRelayEvent) {
+        session.publish(event)
     }
 
     func setReachable(_ value: Bool) {

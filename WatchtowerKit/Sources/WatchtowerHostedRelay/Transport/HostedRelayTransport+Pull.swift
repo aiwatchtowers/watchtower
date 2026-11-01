@@ -7,7 +7,8 @@ import WatchtowerSync
 /// the zone from 0 and deletes what the server forgot only after the resync's last page (R10).
 /// Every page of a pull that started at 0 — a resync, or a zone's first pull — sets
 /// `Changes.resync`, so the relay skips its tombstone floor on the middle pages (relay README
-/// "Changes"); a pull from a stored cursor never does.
+/// "Changes"); a pull from a stored cursor never does. A socket's pull comes from a zone event
+/// the device's `HostedRelaySession` routed to this transport (its two zones only).
 extension HostedRelayTransport {
     /// Pulls `zones`, joining the pull in flight (which then pulls them too before it ends).
     func pullZones(_ zones: Set<CloudZoneID>) async throws {
