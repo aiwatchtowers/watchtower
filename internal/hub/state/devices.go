@@ -34,12 +34,46 @@ type Device struct {
 	ResendRequestedFrom  uint64
 	// AckedEpoch is the newest hub epoch the phone confirmed (epoch_ack).
 	AckedEpoch uint32
+	// RelayAdmittedAt is when the relay first listed this phone as holding
+	// the hub in a slot (zero = not yet). Read only: MarkRelayAdmitted
+	// writes it, LinkDevice clears it.
+	RelayAdmittedAt time.Time
+}
+
+// MarkRelayAdmitted stamps at on the linked phones among relayIDs (their
+// relay device ids) that carry no stamp yet; it returns how many it stamped.
+func (s *Store) MarkRelayAdmitted(relayIDs []string, at time.Time) (int, error) {
+	n := 0
+	err := s.write(func(tx *sql.Tx) error {
+		n = 0
+		for _, id := range relayIDs {
+			if id == "" {
+				continue
+			}
+			res, err := tx.Exec(`UPDATE devices SET relay_admitted_at = ?
+				WHERE relay_device_id = ? AND relay_admitted_at IS NULL`, toReal(at), id)
+			if err != nil {
+				return fmt.Errorf("stamping a device's relay admission: %w", err)
+			}
+			c, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("stamping a device's relay admission: %w", err)
+			}
+			n += int(c)
+		}
+		return nil
+	})
+	return n, err
 }
 
 const deviceColumns = `device_id, name, scope, linked_at, signing_key, agreement_key, link_nonce,
 	typing_allowed, typing_requested, permissions_allowed, permissions_requested,
 	start_sessions_allowed, start_sessions_granted,
 	last_applied_action_seq, ordered, relay_device_id, resend_requested_from, acked_epoch`
+
+// deviceRead is what a read selects: the link's columns and the relay's
+// admission stamp, which only MarkRelayAdmitted writes (a re-link clears it).
+const deviceRead = deviceColumns + `, relay_admitted_at`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -50,13 +84,17 @@ func scanDevice(r rowScanner) (Device, error) {
 		nonce, relayID     sql.NullString
 		lastApplied, resnd int64
 		acked              int64
+		admitted           sql.NullFloat64
 	)
 	err := r.Scan(&d.ID, &d.Name, &d.Scope, &linked, &d.SigningKey, &d.AgreementKey, &nonce,
 		&d.TypingAllowed, &d.TypingRequested, &d.PermissionsAllowed, &d.PermissionsRequested,
 		&d.StartSessionsAllowed, &d.StartSessionsGranted,
-		&lastApplied, &d.Ordered, &relayID, &resnd, &acked)
+		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted)
 	if err != nil {
 		return Device{}, err
+	}
+	if admitted.Valid {
+		d.RelayAdmittedAt = fromReal(admitted.Float64)
 	}
 	d.LinkedAt = fromReal(linked)
 	d.LinkNonce = nonce.String
@@ -69,7 +107,7 @@ func scanDevice(r rowScanner) (Device, error) {
 
 // Devices lists the linked phones, oldest link first.
 func (s *Store) Devices() ([]Device, error) {
-	rows, err := s.db.Query(`SELECT ` + deviceColumns + ` FROM devices ORDER BY linked_at, device_id`)
+	rows, err := s.db.Query(`SELECT ` + deviceRead + ` FROM devices ORDER BY linked_at, device_id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing devices: %w", err)
 	}
@@ -90,7 +128,7 @@ func (s *Store) Devices() ([]Device, error) {
 
 // Device reads one linked phone; ok is false when it is not linked.
 func (s *Store) Device(id string) (Device, bool, error) {
-	d, err := scanDevice(s.db.QueryRow(`SELECT `+deviceColumns+` FROM devices WHERE device_id = ? COLLATE NOCASE`, id))
+	d, err := scanDevice(s.db.QueryRow(`SELECT `+deviceRead+` FROM devices WHERE device_id = ? COLLATE NOCASE`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Device{}, false, nil
 	}

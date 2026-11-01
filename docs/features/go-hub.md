@@ -66,7 +66,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 
 | Verb | `--json` keys (pinned) |
 |---|---|
-| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`) |
+| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`) |
 | `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
@@ -108,6 +108,8 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
 - `00005_recording_jobs` — the phone-recording job queue Desktop claims and finishes.
 - `00006_held_uploads` — held recording uploads (ids, first hold, outcome class), so the 7-day expiry and the
   switch-off failure survive a restart.
+- `00007_relay_admission` — `devices.relay_admitted_at` (REAL, NULL until the relay lists the phone holding the hub in
+  a slot; a re-link clears it).
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -229,6 +231,25 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `get_account_state` the hub is `paused`/`needs_relay` — `Publisher.Pause`, `Processor.SetPaused(true)`, state kept,
   no handler run, sessions untouched; re-read every 5 min (`NeedsRelayPoll`) and at once on `ENTITLEMENT_EXPIRED`,
   `SLOT_REMOVED` or `ENTITLEMENT_INACTIVE`; pairing is never paused. Resume publishes one full diff.
+- **Vouched admission** (spec §7, §12a; relay `bcca870` "Vouched hubs"; `internal/hub/admission.go`): the hub registers
+  as `DEVICE_KIND_HUB` with an empty attestation in test and live mode alike (the relay treats `DEVICE_KIND_MAC` as the
+  same hub kind, so a sidecar an older build registered as a Mac keeps its device) and logs in by Ed25519 only. Until
+  `get_account_state` lists a phone holding it in a slot (`relay.Transport.Vouched`) the hub writes only its
+  `pair/<slot>` zones: the publisher and the processor hold with the relay-only pause (`applyGate`), no
+  `set_hub_readers`, no data-zone or mailbox op, no wipe; status reason `not_vouched` (state `running` in test mode,
+  `paused` live). `HUB_NOT_VOUCHED` (`transport.ErrNotVouched`) on any op clears the transport's slots and closes the
+  gate — no re-register, no retry. `CONTROL_KIND_SLOT_ADDED` (`transport.SlotAdded`): the transport reads the account
+  state before handing the event on, the gate opens at once and the listed phones get `devices.relay_admitted_at`
+  (sidecar `00007`). Every account-state read — the one `Connect` made at start, `SLOT_ADDED`'s, the readers sync,
+  the polls — goes through one door (`readAccount`/`followAccount`: stamps, then the gate), and while unvouched
+  `accountReader` makes at most one `get_account_state` per `unvouchedPoll` (30 s, the relay's limit) of the hub's
+  clock — the short link retry's 2 s ticks and the PayingWatch read the last answer in between; the link backstop
+  (`linkEvery`) polls only with a phone linked (the hub expects a slot). Unvouched after a phone had been admitted
+  is `vouch_revoked`: nothing published, the sidecar kept, also across a restart; a new vouch and slot (a new
+  `hub pair`, or the phone's `add_slot`) admit it again. `hub phones` shows `transport` `pending` for a relay phone
+  without `relay_admitted_at`, `relay` with it. `hubtest.Phone.VouchLink` (the copied client's `VouchHub`: VOUCH challenge, then
+  `vouch_hub` with no attestation) and `relaytest`'s vouch model (gate incl. open sockets, the relay's refusal order,
+  10-minute pending vouch consumed by `promote_pairing`/`add_slot`, best-effort `SLOT_ADDED`, `RemoveSlot`).
 - **Session host under a service manager** (PROJ-20 amended for Linux, ask #827): socket dir `/run/user/<uid>` or
   `<data root>/.run` (see Linux behaviour); on Linux `sessionhost.Ensure` always starts the host as the transient unit
   `watchtower-session-host` (`systemd-run --user --collect --quiet --property=UMask=0077`, `--setenv` of `PATH` and the
@@ -253,11 +274,12 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `Watchtower-CLI-<v>-arm64.zip` after notarization. Supported Linux: 64-bit, glibc ≥ 2.35, `libssl3`.
 - **Short link retry after pairing** (`internal/hub/runtime.go`): a link change (a phone linked or unlinked) opens a
   window in which the link check runs every 2 s (`linkSoonEvery`) for at most 2 min (`linkSoonFor`) until every linked
-  phone holds the hub in a slot — `promote_pairing` sends the hub no event, so otherwise it waited for the next
-  minute-long `linkEvery`. Each tick reads `get_account_state` first; the full link check (keyboxes, readers,
-  subscriptions, a pass) runs only on the window's first tick and when the slotted set changed. When the window
-  settles or runs out, `PayingWatch` re-reads, so a paused headless hub resumes as soon as a paying phone is there.
-  In the smoke test the admission after linking takes about 1.6 s instead of up to a minute.
+  phone holds the hub in a slot — `SLOT_ADDED` is best effort, so otherwise a missed one waited for the next
+  minute-long `linkEvery`. Each tick reads `get_account_state` first — while the hub is unvouched through
+  `accountReader`, so at most one real read per 30 s (`unvouchedPoll`); once vouched (a second phone joining) the 2 s
+  reads are allowed. The full link check (keyboxes, readers, subscriptions, a pass) runs only on the window's first
+  tick and when the slotted set changed. When the window settles or runs out, `PayingWatch` re-reads, so a paused
+  headless hub resumes as soon as a paying phone is there. A first admission normally comes by `SLOT_ADDED` at once.
 - **Owner verbs** (AGENT-07 changelog, ask #827): `hub …` and `service …` writes are refused under every agent marker
   and confirmed by the terminal; the Desktop-confirmed gestures stay refused on Linux.
 
@@ -268,5 +290,7 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
 - Phase 3 does not migrate a CLI-only Mac's `<data root>/.hub` into the desktop hub; its phones link again.
 - A Linux host without a systemd user manager is not supported (`service install` refuses, `session start` fails).
 - A CLI-only Mac runs the daemon only after a GUI login (LaunchAgent; no linger equivalent without sudo, ask #881).
-- Vouching (`not_vouched`, `vouch_revoked`) needs relay ask #805; until it ships the hub registers as a Mac with no
-  attestation, which only the local stand accepts.
+- The Kit phone's `vouch_hub` (App Attest assertion) is the relay client spec's; the Go phone emulator sends none
+  (the stand runs with attestation off), so a real phone vouching is first checked at the Task 13 device gate.
+- `SLOT_ADDED` is best effort: a hub whose socket was closed at that moment learns of its slot from a poll, at most
+  every 30 s during the short link retry and about once a minute after it (the link backstop).
