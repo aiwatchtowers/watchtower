@@ -128,7 +128,7 @@ final class RelaySpies: @unchecked Sendable {
     }
 
     /// The process's relay over these spies, for `config` (an origin by default).
-    func relay(origin: String? = RelaySpies.origin) throws -> SharedRelaySession {
-        try SharedRelaySession(config: RelayConfig.parse(origin)) { self.parts() }
+    func relay(origin: String? = RelaySpies.origin) -> SharedRelaySession {
+        SharedRelaySession(config: RelayConfig.parse(origin)) { self.parts() }
     }
 }

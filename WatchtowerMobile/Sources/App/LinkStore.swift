@@ -33,11 +33,12 @@ struct LinkRecord: Codable, Equatable, Sendable {
     // The hosted relay (relay client Phase 3). Every key is optional and
     // absent in a link saved before it, and in every CloudKit link.
 
-    /// The transport this link talks over; nil = `.cloudKit`.
-    var transport: TransportKind?
+    /// The transport this link talks over; nil = `.cloudKit`. Set with the
+    /// Mac's relay id (`setRelay(mac:)`), never alone.
+    private(set) var transport: TransportKind?
     /// The Mac's relay device id: the route of a `.relay` link, which never
     /// saves or reads without it.
-    var relayMacDeviceID: String?
+    private(set) var relayMacDeviceID: String?
     /// The Mac's `relay_auth` public key, base64url, from the code.
     var relayAuthPub: String?
     /// Every transport the hub offers, raw wire values, from the code or grant.
@@ -147,6 +148,12 @@ struct LinkRecord: Codable, Equatable, Sendable {
     private static let relayWithoutMac = "a relay link without its Mac's relay device id"
 
     private var lacksRelayMac: Bool { transport == .relay && relayMacDeviceID == nil }
+
+    /// Moves the link to the relay Mac `mac`.
+    mutating func setRelay(mac: String) {
+        transport = .relay
+        relayMacDeviceID = mac
+    }
 
     /// Where the phone's transport syncs this link: the relay Mac of a
     /// `.relay` link, else a CloudKit database.

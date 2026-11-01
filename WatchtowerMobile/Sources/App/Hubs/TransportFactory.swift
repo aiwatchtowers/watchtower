@@ -10,6 +10,9 @@ import WatchtowerSync
 struct TransportFactory: Sendable {
     /// The build can run this transport (CloudKit: `CloudKitTransport.entitlementPresent()`).
     let isAvailable: @Sendable () -> Bool
+    /// `make` can build a transport for the route: checked before its store is opened, so a route this factory
+    /// refuses leaves no empty store file.
+    let serves: @Sendable (_ route: HubRoute) -> Bool
     /// A phone-role transport for `route` on `store`; a route this factory cannot serve throws `UnsupportedRouteError`.
     let make: @Sendable (_ route: HubRoute, _ store: TransportStore, _ hubID: String, _ energy: EnergyCounter?) throws -> any LiveTransport
     /// One record saved outside any engine (the kept farewell, #143): CloudKit's `saveDirectly(_:scope:hubID:)`,
@@ -27,13 +30,18 @@ struct TransportFactory: Sendable {
     static func live(relay: SharedRelaySession) -> Self {
         Self(
             isAvailable: { CloudKitTransport.entitlementPresent() },
+            serves: { route in
+                guard case .hostedRelay = route else { return true }
+                if case .available = relay.availability { return true }
+                return false
+            },
             make: { route, store, hubID, energy in
                 switch route {
                 case .cloudKit(let scope):
                     return CloudKitTransport(store: store, scope: scope, hubID: hubID, role: .phone, energy: energy)
                 case .hostedRelay(let macDeviceID):
                     guard let session = try relay.session() else { throw UnsupportedRouteError(route: route) }
-                    return try HostedRelayTransport(session: session, store: store, macDeviceID: macDeviceID, energy: energy)
+                    return try HostedRelayTransport(session: session, store: store, macDeviceID: macDeviceID, mode: .hub, energy: energy)
                 }
             },
             sendDirectly: { record, route, hubID in

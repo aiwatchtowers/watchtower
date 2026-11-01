@@ -223,7 +223,7 @@ final class AppRoot {
             now: Date()
         )
         // The process's one relay session (built on first use, never while the relay is off) and the transports on it.
-        let relay = try AppEnvironment.liveRelay()
+        let relay = AppEnvironment.liveRelay()
         let transports = TransportFactory.live(relay: relay)
         let factory = HubSessionFactory.live(paths: paths, keys: keys, transports: transports)
         let env = try AppEnvironment.live(

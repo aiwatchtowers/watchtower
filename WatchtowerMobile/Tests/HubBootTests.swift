@@ -451,11 +451,10 @@ final class HubBootTests: XCTestCase {
         let paths = try makePaths()
         let spies = RelaySpies()
         let factory = HubSessionFactory.live(
-            paths: paths, keys: try TestE2E.phoneStore(), transports: .live(relay: try spies.relay())
+            paths: paths, keys: try TestE2E.phoneStore(), transports: .live(relay: spies.relay())
         )
         var relayLink = link(TestHub.acme, mac: "build-box")
-        relayLink.transport = .relay
-        relayLink.relayMacDeviceID = "mac-acme"
+        relayLink.setRelay(mac: "mac-acme")
         let row = HubRow(
             link: relayLink, flavor: nil, sortOrder: 0, state: .linked, grantMissingSince: nil, lastHeartbeatAt: nil,
             linkedOn: Date()
@@ -472,6 +471,19 @@ final class HubBootTests: XCTestCase {
         XCTAssertEqual(spies.network.attempts, 0, "a stopped session connects nothing")
         await session.shutDown()
         session.closeDatabases()
+    }
+
+    /// With the relay off, a relay row's session is refused before its store is opened: no empty relay file.
+    func testARelayRowWithTheRelayOffLeavesNoStoreFile() async throws {
+        let paths = try makePaths()
+        let spies = RelaySpies(attestSupported: false)
+        let factory = HubSessionFactory.live(paths: paths, keys: try TestE2E.phoneStore(), transports: .live(relay: spies.relay()))
+        let route = HubRoute.hostedRelay(macDeviceID: "mac-acme")
+
+        XCTAssertThrowsError(try factory.make(nil, TestHub.acme, route, device)) {
+            XCTAssertEqual($0 as? UnsupportedRouteError, UnsupportedRouteError(route: route))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.transportStorePath(TestHub.acme, route: route)))
     }
 
     func testARowTheMacRemovedBootsFrozen() async throws {

@@ -225,6 +225,12 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertEqual(read, relay)
         XCTAssertEqual(read.route, .hostedRelay(macDeviceID: "mac-acme"))
 
+        // A CloudKit link moved to the relay takes its Mac's id with it.
+        var moved = link("hub-b")
+        moved.setRelay(mac: "mac-home")
+        XCTAssertEqual(moved.transport, .relay)
+        XCTAssertEqual(moved.route, .hostedRelay(macDeviceID: "mac-home"))
+
         // A relay link without its Mac's relay id is never read as one.
         let json = """
             {"hubID":"hub-a","macName":"Acme Mac","scope":"private","ownerName":"_owner-acme",

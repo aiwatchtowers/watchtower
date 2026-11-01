@@ -63,14 +63,23 @@ final class SharedRelaySession: @unchecked Sendable {
     private let lock = NSLock()
     private var built: HostedRelaySession?
 
-    /// `parts` is called only for a configured origin, at most once.
-    init(config: RelayConfig, parts makeParts: () throws -> RelayParts) throws {
+    /// `parts` is called only for a configured origin, at most once. Parts that cannot be built (a build
+    /// without its Keychain group) leave the relay off, logged: the app still boots on CloudKit.
+    init(config: RelayConfig, parts makeParts: () throws -> RelayParts) {
         guard config.origin != nil else {
             availability = .off(.notConfigured)
             parts = nil
             return
         }
-        let parts = try makeParts()
+        let parts: RelayParts
+        do {
+            parts = try makeParts()
+        } catch {
+            Self.logger.error("relay off: its parts could not be built")
+            availability = .off(.notConfigured)
+            self.parts = nil
+            return
+        }
         availability = RelayAvailability.evaluate(config: config) { parts.attest.isSupported }
         if case .available = availability {
             self.parts = parts

@@ -21,7 +21,7 @@ final class RelayAvailabilityTests: XCTestCase {
     /// a v4 code offering both transports links over iCloud, and its hub row builds a CloudKit transport.
     func testAttestUnsupportedStaysOnCloudKit() async throws {
         let spies = RelaySpies(attestSupported: false)
-        let relay = try spies.relay()
+        let relay = spies.relay()
         XCTAssertEqual(relay.availability, .off(.unsupportedDevice))
         XCTAssertNil(try relay.session(), "no relay session on a device without App Attest")
         XCTAssertEqual(spies.keychain.operations, 0, "no relay identity in the Keychain")
@@ -50,12 +50,21 @@ final class RelayAvailabilityTests: XCTestCase {
         XCTAssertEqual(spies.network.attempts, 0)
     }
 
+    /// A configured origin whose live parts cannot be built (no Keychain group) leaves the relay off, never the
+    /// app's launch failed.
+    func testPartsThatCannotBeBuiltLeaveTheRelayOff() throws {
+        struct NoParts: Error {}
+        let relay = SharedRelaySession(config: configured) { throw NoParts() }
+        XCTAssertEqual(relay.availability, .off(.notConfigured))
+        XCTAssertNil(try relay.session())
+    }
+
     /// The dark ship: with an empty origin no part of the relay is even built, so no Keychain item, DeviceCheck
     /// call or connection exists, whatever the app asks of the relay.
     func testAnEmptyOriginBuildsNoRelayObject() async throws {
         for origin in [nil, "", "$(WATCHTOWER_RELAY_ORIGIN)"] {
             let spies = RelaySpies()
-            let relay = try spies.relay(origin: origin)
+            let relay = spies.relay(origin: origin)
             XCTAssertEqual(relay.availability, .off(.notConfigured))
             XCTAssertNil(try relay.session())
             XCTAssertFalse(relay.isBuilt)

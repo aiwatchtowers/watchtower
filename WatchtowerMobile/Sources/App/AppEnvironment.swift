@@ -547,8 +547,8 @@ final class AppEnvironment {
 
     /// The live app's relay: the origin from Info.plist (`RelayConfig`); with none, nothing relay-shaped is built
     /// and DeviceCheck is never asked (the dark ship of every Release build).
-    nonisolated static func liveRelay(bundle: Bundle = .main) throws -> SharedRelaySession {
-        try SharedRelaySession(config: RelayConfig.from(bundle: bundle)) { try RelayParts.live(bundle: bundle) }
+    nonisolated static func liveRelay(bundle: Bundle = .main) -> SharedRelaySession {
+        SharedRelaySession(config: RelayConfig.from(bundle: bundle)) { try RelayParts.live(bundle: bundle) }
     }
 
     /// The demo on an unsigned build (simulator, CI): one session over the

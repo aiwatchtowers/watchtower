@@ -22,6 +22,8 @@ struct HubSessionFactory {
             try paths.prepare(hubID)
             let energy = BatteryDiagnostics.shared.counter
             let active = UIApplication.shared.applicationState == .active
+            // Refused before the route's store is opened: no empty file for a route the factory cannot serve.
+            guard transports.serves(route) else { throw UnsupportedRouteError(route: route) }
             let transportStore = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID, route: route))
             let transport = try transports.make(route, transportStore, hubID, energy)
             return try HubSession(
