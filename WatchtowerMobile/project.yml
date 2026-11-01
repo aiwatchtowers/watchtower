@@ -171,6 +171,9 @@ targets:
       # put into the transport. Test target only; the app never links it.
       - package: WatchtowerKit
         product: WatchtowerE2ETesting
+      # The relay identity's real-Keychain test. Test target only for now.
+      - package: WatchtowerKit
+        product: WatchtowerHostedRelay
       - package: GRDB
         product: GRDB
     settings:
