@@ -221,7 +221,7 @@ func runHubRecordingProgress(cmd *cobra.Command, _ []string) error {
 	}
 	req := hub.ControlRequest{Op: hub.OpRecordingProgress, Upload: upload, Phase: phase, Percent: pct}
 	a, err := hubWrite(req, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
-		return hub.RecordingProgressAnswer(st, upload, phase, pct, hubNow()), nil
+		return hub.RecordingProgressAnswer(st, upload, phase, pct), nil
 	})
 	if err != nil {
 		return err

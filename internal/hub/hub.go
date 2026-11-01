@@ -186,6 +186,18 @@ type Options struct {
 	// soonTimer is the link check's short retry after a link change (nil =
 	// a real one).
 	soonTimer func(time.Duration) (<-chan time.Time, func())
+	// staleAfter is the stale check's delay after a Desktop heartbeat (0 =
+	// staleCheckAfter); published sees every publishSoon (nil = none).
+	staleAfter time.Duration
+	published  func(kinds []slices.Kind)
+}
+
+// staleCheck is the stale check's delay after a Desktop heartbeat.
+func (o Options) staleCheck() time.Duration {
+	if o.staleAfter > 0 {
+		return o.staleAfter
+	}
+	return staleCheckAfter
 }
 
 func (o Options) withDefaults() Options {
@@ -328,6 +340,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 	stopControl := s.serveControl(ctx)
 	defer stopControl()
+	defer s.stopStaleCheck()
 	defer s.setStatus(Status{State: StateOff})
 
 	tick := time.NewTicker(o.checkEvery)

@@ -190,14 +190,15 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   ```go
   package hub
   const OpDesktopView, OpRecordingProgress, OpDesktopWatch = "desktop_view", "recording_progress", "desktop_watch"
-  // ControlRequest gains: Hidden, DisplayOver []int64; Upload, Phase string; Percent *int
-  type DesktopView struct{ Hidden, DisplayOver map[int64]bool; At time.Time } // in memory only; empty once the Desktop heartbeat is stale (> 90 s)
+  // ControlRequest gains: Hidden []int64, DisplayOver []ShownOverWire{id, run, reported_at} (each ≤ 10 000, else too_many_ids); Upload, Phase string; Percent *int
+  // ControlAnswer gains: ViewNeeded (desktop_heartbeat), State/Reason snapshot (desktop_watch answer, its first line)
+  type DesktopView struct{ Hidden map[int64]bool; DisplayOver map[int64]sources.ShownOver; At time.Time } // in memory only; empty once the Desktop heartbeat is stale (> 90 s)
   func (h *hubRuntime) SetDesktopView(v DesktopView)
   // desktop_watch: the connection stays open and receives {"event":"status"|"recording_queued"|"pair"|"switched", …} lines
   package sources
-  // TerminalSessionOptions gains: View func() (hidden, displayOver map[int64]bool)
+  // TerminalSessionOptions (and WorkAlertConfig) gain: View func() (hidden map[int64]bool, displayOver map[int64]ShownOver{Run time.Time; ReportedAt string})
   package state
-  func (s *Store) RecordingProgress(uploadID, phase string, percent *int, now time.Time) error // phase transcribing|diarizing|summarizing; percent 0..100 only while transcribing
+  func (s *Store) RecordingProgress(uploadID, phase string, percent *int) error // phase transcribing|diarizing|summarizing; percent 0..100 only while transcribing
   ```
   - `00007`: `ALTER TABLE recording_jobs ADD COLUMN phase TEXT CHECK (phase IN ('transcribing','diarizing','summarizing'))`, `percent INTEGER CHECK (percent BETWEEN 0 AND 100)`, — no file-name column (ask #843). Allowlist (Plan 1b Task 16): `phase: enum`, `percent: counter`.
   - `recording_job` slice: `claimed` + `phase` → the Swift statuses `transcribing` (with `percent`), `diarizing`, `summarizing`, exactly as today's `RecordingJobSlice`; the phone sees no change from the Swift hub.
@@ -416,13 +417,16 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   @MainActor @Observable final class HubCenter {
       private(set) var status: HubStatus?
       func start(); func stop()          // heartbeat every 30 s while Desktop runs (op desktop_heartbeat); watch stream with reconnect 1 s → 30 s
-      func publishView(hidden: Set<Int64>, displayOver: Set<Int64>) // coalesced 250 ms
+      func publishView(hidden: Set<Int64>, displayOver: [Int64: ShownOverCount]) // coalesced 250 ms
   }
   ```
+  - `publishView` sends `displayOver` as triples `{id, run, reported_at}` (the `ShownOverCount` run start — null when not live — and its `agent_background_at`; null when none): the hub shows a count over only while the row still holds that run and report (Task 5). Hidden stays a list of ids. Each list holds at most 10 000 entries (`too_many_ids`).
+  - Desktop sends the whole view unconditionally at `start()` (after its first heartbeat) and again whenever a `desktop_heartbeat` answer carries `view_needed: true` (the hub holds no current view: never sent, a hub restart, or dropped while the heartbeat was stale), besides every change.
+  - The `desktop_watch` answer's `state` / `reason` are the status snapshot: `HubCenter.status` is set from it when the stream (re)connects, then from the `status` events.
   No hub running → the client falls back to `watchtower hub status --json` for status and skips heartbeat/view (nothing to tell); never opens `hubstate.db`.
 - **Depends on:** Task 5
 
-- [ ] **Step 1: Failing tests:** `testHeartbeatEvery30Seconds` (fake clock + fake socket), `testWatchReconnectsWithBackoff`, `testUndoBatchReachesTheHub` (a pending delete → `desktop_view` with that id; Undo → without it), `testDisplayOverReachesTheHub`, `testNoHubFallsBackToCLIStatus`, `testDecodesPinnedStatusKeys`.
+- [ ] **Step 1: Failing tests:** `testHeartbeatEvery30Seconds` (fake clock + fake socket), `testWatchReconnectsWithBackoff`, `testUndoBatchReachesTheHub` (a pending delete → `desktop_view` with that id; Undo → without it), `testDisplayOverReachesTheHub` (the triple with the judged run and report stamp), `testViewResentOnViewNeeded`, `testStatusFromTheWatchAnswer`, `testNoHubFallsBackToCLIStatus`, `testDecodesPinnedStatusKeys`.
 - [ ] **Step 2:** `make test-swift FILTER='HubControlClientTests|HubCenterTests'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-swift`.

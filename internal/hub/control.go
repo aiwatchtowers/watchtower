@@ -34,8 +34,9 @@ import (
 // SocketName is the control socket's file name in the hub dir.
 const SocketName = "hub.sock"
 
-// maxRequestBytes caps one request line.
-const maxRequestBytes = 64 << 10
+// maxRequestBytes caps one request line: a desktop_view of MaxViewIDs ids
+// and MaxViewIDs shown-over counts fits.
+const maxRequestBytes = 2 << 20
 
 // The control ops.
 const (
@@ -91,6 +92,7 @@ const (
 	ErrClassJobState      = "job_state"
 	ErrClassNoTranscriber = "no_transcriber"
 	ErrClassFailed        = "failed"
+	ErrClassTooManyIDs    = "too_many_ids"
 )
 
 // ControlRequest is one request on the control socket. Device names a phone
@@ -98,22 +100,22 @@ const (
 // hub's display name (name), Confirm the owner's answer (confirm); Upload a
 // recording job (recording_claim, recording_finish) with TranscriptID or
 // ErrorClass (a class, never text) for its finish, or Phase and Percent for
-// its progress (recording_progress); Hidden and DisplayOver the session ids
-// of a desktop_view.
+// its progress (recording_progress); Hidden (session ids) and DisplayOver
+// (shown-over counts) a desktop_view, each at most MaxViewIDs.
 type ControlRequest struct {
-	Op           string  `json:"op"`
-	Device       string  `json:"device,omitempty"`
-	Grant        string  `json:"grant,omitempty"`
-	Name         string  `json:"name,omitempty"`
-	On           bool    `json:"on,omitempty"`
-	Confirm      bool    `json:"confirm,omitempty"`
-	Upload       string  `json:"upload,omitempty"`
-	TranscriptID *int64  `json:"transcript_id,omitempty"`
-	ErrorClass   string  `json:"error_class,omitempty"`
-	Hidden       []int64 `json:"hidden,omitempty"`
-	DisplayOver  []int64 `json:"display_over,omitempty"`
-	Phase        string  `json:"phase,omitempty"`
-	Percent      *int    `json:"percent,omitempty"`
+	Op           string          `json:"op"`
+	Device       string          `json:"device,omitempty"`
+	Grant        string          `json:"grant,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	On           bool            `json:"on,omitempty"`
+	Confirm      bool            `json:"confirm,omitempty"`
+	Upload       string          `json:"upload,omitempty"`
+	TranscriptID *int64          `json:"transcript_id,omitempty"`
+	ErrorClass   string          `json:"error_class,omitempty"`
+	Hidden       []int64         `json:"hidden,omitempty"`
+	DisplayOver  []ShownOverWire `json:"display_over,omitempty"`
+	Phase        string          `json:"phase,omitempty"`
+	Percent      *int            `json:"percent,omitempty"`
 }
 
 // ControlAnswer is one line from the hub: the answer to a request (Op set,
@@ -147,7 +149,10 @@ type ControlAnswer struct {
 	Phase   string `json:"phase,omitempty"`
 	Percent *int   `json:"percent,omitempty"`
 	State   string `json:"state,omitempty"`
-	Pair    string `json:"pair,omitempty"`
+	// ViewNeeded on a desktop heartbeat's answer: the hub holds no current
+	// desktop_view (never sent, or dropped while the heartbeat was stale).
+	ViewNeeded bool   `json:"view_needed,omitempty"`
+	Pair       string `json:"pair,omitempty"`
 }
 
 // serveControl listens on <dir>/hub.sock until the returned stop is called
@@ -348,9 +353,9 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 		pl, wl  *pairListener // this connection's pairing and desktop_watch streams
 		pumping sync.WaitGroup
 	)
-	// stream registers a stream of this connection in set; its own goroutine
-	// writes its queue.
-	stream := func(set map[*pairListener]bool) *pairListener {
+	// stream is a new stream of this connection (the caller registers it);
+	// its own goroutine writes its queue.
+	stream := func() *pairListener {
 		p := &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{}}
 		pumping.Add(1)
 		go func() {
@@ -359,9 +364,6 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 				p.w.write(a)
 			}
 		}()
-		s.pairMu.Lock()
-		set[p] = true
-		s.pairMu.Unlock()
 		return p
 	}
 	defer func() {
@@ -390,9 +392,22 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 		}
 		switch {
 		case r.Op == OpPair && pl == nil:
-			pl = stream(s.pairs)
+			pl = stream()
+			s.pairMu.Lock()
+			s.pairs[pl] = true
+			s.pairMu.Unlock()
 		case r.Op == OpDesktopWatch && wl == nil:
-			wl = stream(s.watches)
+			// The answer, with the status at this moment, is the stream's
+			// first line: queued and registered under statusMu and pairMu,
+			// so no event precedes it and no status change is missed.
+			wl = stream()
+			s.statusMu.Lock()
+			s.pairMu.Lock()
+			wl.queue <- s.watchAnswerLocked()
+			s.watches[wl] = true
+			s.pairMu.Unlock()
+			s.statusMu.Unlock()
+			continue
 		}
 		a := s.handle(r, pl)
 		a.Op = r.Op
@@ -440,12 +455,14 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return s.withHub(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) })
 	case OpDesktopHeartbeat:
 		now := s.o.Clock()
+		wasFresh, _, err := s.st.DesktopHost(now)
+		wasFresh = err == nil && wasFresh
 		if err := s.st.Heartbeat(now); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
 		s.recordingsChanged() // the first beat turns the default switch on
 		s.poke()
-		return ControlAnswer{OK: true, At: &now}
+		return ControlAnswer{OK: true, At: &now, ViewNeeded: s.desktopBeat(now, wasFresh)}
 	case OpRecordingClaim, OpRecordingFinish:
 		return s.recordingJob(r)
 	case OpRecordings:
@@ -453,15 +470,32 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 	case OpRecordingProgress:
 		return s.recordingProgress(r)
 	case OpDesktopView:
-		v := DesktopView{Hidden: idSet(r.Hidden), DisplayOver: idSet(r.DisplayOver), At: s.o.Clock()}
+		if len(r.Hidden) > MaxViewIDs || len(r.DisplayOver) > MaxViewIDs {
+			return ControlAnswer{Error: ErrClassTooManyIDs}
+		}
+		v := desktopViewOf(r, s.o.Clock())
 		ok := ControlAnswer{OK: true}
 		return s.withHubOr(func(h *hubRuntime) ControlAnswer { h.SetDesktopView(v); return ok },
 			func() ControlAnswer { s.storeDesktopView(v, nil); return ok })
 	case OpDesktopWatch:
-		// serveConn registered the stream; the events follow this answer.
-		return ControlAnswer{OK: true}
+		// A second watch on one connection: its stream is already there
+		// (serveConn answers the first one itself, ahead of any event).
+		return s.watchAnswer()
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
+}
+
+// watchAnswer answers desktop_watch with the current status (State, Reason),
+// so a late subscriber starts from a snapshot.
+func (s *supervisor) watchAnswer() ControlAnswer {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.watchAnswerLocked()
+}
+
+// watchAnswerLocked is watchAnswer with statusMu held.
+func (s *supervisor) watchAnswerLocked() ControlAnswer {
+	return ControlAnswer{Op: OpDesktopWatch, OK: true, State: s.status.State, Reason: s.status.Reason}
 }
 
 // recordingProgress stores Desktop's phase of a claimed job and republishes
@@ -470,7 +504,7 @@ func (s *supervisor) recordingProgress(r ControlRequest) ControlAnswer {
 	if r.Upload == "" {
 		return ControlAnswer{Error: ErrClassBadRequest}
 	}
-	a := RecordingProgressAnswer(s.st, r.Upload, r.Phase, r.Percent, s.o.Clock())
+	a := RecordingProgressAnswer(s.st, r.Upload, r.Phase, r.Percent)
 	if a.OK {
 		s.hubMu.RLock()
 		if s.hub != nil {
@@ -486,8 +520,8 @@ const recordingJobKind slices.Kind = "recording_job"
 
 // RecordingProgressAnswer stores a progress on st and answers it in the
 // control socket's shape (the CLI's lock-free path answers through it too).
-func RecordingProgressAnswer(st *state.Store, upload, phase string, percent *int, now time.Time) ControlAnswer {
-	err := st.RecordingProgress(upload, phase, percent, now)
+func RecordingProgressAnswer(st *state.Store, upload, phase string, percent *int) ControlAnswer {
+	err := st.RecordingProgress(upload, phase, percent)
 	var job state.RecordingJob
 	if err == nil {
 		job, err = st.RecordingJob(upload)

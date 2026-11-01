@@ -143,7 +143,7 @@ func TestRecordingProgressMapsToSwiftStatuses(t *testing.T) {
 		{state.PhaseSummarizing, nil, "summarizing", -1},
 	}
 	for _, c := range cases {
-		if err := st.RecordingProgress("up-1", c.phase, c.percent, t0); err != nil {
+		if err := st.RecordingProgress("up-1", c.phase, c.percent); err != nil {
 			t.Fatalf("%s: %v", c.phase, err)
 		}
 		p := jobPayloads(t, st, t0)["up-1"]
@@ -169,10 +169,10 @@ func TestPercentOnlyWhileTranscribing(t *testing.T) {
 	t0 := time.Unix(1_800_000_000, 0)
 	_ = st.QueueRecording("up-1", jobDevice, t0)
 	pct := func(v int) *int { return &v }
-	if err := st.RecordingProgress("up-1", state.PhaseTranscribing, nil, t0); !errors.Is(err, state.ErrJobState) {
+	if err := st.RecordingProgress("up-1", state.PhaseTranscribing, nil); !errors.Is(err, state.ErrJobState) {
 		t.Errorf("progress of a queued job: %v", err)
 	}
-	if err := st.RecordingProgress("nope", state.PhaseTranscribing, nil, t0); !errors.Is(err, state.ErrNoRecordingJob) {
+	if err := st.RecordingProgress("nope", state.PhaseTranscribing, nil); !errors.Is(err, state.ErrNoRecordingJob) {
 		t.Errorf("progress of no job: %v", err)
 	}
 	_, _ = st.ClaimRecording("up-1", t0)
@@ -184,16 +184,16 @@ func TestPercentOnlyWhileTranscribing(t *testing.T) {
 		{state.PhaseTranscribing, pct(-1)}, {state.PhaseTranscribing, pct(101)},
 		{"uploading", nil}, {"", nil},
 	} {
-		if err := st.RecordingProgress("up-1", bad.phase, bad.pct, t0); !errors.Is(err, state.ErrBadProgress) {
+		if err := st.RecordingProgress("up-1", bad.phase, bad.pct); !errors.Is(err, state.ErrBadProgress) {
 			t.Errorf("%q %v: %v, want ErrBadProgress", bad.phase, bad.pct, err)
 		}
 	}
 	for _, ok := range []int{0, 100} {
-		if err := st.RecordingProgress("up-1", state.PhaseTranscribing, pct(ok), t0); err != nil {
+		if err := st.RecordingProgress("up-1", state.PhaseTranscribing, pct(ok)); err != nil {
 			t.Errorf("percent %d: %v", ok, err)
 		}
 	}
-	if err := st.RecordingProgress("up-1", state.PhaseDiarizing, nil, t0); err != nil {
+	if err := st.RecordingProgress("up-1", state.PhaseDiarizing, nil); err != nil {
 		t.Fatal(err)
 	}
 	job, err := st.RecordingJob("up-1")

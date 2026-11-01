@@ -378,9 +378,8 @@ func (s *Store) FinishRecording(uploadID string, transcriptID *int64, errClass s
 // (with percent 0...100 when known), diarizing or summarizing. A percent with
 // another phase, an unknown phase or a percent out of range is
 // ErrBadProgress; a job not claimed is ErrJobState. A new phase drops the
-// old percent. A phase is no new activity: the job's times stay (now is
-// for the caller's clock only).
-func (s *Store) RecordingProgress(uploadID, phase string, percent *int, _ time.Time) error {
+// old percent. A phase is no new activity: the job's times stay.
+func (s *Store) RecordingProgress(uploadID, phase string, percent *int) error {
 	switch phase {
 	case PhaseTranscribing:
 		if percent != nil && (*percent < 0 || *percent > 100) {

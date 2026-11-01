@@ -58,7 +58,30 @@ type TerminalSessionOptions struct {
 	Liveness      func() Liveness
 	ReportSummary func(workbenchID, sessionID int64) (ReportSummary, bool)
 	Now           func() time.Time
-	View          func() (hidden, displayOver map[int64]bool)
+	View          func() (hidden map[int64]bool, displayOver map[int64]ShownOver)
+}
+
+// ShownOver is a background count the Desktop shows over (the Swift
+// ShownOverCount): the run it was judged for (zero = the session was not
+// live) and the count's agent_background_at stamp ("" = none). It applies
+// only while the row still holds that run and that report, so a newer report
+// or another run is agents working again.
+type ShownOver struct {
+	Run        time.Time
+	ReportedAt string
+}
+
+// holds reports whether the row (its live run, when live, and its report
+// stamp) is the one the count was judged for. Runs compare at the agent-state
+// stamp's millisecond precision.
+func (o ShownOver) holds(run time.Time, live bool, reportedAt *string) bool {
+	if live != !o.Run.IsZero() || (live && db.AgentStateStamp(run) != db.AgentStateStamp(o.Run)) {
+		return false
+	}
+	if reportedAt == nil {
+		return o.ReportedAt == ""
+	}
+	return *reportedAt == o.ReportedAt
 }
 
 // TerminalSessionSource is the `terminal_session` slice (mobile POC spec
@@ -87,7 +110,7 @@ func TerminalSessions(d *db.DB, o TerminalSessionOptions) *TerminalSessionSource
 		o.Now = time.Now
 	}
 	if o.View == nil {
-		o.View = func() (map[int64]bool, map[int64]bool) { return nil, nil }
+		o.View = func() (map[int64]bool, map[int64]ShownOver) { return nil, nil }
 	}
 	return &TerminalSessionSource{d: d, o: o}
 }
@@ -286,7 +309,10 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		}
 		p.agent, _ = agentkind.Parse(kind)
 		p.targetID = nullInt(target)
-		row.ID, row.Kind, row.DisplayOver = p.id, kind, over[p.id]
+		row.ID, row.Kind = p.id, kind
+		if so, ok := over[p.id]; ok {
+			row.DisplayOver = so.holds(start, isLive, row.AgentBackgroundAt)
+		}
 		if isLive {
 			row.RunStartedAt = db.AgentStateStamp(start)
 		}

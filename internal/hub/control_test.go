@@ -3,15 +3,18 @@ package hub
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 )
 
@@ -118,14 +121,11 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 }
 
 // TestRecordingProgressOverTheSocket: recording_progress stores the phase of
-// a claimed job and answers it; a bad progress is a bad request.
+// a claimed job, answers it and republishes the recording_job slice; a bad
+// progress is a bad request and republishes nothing.
 func TestRecordingProgressOverTheSocket(t *testing.T) {
-	st, err := state.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	s := &supervisor{o: Options{Clock: time.Now}, st: st}
+	r := newViewRig(t)
+	st, s := r.s.st, r.s
 	now := time.Now()
 	_ = st.QueueRecording("u1", "AAAAAAAA-0000-4000-8000-000000000001", now)
 	if _, err := st.ClaimRecording("u1", now); err != nil {
@@ -141,5 +141,61 @@ func TestRecordingProgressOverTheSocket(t *testing.T) {
 	}
 	if a := s.handle(ControlRequest{Op: OpRecordingProgress, Upload: "nope", Phase: state.PhaseDiarizing}, nil); a.Error != ErrClassNoJob {
 		t.Errorf("no job = %+v", a)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.kinds) != 1 || !slices.Equal(r.kinds[0], []hubslices.Kind{recordingJobKind}) {
+		t.Errorf("publishes %v, want one of recording_job", r.kinds)
+	}
+}
+
+// TestDesktopWatchAnswerComesFirstWithAStatusSnapshot: the desktop_watch
+// answer is the stream's first line, carrying the current status, however
+// many events race with the subscription.
+func TestDesktopWatchAnswerComesFirstWithAStatusSnapshot(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		s := &supervisor{o: Options{Dir: t.TempDir()}.withDefaults(), pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{}}
+		s.status = Status{State: StateOff, Reason: ReasonDisabled}
+		client, server := net.Pipe()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); s.serveConn(ctx, server) }()
+		stop := make(chan struct{})
+		var spam sync.WaitGroup
+		spam.Add(1)
+		go func() {
+			defer spam.Done()
+			// Fewer events than a stream's queue holds: the client reads
+			// only the first line, and a full queue would drop it.
+			for sent := 0; sent < pairQueue/2; {
+				select {
+				case <-stop:
+					return
+				default:
+					s.pairMu.Lock()
+					subscribed := len(s.watches) > 0
+					s.pairMu.Unlock()
+					s.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: "u1"})
+					if subscribed {
+						sent++
+					}
+				}
+			}
+		}()
+		if err := json.NewEncoder(client).Encode(ControlRequest{Op: OpDesktopWatch}); err != nil {
+			t.Fatal(err)
+		}
+		var first ControlAnswer
+		if err := json.NewDecoder(client).Decode(&first); err != nil {
+			t.Fatal(err)
+		}
+		close(stop)
+		spam.Wait()
+		cancel()
+		_ = client.Close()
+		<-done
+		if first.Op != OpDesktopWatch || !first.OK || first.Event != "" || first.State != StateOff || first.Reason != ReasonDisabled {
+			t.Fatalf("first line %+v, want the answer with the status snapshot", first)
+		}
 	}
 }

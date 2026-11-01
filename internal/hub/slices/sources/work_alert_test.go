@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -51,6 +52,7 @@ type alertRig struct {
 	now       time.Time
 	live      map[int64]bool
 	hidden    map[int64]bool
+	over      map[int64]ShownOver
 	started   time.Time
 	enabledAt time.Time
 	kr        *identity.Keyring
@@ -125,14 +127,10 @@ func (r *alertRig) source() slices.Source {
 			}
 			return l
 		},
-		Hidden: func() map[int64]bool {
+		View: func() (map[int64]bool, map[int64]ShownOver) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			out := map[int64]bool{}
-			for k, v := range r.hidden {
-				out[k] = v
-			}
-			return out
+			return maps.Clone(r.hidden), maps.Clone(r.over)
 		},
 	})
 }
@@ -507,6 +505,56 @@ func TestWorkAlertASessionInTheUndoBatchNeverAlerts(t *testing.T) {
 	}
 	if len(events) != 2 || !events[eventAsk] || !events[eventPermission] {
 		t.Fatalf("after Undo: %v", events)
+	}
+}
+
+// A hidden session takes no slot of the 50-per-workbench window (as
+// WorkAlertSlice reads TerminalSessionSlice.publishedSessions): the 51st
+// newest session's stop still alerts when one newer session is hidden.
+func TestWorkAlertAHiddenSessionTakesNoWindowSlot(t *testing.T) {
+	r := newAlertRig(t)
+	project := r.workbench("acme")
+	oldest := r.session(project)
+	r.setState(oldest, "", r.clock().Add(-2*time.Minute), true, "")
+	execID(t, r.d, `UPDATE terminal_sessions SET last_active_at = '2020-01-01T00:00:00Z' WHERE id = ?`, oldest)
+	var hidden int64
+	for i := 0; i < newestSessionsPerWorkbench; i++ {
+		hidden = r.session(project)
+	}
+	if got := r.alerts(); len(got) != 0 {
+		t.Fatalf("the 51st session alerted outside the window: %+v", got)
+	}
+	r.mu.Lock()
+	r.hidden = map[int64]bool{hidden: true}
+	r.mu.Unlock()
+	got := r.alerts()
+	if len(got) != 1 || *got[0].SessionID != oldest || got[0].Body != "Finished" {
+		t.Fatalf("with one newer session hidden: %+v", got)
+	}
+}
+
+// A background count the Desktop shows over reads stopped, so its stop
+// alerts as WorkAlertSlice does; a newer report is agents working again.
+func TestWorkAlertAShownOverCountAlertsAsStopped(t *testing.T) {
+	r := newAlertRig(t)
+	s := r.session(r.workbench("acme"))
+	r.setLive(s)
+	r.setState(s, "waiting", r.clock().Add(-time.Minute), false, "")
+	reported := db.AgentStateStamp(r.clock().Add(-time.Minute))
+	execID(t, r.d, `UPDATE terminal_sessions SET agent_background = 2, agent_background_at = ? WHERE id = ?`, reported, s)
+	if got := r.alerts(); len(got) != 0 {
+		t.Fatalf("agents working alerted: %+v", got)
+	}
+	r.mu.Lock()
+	r.over = map[int64]ShownOver{s: {Run: r.started, ReportedAt: reported}}
+	r.mu.Unlock()
+	if got := r.alerts(); len(got) != 1 || got[0].Event != eventSessionStopped {
+		t.Fatalf("shown over: %+v", got)
+	}
+	newer := db.AgentStateStamp(r.clock().Add(-30 * time.Second))
+	execID(t, r.d, `UPDATE terminal_sessions SET agent_background_at = ? WHERE id = ?`, newer, s)
+	if got := r.alerts(); len(got) != 0 {
+		t.Fatalf("a newer report than the one shown over alerted: %+v", got)
 	}
 }
 

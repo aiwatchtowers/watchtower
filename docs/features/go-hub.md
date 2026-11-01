@@ -169,15 +169,22 @@ Recorded for the owner; each was a review ruling during phase 1.
    quota or an outdated protocol waits in `control_queue` and is retried each pass; only a record too large or a
    forbidden mailbox is dropped. The relay sim's rule 7a drops them; the entitlement case is revisited in phase 3
    (sim rule 16).
-3. **The Desktop→hub inputs arrive in phase 3.** Since plan 3 Task 5 the control socket takes `desktop_view`
-   (`hidden` — the sessions in the Desktop's PROJ-17 Undo batch, neither published nor alerted — and `display_over` —
-   the background counts the Desktop shows over, #411, published as Stopped), kept in memory only and ignored once the
-   Desktop heartbeat is stale (> 90 s); `recording_progress` (`upload`, `phase`, `percent`: the `recording_job` slice
-   then reads `transcribing` with its percent, `diarizing` or `summarizing`, as the Swift slice); and `desktop_watch`,
-   a stream of `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
-   device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines. The view carries
-   ids only, so a count is shown over for whatever report the row holds (the Swift slice also matched the run and the
-   report stamp it judged). The owner-write notice from the history actor is still pending (Task 9).
+3. **The Desktop→hub inputs arrive in phase 3.** Since plan 3 Task 5 the control socket takes:
+   - `desktop_view`: `hidden` (session ids in the Desktop's PROJ-17 Undo batch: not published, not alerted, no
+     window slot) and `display_over` (`[{id, run, reported_at}]`, the background counts the Desktop shows over,
+     #411; a count reads Stopped only while the row still holds that run start — null = not live — and that
+     `agent_background_at`, as the Swift `ShownOverCount`), each at most 10 000 (`too_many_ids` beyond). In memory
+     only; ignored while the Desktop heartbeat is stale (> 90 s), dropped when it was sent before that. The
+     `desktop_heartbeat` answer carries `view_needed: true` while the hub holds no current view (never sent, or
+     dropped); Desktop sends the view at its start, on every change and on `view_needed`. A stale → fresh heartbeat,
+     and a heartbeat going stale, republish the view's slices.
+   - `recording_progress` (`upload`, `phase`, `percent`): the `recording_job` slice then reads `transcribing` with its
+     percent, `diarizing` or `summarizing`, as the Swift slice.
+   - `desktop_watch`: the answer (`{op, ok, state, reason}`, the current status as a snapshot) is the stream's first
+     line, then `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
+     device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines.
+
+   The owner-write notice from the history actor is still pending (Task 9).
 4. **Test mode is a `hubtest-*` test workspace** (`WATCHTOWER_HUB_TEST_WORKSPACE`). Since phase 2 a headless host also
    runs the live mode (see "Phase 2 — headless hosts"); a desktop host gets the Go hub only in phase 3.
 5. **The refusing session port (test mode only).** In test mode, unless `WATCHTOWER_SESSION_HOST_SOCKET` is set, the hub

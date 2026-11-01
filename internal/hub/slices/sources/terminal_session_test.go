@@ -199,7 +199,7 @@ func TestHiddenSessionIsNotPublished(t *testing.T) {
 	view := map[int64]bool{hidden: true}
 	src := TerminalSessions(r.d, TerminalSessionOptions{
 		Now:  func() time.Time { return r.now },
-		View: func() (map[int64]bool, map[int64]bool) { return view, nil },
+		View: func() (map[int64]bool, map[int64]ShownOver) { return view, nil },
 	})
 	if got := payloads(t, src); len(got) != 1 || got[kept] == nil {
 		t.Fatalf("published %v, want only %d", sessionIDs(got), kept)
@@ -222,26 +222,40 @@ func sessionIDs(m map[int64]map[string]any) []int64 {
 }
 
 // TestDisplayOverCountReadsAsShownOver is the Go twin of the Swift
-// testACountShownOverOnTheMacIsPublishedAsStoppedOnlyForThatCount's view
-// case: a background count the Desktop shows over (#411) goes out as
-// Stopped; without it the same row is agents working.
+// testACountShownOverOnTheMacIsPublishedAsStoppedOnlyForThatCount: a
+// background count the Desktop shows over (#411) goes out as Stopped, only
+// for the run and report stamp it was judged for; without it, for an older
+// report or for another run, the same row is agents working.
 func TestDisplayOverCountReadsAsShownOver(t *testing.T) {
 	r := newSessionRig(t)
 	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
 	id := insertSession(t, r.d, project, sessionSeed{})
 	r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(2), bgAt: ptr(2 * time.Second)})
-	var over map[int64]bool
+	var over map[int64]ShownOver
 	src := TerminalSessions(r.d, TerminalSessionOptions{
 		Liveness: func() Liveness { return Liveness{Runs: map[int64]time.Time{id: r.started}} },
 		Now:      func() time.Time { return r.now },
-		View:     func() (map[int64]bool, map[int64]bool) { return nil, over },
+		View:     func() (map[int64]bool, map[int64]ShownOver) { return nil, over },
 	})
+	kind := func() any { return payloads(t, src)[id]["state_kind"] }
 	if p := payloads(t, src)[id]; p["state_kind"] != "working" || p["state_caption"] != "2 agents working" {
 		t.Errorf("not shown over = %v", p)
 	}
-	over = map[int64]bool{id: true}
+	over = map[int64]ShownOver{id: {Run: r.started, ReportedAt: r.stamp(2 * time.Second)}}
 	if p := payloads(t, src)[id]; p["state_kind"] != "stopped" || p["state_caption"] != "Stopped" {
 		t.Errorf("shown over = %v", p)
+	}
+	over = map[int64]ShownOver{id: {Run: r.started, ReportedAt: r.stamp(time.Second)}}
+	if k := kind(); k != "working" {
+		t.Errorf("the row holds a newer report than the one judged over: %v", k)
+	}
+	over = map[int64]ShownOver{id: {Run: r.started.Add(-time.Minute), ReportedAt: r.stamp(2 * time.Second)}}
+	if k := kind(); k != "working" {
+		t.Errorf("judged over for another run: %v", k)
+	}
+	over = map[int64]ShownOver{id: {ReportedAt: r.stamp(2 * time.Second)}}
+	if k := kind(); k != "working" {
+		t.Errorf("judged over while not live, now live: %v", k)
 	}
 }
 
