@@ -68,11 +68,17 @@ func (p *Processor) Hygiene(ctx context.Context) (HygieneReport, error) {
 		if err != nil {
 			return rep, err
 		}
-		for _, g := range byZone(boxes) { // the shared RelayZone once
+		// The shared RelayZone once, with no phone linked too: its stale
+		// hellos age out.
+		for _, g := range p.withHelloZone(byZone(boxes), true) {
 			n, err := p.sweepZone(ctx, g, now)
 			rep.Deleted += n
 			if err != nil {
-				log.Printf("hub: hygiene of device %s's mailbox: %s", g.boxes[0].id, errClass(err))
+				if len(g.boxes) > 0 {
+					log.Printf("hub: hygiene of device %s's mailbox: %s", g.boxes[0].id, errClass(err))
+				} else {
+					log.Printf("hub: hygiene of the shared mailbox: %s", errClass(err))
+				}
 				errs = append(errs, err)
 			}
 		}

@@ -191,7 +191,15 @@ type ckState struct {
 	accountEpoch uint64
 	// linkWanted is the public link the center wants (the Swift linkWanted).
 	linkWanted bool
+	// decided is each hello record version already decided (wire name →
+	// change tag), oldest first in decidedOrder, at most maxDecidedHellos:
+	// a held-back page read again decides none of them twice.
+	decided      map[string]uint64
+	decidedOrder []string
 }
+
+// maxDecidedHellos caps ckState.decided; the oldest version goes first.
+const maxDecidedHellos = 256
 
 type openCode struct {
 	nonce string
@@ -738,7 +746,75 @@ func sweepEpochTx(tx *sql.Tx) (uint64, error) {
 // call. s is the Shares the participants and the owner are read from (a
 // deviation from the plan's signature, which had none: the center keeps no
 // Shares).
+//
+// A hello record version (its wire name and change tag) once decided is not
+// decided again: a page the processor holds back comes back with the same
+// hellos, and their re-read makes no share call, no refusal and no event
+// (ErrHelloDropped, nothing logged). A record without a change tag (0) is
+// never remembered: nothing tells two of its versions apart.
 func (c *Center) HandleCloudKitHello(ctx context.Context, s transport.Shares, rec transport.Stored) (Pending, error) {
+	if c.helloDecided(rec) {
+		return Pending{}, fmt.Errorf("%w: already decided", ErrHelloDropped)
+	}
+	p, err := c.handleCloudKitHello(ctx, s, rec)
+	if err == nil {
+		c.rememberHello(rec)
+	}
+	return p, err
+}
+
+// helloDecided: rec's version was decided before.
+func (c *Center) helloDecided(rec transport.Stored) bool {
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	tag, ok := c.ck.decided[rec.Name]
+	return ok && rec.RecordSeq != 0 && tag == rec.RecordSeq
+}
+
+// rememberHello records rec's version as decided.
+func (c *Center) rememberHello(rec transport.Stored) {
+	if rec.RecordSeq == 0 {
+		return
+	}
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	if c.ck.decided == nil {
+		c.ck.decided = map[string]uint64{}
+	}
+	if _, ok := c.ck.decided[rec.Name]; !ok {
+		if len(c.ck.decidedOrder) >= maxDecidedHellos {
+			delete(c.ck.decided, c.ck.decidedOrder[0])
+			c.ck.decidedOrder = c.ck.decidedOrder[1:]
+		}
+		c.ck.decidedOrder = append(c.ck.decidedOrder, rec.Name)
+	}
+	c.ck.decided[rec.Name] = rec.RecordSeq
+}
+
+// WantsHellos reports whether the shared RelayZone's hellos are worth a
+// read with no phone linked: a code is open (stored, unused, not expired)
+// or a link is urgent (a CloudKit code on screen, an answering close's
+// grace, when a late hello is still answered). It never waits on the
+// bridge.
+func (c *Center) WantsHellos() bool {
+	if c.LinkUrgent() {
+		return true
+	}
+	codes, err := c.keptCodes()
+	if err != nil {
+		return true // unreadable: read rather than miss a hello
+	}
+	now := c.now()
+	for _, code := range codes {
+		if code.usedBy == "" && !code.exp.Before(now) {
+			return true
+		}
+	}
+	return false
+}
+
+// handleCloudKitHello is HandleCloudKitHello for a version not decided yet.
+func (c *Center) handleCloudKitHello(ctx context.Context, s transport.Shares, rec transport.Stored) (Pending, error) {
 	if c.host.RelayDeviceID == "" || rec.Zone != transport.SharedMailboxZone(c.host.RelayDeviceID) {
 		log.Printf("hub link: hello %s outside the hub's RelayZone: dropped", safeName(rec.Name))
 		return Pending{}, fmt.Errorf("%w: not in the RelayZone", ErrHelloDropped)
@@ -839,6 +915,38 @@ func (c *Center) acceptedBothShares(ctx context.Context, s transport.Shares, use
 // the phone already unlinked (the gate refuses it at once); Unlink marked
 // the sweep pending and due, so the next pass removes it.
 func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device string) error {
+	user, err := c.unlinkForRemoval(ctx, device)
+	if err != nil {
+		return err
+	}
+	return c.removeParticipant(ctx, s, device, user)
+}
+
+// BeginRemove is the owner's Remove and a phone's own unlink, for every
+// caller: it unlinks device now (Unlink; state.ErrNoDevice when it is
+// neither linked nor waiting) and returns finish, which takes a shared
+// phone's iCloud user off the shares through s (RemoveCloudKit's second
+// half; nothing when s is nil, the phone was private, or another linked
+// phone is on the user). finish makes the share calls, so a caller that
+// must not wait on the bridge runs it elsewhere; it never fails the
+// remove: a failed removal is logged, and the sweep Unlink marked pending
+// removes the participant at a later pass.
+func (c *Center) BeginRemove(ctx context.Context, device string) (finish func(ctx context.Context, s transport.Shares), err error) {
+	user, err := c.unlinkForRemoval(ctx, device)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, s transport.Shares) {
+		if s == nil {
+			return
+		}
+		_ = c.removeParticipant(ctx, s, device, user)
+	}, nil
+}
+
+// unlinkForRemoval unlinks device and returns its iCloud user when it was
+// a shared-scope phone ("" otherwise), read before the unlink removed it.
+func (c *Center) unlinkForRemoval(ctx context.Context, device string) (string, error) {
 	var scope, user string
 	err := c.st.ReadTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`SELECT scope, user_record_name FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(&scope, &user)
@@ -848,12 +956,21 @@ func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device 
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("link: reading a phone: %w", err)
+		return "", fmt.Errorf("link: reading a phone: %w", err)
 	}
 	if err := c.Unlink(device); err != nil {
-		return err
+		return "", err
 	}
-	if scope != wire.ScopeShared || user == "" {
+	if scope != wire.ScopeShared {
+		return "", nil
+	}
+	return user, nil
+}
+
+// removeParticipant takes user ("" = none) off both shares unless a linked
+// shared phone is still bound to it; device names the phone in the log.
+func (c *Center) removeParticipant(ctx context.Context, s transport.Shares, device, user string) error {
+	if user == "" {
 		return nil
 	}
 	snap, err := c.readSweep(ctx)
