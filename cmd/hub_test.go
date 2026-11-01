@@ -331,7 +331,7 @@ func startPair(t *testing.T) *pairRun {
 		rootCmd.SetIn(nil)
 		rootCmd.SetArgs(nil)
 		for _, c := range hubCmd.Commands() {
-			c.Flags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+			c.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 		}
 	})
 	return p
