@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerHostedRelay
 import WatchtowerRelayProto
 
 /// A phone's account: entitlement, Mac slots, pairing slots and the revocation
@@ -31,6 +32,8 @@ extension FakeHostedRelay {
         var replacements: [Date] = []
         var revocations: [Revocation] = []
         var pairings: [String: Pairing] = [:]
+        /// The phone's pending vouches: hub id → expiry (README "Vouched hubs"; not backed up).
+        var vouches: [String: Date] = [:]
 
         var paying: Bool {
             entitlement == .active || entitlement == .grace
@@ -47,7 +50,7 @@ extension FakeHostedRelay {
     func runAccountOp(_ op: Relay_V1_Request.OneOf_Op, _ session: Session) throws -> Relay_V1_Response {
         switch op {
         case .addSlot(let add):
-            try addSlot(macID: add.macDeviceID, by: requirePhone(session))
+            try addSlot(macID: add.macDeviceID, by: requirePhone(session), vouch: .required)
             return Self.okResponse()
         case .removeSlot(let remove):
             return try removeSlot(remove, session)
@@ -67,6 +70,8 @@ extension FakeHostedRelay {
             throw RelayFailure(.unspecified, "not implemented")
         case .getAccountState:
             return accountState(session)
+        case .vouchHub(let vouch):
+            return try vouchHub(vouch, session)
         default:
             throw RelayFailure.invalid
         }
@@ -82,15 +87,79 @@ extension FakeHostedRelay {
         state.devices[phoneID]?.accountID
     }
 
+    // MARK: - Vouched hubs
+
+    /// Whether a slot add needs the phone's pending vouch (Worker `VouchMode`): `required` for the
+    /// phone's `add_slot` and `promote_pairing`, `operator` for the stand's `/dev/pair`.
+    enum VouchMode {
+        case required
+        case `operator`
+    }
+
+    /// README "Vouched hubs" `vouch_hub`, the six checks in their order: a phone (`FORBIDDEN`), paying
+    /// (`ENTITLEMENT_INACTIVE`), the attestation (`ATTESTATION_REQUIRED` / `ATTESTATION_FAILED`), a
+    /// registered hub with that key (`NOT_FOUND`), room in the slots unless the hub holds one
+    /// (`SLOT_LIMIT`). `Ok` keeps (or renews) the pending vouch for 10 minutes.
+    private func vouchHub(_ op: Relay_V1_VouchHub, _ session: Session) throws -> Relay_V1_Response {
+        let accountID = try requirePhone(session)
+        guard var account = state.accounts[accountID], account.paying else { throw RelayFailure.entitlementInactive }
+        try checkVouchAttestation(op, phoneID: session.deviceID)
+        guard RelayAuthMessages.deviceID(publicKey: op.authPub) == op.hubDeviceID,
+              let hub = state.devices[op.hubDeviceID], hub.kind == .mac, hub.authPub == op.authPub
+        else { throw RelayFailure.notFound }
+        guard account.macs.contains(hub.id) || account.macs.count < state.limits.maxMacSlots else {
+            throw RelayFailure(.slotLimit, "slot limit")
+        }
+        let now = now
+        account.vouches = account.vouches.filter { $0.value > now }
+        account.vouches[hub.id] = now.addingTimeInterval(RelayTTL.vouch)
+        state.accounts[accountID] = account
+        return Self.okResponse()
+    }
+
+    /// README "Vouched hubs" (Worker `unvouchedAllowed`, `refuseUnvouched`): a Mac in no account's
+    /// slots may only read its account state, close a pairing, send `vouch_hub` (to get its own
+    /// `FORBIDDEN`) and use pair zones (every item of a non-empty save); else `HUB_NOT_VOUCHED`.
+    /// As the Worker's `vouched()` (the gate closes with snapshot delivery), a Mac whose removal is
+    /// not delivered yet still counts as vouched.
+    func refuseUnvouched(_ op: Relay_V1_Request.OneOf_Op, _ session: Session) throws {
+        let id = session.deviceID
+        let vouched = state.accounts.values.contains { account in
+            account.macs.contains(id) || account.revocations.contains { $0.macID == id && !$0.delivered }
+        }
+        guard session.kind == .mac, !vouched else { return }
+        let pair = { (zone: String) in zone.hasPrefix("pair/") }
+        let allowed: Bool
+        switch op {
+        case .getAccountState, .subscribe, .closePairing, .vouchHub:
+            allowed = true
+        case .save(let save):
+            allowed = !save.items.isEmpty && save.items.allSatisfy { pair($0.record.zone) }
+        case .delete(let delete):
+            allowed = pair(delete.zone)
+        case .changes(let changes):
+            allowed = pair(changes.zone)
+        default:
+            allowed = false
+        }
+        guard allowed else { throw RelayFailure(.hubNotVouched, "hub not vouched") }
+    }
+
     // MARK: - Slots
 
-    /// README `add_slot`: a paying account, a registered Mac (else `NOT_FOUND`), idempotent;
-    /// at most `maxMacSlots` (`SLOT_LIMIT`); a new Mac added within 30 days of a removal is a
-    /// replacement, at most `slotReplacementsPer30Days` of them (`SLOT_REPLACEMENT_LIMIT`).
-    func addSlot(macID: String, by accountID: String) throws {
+    /// README `add_slot`: a paying account, a registered Mac (else `NOT_FOUND`), idempotent; a new
+    /// Mac needs the phone's unexpired vouch (`HUB_NOT_VOUCHED`) unless `vouch` is `.operator`, and
+    /// takes it only when the add succeeds; at most `maxMacSlots` (`SLOT_LIMIT`); a new Mac added
+    /// within 30 days of a removal is a replacement, at most `slotReplacementsPer30Days` of them
+    /// (`SLOT_REPLACEMENT_LIMIT`).
+    func addSlot(macID: String, by accountID: String, vouch: VouchMode) throws {
         guard var account = state.accounts[accountID], account.paying else { throw RelayFailure.entitlementInactive }
         if account.macs.contains(macID) { return }
         guard state.devices[macID]?.kind == .mac else { throw RelayFailure.notFound }
+        if vouch == .required {
+            guard let expiry = account.vouches[macID], now < expiry else { throw RelayFailure(.hubNotVouched, "hub not vouched") }
+            account.vouches[macID] = nil
+        }
         guard account.macs.count < state.limits.maxMacSlots else { throw RelayFailure(.slotLimit, "slot limit") }
         let windowStart = now.addingTimeInterval(-RelayTTL.replacementWindow)
         if account.removals.contains(where: { $0 > windowStart }) {
@@ -175,7 +244,7 @@ extension FakeHostedRelay {
     private func promotePairing(slotID: String, by accountID: String) throws {
         guard let pairing = state.accounts[accountID]?.pairings[slotID] else { throw RelayFailure.notFound }
         guard now < pairing.expiresAt else { throw RelayFailure(.pairingExpired, "pairing expired") }
-        try addSlot(macID: pairing.macID, by: accountID)
+        try addSlot(macID: pairing.macID, by: accountID, vouch: .required)
         state.accounts[accountID]?.pairings[slotID] = nil
     }
 
@@ -323,7 +392,7 @@ extension FakeHostedRelay: RelayStandControl {
             for phone in phones {
                 guard let accountID = accountOfPhone(phone) else { throw RelayStandError.notFound }
                 do {
-                    try addSlot(macID: mac, by: accountID)
+                    try addSlot(macID: mac, by: accountID, vouch: .operator)
                 } catch let failure as RelayFailure {
                     throw failure.code == .notFound ? RelayStandError.notFound : RelayStandError.refused(failure.code)
                 }

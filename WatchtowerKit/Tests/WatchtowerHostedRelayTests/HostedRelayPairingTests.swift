@@ -89,6 +89,11 @@ final class HostedRelayPairingTests: HostedRelayScenarioCase {
         backend.opLog.filter { HostedRelayClient.name($0) == name }.count
     }
 
+    /// `vouch_hub` for `mac`, which `promote_pairing` of a Mac not in slots needs (relay "Vouched hubs").
+    private func vouch(_ pairer: HostedRelayPairing, _ mac: HostedRelayClient, seed: UInt8 = 1) async throws {
+        try await pairer.vouch(hubDeviceID: mac.deviceID, authPub: try backend.signer(seed: seed).publicKey)
+    }
+
     private func assertRefusal(
         _ expected: HostedRelayPairing.Refusal, file: StaticString = #filePath, line: UInt = #line, _ body: () async throws -> Void
     ) async {
@@ -178,6 +183,7 @@ final class HostedRelayPairingTests: HostedRelayScenarioCase {
         try await pairing.save([record("hello-late")])
         await pairing.stop()
 
+        try await vouch(pairer, mac)
         try await pairer.promote(slot: slot)
         let dataZone = HostedRelayZones.data(mac: mac.deviceID)
         for index in 0..<4 { try await macSave(mac, dataZone, "d\(index)") }
@@ -271,6 +277,7 @@ final class HostedRelayPairingTests: HostedRelayScenarioCase {
         try await pairer.removeSlot(mac: second.deviceID)
 
         let (slot, _) = try await pairer.open(mac: second.deviceID)
+        try await vouch(pairer, second, seed: 3)
         await assertRefusal(.replacementLimit) { try await pairer.promote(slot: slot) }
         let macsAfter = try await pairer.accountState().macs
         XCTAssertEqual(macsAfter, [])
@@ -289,6 +296,7 @@ final class HostedRelayPairingTests: HostedRelayScenarioCase {
             macs.append(mac.deviceID)
         }
         let (slot, _) = try await pairer.open(mac: late.deviceID)
+        try await vouch(pairer, late, seed: 20)
         let third = try await makeClient(kind: .mac, seed: 23)
         try await stand.pair(mac: third.deviceID, phones: [phone.deviceID])
         macs.append(third.deviceID)
@@ -325,8 +333,29 @@ final class HostedRelayPairingTests: HostedRelayScenarioCase {
         } catch {
             XCTAssertEqual(error as? HostedRelayError, .server(code: .notFound, retryAfter: nil))
         }
+        try await vouch(pairer, mac)
         try await pairer.promote(slot: second)
         let macsAfter = try await pairer.accountState().macs
         XCTAssertEqual(macsAfter, [mac.deviceID])
+    }
+
+    /// ATTESTATION_REQUIRED and ATTESTATION_FAILED on an account op are "update the app", also
+    /// when a relogin's lost-key retry (the client's one fresh attestation) fails too.
+    func testAttestationAnswersAreUpdateRequired() async throws {
+        let (phone, mac) = try await phoneAndMac()
+        let pairer = HostedRelayPairing(session: HostedRelaySession(client: phone))
+        let (slot, _) = try await pairer.open(mac: mac.deviceID)
+        for code in [Relay_V1_ErrorCode.attestationRequired, .attestationFailed] {
+            try relay.failNext("promotePairing", with: code)
+            await assertRefusal(.updateRequired) { try await pairer.promote(slot: slot) }
+        }
+        XCTAssertEqual(opCount("promotePairing"), 2, "no retry")
+
+        // The session ends and the relogin is refused twice: one fresh attestation, then update.
+        try relay.expireSessions(of: phone.deviceID)
+        try relay.failNext("login", with: .attestationFailed, times: 2)
+        let logins = opCount("login")
+        await assertRefusal(.updateRequired) { _ = try await pairer.accountState() }
+        XCTAssertEqual(opCount("login") - logins, 2)
     }
 }

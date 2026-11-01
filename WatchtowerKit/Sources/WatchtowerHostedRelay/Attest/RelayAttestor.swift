@@ -31,8 +31,13 @@ public enum HostedRelayAttestError: Error, Equatable, Sendable {
     case updateRequired
 }
 
-/// Builds the `attestation` field of `register` and `login` over App Attest,
+/// Builds the `attestation` field of `register`, `login` and `vouch_hub` over App Attest,
 /// following the client failure-path table of the relay's proto README.
+///
+/// The only caller of `generateAssertion`. Login and `vouch_hub` assertions share the server's
+/// counter, and a later assertion reaching the server first makes the earlier one fail (proto
+/// README "Client rules (phone)"), so each runs inside `withAssertionTurn`: one at a time, the
+/// next generated only after the previous request was answered.
 public actor RelayAttestor {
     private static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
 
@@ -46,6 +51,10 @@ public actor RelayAttestor {
     private var forgetKeyOnNextLogin = false
     /// `serverRefusedAssertion()` was already taken since the last successful login.
     private var refusedSinceLogin = false
+    /// A `withAssertionTurn` body is running.
+    private var turnTaken = false
+    /// The callers waiting for the turn, oldest first.
+    private var turnQueue: [CheckedContinuation<Void, Never>] = []
 
     public init(attest: any AppAttesting, keys: any AppAttestKeyStore, clock: any RelayClock) {
         self.attest = attest
@@ -89,7 +98,58 @@ public actor RelayAttestor {
         }
     }
 
-    /// The server answered ATTESTATION_FAILED to an assertion login: forget the key so the next login attests afresh.
+    /// For `vouch_hub`: an assertion by the stored key over the vouch `clientDataHash`. Called inside
+    /// `withAssertionTurn`. No stored key, or `invalidKey` (the key is then discarded), throws
+    /// `NoAssertionKey`: the caller logs in again, which attests afresh (lost-key path), and retries.
+    public func vouchAssertion(clientDataHash: Data) async throws -> Relay_V1_Attestation {
+        guard attest.isSupported else { throw HostedRelayAttestError.notSupported }
+        guard let keyID = await keys.keyID() else { throw NoAssertionKey() }
+        do {
+            let assertion = try await attest.generateAssertion(keyID, clientDataHash: clientDataHash)
+            failures = 0
+            var attestation = Relay_V1_Attestation()
+            attestation.appAttestAssertion.assertion = assertion
+            return attestation
+        } catch {
+            let failure = AppAttestFailure.classify(error)
+            guard failure == .invalidKey else { throw transient("generateAssertion", failure) }
+            Self.logger.info("app attest generateAssertion: invalid key, attesting a new one at the next login")
+            await keys.setKeyID(nil)
+            throw NoAssertionKey()
+        }
+    }
+
+    /// Runs `body` (an assertion and the request that carries it) when no other body runs, in the
+    /// order the callers came. The body must not wait for another turn (a login inside a vouch's
+    /// turn would wait forever).
+    public func withAssertionTurn<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+        if turnTaken {
+            await withCheckedContinuation { turnQueue.append($0) }
+        } else {
+            turnTaken = true
+        }
+        defer { passTurn() }
+        // A caller cancelled while it waited gives the turn on without running.
+        try Task.checkCancellation()
+        return try await body()
+    }
+
+    /// Callers waiting for the turn (tests).
+    var turnWaiters: Int {
+        turnQueue.count
+    }
+
+    /// Hands the turn to the oldest waiter, or frees it.
+    private func passTurn() {
+        if turnQueue.isEmpty {
+            turnTaken = false
+        } else {
+            turnQueue.removeFirst().resume()
+        }
+    }
+
+    /// The server answered ATTESTATION_FAILED to an assertion login (or to a second `vouch_hub`): forget the key so
+    /// the next login attests afresh.
     /// Returns false when this already happened once since the last successful login (→ updateRequired).
     public func serverRefusedAssertion() -> Bool {
         guard !refusedSinceLogin else { return false }
@@ -159,3 +219,6 @@ public actor RelayAttestor {
         }
     }
 }
+
+/// `vouchAssertion` has no key to assert with: log in afresh (lost-key path), then vouch again.
+struct NoAssertionKey: Error {}

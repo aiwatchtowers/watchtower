@@ -136,6 +136,7 @@ final class FakeHostedRelayTests: XCTestCase {
         try await pay(relay, slotted)
         var add = Relay_V1_AddMacSlot()
         add.macDeviceID = mac.id
+        try await assertVouched(relay, slotted, mac)
         XCTAssertNil(try errorCode(relay, slotted, .addSlot(add)))
         let stranger = try await onboard(relay, .phone, seed: 4)
         try await pay(relay, stranger)
@@ -222,6 +223,8 @@ final class FakeHostedRelayTests: XCTestCase {
         XCTAssertEqual(controls(relay, phone), [control(.slotRemoved, mac.id)])
         XCTAssertEqual(controls(relay, mac), [control(.slotRemoved, phone.id)])
         XCTAssertEqual(try errorCode(relay, phone, .removeSlot(remove)), .unavailable)
+        // Until the revocation is delivered the Mac still counts as vouched (Worker `vouched()`:
+        // the gate closes with snapshot delivery), so it may remove itself too.
         XCTAssertEqual(try errorCode(relay, mac, .removeSlot(remove)), .unavailable, "the Mac may remove itself too")
 
         relay.markRevocationsDelivered()
@@ -236,7 +239,13 @@ final class FakeHostedRelayTests: XCTestCase {
         let (relay, mac, phone) = try await pairedWorld()
         XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
         XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))), "delivered at once, as on the stand")
+        XCTAssertEqual(try errorCode(relay, mac, .removeSlot(removeOp(phone, mac))), .hubNotVouched, "the Mac left its last slot")
+    }
+
+    func testTheMacMayRemoveItsOwnSlot() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
         XCTAssertNil(try errorCode(relay, mac, .removeSlot(removeOp(phone, mac))))
+        XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))), "a repeat within 24 h is done")
     }
 
     func testRemovedSlotDropsTheHubReader() async throws {
@@ -244,6 +253,7 @@ final class FakeHostedRelayTests: XCTestCase {
         let zone = "data/\(mac.id)"
         XCTAssertNil(try errorCode(relay, phone, changesOp(zone, since: 0)))
         XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
+        try await assertVouched(relay, phone, mac)
         XCTAssertNil(try errorCode(relay, phone, addSlotOp(mac)))
         XCTAssertEqual(try errorCode(relay, phone, changesOp(zone, since: 0)), .forbidden, "back in the slots, not a reader")
         var readers = Relay_V1_SetHubReaders()
@@ -269,19 +279,25 @@ final class FakeHostedRelayTests: XCTestCase {
         try await pay(relay, phone)
         for seed: UInt8 in 10...12 {
             let mac = try await onboard(relay, .mac, seed: seed)
+            XCTAssertEqual(try errorCode(relay, phone, addSlotOp(mac)), .hubNotVouched)
+            try await assertVouched(relay, phone, mac)
             XCTAssertNil(try errorCode(relay, phone, addSlotOp(mac)))
         }
         let fourth = try await onboard(relay, .mac, seed: 13)
-        XCTAssertEqual(try errorCode(relay, phone, addSlotOp(fourth)), .slotLimit)
+        let refused = try await vouch(relay, phone, fourth)
+        XCTAssertEqual(refused, .slotLimit)
+        XCTAssertEqual(try errorCode(relay, phone, addSlotOp(fourth)), .hubNotVouched, "the vouch is checked before the limit")
     }
 
     func testSlotReplacementLimit() async throws {
         let (relay, mac, phone) = try await pairedWorld()
         for _ in 0..<5 {
             XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
+            try await assertVouched(relay, phone, mac)
             XCTAssertNil(try errorCode(relay, phone, addSlotOp(mac)))
         }
         XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
+        try await assertVouched(relay, phone, mac)
         XCTAssertEqual(try errorCode(relay, phone, addSlotOp(mac)), .slotReplacementLimit)
     }
 
@@ -930,6 +946,26 @@ final class FakeHostedRelayTests: XCTestCase {
         remove.phoneDeviceID = phone.id
         remove.macDeviceID = mac.id
         return remove
+    }
+
+    /// A `vouch_hub` of `phone` for `mac` with a fresh `VOUCH` nonce and assertion; its error code.
+    private func vouch(_ relay: FakeHostedRelay, _ phone: Device, _ mac: Device) async throws -> Relay_V1_ErrorCode? {
+        var vouch = Relay_V1_VouchHub()
+        vouch.hubDeviceID = mac.id
+        vouch.authPub = mac.signer.publicKey
+        vouch.nonce = try nonce(relay, phone, .vouch)
+        let hash = RelayAuthMessages.vouchClientDataHash(
+            nonce: vouch.nonce, hubDeviceID: mac.id, authPub: mac.signer.publicKey, origin: try RelayOrigin(origin)
+        )
+        vouch.attestation.appAttestAssertion.assertion = try await phone.attest.generateAssertion(try XCTUnwrap(phone.keyID), clientDataHash: hash)
+        return try errorCode(relay, phone, .vouchHub(vouch))
+    }
+
+    private func assertVouched(
+        _ relay: FakeHostedRelay, _ phone: Device, _ mac: Device, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let code = try await vouch(relay, phone, mac)
+        XCTAssertNil(code, "vouch_hub", file: file, line: line)
     }
 
     private func addSlotOp(_ mac: Device) -> Relay_V1_Request.OneOf_Op {
