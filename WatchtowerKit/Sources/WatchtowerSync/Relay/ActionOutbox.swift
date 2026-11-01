@@ -71,6 +71,8 @@ public actor ActionOutbox {
     var queuedFlush: Task<OutboxFlushReport, Error>?
     /// The failed rows a `retry(id:)` is re-enqueueing now: a second Retry of one of them does nothing.
     var retrying: Set<String> = []
+    /// Tests only: awaited by `retry(id:)` right after it claims the row, so a test can hold one Retry there.
+    var retryClaimedHook: (@Sendable () async -> Void)?
     let logger = Logger(subsystem: "WatchtowerKit", category: "ActionOutbox")
 
     public init(
@@ -106,6 +108,11 @@ public actor ActionOutbox {
     /// A pass that throws (a store error) reports nothing.
     public func setFlushReportObserver(_ observer: (@Sendable (OutboxFlushReport) -> Void)?) {
         flushReportObserver = observer
+    }
+
+    /// Tests only: see `retryClaimedHook`.
+    func setRetryClaimedHook(_ hook: (@Sendable () async -> Void)?) {
+        retryClaimedHook = hook
     }
 
     /// The `snooze_until` param in the wire's frozen form: plain ISO8601 UTC,
