@@ -20,10 +20,15 @@ public enum DesktopReachability: Equatable, Sendable {
 /// - `recording_upload` echoes → the `RecordingUploadAcking` seam,
 /// - hub `control` records (relay client Phase 1) → `resend_from` to
 ///   `ActionOutbox.resendFrom`, `transport_switch_rejected` logged; both read
-///   once (`handled_controls`) and deleted. `transport_switched`,
-///   `hub_on_relay` and unknown kinds stay in the mailbox for Phase 3
-///   (Ruling 9). One naming another phone or hub is dropped and deleted; the
-///   phone's own controls reflecting back are left for the hub,
+///   once (`handled_controls`) and deleted. `transport_switched` and
+///   `hub_on_relay` go to the transport handler (relay client Phase 3, which
+///   ends Phase 1 Ruling 9): marked handled and deleted only once it returns
+///   true, else left in the mailbox and handed again at every later cycle
+///   of this feed (in memory: after a relaunch the hub's transport marker
+///   leads instead); with no handler set they stay too. Unknown kinds stay in the mailbox. One naming
+///   another phone or hub is dropped and deleted; the phone's own controls
+///   reflecting back are left for the hub. Controls are read whatever path the
+///   actions take (ordered or legacy, contract point 6a),
 /// - `heartbeat` → ignored: the heartbeat lives in DataZone (mobile POC
 ///   spec §4.1), so a relay-zone copy is never trusted for liveness,
 /// - `device` → ignored (the phone's own link record; the Mac consumes it),
@@ -88,6 +93,10 @@ public actor RelayFeed {
     /// Called for each well-formed `hub_on_relay` control this phone reads (relay client Phase 3 Task 10: an
     /// iCloud link to a Mac on Relay ends on a phone that cannot use Relay). The control stays in the mailbox.
     private let onHubOnRelay: (@Sendable () async -> Void)?
+    /// Decides a `transport_switched` or `hub_on_relay` control (the session's transport follower); true = handled.
+    private var transportHandler: (@Sendable (ControlPayload) async -> Bool)?
+    /// Transport controls the handler has not decided yet, by control id, with their record: handed again each cycle.
+    private var undecided: [String: (control: ControlPayload, record: CloudRecord)] = [:]
     /// When a hub control is marked handled (its id is kept 15 days).
     private let now: @Sendable () -> Date
     private var loopTask: Task<Void, Never>?
@@ -122,6 +131,11 @@ public actor RelayFeed {
         self.now = now
     }
 
+    /// Sets (or clears) the transport handler: the session's `TransportFollower`.
+    public func setTransportHandler(_ handler: (@Sendable (ControlPayload) async -> Bool)?) {
+        transportHandler = handler
+    }
+
     // MARK: - One cycle
 
     /// One relay cycle: optional engine pull, read relay-zone changes since
@@ -149,6 +163,8 @@ public actor RelayFeed {
         try await pull?()
         let since = try store.relayToken()
         let batch = try await transport.changes(in: .relay, since: since)
+        // Before the batch: a control the handler left undecided is handed again (the paying check answers now).
+        await deleteRead(try await retryUndecided())
         // Monotonic stale-batch drop, mirroring ReplicaStore.apply — but
         // checked BEFORE routing, because routing has side effects (echo
         // resolution, upload acks) that a replayed stale batch must not
@@ -275,6 +291,30 @@ public actor RelayFeed {
         return Routed()
     }
 
+    /// Hands every undecided transport control to the handler again; returns the deletes of the ones it decided.
+    private func retryUndecided() async throws -> [ConditionalDelete] {
+        var deletes: [ConditionalDelete] = []
+        for (id, parked) in undecided {
+            undecided[id] = nil
+            if let delete = try await decideTransport(parked.control, record: parked.record) { deletes.append(delete) }
+        }
+        return deletes
+    }
+
+    /// One `transport_switched` or `hub_on_relay` to the handler: marked handled and its delete returned once it
+    /// decided; else kept for the next cycle (nil).
+    private func decideTransport(_ control: ControlPayload, record: CloudRecord) async throws -> ConditionalDelete? {
+        guard let transportHandler, await transportHandler(control) else {
+            undecided[control.id] = (control, record)
+            if loggedControlKinds.insert(control.kind.rawValue).inserted {
+                logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
+            }
+            return nil
+        }
+        _ = try store.markControlHandled(id: control.id, at: now())
+        return Self.delete(record)
+    }
+
     /// Handles one control record; returns its delete, or nil to leave it in the mailbox.
     ///
     /// Read once: the handled id is checked first and marked only after the handling, so a `resend_from` whose
@@ -310,15 +350,14 @@ public actor RelayFeed {
             }
             _ = try store.markControlHandled(id: control.id, at: now())
             return Self.delete(record)
-        case .hubOnRelay:
-            // Told to the link flow, and left in the mailbox for the transport follower.
-            await onHubOnRelay?()
-            if loggedControlKinds.insert(control.kind.rawValue).inserted {
-                logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
-            }
-            return nil
+        case .transportSwitched, .hubOnRelay:
+            if try store.isControlHandled(id: control.id) { return Self.delete(record) }
+            // `hub_on_relay` is told to the link flow too (a link that never came alive ends on it).
+            if control.kind == .hubOnRelay { await onHubOnRelay?() }
+            // Marked only after the handler returned: a move it persisted is never lost to a delete.
+            return try await decideTransport(control, record: record)
         default:
-            // `transport_switched` (Phase 3) and kinds this build does not know: left in the mailbox.
+            // Kinds this build does not know: left in the mailbox.
             if loggedControlKinds.insert(control.kind.rawValue).inserted {
                 logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
             }

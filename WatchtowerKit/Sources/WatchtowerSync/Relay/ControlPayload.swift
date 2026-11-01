@@ -20,8 +20,9 @@ public struct ControlKind: OpenWireValue {
 
 /// The sealed body of a control record `c-<uuid>` (relay client Phase 1), byte-compatible with the Go hub's
 /// `wire.Control`. Fields by kind: `resend_from`/`skip_to` → `seq`; `epoch_ack` → `epoch`; `transport_switch`
-/// → `target` (and `reason`); `transport_switched` → `target`, `epoch`, `by`, `at` (its `keybox` is not read in
-/// Phase 1); `transport_switch_rejected` → `reason`, `retryAfterS`; `hub_on_relay` → nothing.
+/// → `target` (and `reason`); `transport_switched` → `target`, `epoch`, `by`, `at` and `keybox` (relay client Phase 3:
+/// base64url of the sealed `keybox-<DEVICE_ID>` envelope of the new epoch, opened by `SecureTransport.openKeybox`);
+/// `transport_switch_rejected` → `reason`, `retryAfterS`; `hub_on_relay` → nothing.
 ///
 /// Wire: RelayCoder JSON (snake_case, Unix-second dates); a nil optional is an absent key.
 public struct ControlPayload: Codable, Equatable, Sendable {
@@ -39,6 +40,9 @@ public struct ControlPayload: Codable, Equatable, Sendable {
     public let reason: String?
     /// Whole seconds.
     public let retryAfterS: UInt32?
+    /// `transport_switched` only: base64url of the sealed keybox envelope of the new epoch for this phone. A secret
+    /// in transit: never logged.
+    public let keybox: String?
 
     /// The plain record name.
     public var recordName: String { "c-\(id)" }
@@ -56,6 +60,7 @@ public struct ControlPayload: Codable, Equatable, Sendable {
         case at
         case reason
         case retryAfterS
+        case keybox
     }
 
     public init(
@@ -69,7 +74,8 @@ public struct ControlPayload: Codable, Equatable, Sendable {
         by: String? = nil,
         at: Date? = nil,
         reason: String? = nil,
-        retryAfterS: UInt32? = nil
+        retryAfterS: UInt32? = nil,
+        keybox: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -82,6 +88,25 @@ public struct ControlPayload: Codable, Equatable, Sendable {
         self.at = at
         self.reason = reason
         self.retryAfterS = retryAfterS
+        self.keybox = keybox
+    }
+
+    /// A `keybox` that is not a string (an earlier Go hub's plain keybox object) reads as absent, so the control
+    /// still decodes and its switch waits for a keybox this build can open, instead of being dropped unread.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        kind = try container.decode(ControlKind.self, forKey: .kind)
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        hubID = try container.decodeIfPresent(String.self, forKey: .hubID)
+        seq = try container.decodeIfPresent(UInt64.self, forKey: .seq)
+        epoch = try container.decodeIfPresent(UInt32.self, forKey: .epoch)
+        target = try container.decodeIfPresent(String.self, forKey: .target)
+        by = try container.decodeIfPresent(String.self, forKey: .by)
+        at = try container.decodeIfPresent(Date.self, forKey: .at)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+        retryAfterS = try container.decodeIfPresent(UInt32.self, forKey: .retryAfterS)
+        keybox = try? container.decodeIfPresent(String.self, forKey: .keybox)
     }
 
     /// A phone's `skip_to(seq)`: the order continues from `seq`. Every id is the canonical uppercase

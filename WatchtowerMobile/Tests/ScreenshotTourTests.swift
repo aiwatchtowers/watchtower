@@ -49,7 +49,9 @@ final class ScreenshotTourTests: XCTestCase {
         let recorderRows = try await captureRecorder(into: dir, linking: root.linking)
         let outboxRows = try await captureOutbox(into: dir, linking: root.linking)
         let relayRows = try await captureRelayLinking(host: host)
-        try ScreenshotHost.writeIndex(Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows, to: dir)
+        let onRelayRows = try await captureHubOnRelay(into: dir, linking: root.linking)
+        try ScreenshotHost.writeIndex(
+            Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows, to: dir)
 
         let pngs = try FileManager.default
             .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
@@ -57,7 +59,7 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(
             pngs.count,
             2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count)
-                + 3 * relayRows.count
+                + 3 * (relayRows.count + onRelayRows.count)
         )
         for png in pngs {
             XCTAssertGreaterThan(try png.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0, 0, png.lastPathComponent)
@@ -352,6 +354,49 @@ final class ScreenshotTourTests: XCTestCase {
             ScreenshotHost.IndexRow(number: "38", view: "NotDeliveredView", source: source, reached: "bare stack, outbox demo"),
             ScreenshotHost.IndexRow(number: "38c", view: "NotDeliveredView", source: source, reached: "bare stack, Dismiss All confirmation"),
             ScreenshotHost.IndexRow(number: "38r", view: "NotDeliveredView", source: source, reached: "bare stack, a retry over a failed one")
+        ]
+    }
+
+    /// R30 (relay client mockup 7.7, R32): Not delivered with a move the hub's switch to Relay left behind ("<Mac>
+    /// runs over Relay now") above a Phase 1 row refused for good, on its own demo session, in light, dark and narrow.
+    private func captureHubOnRelay(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+        let transport = RefusingTransport()
+        let defaults = try makeDefaults()
+        let session = try HubSession(
+            transport: transport,
+            replicaPath: try makeReplicaPath(),
+            backend: .inMemoryDemo,
+            keys: try DemoSeed.phoneKeys(),
+            defaults: defaults,
+            recordingsDirectory: try makeRecordingsDirectory()
+        )
+        addTeardownBlock { @MainActor in session.stop() }
+        try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the demo booted")
+        await session.outboxWork?.value
+        try await session.outbox.enableOrderedActions()
+        await transport.refuse(.unreachable)
+        let workbench = DemoSeed.acmeID
+        _ = try await session.outbox.enqueue(
+            kind: .boardTargetStatus, entityRecordName: SliceKind.workbenchTarget.recordName(id: "416"),
+            params: try BoardTargetStatusParams(workbenchID: workbench, status: .done, fromStatus: .todo).wireParams())
+        _ = try await session.outbox.flush()
+        try await session.outbox.listUnechoedAsUndelivered(reason: .hubOnRelay)
+        await transport.refuse(.permanent(code: "zone_gone"))
+        _ = try await session.outbox.enqueue(
+            kind: .askAnswer, entityRecordName: SliceKind.ownerAsk.recordName(id: "109"),
+            params: try AskAnswerParams(
+                workbenchID: workbench, answer: OwnerAskAnswer(answers: [.init(id: "q1", labels: ["Archive Now"])])
+            ).wireParams())
+        _ = try await session.outbox.flush()
+        try await poll(timeout: 20, { OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2 }, "both listed")
+        let env = AppEnvironment.single(session, defaults: defaults)
+        let host = ScreenshotHost(directory: dir, env: env, linking: linking)
+        // The narrow frame scrolls past the title and the footer to the two rows (mockup 7.7's SE frame shows them).
+        try await host.captureThree("R30-not-delivered-hub-on-relay", NavigationStack { NotDeliveredView() }, narrowScroll: 480)
+        return [
+            ScreenshotHost.IndexRow(
+                number: "R30", view: "NotDeliveredView", source: "Features/Now/NotDeliveredView.swift",
+                reached: "bare stack, a hub-on-relay row over a refused one, light/dark/narrow")
         ]
     }
 

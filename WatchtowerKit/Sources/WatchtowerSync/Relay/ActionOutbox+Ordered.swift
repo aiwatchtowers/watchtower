@@ -26,6 +26,7 @@ public struct OutboxFlushReport: Equatable, Sendable {
 extension ActionOutbox {
     static let refusedMessage = "Not delivered to your Mac."
     static let noAnswerMessage = "No answer from your Mac for 24 hours."
+    static let hubOnRelayMessage = "Your Mac runs over Relay now."
     /// The hosted relay's mailbox TTL: a control unwritten this long is dropped there (sim "Bounded state").
     static let hostedRelayControlTTL: TimeInterval = 14 * 86_400
     /// Seals per enqueue when other enqueues keep drawing the seq (Ruling 2).
@@ -218,6 +219,56 @@ extension ActionOutbox {
         return queued
     }
 
+    // MARK: A transport switch (relay client Phase 3)
+
+    /// The hub moved to another transport: once the operation in flight on the chain ends, this outbox writes
+    /// nothing more (every later pass returns an empty report), so no action reaches the transport the hub left.
+    /// The session on the new transport flushes the same rows. For good: a held outbox belongs to a session that is
+    /// being replaced.
+    public func holdFlushes() async {
+        _ = try? await onChain { await self.setFlushesHeld() }.value
+    }
+
+    private func setFlushesHeld() {
+        flushesHeld = true
+    }
+
+    /// Rule 13: every ordered action without a final echo (`queued` or `sent`) is `queued` again with no known
+    /// version, on the chain after any flush in flight: the next flush, on the session of `onNewTransport`, writes
+    /// the same envelope bytes, in order, with `.absent` (a resend: never resealed). Legacy rows are not touched.
+    /// Returns how many rows it put back.
+    @discardableResult
+    public func resendUnechoed(onNewTransport transport: TransportKind) async throws -> Int {
+        let count = try await onChain { try await self.requeueForNewTransport() }.value
+        logger.notice("\(count, privacy: .public) unechoed actions queued again for \(transport.rawValue, privacy: .public)")
+        return count
+    }
+
+    /// R32: every ordered action without a final echo (`queued` or `sent`) is listed as Not delivered with `reason`,
+    /// on the chain after any flush in flight. Legacy rows are not touched. Returns how many rows it listed.
+    @discardableResult
+    public func listUnechoedAsUndelivered(reason: UndeliveredReason) async throws -> Int {
+        try await onChain { try await self.listUnechoed(reason: reason) }.value
+    }
+
+    private func requeueForNewTransport() throws -> Int {
+        try store.requeueForNewTransport()
+    }
+
+    private func listUnechoed(reason: UndeliveredReason) throws -> Int {
+        let ids = try store.outboxRows([.queued, .sent]).map(\.actionID)
+        try store.markUndelivered(actionIDs: ids, reason: reason, message: Self.message(for: reason))
+        return ids.count
+    }
+
+    private static func message(for reason: UndeliveredReason) -> String {
+        switch reason {
+        case .refused: refusedMessage
+        case .noAnswer: noAnswerMessage
+        case .hubOnRelay: hubOnRelayMessage
+        }
+    }
+
     // MARK: Retry and Dismiss All
 
     /// A new action with the failed row's kind, entity and params at the end of the queue (new id, now, next seq,
@@ -297,7 +348,7 @@ extension ActionOutbox {
     /// the next pass, the action is listed as Not delivered, and the records after it go on.
     func performFlush() async throws -> OutboxFlushReport {
         var report = OutboxFlushReport()
-        guard transport.isConditional else { return report }
+        guard transport.isConditional, !flushesHeld else { return report }
         for control in try store.queuedControls() {
             if case .hostedRelay = route, now().timeIntervalSince(control.queuedAt) >= Self.hostedRelayControlTTL {
                 // The relay would have purged any copy by now. On CloudKit there is no such TTL and a control is

@@ -121,7 +121,7 @@ private struct NotDeliveredRowView: View {
     var body: some View {
         HStack(alignment: .center, spacing: Spacing.medium) {
             VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(row.summary).font(TypeScale.rowTitle).lineLimit(2)
+                Text(row.summary).font(TypeScale.rowTitle)
                 Text(row.detail).font(TypeScale.meta).foregroundStyle(.secondary)
                 if let error = row.error {
                     Text(error).font(TypeScale.meta).foregroundStyle(.secondary)

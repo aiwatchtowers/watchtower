@@ -96,6 +96,14 @@ public final class PhoneKeyProvider: SecureKeyProvider, @unchecked Sendable {
 
     public func linkNonce() throws -> Data { try link().linkNonce }
 
+    public func deviceAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { try store.identity().agreement }
+
+    /// The `afterFirstUnlock` copy; absent (no link) is `keysUnavailable`.
+    public func hubSigningPublicKey() throws -> Curve25519.Signing.PublicKey {
+        guard let key = try store.hubSigningKey(hubID) else { throw SecureTransportError.keysUnavailable }
+        return key
+    }
+
     private func hubAgreementPublicKey(_ link: HubLinkKeys) throws -> Curve25519.KeyAgreement.PublicKey {
         do { return try Curve25519.KeyAgreement.PublicKey(rawRepresentation: link.hubAgreementKey) } catch {
             throw KeyStoreError.corrupt("hub agreement key does not parse")

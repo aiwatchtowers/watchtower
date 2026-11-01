@@ -116,6 +116,23 @@ enum HubLinkPresence: Equatable {
     case unknown
 }
 
+/// The transport follower's hooks on a session (relay client Phase 3 Task 11), set by `AppRoot.wire`: the feed's
+/// `transport_switched` / `hub_on_relay` controls and the hydrator's transport marker reach them; with none set,
+/// nothing is decided (false) and the feed keeps the control.
+@MainActor
+final class TransportSignals {
+    var onControl: (@MainActor (ControlPayload) async -> Bool)?
+    var onMarker: (@MainActor (TransportMarker) async -> Bool)?
+
+    func control(_ control: ControlPayload) async -> Bool {
+        await onControl?(control) ?? false
+    }
+
+    func marker(_ marker: TransportMarker) async -> Bool {
+        await onMarker?(marker) ?? false
+    }
+}
+
 /// The handler of the keybox signal (`HubSession.onKeyboxChanged`), set after the hydrator that fires it.
 @MainActor
 private final class KeyboxSignal {
@@ -240,6 +257,8 @@ final class HubSession {
         set { keyboxSignal.handler = newValue }
     }
     @ObservationIgnored private let keyboxSignal: KeyboxSignal
+    /// The transport follower's hooks (`AppRoot.wire`): the hub's switch controls and its transport marker.
+    @ObservationIgnored let transportSignals = TransportSignals()
     /// The unlock signal reached the environment (after its own indexing): the link flow reconciles the
     /// keybox's epoch keys with the Keychain (final review Phone I-1).
     @ObservationIgnored var onKeysAvailable: (@MainActor () -> Void)?
@@ -440,7 +459,7 @@ final class HubSession {
         let sealed = try Self.sealedStack(
             transport: transport, replicaPath: replicaPath,
             keys: try keys ?? (demoKeys ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor,
-            observesSuspension: replicaObservesSuspension
+            observesSuspension: replicaObservesSuspension, route: route
         )
         let (store, secure) = (sealed.store, sealed.secure)
         self.store = store
@@ -455,10 +474,7 @@ final class HubSession {
         let keyboxSignal = KeyboxSignal()
         self.keyboxSignal = keyboxSignal
         // Labelled: a trailing closure would bind to `pull`, the first closure parameter.
-        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: { records in // swiftlint:disable:this trailing_closure
-            guard records.contains(where: { $0.kind == .deviceGrant }) else { return }
-            Task { @MainActor in keyboxSignal.handler?() }
-        })
+        let hydrator = Self.makeHydrator(transport, store, keyboxSignal, transportSignals)
         self.hydrator = hydrator
         // The route decides a queued control's outer bound (the hosted relay's mailbox TTL; none on CloudKit); the
         // session's clock times the 24 h withdrawal.
@@ -533,6 +549,23 @@ final class HubSession {
 
     /// The poster of a shared-scope hub's work alerts, over this phone's keys for the hub; nil in any other scope or
     /// without keys. A private-scope hub never posts locally: its push subscription delivers.
+    /// The hydrator: a keybox it indexed fires `keyboxSignal`, and the hub's transport marker goes to `signals`.
+    private static func makeHydrator(
+        _ transport: any CloudSyncTransport & Sendable,
+        _ store: ReplicaStore,
+        _ keyboxSignal: KeyboxSignal,
+        _ signals: TransportSignals
+    ) -> ReplicaHydrator {
+        ReplicaHydrator(
+            transport: transport, store: store,
+            onRecordsApplied: { records in
+                guard records.contains(where: { $0.kind == .deviceGrant }) else { return }
+                Task { @MainActor in keyboxSignal.handler?() }
+            },
+            onTransportMarker: { marker in await signals.marker(marker) }
+        )
+    }
+
     /// The relay feed: echoes, controls, and a `hub_on_relay` noted in `sighting`.
     private static func makeFeed(
         _ secure: SecureTransport,
@@ -713,6 +746,8 @@ final class HubSession {
         // Before any fetch: the feed's `resend_from` needs both ids (with the device id the init set), or it
         // throws and the feed keeps its token, stalling every later action.
         await outbox.setHubID(hubID)
+        // Before any fetch: the hub's switch controls reach the transport follower.
+        await feed.setTransportHandler { [transportSignals] control in await transportSignals.control(control) }
         // Every flush's outcome, the ones an enqueue or a `resend_from` starts included.
         await outbox.setFlushReportObserver { [weak self] report in
             Task { @MainActor in self?.outboxBacklog.lastFlushStopped = report.stoppedOn != nil }
@@ -1337,7 +1372,34 @@ final class HubSession {
     }
 
     /// The hub's transport marker's plain record name.
-    static let transportMarkerName = "transport-marker"
+    static let transportMarkerName = TransportMarker.recordName
+
+    /// The transport a route talks over.
+    nonisolated static func transportKind(of route: HubRoute) -> TransportKind {
+        route.cloudKitScope != nil ? .cloudKit : .relay
+    }
+
+    /// Opens the keybox a `transport_switched` carries (relay client Phase 3) with this phone's keys for the hub;
+    /// nil when it does not open (logged by error type only: the envelope is a secret).
+    func openSwitchKeybox(_ sealed: Data) async -> Keybox? {
+        guard let deviceID = linkedDevice.flatMap({ UUID(uuidString: $0.deviceID) }) else { return nil }
+        do {
+            return try await secure.openKeybox(sealed: sealed, deviceID: deviceID)
+        } catch {
+            Self.logger.warning("switch keybox does not open: \(String(describing: type(of: error)), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Returns once no fetch of this session runs or waits (a route move replaces the session after them).
+    func waitForFetches() async {
+        _ = await launchFetchTask?.value
+        while let running = runningFetch {
+            _ = await running.task.value
+            if runningFetch?.serial == running.serial { break }
+        }
+        _ = await queuedPushTask?.value
+    }
 
     /// The one field of the marker the link flow reads.
     private struct TransportMarkerTarget: Decodable {
@@ -1372,7 +1434,8 @@ final class HubSession {
         replicaPath: String,
         keys: PhoneKeys?,
         seqFloor: UInt64,
-        observesSuspension: Bool
+        observesSuspension: Bool,
+        route: HubRoute?
     ) throws -> (store: ReplicaStore, secure: SecureTransport, hasDeviceKeys: Bool) {
         let wired = try deviceKeys(keys)
         let phoneKeys = wired?.keys ?? PhoneKeys.unlinked()
@@ -1383,6 +1446,11 @@ final class HubSession {
             opener: EnvelopeReplicaOpener(hubID: phoneKeys.hubID, deviceID: keyDeviceID, keys: phoneKeys.store),
             observesSuspension: observesSuspension
         )
+        // The tokens belong to one route's transport store (R12): a session on another route reads its own from the
+        // start and sweeps what that full read did not return. A kill mid-move is healed here too.
+        if let route, try store.adoptRoute(transportKind(of: route).rawValue) {
+            logger.notice("the hub's route changed: the replica re-reads it")
+        }
         try persistSeqFloor(seqFloor, in: store)
         let seq = SeqAllocator(
             load: { max(try store.envelopeSeqCeiling(), seqFloor) },

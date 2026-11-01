@@ -153,20 +153,7 @@ public final class ReplicaStore: Sendable {
                 CREATE INDEX IF NOT EXISTS idx_slice_records_plain_name ON slice_records(plain_name);
                 CREATE INDEX IF NOT EXISTS idx_slice_records_needs_index ON slice_records(needs_index);
                 \(Self.kindVersionsTableSQL);
-                CREATE TABLE IF NOT EXISTS pending_actions (
-                    action_id TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
-                    entity_record_name TEXT,
-                    payload BLOB NOT NULL,
-                    created_at REAL NOT NULL,
-                    state TEXT NOT NULL CHECK(state IN ('pending','failed')),
-                    error_message TEXT,
-                    reason TEXT,
-                    result BLOB,
-                    echo_status TEXT,
-                    wire_name TEXT,
-                    \(Self.outboxColumnsSQL)
-                );
+                \(Self.pendingActionsTableSQL(name: "pending_actions", ifNotExists: true));
                 \(Self.outboxTablesSQL);
                 \(Self.phoneRecordingsTableSQL(name: "phone_recordings", ifNotExists: true));
                 CREATE TABLE IF NOT EXISTS phone_recording_marks (
@@ -190,6 +177,45 @@ public final class ReplicaStore: Sendable {
             }
         }
         try upgradePhoneRecordingsStates()
+        try upgradeUndeliveredReasons()
+    }
+
+    /// The overlay and outbox table (`pending_actions`).
+    static func pendingActionsTableSQL(name: String, ifNotExists: Bool) -> String {
+        """
+        CREATE TABLE \(ifNotExists ? "IF NOT EXISTS " : "")\(name) (
+            action_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            entity_record_name TEXT,
+            payload BLOB NOT NULL,
+            created_at REAL NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending','failed')),
+            error_message TEXT,
+            reason TEXT,
+            result BLOB,
+            echo_status TEXT,
+            wire_name TEXT,
+            \(Self.outboxColumnsSQL)
+        )
+        """
+    }
+
+    /// An outbox written before the `hub_on_relay` reason (relay client Phase 1) has a CHECK without it, and SQLite
+    /// cannot alter a CHECK: the table is rebuilt with its rows and its `action_seq` index, in one transaction.
+    private func upgradeUndeliveredReasons() throws {
+        let current = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pending_actions'")
+        }
+        guard let current, !current.contains("'\(UndeliveredReason.hubOnRelay.rawValue)'") else { return }
+        try writer.write { db in
+            let columns = try db.columns(in: "pending_actions").map(\.name).joined(separator: ", ")
+            try db.execute(sql: Self.pendingActionsTableSQL(name: "pending_actions_upgrade", ifNotExists: false))
+            try db.execute(sql: "INSERT INTO pending_actions_upgrade (\(columns)) SELECT \(columns) FROM pending_actions")
+            try db.execute(sql: "DROP TABLE pending_actions")
+            try db.execute(sql: "ALTER TABLE pending_actions_upgrade RENAME TO pending_actions")
+            try upgradeOutboxColumns(db, existing: try db.columns(in: "pending_actions").map(\.name))
+        }
+        logger.notice("outbox upgraded for the hub_on_relay reason")
     }
 
     /// Columns added to the sidecar tables after they first shipped, added in
@@ -369,6 +395,10 @@ public final class ReplicaStore: Sendable {
             if let stored = Self.decodeToken(storedRaw), batch.newToken.value <= stored.value {
                 return (false, 0, [])
             }
+            // The first complete pull after a route change (no token, something returned): every row it did not
+            // return goes once the batch is in (R12).
+            let marked = try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [Self.sweepKey])
+            let sweeping = storedRaw == nil && !batch.changed.isEmpty && marked != nil
             var rolledBack: [String] = []
             var stored = 0
             // Per-kind change stamps (board #724): a stored version is
@@ -401,6 +431,9 @@ public final class ReplicaStore: Sendable {
                 if let kind = try Self.storedKind(of: name, in: db) { touchedKinds.insert(kind) }
                 try db.execute(sql: "DELETE FROM slice_records WHERE record_name = ?", arguments: [name])
                 try db.execute(sql: "DELETE FROM slice_assets WHERE record_name = ?", arguments: [name])
+            }
+            if sweeping {
+                touchedKinds.formUnion(try Self.sweep(keeping: Set(batch.changed.map(\.recordName)), in: db))
             }
             try Self.bumpKindVersions(touchedKinds, in: db)
             if let tokenJSON {
@@ -749,6 +782,70 @@ public final class ReplicaStore: Sendable {
             )
         }
     }
+
+    // MARK: - Route changes (relay client Phase 3, R12)
+
+    /// `replica_meta` key: set by a route change, cleared by the sweep of the next complete data pull.
+    private static let sweepKey = "sweep_after_full_pull"
+    /// `replica_meta` key: the transport the stored change tokens belong to (`TransportKind` raw value).
+    private static let routeKey = "sync_route"
+
+    /// The hub moved to another transport (each route has its own transport store, whose tokens mean nothing to
+    /// another): both change tokens go, so the next hydration and relay cycle read the new transport from its start,
+    /// and the next complete data pull deletes the slice rows it did not return (the hub republishes its whole window
+    /// on the new transport). The outbox, the queued and handled controls, the keys, the seq ceiling and the alert
+    /// watermark stay.
+    public func routeChanged() throws {
+        try writer.write { db in try Self.changeRoute(db) }
+    }
+
+    /// Records `route` (a `TransportKind` raw value) as the transport the tokens belong to; when another one was
+    /// recorded, the route changed (`routeChanged()`, in the same transaction). A replica with none recorded (every
+    /// replica before relay client Phase 3) only records it. Returns whether the route changed. A session runs it as
+    /// it opens the replica, so a kill between a route move and the new transport's first read still resets.
+    @discardableResult
+    public func adoptRoute(_ route: String) throws -> Bool {
+        try writer.write { db in
+            let recorded = try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [Self.routeKey])
+            try Self.upsertMeta(db, key: Self.routeKey, value: route)
+            guard let recorded, recorded != route else { return false }
+            try Self.changeRoute(db)
+            return true
+        }
+    }
+
+    /// Whether the next complete data pull sweeps (tests, logs).
+    public func sweepsAfterFullPull() throws -> Bool {
+        try metaValue(Self.sweepKey) != nil
+    }
+
+    private static func changeRoute(_ db: Database) throws {
+        try db.execute(
+            sql: "DELETE FROM replica_meta WHERE key IN (?, ?)", arguments: [Self.dataTokenKey, Self.relayTokenKey])
+        try upsertMeta(db, key: Self.sweepKey, value: "1")
+    }
+
+    /// Deletes every slice row (and its asset) whose wire name is not in `returned`, except this phone's keybox,
+    /// which the hub carries in the switch control rather than republishing; clears the sweep mark. Returns the kinds
+    /// it touched.
+    private static func sweep(keeping returned: Set<String>, in db: Database) throws -> Set<String> {
+        let rows = try Row.fetchAll(db, sql: "SELECT record_name, kind FROM slice_records")
+        var touched = Set<String>()
+        var swept = 0
+        for row in rows {
+            let name: String = row["record_name"]
+            guard !returned.contains(name), !name.hasPrefix(keyboxPrefix) else { continue }
+            if let kind: String = row["kind"] { touched.insert(kind) }
+            try db.execute(sql: "DELETE FROM slice_records WHERE record_name = ?", arguments: [name])
+            try db.execute(sql: "DELETE FROM slice_assets WHERE record_name = ?", arguments: [name])
+            swept += 1
+        }
+        try db.execute(sql: "DELETE FROM replica_meta WHERE key = ?", arguments: [Self.sweepKey])
+        sweepLogger.notice("route change: \(swept, privacy: .public) slice rows the new transport did not return swept")
+        return touched
+    }
+
+    private static let sweepLogger = Logger(subsystem: "WatchtowerKit", category: "ReplicaStore")
 
     // MARK: - Relay token (RelayFeed state) + heartbeat
 

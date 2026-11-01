@@ -15,11 +15,13 @@ public enum Delivery: String, Sendable {
     case queued, sent, settled, undelivered
 }
 
-/// Why a row is listed under Not delivered: the transport refused its write for good, or it was withdrawn after
-/// 24 h without an answer. A row already listed keeps its first reason.
+/// Why a row is listed under Not delivered: the transport refused its write for good, it was withdrawn after
+/// 24 h without an answer, or the hub runs over Relay, which this phone cannot follow (R32, relay client Phase 3). A
+/// row already listed keeps its first reason.
 public enum UndeliveredReason: String, Sendable {
     case refused
     case noAnswer = "no_answer"
+    case hubOnRelay = "hub_on_relay"
 }
 
 /// One ordered row as the flush reads it: the sealed envelope under its wire name, nothing in plaintext.
@@ -66,7 +68,7 @@ extension ReplicaStore {
         ("record_seq", "INTEGER"),
         ("sent_at", "REAL"),
         ("delivery", "TEXT CHECK(delivery IN ('queued','sent','settled','undelivered'))"),
-        ("undelivered_reason", "TEXT CHECK(undelivered_reason IN ('refused','no_answer'))")
+        ("undelivered_reason", "TEXT CHECK(undelivered_reason IN ('refused','no_answer','hub_on_relay'))")
     ]
 
     static var outboxColumnsSQL: String {
@@ -262,6 +264,19 @@ extension ReplicaStore {
                 sql: "SELECT MIN(action_seq) FROM pending_actions WHERE delivery = 'queued' AND action_seq >= ?",
                 arguments: [from])
             return first.map { UInt64($0) }
+        }
+    }
+
+    /// Rule 13 (relay client Phase 3): every ordered row not echoed yet (`queued` or `sent`) is `queued` again with
+    /// no known version, so the next flush writes its same envelope with `.absent` on the transport the hub moved to.
+    /// Returns how many rows it put back.
+    func requeueForNewTransport() throws -> Int {
+        try writer.write { db in
+            try db.execute(sql: """
+                UPDATE pending_actions SET delivery = 'queued', record_seq = NULL
+                WHERE action_seq IS NOT NULL AND delivery IN ('queued','sent')
+                """)
+            return db.changesCount
         }
     }
 

@@ -71,6 +71,8 @@ public actor ActionOutbox {
     var queuedFlush: Task<OutboxFlushReport, Error>?
     /// The failed rows a `retry(id:)` is re-enqueueing now: a second Retry of one of them does nothing.
     var retrying: Set<String> = []
+    /// Set by `holdFlushes()` once the hub moved to another transport: this outbox writes nothing more (rule 13).
+    var flushesHeld = false
     /// Tests only: awaited by `retry(id:)` right after it claims the row, so a test can hold one Retry there.
     var retryClaimedHook: (@Sendable () async -> Void)?
     let logger = Logger(subsystem: "WatchtowerKit", category: "ActionOutbox")
