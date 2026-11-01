@@ -84,14 +84,12 @@ final class CodeHandoffCenterTests: XCTestCase {
         terminals = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = FakeTerminalSession(pid: 0)
+                // The session host's pause (`FakeHostDelivery`).
+                process.host.pause = { [weak self] _ in await self?.duringPause?() }
                 self?.processes.append(process)
                 return process
             },
-            signaller: ProcessGroupSignaller(
-                signal: { _, _ in },
-                isAlive: { _ in false },
-                sleep: { [weak self] _ in await self?.duringPause?() }
-            )
+            signaller: ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
         )
         terminals.shell = { "/bin/zsh" }
         terminals.transcriptExists = { _ in false }
@@ -349,7 +347,7 @@ final class CodeHandoffCenterTests: XCTestCase {
             XCTAssertEqual(processes[0].inputs.count, before + 1, "\(name): the paste only")
             XCTAssertFalse(processes[0].inputs.contains([0x0D]), name)
             XCTAssertEqual(terminals.answerHints[session.id], .typed, "\(name): the bar asks for Return")
-            processes[0].onOwnerInput?([0x0D])
+            processes[0].ownerReturn()
         }
     }
 
@@ -376,7 +374,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         await agentStates.poll()
         let beforeTheMark = await vm.asks.answer(try await answerableAsk(vm, project, session))
         XCTAssertEqual(beforeTheMark, .typed, "the previous run's waiting vouches for nothing")
-        processes[0].onOwnerInput?([0x0D])
+        processes[0].ownerReturn()
 
         stored.markRun(session.id, at: "2999-01-01T00:00:00.000Z")
         await agentStates.poll()
@@ -470,7 +468,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertTrue(terminals.pasteHints.contains(session.id))
         XCTAssertTrue(terminals.sharedPrompts.contains(session.id), "the pane says both go on Return")
 
-        processes[0].onOwnerInput?([0x0D])
+        processes[0].ownerReturn()
         XCTAssertFalse(terminals.sharedPrompts.contains(session.id), "the owner's Return sent them")
     }
 
