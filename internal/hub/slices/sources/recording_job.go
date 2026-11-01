@@ -21,8 +21,10 @@ const (
 // §4.12), record recording_job-<upload id>: the hub-side progress of one phone
 // upload, read from the sidecar's recording_jobs queue (ids, statuses and
 // error classes; Task 5). The queue has four states, the wire more: queued is
-// queued, claimed (Desktop took it) is transcribing without a percent, done
-// carries the transcript id, failed carries the error class as its error. A
+// queued, claimed (Desktop took it) is Desktop's reported phase —
+// transcribing (with its percent when reported; also before any report),
+// diarizing or summarizing, as RecordingJobSlice —, done carries the
+// transcript id, failed carries the error class as its error. A
 // job is published until 7 days after it ended; an unfinished one stays. At
 // most 100, the latest updated first. now nil is time.Now.
 func RecordingJob(st *state.Store, now func() time.Time) (hubslices.Source, error) {
@@ -74,7 +76,13 @@ func (s *recordingJobSource) Items(ctx context.Context) ([]hubslices.Item, error
 		}
 		switch j.Status {
 		case state.RecordingClaimed:
-			p.Status = "transcribing"
+			// Desktop's phase; a claim it has not reported on yet transcribes.
+			switch j.Phase {
+			case state.PhaseDiarizing, state.PhaseSummarizing:
+				p.Status = j.Phase
+			default:
+				p.Status, p.Percent = state.PhaseTranscribing, j.Percent
+			}
 		case state.RecordingDone:
 			p.Status, p.TranscriptID = "done", j.TranscriptID
 		case state.RecordingFailed:

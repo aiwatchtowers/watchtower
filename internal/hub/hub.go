@@ -303,7 +303,7 @@ func Run(ctx context.Context, o Options) error {
 	if err := checkDir(o.Dir); err != nil {
 		return err
 	}
-	s := &supervisor{o: o, run: newRunID(), wake: make(chan struct{}, 1), pairs: map[*pairListener]bool{}}
+	s := &supervisor{o: o, run: newRunID(), wake: make(chan struct{}, 1), pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{}}
 	lock, err := s.acquire(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -371,8 +371,13 @@ type supervisor struct {
 	statusMu sync.Mutex
 	status   Status
 
-	pairMu sync.Mutex
-	pairs  map[*pairListener]bool
+	// pairMu guards the pairing streams and the desktop_watch streams.
+	pairMu  sync.Mutex
+	pairs   map[*pairListener]bool
+	watches map[*pairListener]bool
+
+	// view is the Desktop's last desktop_view (in memory only).
+	view desktopViewBox
 }
 
 func newRunID() string {
@@ -610,6 +615,7 @@ func (s *supervisor) setStatus(st Status) {
 	if s.o.report != nil {
 		s.o.report(st)
 	}
+	s.notifyDesktop(ControlAnswer{Event: EventStatus, OK: true, State: st.State, Reason: st.Reason})
 }
 
 // otherLiveStatus: the status file holds a live status of another run.

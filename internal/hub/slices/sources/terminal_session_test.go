@@ -11,9 +11,8 @@ import (
 )
 
 // Go twins of TerminalSessionSliceTests (the summary runner's tests move
-// with the runner). Not ported, by design: the Undo batch (hiddenIDs) and
-// the shown-over background count (displayOver) are Desktop memory the Go
-// hub cannot read — the documented divergences of TerminalSessionSource.
+// with the runner). The Undo batch (hiddenIDs) and the shown-over background
+// count (displayOver) reach the hub as the Desktop's view (desktop_view).
 
 type sessionRig struct {
 	t       *testing.T
@@ -186,6 +185,63 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 	}
 	if p := all[ids[8]]; p["agent_error"] != "rate_limit" {
 		t.Errorf("agent_error = %v", p["agent_error"])
+	}
+}
+
+// TestHiddenSessionIsNotPublished is the Go twin of the Swift
+// testASessionInTheUndoBatchIsNotPublished: a session in the Desktop's Undo
+// batch (PROJ-17) is not published and not counted; Undo publishes it again.
+func TestHiddenSessionIsNotPublished(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	kept := insertSession(t, r.d, project, sessionSeed{})
+	hidden := insertSession(t, r.d, project, sessionSeed{})
+	view := map[int64]bool{hidden: true}
+	src := TerminalSessions(r.d, TerminalSessionOptions{
+		Now:  func() time.Time { return r.now },
+		View: func() (map[int64]bool, map[int64]bool) { return view, nil },
+	})
+	if got := payloads(t, src); len(got) != 1 || got[kept] == nil {
+		t.Fatalf("published %v, want only %d", sessionIDs(got), kept)
+	}
+	if c := countsOf(t, r.d, src)[project]; c.NotRunning != 1 {
+		t.Errorf("counts = %+v, want the hidden session left out", c)
+	}
+	view = nil
+	if got := payloads(t, src); len(got) != 2 || got[hidden] == nil {
+		t.Errorf("published %v after Undo, want both", sessionIDs(got))
+	}
+}
+
+func sessionIDs(m map[int64]map[string]any) []int64 {
+	var out []int64
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// TestDisplayOverCountReadsAsShownOver is the Go twin of the Swift
+// testACountShownOverOnTheMacIsPublishedAsStoppedOnlyForThatCount's view
+// case: a background count the Desktop shows over (#411) goes out as
+// Stopped; without it the same row is agents working.
+func TestDisplayOverCountReadsAsShownOver(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	id := insertSession(t, r.d, project, sessionSeed{})
+	r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(2), bgAt: ptr(2 * time.Second)})
+	var over map[int64]bool
+	src := TerminalSessions(r.d, TerminalSessionOptions{
+		Liveness: func() Liveness { return Liveness{Runs: map[int64]time.Time{id: r.started}} },
+		Now:      func() time.Time { return r.now },
+		View:     func() (map[int64]bool, map[int64]bool) { return nil, over },
+	})
+	if p := payloads(t, src)[id]; p["state_kind"] != "working" || p["state_caption"] != "2 agents working" {
+		t.Errorf("not shown over = %v", p)
+	}
+	over = map[int64]bool{id: true}
+	if p := payloads(t, src)[id]; p["state_kind"] != "stopped" || p["state_caption"] != "Stopped" {
+		t.Errorf("shown over = %v", p)
 	}
 }
 

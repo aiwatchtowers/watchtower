@@ -41,7 +41,10 @@ type Config struct {
 	DefaultAgent func() agentkind.Kind
 	Live         func() Liveness
 	Away         platform.Away
-	Hidden       func() map[int64]bool
+	// View (nil = none) is the Desktop's view: the sessions in its Undo
+	// batch, which are neither published nor alerted, and the background
+	// counts it shows over (TerminalSessionOptions.View).
+	View         func() (hidden, displayOver map[int64]bool)
 	Active       func() bool
 	OnChatChange func()
 	// OnReportChange and OnGitChange (nil = none) are the report runner's
@@ -150,8 +153,13 @@ func All(c Config) (*Set, error) {
 			}
 			return report.Summary(workbenchID, sessionID)
 		},
-		Now: now,
+		Now:  now,
+		View: c.View,
 	})
+	var hidden func() map[int64]bool
+	if c.View != nil {
+		hidden = func() map[int64]bool { h, _ := c.View(); return h }
+	}
 	report, err := SessionReport(c.DB, SessionReportOptions{Sessions: sessions, Store: c.Store, Sealer: c.Sealer, Active: c.Active, Now: now, OnChange: c.OnReportChange, Fetch: c.ReportFetch, MinimumGap: c.RunnerGap})
 	if err != nil {
 		return nil, err
@@ -174,7 +182,7 @@ func All(c Config) (*Set, error) {
 		timeline,
 		OwnerAsk(c.DB, now),
 		PermissionRequest(c.DB, c.Live, now),
-		WorkAlert(WorkAlertConfig{DB: c.DB, Store: c.Store, Away: c.Away, Live: c.Live, Hidden: c.Hidden, Now: now}),
+		WorkAlert(WorkAlertConfig{DB: c.DB, Store: c.Store, Away: c.Away, Live: c.Live, Hidden: hidden, Now: now}),
 		chat,
 		report.Source(),
 	}

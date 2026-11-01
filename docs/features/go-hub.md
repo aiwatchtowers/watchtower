@@ -77,6 +77,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
 | `hub recording claim --upload <id>` | `upload_id`, `audio_path`, `status` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
+| `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
 | `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
 
 `watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto]`
@@ -99,6 +100,8 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
 - `00005_recording_jobs` — the phone-recording job queue Desktop claims and finishes.
 - `00006_held_uploads` — held recording uploads (ids, first hold, outcome class), so the 7-day expiry and the
   switch-off failure survive a restart.
+- `00007_desktop_recordings` — `recording_jobs.phase` (`transcribing|diarizing|summarizing`) and `percent` (0–100,
+  transcribing only) of a claimed job, as Desktop reports them; no file name.
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -166,9 +169,15 @@ Recorded for the owner; each was a review ruling during phase 1.
    quota or an outdated protocol waits in `control_queue` and is retried each pass; only a record too large or a
    forbidden mailbox is dropped. The relay sim's rule 7a drops them; the entitlement case is revisited in phase 3
    (sim rule 16).
-3. **The phase 3 Desktop→hub inputs are deferred to phase 3**: the Desktop's Undo batch (sessions pending a PROJ-17
-   delete), `displayOver`, and the owner-write notice from the history actor. Until then the phone may show a session
-   that waits for an Undo on the Mac.
+3. **The Desktop→hub inputs arrive in phase 3.** Since plan 3 Task 5 the control socket takes `desktop_view`
+   (`hidden` — the sessions in the Desktop's PROJ-17 Undo batch, neither published nor alerted — and `display_over` —
+   the background counts the Desktop shows over, #411, published as Stopped), kept in memory only and ignored once the
+   Desktop heartbeat is stale (> 90 s); `recording_progress` (`upload`, `phase`, `percent`: the `recording_job` slice
+   then reads `transcribing` with its percent, `diarizing` or `summarizing`, as the Swift slice); and `desktop_watch`,
+   a stream of `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
+   device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines. The view carries
+   ids only, so a count is shown over for whatever report the row holds (the Swift slice also matched the run and the
+   report stamp it judged). The owner-write notice from the history actor is still pending (Task 9).
 4. **Test mode is a `hubtest-*` test workspace** (`WATCHTOWER_HUB_TEST_WORKSPACE`). Since phase 2 a headless host also
    runs the live mode (see "Phase 2 — headless hosts"); a desktop host gets the Go hub only in phase 3.
 5. **The refusing session port (test mode only).** In test mode, unless `WATCHTOWER_SESSION_HOST_SOCKET` is set, the hub
