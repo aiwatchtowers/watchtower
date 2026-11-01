@@ -427,21 +427,7 @@ func TestALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted(t *testing.T) {
 	var next *stubSession
 	var second DeliveredMsg
 	out := st.deliver(st.hub(), st.req("x"), func(context.Context) DeliverCheckReplyMsg {
-		_ = syscall.Kill(-st.info.Pid, syscall.SIGKILL)
-		ctl := dial(t, st.path)
-		deadline := time.Now().Add(ioTimeout)
-		for {
-			if l := ctl.list(); len(l) == 1 && l[0].Exited {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("the old run never exited")
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		ctl.send(Forget, AttachReq{Row: 1, Run: "r1"})
-		ctl.expect(Forgot)
-		next = launchStub(t, st.srv, st.path, 1, "claude", rawEchoAgent)
+		next = st.relaunch("claude")
 		second = next.deliver(next.hub(), next.req("y"), nil)
 		return okCheck(context.Background())
 	})

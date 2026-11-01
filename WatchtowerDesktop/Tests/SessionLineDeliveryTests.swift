@@ -12,18 +12,10 @@ private final class LineProbeSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
-    /// The center's owner-input callback; the owner's keys reach the
-    /// stand-in host first, as they reach the real one.
+    /// The center's owner-input callback (`FakeHostDelivery.ownerInputRelay`).
     private var centerOwnerInput: (([UInt8]) -> Void)?
     var onOwnerInput: (([UInt8]) -> Void)? {
-        get {
-            centerOwnerInput.map { forward in
-                { [weak self] bytes in
-                    self?.host.ownerInput(bytes)
-                    forward(bytes)
-                }
-            }
-        }
+        get { host.ownerInputRelay(to: centerOwnerInput) }
         set { centerOwnerInput = newValue }
     }
     var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?

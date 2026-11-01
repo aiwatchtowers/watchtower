@@ -113,6 +113,18 @@ final class FakeHostDelivery {
         return .submitted
     }
 
+    /// A fake process's `onOwnerInput`: the center's callback, with the
+    /// owner's keys reaching this host first, as they reach the real one.
+    /// nil while the center set none (a closed process reports no input).
+    func ownerInputRelay(to center: (([UInt8]) -> Void)?) -> (([UInt8]) -> Void)? {
+        center.map { forward in
+            { [weak self] bytes in
+                self?.ownerInput(bytes)
+                forward(bytes)
+            }
+        }
+    }
+
     private func leaveTyped(besideText: Bool) -> DeliverOutcome {
         leftTyped = true
         send(.leftTyped, besideText: besideText)
