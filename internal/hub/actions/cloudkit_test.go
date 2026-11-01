@@ -425,3 +425,57 @@ func TestSharedRelayZoneHellosGoToTheHelloLane(t *testing.T) {
 		t.Fatalf("the linked world's hello did not reach the lane: %v", got)
 	}
 }
+
+// With no phone linked the shared RelayZone is read for hellos only while
+// Config.HelloWanted says so (a code open, a link urgent).
+func TestTheHelloZoneIsReadOnlyWhileHellosAreWanted(t *testing.T) {
+	w := newWorld(t, kindShared)
+	var got []string
+	wanted := false
+	w.proc.cfg.Hello = func(_ context.Context, rec transport.Stored) error {
+		got = append(got, rec.Name)
+		return nil
+	}
+	w.proc.cfg.HelloWanted = func() bool { return wanted }
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM devices`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.phone.Hello(w.mailbox); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if len(got) != 0 {
+		t.Fatalf("hellos read while not wanted: %v", got)
+	}
+	wanted = true
+	w.pass()
+	if !slices.Equal(got, []string{w.phone.HelloName()}) {
+		t.Fatalf("hello lane saw %v", got)
+	}
+}
+
+// The daily hygiene ages out the shared RelayZone's stale hellos with no
+// phone linked, as the Swift hub did.
+func TestHygieneAgesOutHellosWithNoPhoneLinked(t *testing.T) {
+	w := newWorld(t, kindShared)
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM devices`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.phone.Hello(w.mailbox); err != nil {
+		t.Fatal(err)
+	}
+	w.advance(ActionMaxAge + time.Hour)
+	rep, err := w.proc.Hygiene(w.ctx)
+	if err != nil || !rep.Ran || rep.Deleted != 1 {
+		t.Fatalf("hygiene %+v, %v", rep, err)
+	}
+	if names := w.zoneNames(); len(names) != 0 {
+		t.Fatalf("left in the zone: %v", names)
+	}
+}

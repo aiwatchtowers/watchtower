@@ -7,7 +7,11 @@ package hub
 // the close after a confirm that linked, the RelayZone hellos and the
 // owner's Remove. Every share call goes through the transport's
 // transport.Shares (the CloudKit bridge); on a transport without it these
-// are no-ops and the hub behaves as on the hosted relay.
+// are no-ops and the hub behaves as on the hosted relay. No share call runs
+// on a control request's goroutine or under the supervisor's hubMu: the
+// owner's Remove and confirm are answered once their database change is
+// made, and their share calls follow on a goroutine of the hub's own, which
+// stop cancels and waits for.
 
 import (
 	"context"
@@ -16,7 +20,7 @@ import (
 	"time"
 
 	"watchtower/internal/hub/link"
-	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/transport"
 )
 
@@ -41,6 +45,23 @@ func cloudKitPassEvery(now, lastTouch time.Time, urgent bool) time.Duration {
 	return CloudKitIdlePass
 }
 
+// cloudKitPassDue: a pass is due at a tick at now when the cadence's
+// interval has run since the last pass, within half a tick — the ticks and
+// the pass stamps drift by milliseconds, and without the tolerance a 3 s
+// cadence on a 3 s ticker would pass every other tick.
+func cloudKitPassDue(now, lastPass, lastTouch time.Time, urgent bool) bool {
+	if lastPass.IsZero() {
+		return true
+	}
+	return now.Sub(lastPass) >= cloudKitPassEvery(now, lastTouch, urgent)-CloudKitActivePass/2
+}
+
+// realTicker is a real ticker as a channel and its stop.
+func realTicker(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(d)
+	return t.C, t.Stop
+}
+
 // shares is the transport's CloudKit linking surface; false on a transport
 // that has none (the hosted relay).
 func (h *hubRuntime) shares() (transport.Shares, bool) {
@@ -53,7 +74,7 @@ func (h *hubRuntime) shares() (transport.Shares, bool) {
 
 // passTickEvery is the worker's pass ticker: Options.passEvery on the hosted
 // relay (live events, a backstop only), CloudKitActivePass on CloudKit, where
-// each tick asks passDue whether the cadence wants a pass now.
+// each tick asks the cadence whether a pass is due.
 func (h *hubRuntime) passTickEvery() time.Duration {
 	if h.tr.Kind() == transport.KindCloudKit {
 		return CloudKitActivePass
@@ -62,14 +83,11 @@ func (h *hubRuntime) passTickEvery() time.Duration {
 }
 
 // passTick is one tick of the pass ticker (worker only): on CloudKit a pass
-// runs once the cadence's interval passed since the last one, elsewhere
-// every tick.
+// runs when the cadence has one due, elsewhere every tick.
 func (h *hubRuntime) passTick(ctx context.Context) {
-	if h.tr.Kind() == transport.KindCloudKit {
-		now := h.sup.o.Clock()
-		if !h.lastPass.IsZero() && now.Sub(h.lastPass) < cloudKitPassEvery(now, h.touched(), h.center.LinkUrgent()) {
-			return
-		}
+	if h.tr.Kind() == transport.KindCloudKit &&
+		!cloudKitPassDue(h.sup.o.Clock(), h.lastPass, h.touched(), h.center.LinkUrgent()) {
+		return
 	}
 	h.pass(ctx)
 }
@@ -102,9 +120,10 @@ func (h *hubRuntime) sweepShares(ctx context.Context) {
 }
 
 // cloudKitEvent handles the CloudKit bridge's own events; false for any
-// other event. PullNow (a silent push, or a reconnect that may have missed
-// pushes) runs a pass at once; AccountChanged closes the link the old
-// iCloud user opened.
+// other event. PullNow (a silent push, or the bridge's reconnect, after
+// which pushes may have been missed) is the relay's resync: what the phones
+// wait for goes out again, the link check runs, and a pass runs at once.
+// AccountChanged closes the link the old iCloud user opened.
 func (h *hubRuntime) cloudKitEvent(ctx context.Context, ev transport.Event) bool {
 	switch {
 	case ev.AccountChanged:
@@ -119,6 +138,8 @@ func (h *hubRuntime) cloudKitEvent(ctx context.Context, ev transport.Event) bool
 		return true
 	case ev.PullNow:
 		h.setUnreachable(false)
+		h.publishSoon(slices.UrgentKinds...)
+		h.kick(h.linkKick)
 		h.pass(ctx)
 		return true
 	}
@@ -140,31 +161,24 @@ func (h *hubRuntime) cloudKitHello(ctx context.Context, rec transport.Stored) er
 	return nil
 }
 
-// removePhone is the owner's Remove: on CloudKit RemoveCloudKit (the
-// phone's iCloud user leaves the shares at once), elsewhere Unlink. A
-// participant removal that failed once the phone was unlinked answers OK:
-// the sweep removes the participant later.
+// removePhone is the owner's Remove (link.Center.BeginRemove): the phone is
+// unlinked before the answer; on CloudKit its iCloud user then leaves the
+// shares in the background (a failure there is left to the sweep).
 func (h *hubRuntime) removePhone(device string) error {
-	s, ok := h.shares()
-	if !ok {
-		return h.center.Unlink(device)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
-	defer cancel()
-	err := h.center.RemoveCloudKit(ctx, s, device)
-	if err == nil || errors.Is(err, state.ErrNoDevice) {
+	finish, err := h.center.BeginRemove(context.Background(), device)
+	if err != nil {
 		return err
 	}
-	if _, linked, rerr := h.st.Device(device); rerr == nil && !linked {
-		log.Printf("hub: phone unlinked, its share participant left to the sweep (%s)", errClass(err))
-		return nil
+	if s, ok := h.shares(); ok {
+		h.inBackground(func(ctx context.Context) { finish(ctx, s) })
 	}
-	return err
+	return nil
 }
 
-// afterConfirm closes the CloudKit link once a confirm linked device
-// (CloseUsed): the public link closes now, the participants after the
-// answer grace.
+// afterConfirm closes the CloudKit link in the background once a confirm
+// linked device (CloseUsed): the public link closes now, the participants
+// after the answer grace. A failure keeps the sweep pending (retried by
+// SweepShares, and by the next start's restart close).
 func (h *hubRuntime) afterConfirm(device string) {
 	s, ok := h.shares()
 	if !ok {
@@ -173,9 +187,22 @@ func (h *hubRuntime) afterConfirm(device string) {
 	if _, linked, err := h.st.Device(device); err != nil || !linked {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
-	defer cancel()
-	if err := h.center.CloseLink(ctx, s, link.CloseUsed); err != nil {
-		log.Printf("hub: closing the link after a confirm failed (%s): retried", errClass(err))
-	}
+	h.inBackground(func(ctx context.Context) {
+		if err := h.center.CloseLink(ctx, s, link.CloseUsed); err != nil {
+			log.Printf("hub: closing the link after a confirm failed (%s): retried", errClass(err))
+		}
+	})
+}
+
+// inBackground runs fn on a goroutine of the hub's own, under its context
+// bounded by opTimeout: stop cancels it and waits for it. Called with the
+// supervisor's hubMu read-held (a control request), so stop has not begun.
+func (h *hubRuntime) inBackground(fn func(ctx context.Context)) {
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
+		defer cancel()
+		fn(ctx)
+	}()
 }

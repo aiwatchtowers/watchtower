@@ -171,10 +171,15 @@ func isHello(rec transport.Stored) bool {
 }
 
 // withHelloZone adds CloudKit's shared RelayZone, with no phone in it, when
-// hellos are taken (Config.Hello) and no linked phone put it in groups: the
-// first phone's hello is read before any phone is linked.
-func (p *Processor) withHelloZone(groups []zoneGroup) []zoneGroup {
-	if p.cfg.Hello == nil || p.cfg.Transport.Kind() != transport.KindCloudKit {
+// no linked phone put it in groups and hellos are wanted: for a pass while
+// the lane takes them (Config.Hello) and Config.HelloWanted says a code is
+// open or a link urgent; for the hygiene (always), so stale hellos age out
+// with no phone linked.
+func (p *Processor) withHelloZone(groups []zoneGroup, hygiene bool) []zoneGroup {
+	if p.cfg.Transport.Kind() != transport.KindCloudKit {
+		return groups
+	}
+	if !hygiene && (p.cfg.Hello == nil || (p.cfg.HelloWanted != nil && !p.cfg.HelloWanted())) {
 		return groups
 	}
 	sm, ok := p.cfg.Transport.(transport.SharedMailbox)
