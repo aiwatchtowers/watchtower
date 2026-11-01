@@ -81,6 +81,7 @@ var (
 	_ transport.Transport     = (*Client)(nil)
 	_ transport.SharedMailbox = (*Client)(nil)
 	_ transport.Shares        = (*Client)(nil)
+	_ transport.CloudUser     = (*Client)(nil)
 )
 
 // New returns a client of the bridge serving c.Dir/bridge.sock.
@@ -430,7 +431,8 @@ func (c *Client) fillOutcomes(resp *bridgepb.Response, index []int, zones []zone
 }
 
 func stored(zone string, r *bridgepb.Record) transport.Stored {
-	s := transport.Stored{Zone: zone, Name: r.GetName(), Envelope: r.GetEnvelope(), RecordSeq: r.GetTagSeq(), AttachmentID: r.GetAssetId()}
+	s := transport.Stored{Zone: zone, Name: r.GetName(), Envelope: r.GetEnvelope(), RecordSeq: r.GetTagSeq(),
+		AttachmentID: r.GetAssetId(), Creator: r.GetCreator()}
 	if ms := r.GetServerAtMs(); ms != 0 {
 		s.ServerAt = time.UnixMilli(ms).UTC()
 	}

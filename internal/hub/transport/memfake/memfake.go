@@ -212,6 +212,13 @@ func (f *Fake) AccountStateReads() int {
 // Write is the phone's side: it stores env under name in zone with no sealer
 // (the phone seals its own records), subject to expect and to SetAvailable.
 func (f *Fake) Write(zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error) {
+	return f.WriteAs("", zone, name, env, expect)
+}
+
+// WriteAs is Write by the iCloud user creator: the record reads back with
+// Stored.Creator set (CloudKit's record creator; a rewrite keeps the
+// record's first creator, as CloudKit does).
+func (f *Fake) WriteAs(creator, zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error) {
 	if err := checkExpect(expect); err != nil {
 		return transport.Outcome{}, err
 	}
@@ -221,7 +228,14 @@ func (f *Fake) Write(zone, name string, env []byte, expect transport.Expect) (tr
 		return transport.Outcome{}, transport.ErrUnavailable
 	}
 	f.frames = append(f.frames, bytes.Clone(env))
-	return f.put(zone, name, env, "", expect), nil
+	out := f.put(zone, name, env, "", expect)
+	if out.Saved {
+		rec := f.zone(zone).recs[name]
+		if rec.stored.Creator == "" {
+			rec.stored.Creator = creator
+		}
+	}
+	return out, nil
 }
 
 // WriteWithAsset is Write for a phone record that carries an attachment (a
@@ -427,9 +441,14 @@ func (f *Fake) put(zone, name string, env []byte, att string, expect transport.E
 	if f.kind == transport.KindCloudKit {
 		version = f.nextTag()
 	}
+	creator := ""
+	if cur != nil {
+		creator = cur.stored.Creator // a record keeps its first creator
+	}
 	z.recs[name] = &record{
 		change: z.counter,
-		stored: transport.Stored{Zone: zone, Name: name, Envelope: bytes.Clone(env), RecordSeq: version, ServerAt: f.clock(), AttachmentID: att},
+		stored: transport.Stored{Zone: zone, Name: name, Envelope: bytes.Clone(env), RecordSeq: version, ServerAt: f.clock(),
+			AttachmentID: att, Creator: creator},
 	}
 	f.emit(transport.Event{Zone: zone})
 	return transport.Outcome{Saved: true, RecordSeq: version}

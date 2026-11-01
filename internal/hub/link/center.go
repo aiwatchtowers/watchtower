@@ -105,11 +105,9 @@ type Config struct {
 	Clock   func() time.Time
 	Publish func(kinds ...string)
 	// CloudKit linking (cloudkit.go): the container the QR names (default
-	// CloudKitContainer), the Mac's iCloud user record name (nil or "" =
-	// unknown: IssueCloudKit refuses ErrOwnerUnknown) and the sweep's grace
-	// (zero = DefaultSweep).
+	// CloudKitContainer) and the sweep's grace (zero = DefaultSweep). The
+	// Mac's iCloud user comes from the bridge (transport.CloudUser).
 	Container string
-	OwnerUser func(context.Context) (string, error)
 	Sweep     Sweep
 }
 
@@ -151,7 +149,6 @@ type Center struct {
 	// (guarded by ck.mu) and the code an answering close retired, whose
 	// late hellos read that close's refusal (guarded by mu).
 	container string
-	ownerUser func(context.Context) (string, error)
 	sweep     Sweep
 	ck        ckState
 	retired   retiredCode
@@ -176,7 +173,7 @@ func NewCenter(c Config) *Center {
 		st: c.Store, keys: c.Keys, opener: c.Opener, host: c.Host, clock: c.Clock,
 		publish: c.Publish, events: make(chan PairEvent, eventBuffer),
 		sealer: secure.NewSealer(c.Keys), pairs: map[string]*pairSlot{},
-		container: c.Container, ownerUser: c.OwnerUser, sweep: c.Sweep,
+		container: c.Container, sweep: c.Sweep,
 	}
 }
 

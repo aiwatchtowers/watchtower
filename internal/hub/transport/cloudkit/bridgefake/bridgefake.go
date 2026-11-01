@@ -56,6 +56,7 @@ type Fake struct {
 	answers      [][]byte
 	hubID        string
 	account      transport.Account
+	ownerUser    string
 	publicLink   bool
 	participants map[string][]transport.Participant
 	fail         map[string][]string
@@ -197,7 +198,7 @@ func (f *Fake) SendError(class string) { f.broadcast(&bridgepb.Event{ErrorClass:
 
 // FailNext makes the next request of op ("save", "delete", "changes",
 // "download", "account_status", "ensure_shares", "set_public_link",
-// "participants", "remove_participants") fail with class.
+// "participants", "remove_participants", "owner_user") fail with class.
 func (f *Fake) FailNext(op, class string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -209,6 +210,13 @@ func (f *Fake) SetAccount(a transport.Account) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.account = a
+}
+
+// SetOwnerUser sets what OwnerUser answers (the Mac's iCloud user).
+func (f *Fake) SetOwnerUser(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ownerUser = name
 }
 
 // SetParticipants sets a zone's (CloudKit name) share participants.
@@ -266,6 +274,11 @@ func (p *PhoneRecords) zone(z string) string {
 // Write stores a phone's sealed record.
 func (p *PhoneRecords) Write(zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error) {
 	return p.f.Store().Write(p.zone(zone), name, env, expect)
+}
+
+// WriteAs stores a phone's sealed record created by the iCloud user creator.
+func (p *PhoneRecords) WriteAs(creator, zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error) {
+	return p.f.Store().WriteAs(creator, p.zone(zone), name, env, expect)
 }
 
 // WriteWithAsset stores a phone's sealed record with its sealed asset.
@@ -422,6 +435,10 @@ func (f *Fake) handle(c *fakeConn, req *bridgepb.Request) *bridgepb.Response {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		return &bridgepb.Response{Result: &bridgepb.Response_Account{Account: &bridgepb.Account{Status: string(f.account)}}}
+	case req.GetOwnerUser() != nil:
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return &bridgepb.Response{Result: &bridgepb.Response_OwnerUser{OwnerUser: &bridgepb.OwnerUserInfo{UserRecordName: f.ownerUser}}}
 	case req.GetEnsureShares() != nil:
 		hub := f.HubID()
 		return &bridgepb.Response{Result: &bridgepb.Response_Shares{Shares: &bridgepb.SharesInfo{
@@ -485,6 +502,8 @@ func opName(req *bridgepb.Request) string {
 		return "participants"
 	case req.GetRemoveParticipants() != nil:
 		return "remove_participants"
+	case req.GetOwnerUser() != nil:
+		return "owner_user"
 	}
 	return ""
 }
@@ -535,7 +554,7 @@ func outcomeOf(o transport.Outcome) *bridgepb.Outcome {
 }
 
 func recordOf(s transport.Stored) *bridgepb.Record {
-	r := &bridgepb.Record{Name: s.Name, Envelope: s.Envelope, TagSeq: s.RecordSeq, AssetId: s.AttachmentID}
+	r := &bridgepb.Record{Name: s.Name, Envelope: s.Envelope, TagSeq: s.RecordSeq, AssetId: s.AttachmentID, Creator: s.Creator}
 	if !s.ServerAt.IsZero() {
 		r.ServerAtMs = s.ServerAt.UnixMilli()
 	}

@@ -64,14 +64,22 @@ type SaveItem struct {
 // record's uploaded asset, or "". ServerAt is the transport's time of the
 // last write where it has one; on the hosted relay, which keeps none, it is
 // the writer's client_modified_at_ms, so a writer's skewed clock skews it —
-// never order records by it across writers.
+// never order records by it across writers. Creator is, on CloudKit, the
+// user record name of the iCloud user who created the record, as CloudKit
+// reports it (CurrentUserCreator for the Mac's own user); "" where the
+// transport gives none (the hosted relay, memfake by default).
 type Stored struct {
 	Zone, Name   string
 	Envelope     []byte
 	RecordSeq    uint64
 	ServerAt     time.Time
 	AttachmentID string
+	Creator      string
 }
+
+// CurrentUserCreator is CloudKit's creator name for the current user's own
+// records (CKCurrentUserDefaultName): on the Mac, the owner.
+const CurrentUserCreator = "__defaultOwner__"
 
 // Outcome is one item's result, in the order of the items. Saved is true when
 // the write (or delete) took effect, with the record's new RecordSeq (a
@@ -202,6 +210,12 @@ type Shares interface {
 	SetPublicLink(ctx context.Context, open bool) error
 	Participants(ctx context.Context, zone string) ([]Participant, error)
 	RemoveParticipants(ctx context.Context, zone string, userRecordNames []string) error
+}
+
+// CloudUser is the CloudKit bridge's iCloud user: the Mac's own user record
+// name (CKContainer.userRecordID), "" when the account has none yet.
+type CloudUser interface {
+	OwnerUser(ctx context.Context) (string, error)
 }
 
 // Participant is one participant of a zone share.

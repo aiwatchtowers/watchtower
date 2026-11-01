@@ -35,6 +35,7 @@ const ownerUser = "_owner-acme"
 type fakeShares struct {
 	mu       sync.Mutex
 	account  transport.Account
+	owner    string
 	open     bool
 	created  int
 	dataURL  string
@@ -46,7 +47,7 @@ type fakeShares struct {
 
 func newFakeShares() *fakeShares {
 	return &fakeShares{
-		account: transport.AccountAvailable, parts: map[string][]transport.Participant{}, failing: map[string]bool{},
+		account: transport.AccountAvailable, owner: ownerUser, parts: map[string][]transport.Participant{}, failing: map[string]bool{},
 		dataURL: "https://share.example.com/d", relayURL: "https://share.example.com/r",
 	}
 }
@@ -68,6 +69,15 @@ func (f *fakeShares) AccountStatus(context.Context) (transport.Account, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.account, nil
+}
+
+func (f *fakeShares) OwnerUser(context.Context) (string, error) {
+	if err := f.call("owner_user"); err != nil {
+		return "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.owner, nil
 }
 
 func (f *fakeShares) EnsureShares(context.Context) (string, string, error) {
@@ -159,8 +169,8 @@ func (f *fakeShares) takeCalls() []string {
 	return out
 }
 
-// ckRig is a rig whose center links over CloudKit: the Mac's user is
-// ownerUser, the grace is today's.
+// ckRig is a rig whose center links over CloudKit: the Mac's user (the
+// fake bridge's OwnerUser) is ownerUser, the grace is today's.
 type ckRig struct {
 	*rig
 	s   *fakeShares
@@ -179,10 +189,9 @@ func (r *rig) ckCenter(sw Sweep) *Center {
 		Store: r.st, Keys: r.kr, Opener: secure.NewOpener(r.kr, r.kr),
 		Host: HostInfo{Name: "acme-host", RelayDeviceID: testRelayID, RelayAuthPub: testRelayPub,
 			Transports: []string{wire.TransportCloudKit, wire.TransportRelay}},
-		Clock:     r.clock,
-		Publish:   func(...string) {},
-		OwnerUser: func(context.Context) (string, error) { return ownerUser, nil },
-		Sweep:     sw,
+		Clock:   r.clock,
+		Publish: func(...string) {},
+		Sweep:   sw,
 	})
 }
 
@@ -204,10 +213,26 @@ func sharedHello(user string) func(*wire.DeviceHello) {
 }
 
 // ckHello hands p's hello to the center as the RelayZone record the bridge
-// reads.
+// reads, created as a real phone's is: by the user it names (shared), by
+// the Mac's own user (private).
 func (r *ckRig) ckHello(p phone, nonce string, edit ...func(*wire.DeviceHello)) (Pending, error) {
 	r.t.Helper()
-	rec := transport.Stored{Zone: transport.SharedMailboxZone(testRelayID), Name: p.name(), Envelope: r.hello(p, nonce, edit...)}
+	h := wire.DeviceHello{Device: wire.DevicePayload{Scope: wire.ScopePrivate}}
+	for _, e := range edit {
+		e(&h)
+	}
+	creator := transport.CurrentUserCreator
+	if h.Device.Scope == wire.ScopeShared {
+		creator = h.Device.UserRecordName
+	}
+	return r.ckHelloAs(creator, p, nonce, edit...)
+}
+
+// ckHelloAs is ckHello for a record created by creator.
+func (r *ckRig) ckHelloAs(creator string, p phone, nonce string, edit ...func(*wire.DeviceHello)) (Pending, error) {
+	r.t.Helper()
+	rec := transport.Stored{Zone: transport.SharedMailboxZone(testRelayID), Name: p.name(), Envelope: r.hello(p, nonce, edit...),
+		Creator: creator}
 	return r.c.HandleCloudKitHello(r.ctx, r.s, rec)
 }
 
@@ -268,6 +293,7 @@ func TestIssueOnCloudKitOpensThePublicLinkAndCarriesShares(t *testing.T) {
 	r.c = r.ckCenter(DefaultSweep)
 	dir := bridgefake.Dir(t)
 	bridge := bridgefake.Serve(t, dir)
+	bridge.SetOwnerUser(ownerUser)
 	hub := r.kr.HubID().String()
 	client := cloudkit.New(cloudkit.Config{Dir: dir, HubID: hub, RelayID: testRelayID})
 	t.Cleanup(func() { _ = client.Close() })
@@ -341,11 +367,11 @@ func TestNoAccountRefusesToIssue(t *testing.T) {
 	}
 	// An unknown owner refuses too, before any share call.
 	r.s.account = transport.AccountAvailable
-	r.c.ownerUser = func(context.Context) (string, error) { return "", nil }
+	r.s.owner = ""
 	if _, _, err := r.c.IssueCloudKit(r.ctx, r.s); !errors.Is(err, ErrOwnerUnknown) {
 		t.Errorf("owner unknown: %v", err)
 	}
-	if calls := r.s.takeCalls(); !slices.Equal(calls, []string{"account_status"}) {
+	if calls := r.s.takeCalls(); !slices.Equal(calls, []string{"account_status", "owner_user"}) {
 		t.Errorf("calls %v", calls)
 	}
 }
@@ -506,7 +532,7 @@ func TestRemoveDropsTheParticipant(t *testing.T) {
 	if err := r.c.RemoveCloudKit(r.ctx, r.s, d.id.String()); err != nil {
 		t.Fatal(err)
 	}
-	if calls := r.s.takeCalls(); len(calls) != 0 {
+	if calls := r.s.takeCalls(); slices.ContainsFunc(calls, func(c string) bool { return c != "owner_user" }) {
 		t.Errorf("a private phone made share calls: %v", calls)
 	}
 }
@@ -606,6 +632,128 @@ func TestWrongCreatorGetsNoKeys(t *testing.T) {
 	kb := r.mustKeybox(a)
 	if !kb.Grant.Linked || kb.Keys == nil || kb.Grant.Scope != wire.ScopeShared || r.userOf(a) != "_colleague-a" {
 		t.Errorf("linked %+v user %q", kb.Grant, r.userOf(a))
+	}
+}
+
+// noAnswer asserts a dropped hello left nothing: no request, no grant (not
+// even a refusal), the code unused.
+func (r *ckRig) noAnswer(t *testing.T, err error, nonce string) {
+	t.Helper()
+	if !errors.Is(err, ErrHelloDropped) {
+		t.Errorf("err %v", err)
+	}
+	if ids := pendingIDs(t, r.c); len(ids) != 0 {
+		t.Errorf("pending %v", ids)
+	}
+	if grants, err := r.c.Grants(); err != nil || len(grants) != 0 {
+		t.Errorf("no grant, not even a refusal: %v %v", grants, err)
+	}
+	if r.codeUsedBy(nonce) != "" {
+		t.Error("the code stays usable for the owner's phone")
+	}
+}
+
+// testAPrivateDeviceRecordWrittenByAStrangerIsNotLinked: a stranger who
+// joined the public link cannot pass as a same-Apple-ID phone.
+func TestAStrangersPrivateHelloNeverWaits(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_stranger")
+	a := newPhone(t)
+	_, err := r.ckHelloAs("_stranger", a, code.Nonce)
+	r.noAnswer(t, err, code.Nonce)
+	// Claiming the owner's name in the payload changes nothing: the creator decides.
+	_, err = r.ckHelloAs("_stranger", a, code.Nonce, func(h *wire.DeviceHello) { h.Device.UserRecordName = ownerUser })
+	r.noAnswer(t, err, code.Nonce)
+	// With the owner unknown, a named creator cannot be checked: no answer either.
+	r.s.setFailing("owner_user")
+	_, err = r.ckHelloAs("_stranger", a, code.Nonce)
+	r.noAnswer(t, err, code.Nonce)
+}
+
+// The private creator check: the current-user name, the owner's own record
+// name or no creator pass, and the request is bound to the owner.
+func TestAPrivateHelloMustBeCreatedByTheOwner(t *testing.T) {
+	for _, creator := range []string{transport.CurrentUserCreator, ownerUser, ""} {
+		r := newCKRig(t)
+		code := r.issueCK()
+		a := newPhone(t)
+		got, err := r.ckHelloAs(creator, a, code.Nonce)
+		if err != nil || got.Code == "" {
+			t.Fatalf("creator %q: %+v %v", creator, got, err)
+		}
+		if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+			t.Fatal(err)
+		}
+		if r.userOf(a) != ownerUser {
+			t.Errorf("creator %q: user %q", creator, r.userOf(a))
+		}
+	}
+}
+
+// testASharedDeviceRecordFromAnotherCreatorIsRefusedWithNoGrant: a shared
+// hello must be created by the user it names, even when that user accepted
+// both shares.
+func TestASharedHelloFromAnotherCreatorGetsNoAnswer(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	r.s.join("_stranger")
+	a := newPhone(t)
+	for _, creator := range []string{"_stranger", transport.CurrentUserCreator, ""} {
+		_, err := r.ckHelloAs(creator, a, code.Nonce, sharedHello("_colleague-a"))
+		r.noAnswer(t, err, code.Nonce)
+	}
+	r.linkCK(a, code.Nonce, sharedHello("_colleague-a"))
+	if !r.linked(a) {
+		t.Error("the right creator links")
+	}
+}
+
+// The creator travels the real wire: a stranger's private hello written into
+// the bridge's RelayZone comes back from Changes with its creator and gets
+// no answer, while the owner's own hello waits.
+func TestTheBridgeCarriesTheCreatorToTheCheck(t *testing.T) {
+	r := &ckRig{rig: newRig(t), ctx: context.Background()}
+	r.c = r.ckCenter(DefaultSweep)
+	dir := bridgefake.Dir(t)
+	bridge := bridgefake.Serve(t, dir)
+	bridge.SetOwnerUser(ownerUser)
+	hub := r.kr.HubID().String()
+	client := cloudkit.New(cloudkit.Config{Dir: dir, HubID: hub, RelayID: testRelayID})
+	t.Cleanup(func() { _ = client.Close() })
+	code, _, err := r.c.IssueCloudKit(r.ctx, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phones := bridge.PhoneRecords(hub)
+	mbox := transport.SharedMailboxZone(testRelayID)
+	stranger, mine := newPhone(t), newPhone(t)
+	if _, err := phones.WriteAs("_stranger", mbox, stranger.name(), r.hello(stranger, code.Nonce), transport.Expect{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := phones.WriteAs(transport.CurrentUserCreator, mbox, mine.name(), r.hello(mine, code.Nonce), transport.Expect{}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := client.Changes(r.ctx, mbox, 0)
+	if err != nil || len(b.Changed) != 2 {
+		t.Fatalf("changes %+v %v", b, err)
+	}
+	for _, rec := range b.Changed {
+		got, err := r.c.HandleCloudKitHello(r.ctx, client, rec)
+		switch rec.Name {
+		case stranger.name():
+			if rec.Creator != "_stranger" || !errors.Is(err, ErrHelloDropped) {
+				t.Errorf("stranger: creator %q err %v", rec.Creator, err)
+			}
+		case mine.name():
+			if rec.Creator != transport.CurrentUserCreator || err != nil || got.Code == "" {
+				t.Errorf("owner's phone: creator %q %+v %v", rec.Creator, got, err)
+			}
+		}
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, []string{mine.id.String()}) {
+		t.Errorf("pending %v", ids)
 	}
 }
 
@@ -714,7 +862,7 @@ func TestAPrivatePhoneLinksWithoutAnyShareWhenSharingFails(t *testing.T) {
 	if err := r.c.CloseLink(r.ctx, r.s, CloseUsed); err != nil {
 		t.Fatal(err)
 	}
-	if calls := r.s.takeCalls(); !slices.Equal(calls, []string{"account_status", "ensure_shares"}) {
+	if calls := r.s.takeCalls(); !slices.Equal(calls, []string{"account_status", "owner_user", "ensure_shares", "owner_user"}) {
 		t.Errorf("no link opened, so none to close: %v", calls)
 	}
 }

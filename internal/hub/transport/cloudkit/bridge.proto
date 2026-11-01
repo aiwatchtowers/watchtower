@@ -43,6 +43,7 @@ message Request {
     SetPublicLink set_public_link = 9;
     Participants participants = 10;
     RemoveParticipants remove_participants = 11;
+    OwnerUser owner_user = 12;
   }
 }
 
@@ -125,6 +126,10 @@ message Participants {
   string zone = 1;
 }
 
+// OwnerUser answers OwnerUserInfo: the Mac's iCloud user record name
+// (CKContainer.userRecordID().recordName).
+message OwnerUser {}
+
 // RemoveParticipants answers Done.
 message RemoveParticipants {
   string zone = 1;
@@ -144,6 +149,7 @@ message Response {
     ParticipantList participants = 8;
     Failure failure = 9;
     Event event = 10;
+    OwnerUserInfo owner_user = 11;
   }
 }
 
@@ -154,14 +160,18 @@ message HelloOk {
 }
 
 // Record is a stored record: its name, envelope, tag_seq (the bridge's
-// number for its change tag), the server's modification time and its
-// asset's id, if any.
+// number for its change tag), the server's modification time, its asset's
+// id, if any, and its creator: the user record name of the iCloud user who
+// created it (CKRecord.creatorUserRecordID.recordName) as CloudKit reports
+// it — "__defaultOwner__" (CKCurrentUserDefaultName) for the Mac's own
+// user, "" when CloudKit gives none.
 message Record {
   string name = 1;
   bytes envelope = 2;
   uint64 tag_seq = 3;
   int64 server_at_ms = 4;
   string asset_id = 5;
+  string creator = 6;
 }
 
 // Outcome: saved with the new tag_seq; or not saved with refused_class set
@@ -189,6 +199,11 @@ message Batch {
 }
 
 message Done {}
+
+// OwnerUserInfo.user_record_name: "" when the account has no user yet.
+message OwnerUserInfo {
+  string user_record_name = 1;
+}
 
 // Account.status: available | no_account | restricted |
 // temporarily_unavailable | no_entitlement.

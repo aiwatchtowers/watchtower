@@ -79,6 +79,7 @@ func fixtureCases() []struct {
 		{"remove_participants", &pb.Request{Id: 12, Op: &pb.Request_RemoveParticipants{RemoveParticipants: &pb.RemoveParticipants{
 			Zone: relay, UserRecordNames: []string{"_user-a", "_user-é"},
 		}}}},
+		{"owner_user", &pb.Request{Id: 13, Op: &pb.Request_OwnerUser{OwnerUser: &pb.OwnerUser{}}}},
 		{"hello_ok", &pb.Response{Id: 1, Result: &pb.Response_Hello{Hello: &pb.HelloOk{Version: 1, Generation: gen}}}},
 		{"outcomes", &pb.Response{Id: 2, Result: &pb.Response_Outcomes{Outcomes: &pb.Outcomes{Items: []*pb.Outcome{
 			{Saved: true, TagSeq: big},
@@ -93,6 +94,14 @@ func fixtureCases() []struct {
 			},
 			Deleted: []string{"c-1", "c-2"}, NewSeq: 152, More: true, Generation: gen,
 		}}}},
+		{"batch_creators", &pb.Response{Id: 14, Result: &pb.Response_Batch{Batch: &pb.Batch{
+			Changed: []*pb.Record{
+				{Name: "hello-DEVICE-9", Envelope: env, TagSeq: 9, ServerAtMs: 1_800_000_002_000, Creator: "_user-é"},
+				{Name: "device-DEVICE-9", Envelope: env, TagSeq: big, Creator: "__defaultOwner__"},
+				{Name: "a-DEVICE-9-1", Envelope: env, TagSeq: 10},
+			},
+			NewSeq: 3, Generation: gen,
+		}}}},
 		{"batch_empty", &pb.Response{Id: 5, Result: &pb.Response_Batch{Batch: &pb.Batch{Generation: gen}}}},
 		{"done", &pb.Response{Id: 6, Result: &pb.Response_Done{Done: &pb.Done{}}}},
 		{"account", &pb.Response{Id: 7, Result: &pb.Response_Account{Account: &pb.Account{Status: "temporarily_unavailable"}}}},
@@ -102,6 +111,8 @@ func fixtureCases() []struct {
 		{"participant_list", &pb.Response{Id: 11, Result: &pb.Response_Participants{Participants: &pb.ParticipantList{Items: []*pb.Participant{
 			{UserRecordName: "_user-a", Accepted: true}, {UserRecordName: "_user-b"},
 		}}}}},
+		{"owner_user_info", &pb.Response{Id: 13, Result: &pb.Response_OwnerUser{OwnerUser: &pb.OwnerUserInfo{UserRecordName: "_owner-acme"}}}},
+		{"owner_user_info_empty", &pb.Response{Id: 13, Result: &pb.Response_OwnerUser{OwnerUser: &pb.OwnerUserInfo{}}}},
 		{"failure", &pb.Response{Id: 4, Result: &pb.Response_Failure{Failure: &pb.Failure{Class: "token_expired"}}}},
 		{"event_zone", &pb.Response{Result: &pb.Response_Event{Event: &pb.Event{Zone: relay}}}},
 		{"event_pull_now", &pb.Response{Result: &pb.Response_Event{Event: &pb.Event{PullNow: true}}}},

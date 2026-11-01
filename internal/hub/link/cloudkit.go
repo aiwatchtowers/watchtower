@@ -155,7 +155,8 @@ type retiredCode struct{ nonce, reason string }
 
 // IssueCloudKit makes a CloudKit QR code (the Swift issueCode): it refuses
 // without an available iCloud account (*AccountError, no share call) or the
-// Mac's user (ErrOwnerUnknown); creates the zone shares if missing, marks
+// Mac's user (ErrOwnerUnknown; read from s when it is a
+// transport.CloudUser, as the CloudKit client is); creates the zone shares if missing, marks
 // the sweep pending and opens their public link — a failure there leaves the
 // share URLs out (only a same-Apple-ID phone can link then); and stores the
 // code like Issue (v4, container, owner_user, data_share, relay_share,
@@ -176,7 +177,7 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 		log.Printf("hub link: iCloud account %s: no code", account)
 		return wire.LinkPayload{}, "", &AccountError{Account: account}
 	}
-	owner := c.owner(ctx)
+	owner := c.owner(ctx, s)
 	if owner == "" {
 		return wire.LinkPayload{}, "", ErrOwnerUnknown
 	}
@@ -194,12 +195,14 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	return p, url, nil
 }
 
-// owner is the Mac's iCloud user record name, "" when unknown.
-func (c *Center) owner(ctx context.Context) string {
-	if c.ownerUser == nil {
+// owner is the Mac's iCloud user record name from the bridge, "" when
+// unknown (s is no transport.CloudUser, or the lookup failed).
+func (c *Center) owner(ctx context.Context, s transport.Shares) string {
+	u, ok := s.(transport.CloudUser)
+	if !ok {
 		return ""
 	}
-	name, err := c.ownerUser(ctx)
+	name, err := bounded(ctx, u.OwnerUser)
 	if err != nil {
 		log.Printf("hub link: the Mac's iCloud user unreadable (%s)", shareErrorClass(err))
 		return ""
@@ -418,15 +421,17 @@ func (c *Center) sweepShares(ctx context.Context, s transport.Shares, reason Clo
 }
 
 // HandleCloudKitHello decides a hello read from the shared RelayZone (the
-// Swift handleHello): it opens and checks the hello as HandleHello does;
-// a shared-scope phone whose code is valid must name, in user_record_name,
-// a participant that accepted both shares — else it gets no answer at all
-// (no grant, not even a refusal; the code stays usable for the owner's
-// phone; a failed participant read the same); a private phone is the Mac's
-// own user, so its request is bound to the owner's user record name, never
-// to the name it sent. Refused codes are answered without a share call.
-// s is the Shares the participants are read from (a deviation from the
-// plan's signature, which had none: the center keeps no Shares).
+// Swift handleHello): it opens and checks the hello as HandleHello does,
+// then runs the creator check (creatorMatches) — a hello another iCloud
+// user wrote gets no answer at all (no grant, not even a refusal; the code
+// stays usable). A shared-scope phone whose code is valid must also name,
+// in user_record_name, a participant that accepted both shares (else no
+// answer; a failed participant read the same); a private phone is the
+// Mac's own user, so its request is bound to the owner's user record name,
+// never to the name it sent. Refused codes are answered without a share
+// call. s is the Shares the participants and the owner are read from (a
+// deviation from the plan's signature, which had none: the center keeps no
+// Shares).
 func (c *Center) HandleCloudKitHello(ctx context.Context, s transport.Shares, rec transport.Stored) (Pending, error) {
 	if c.host.RelayDeviceID == "" || rec.Zone != transport.SharedMailboxZone(c.host.RelayDeviceID) {
 		log.Printf("hub link: hello %s outside the hub's RelayZone: dropped", safeName(rec.Name))
@@ -437,8 +442,16 @@ func (c *Center) HandleCloudKitHello(ctx context.Context, s transport.Shares, re
 		return Pending{}, err
 	}
 	payload := opened.hello.Device
+	var owner string
 	if payload.Scope == wire.ScopePrivate {
-		return c.decideHello(opened, c.owner(ctx))
+		owner = c.owner(ctx, s)
+	}
+	if !creatorMatches(payload, rec.Creator, owner) {
+		log.Printf("hub link: hello %s not written by its phone's user: no answer", safeName(rec.Name))
+		return Pending{}, fmt.Errorf("%w: written by another iCloud user", ErrHelloDropped)
+	}
+	if payload.Scope == wire.ScopePrivate {
+		return c.decideHello(opened, owner)
 	}
 	valid, err := c.codeValidFor(opened)
 	if err != nil {
@@ -448,6 +461,21 @@ func (c *Center) HandleCloudKitHello(ctx context.Context, s transport.Shares, re
 		return Pending{}, fmt.Errorf("%w: the phone's user has not accepted both shares", ErrHelloDropped)
 	}
 	return c.decideHello(opened, payload.UserRecordName)
+}
+
+// creatorMatches is the Swift creatorMatches: a shared phone's record was
+// created by the phone's own user (the user_record_name it sent); a private
+// phone's by the Mac's user — the current-user name, the owner's own
+// record name, or no creator at all (a stranger on a share cannot pass as
+// a same-Apple-ID phone). owner is the Mac's user ("" = unknown).
+func creatorMatches(payload wire.DevicePayload, creator, owner string) bool {
+	if payload.Scope != wire.ScopePrivate {
+		return creator != "" && creator == payload.UserRecordName
+	}
+	if creator == "" || creator == transport.CurrentUserCreator {
+		return true
+	}
+	return owner != "" && creator == owner
 }
 
 // codeValidFor: the hello's code would let it wait now (decideHello decides

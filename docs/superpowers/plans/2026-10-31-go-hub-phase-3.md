@@ -310,6 +310,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Interfaces:**
 - Consumes: Task 4 `bridge.proto` + `frames.json`; Kit `CloudKitTransport` (CKSyncEngine, `TransportStore`, zones, `AskAlertSubscription` — the query subscription on `sig-` records, the only signal work the bridge does; signals arrive as ordinary `Save`/`Delete` frames —, push fetch), the share logic of today's `ShareService` (moved here), `InMemoryCloudTransport` for the contract test.
 - Produces: an `LSUIElement` app that serves `<hub dir>/bridge.sock` (path from `--socket`), mints a random `generation` when it creates `bridge.db` and persists it there (sent in `HelloOk` and every `Batch`; a `Changes` cursor or an `EXPECT_SEQ` tag of another generation is answered `token_expired`, never compared — Task 4 review round 1), checks the peer UID (`getpeereid`), answers every Task 4 frame, keeps `tag_seq`/`bridge_seq` in `BridgeTagMap` (GRDB, `<hub dir>/cloudkit/bridge.db`, ids and numbers only), conditional saves as `modifyRecords(savePolicy: .ifServerRecordUnchanged)` with the last known change tag (`expect: absent` = no tag; conflict answers carry the server copy's envelope), receives silent pushes and emits `Event{pull_now}`; exits when the socket peer closes for 60 s and the daemon does not reconnect.
+  - Creator and owner user (Task 12 amendment): every `Record` in `Batch.changed` and in a conflict carries `creator` = `CKRecord.creatorUserRecordID.recordName` as CloudKit reports it (`__defaultOwner__` for the Mac's own user, `""` when absent), and `OwnerUser` is answered `OwnerUserInfo{user_record_name}` from `CKContainer.userRecordID()` (`""` while the account has no user); pinned by the `frames.json` cases `batch_creators`, `owner_user`, `owner_user_info`, `owner_user_info_empty`.
 - **Depends on:** Task 4
 
 - [ ] **Step 1: Failing tests:** `testFramesFixture` (every `frames.json` case decodes and re-encodes byte-equal), `testSaveDeleteChangesOverAFakeTransport` (the spec §13 bridge contract test, fake `CloudSyncTransport`), `testConditionalSaveConflictReturnsServerCopy`, `testExpectAbsentRefusesAnExistingRecord`, `testTagSeqStableAcrossRestarts` (`BridgeTagMapTests`), `testPeerWithAnotherUIDIsClosed`, `testAssetPathOutsideTheHubDirIsRefused`, `testBridgeNeverOpensEnvelopes` (Review Focus 5: the target's dependency graph has no `EnvelopeOpener`/`HubKeyring`/key provider symbol — checked by a test that reflects over the linked module list of `CloudBridgeCore`, which links `WatchtowerSync` only), `testSilentPushEmitsPullNow`.
@@ -440,7 +441,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Test: `internal/hub/slices/cloudkit_test.go`, `internal/hub/runtime_test.go`
 
 **Interfaces:**
-- Consumes: Task 4 `Event.PullNow`; Task 11; Plan 1a's ask-alert signals as they are (`Sealer.Signal`, the publisher's `sig-` save/delete on `KindCloudKit`, tests `TestAskAlertSignalOnCloudKit`, `TestAskAlertHasNoSignalOnTheRelay`, `TestAskAlertSignalIsNeverCreatedTwice` in `internal/hub/slices/alert_signal_test.go`) — nothing to add for signals.
+- Consumes: Task 12 — the runtime calls `link.Center.CloseLink(ctx, client, link.CloseRestart)` once at start, `SweepShares(ctx, client)` on every relay pass and `CloseLink(ctx, client, link.CloseUsed)` after a confirm that linked, and routes RelayZone `hello-*` records to `HandleCloudKitHello(ctx, client, rec)`. Task 4 `Event.PullNow`; Task 11; Plan 1a's ask-alert signals as they are (`Sealer.Signal`, the publisher's `sig-` save/delete on `KindCloudKit`, tests `TestAskAlertSignalOnCloudKit`, `TestAskAlertHasNoSignalOnTheRelay`, `TestAskAlertSignalIsNeverCreatedTwice` in `internal/hub/slices/alert_signal_test.go`) — nothing to add for signals.
 - Produces:
   ```go
   const CloudKitActivePass, CloudKitIdlePass = 3 * time.Second, 30 * time.Second
@@ -585,7 +586,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Test: `internal/hub/resolve_desktop_test.go`, `cmd/hub_test.go`, `cmd/hub_recording_test.go`
 
 **Interfaces:**
-- Consumes: Phase 2 `hub.Resolve`/`Dir`/`Mode`/`hostkind.Detect`; Tasks 1, 4, 10, 13, 15, 16, 18; Plan 1b `sessionhost.Dial` (`ErrHostV1`).
+- Consumes: Task 12 — on a desktop host the runtime calls `link.Center.CloseLink(ctx, client, link.CloseRestart)` once at start, `SweepShares(ctx, client)` on every relay pass and `CloseLink(ctx, client, link.CloseUsed)` after a confirm that linked, and routes RelayZone `hello-*` records to `HandleCloudKitHello(ctx, client, rec)`. Phase 2 `hub.Resolve`/`Dir`/`Mode`/`hostkind.Detect`; Tasks 1, 4, 10, 13, 15, 16, 18; Plan 1b `sessionhost.Dial` (`ErrHostV1`).
 - Produces:
   ```go
   // Resolve on a desktop host (Phase 2 returned ModeOff/desktop_host):
