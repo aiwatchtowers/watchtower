@@ -403,19 +403,29 @@ final class AppState {
     /// The opt-in mobile hub (mobile POC spec §6.1): nil while
     /// `mobileSyncEnabled` is off. Rebuilt whenever `initWorkbenches` re-runs,
     /// because it holds the centers that function replaces.
-    private(set) var mobileHub: MobileHubService?
+    /// Set only by the hub build in `AppState+MobileHub.swift`.
+    var mobileHub: MobileHubService?
     /// Why the hub's storage could not be opened, for Settings → Mobile.
-    private(set) var mobileHubInitError: String?
+    var mobileHubInitError: String?
+    /// A newer Watchtower runs the phone hub (`MOVED`, spec §12.1): resolved
+    /// at launch and before every hub build or start (`resolveMobileHubMoved`),
+    /// never on a view read.
+    var isMobileHubMoved = false
     /// Where the toggle lives; tests pass a throwaway suite.
     @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
     /// The policy's `MobileSync` mode for the hub's background parts (#608).
     @ObservationIgnored let mobileSyncPolicy = MobileSyncPolicyBox()
-    @ObservationIgnored private var policyOffWipeDone = false
-    /// Opens the hub's transport and sidecar; tests pass a stub.
-    @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
+    @ObservationIgnored var policyOffWipeDone = false
+    /// Opens the hub's transport and sidecar; nil (the default) opens the
+    /// live storage in `mobileHubDirectory`. Tests pass a stub.
+    @ObservationIgnored var makeMobileHubStorage: (() throws -> MobileHubStorage)?
+    /// The Swift hub's directory: the live storage's, and where the
+    /// downgrade guard looks for `MOVED`. Under XCTest a fresh temporary
+    /// path (`MobileHubStorage.defaultDirectory`), never this Mac's own.
+    @ObservationIgnored var mobileHubDirectory: URL = MobileHubStorage.defaultDirectory()
     /// Built once per run and kept across hub rebuilds and toggles.
-    @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
-    @ObservationIgnored private(set) var mobileHubPool: DatabasePool?
+    @ObservationIgnored var mobileHubStorage: MobileHubStorage?
+    @ObservationIgnored var mobileHubPool: DatabasePool?
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
@@ -546,6 +556,7 @@ final class AppState {
         }
         managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
         managedPolicy.onRefresh = { [weak self] _ in self?.retryPolicyOffWipe() }
+        resolveMobileHubMoved()
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
@@ -1871,63 +1882,6 @@ final class AppState {
         let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: NotificationService.shared)
         planUsageCenter = center
         center.start()
-    }
-
-    private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
-
-    /// Tears down the previous hub and, while the toggle is on, builds and
-    /// starts a new one over the run's one transport and sidecar. Called at
-    /// the end of `initWorkbenches`. With the toggle off nothing is opened —
-    /// unless the organization's `MobileSync = off` must still wipe the
-    /// phone (`wipeHubForPolicyOff`).
-    func initMobileHub(dbPool: DatabasePool) {
-        let previous = mobileHub
-        previous?.dispose()
-        mobileHub = nil
-        mobileHubPool = dbPool
-        guard isMobileSyncEnabled else {
-            wipeHubForPolicyOff(dbPool: dbPool)
-            return
-        }
-        guard let hub = buildRunHub(dbPool: dbPool) else { return }
-        Task {
-            // The replaced hub's relay pass ends first: two never overlap.
-            await previous?.waitUntilStopped()
-            await hub.start()
-        }
-    }
-
-    /// `MobileSync = off` (#608) found the owner's toggle on and no hub
-    /// running (a profile installed while the app was quit): the hub is
-    /// built once and disabled, so what the phone held is removed. Once per
-    /// run; the toggle itself is kept.
-    func wipeHubForPolicyOff(dbPool: DatabasePool) {
-        guard mobileSyncPolicy.current == "off", mobileHub == nil, !policyOffWipeDone,
-              mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey),
-              let hub = buildRunHub(dbPool: dbPool) else { return }
-        policyOffWipeDone = true
-        hub.disable()
-    }
-
-    /// Builds the run's hub over its one storage (opened on first use) into
-    /// `mobileHub`; nil (the error kept) when it cannot be built.
-    private func buildRunHub(dbPool: DatabasePool) -> MobileHubService? {
-        do {
-            let storage = try mobileHubStorage ?? makeMobileHubStorage()
-            if mobileHubStorage == nil {
-                // Once per run, with the storage: CKSyncEngine learns of
-                // remote changes from pushes (the relay poll is the backstop).
-                storage.registerForPushes?()
-            }
-            mobileHubStorage = storage
-            mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
-            mobileHubInitError = nil
-            return mobileHub
-        } catch {
-            mobileHubInitError = error.localizedDescription
-            Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
     }
 
     /// The presence center and the question escalator for a rebuilt
