@@ -13,13 +13,13 @@ import (
 
 // AccountStatus implements transport.Shares.
 func (c *Client) AccountStatus(ctx context.Context) (transport.Account, error) {
-	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_AccountStatus{AccountStatus: &bridgepb.AccountStatus{}}})
+	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_AccountStatus{AccountStatus: &bridgepb.AccountStatus{}}}, false)
 	if err != nil {
 		return "", fmt.Errorf("cloudkit: account status: %w", err)
 	}
 	a := resp.GetAccount()
 	if a == nil {
-		return "", errUnexpected
+		return "", fmt.Errorf("cloudkit: account status: %w", errUnexpected)
 	}
 	switch s := transport.Account(a.GetStatus()); s {
 	case transport.AccountAvailable, transport.AccountNoAccount, transport.AccountRestricted,
@@ -31,7 +31,7 @@ func (c *Client) AccountStatus(ctx context.Context) (transport.Account, error) {
 
 // EnsureShares implements transport.Shares.
 func (c *Client) EnsureShares(ctx context.Context) (dataURL, relayURL string, err error) {
-	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_EnsureShares{EnsureShares: &bridgepb.EnsureShares{}}})
+	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_EnsureShares{EnsureShares: &bridgepb.EnsureShares{}}}, false)
 	if err != nil {
 		return "", "", fmt.Errorf("cloudkit: ensure shares: %w", err)
 	}
@@ -44,25 +44,25 @@ func (c *Client) EnsureShares(ctx context.Context) (dataURL, relayURL string, er
 
 // SetPublicLink implements transport.Shares.
 func (c *Client) SetPublicLink(ctx context.Context, open bool) error {
-	if err := c.done0(ctx, &bridgepb.Request{Op: &bridgepb.Request_SetPublicLink{SetPublicLink: &bridgepb.SetPublicLink{Open: open}}}); err != nil {
+	if err := c.done0(ctx, &bridgepb.Request{Op: &bridgepb.Request_SetPublicLink{SetPublicLink: &bridgepb.SetPublicLink{Open: open}}}, false); err != nil {
 		return fmt.Errorf("cloudkit: public link: %w", err)
 	}
 	return nil
 }
 
-// Participants implements transport.Shares.
-func (c *Client) Participants(ctx context.Context, zone string) ([]transport.Participant, error) {
-	ckZone, err := zoneName(c.c.HubID, zone)
+// Participants implements transport.Shares; zone is a runtime zone name.
+func (c *Client) Participants(ctx context.Context, zoneName string) ([]transport.Participant, error) {
+	z, err := c.zone(zoneName)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_Participants{Participants: &bridgepb.Participants{Zone: ckZone}}})
+	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_Participants{Participants: &bridgepb.Participants{Zone: z.ck}}}, z.mailbox)
 	if err != nil {
 		return nil, fmt.Errorf("cloudkit: participants: %w", err)
 	}
 	l := resp.GetParticipants()
 	if l == nil {
-		return nil, errUnexpected
+		return nil, fmt.Errorf("cloudkit: participants: %w", errUnexpected)
 	}
 	out := make([]transport.Participant, 0, len(l.GetItems()))
 	for _, p := range l.GetItems() {
@@ -71,23 +71,24 @@ func (c *Client) Participants(ctx context.Context, zone string) ([]transport.Par
 	return out, nil
 }
 
-// RemoveParticipants implements transport.Shares.
-func (c *Client) RemoveParticipants(ctx context.Context, zone string, userRecordNames []string) error {
-	ckZone, err := zoneName(c.c.HubID, zone)
+// RemoveParticipants implements transport.Shares; zone is a runtime zone
+// name.
+func (c *Client) RemoveParticipants(ctx context.Context, zoneName string, userRecordNames []string) error {
+	z, err := c.zone(zoneName)
 	if err != nil {
 		return err
 	}
 	if err := c.done0(ctx, &bridgepb.Request{Op: &bridgepb.Request_RemoveParticipants{RemoveParticipants: &bridgepb.RemoveParticipants{
-		Zone: ckZone, UserRecordNames: userRecordNames,
-	}}}); err != nil {
+		Zone: z.ck, UserRecordNames: userRecordNames,
+	}}}, z.mailbox); err != nil {
 		return fmt.Errorf("cloudkit: remove participants: %w", err)
 	}
 	return nil
 }
 
 // done0 sends req and expects Done.
-func (c *Client) done0(ctx context.Context, req *bridgepb.Request) error {
-	resp, err := c.do(ctx, req)
+func (c *Client) done0(ctx context.Context, req *bridgepb.Request, mailbox bool) error {
+	resp, err := c.do(ctx, req, mailbox)
 	if err != nil {
 		return err
 	}

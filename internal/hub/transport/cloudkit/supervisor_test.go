@@ -5,7 +5,10 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -144,5 +147,39 @@ func TestSupervisorStopsTheBridgeWithItsContext(t *testing.T) {
 func TestSupervisorWithoutLauncher(t *testing.T) {
 	if err := cloudkit.NewSupervisor(cloudkit.Config{}).Run(context.Background()); err == nil {
 		t.Fatal("ran without a launcher")
+	}
+}
+
+// TestSupervisorStopsTheWholeProcessGroup: stopping signals the bridge's
+// process group, so a helper the bridge started goes with it.
+func TestSupervisorStopsTheWholeProcessGroup(t *testing.T) {
+	st := newStubs(t)
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	s := cloudkit.NewSupervisor(cloudkit.Config{Launch: func(context.Context) (*os.Process, error) {
+		return st.start("sleep 30 & echo $! > '" + pidFile + "'; wait")
+	}})
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	var child int
+	deadline := time.Now().Add(10 * time.Second)
+	for child == 0 {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			child, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the bridge's helper did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	for syscall.Kill(child, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the bridge's helper outlived the stop")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

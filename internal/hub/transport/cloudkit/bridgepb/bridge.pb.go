@@ -15,7 +15,11 @@
 // opened frame, and no asset bytes (assets travel as paths under the hub
 // dir). CloudKit change tags never cross it either: the bridge maps each
 // record's change tag to a tag_seq and each zone's change feed to a cursor,
-// both opaque numbers it keeps in its own state.
+// both opaque numbers it keeps in its own state (bridge.db). That state has a
+// generation: a random id the bridge mints when it creates bridge.db and
+// persists with it. Every tag_seq and cursor belongs to one generation; the
+// bridge refuses a cursor or a tag of another one (token_expired), and the
+// client never compares numbers across generations.
 //
 // Regenerate bridgepb/bridge.pb.go from this directory with buf and
 // protoc-gen-go v1.36.12 (paths=source_relative, out bridgepb).
@@ -364,11 +368,13 @@ func (x *Hello) GetHubId() string {
 	return ""
 }
 
-// Expect is a precondition; tag_seq is read only with EXPECT_SEQ.
+// Expect is a precondition; tag_seq (with the generation it was issued in)
+// is read only with EXPECT_SEQ.
 type Expect struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Mode          ExpectMode             `protobuf:"varint,1,opt,name=mode,proto3,enum=watchtower.bridge.v1.ExpectMode" json:"mode,omitempty"`
 	TagSeq        uint64                 `protobuf:"varint,2,opt,name=tag_seq,json=tagSeq,proto3" json:"tag_seq,omitempty"`
+	Generation    string                 `protobuf:"bytes,3,opt,name=generation,proto3" json:"generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -415,6 +421,13 @@ func (x *Expect) GetTagSeq() uint64 {
 		return x.TagSeq
 	}
 	return 0
+}
+
+func (x *Expect) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
 }
 
 // SaveItem is one record to save. asset_path is a sealed file under
@@ -646,11 +659,13 @@ func (x *Delete) GetItems() []*DeleteItem {
 }
 
 // Changes answers one Batch of zone's changes after the cursor since
-// (0 = from the start), or Failure "token_expired".
+// (0 = from the start) of generation, or Failure "token_expired" (a cursor
+// the bridge no longer keeps, or one of another generation).
 type Changes struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Zone          string                 `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
 	Since         uint64                 `protobuf:"varint,2,opt,name=since,proto3" json:"since,omitempty"`
+	Generation    string                 `protobuf:"bytes,3,opt,name=generation,proto3" json:"generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -697,6 +712,13 @@ func (x *Changes) GetSince() uint64 {
 		return x.Since
 	}
 	return 0
+}
+
+func (x *Changes) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
 }
 
 // Download writes a record's asset to dst, a path under
@@ -1181,9 +1203,11 @@ func (*Response_Failure) isResponse_Result() {}
 
 func (*Response_Event) isResponse_Result() {}
 
+// HelloOk carries the bridge's generation (see above).
 type HelloOk struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Generation    string                 `protobuf:"bytes,2,opt,name=generation,proto3" json:"generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1223,6 +1247,13 @@ func (x *HelloOk) GetVersion() uint32 {
 		return x.Version
 	}
 	return 0
+}
+
+func (x *HelloOk) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
 }
 
 // Record is a stored record: its name, envelope, tag_seq (the bridge's
@@ -1419,13 +1450,15 @@ func (x *Outcomes) GetItems() []*Outcome {
 	return nil
 }
 
-// Batch is one page of changes in change order; new_seq is the next cursor.
+// Batch is one page of changes in change order; new_seq is the next cursor
+// and generation the one its cursor and tag_seq values belong to.
 type Batch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Changed       []*Record              `protobuf:"bytes,1,rep,name=changed,proto3" json:"changed,omitempty"`
 	Deleted       []string               `protobuf:"bytes,2,rep,name=deleted,proto3" json:"deleted,omitempty"`
 	NewSeq        uint64                 `protobuf:"varint,3,opt,name=new_seq,json=newSeq,proto3" json:"new_seq,omitempty"`
 	More          bool                   `protobuf:"varint,4,opt,name=more,proto3" json:"more,omitempty"`
+	Generation    string                 `protobuf:"bytes,5,opt,name=generation,proto3" json:"generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1486,6 +1519,13 @@ func (x *Batch) GetMore() bool {
 		return x.More
 	}
 	return false
+}
+
+func (x *Batch) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
 }
 
 type Done struct {
@@ -1848,10 +1888,13 @@ const file_bridge_proto_rawDesc = "" +
 	"\x02op\"8\n" +
 	"\x05Hello\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x15\n" +
-	"\x06hub_id\x18\x02 \x01(\tR\x05hubId\"W\n" +
+	"\x06hub_id\x18\x02 \x01(\tR\x05hubId\"w\n" +
 	"\x06Expect\x124\n" +
 	"\x04mode\x18\x01 \x01(\x0e2 .watchtower.bridge.v1.ExpectModeR\x04mode\x12\x17\n" +
-	"\atag_seq\x18\x02 \x01(\x04R\x06tagSeq\"\xa3\x01\n" +
+	"\atag_seq\x18\x02 \x01(\x04R\x06tagSeq\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\tR\n" +
+	"generation\"\xa3\x01\n" +
 	"\bSaveItem\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -1867,10 +1910,13 @@ const file_bridge_proto_rawDesc = "" +
 	"\x06expect\x18\x02 \x01(\v2\x1c.watchtower.bridge.v1.ExpectR\x06expect\"T\n" +
 	"\x06Delete\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x126\n" +
-	"\x05items\x18\x02 \x03(\v2 .watchtower.bridge.v1.DeleteItemR\x05items\"3\n" +
+	"\x05items\x18\x02 \x03(\v2 .watchtower.bridge.v1.DeleteItemR\x05items\"S\n" +
 	"\aChanges\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12\x14\n" +
-	"\x05since\x18\x02 \x01(\x04R\x05since\"K\n" +
+	"\x05since\x18\x02 \x01(\x04R\x05since\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\tR\n" +
+	"generation\"K\n" +
 	"\bDownload\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12\x19\n" +
 	"\basset_id\x18\x02 \x01(\tR\aassetId\x12\x10\n" +
@@ -1896,9 +1942,12 @@ const file_bridge_proto_rawDesc = "" +
 	"\afailure\x18\t \x01(\v2\x1d.watchtower.bridge.v1.FailureH\x00R\afailure\x123\n" +
 	"\x05event\x18\n" +
 	" \x01(\v2\x1b.watchtower.bridge.v1.EventH\x00R\x05eventB\b\n" +
-	"\x06result\"#\n" +
+	"\x06result\"C\n" +
 	"\aHelloOk\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\rR\aversion\"\x8e\x01\n" +
+	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\tR\n" +
+	"generation\"\x8e\x01\n" +
 	"\x06Record\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\benvelope\x18\x02 \x01(\fR\benvelope\x12\x17\n" +
@@ -1912,12 +1961,15 @@ const file_bridge_proto_rawDesc = "" +
 	"\bconflict\x18\x03 \x01(\v2\x1c.watchtower.bridge.v1.RecordR\bconflict\x12#\n" +
 	"\rrefused_class\x18\x04 \x01(\tR\frefusedClass\"?\n" +
 	"\bOutcomes\x123\n" +
-	"\x05items\x18\x01 \x03(\v2\x1d.watchtower.bridge.v1.OutcomeR\x05items\"\x86\x01\n" +
+	"\x05items\x18\x01 \x03(\v2\x1d.watchtower.bridge.v1.OutcomeR\x05items\"\xa6\x01\n" +
 	"\x05Batch\x126\n" +
 	"\achanged\x18\x01 \x03(\v2\x1c.watchtower.bridge.v1.RecordR\achanged\x12\x18\n" +
 	"\adeleted\x18\x02 \x03(\tR\adeleted\x12\x17\n" +
 	"\anew_seq\x18\x03 \x01(\x04R\x06newSeq\x12\x12\n" +
-	"\x04more\x18\x04 \x01(\bR\x04more\"\x06\n" +
+	"\x04more\x18\x04 \x01(\bR\x04more\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x05 \x01(\tR\n" +
+	"generation\"\x06\n" +
 	"\x04Done\"!\n" +
 	"\aAccount\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\"D\n" +

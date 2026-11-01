@@ -52,6 +52,7 @@ import (
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit"
 	"watchtower/internal/policy"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
@@ -630,7 +631,8 @@ func errClass(err error) string {
 		{transport.ErrTokenExpired, "token_expired"}, {transport.ErrUnsupportedVersion, "unsupported_version"},
 		{identity.ErrSealedKeyUnreadable, "sealed_key_unreadable"}, {identity.ErrInsecureMode, "insecure_mode"},
 		{identity.ErrKeysUnavailable, "keys_unavailable"}, {state.ErrNoDevice, "no_device"},
-		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"},
+		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"}, {cloudkit.ErrBridgeRefused, "bridge_refused"},
+		{transport.ErrUnsupportedZone, "unsupported_zone"},
 	} {
 		if errors.Is(err, c.err) {
 			return c.class

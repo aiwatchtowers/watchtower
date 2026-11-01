@@ -11,6 +11,8 @@ package bridgefake
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
@@ -41,12 +43,14 @@ type Fake struct {
 	dir     string
 	version uint32
 	clock   func() time.Time
-	store   *memfake.Fake
 	l       *net.UnixListener
 	wg      sync.WaitGroup
 	stop    chan struct{}
 
 	mu           sync.Mutex
+	store        *memfake.Fake
+	gen          string
+	reset        chan struct{}
 	conns        map[*fakeConn]bool
 	frames       [][]byte
 	answers      [][]byte
@@ -83,7 +87,7 @@ func Serve(t testing.TB, dir string, opts ...Option) *Fake {
 	f := &Fake{
 		t: t, dir: dir, version: cloudkit.ProtocolVersion, clock: time.Now, account: transport.AccountAvailable,
 		conns: map[*fakeConn]bool{}, participants: map[string][]transport.Participant{}, fail: map[string][]string{},
-		stop: make(chan struct{}),
+		stop: make(chan struct{}), reset: make(chan struct{}, 1), gen: newGeneration(t),
 	}
 	for _, o := range opts {
 		o(f)
@@ -120,7 +124,41 @@ func (f *Fake) Close() {
 }
 
 // Store is the record store behind the bridge, by CloudKit zone names.
-func (f *Fake) Store() *memfake.Fake { return f.store }
+func (f *Fake) Store() *memfake.Fake {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.store
+}
+
+// Generation is the bridge's generation (the id its bridge.db was minted
+// with).
+func (f *Fake) Generation() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gen
+}
+
+// LoseState is the bridge's bridge.db lost: an empty store whose cursors
+// and tags restart, a new generation, every connection dropped.
+func (f *Fake) LoseState() {
+	f.mu.Lock()
+	f.store = memfake.New(transport.KindCloudKit, f.clock)
+	f.gen = newGeneration(f.t)
+	f.mu.Unlock()
+	select {
+	case f.reset <- struct{}{}:
+	default:
+	}
+	f.DropConnections()
+}
+
+func newGeneration(t testing.TB) string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // Frames is a copy of every frame's message bytes the bridge received, in
 // order (the Go side's writes, Hello included).
@@ -206,12 +244,12 @@ func (f *Fake) DropConnections() {
 // PhoneRecords is a phone's view of the store by hub zone names (data/<x>
 // → DataZone-<hubID>, relay/<x>/<y> → RelayZone-<hubID>), for hubtest.Phone.
 func (f *Fake) PhoneRecords(hubID string) *PhoneRecords {
-	return &PhoneRecords{f: f.store, hub: hubID}
+	return &PhoneRecords{f: f, hub: hubID}
 }
 
 // PhoneRecords is a phone writing into and reading the fake's store.
 type PhoneRecords struct {
-	f   *memfake.Fake
+	f   *Fake
 	hub string
 }
 
@@ -227,22 +265,22 @@ func (p *PhoneRecords) zone(z string) string {
 
 // Write stores a phone's sealed record.
 func (p *PhoneRecords) Write(zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error) {
-	return p.f.Write(p.zone(zone), name, env, expect)
+	return p.f.Store().Write(p.zone(zone), name, env, expect)
 }
 
 // WriteWithAsset stores a phone's sealed record with its sealed asset.
 func (p *PhoneRecords) WriteWithAsset(zone, name string, env, asset []byte, expect transport.Expect) (transport.Outcome, error) {
-	return p.f.WriteWithAsset(p.zone(zone), name, env, asset, expect)
+	return p.f.Store().WriteWithAsset(p.zone(zone), name, env, asset, expect)
 }
 
 // Changes reads a zone's changes.
 func (p *PhoneRecords) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
-	return p.f.Changes(ctx, p.zone(zone), since)
+	return p.f.Store().Changes(ctx, p.zone(zone), since)
 }
 
 // Delete deletes a phone's records.
 func (p *PhoneRecords) Delete(ctx context.Context, zone string, items []transport.DeleteItem) ([]transport.Outcome, error) {
-	return p.f.Delete(ctx, p.zone(zone), items)
+	return p.f.Store().Delete(ctx, p.zone(zone), items)
 }
 
 func (f *Fake) accept() {
@@ -319,10 +357,12 @@ func (f *Fake) broadcast(ev *bridgepb.Event) {
 func (f *Fake) forwardEvents() {
 	defer f.wg.Done()
 	for {
+		st := f.Store()
 		select {
 		case <-f.stop:
 			return
-		case ev := <-f.store.Events():
+		case <-f.reset:
+		case ev := <-st.Events():
 			if ev.Zone != "" {
 				f.broadcast(&bridgepb.Event{Zone: ev.Zone})
 			}
@@ -356,7 +396,7 @@ func (f *Fake) handle(c *fakeConn, req *bridgepb.Request) *bridgepb.Response {
 		f.mu.Lock()
 		f.hubID, c.hello = h.GetHubId(), true
 		f.mu.Unlock()
-		return &bridgepb.Response{Result: &bridgepb.Response_Hello{Hello: &bridgepb.HelloOk{Version: f.version}}}
+		return &bridgepb.Response{Result: &bridgepb.Response_Hello{Hello: &bridgepb.HelloOk{Version: f.version, Generation: f.Generation()}}}
 	}
 	f.mu.Lock()
 	hello := c.hello
@@ -470,6 +510,11 @@ func (f *Fake) under(sub, p string) bool {
 	return err == nil && !strings.HasPrefix(rel, "..")
 }
 
+// staleTag: a tag of another generation (the bridge never compares it).
+func (f *Fake) staleTag(e *bridgepb.Expect) bool {
+	return e.GetMode() == bridgepb.ExpectMode_EXPECT_SEQ && e.GetGeneration() != f.Generation()
+}
+
 func expectOf(e *bridgepb.Expect) transport.Expect {
 	switch e.GetMode() {
 	case bridgepb.ExpectMode_EXPECT_ABSENT:
@@ -524,14 +569,18 @@ func (f *Fake) save(s *bridgepb.Save) *bridgepb.Response {
 			o   transport.Outcome
 			err error
 		)
+		if f.staleTag(it.GetExpect()) {
+			res.Items = append(res.Items, &bridgepb.Outcome{RefusedClass: "token_expired"})
+			continue
+		}
 		if p := it.GetAssetPath(); p != "" {
 			b, rerr := os.ReadFile(p)
 			if rerr != nil {
 				return failure("bad_request")
 			}
-			o, err = f.store.WriteWithAsset(it.GetZone(), it.GetName(), it.GetEnvelope(), b, expectOf(it.GetExpect()))
+			o, err = f.Store().WriteWithAsset(it.GetZone(), it.GetName(), it.GetEnvelope(), b, expectOf(it.GetExpect()))
 		} else {
-			o, err = f.store.Write(it.GetZone(), it.GetName(), it.GetEnvelope(), expectOf(it.GetExpect()))
+			o, err = f.Store().Write(it.GetZone(), it.GetName(), it.GetEnvelope(), expectOf(it.GetExpect()))
 		}
 		if err != nil {
 			return failure(errorClass(err))
@@ -545,17 +594,17 @@ func (f *Fake) delete(ctx context.Context, d *bridgepb.Delete) *bridgepb.Respons
 	if !f.ownZone(d.GetZone()) {
 		return failure("unsupported_zone")
 	}
-	items := make([]transport.DeleteItem, 0, len(d.GetItems()))
-	for _, it := range d.GetItems() {
-		items = append(items, transport.DeleteItem{Name: it.GetName(), Expect: expectOf(it.GetExpect())})
-	}
-	out, err := f.store.Delete(ctx, d.GetZone(), items)
-	if err != nil {
-		return failure(errorClass(err))
-	}
 	res := &bridgepb.Outcomes{}
-	for _, o := range out {
-		res.Items = append(res.Items, outcomeOf(o))
+	for _, it := range d.GetItems() {
+		if f.staleTag(it.GetExpect()) {
+			res.Items = append(res.Items, &bridgepb.Outcome{RefusedClass: "token_expired"})
+			continue
+		}
+		out, err := f.Store().Delete(ctx, d.GetZone(), []transport.DeleteItem{{Name: it.GetName(), Expect: expectOf(it.GetExpect())}})
+		if err != nil {
+			return failure(errorClass(err))
+		}
+		res.Items = append(res.Items, outcomeOf(out[0]))
 	}
 	return &bridgepb.Response{Result: &bridgepb.Response_Outcomes{Outcomes: res}}
 }
@@ -564,11 +613,15 @@ func (f *Fake) changes(ctx context.Context, c *bridgepb.Changes) *bridgepb.Respo
 	if !f.ownZone(c.GetZone()) {
 		return failure("unsupported_zone")
 	}
-	b, err := f.store.Changes(ctx, c.GetZone(), c.GetSince())
+	gen := f.Generation()
+	if c.GetSince() != 0 && c.GetGeneration() != gen {
+		return failure("token_expired")
+	}
+	b, err := f.Store().Changes(ctx, c.GetZone(), c.GetSince())
 	if err != nil {
 		return failure(errorClass(err))
 	}
-	out := &bridgepb.Batch{Deleted: b.Deleted, NewSeq: b.NewSeq, More: b.More}
+	out := &bridgepb.Batch{Deleted: b.Deleted, NewSeq: b.NewSeq, More: b.More, Generation: gen}
 	for _, s := range b.Changed {
 		out.Changed = append(out.Changed, recordOf(s))
 	}
@@ -582,7 +635,7 @@ func (f *Fake) download(ctx context.Context, d *bridgepb.Download) *bridgepb.Res
 	if !f.under(cloudkit.DownloadsDirName, d.GetDst()) {
 		return failure("forbidden")
 	}
-	if err := f.store.Download(ctx, d.GetZone(), d.GetAssetId(), d.GetDst()); err != nil {
+	if err := f.Store().Download(ctx, d.GetZone(), d.GetAssetId(), d.GetDst()); err != nil {
 		return failure(errorClass(err))
 	}
 	return done()

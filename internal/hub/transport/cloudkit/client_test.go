@@ -23,7 +23,11 @@ import (
 	pb "watchtower/internal/hub/transport/cloudkit/bridgepb"
 )
 
-const dataZone = "data/acme"
+const (
+	relayID  = "acmehub"
+	dataZone = "data/" + relayID
+	mailbox  = "relay/" + relayID + "/phone"
+)
 
 type rig struct {
 	t      *testing.T
@@ -61,7 +65,7 @@ func newRig(t *testing.T, opts ...bridgefake.Option) *rig {
 	t.Cleanup(cancel)
 	r := &rig{t: t, ctx: ctx, dir: dir, hub: kr.HubID().String(), st: st, ident: ident, kr: kr, sealer: secure.NewSealer(kr)}
 	r.fake = bridgefake.Serve(t, dir, opts...)
-	r.c = cloudkit.New(cloudkit.Config{Dir: dir, HubID: r.hub})
+	r.c = cloudkit.New(cloudkit.Config{Dir: dir, HubID: r.hub, RelayID: relayID})
 	t.Cleanup(func() { _ = r.c.Close() })
 	return r
 }
@@ -186,39 +190,54 @@ func TestZonesMapToHubZones(t *testing.T) {
 	if z := r.lastSave().GetItems()[0].GetZone(); z != cloudkit.DataZoneName(r.hub) {
 		t.Fatalf("data zone sent as %q", z)
 	}
-	for zone, want := range map[string]string{
-		dataZone:                      cloudkit.DataZoneName(r.hub),
-		"data/" + r.hub:               cloudkit.DataZoneName(r.hub),
-		cloudkit.DataZoneName(r.hub):  cloudkit.DataZoneName(r.hub),
-		"relay/acme/phone-a":          cloudkit.RelayZoneName(r.hub),
-		"relay/acme/phone-b":          cloudkit.RelayZoneName(r.hub),
-		cloudkit.RelayZoneName(r.hub): cloudkit.RelayZoneName(r.hub),
+	shared := transport.SharedMailboxZone(relayID)
+	if _, err := r.fake.PhoneRecords(r.hub).Write(mailbox, "a-X-1", []byte("env"), transport.Expect{}); err != nil {
+		t.Fatal(err)
+	}
+	// One runtime name per feed: what the client is asked by, what it sends
+	// to the bridge, and the name its records come back under.
+	for _, c := range []struct{ zone, ck, name string }{
+		{dataZone, cloudkit.DataZoneName(r.hub), dataZone},
+		{shared, cloudkit.RelayZoneName(r.hub), shared},
+		{"relay/" + relayID + "/phone-a", cloudkit.RelayZoneName(r.hub), shared},
+		{"relay/" + relayID + "/phone-b", cloudkit.RelayZoneName(r.hub), shared},
 	} {
-		b, err := r.c.Changes(r.ctx, zone, 0)
+		b, err := r.c.Changes(r.ctx, c.zone, 0)
 		if err != nil {
-			t.Fatalf("%s: %v", zone, err)
+			t.Fatalf("%s: %v", c.zone, err)
 		}
 		qs := r.requests()
-		if got := qs[len(qs)-1].GetChanges().GetZone(); got != want {
-			t.Errorf("%s sent as %q, want %q", zone, got, want)
+		if got := qs[len(qs)-1].GetChanges().GetZone(); got != c.ck {
+			t.Errorf("%s sent as %q, want %q", c.zone, got, c.ck)
 		}
-		for _, s := range b.Changed {
-			if s.Zone != zone {
-				t.Errorf("%s: a record came back in zone %q", zone, s.Zone)
-			}
-		}
-		if want == cloudkit.DataZoneName(r.hub) && len(b.Changed) != 1 {
-			t.Errorf("%s: %d records, want the saved one", zone, len(b.Changed))
+		if len(b.Changed) != 1 || b.Changed[0].Zone != c.name {
+			t.Errorf("%s: %+v, want one record stamped %s", c.zone, b.Changed, c.name)
 		}
 	}
-	if a, b := r.c.MailboxFor("acme", "phone-a"), r.c.MailboxFor("acme", "phone-b"); a != cloudkit.RelayZoneName(r.hub) || b != a {
-		t.Fatalf("mailboxes %q %q, want the one RelayZone", a, b)
+	if a, b := r.c.MailboxFor(relayID, "phone-a"), r.c.MailboxFor(relayID, "phone-b"); a != shared || b != a {
+		t.Fatalf("mailboxes %q %q, want the one shared mailbox", a, b)
 	}
-	for _, bad := range []string{"", "data/", "data/a/b", "relay/a", "relay/a/", "relay/a/b/c", "DataZone-other", "RelayZone-other", "inbox/acme"} {
+	for _, bad := range []string{
+		"", "data/", "data/other", "data/" + relayID + "/x", "relay/" + relayID, "relay/" + relayID + "/",
+		"relay/" + relayID + "/a/b", "relay/other/phone", transport.SharedMailboxZone("other"),
+		cloudkit.DataZoneName(r.hub), cloudkit.RelayZoneName(r.hub), "inbox/acme",
+	} {
 		if _, err := r.c.Changes(r.ctx, bad, 0); !errors.Is(err, transport.ErrUnsupportedZone) {
 			t.Errorf("%q: %v, want ErrUnsupportedZone", bad, err)
 		}
 	}
+	// A client with no relay id knows no zone.
+	bare := cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub})
+	if _, err := bare.Changes(r.ctx, dataZone, 0); !errors.Is(err, transport.ErrUnsupportedZone) {
+		t.Fatalf("no relay id: %v", err)
+	}
+	// A zone event carries the runtime name.
+	if _, err := r.fake.PhoneRecords(r.hub).Write(mailbox, "a-X-2", []byte("env"), transport.Expect{}); err != nil {
+		t.Fatal(err)
+	}
+	r.nextEvent("shared mailbox", func(e transport.Event) bool { return e.Zone == shared })
+	r.save(transport.SaveItem{Record: r.data("workbench-2", []byte("{}"))})
+	r.nextEvent("data zone", func(e transport.Event) bool { return e.Zone == dataZone })
 }
 
 func TestPairZoneIsUnsupportedOnCloudKit(t *testing.T) {
@@ -415,15 +434,15 @@ func TestAssetsCrossAsPathsOnly(t *testing.T) {
 	// file to dst.
 	phone := r.fake.PhoneRecords(r.hub)
 	upload := bytes.Repeat([]byte{0xA5}, 100<<10)
-	if _, err := phone.WriteWithAsset("relay/acme/phone", "recupload-u1", []byte("env"), upload, transport.Expect{}); err != nil {
+	if _, err := phone.WriteWithAsset(mailbox, "recupload-u1", []byte("env"), upload, transport.Expect{}); err != nil {
 		t.Fatal(err)
 	}
-	b, err := r.c.Changes(r.ctx, "relay/acme/phone", 0)
+	b, err := r.c.Changes(r.ctx, mailbox, 0)
 	if err != nil || len(b.Changed) != 1 || b.Changed[0].AttachmentID == "" {
 		t.Fatalf("upload record: %+v, %v", b, err)
 	}
 	dst := filepath.Join(t.TempDir(), "u1.sealed")
-	if err := r.c.Download(r.ctx, "relay/acme/phone", b.Changed[0].AttachmentID, dst); err != nil {
+	if err := r.c.Download(r.ctx, mailbox, b.Changed[0].AttachmentID, dst); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, upload) {
@@ -459,7 +478,7 @@ func TestSocketPrivateAndPeerChecked(t *testing.T) {
 	if err := os.Chmod(sock, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.c.Changes(r.ctx, dataZone, 0); err == nil {
+	if _, err := r.c.Changes(r.ctx, dataZone, 0); !errors.Is(err, cloudkit.ErrBridgeRefused) {
 		t.Fatal("a 0666 socket was used")
 	}
 	if r.fake.Accepted() != 0 {
@@ -470,11 +489,11 @@ func TestSocketPrivateAndPeerChecked(t *testing.T) {
 	}
 	// A peer of another user is closed before any frame.
 	cloudkit.SetPeerUID(r.c, func(*net.UnixConn) (int, error) { return os.Getuid() + 1, nil })
-	if _, err := r.c.Changes(r.ctx, dataZone, 0); err == nil {
+	if _, err := r.c.Changes(r.ctx, dataZone, 0); !errors.Is(err, cloudkit.ErrBridgeRefused) {
 		t.Fatal("a bridge of another user was used")
 	}
 	cloudkit.SetPeerUID(r.c, func(*net.UnixConn) (int, error) { return 0, errors.New("no credentials") })
-	if _, err := r.c.Changes(r.ctx, dataZone, 0); err == nil {
+	if _, err := r.c.Changes(r.ctx, dataZone, 0); !errors.Is(err, cloudkit.ErrBridgeRefused) {
 		t.Fatal("a bridge without peer credentials was used")
 	}
 	if n := len(r.fake.Frames()); n != 0 {
@@ -482,7 +501,7 @@ func TestSocketPrivateAndPeerChecked(t *testing.T) {
 	}
 	// The real peer call accepts this user's bridge; Hello goes first.
 	_ = r.c.Close()
-	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub})
+	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub, RelayID: relayID})
 	if _, err := r.c.Changes(r.ctx, dataZone, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +518,7 @@ func TestHelloVersionMismatchIsUnsupported(t *testing.T) {
 	}
 }
 
-func TestPullNowEventTriggersAPass(t *testing.T) {
+func TestPullNowEventIsEmitted(t *testing.T) {
 	r := newRig(t)
 	if _, err := r.c.Changes(r.ctx, dataZone, 0); err != nil {
 		t.Fatal(err)
@@ -507,10 +526,10 @@ func TestPullNowEventTriggersAPass(t *testing.T) {
 	r.fake.PullNow()
 	r.nextEvent("pull_now", func(e transport.Event) bool { return e.PullNow })
 	// A phone's write is a zone event for the one RelayZone.
-	if _, err := r.fake.PhoneRecords(r.hub).Write("relay/acme/phone", "a-X-1", []byte("env"), transport.Expect{}); err != nil {
+	if _, err := r.fake.PhoneRecords(r.hub).Write(mailbox, "a-X-1", []byte("env"), transport.Expect{}); err != nil {
 		t.Fatal(err)
 	}
-	r.nextEvent("relay zone", func(e transport.Event) bool { return e.Zone == r.c.MailboxFor("acme", "phone") })
+	r.nextEvent("relay zone", func(e transport.Event) bool { return e.Zone == transport.SharedMailboxZone(relayID) })
 	r.fake.SendError("rate_limited")
 	r.nextEvent("error", func(e transport.Event) bool { return errors.Is(e.Err, transport.ErrRateLimited) })
 	// A dropped connection is an Err event; the next op reconnects and the
@@ -578,12 +597,13 @@ func TestSharesOverTheBridge(t *testing.T) {
 		t.Fatalf("public link closed: %v", err)
 	}
 	relayCK := cloudkit.RelayZoneName(r.hub)
+	shared := transport.SharedMailboxZone(relayID)
 	r.fake.SetParticipants(relayCK, []transport.Participant{{UserRecordName: "_a", Accepted: true}, {UserRecordName: "_b"}})
-	ps, err := r.c.Participants(r.ctx, "relay/acme/phone")
+	ps, err := r.c.Participants(r.ctx, mailbox)
 	if err != nil || len(ps) != 2 || ps[0] != (transport.Participant{UserRecordName: "_a", Accepted: true}) {
 		t.Fatalf("participants %+v, %v", ps, err)
 	}
-	if err := r.c.RemoveParticipants(r.ctx, relayCK, []string{"_b"}); err != nil {
+	if err := r.c.RemoveParticipants(r.ctx, shared, []string{"_b"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.fake.ParticipantsOf(relayCK); len(got) != 1 || got[0].UserRecordName != "_a" {

@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/secure"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
@@ -73,7 +74,7 @@ func newCanary(t *testing.T) *canary {
 	}
 	phone, err := hubtest.New(hubtest.Config{
 		Hub: r.kr.HubID(), HubKX: r.ident.Agreement.PublicKey(), HubSig: r.ident.Signing.Public().(ed25519.PublicKey),
-		MetaKey: meta, Epoch: epoch, HubRelayID: "acme-hub", Transport: r.fake.PhoneRecords(r.hub),
+		MetaKey: meta, Epoch: epoch, HubRelayID: relayID, Transport: r.fake.PhoneRecords(r.hub),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,9 +111,16 @@ func (c *canary) sealData(plain, field string, asset *secure.AssetDescriptor, as
 func (c *canary) saveHubRecords() {
 	t := c.t
 	var items []transport.SaveItem
-	for _, k := range []string{"workbench", "workbench_target", "workbench_comment", "terminal_session", "session_timeline",
-		"owner_ask", "permission_request", "session_chat", "session_report", "calendar_event", "recording_job", "briefing", "inbox_item"} {
-		items = append(items, c.sealData(k+"-1", "slice."+k, nil, ""))
+	// Every slice kind the publisher has: the keybox and the alert below,
+	// the heartbeat under its plain name, every other kind as <kind>-1.
+	for _, k := range hubslices.AllKinds {
+		switch k {
+		case hubslices.KindDeviceGrant, hubslices.KindAskAlert:
+		case hubslices.KindHeartbeat:
+			items = append(items, c.sealData(string(k), "slice."+string(k), nil, ""))
+		default:
+			items = append(items, c.sealData(string(k)+"-1", "slice."+string(k), nil, ""))
+		}
 	}
 	mAlert := c.mark("ask_alert")
 	alert, err := c.sealer.Alert(dataZone, "ask_alert-1", canaryText(mAlert))
@@ -136,7 +144,7 @@ func (c *canary) saveHubRecords() {
 	assetPath := filepath.Join(c.dir, cloudkit.AssetsDirName, "transcripts", "t1.asset")
 	d := sealedAsset(t, bytes.Repeat([]byte(c.mark("transcript.text")+" "), 4000), assetPath)
 	c.assets, c.sealed = append(c.assets, d), append(c.sealed, mustRead(t, assetPath)[:512])
-	transcript := c.sealData("meeting_transcript-1", "transcript.title", d, assetPath)
+	transcript := c.sealData("meeting_transcript-2", "transcript.title", d, assetPath)
 	transcript.Expect = transport.Expect{Mode: transport.ExpectAbsent}
 	items = append(items, transport.SaveItem{Record: alert}, transport.SaveItem{Record: sig}, transport.SaveItem{Record: kb}, transcript)
 
@@ -150,7 +158,7 @@ func (c *canary) saveHubRecords() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctl, err := c.sealer.ToPhone("relay/acme-hub/"+c.phone.RelayDeviceID(), c.phone.ID(), cName, "control", "c-"+c.cID, cPayload)
+	ctl, err := c.sealer.ToPhone("relay/"+relayID+"/"+c.phone.RelayDeviceID(), c.phone.ID(), cName, "control", "c-"+c.cID, cPayload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +208,7 @@ func (c *canary) phoneTraffic() {
 	}, nil)
 	proc := actions.NewProcessor(actions.Config{
 		Store: c.st, Transport: c.c, Sealer: c.sealer, Opener: secure.NewOpener(c.kr, c.kr), Keys: c.kr,
-		Dispatcher: disp, HubRelayID: "acme-hub",
+		Dispatcher: disp, HubRelayID: relayID,
 	})
 	a := c.phone.NewAction("test_note")
 	a.Params["text"], _ = json.Marshal(mAction)

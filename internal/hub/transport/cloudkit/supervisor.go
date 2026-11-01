@@ -71,8 +71,9 @@ func (s *Supervisor) runOnce(ctx context.Context) {
 	s.wait(ctx, p)
 }
 
-// wait returns when p exits; when ctx ends first it stops p (SIGTERM, then
-// SIGKILL after stopGrace) and reaps it.
+// wait returns when p exits; when ctx ends first it stops p's process group
+// (SIGTERM, then SIGKILL after stopGrace — Config.Launch starts the bridge
+// as its own group's leader) and reaps it.
 func (s *Supervisor) wait(ctx context.Context, p *os.Process) {
 	done := make(chan struct{})
 	go func() {
@@ -84,14 +85,21 @@ func (s *Supervisor) wait(ctx context.Context, p *os.Process) {
 		return
 	case <-ctx.Done():
 	}
-	_ = p.Signal(syscall.SIGTERM)
+	stopGroup(p, syscall.SIGTERM)
 	t := time.NewTimer(stopGrace)
 	defer t.Stop()
 	select {
 	case <-done:
 	case <-t.C:
-		_ = p.Kill()
+		stopGroup(p, syscall.SIGKILL)
 		<-done
+	}
+}
+
+// stopGroup signals p's process group, or p alone when it leads none.
+func stopGroup(p *os.Process, sig syscall.Signal) {
+	if err := syscall.Kill(-p.Pid, sig); err != nil {
+		_ = p.Signal(sig)
 	}
 }
 

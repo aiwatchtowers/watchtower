@@ -15,7 +15,11 @@
 // opened frame, and no asset bytes (assets travel as paths under the hub
 // dir). CloudKit change tags never cross it either: the bridge maps each
 // record's change tag to a tag_seq and each zone's change feed to a cursor,
-// both opaque numbers it keeps in its own state.
+// both opaque numbers it keeps in its own state (bridge.db). That state has a
+// generation: a random id the bridge mints when it creates bridge.db and
+// persists with it. Every tag_seq and cursor belongs to one generation; the
+// bridge refuses a cursor or a tag of another one (token_expired), and the
+// client never compares numbers across generations.
 //
 // Regenerate bridgepb/bridge.pb.go from this directory with buf and
 // protoc-gen-go v1.36.12 (paths=source_relative, out bridgepb).
@@ -54,10 +58,12 @@ enum ExpectMode {
   EXPECT_SEQ = 2;
 }
 
-// Expect is a precondition; tag_seq is read only with EXPECT_SEQ.
+// Expect is a precondition; tag_seq (with the generation it was issued in)
+// is read only with EXPECT_SEQ.
 message Expect {
   ExpectMode mode = 1;
   uint64 tag_seq = 2;
+  string generation = 3;
 }
 
 // SaveItem is one record to save. asset_path is a sealed file under
@@ -87,10 +93,12 @@ message Delete {
 }
 
 // Changes answers one Batch of zone's changes after the cursor since
-// (0 = from the start), or Failure "token_expired".
+// (0 = from the start) of generation, or Failure "token_expired" (a cursor
+// the bridge no longer keeps, or one of another generation).
 message Changes {
   string zone = 1;
   uint64 since = 2;
+  string generation = 3;
 }
 
 // Download writes a record's asset to dst, a path under
@@ -139,8 +147,10 @@ message Response {
   }
 }
 
+// HelloOk carries the bridge's generation (see above).
 message HelloOk {
   uint32 version = 1;
+  string generation = 2;
 }
 
 // Record is a stored record: its name, envelope, tag_seq (the bridge's
@@ -168,12 +178,14 @@ message Outcomes {
   repeated Outcome items = 1;
 }
 
-// Batch is one page of changes in change order; new_seq is the next cursor.
+// Batch is one page of changes in change order; new_seq is the next cursor
+// and generation the one its cursor and tag_seq values belong to.
 message Batch {
   repeated Record changed = 1;
   repeated string deleted = 2;
   uint64 new_seq = 3;
   bool more = 4;
+  string generation = 5;
 }
 
 message Done {}

@@ -52,6 +52,7 @@ func fixtureCases() []struct {
 	data, relay := cloudkit.DataZoneName(hub), cloudkit.RelayZoneName(hub)
 	env := []byte{0x57, 0x54, 0x45, 0x31, 0x00, 0x01, 0x00, 0xff, 0x80}
 	big := uint64(1)<<63 + 12345
+	gen := "5f1c0a9e2b7d4c18"
 	type c = struct {
 		name string
 		msg  proto.Message
@@ -61,13 +62,13 @@ func fixtureCases() []struct {
 		{"save", &pb.Request{Id: 2, Op: &pb.Request_Save{Save: &pb.Save{Items: []*pb.SaveItem{
 			{Zone: data, Name: "k1a2b3", Envelope: env},
 			{Zone: relay, Name: "a-DEVICE-7", Envelope: env, Expect: &pb.Expect{Mode: pb.ExpectMode_EXPECT_ABSENT}},
-			{Zone: data, Name: "t9x8", Envelope: env, AssetPath: "/hub/assets/transcripts/7.asset", Expect: &pb.Expect{Mode: pb.ExpectMode_EXPECT_SEQ, TagSeq: big}},
+			{Zone: data, Name: "t9x8", Envelope: env, AssetPath: "/hub/assets/transcripts/7.asset", Expect: &pb.Expect{Mode: pb.ExpectMode_EXPECT_SEQ, TagSeq: big, Generation: gen}},
 			{Zone: data, Name: "sig-k1a2b3"},
 		}}}}},
 		{"delete", &pb.Request{Id: 3, Op: &pb.Request_Delete{Delete: &pb.Delete{Zone: relay, Items: []*pb.DeleteItem{
-			{Name: "c-1"}, {Name: "a-DEVICE-7", Expect: &pb.Expect{Mode: pb.ExpectMode_EXPECT_SEQ, TagSeq: 300}},
+			{Name: "c-1"}, {Name: "a-DEVICE-7", Expect: &pb.Expect{Mode: pb.ExpectMode_EXPECT_SEQ, TagSeq: 300, Generation: gen}},
 		}}}}},
-		{"changes", &pb.Request{Id: 4, Op: &pb.Request_Changes{Changes: &pb.Changes{Zone: relay, Since: 150}}}},
+		{"changes", &pb.Request{Id: 4, Op: &pb.Request_Changes{Changes: &pb.Changes{Zone: relay, Since: 150, Generation: gen}}}},
 		{"changes_from_start", &pb.Request{Id: 5, Op: &pb.Request_Changes{Changes: &pb.Changes{Zone: data}}}},
 		{"download", &pb.Request{Id: 6, Op: &pb.Request_Download{Download: &pb.Download{Zone: relay, AssetId: "asset-1", Dst: "/hub/downloads/ab12.part"}}}},
 		{"account_status", &pb.Request{Id: 7, Op: &pb.Request_AccountStatus{AccountStatus: &pb.AccountStatus{}}}},
@@ -78,7 +79,7 @@ func fixtureCases() []struct {
 		{"remove_participants", &pb.Request{Id: 12, Op: &pb.Request_RemoveParticipants{RemoveParticipants: &pb.RemoveParticipants{
 			Zone: relay, UserRecordNames: []string{"_user-a", "_user-é"},
 		}}}},
-		{"hello_ok", &pb.Response{Id: 1, Result: &pb.Response_Hello{Hello: &pb.HelloOk{Version: 1}}}},
+		{"hello_ok", &pb.Response{Id: 1, Result: &pb.Response_Hello{Hello: &pb.HelloOk{Version: 1, Generation: gen}}}},
 		{"outcomes", &pb.Response{Id: 2, Result: &pb.Response_Outcomes{Outcomes: &pb.Outcomes{Items: []*pb.Outcome{
 			{Saved: true, TagSeq: big},
 			{Conflict: &pb.Record{Name: "a-DEVICE-7", Envelope: env, TagSeq: 77, ServerAtMs: 1_800_000_000_123}},
@@ -90,9 +91,9 @@ func fixtureCases() []struct {
 				{Name: "a-DEVICE-8", Envelope: env, TagSeq: big, ServerAtMs: 1_800_000_000_999},
 				{Name: "recupload-u1", Envelope: env, TagSeq: 5, ServerAtMs: 1_800_000_001_000, AssetId: "asset-1"},
 			},
-			Deleted: []string{"c-1", "c-2"}, NewSeq: 152, More: true,
+			Deleted: []string{"c-1", "c-2"}, NewSeq: 152, More: true, Generation: gen,
 		}}}},
-		{"batch_empty", &pb.Response{Id: 5, Result: &pb.Response_Batch{Batch: &pb.Batch{}}}},
+		{"batch_empty", &pb.Response{Id: 5, Result: &pb.Response_Batch{Batch: &pb.Batch{Generation: gen}}}},
 		{"done", &pb.Response{Id: 6, Result: &pb.Response_Done{Done: &pb.Done{}}}},
 		{"account", &pb.Response{Id: 7, Result: &pb.Response_Account{Account: &pb.Account{Status: "temporarily_unavailable"}}}},
 		{"shares", &pb.Response{Id: 8, Result: &pb.Response_Shares{Shares: &pb.SharesInfo{

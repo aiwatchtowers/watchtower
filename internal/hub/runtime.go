@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit"
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/wire"
@@ -54,8 +55,9 @@ const (
 )
 
 // assetDirName is the sealer's own asset directory inside the hub dir: the
-// relay transport uploads only files under it.
-const assetDirName = "assets"
+// relay transport uploads only files under it, and the CloudKit bridge reads
+// assets only from it (one constant for both).
+const assetDirName = cloudkit.AssetsDirName
 
 // workbenchOnly is what MobileSync = workbench_only keeps (the Swift
 // SliceKind.workbenchOnly): the sources' workbench kinds and the hub's own
@@ -603,11 +605,17 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		switch {
 		case strings.HasPrefix(ev.Zone, transport.PairZone("")):
 			h.pairing(ctx, strings.TrimPrefix(ev.Zone, transport.PairZone("")))
-		case strings.HasPrefix(ev.Zone, transport.MailboxZone(h.relayID, "")):
+		case h.isMailbox(ev.Zone):
 			h.touch()
 			h.pass(ctx)
 		}
 	}
+}
+
+// isMailbox: zone is a phone's mailbox — relay/<relay id>/<phone>, or the
+// shared mailbox relay/<relay id>/* every phone has on CloudKit.
+func (h *hubRuntime) isMailbox(zone string) bool {
+	return strings.HasPrefix(zone, transport.MailboxZone(h.relayID, ""))
 }
 
 // onControl handles a server control event.
