@@ -405,6 +405,33 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertFalse(relay.ops.contains("close slot-1"))
         XCTAssertEqual(relay.ops.suffix(2), ["vouch \(mac.deviceID)", "promote slot-1"])
         XCTAssertNil(store.pending)
+        XCTAssertEqual(host.linkedCalls.last?.record.linkedAt, start, "the grant's linked_at, not the code's issue time")
+    }
+
+    /// Round 2, N3: a pending link an older build saved, without `linkedAt`, still decodes; its confirmation at
+    /// launch falls back to the code's issue time.
+    func testAPendingLinkWithoutLinkedAtStillDecodesAndFallsBackToIssuedAt() async throws {
+        let payload = relayCode()
+        let link = try seedPromoted(payload, state: .confirmed)
+        store.promoted = [:]
+        let issued = Date(timeIntervalSince1970: TimeInterval(payload.iat))
+        let pending = PendingLink(
+            link: link.link, deadline: clock.now(), baseline: nil, baselineCaptured: true, issuedAt: issued,
+            relaySlot: "slot-0", relaySlotExpiresAt: clock.now().addingTimeInterval(600)
+        )
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(pending)) as? [String: Any])
+        json.removeValue(forKey: "linkedAt")
+        XCTAssertNil(json["linkedAt"])
+        defaults.set(try JSONSerialization.data(withJSONObject: json), forKey: "link.pending")
+        XCTAssertEqual(store.pending?.relaySlot, "slot-0")
+        XCTAssertNil(store.pending?.linkedAt)
+        clock.advance(by: 3_600)
+
+        let relaunched = makeModel()
+        await relaunched.resumePendingLink()
+
+        XCTAssertEqual(relaunched.phase, .linked(macName: "build-box"))
+        XCTAssertEqual(host.linkedCalls.last?.record.linkedAt, issued)
     }
 
     func testRemovingStateDisablesTheOtherRows() {

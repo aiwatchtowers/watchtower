@@ -125,7 +125,8 @@ final class ScreenshotHost {
     }
 
     private func render(_ window: UIWindow, as name: String) throws {
-        // iOS 26 draws a presented alert outside what `drawHierarchy` captures: a shot of one shows the screen beneath.
+        // iOS 26 draws a presented alert outside what `drawHierarchy` captures (drawing every window of the scene by
+        // level does not bring it in either): a shot of one shows the screen beneath.
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
             _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }

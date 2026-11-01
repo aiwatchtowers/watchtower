@@ -252,6 +252,9 @@ final class RelayLinkingE2ETests: XCTestCase {
         XCTAssertEqual(try briefings(session), 1, "read on the next pull")
 
         XCTAssertEqual(bed.sockets.mostOpenAtOnce, 1, "one socket per device, the pairing and the hub transports on it")
+        // The hand-over closes the pairing session before the hub session attaches, and the shared session closes
+        // its socket with its last transport (`HostedRelaySession.detach`): one more dial, never two sockets at once.
+        XCTAssertEqual(bed.sockets.dials, 2, "the pairing session's socket, then the hub session's")
     }
 
     private func briefings(_ session: HubSession) throws -> Int {

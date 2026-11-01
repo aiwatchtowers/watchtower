@@ -95,8 +95,8 @@ struct RelaySlotsView: View {
 
     @ViewBuilder private func slotAction(_ row: RelaySlotsModel.Row) -> some View {
         if row.action == .removing {
-            // On the title's baseline, in the trailing slot (the row's text keeps its line).
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            // In the trailing slot (the row's text keeps its line), the spinner centred on the text.
+            HStack(alignment: .center, spacing: Spacing.compact) {
                 Text(row.action.title)
                     .font(TypeScale.meta)
                     .foregroundStyle(.secondary)

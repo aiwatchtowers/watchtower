@@ -188,6 +188,9 @@ struct PendingLink: Codable, Equatable, Sendable {
     /// A Relay link's pairing slot (`open_pairing`) and when it expires; nil for an iCloud link.
     let relaySlot: String?
     let relaySlotExpiresAt: Date?
+    /// A Relay link's grant `linked_at` (the Mac's clock), written before the keybox's keys are stored: a launch
+    /// that finds the keys and no promoted entry confirms the link with it. Absent in a value an older build saved.
+    var linkedAt: Date?
 
     init(
         link: LinkRecord,
@@ -216,6 +219,7 @@ struct PendingLink: Codable, Equatable, Sendable {
         issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt)
         relaySlot = try container.decodeIfPresent(String.self, forKey: .relaySlot)
         relaySlotExpiresAt = try container.decodeIfPresent(Date.self, forKey: .relaySlotExpiresAt)
+        linkedAt = try container.decodeIfPresent(Date.self, forKey: .linkedAt)
     }
 }
 

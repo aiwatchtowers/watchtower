@@ -637,6 +637,12 @@ final class LinkingViewModel {
     /// fifth hub that raced past the scan's check is refused (its keys go).
     private func complete(_ pending: PendingLink, keys boxKeys: KeyboxKeys, linkedAt: Date?) async {
         let hubID = pending.link.hubID
+        if pending.relaySlot != nil {
+            // Kept before the keys: a launch that finds them confirms the link with the grant's own time.
+            var kept = pending
+            kept.linkedAt = linkedAt
+            store.pending = kept
+        }
         do {
             guard let unconfirmed = try keys.hubLink(hubID) else { throw SecureTransportError.keysUnavailable }
             try keys.saveHubLink(try unconfirmed.adding(boxKeys))
@@ -1518,12 +1524,12 @@ extension LinkingViewModel {
         }
     }
 
-    /// The `.confirmed` write again, at launch, whatever the time: the link's `linkedAt` is the code's issue time
-    /// (the Mac linked at or after it; the keybox is not read again).
+    /// The `.confirmed` write again, at launch, whatever the time: the link's `linkedAt` is the grant's, kept in the
+    /// pending link before the keys; one an older build saved without it falls back to the code's issue time.
     private func confirmPendingRelay(_ pending: PendingLink) async {
         guard let slot = pending.relaySlot else { return }
         var record = pending.link
-        record.linkedAt = pending.issuedAt
+        record.linkedAt = pending.linkedAt ?? pending.issuedAt
         phase = .checking
         await confirmRelay(pending, record: record, slot: slot)
     }

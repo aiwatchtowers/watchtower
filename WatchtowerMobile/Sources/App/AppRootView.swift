@@ -65,37 +65,52 @@ struct LinkNoticeBanner: View {
     @Environment(LinkingViewModel.self) private var linking
     let notice: LinkNotice
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
-        HStack(spacing: Spacing.medium) {
-            Image(systemName: "exclamationmark.circle")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text(notice.message)
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            switch notice {
-            case .stale, .encryptionReScan:
-                // A large control: the bordered shape is the hit area, and
-                // a frame outside it would not grow it to 44 pt.
-                Button("Scan") { linking.startScan() }
-                    .buttonStyle(BannerButtonStyle())
-            case .macOnRelay, .finishingInBackground, .needsOwner:
-                Button(notice.dismissTitle ?? "") { linking.dismissNotice() }
-                    .buttonStyle(BannerButtonStyle())
-            case .removed, .notSent, .recordingKept, .recordingsProblem:
-                Button {
-                    linking.dismissNotice()
-                } label: {
-                    Image(systemName: "xmark")
-                        .frame(width: PhoneMetrics.minTouch, height: PhoneMetrics.minTouch)
-                }
-                .accessibilityLabel("Close")
+        // At the accessibility text sizes the action goes under the text, which wraps in full.
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Spacing.medium))
+            : AnyLayout(HStackLayout(spacing: Spacing.medium))
+        layout {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
+                Image(systemName: "exclamationmark.circle")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text(notice.message)
+                    .font(.subheadline)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            action
         }
         .padding(.horizontal, Spacing.large)
         .padding(.vertical, Spacing.small)
         .background(Fill.card)
         .overlay(alignment: .bottom) { CardRowDivider() }
+        // Capped so the whole notice and its action fit above the tabs on the smallest phone.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+    }
+
+    @ViewBuilder private var action: some View {
+        switch notice {
+        case .stale, .encryptionReScan:
+            // A large control: the bordered shape is the hit area, and
+            // a frame outside it would not grow it to 44 pt.
+            Button("Scan") { linking.startScan() }
+                .buttonStyle(BannerButtonStyle())
+        case .macOnRelay, .finishingInBackground, .needsOwner:
+            Button(notice.dismissTitle ?? "") { linking.dismissNotice() }
+                .buttonStyle(BannerButtonStyle())
+        case .removed, .notSent, .recordingKept, .recordingsProblem:
+            Button {
+                linking.dismissNotice()
+            } label: {
+                Image(systemName: "xmark")
+                    .frame(width: PhoneMetrics.minTouch, height: PhoneMetrics.minTouch)
+            }
+            .accessibilityLabel("Close")
+        }
     }
 }
 

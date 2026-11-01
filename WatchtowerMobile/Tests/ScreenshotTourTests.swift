@@ -193,7 +193,7 @@ final class ScreenshotTourTests: XCTestCase {
                 .rows.first { $0.id == DemoSeed.Relay.finishingMac }
         )
         try await shot(
-            "R07", "relay-slots-finishing-mac", slots, "sheet, Remove on the finishing link",
+            "R07", "relay-slots-finishing-mac", slots, "sheet, Remove on the finishing link. \(Self.alertGap)",
             RelaySlotsView(asking: RelaySlotsModel.ask(for: finishingRow)) {}.environment(slotsLinking), settle: .seconds(2)
         )
         slotsRelay.park("removeSlot")
@@ -248,10 +248,14 @@ final class ScreenshotTourTests: XCTestCase {
         let (cancel, _, _) = try relayLinking(.needsOwner(.slotExpired), now: now)
         let row = try XCTUnwrap(MacsModel.finishingRows(cancel.promotedLinks, running: [], failed: []).first)
         try await shot(
-            "R20", "macs-finishing-cancel-confirm", "bare stack, Cancel pressed",
+            "R20", "macs-finishing-cancel-confirm", "bare stack, Cancel pressed. \(Self.alertGap)",
             AnyView(NavigationStack { MacsView(cancelling: row) }.environment(cancel)), .seconds(2)
         )
     }
+
+    /// R07/R20's INDEX note: the confirmation alert is presented but not in the PNG.
+    static let alertGap = "The alert is not captured (iOS 26 draws it outside drawHierarchy); its copy is asserted in "
+        + "RelaySlotsModelTests and MacsModelTests; the owner checks it on a device"
 
     private static func isHydrated(_ env: AppEnvironment) -> Bool {
         env.activeSession.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty
