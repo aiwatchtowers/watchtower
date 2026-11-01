@@ -88,7 +88,9 @@ type desktopViewBox struct {
 
 	freshAt  time.Time // when fresh was read; zero = not cached
 	fresh    bool
+	gen      uint64 // bumped by every invalidation: a read begun before one is not cached
 	staleChk *time.Timer
+	stopped  bool // Run ended: no stale check is armed any more
 }
 
 // set stores v and reports whether it differs from the stored view.
@@ -119,6 +121,7 @@ func (b *desktopViewBox) clearIfOlder(cutoff time.Time) {
 func (b *desktopViewBox) invalidate() {
 	b.mu.Lock()
 	b.freshAt = time.Time{}
+	b.gen++
 	b.mu.Unlock()
 }
 
@@ -150,11 +153,17 @@ func (s *supervisor) desktopFresh(now time.Time) bool {
 		b.mu.Unlock()
 		return fresh
 	}
+	gen := b.gen
 	b.mu.Unlock()
 	fresh, _, err := s.st.DesktopHost(now)
 	fresh = err == nil && fresh
+	if s.o.afterFreshRead != nil {
+		s.o.afterFreshRead()
+	}
 	b.mu.Lock()
-	b.freshAt, b.fresh = now, fresh
+	if b.gen == gen { // no heartbeat came between the read and here
+		b.freshAt, b.fresh = now, fresh
+	}
 	b.mu.Unlock()
 	return fresh
 }
@@ -187,10 +196,13 @@ func (s *supervisor) desktopBeat(now time.Time, wasFresh bool) (viewNeeded bool)
 	b := &s.view
 	b.mu.Lock()
 	b.freshAt = time.Time{}
+	b.gen++
 	if b.staleChk != nil {
 		b.staleChk.Stop()
 	}
-	b.staleChk = time.AfterFunc(s.o.staleCheck(), s.desktopWentStale)
+	if !b.stopped {
+		b.staleChk = time.AfterFunc(s.o.staleCheck(), s.desktopWentStale)
+	}
 	b.mu.Unlock()
 	if !wasFresh {
 		s.view.clearIfOlder(now.Add(-state.DesktopFreshFor))
@@ -210,10 +222,12 @@ func (s *supervisor) desktopWentStale() {
 	}
 }
 
-// stopStaleCheck stops the pending stale check (Run's end).
+// stopStaleCheck stops the pending stale check for good (Run's end): a
+// heartbeat answered after it arms none.
 func (s *supervisor) stopStaleCheck() {
 	s.view.mu.Lock()
 	defer s.view.mu.Unlock()
+	s.view.stopped = true
 	if s.view.staleChk != nil {
 		s.view.staleChk.Stop()
 	}

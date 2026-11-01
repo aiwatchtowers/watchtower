@@ -190,6 +190,9 @@ type Options struct {
 	// staleCheckAfter); published sees every publishSoon (nil = none).
 	staleAfter time.Duration
 	published  func(kinds []slices.Kind)
+	// afterFreshRead runs between the heartbeat freshness read and its
+	// caching (nil = none).
+	afterFreshRead func()
 }
 
 // staleCheck is the stale check's delay after a Desktop heartbeat.

@@ -202,7 +202,35 @@ func TestAHeartbeatGoingStaleRepublishesTheView(t *testing.T) {
 	eventually(t, 5*time.Second, "the stale check republished", func() bool { return r.viewPublishes() > n })
 }
 
-// TestDesktopViewPublishesTheViewKinds: a changed view republishes the
+// TestAHeartbeatDuringAFreshnessReadIsNotCachedOver: a heartbeat that lands
+// between the freshness read and its caching wins: the stale value read
+// before it is not cached.
+func TestAHeartbeatDuringAFreshnessReadIsNotCachedOver(t *testing.T) {
+	r := newViewRig(t)
+	var once sync.Once
+	r.s.o.afterFreshRead = func() { once.Do(func() { r.beat(t) }) }
+	if r.s.desktopFresh(r.clock()) {
+		t.Fatal("the read before the heartbeat was fresh")
+	}
+	if !r.s.desktopFresh(r.clock()) {
+		t.Error("the stale read from before the heartbeat was cached over it")
+	}
+}
+
+// TestNoStaleCheckIsArmedAfterRunStopped: a heartbeat answered after Run's
+// end arms no stale-check timer.
+func TestNoStaleCheckIsArmedAfterRunStopped(t *testing.T) {
+	r := newViewRig(t)
+	r.s.stopStaleCheck()
+	r.beat(t)
+	r.s.view.mu.Lock()
+	defer r.s.view.mu.Unlock()
+	if r.s.view.staleChk != nil {
+		t.Error("a stale check was armed after Run stopped")
+	}
+}
+
+// TestDesktopViewPublishesTheViewKinds:a changed view republishes the
 // sessions, the workbench counts, the timeline and the alerts; the same
 // view again does not.
 func TestDesktopViewPublishesTheViewKinds(t *testing.T) {
