@@ -18,8 +18,10 @@ import (
 // copy snapshots the Swift sidecar and the CloudKit transport state with the
 // SQLite backup API (a consistent copy of the committed state, WAL included)
 // and copies the slice assets into <hub dir>/adopt.tmp, starting over from
-// an empty folder. Each Swift file is first proven idle (swiftIdle): the
-// Swift hub must not be running.
+// an empty folder. Precondition: the caller stopped the Swift hub (Desktop's
+// adoption driver stops MobileHubService and waits for its storage to close
+// before `hub adopt`). noOpenTransaction only refuses a file someone is
+// in the middle of using; it cannot see an idle open handle.
 func (r *run) copy() error {
 	if err := os.RemoveAll(r.tmpDir()); err != nil {
 		return fmt.Errorf("adopt: clearing the copy: %w", err)
@@ -51,7 +53,7 @@ func (r *run) copy() error {
 var swiftBusyTimeout = "1000"
 
 // snapshot copies the SQLite file src to dst (which must not exist) through
-// the backup API, after proving src idle: an exclusive lock taken and
+// the backup API, after noOpenTransaction: an exclusive lock taken and
 // released, and a full WAL checkpoint (busy 0, every frame checkpointed).
 // The -wal/-shm the open leaves beside src are removed.
 func snapshot(ctx context.Context, src, dst string) error {
@@ -77,7 +79,7 @@ func backupFile(ctx context.Context, src, dst string) error {
 		return fmt.Errorf("adopt: opening a Swift file: %w", err)
 	}
 	defer func() { _ = sconn.Close() }()
-	if err := swiftIdle(ctx, sconn); err != nil {
+	if err := noOpenTransaction(ctx, sconn); err != nil {
 		return err
 	}
 	ddb, err := rawOpen(dst, openCreate)
@@ -119,11 +121,14 @@ func backupFile(ctx context.Context, src, dst string) error {
 	})
 }
 
-// swiftIdle proves no other connection uses the Swift file: an exclusive
-// lock taken and released (a writer, or in DELETE mode a reader, blocks
-// it), then wal_checkpoint(TRUNCATE) must report busy 0 and every frame
-// checkpointed (a WAL reader blocks that). Either failing is ErrSwiftBusy.
-func swiftIdle(ctx context.Context, c *sql.Conn) error {
+// noOpenTransaction refuses a Swift file another connection is using right
+// now: an exclusive lock taken and released (a writer, or in DELETE mode a
+// reader, blocks it), then wal_checkpoint(TRUNCATE) must report busy 0 and
+// every frame checkpointed (a WAL reader blocks that). Either failing is
+// ErrSwiftBusy. It does NOT prove the Swift hub stopped: an idle open handle
+// holds no lock and passes (TestAnIdleOpenSwiftHandleIsNotDetected). Run
+// requires the caller to have stopped the Swift hub.
+func noOpenTransaction(ctx context.Context, c *sql.Conn) error {
 	if _, err := c.ExecContext(ctx, `BEGIN EXCLUSIVE`); err != nil {
 		return fmt.Errorf("%w: %w", ErrSwiftBusy, err)
 	}
@@ -152,6 +157,13 @@ func (r *run) verify() error {
 		return err
 	}
 	defer func() { _ = db.Close() }()
+	// The backup keeps a WAL source's journal mode; the copy is ours and
+	// goes DELETE first, so every repair below lands in the file itself and
+	// the dry run's byte copy sees it (no -wal beside the copy).
+	var jm string
+	if err := db.QueryRow(`PRAGMA journal_mode = DELETE`).Scan(&jm); err != nil || jm != "delete" {
+		return fmt.Errorf("adopt: the copy's journal mode: %q %w", jm, err)
+	}
 	var res string
 	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&res); err != nil || res != "ok" {
 		return ErrSwiftCorrupt

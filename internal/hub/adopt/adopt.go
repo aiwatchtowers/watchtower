@@ -83,9 +83,12 @@ var (
 	ErrSwiftSchema = errors.New("adopt: the Swift hub's file has a schema this hub cannot take")
 	// ErrSwiftHubID: the Swift file has no valid hub_meta.hub_id.
 	ErrSwiftHubID = errors.New("adopt: the Swift hub's file has no hub id")
-	// ErrSwiftBusy: another connection holds the Swift file (the Swift hub
-	// still runs): its WAL could not be checkpointed or its lock taken.
-	ErrSwiftBusy = errors.New("adopt: the Swift hub's file is in use")
+	// ErrSwiftBusy: another connection has a transaction open on the Swift
+	// file (noOpenTransaction): its lock could not be taken or its WAL not
+	// fully checkpointed. It does not prove the Swift hub stopped — an idle
+	// open handle passes —: Run requires the caller (Desktop's adoption
+	// driver) to have stopped the Swift hub first.
+	ErrSwiftBusy = errors.New("adopt: the Swift hub's file has an open transaction")
 	// ErrSwiftCorrupt: the copy fails PRAGMA integrity_check.
 	ErrSwiftCorrupt = errors.New("adopt: the Swift hub's file is damaged")
 	// ErrAlreadyAdopted: adopted_at is set; nothing is done.
