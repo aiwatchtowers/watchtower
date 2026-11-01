@@ -52,13 +52,19 @@ extension HostedRelayTransport {
     }
 
     /// Downloads `record`'s attachment into the store's stash (a temporary file for a store
-    /// without one). A URL `secureBlobURL` refuses, a non-2xx answer (a redirect not followed
+    /// without one). An attachment gone since the page was read (the record rewritten or deleted
+    /// meanwhile) is nil, and the record is buffered without a file; the page's next read brings
+    /// the record as it is now (#1469). Gone means `get_download` answers `NOT_FOUND`, or the blob
+    /// GET answers 404 and a second `get_download` then answers `NOT_FOUND`; a 404 on an attachment
+    /// the relay still serves fails the page. (`CloudKitTransport` also keeps a fetched record whose
+    /// asset it could not stash; there the consumer later records a failed ingest.)
+    /// A URL `secureBlobURL` refuses, any other non-2xx answer (a redirect not followed
     /// included) or a body past `maxAttachmentBytes` fails the page; nothing is left on disk then.
-    func download(_ record: Relay_V1_Record, zone: CloudZoneID) async throws -> URL {
+    func download(_ record: Relay_V1_Record, zone: CloudZoneID) async throws -> URL? {
         var request = Relay_V1_GetDownload()
         request.zone = zoneName(zone)
         request.attachmentID = record.attachmentID
-        let answer = try await call(zone) { try await self.client.getDownload(request) }
+        guard let answer = try await downloadURL(request, zone: zone) else { return nil }
         guard let url = URL(string: answer.url), Self.secureBlobURL(url, origin: client.origin) else {
             Self.logger.error("relay download: the URL leaves HTTPS, \(Self.kind(zone), privacy: .public)")
             throw HostedRelayError.undecodable(status: 200)
@@ -68,6 +74,13 @@ extension HostedRelayTransport {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let status = try await client.http.get(url, to: file, maxBytes: maxAttachmentBytes, headers: [:])
+            if status == 404 {
+                try? FileManager.default.removeItem(at: file)
+                // Gone only if the relay agrees: a blob missing under a live attachment is an error.
+                guard try await downloadURL(request, zone: zone) != nil else { return nil }
+                Self.logger.error("relay download: HTTP 404 on a live attachment, \(Self.kind(zone), privacy: .public)")
+                throw HostedRelayError.undecodable(status: status)
+            }
             guard (200..<300).contains(status) else {
                 Self.logger.error("relay download: HTTP \(status), \(Self.kind(zone), privacy: .public)")
                 throw HostedRelayError.undecodable(status: status)
@@ -81,6 +94,16 @@ extension HostedRelayTransport {
         }
         try? FileManager.default.removeItem(at: file)
         return stashed
+    }
+
+    /// `get_download`; nil when the relay answers `NOT_FOUND` (the attachment is gone).
+    private func downloadURL(_ request: Relay_V1_GetDownload, zone: CloudZoneID) async throws -> Relay_V1_Download? {
+        do {
+            return try await call(zone) { try await self.client.getDownload(request) }
+        } catch HostedRelayError.server(code: .notFound, _) {
+            Self.logger.info("relay download: the attachment is gone, \(Self.kind(zone), privacy: .public)")
+            return nil
+        }
     }
 
     private static func downloadError(_ error: any Error, zone: CloudZoneID) -> any Error {

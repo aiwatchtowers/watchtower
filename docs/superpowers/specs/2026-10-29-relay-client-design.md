@@ -168,6 +168,8 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 
 Launch for users waits for Phases 0a and 1–4, the Go hub's side and §12 p. 5. Each phase gets its own plan.
 
+Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is unvouched again and may read only its pair zone, so the Kit ↔ Go hub interop has the hub read the phone's unlink farewell before the phone's `remove_slot`.
+
 ## 14. Contracts and docs this touches
 
 - `docs/features/mobile-companion.md` — the feature note of the phone ↔ hub link. Updated in the PR of each phase that changes a rule it states: Phase 0b (cadence lines), Phase 1 (action path, echoes, hygiene, "D4: no ordering gate"), Phase 3 (linking, epochs, transport). A new note `docs/features/relay-client.md` holds the hosted-relay parts (identity, transport, switch, subscription) from Phase 2 on, linked from CLAUDE.md's feature list.
