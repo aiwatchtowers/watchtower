@@ -43,7 +43,7 @@ func Open(dir string) (*Store, error) {
 	if err := ensurePrivateDir(dir); err != nil {
 		return nil, err
 	}
-	migrations, err := fs.Sub(migrationsFS, "migrations")
+	migrations, err := Migrations()
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +57,19 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("opening the hub state: %w", err)
 	}
 	return s, nil
+}
+
+// Migrations is the sidecar's goose migrations (the files at its root): the
+// set Open applies.
+func Migrations() (fs.FS, error) { return fs.Sub(migrationsFS, "migrations") }
+
+// Checkpoint copies the WAL into the file and truncates it (adoption, so no
+// blanked text stays behind in the log).
+func (s *Store) Checkpoint() error {
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("checkpointing the hub state: %w", err)
+	}
+	return nil
 }
 
 // OpenReadOnly opens an existing <dir>/hubstate.db for reading only (the

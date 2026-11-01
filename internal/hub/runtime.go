@@ -284,7 +284,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		HubRelayID: h.relayID, Clock: o.Clock,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
 	})
-	sweepTemps(o)
+	sweepTemps(o, st)
 	if o.DB != nil {
 		// Registered after the processor exists: the handlers' start may
 		// already late-echo a held line it ends. No pass runs before the

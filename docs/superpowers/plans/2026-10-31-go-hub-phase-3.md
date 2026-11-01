@@ -375,7 +375,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Test: `internal/hub/adopt/{adopt_test.go,steps_test.go,recordings_test.go}`, `cmd/hub_adopt_test.go`, `internal/hub/slices/sources/recording_job_test.go`
 
 **Interfaces:**
-- Consumes: Plan 1a `state.Open`/`AcquireLock`, every sidecar migration present (`00001`–`00009` at the time of writing); Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
+- Consumes: Plan 1a `state.Open`/`AcquireLock`, every sidecar migration present on the branch (`00001`–`00008` when Task 13 landed; Task 20 adds `00009` — the test derives the list from the embedded FS); Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
 - Produces:
   ```go
   package adopt

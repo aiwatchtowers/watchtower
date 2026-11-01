@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"time"
@@ -509,4 +512,90 @@ func (j RecordingJob) UpdatedAt() time.Time {
 		return j.ClaimedAt
 	}
 	return j.CreatedAt
+}
+
+// ClassHubMoved is the error class of a phone recording that was being
+// transcribed when the Go hub adopted the Swift hub's state (ask #843): it
+// fails once, and the recording_job slice shows a fixed text for it.
+const ClassHubMoved = "hub_moved"
+
+// RecordingJobKeptFor is how long a finished job (and its audio file) is
+// kept: the Swift hub's 31-day rule.
+const RecordingJobKeptFor = 31 * 24 * time.Hour
+
+// ImportRecordingJobTx adds one job taken over from the Swift hub inside the
+// caller's transaction. A job already there is kept as it is (ok false):
+// an adoption run again never changes it.
+func ImportRecordingJobTx(tx *sql.Tx, j RecordingJob) (ok bool, err error) {
+	var tid, finished any
+	if j.TranscriptID != nil {
+		tid = *j.TranscriptID
+	}
+	if !j.FinishedAt.IsZero() {
+		finished = toReal(j.FinishedAt)
+	}
+	var class any
+	if j.ErrorClass != "" {
+		class = ErrorClass(j.ErrorClass)
+	}
+	res, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, transcript_id, error_class, created_at, finished_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, j.UploadID, deviceKey(j.DeviceID), j.Status, tid, class, toReal(j.CreatedAt), finished)
+	if err != nil {
+		return false, fmt.Errorf("importing a recording job: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("importing a recording job: %w", err)
+	}
+	return n == 1, nil
+}
+
+// PruneRecordingJobs deletes every finished job that ended at or before
+// olderThan, and its audio file <recordingsDir>/<upload_id>.m4a (a missing
+// file is no error). The file goes first, so a crash between the two leaves
+// a row the next prune finishes. It returns the number of rows deleted.
+func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (int, error) {
+	ids, err := s.finishedJobsBefore(olderThan)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, id := range ids {
+		if recordingsDir != "" && id != "" && filepath.Base(id) == id {
+			if err := os.Remove(filepath.Join(recordingsDir, id+".m4a")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return n, fmt.Errorf("removing a recording's audio: %w", err)
+			}
+		}
+		err := s.write(func(tx *sql.Tx) error {
+			_, err := tx.Exec(`DELETE FROM recording_jobs WHERE upload_id = ?`, id)
+			return err
+		})
+		if err != nil {
+			return n, fmt.Errorf("pruning the recording queue: %w", err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// finishedJobsBefore lists the upload ids of the jobs finished at or before t.
+func (s *Store) finishedJobsBefore(t time.Time) ([]string, error) {
+	rows, err := s.db.Query(`SELECT upload_id FROM recording_jobs
+		WHERE status IN ('done', 'failed') AND finished_at IS NOT NULL AND finished_at <= ?`, toReal(t))
+	if err != nil {
+		return nil, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("reading the recording queue: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	return ids, nil
 }
