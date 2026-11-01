@@ -25,6 +25,12 @@
 #
 # Environment: RELAY_INTEROP_PORT, RELAY_INTEROP_FILTER (default 'InteropTests'),
 # RELAY_INTEROP_KEEP=1 keeps the temp dir (wrangler's log and state).
+# WATCHTOWER_CHECKOUT is the Watchtower checkout to test (default: this script's
+# repo; needs a Makefile and WatchtowerKit/), so a relay CI job can call it.
+# RELAY_INTEROP_CI=1 is the CI mode (scripts/relay-interop-ci-lib.sh): stdin from
+# /dev/null, the test output goes to stderr after the run, the last stdout line
+# is `relay-interop: passed=N skipped=M failed=K`, and a run where no test passed
+# or failed exits 1.
 #
 # No `set -e`: the script reads exit codes itself (the readiness loop's curl, `wait` on
 # the test run, whose code is the script's), and an early exit there would skip the
@@ -32,53 +38,17 @@
 # EXIT trap reaps whatever was started.
 set -uo pipefail
 
-if [ $# -ne 1 ] || [ -z "$1" ]; then
-	echo "usage: $0 <relay checkout>   (or: make relay-interop-kit RELAY=<dir>)" >&2
-	exit 2
-fi
-RELAY="$1"
-WORKER="$RELAY/worker"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PORT="${RELAY_INTEROP_PORT:-8787}"
-ORIGIN="http://127.0.0.1:$PORT"
-FILTER="${RELAY_INTEROP_FILTER:-InteropTests}"
+# shellcheck source=relay-interop-ci-lib.sh
+. "$(dirname "$0")/relay-interop-ci-lib.sh" || exit 1
+
+WPID=""
+TPID=""
+STATE=""
 
 die() {
 	echo "relay-interop-kit: $*" >&2
 	exit 1
 }
-
-[ -f "$WORKER/package.json" ] && [ -f "$WORKER/wrangler.jsonc" ] || die "$WORKER is not the relay's worker directory"
-command -v node >/dev/null 2>&1 || die "node not found: install Node"
-command -v npx >/dev/null 2>&1 || die "npx not found: install Node"
-command -v curl >/dev/null 2>&1 || die "curl not found"
-command -v openssl >/dev/null 2>&1 || die "openssl not found"
-if [ ! -d "$WORKER/node_modules" ]; then
-	echo "relay-interop-kit: npm ci in $WORKER" >&2
-	(cd "$WORKER" && npm ci --no-audit --no-fund) >&2 || die "npm ci failed in $WORKER"
-fi
-[ -d "$WORKER/node_modules/wrangler" ] || die "no wrangler in $WORKER/node_modules"
-if command -v lsof >/dev/null 2>&1; then
-	holder="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { print $1 " (pid " $2 ")"; exit }')"
-	[ -z "$holder" ] || die "port $PORT is held by $holder: stop it or set RELAY_INTEROP_PORT"
-fi
-if curl -fsS -m 2 "$ORIGIN/healthz" >/dev/null 2>&1; then
-	die "something already answers on $ORIGIN: stop it or set RELAY_INTEROP_PORT"
-fi
-
-PIN="$(head -n 1 "$ROOT/WatchtowerKit/Sources/WatchtowerRelayProto/VERSION" | cut -d' ' -f1)"
-if HEAD="$(git -C "$RELAY" rev-parse HEAD 2>/dev/null)"; then
-	echo "relay-interop-kit: relay checkout at $HEAD" >&2
-	if [ "$HEAD" != "$PIN" ]; then
-		echo "relay-interop-kit: warning: the Kit's proto is pinned to $PIN" >&2
-	fi
-else
-	echo "relay-interop-kit: $RELAY is not a git checkout; the Kit's proto is pinned to $PIN" >&2
-fi
-
-WPID=""
-TPID=""
-STATE=""
 
 # stop_group ends process group $1: SIGTERM, then SIGKILL after 10 s, and
 # waits until no process of the group is left.
@@ -115,14 +85,55 @@ cleanup() {
 	elif [ -n "$STATE" ]; then
 		rm -rf "$STATE"
 	fi
-	exit "$rc"
+	ci_exit "$rc"
 }
 
-# The trap goes in right after mktemp, so no exit path leaves the temp dir behind.
-STATE="$(mktemp -d "${TMPDIR:-/tmp}/relay-interop-kit.XXXXXX")" || die "mktemp failed"
+# The trap is first, so no exit path (a refusal too) skips the cleanup and the CI summary.
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [ $# -ne 1 ] || [ -z "$1" ]; then
+	echo "usage: $0 <relay checkout>   (or: make relay-interop-kit RELAY=<dir>)" >&2
+	exit 2
+fi
+RELAY="$1"
+WORKER="$RELAY/worker"
+ROOT="$(ci_checkout "$(cd "$(dirname "$0")" && pwd)")" || die "no usable Watchtower checkout"
+PORT="${RELAY_INTEROP_PORT:-8787}"
+ORIGIN="http://127.0.0.1:$PORT"
+FILTER="${RELAY_INTEROP_FILTER:-InteropTests}"
+
+[ -f "$WORKER/package.json" ] && [ -f "$WORKER/wrangler.jsonc" ] || die "$WORKER is not the relay's worker directory"
+command -v node >/dev/null 2>&1 || die "node not found: install Node"
+command -v npx >/dev/null 2>&1 || die "npx not found: install Node"
+command -v curl >/dev/null 2>&1 || die "curl not found"
+command -v openssl >/dev/null 2>&1 || die "openssl not found"
+if [ ! -d "$WORKER/node_modules" ]; then
+	echo "relay-interop-kit: npm ci in $WORKER" >&2
+	(cd "$WORKER" && npm ci --no-audit --no-fund) >&2 || die "npm ci failed in $WORKER"
+fi
+[ -d "$WORKER/node_modules/wrangler" ] || die "no wrangler in $WORKER/node_modules"
+if command -v lsof >/dev/null 2>&1; then
+	holder="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { print $1 " (pid " $2 ")"; exit }')"
+	[ -z "$holder" ] || die "port $PORT is held by $holder: stop it or set RELAY_INTEROP_PORT"
+fi
+if curl -fsS -m 2 "$ORIGIN/healthz" >/dev/null 2>&1; then
+	die "something already answers on $ORIGIN: stop it or set RELAY_INTEROP_PORT"
+fi
+
+PIN="$(head -n 1 "$ROOT/WatchtowerKit/Sources/WatchtowerRelayProto/VERSION" | cut -d' ' -f1)"
+if HEAD="$(git -C "$RELAY" rev-parse HEAD 2>/dev/null)"; then
+	echo "relay-interop-kit: relay checkout at $HEAD" >&2
+	if [ "$HEAD" != "$PIN" ]; then
+		echo "relay-interop-kit: warning: the Kit's proto is pinned to $PIN" >&2
+	fi
+else
+	echo "relay-interop-kit: $RELAY is not a git checkout; the Kit's proto is pinned to $PIN" >&2
+fi
+
+# The temp dir is created right after the checks; the EXIT trap above removes it.
+STATE="$(mktemp -d "${TMPDIR:-/tmp}/relay-interop-kit.XXXXXX")" || die "mktemp failed"
 LOG="$STATE/wrangler.log"
 SECRET="$(openssl rand -hex 32)"
 [ -n "$SECRET" ] || die "openssl rand gave no session secret"
@@ -181,13 +192,27 @@ if [ "$code" = 404 ] || [ "$code" = 000 ]; then
 fi
 
 cd "$ROOT" || exit 1
+run_kit() {
+	WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" make kit-test FILTER="$FILTER" </dev/null
+}
+KLOG="$STATE/kit-test.log"
 set -m
-WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" make kit-test FILTER="$FILTER" </dev/null &
+if [ "$CI_MODE" = 1 ]; then
+	# stdout is only the summary line: the run's output is kept for the count and
+	# shown on stderr when it ends.
+	run_kit >"$KLOG" 2>&1 &
+else
+	run_kit &
+fi
 TPID=$!
 set +m
 wait "$TPID"
 rc=$?
 TPID=""
+if [ "$CI_MODE" = 1 ]; then
+	cat "$KLOG" >&2
+	ci_add_xctest "$KLOG"
+fi
 if [ "$rc" -ne 0 ]; then
 	echo "relay-interop-kit: FAIL (exit $rc); wrangler log tail:" >&2
 	tail -n 60 "$LOG" >&2

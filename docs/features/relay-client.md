@@ -252,6 +252,24 @@ Script settings and its stand config:
 
 Task 12's run against the stand at `3a99bd7`: 44 passed, 20 skipped, 0 failed. Task 17's run at `bcca870` (Phase 3): 46 passed, 24 skipped, 0 failed.
 
+### Relay CI job
+
+The relay repo's CI runs the two Kit interop scripts against its own stand. The job itself belongs to the relay session (ask #734); this repo ships the entry points:
+
+```
+RELAY_INTEROP_CI=1 WATCHTOWER_CHECKOUT=<watchtower checkout> bash <watchtower checkout>/scripts/relay-interop-kit.sh <relay checkout>
+RELAY_INTEROP_CI=1 WATCHTOWER_CHECKOUT=<watchtower checkout> bash <watchtower checkout>/scripts/relay-interop-kit-hub.sh <relay checkout>
+```
+
+(or `make relay-interop-kit` and `make relay-interop-kit-hub` with `RELAY=<relay checkout>`, run from the Watchtower checkout.)
+
+- **What each runs.** `relay-interop-kit.sh` runs the Kit's `*InteropTests` classes against the stand. `relay-interop-kit-hub.sh` runs the Kit phone against the Go hub on the same stand: the Go test `TestInterop_KitPhone` (build tag `interop`) beside the Kit's `KitGoHubInteropTests`, handing off through files.
+- **Needs.** A macOS runner with Xcode (Swift 6 toolchain), Node with `npx` (`npm ci` runs in `<relay>/worker` when `node_modules` is missing), `curl` and `openssl`. The hub script also needs Go with cgo. Both scripts use the stand's fixed port 8787 (`RELAY_INTEROP_PORT`) and refuse a port that is held or already answers, so run the two one after the other, not at the same time.
+- **`WATCHTOWER_CHECKOUT`** is the Watchtower checkout to test. It defaults to the script's own repo, and must hold a `Makefile` and `WatchtowerKit/`, otherwise the script refuses.
+- **`RELAY_INTEROP_CI=1`.** Non-interactive: stdin is `/dev/null` and the scripts never prompt. The tests' output goes to stderr when the run ends. The last line of stdout, printed exactly once and also on failure or refusal, is `relay-interop: passed=N skipped=M failed=K`. The counts come from the runners' own output (XCTest's `Executed N tests, with S tests skipped and K failures`, and `go test -v`'s top-level `--- PASS/SKIP/FAIL` lines). The exit code is non-zero on any failure, and 1 when no test passed or failed, even if some were skipped (every interop test skips without the stand's URL). A run that fails without a failing test (a build error, a timeout) has `failed=0` and a non-zero exit.
+- **Cleanup.** The stand, the Go test and the Kit run each have a process group; all are killed and waited for on every exit path, as without CI mode.
+- **Tests.** `scripts/tests/test-relay-interop-kit.sh` and `scripts/tests/test-relay-interop-kit-hub.sh` run the scripts against stubs (`make test-scripts`).
+
 ## v1 limits
 
 - **A stalled resync is silent.** The only trace is one `relay resync stalled partway, held` log line (category `HostedRelay`, zone kind only). No `relayEvents` case or screen reports it.

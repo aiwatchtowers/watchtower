@@ -364,6 +364,8 @@ relay-interop-kit:
 # the Kit's KitGoHubInteropTests side by side, handing off through files. The
 # stand, the Go test and the Kit run each get a process group, killed and
 # waited for on exit, failure and signal. See scripts/relay-interop-kit-hub.sh.
+# Both Kit targets honour RELAY_INTEROP_CI=1 (the relay CI mode) and
+# WATCHTOWER_CHECKOUT, see docs/features/relay-client.md.
 relay-interop-kit-hub:
 	bash scripts/relay-interop-kit-hub.sh "$(RELAY)"
 
