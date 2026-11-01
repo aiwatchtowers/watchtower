@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- The CloudKit bridge's entitlements: the app's iCloud container, CloudKit and push, nothing else (no
+         audio, no files). Restricted: they take effect only with a real identity and the helper's own
+         Developer ID provisioning profile (App ID com.watchtower.desktop.cloudbridge, WATCHTOWER_BRIDGE_PROFILE).
+         build-app.sh's bridge-profile-check merges the application and team identifiers from that profile into
+         a temporary copy and rewrites the two environment keys for WATCHTOWER_CLOUDKIT_ENV=Development, as
+         for the app; check-bridge-signing.sh compares the signed result with that copy and the profile. -->
+    <key>com.apple.developer.icloud-container-identifiers</key>
+    <array>
+        <string>iCloud.com.aiwatchtowers.watchtower</string>
+    </array>
+    <key>com.apple.developer.icloud-services</key>
+    <array>
+        <string>CloudKit</string>
+    </array>
+    <key>com.apple.developer.icloud-container-environment</key>
+    <string>Production</string>
+    <key>com.apple.developer.aps-environment</key>
+    <string>production</string>
+</dict>
+</plist>
