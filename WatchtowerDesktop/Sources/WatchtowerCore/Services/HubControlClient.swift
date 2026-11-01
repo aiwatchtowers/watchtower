@@ -328,7 +328,7 @@ package final class HubControlClient: HubControlClienting {
                         return
                     }
                     defer { socket.close() }
-                    try Self.write(fd, try Self.line(.watch), deadline: Date().addingTimeInterval(Self.requestTimeout))
+                    try Self.sendAll(fd, try Self.line(.watch), deadline: Date().addingTimeInterval(Self.requestTimeout))
                     var reader = LineReader(fd: fd)
                     while true {
                         guard let next = try reader.next(timeout: nil) else { continue }
@@ -397,7 +397,7 @@ package final class HubControlClient: HubControlClienting {
         let fd = try connect(path)
         defer { close(fd) }
         let deadline = Date().addingTimeInterval(requestTimeout)
-        try write(fd, line, deadline: deadline)
+        try sendAll(fd, line, deadline: deadline)
         var reader = LineReader(fd: fd)
         while true {
             let left = deadline.timeIntervalSinceNow
@@ -436,7 +436,7 @@ package final class HubControlClient: HubControlClienting {
         return fd
     }
 
-    private static func write(_ fd: Int32, _ data: Data, deadline: Date) throws {
+    private static func sendAll(_ fd: Int32, _ data: Data, deadline: Date) throws {
         var sent = 0
         while sent < data.count {
             let left = deadline.timeIntervalSinceNow
