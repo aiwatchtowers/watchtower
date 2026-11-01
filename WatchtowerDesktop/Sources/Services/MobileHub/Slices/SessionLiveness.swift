@@ -31,22 +31,6 @@ struct SessionLiveness: Equatable, Sendable {
     }
 }
 
-/// A background agent count the state center shows as over: the session's
-/// run and the count's `agent_background_at` it was judged for.
-struct ShownOverCount: Equatable, Sendable {
-    let run: Date?
-    let reportedAt: String?
-
-    /// `over`'s sessions with the run and report stamp of `rows`.
-    static func of(_ over: Set<Int64>, rows: [SessionAgentStateRow], startedAt: [Int64: Date]) -> [Int64: Self] {
-        var counts: [Int64: Self] = [:]
-        for row in rows where over.contains(row.id) {
-            counts[row.id] = Self(run: startedAt[row.id], reportedAt: row.agentBackgroundAt)
-        }
-        return counts
-    }
-}
-
 /// The lock-guarded `SessionLiveness` the fast lane writes and the slice
 /// reads.
 final class SessionLivenessBox: Sendable {
