@@ -1,6 +1,7 @@
 package wire_test
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -8,21 +9,30 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/wire"
 )
 
 type fixture struct {
 	DeviceGrant []struct {
-		Name   string          `json:"name"`
-		JSON   json.RawMessage `json:"json"`
-		Expect json.RawMessage `json:"expect"`
+		Name          string          `json:"name"`
+		RelayAuthSeed string          `json:"relay_auth_seed"`
+		JSON          json.RawMessage `json:"json"`
+		Expect        json.RawMessage `json:"expect"`
 	} `json:"device_grant"`
 	LinkPayload []struct {
-		Name   string          `json:"name"`
-		URL    string          `json:"url"`
-		Expect json.RawMessage `json:"expect"`
-		Error  string          `json:"error"`
+		Name          string          `json:"name"`
+		RelayAuthSeed string          `json:"relay_auth_seed"`
+		URL           string          `json:"url"`
+		Expect        json.RawMessage `json:"expect"`
+		Error         string          `json:"error"`
 	} `json:"link_payload"`
+	DeviceHello []struct {
+		Name          string          `json:"name"`
+		RelayAuthSeed string          `json:"relay_auth_seed"`
+		JSON          json.RawMessage `json:"json"`
+		RelayCoder    string          `json:"relay_coder"`
+	} `json:"device_hello"`
 	Encoding []struct {
 		Name        string          `json:"name"`
 		Kind        string          `json:"kind"`
@@ -48,6 +58,28 @@ func errFor(t *testing.T, s string) error {
 	return nil
 }
 
+// relayPair is the relay identity a case derives from its fixed seed: the
+// base64url `relay_auth` public key and its relay device id.
+func relayPair(t *testing.T, seed string) (pub, id string) {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(seed)
+	require.NoError(t, err)
+	key := ed25519.NewKeyFromSeed(raw).Public().(ed25519.PublicKey)
+	return base64.RawURLEncoding.EncodeToString(key), identity.RelayDeviceID(key)
+}
+
+// requireCoherentRelay checks that a case's relay_auth_pub and relay_device_id
+// are the pair its seed derives (the hub derives both from one key).
+func requireCoherentRelay(t *testing.T, seed, gotPub, gotID string) {
+	t.Helper()
+	if seed == "" {
+		return
+	}
+	pub, id := relayPair(t, seed)
+	require.Equal(t, pub, gotPub, "relay_auth_pub derives from the case's seed")
+	require.Equal(t, id, gotID, "relay_device_id derives from the case's seed")
+}
+
 func TestHubContractFixture(t *testing.T) {
 	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
 	require.NoError(t, err)
@@ -55,6 +87,7 @@ func TestHubContractFixture(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &f))
 	require.NotEmpty(t, f.DeviceGrant)
 	require.NotEmpty(t, f.LinkPayload)
+	require.Len(t, f.DeviceHello, 3)
 
 	for _, c := range f.DeviceGrant {
 		t.Run("grant/"+c.Name, func(t *testing.T) {
@@ -67,6 +100,7 @@ func TestHubContractFixture(t *testing.T) {
 			var g2 wire.DeviceGrant
 			require.NoError(t, json.Unmarshal(out, &g2))
 			require.Equal(t, g, g2)
+			requireCoherentRelay(t, c.RelayAuthSeed, g.RelayAuthPub, g.RelayDeviceID)
 		})
 	}
 	for _, c := range f.LinkPayload {
@@ -86,6 +120,33 @@ func TestHubContractFixture(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, p, p2)
 			require.Equal(t, c.URL, u, "Go writes the fixture's link bytes")
+			requireCoherentRelay(t, c.RelayAuthSeed, p.RelayAuthPub, p.RelayDeviceID)
+		})
+	}
+	for _, c := range f.DeviceHello {
+		t.Run("hello/"+c.Name, func(t *testing.T) {
+			var h wire.DeviceHello
+			require.NoError(t, json.Unmarshal(c.JSON, &h))
+			out, err := wire.Marshal(h)
+			require.NoError(t, err)
+			require.JSONEq(t, string(c.JSON), string(out))
+			if c.RelayCoder != "" {
+				require.Equal(t, c.RelayCoder, string(out), "Go writes the Kit's hello bytes")
+			}
+			switch c.Name {
+			case "with_relay_id":
+				_, id := relayPair(t, c.RelayAuthSeed)
+				require.Equal(t, wire.DeviceHello{
+					Device: h.Device, SigningKey: h.SigningKey, AgreementKey: h.AgreementKey, RelayDeviceID: id,
+				}, h)
+			case "without_relay_id":
+				require.Empty(t, h.RelayDeviceID)
+			case "bad_relay_id":
+				// Decodes; the hub's link drops it (pinned in internal/hub/link's TestHelloFixtureRelayIDRule).
+				require.NotEmpty(t, h.RelayDeviceID)
+			default:
+				t.Fatalf("unknown hello case %q", c.Name)
+			}
 		})
 	}
 	require.NotEmpty(t, f.Encoding)

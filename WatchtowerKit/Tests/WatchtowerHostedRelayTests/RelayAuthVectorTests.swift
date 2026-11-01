@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import WatchtowerHostedRelay
+import WatchtowerSync
 import XCTest
 
 /// The relay device id and the register/login messages, pinned to the Go client by
@@ -50,9 +51,23 @@ final class RelayAuthVectorTests: XCTestCase {
         for vector in try vectors() {
             let pub = try hex(vector.authPub)
             XCTAssertEqual(RelayAuthMessages.deviceID(publicKey: pub), vector.relayDeviceId)
+            XCTAssertEqual(RelayIDs.deviceID(publicKey: pub), vector.relayDeviceId)
+            XCTAssertTrue(RelayIDs.isValid(vector.relayDeviceId))
             let key = try Curve25519.Signing.PrivateKey(rawRepresentation: hex(vector.seed))
             XCTAssertEqual(Ed25519RelaySigner(key).publicKey, pub)
         }
+    }
+
+    func testRelayIDFormatRule() {
+        let valid = String(repeating: "a", count: 50) + "27"
+        XCTAssertTrue(RelayIDs.isValid(valid))
+        XCTAssertFalse(RelayIDs.isValid(String(valid.dropLast())), "51 characters")
+        XCTAssertFalse(RelayIDs.isValid(valid + "a"), "53 characters")
+        XCTAssertFalse(RelayIDs.isValid(valid.uppercased()), "upper case")
+        XCTAssertFalse(RelayIDs.isValid(String(valid.dropLast()) + "1"), "1 is not base32")
+        XCTAssertFalse(RelayIDs.isValid(String(valid.dropLast()) + "="), "padding")
+        XCTAssertFalse(RelayIDs.isValid("CCCCCCCC-0000-4000-8000-000000000003"))
+        XCTAssertFalse(RelayIDs.isValid(""))
     }
 
     func testRegisterClientDataHashVector() throws {

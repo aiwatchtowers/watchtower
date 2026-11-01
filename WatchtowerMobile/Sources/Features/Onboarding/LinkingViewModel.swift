@@ -190,6 +190,12 @@ final class LinkingViewModel {
             phase = .failed(.refused)
             return
         }
+        // The Kit reads v4 now, but which route a v4 code links over is relay client Phase 3 Task 10's: until then
+        // a v4 code reads as it did before the Kit could read v4. A v3 code always carries its owner.
+        guard payload.v <= LinkPayload.currentVersion, let ownerUser = payload.ownerUser else {
+            phase = .failed(.updateApp)
+            return
+        }
         // The hub id names the hub's directories: only a plain name.
         guard HubPaths.isValidHubID(payload.hubID) else {
             Self.logger.warning("link code with an unusable hub id")
@@ -248,7 +254,7 @@ final class LinkingViewModel {
         if let row = row(payload.hubID), !ending.contains(row.hubID) {
             report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
         }
-        await connect(payload, hubKeys: hubKeys, userRecordName: userRecordName)
+        await connect(payload, ownerUser: ownerUser, hubKeys: hubKeys, userRecordName: userRecordName)
     }
 
     /// "Linked to <Mac name>" → the notification prompt → Now.
@@ -260,12 +266,12 @@ final class LinkingViewModel {
     }
 
     /// Steps 3–5 for a valid code.
-    private func connect(_ payload: LinkPayload, hubKeys: ScannedHubKeys, userRecordName: String) async {
+    private func connect(_ payload: LinkPayload, ownerUser: String, hubKeys: ScannedHubKeys, userRecordName: String) async {
         // Step 3: same Apple ID → the private database, share URLs ignored
         // (an owner cannot accept their own share). Another Apple ID → both
         // shares, then the shared database.
         let route: HubRoute
-        if userRecordName == payload.ownerUser {
+        if userRecordName == ownerUser {
             route = .cloudKit(.private)
         } else {
             guard payload.dataShare.flatMap(URL.init(string:)) != nil,
@@ -277,13 +283,13 @@ final class LinkingViewModel {
             do {
                 try await access.join(
                     LinkInvitation(dataShare: payload.dataShare, relayShare: payload.relayShare),
-                    route: .cloudKit(.shared(ownerName: payload.ownerUser)), hubID: payload.hubID)
+                    route: .cloudKit(.shared(ownerName: ownerUser)), hubID: payload.hubID)
             } catch {
                 Self.logger.error("share accept failed: \(error.localizedDescription, privacy: .public)")
                 phase = .failed(.cannotShare)
                 return
             }
-            route = .cloudKit(.shared(ownerName: payload.ownerUser))
+            route = .cloudKit(.shared(ownerName: ownerUser))
         }
         // The device keys (created here, in the foreground, on the first scan:
         // F14; one identity for every hub) and the hub's keys from the code.
@@ -303,7 +309,7 @@ final class LinkingViewModel {
             hubID: payload.hubID,
             macName: payload.macName,
             scope: shared ? .shared : .private,
-            ownerName: payload.ownerUser,
+            ownerName: ownerUser,
             userRecordName: userRecordName,
             nonce: payload.nonce,
             dataShareURL: shared ? payload.dataShare : nil,

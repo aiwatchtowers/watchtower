@@ -2,6 +2,7 @@
   "device_grant": [
     {
       "name": "desktop_awaiting",
+      "relay_auth_seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
       "json": {
         "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
         "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
@@ -18,8 +19,8 @@
           "cloudkit",
           "relay"
         ],
-        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
-        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"
       },
       "expect": {
         "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
@@ -37,8 +38,8 @@
           "cloudkit",
           "relay"
         ],
-        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
-        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"
       },
       "kit": {
         "linked": false,
@@ -53,11 +54,22 @@
         "typing_allowed": false,
         "linked_at": null,
         "decided_at": null,
-        "ordered_actions": 1
+        "ordered_actions": 1,
+        "transports": [
+          "cloudkit",
+          "relay"
+        ],
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+        "hub_transports": [
+          "cloudkit",
+          "relay"
+        ]
       }
     },
     {
       "name": "headless_linked",
+      "relay_auth_seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
       "json": {
         "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
         "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
@@ -74,8 +86,8 @@
         "transports": [
           "relay"
         ],
-        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
-        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"
       },
       "expect": {
         "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
@@ -93,8 +105,8 @@
         "transports": [
           "relay"
         ],
-        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
-        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"
       },
       "kit": {
         "linked": true,
@@ -109,7 +121,15 @@
         "typing_allowed": true,
         "linked_at": 1730000000,
         "decided_at": 1730000001.5,
-        "ordered_actions": 1
+        "ordered_actions": 1,
+        "transports": [
+          "relay"
+        ],
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+        "hub_transports": [
+          "relay"
+        ]
       }
     },
     {
@@ -231,10 +251,25 @@
   "link_payload": [
     {
       "name": "v4_desktop",
-      "url": "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmV4YW1wbGUud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3NoYXJlLmV4YW1wbGUuY29tL2QiLCJleHAiOjE3MzAwMDA2MDAsImh1Yl9pZCI6IkFBQUFBQUFBLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImh1Yl9reCI6IllXSmpaR1ZtWjJocGFtdHNiVzV2Y0hGeWMzUjFkbmQ0ZVhwN2ZIMS1mNEEiLCJodWJfc2lnIjoiUVVKRFJFVkdSMGhKU2t0TVRVNVBVRkZTVTFSVlZsZFlXVnBiWEYxZVgyQSIsImlhdCI6MTczMDAwMDAwMCwibWFjX25hbWUiOiJUZXN0IE1hYyIsIm5vbmNlIjoiSVNJakpDVW1KeWdwS2lzc0xTNHZNREV5TXpRMU5qYzRPVG83UEQwLVAwQSIsIm93bmVyX3VzZXIiOiJfb3duZXIwMDAwIiwicmVsYXlfYXV0aF9wdWIiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBIiwicmVsYXlfZGV2aWNlX2lkIjoiQ0NDQ0NDQ0MtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAzIiwicmVsYXlfc2hhcmUiOiJodHRwczovL3NoYXJlLmV4YW1wbGUuY29tL3IiLCJ0cmFuc3BvcnQiOiJyZWxheSIsInRyYW5zcG9ydHMiOlsiY2xvdWRraXQiLCJyZWxheSJdLCJ2Ijo0fQ",
-      "kit": "newer_version",
+      "relay_auth_seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "url": "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmFpd2F0Y2h0b3dlcnMud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3NoYXJlLmV4YW1wbGUuY29tL2QiLCJleHAiOjE3MzAwMDA2MDAsImh1Yl9pZCI6IkFBQUFBQUFBLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImh1Yl9reCI6IllXSmpaR1ZtWjJocGFtdHNiVzV2Y0hGeWMzUjFkbmQ0ZVhwN2ZIMS1mNEEiLCJodWJfc2lnIjoiUVVKRFJFVkdSMGhKU2t0TVRVNVBVRkZTVTFSVlZsZFlXVnBiWEYxZVgyQSIsImlhdCI6MTczMDAwMDAwMCwibWFjX25hbWUiOiJUZXN0IE1hYyIsIm5vbmNlIjoiSVNJakpDVW1KeWdwS2lzc0xTNHZNREV5TXpRMU5qYzRPVG83UEQwLVAwQSIsIm93bmVyX3VzZXIiOiJfb3duZXIwMDAwIiwicmVsYXlfYXV0aF9wdWIiOiJlYlZXTG9fbVZQbEFlTEVTNkttTHA1QWZoVHJtbGI3WDRPT1JDNjBFbG1RIiwicmVsYXlfZGV2aWNlX2lkIjoibXczYW00Nnc1d2VleDRhNGZxcmMzYXZudWIyYTZrbm1nbms1bmtqZnphcHJwNWQyZTY0YSIsInJlbGF5X3NoYXJlIjoiaHR0cHM6Ly9zaGFyZS5leGFtcGxlLmNvbS9yIiwidHJhbnNwb3J0IjoicmVsYXkiLCJ0cmFuc3BvcnRzIjpbImNsb3Vka2l0IiwicmVsYXkiXSwidiI6NH0",
+      "kit": {
+        "offers_cloudkit": true,
+        "offers_relay": true,
+        "container": "iCloud.com.aiwatchtowers.watchtower",
+        "owner_user": "_owner0000",
+        "transport": "relay",
+        "transports": [
+          "cloudkit",
+          "relay"
+        ],
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+        "data_share": "https://share.example.com/d",
+        "relay_share": "https://share.example.com/r"
+      },
       "expect": {
-        "container": "iCloud.com.example.watchtower",
+        "container": "iCloud.com.aiwatchtowers.watchtower",
         "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
         "mac_name": "Test Mac",
         "owner_user": "_owner0000",
@@ -247,8 +282,8 @@
         "data_share": "https://share.example.com/d",
         "relay_share": "https://share.example.com/r",
         "transport": "relay",
-        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
-        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
         "transports": [
           "cloudkit",
           "relay"
@@ -257,8 +292,22 @@
     },
     {
       "name": "v4_headless",
-      "url": "watchtower://link?d=eyJleHAiOjE3MzAwMDA2MDAsImh1Yl9pZCI6IkFBQUFBQUFBLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImh1Yl9reCI6IllXSmpaR1ZtWjJocGFtdHNiVzV2Y0hGeWMzUjFkbmQ0ZVhwN2ZIMS1mNEEiLCJodWJfc2lnIjoiUVVKRFJFVkdSMGhKU2t0TVRVNVBVRkZTVTFSVlZsZFlXVnBiWEYxZVgyQSIsImlhdCI6MTczMDAwMDAwMCwibWFjX25hbWUiOiJUZXN0IE1hYyIsIm5vbmNlIjoiSVNJakpDVW1KeWdwS2lzc0xTNHZNREV5TXpRMU5qYzRPVG83UEQwLVAwQSIsInJlbGF5X2F1dGhfcHViIjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QSIsInJlbGF5X2RldmljZV9pZCI6IkNDQ0NDQ0NDLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMyIsInRyYW5zcG9ydCI6InJlbGF5IiwidHJhbnNwb3J0cyI6WyJyZWxheSJdLCJ2Ijo0fQ",
-      "kit": "newer_version",
+      "relay_auth_seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "url": "watchtower://link?d=eyJleHAiOjE3MzAwMDA2MDAsImh1Yl9pZCI6IkFBQUFBQUFBLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImh1Yl9reCI6IllXSmpaR1ZtWjJocGFtdHNiVzV2Y0hGeWMzUjFkbmQ0ZVhwN2ZIMS1mNEEiLCJodWJfc2lnIjoiUVVKRFJFVkdSMGhKU2t0TVRVNVBVRkZTVTFSVlZsZFlXVnBiWEYxZVgyQSIsImlhdCI6MTczMDAwMDAwMCwibWFjX25hbWUiOiJUZXN0IE1hYyIsIm5vbmNlIjoiSVNJakpDVW1KeWdwS2lzc0xTNHZNREV5TXpRMU5qYzRPVG83UEQwLVAwQSIsInJlbGF5X2F1dGhfcHViIjoiZWJWV0xvX21WUGxBZUxFUzZLbUxwNUFmaFRybWxiN1g0T09SQzYwRWxtUSIsInJlbGF5X2RldmljZV9pZCI6Im13M2FtNDZ3NXdlZXg0YTRmcXJjM2F2bnViMmE2a25tZ25rNW5ramZ6YXBycDVkMmU2NGEiLCJ0cmFuc3BvcnQiOiJyZWxheSIsInRyYW5zcG9ydHMiOlsicmVsYXkiXSwidiI6NH0",
+      "kit": {
+        "offers_cloudkit": false,
+        "offers_relay": true,
+        "container": null,
+        "owner_user": null,
+        "transport": "relay",
+        "transports": [
+          "relay"
+        ],
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+        "data_share": null,
+        "relay_share": null
+      },
       "expect": {
         "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
         "mac_name": "Test Mac",
@@ -269,8 +318,8 @@
         "hub_kx": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
         "v": 4,
         "transport": "relay",
-        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
-        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+        "relay_device_id": "mw3am46w5weex4a4fqrc3avnub2a6knmgnk5nkjfzaprp5d2e64a",
+        "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
         "transports": [
           "relay"
         ]
@@ -643,6 +692,82 @@
         "reason": null,
         "retry_after_s": null,
         "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004"
+      }
+    }
+  ],
+  "device_hello": [
+    {
+      "name": "with_relay_id",
+      "relay_auth_seed": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+      "json": {
+        "device": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "name": "Test Phone",
+          "model": "iPhone",
+          "app_version": "1.0",
+          "scope": "private",
+          "user_record_name": "_owner0000",
+          "link_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+          "typing_requested": false,
+          "start_sessions": true,
+          "updated_at": 1730000000
+        },
+        "signing_key": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "agreement_key": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      },
+      "relay_coder": "{\"agreement_key\":\"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A\",\"device\":{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"link_nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"},\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"signing_key\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A\"}",
+      "hub_accepts_relay_id": true,
+      "kit": {
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      }
+    },
+    {
+      "name": "without_relay_id",
+      "json": {
+        "device": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "name": "Test Phone",
+          "model": "iPhone",
+          "app_version": "1.0",
+          "scope": "private",
+          "user_record_name": "_owner0000",
+          "link_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+          "typing_requested": false,
+          "start_sessions": true,
+          "updated_at": 1730000000
+        },
+        "signing_key": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "agreement_key": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A"
+      },
+      "relay_coder": "{\"agreement_key\":\"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A\",\"device\":{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"link_nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"},\"signing_key\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A\"}",
+      "hub_accepts_relay_id": null,
+      "kit": {
+        "relay_device_id": null
+      }
+    },
+    {
+      "name": "bad_relay_id",
+      "json": {
+        "device": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "name": "Test Phone",
+          "model": "iPhone",
+          "app_version": "1.0",
+          "scope": "private",
+          "user_record_name": "_owner0000",
+          "link_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+          "typing_requested": false,
+          "start_sessions": true,
+          "updated_at": 1730000000
+        },
+        "signing_key": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "agreement_key": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003"
+      },
+      "hub_accepts_relay_id": false,
+      "kit": {
+        "relay_device_id": null
       }
     }
   ]
