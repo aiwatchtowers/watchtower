@@ -8,7 +8,7 @@ You step away from your desk while a Workbench session waits on a question. The 
 
 ## How it works
 
-The Mac is the **hub**. With **Sync with iPhone** on, it publishes a slice of your data (asks, Workbench boards and sessions, calendar, recaps) into your iCloud. The phone reads that slice and sends its changes back as requests. The Mac applies them in the order they were made, when it is awake; see [not delivered](iphone-not-delivered.md).
+The Mac is the **hub**. With **Sync with iPhone** on, it publishes asks, Workbench boards and sessions, calendar and recaps into your iCloud. The phone reads them and sends requests back; the Mac applies them when awake. Hubs with ordered delivery apply changes in order; see [not delivered](iphone-not-delivered.md).
 
 Everything is sealed with keys exchanged at linking, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's chat (below).
 

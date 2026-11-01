@@ -18,6 +18,20 @@ Pull request details need the GitHub CLI (`gh`). Without it, only whether a bran
 
 ## Using it
 
+### Choose what a session counts
+<!-- learn
+id: session-report-target
+title: Choose a session's target
+text: Right-click a session and choose **Session Target** to set which target its progress counts.
+area: development
+level: next
+kind: feature
+since: 0.26.4
+action: nav:projects
+-->
+
+Right-click an agent session and choose **Session Target**, then a target from the board. Choose **None — Count What It Touched** to count the session's own work instead. The choice also sets which target must be closed before the agent can finish; see [the session report](#the-session-report).
+
 ### Read the Report view
 <!-- learn
 id: session-report-view
