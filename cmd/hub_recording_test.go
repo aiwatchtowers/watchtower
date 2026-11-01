@@ -18,6 +18,21 @@ import (
 	"watchtower/internal/hub/state"
 )
 
+func TestHubRunPreservesConfigIsolation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	hubTestDir(t)
+	orig := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "missing-config.yaml")
+	t.Cleanup(func() { flagConfig = orig })
+	want := flagConfig
+
+	_, err := runHub(t, "desktop", "heartbeat", "--json")
+	require.NoError(t, err)
+	require.Equal(t, want, flagConfig, "hub flag cleanup must not restore the real user's --config default")
+	_, err = os.Stat(filepath.Join(os.Getenv("HOME"), ".local", "share", "watchtower"))
+	require.True(t, os.IsNotExist(err), "a hub test must not create a workspace through the user's config")
+}
+
 func runHub(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
@@ -28,10 +43,7 @@ func runHub(t *testing.T, args ...string) (string, error) {
 	rootCmd.SetArgs(nil)
 	for _, c := range hubCmd.Commands() {
 		for _, sub := range append(c.Commands(), c) {
-			// Local flags only: resetting the inherited root flags would point
-			// flagConfig at the default (the developer's real) config path for
-			// every later test in the package.
-			sub.LocalFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+			sub.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 		}
 	}
 	return out.String(), err

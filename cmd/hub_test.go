@@ -850,7 +850,7 @@ func startPair(t *testing.T) *pairRun {
 		rootCmd.SetIn(nil)
 		rootCmd.SetArgs(nil)
 		for _, c := range hubCmd.Commands() {
-			c.LocalFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false }) // never the inherited --config
+			c.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 		}
 	})
 	return p
