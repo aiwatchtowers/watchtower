@@ -705,6 +705,8 @@ final class HubSession {
                 askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter
             )
         )
+        // A raise this phone has not acknowledged yet (no session was up, or the Keychain was locked).
+        acknowledgeNewestEpoch()
         switch transportKind {
         case .inMemoryDemo:
             do {
@@ -1145,6 +1147,7 @@ final class HubSession {
         await readoptHeldIfNeeded()
         await recorder.uploadPending()
         startOutboxWork(sweep: false)
+        acknowledgeNewestEpoch()
     }
 
     /// The link flow merged new epoch keys into the Keychain (`AppRoot.keysMerged`): the rows they unlock are
@@ -1153,8 +1156,19 @@ final class HubSession {
     /// link leaves it to the next raise.
     func keysMerged(newestEpochRaised: Bool) {
         indexStoredRows()
-        guard newestEpochRaised, !stopped else { return }
+        guard newestEpochRaised else { return }
+        acknowledgeNewestEpoch()
+    }
+
+    /// Queues `epoch_ack` for the Keychain's newest epoch when it is above the last one acknowledged (the outbox
+    /// decides, and sends none to a hub on today's path). Also at boot and after the unlock, so a raise made while
+    /// no session was up or the Keychain was locked is still acknowledged (the epoch the ordered path turned on in
+    /// is the baseline, `adoptOrderedActions`). Kept in `epochAckWork` (tests).
+    private func acknowledgeNewestEpoch() {
+        guard !stopped, linkedDevice != nil else { return }
+        let previous = epochAckWork
         epochAckWork = Task { [outbox, secure] in
+            await previous?.value
             do {
                 try await outbox.enqueueEpochAck(epoch: secure.currentEpoch())
             } catch {
@@ -1227,6 +1241,8 @@ final class HubSession {
                   try await !outbox.orderedActions() else { return }
             try await outbox.enableOrderedActions()
             Self.logger.notice("the hub runs ordered actions: the ordered path is on")
+            // The grant comes with the link's keybox: the hub knows this epoch, so only a later raise is acknowledged.
+            try await outbox.setEpochAckBaseline(secure.currentEpoch())
         } catch {
             Self.logger.notice("ordered-actions grant check skipped: \(error.localizedDescription, privacy: .public)")
         }

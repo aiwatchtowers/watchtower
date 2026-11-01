@@ -151,9 +151,12 @@ extension ActionOutbox {
         // Checked before anything moves: a lost skip would stall the order (the hub asks once per gap).
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        _ = try store.requeue(fromSeq: seq)
+        // Before `first` is read: a row of an older epoch that does not open is listed here, so the skip covers it.
+        try await resealOlderEpochs(from: seq)
         // Seqs in [seq, first) are settled, already Not delivered (each keeps its first reason) or gone (an
         // `applied` echo or the owner's Dismiss): nothing to list (Ruling 1).
-        let first = try store.requeue(fromSeq: seq) ?? store.nextActionSeq()
+        let first = try store.outboxRows([.queued]).first { $0.actionSeq >= seq }?.actionSeq ?? store.nextActionSeq()
         if first > seq {
             let control = ControlPayload.skipTo(first, deviceID: device, hubID: hub)
             let at = now()
@@ -162,11 +165,11 @@ extension ActionOutbox {
                 id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload,
                 queuedAt: at))
         }
-        try await resealOlderEpochs(from: seq)
         return try await reportedFlush()
     }
 
-    /// Sim rule 14 (the hub asks again for what it can no longer open): every queued row from `seq` on that was
+    /// Sim rule 14 (the hub asks again for what it can no longer open), after the requeue and before the skip is
+    /// decided: every queued row from `seq` on that was
     /// sealed in an epoch below the current one is resealed under the current epoch, the same `action_seq` and wire
     /// name, a fresh envelope seq; the flush then overwrites its record under the version of its last write. Rows
     /// already in the current epoch keep their bytes. A row whose own envelope does not open is Not delivered.
@@ -182,7 +185,9 @@ extension ActionOutbox {
                 continue
             }
             let epoch = try Envelope.parse(resealed.payload).header.epoch
-            try store.replaceOutboxEnvelope(actionID: row.actionID, envelope: resealed.payload, epoch: epoch)
+            if try !store.replaceOutboxEnvelope(actionID: row.actionID, envelope: resealed.payload, epoch: epoch) {
+                logger.error("resealed action \(row.actionSeq, privacy: .public) is no longer queued: envelope not replaced")
+            }
         }
     }
 
@@ -196,6 +201,12 @@ extension ActionOutbox {
         let queued = try await onChain { try await self.queueEpochAck(epoch) }.value
         if queued { requestFlush() }
         return queued
+    }
+
+    /// The epoch the hub already knows when the ordered path turns on (the link's keybox): recorded as acknowledged
+    /// unless an ack was ever recorded, so the next `enqueueEpochAck` goes out only for a newer one.
+    public func setEpochAckBaseline(_ epoch: UInt32) throws {
+        try store.setEpochAckBaseline(epoch)
     }
 
     private func queueEpochAck(_ epoch: UInt32) async throws -> Bool {

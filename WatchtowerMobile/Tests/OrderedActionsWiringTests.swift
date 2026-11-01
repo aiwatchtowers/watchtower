@@ -301,6 +301,34 @@ final class OrderedActionsWiringTests: XCTestCase {
         XCTAssertEqual(acks.first?.hubID, hubID)
     }
 
+    /// A raise the session never heard of (made while no session was up, or while the Keychain was locked) is
+    /// acknowledged at the next boot of an ordered session: the newest epoch is above the last acknowledged one.
+    func testABootAcknowledgesAnEpochRaisedMeanwhile() async throws {
+        let transport = SwitchableTransport()
+        let path = try makeReplicaPath()
+        let keys = try TestPhone.keys()
+        let first = try session(over: transport, path: path, closing: false, keys: keys)
+        await first.waitForBoot()
+        try await publishGrant(orderedActions: 1, over: transport)
+        await fetch(first)
+        await first.epochAckWork?.value
+        await first.shutDown()
+        first.closeDatabases()
+
+        var link = try XCTUnwrap(try keys.store.hubLink(hubID))
+        link.epochs.append(EpochKeys(
+            epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
+        try keys.store.saveHubLink(link)
+
+        let second = try session(over: transport, path: path, keys: keys)
+        await second.waitForBoot()
+        await second.epochAckWork?.value
+        await second.outbox.drain()
+        let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }.compactMap(\.epoch)
+        XCTAssertEqual(acks.max(), 2, "the boot acknowledged the raise")
+        XCTAssertEqual(acks.filter { $0 == 2 }.count, 1)
+    }
+
     // MARK: - Helpers
 
     private func session(

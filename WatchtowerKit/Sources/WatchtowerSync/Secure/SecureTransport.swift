@@ -193,7 +193,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     /// from the static link keys, so no kept epoch key is needed) and sealed again under the current epoch with a
     /// fresh envelope seq, under the same wire name; the plain frame (an action's `action_seq` with it) is unchanged.
     /// nil when it does not open as this phone's own relay record. A locked keychain throws `keysUnavailable`.
-    public func reseal(ownEnvelope envelope: Data, wireName: String, modifiedAt: Date) throws -> CloudRecord? {
+    func reseal(ownEnvelope envelope: Data, wireName: String, modifiedAt: Date) throws -> CloudRecord? {
         guard case let .phone(hubID, deviceID) = keys.role else { throw SecureTransportError.wrongRole }
         do {
             guard let header = try? Envelope.parse(envelope).header, header.hubID == hubID, header.senderID == deviceID,

@@ -239,11 +239,13 @@ extension ReplicaStore {
 
     /// Sim rule 14: a `queued` row resealed under a newer epoch takes the new envelope and its epoch; its wire name,
     /// `action_seq` and `record_seq` (the version the overwrite goes under) stay. Any other state is left alone.
-    func replaceOutboxEnvelope(actionID: String, envelope: Data, epoch: UInt32) throws {
+    /// Returns whether exactly one row took it.
+    func replaceOutboxEnvelope(actionID: String, envelope: Data, epoch: UInt32) throws -> Bool {
         try writer.write { db in
             try db.execute(
                 sql: "UPDATE pending_actions SET payload = ?, epoch = ? WHERE action_id = ? AND delivery = 'queued'",
                 arguments: [envelope, Int64(epoch), actionID])
+            return db.changesCount == 1
         }
     }
 
@@ -342,6 +344,15 @@ extension ReplicaStore {
     /// Whether an `epoch_ack` for `epoch` is due: above every epoch one was queued for.
     func epochAckDue(_ epoch: UInt32) throws -> Bool {
         try writer.read { db in try Self.ackedEpoch(db).map { epoch > $0 } ?? true }
+    }
+
+    /// Records `epoch` as acknowledged when no ack was recorded yet; an existing record is kept.
+    func setEpochAckBaseline(_ epoch: UInt32) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO replica_meta (key, value) VALUES (?, ?)",
+                arguments: [Self.epochAckKey, String(epoch)])
+        }
     }
 
     /// Queues the sealed `epoch_ack` for `epoch` in place of any unsent one (always for a lower epoch) and records
