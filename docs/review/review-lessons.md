@@ -2558,3 +2558,10 @@ Entry format:
 - weak-dimension: 7. The new hand-written line reader has no boundary test (limit−1, limit, a newline in a later chunk, EOF); I checked the off-by-one only by reading.
 - rule-gap (candidate, dim 8): *a PR that raises a size or count limit names every consumer of the bigger input (renderers, buffers, per-connection memory) and says why each one copes.*
 - outcome: TBD
+
+## 2026-11-02 — prep/provider-fallback (#1482, faa546990) — verdict: approve
+
+- contested: presentation-only baseline acceptance is scoped to shared copy, registered scenes, semantic tests and rendered assets; the approved plan schedules full runtime gates at implementation phase boundaries. Mockups do not establish routing behavior. [6/7]
+- weak-dimension: independent review breadth was limited: external Codex was unavailable after sandbox failure and automatic approval rejection of unauthorized diff transmission; all three toolkit specialist APIs were unavailable. Prosecutor and judge found no substantive issue; unavailable lanes are not clean reviews.
+- rule-gap: no new rule; distinguish verification of a proposed presentation contract from verification of the future runtime feature.
+- outcome: TBD
