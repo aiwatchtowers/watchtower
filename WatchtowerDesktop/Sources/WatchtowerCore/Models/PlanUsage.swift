@@ -24,6 +24,7 @@ package struct PlanUsageLimit: Codable, Equatable, Identifiable, Sendable {
     package let resetsAt: Date?
     package let severity: String?
     package let projection: PlanUsageProjection
+    package let windowDurationMinutes: Int?
     package var id: String { key }
 
     package init(
@@ -33,7 +34,8 @@ package struct PlanUsageLimit: Codable, Equatable, Identifiable, Sendable {
         percent: Double,
         resetsAt: Date?,
         severity: String?,
-        projection: PlanUsageProjection
+        projection: PlanUsageProjection,
+        windowDurationMinutes: Int? = nil
     ) {
         self.key = key
         self.label = label
@@ -42,6 +44,7 @@ package struct PlanUsageLimit: Codable, Equatable, Identifiable, Sendable {
         self.resetsAt = resetsAt
         self.severity = severity
         self.projection = projection
+        self.windowDurationMinutes = windowDurationMinutes
     }
 }
 
@@ -68,6 +71,14 @@ package struct PlanUsageStatus: Equatable, Sendable {
     package let lastError: String
     package let limits: [PlanUsageLimit]
     package let breakdown: [PlanUsageBreakdownRow]
+    package let provider: PlanUsageProvider
+    package let updatedAt: Date?
+    package let identityKnown: Bool
+    // null means the service did not report access policy
+    // swiftlint:disable:next discouraged_optional_boolean
+    package let ordinaryUsageAllowed: Bool?
+    package let plot: PlanUsagePlot?
+    package let history: [String: [PlanUsageSample]]
 
     package init(
         state: String,
@@ -76,7 +87,15 @@ package struct PlanUsageStatus: Equatable, Sendable {
         fetchedAt: Date?,
         lastError: String,
         limits: [PlanUsageLimit],
-        breakdown: [PlanUsageBreakdownRow]
+        breakdown: [PlanUsageBreakdownRow],
+        provider: PlanUsageProvider = .claude,
+        updatedAt: Date? = nil,
+        identityKnown: Bool = true,
+        // preserve nullable source policy
+        // swiftlint:disable:next discouraged_optional_boolean
+        ordinaryUsageAllowed: Bool? = nil,
+        plot: PlanUsagePlot? = nil,
+        history: [String: [PlanUsageSample]] = [:]
     ) {
         self.state = state
         self.reason = reason
@@ -85,6 +104,12 @@ package struct PlanUsageStatus: Equatable, Sendable {
         self.lastError = lastError
         self.limits = limits
         self.breakdown = breakdown
+        self.provider = provider
+        self.updatedAt = updatedAt
+        self.identityKnown = identityKnown
+        self.ordinaryUsageAllowed = ordinaryUsageAllowed
+        self.plot = plot
+        self.history = history
     }
 }
 
@@ -115,6 +140,20 @@ package enum PlanUsageDates {
         return formatter.date(from: s)
     }
 
+    /// Publication equality must retain fractions instead of silently accepting
+    /// a different Line start within the same second. The legacy parse helper
+    /// above keeps its historical whole-second behaviour for existing callers.
+    package static func preciseParse(_ text: String?) -> Date? {
+        guard let text, !text.isEmpty else { return nil }
+        guard let dot = text.firstIndex(of: ".") else { return formatter.date(from: text) }
+        var end = text.index(after: dot)
+        while end < text.endIndex, text[end].isNumber { end = text.index(after: end) }
+        guard end > text.index(after: dot), let fraction = Double("0" + text[dot..<end]) else { return nil }
+        var whole = text
+        whole.removeSubrange(dot..<end)
+        return formatter.date(from: whole)?.addingTimeInterval(fraction)
+    }
+
     /// Whole-second UTC, the fixed-width form Go stores in the sample table.
     package static func format(_ date: Date) -> String {
         formatter.string(from: date)
@@ -125,7 +164,7 @@ package enum PlanUsageDates {
         d.keyDecodingStrategy = .convertFromSnakeCase
         d.dateDecodingStrategy = .custom { decoder in
             let text = try decoder.singleValueContainer().decode(String.self)
-            guard let date = parse(text) else {
+            guard let date = preciseParse(text) else {
                 throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                         debugDescription: "Invalid date: \(text)"))
             }

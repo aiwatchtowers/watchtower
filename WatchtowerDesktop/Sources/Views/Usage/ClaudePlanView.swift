@@ -87,7 +87,7 @@ struct ClaudePlanView: View {
                 Text(PlanUsagePresentation.projectionText(limit, now: now)).font(.caption).foregroundStyle(.secondary)
                 if Self.chartKeys.contains(limit.key), let reset = limit.resetsAt,
                    let start = PlanUsagePresentation.windowStart(key: limit.key, resetsAt: reset) {
-                    chart(limit, start: start, reset: reset, tone: tone)
+                    chart(limit, start: start, reset: reset, tone: tone, now: now)
                 }
             }
             .padding(4)
@@ -95,16 +95,16 @@ struct ClaudePlanView: View {
         .foregroundStyle(stale ? .secondary : .primary)
     }
 
-    private func chart(_ limit: PlanUsageLimit, start: Date, reset: Date, tone: PlanUsageTone) -> some View {
+    private func chart(_ limit: PlanUsageLimit, start: Date, reset: Date, tone: PlanUsageTone, now: Date) -> some View {
         let points = series[limit.key] ?? []
-        let projected = points.last.flatMap { PlanUsagePresentation.projectedEnd(limit, last: $0) }
+        let projected = forecastLine(limit, now: now)
         return Chart {
             ForEach(points, id: \.takenAt) { sample in
                 LineMark(x: .value("Time", sample.takenAt), y: .value("Percent", sample.percent))
                     .foregroundStyle(color(tone))
             }
-            if let last = points.last, let end = projected {
-                ForEach([(last.takenAt, last.percent), (end.at, end.percent)], id: \.0) { at, percent in
+            if let line = projected {
+                ForEach([(line.startAt, line.startPercent), (line.endAt, line.endPercent)], id: \.0) { at, percent in
                     LineMark(
                         x: .value("Time", at), y: .value("Percent", percent),
                         series: .value("Series", "projection")
@@ -122,6 +122,14 @@ struct ClaudePlanView: View {
         .chartYScale(domain: 0...100)
         .chartXScale(domain: start...reset)
         .frame(height: 140)
+    }
+
+    private func forecastLine(_ limit: PlanUsageLimit, now: Date) -> PlanUsageLine? {
+        guard let status = appState.planUsageCenter?.status else { return nil }
+        do { return try status.forecast(for: limit, now: now).line } catch {
+            NSLog("ClaudePlanView: invalid saved forecast")
+            return nil
+        }
     }
 
     private func breakdownBox(_ rows: [PlanUsageBreakdownRow], stale: Bool) -> some View {

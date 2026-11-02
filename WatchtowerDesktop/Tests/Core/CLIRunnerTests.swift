@@ -4,6 +4,16 @@ import Testing
 
 @Suite("CLIRunner")
 struct CLIRunnerTests {
+    @Test("Captured process result preserves partial JSON on nonzero exit")
+    func capturedPartialJSON() async throws {
+        let runner = ProcessCLIRunner(binaryPath: "/bin/sh")
+        let result = try await runner.capture(args: ["-c", "printf '{\"schema_version\":1}'; printf 'safe error' >&2; exit 3"],
+                                              environment: ProcessInfo.processInfo.environment, timeout: 5)
+        #expect(result.exitCode == 3)
+        #expect(String(data: result.stdout, encoding: .utf8) == #"{"schema_version":1}"#)
+        #expect(result.stderr == "safe error")
+    }
+
     @Test("CLIRunnerError binaryNotFound message")
     func errorBinaryNotFound() {
         let err = CLIRunnerError.binaryNotFound
