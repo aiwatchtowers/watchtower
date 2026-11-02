@@ -27,7 +27,8 @@ const kindRecordingUpload = "recording_upload"
 // authenticated: the phone's device, its upload id, the hub it addressed (nil
 // = unchecked), the asset's descriptor (from the sealed frame; nil = the
 // record carried no asset) and Download, which writes the sealed attachment
-// to the given path.
+// to the given path; Origin the upload's event_id and started_at (never its
+// title_hint: content).
 type RecordingIntake struct {
 	Device     secure.ID
 	UploadID   string
@@ -35,6 +36,20 @@ type RecordingIntake struct {
 	ThisHub    secure.ID
 	Descriptor *secure.AssetDescriptor
 	Download   func(ctx context.Context, dst string) error
+	Origin     state.RecordingOrigin
+}
+
+// recordingOrigin reads an upload payload's event_id and started_at; a
+// malformed time reads as none.
+func recordingOrigin(payload map[string]json.RawMessage) state.RecordingOrigin {
+	o := state.RecordingOrigin{EventID: strField(payload, "event_id")}
+	if raw, ok := payload["started_at"]; ok {
+		var t wire.Time
+		if json.Unmarshal(raw, &t) == nil {
+			o.StartedAt = t.Time
+		}
+	}
+	return o
 }
 
 // RecordingOutcome is the upload's echo: Status received, held (non-final:
@@ -330,7 +345,8 @@ func (p *Processor) settleUpload(ctx context.Context, h *heldUpload, ps *pass, r
 			desc = &c
 			defer clear(c.Key[:])
 		}
-		in := RecordingIntake{Device: b.id, UploadID: id, TargetHub: target, ThisHub: hub, Descriptor: desc}
+		in := RecordingIntake{Device: b.id, UploadID: id, TargetHub: target, ThisHub: hub, Descriptor: desc,
+			Origin: recordingOrigin(h.payload)}
 		if h.attachment != "" {
 			zone, att := b.zone, h.attachment
 			in.Download = func(ctx context.Context, dst string) error {

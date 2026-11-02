@@ -48,7 +48,9 @@ func TestRecordingJobProgress(t *testing.T) {
 	if _, err := st.ClaimRecording("up-1", t0.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if p := jobPayloads(t, st, t0)["up-1"]; p["status"] != "transcribing" || num(p["updated_at"]) != 1_800_000_001 {
+	// Claimed but not started by the transcriber yet: queued, as the Swift
+	// hub's job read until the transcriber's first report.
+	if p := jobPayloads(t, st, t0)["up-1"]; p["status"] != "queued" || num(p["updated_at"]) != 1_800_000_001 {
 		t.Errorf("claimed = %v", p)
 	}
 	tid := int64(42)
@@ -74,6 +76,43 @@ func TestRecordingJobFailedCarriesOnlyTheErrorClass(t *testing.T) {
 	}
 	if _, ok := p["transcript_id"]; ok {
 		t.Error("a failed job has no transcript")
+	}
+}
+
+// TestRecordingFailureTextsPinned: the classes Desktop finishes a phone
+// recording with (PhoneRecordingQueue.FailureClass, a Go↔Swift dual path)
+// read on the phone as these sentences, byte for byte: never "send it
+// again" (the phone deleted its copy on received; the audio is on the Mac);
+// an unknown class still reads as itself.
+func TestRecordingFailureTextsPinned(t *testing.T) {
+	want := map[string]string{
+		state.ClassNoSpeech:            "No speech recognized",
+		state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording. It keeps the audio; you can retry it in Watchtower on the Mac.",
+		state.ClassNotAudio:            "Your Mac could not open this recording as audio. It keeps the file on the Mac.",
+		state.ClassUnreadable:          "Your Mac could not read this recording yet. It keeps the audio and will try again.",
+		state.ClassIngestFailed:        "Your Mac could not save this recording yet. It keeps the audio and will try again.",
+		state.ClassMissingAudio:        "Your Mac no longer has this recording's audio.",
+		"something_new":                "something_new",
+	}
+	for class, text := range want {
+		if class != "something_new" && strings.Contains(strings.ToLower(text), "send it again") {
+			t.Errorf("%s asks the phone to send it again", class)
+		}
+	}
+	st := openSidecar(t)
+	t0 := time.Unix(1_800_000_000, 0)
+	for class := range want {
+		_ = st.QueueRecording(class, jobDevice, t0)
+		_, _ = st.ClaimRecording(class, t0)
+		if _, err := st.FinishRecording(class, nil, class, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := jobPayloads(t, st, t0)
+	for class, text := range want {
+		if got[class]["error"] != text {
+			t.Errorf("%s reads %q, want %q", class, got[class]["error"], text)
+		}
 	}
 }
 

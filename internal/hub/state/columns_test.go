@@ -134,6 +134,10 @@ var sidecarColumns = map[string]string{
 	"recording_jobs.status":      classEnum,
 	"recording_jobs.error_class": classErrorClass,
 	"recording_jobs.phase":       classEnum, // percent is an INTEGER counter (not text, so not listed)
+	// The calendar event the phone recorded for: an opaque calendar id (the
+	// Mac's calendar_events.id), not content; its title is never stored.
+	// started_at is REAL (not listed).
+	"recording_jobs.event_id": classID,
 
 	// held_at and settled_at are REAL (no text, so not listed).
 	"held_uploads.upload_id": classID,

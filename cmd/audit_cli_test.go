@@ -250,6 +250,7 @@ var cliNoContentCommands = map[string]bool{
 	"hub recording discard":            true,
 	"hub recording finish":             true,
 	"hub recording progress":           true,
+	"hub recording list":               true,
 	"hub recordings":                   true,
 	"hub status":                       true,
 	"hub unlink":                       true,

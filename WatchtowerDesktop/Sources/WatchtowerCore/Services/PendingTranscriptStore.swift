@@ -25,6 +25,26 @@ package protocol PendingTranscriptStore: Sendable {
     func remove(recording: String) async throws
     /// Audio paths of saved transcripts.
     func savedAudioPaths() throws -> Set<String>
+    /// `reserve` for a Go hub phone recording: the row also keeps its upload id.
+    func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, uploadID: String?, at: Date)
+        async throws -> Bool
+    /// The recording reserved for a Go hub upload, nil when none is pending.
+    func recording(forUpload uploadID: String) throws -> String?
+    /// The saved transcript of the recording at `audioPath`, nil when none.
+    func savedTranscriptID(audioPath: String) throws -> Int64?
+}
+
+extension PendingTranscriptStore {
+    /// A store that keeps no upload ids (test doubles over a base store).
+    package func reserve(
+        recording: String, eventID: String?, title: String?, isPrivate: Bool, uploadID: String?, at: Date
+    ) async throws -> Bool {
+        try await reserve(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, at: at)
+    }
+
+    package func recording(forUpload uploadID: String) throws -> String? { nil }
+
+    package func savedTranscriptID(audioPath: String) throws -> Int64? { nil }
 }
 
 /// `PendingTranscriptStore` over the Desktop's database writer.
@@ -42,10 +62,24 @@ package struct DatabasePendingTranscriptStore: PendingTranscriptStore {
 
     package func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date)
         async throws -> Bool {
+        try await reserve(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, uploadID: nil, at: at)
+    }
+
+    package func reserve(
+        recording: String, eventID: String?, title: String?, isPrivate: Bool, uploadID: String?, at: Date
+    ) async throws -> Bool {
         try await writer.write {
             try PendingTranscriptQueries.reserve($0, recording: recording, eventID: eventID, title: title,
-                                                 isPrivate: isPrivate, at: at)
+                                                 isPrivate: isPrivate, uploadID: uploadID, at: at)
         }
+    }
+
+    package func recording(forUpload uploadID: String) throws -> String? {
+        try writer.read { try PendingTranscriptQueries.recording($0, forUpload: uploadID) }
+    }
+
+    package func savedTranscriptID(audioPath: String) throws -> Int64? {
+        try writer.read { try PendingTranscriptQueries.savedTranscriptID($0, audioPath: audioPath) }
     }
 
     @discardableResult

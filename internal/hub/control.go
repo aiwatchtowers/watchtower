@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/slices"
@@ -142,11 +143,17 @@ type ControlAnswer struct {
 	Code      string     `json:"code,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
 	// At is when a desktop heartbeat was written; UploadID, Status and
-	// TranscriptID a recording job after a claim or finish.
+	// TranscriptID a recording job after a claim or finish; AudioPath the
+	// claimed job's audio file (claim only: Desktop never derives it).
 	At           *time.Time `json:"at,omitempty"`
 	UploadID     string     `json:"upload_id,omitempty"`
 	Status       string     `json:"status,omitempty"`
 	TranscriptID *int64     `json:"transcript_id,omitempty"`
+	AudioPath    string     `json:"audio_path,omitempty"`
+	// EventID and StartedAt are the claimed job's origin (claim only): the
+	// calendar event it was recorded for and its start (Unix seconds).
+	EventID   string     `json:"event_id,omitempty"`
+	StartedAt *wire.Time `json:"started_at,omitempty"`
 	// Recordings is the switch after a recordings request: "on" | "off".
 	Recordings string `json:"recordings,omitempty"`
 	// Phase and Percent are a job's progress after a recording_progress;
@@ -609,7 +616,17 @@ func (s *supervisor) recordingJob(r ControlRequest) ControlAnswer {
 		return ControlAnswer{Error: ErrClassFailed}
 	}
 	s.poke()
-	return ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
+	a := ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
+	if r.Op == OpRecordingClaim {
+		if s.o.RecordingsDir != "" {
+			a.AudioPath = handlers.RecordingAudioPath(s.o.RecordingsDir, job.UploadID)
+		}
+		a.EventID = job.EventID
+		if !job.StartedAt.IsZero() {
+			a.StartedAt = &wire.Time{Time: job.StartedAt}
+		}
+	}
+	return a
 }
 
 // offlineLink is unlink or allow while the lock holder runs no hub

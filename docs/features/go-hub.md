@@ -76,7 +76,8 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub pair [--stream]` | JSON lines: `{event: qr, url, expires_at}`, `{event: waiting}`, `{event: sas, device_id, name, code}`, `{event: linked, device_id}`, `{event: refused, reason}`; the owner's `{confirm: true\|false}` on stdin |
 | `hub desktop heartbeat` (darwin only) | `desktop_at` |
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
-| `hub recording claim --upload <id>` | `upload_id`, `audio_path`, `status` |
+| `hub recording claim --upload <id>` (a failed job claims again for the owner's Retry; `done` and `hub_moved` never) | `upload_id`, `audio_path`, `status` |
+| `hub recording list` (read only; refused under an agent marker) | `ready` (false: no queue to read yet) and `jobs`, each `upload_id`, `status`, `phase`, `percent`, `audio_path`, `event_id`, `started_at`, `error_class` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
 | `hub recording discard --upload <id>` (owner; phase 3 Task 23: a `failed` job only, else `job_state`; deletes `<recordings>/<upload_id>.m4a` then the row, through the running hub's `recording_discard` op so the phone's `recording_job` slice drops it) | `upload_id`, `discarded` |
 | `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
@@ -115,6 +116,9 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
   a slot; a re-link clears it).
 - `00008_desktop_recordings` — `recording_jobs.phase` (`transcribing|diarizing|summarizing`) and `percent` (0–100,
   transcribing only) of a claimed job, as Desktop reports them; no file name.
+- `00009_recording_origin` — `recording_jobs.event_id` (the calendar event the phone recorded for, an opaque id) and
+  `started_at` (REAL), so Desktop links the transcript and rebuilds the phone's title (phase 3 Task 17); never the
+  upload's `title_hint` (content).
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -192,7 +196,37 @@ Recorded for the owner; each was a review ruling during phase 1.
      dropped); Desktop sends the view at its start, on every change and on `view_needed`. A stale → fresh heartbeat,
      and a heartbeat going stale, republish the view's slices.
    - `recording_progress` (`upload`, `phase`, `percent`): the `recording_job` slice then reads `transcribing` with its
-     percent, `diarizing` or `summarizing`, as the Swift slice.
+     percent, `diarizing` or `summarizing`, as the Swift slice; a claimed job with no phase yet reads `queued` (it
+     waits in the Mac's transcriber queue, as the Swift hub's job did).
+   - `recording_claim`'s answer carries `audio_path` (Desktop never derives it) and the job's origin, `event_id` and
+     `started_at` (Unix seconds).
+
+   **Done (phase 3 Task 17): the Desktop recording queue.** `PhoneRecordingQueue` (beside the Swift hub's
+   `PhoneRecordingJobs` until Task 24) claims a job on `recording_queued` and on a rescan of `hub recording list
+   --json` (`{ready, jobs}`; a not-ready answer is skipped, an empty one erases nothing) at every watch snapshot,
+   ingests the audio through `MeetingRecorderCenter.ingestPhoneRecording`, follows the transcriber through
+   `addJobObserver` into `recording_progress` and finishes with the transcript or a class: `no_speech`,
+   `transcription_failed`, `not_audio`, `unreadable`, `ingest_failed`, `missing_audio`. **The hub's audio is the only
+   copy** (the phone deleted its own on `received`): Desktop removes it only after the transcript is saved; every
+   failure keeps it until the hub's 31-day prune, which now also removes it for a job failed with one of these
+   classes. `unreadable` and `ingest_failed` (disk full, a failed copy, cancellation) are reported and tried again
+   with a backoff (30 s doubling to 30 min); a database not open yet and a calendar read error are tried again
+   unreported (never saved ad-hoc on an error); `not_audio` keeps the file for the owner (a Mac-side Retry/discard
+   control is Task 23's). The phone's texts (`failureTexts`, pinned by `TestRecordingFailureTextsPinned`; Swift
+   `testFailureClassesPinned` pins the classes) never ask it to send the recording again. Only a job failed with one
+   of these classes claims again (`state.DesktopFailureClasses`); `hub_moved`, an adopted Swift failure and `done`
+   stay terminal. **Exactly once:** the upload is remembered as `ingesting` before the ingest starts, and the
+   ingest's reservation keeps the upload id (`pending_transcripts.upload_id`, migration 00170), so after a crash a
+   claimed job is matched to its reservation (`phoneRecording(forUpload:)`) instead of being ingested again;
+   unreadable bookkeeping matches claimed jobs by upload id only and leaves an unmatched one alone. The uploads it
+   took (ids, the Mac's recording path, the hub's audio path, an unsent finish) are remembered in the app's
+   defaults. The title comes back
+   from the origin, never stored: an `event_id` this Mac's calendar has links the transcript and takes the event's
+   title (the phone's meeting title); one it lacks saves ad-hoc and untitled (the Swift hub dropped the event too but
+   kept `title_hint` — the one remaining gap); no event is the phone's voice note, `Voice note — d MMM, HH:mm` from
+   `started_at` (`PhoneRecordingQueue.voiceNoteTitle`, pinned), formatted in the Mac's time zone (the phone uses its
+   own; they differ only when the two are set to different zones). An `event_id` is stored only in a calendar id's
+   shape (`[A-Za-z0-9_.:@-]`, at most 256 bytes), so it cannot carry free text.
    - `desktop_watch`: the answer (`{op, ok, state, reason}`, the current status as a snapshot) is the stream's first
      line, then `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
      device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines.

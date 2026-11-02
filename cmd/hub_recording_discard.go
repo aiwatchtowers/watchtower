@@ -6,7 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/hub"
-	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/state"
 )
 
@@ -42,7 +41,11 @@ func runHubRecordingDiscard(cmd *cobra.Command, _ []string) error {
 	}
 	_, err := hubWrite(hub.ControlRequest{Op: hub.OpRecordingDiscard, Upload: upload},
 		func(dir string, st *state.Store) (hub.ControlAnswer, error) {
-			return hub.RecordingDiscardAnswer(st, handlers.RecordingsDirUnder(dir), upload), nil
+			recordings, err := hubRecordingsDir(dir) // a desktop host's are Desktop's recordings folder
+			if err != nil {
+				return hub.ControlAnswer{}, err
+			}
+			return hub.RecordingDiscardAnswer(st, recordings, upload), nil
 		})
 	if err != nil {
 		return err
