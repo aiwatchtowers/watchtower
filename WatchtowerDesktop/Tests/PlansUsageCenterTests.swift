@@ -6,12 +6,13 @@ import WatchtowerTestSupport
 
 @MainActor
 final class PlansUsageCenterTests: XCTestCase {
-    private func envelope(provider: String, error: String? = nil) -> Data {
+    private func envelope(provider: String, error: String? = nil, enabled: Bool = true) -> Data {
         let errorJSON = error.map { "{\"code\":\"\($0)\",\"message\":\"safe\"}" } ?? "null"
+        let outcome = error == "feature_disabled" ? "disabled" : (error == nil ? "updated" : "busy")
         return Data("""
-        {"schema_version":1,"requested_provider":"\(provider)","refresh_requested":true,"feature_enabled":true,
+        {"schema_version":1,"requested_provider":"\(provider)","refresh_requested":true,"feature_enabled":\(enabled),
          "providers":[{"provider":"\(provider)","ok":\(error == nil ? "true" : "false"),"error":\(errorJSON),
-         "refresh_outcome":"\(error == nil ? "updated" : "busy")","status":null}]}
+         "refresh_outcome":"\(outcome)","status":null}]}
         """.utf8)
     }
 
@@ -97,6 +98,146 @@ final class PlansUsageCenterTests: XCTestCase {
         await task.value
         XCTAssertNil(center.status)
         XCTAssertFalse(center.loadedProviders.contains(.claude))
+    }
+
+    func testStopDuringBackfillReadDoesNotStartProviderReadsOrNotify() async throws {
+        let (initial, path) = try TestDatabase.createPool()
+        try initial.close()
+        defer { TestDatabase.cleanup(path: path) }
+        let entered = expectation(description: "backfill read entered")
+        let release = DispatchSemaphore(value: 0)
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            db.add(function: DatabaseFunction("hold_backfill_read", argumentCount: 0) { _ in
+                entered.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+                return 1
+            })
+        }
+        let pool = try DatabasePool(path: path, configuration: configuration)
+        try await pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO plan_usage_status (id,state,fetched_at,updated_at,limits_json)
+                VALUES (1,'ok','2026-11-02T09:59:00Z','2026-11-02T09:59:00Z',
+                '[{"key":"session","label":"5 hours","group":"session","percent":92,
+                  "resets_at":"2026-11-02T12:00:00Z","projection":{"state":"hit","hit_at":null,"rate_per_hour":0}}]');
+                INSERT INTO history_backfill
+                (source_kind,account_id,floor_ts,upper_ts,reached_ts,status,waiting,started_at,updated_at)
+                VALUES ('slack',1,0,2592000,1555200,'running','','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z');
+                ALTER TABLE history_backfill RENAME TO saved_history_backfill;
+                CREATE VIEW history_backfill AS SELECT * FROM saved_history_backfill WHERE hold_backfill_read() = 1;
+                """)
+        }
+        let at = try XCTUnwrap(PlanUsageDates.parse("2026-11-02T10:00:00Z"))
+        let notifier = RecordingNotifier()
+        let suite = "PlansUsageCenterTests.backfill.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let center = PlanUsageCenter(dbPool: pool, runner: nil, notifier: notifier, defaults: defaults) { at }
+        var callbacks = 0
+        center.onStatus = { _ in callbacks += 1 }
+        let task = Task { await center.reload() }
+        await fulfillment(of: [entered], timeout: 3)
+        center.stop()
+        release.signal()
+        await task.value
+        XCTAssertNil(center.status)
+        XCTAssertNil(center.codexStatus)
+        XCTAssertNil(center.backfillLine)
+        XCTAssertTrue(center.loadedProviders.isEmpty)
+        XCTAssertEqual(callbacks, 0)
+        XCTAssertTrue(notifier.notices.isEmpty)
+    }
+
+    func testSuccessfulFeatureLoadReenablesWithoutAnotherLimitsRefresh() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            let limits = """
+            [{"key":"session","label":"5 hours","group":"session","percent":4,"window_duration_minutes":300,
+              "resets_at":"2026-11-02T12:00:00Z","projection":{"state":"safe","hit_at":null,"rate_per_hour":0}}]
+            """
+            try db.execute(sql: """
+                INSERT INTO plan_usage_status (id,state,fetched_at,updated_at,limits_json)
+                VALUES (1,'ok','2026-11-02T09:59:00Z','2026-11-02T09:59:00Z',?);
+                """, arguments: [limits])
+        }
+        let config = FeatureRunner(state: "disabled")
+        let app = AppState.isolated(featuresRunner: config)
+        let manager = app.featureManager
+        app.wireFeatureVisibility()
+        await manager.load()
+        let cli = CapturedRunner(result: CLICapturedResult(
+            stdout: envelope(provider: "codex", error: "feature_disabled", enabled: false), exitCode: 3))
+        app.initPlanUsage(dbPool: pool, cliRunner: cli, notifier: nil)
+        let center = try XCTUnwrap(app.planUsageCenter)
+        center.stop()
+        defer { center.stop() }
+        _ = await center.refresh(.codex)
+        await center.reload()
+        XCTAssertFalse(center.featureEnabled, "retained ok row is not current config evidence")
+        XCTAssertNil(center.menuBarLabel(showText: true))
+
+        config.state = "enabled"
+        manager.pending[PlanUsageCenter.featureID] = false // staged UI state is not persisted config.
+        await manager.load()
+        XCTAssertNil(manager.loadError)
+        XCTAssertTrue(app.featureVisibility.disabledFeatureIDs.contains(PlanUsageCenter.featureID))
+        XCTAssertTrue(center.featureEnabled, "the successful actual feature load is authoritative")
+        await center.reload()
+        XCTAssertTrue(center.featureEnabled)
+        XCTAssertNil(center.refreshErrors[.codex])
+        XCTAssertEqual(cli.calls.count, 1, "periodic DB read does not fetch subscription limits")
+        XCTAssertEqual(center.providerStatus(.claude)?.state, "ok")
+        XCTAssertNotNil(center.menuBarLabel(showText: true))
+        XCTAssertFalse(center.trayLines.isEmpty)
+        XCTAssertNotEqual(try center.presentation(.claude).summary, PlansPresentation.reasonText("disabled"))
+    }
+
+    func testOlderDisabledEnvelopeDoesNotOverrideNewerFeatureEnableEvent() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let at = try XCTUnwrap(PlanUsageDates.parse("2026-11-02T10:00:00Z"))
+        try await pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO plan_usage_status (id,state,fetched_at,updated_at,limits_json)
+                VALUES (1,'ok','2026-11-02T09:59:00Z','2026-11-02T09:59:00Z',
+                '[{"key":"session","label":"5 hours","group":"session","percent":4,
+                  "resets_at":"2026-11-02T12:00:00Z","projection":{"state":"safe","hit_at":null,"rate_per_hour":0}}]');
+                """)
+        }
+        let cli = HeldCLIRunner(stdout: envelope(provider: "codex", error: "feature_disabled", enabled: false))
+        let center = PlanUsageCenter(dbPool: pool, runner: cli) { at }
+        center.setFeatureEnabled(false)
+        let refresh = Task { await center.refresh(.codex) }
+        await awaitStarted(cli)
+        center.setFeatureEnabled(true)
+        cli.release()
+        let result = await refresh.value
+        XCTAssertEqual(result?.code, "feature_disabled", "the completed operation keeps its historical result")
+        await center.reload()
+        XCTAssertTrue(center.featureEnabled)
+        XCTAssertNil(center.providerError(.codex), "obsolete error must not retain disabled copy")
+        XCTAssertEqual(center.menuBarLabel(showText: true), "Claude 5h 4%")
+        XCTAssertFalse(center.trayLines.isEmpty)
+        XCTAssertNotEqual(try center.presentation(.codex).summary, PlansPresentation.reasonText("disabled"))
+    }
+
+    final class RecordingNotifier: PlanUsageNotifying {
+        var notices: [PlanUsageNotice] = []
+        func sendPlanUsageNotice(_ notice: PlanUsageNotice) { notices.append(notice) }
+    }
+
+    final class FeatureRunner: CLIRunnerProtocol {
+        var state: String
+        init(state: String) { self.state = state }
+        func run(args: [String]) async throws -> Data {
+            Data("""
+            {"features":[{"id":"claude-plan-limits","title":"Plans","description":"","tagline":"","benefits":[],
+            "icon":"gauge","state":"\(state)","core":false,"parent":"","config_key":"plan_usage.enabled",
+            "cost":"none","feeds_into":[],"sub_toggles":[]}]}
+            """.utf8)
+        }
     }
 
     final class CapturedRunner: CLIRunnerProtocol {

@@ -19,6 +19,7 @@ final class PlanUsageCenter {
     static let pollInterval: Duration = .seconds(30)
     /// `@AppStorage` key of the "show in menu bar" toggle; absent = on.
     static let menuBarKey = "planUsage.showInMenuBar"
+    static let featureID = "claude-plan-limits"
 
     private(set) var status: PlanUsageStatus?
     private(set) var codexStatus: PlanUsageStatus?
@@ -39,6 +40,7 @@ final class PlanUsageCenter {
     @ObservationIgnored private var refreshTasks: [PlanUsageProvider: Task<PlansOperationError?, Never>] = [:]
     @ObservationIgnored private var refreshIDs: [PlanUsageProvider: UUID] = [:]
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var featureRevision = 0
     private let dbPool: DatabasePool
     private let runner: CLIRunnerProtocol?
     private let now: () -> Date
@@ -81,10 +83,22 @@ final class PlanUsageCenter {
     }
 
     func reload() async {
+        let epoch = generation
         await reloadBackfillLine()
-        async let claude: Void = reload(.claude)
-        async let codex: Void = reload(.codex)
+        guard !Task.isCancelled, epoch == generation else { return }
+        async let claude: Void = reload(.claude, expectedGeneration: epoch)
+        async let codex: Void = reload(.codex, expectedGeneration: epoch)
         _ = await (claude, codex)
+    }
+
+    /// A successful Feature Manager load is current config evidence. Retained
+    /// DB numbers never turn a feature back on after a disabled refresh.
+    func setFeatureEnabled(_ enabled: Bool) {
+        featureRevision += 1
+        featureEnabled = enabled
+        if enabled {
+            refreshErrors = refreshErrors.filter { $0.value.code != "feature_disabled" }
+        }
     }
 
     func providerStatus(_ provider: PlanUsageProvider) -> PlanUsageStatus? {
@@ -101,8 +115,13 @@ final class PlanUsageCenter {
                                    now: date ?? now(), enabled: featureEnabled)
     }
 
-    private func reload(_ provider: PlanUsageProvider, clearOlderRefreshError: Bool = true) async {
-        let epoch = generation
+    private func reload(
+        _ provider: PlanUsageProvider,
+        clearOlderRefreshError: Bool = true,
+        expectedGeneration: Int? = nil
+    ) async {
+        let epoch = expectedGeneration ?? generation
+        guard !Task.isCancelled, epoch == generation else { return }
         let previousFetched = providerStatus(provider)?.fetchedAt
         do {
             let fresh = try await dbPool.read { try PlanUsageQueries.status($0, provider: provider) }
@@ -131,9 +150,10 @@ final class PlanUsageCenter {
     /// Its own read, so a failure here cannot freeze the plan status; a failed
     /// read keeps the last line.
     private func reloadBackfillLine() async {
+        let epoch = generation
         do {
             let line = try await dbPool.read { BackfillProgress.line(try BackfillQueries.rows($0)) }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, epoch == generation else { return }
             if line != backfillLine { backfillLine = line }
         } catch {
             NSLog("PlanUsageCenter: backfill read failed: %@", String(describing: error))
@@ -144,7 +164,7 @@ final class PlanUsageCenter {
     /// window counts as sent once it is handed to the notifier, even if
     /// notifications are denied (the `sendSessionAgentNotice` precedent).
     private func notify(_ status: PlanUsageStatus) {
-        guard let notifier, defaults.object(forKey: PlanUsageNoticePolicy.enabledKey) as? Bool ?? true else { return }
+        guard featureEnabled, let notifier, defaults.object(forKey: PlanUsageNoticePolicy.enabledKey) as? Bool ?? true else { return }
         // A pause holds the notice back; `sent` is untouched, so one still due fires afterwards.
         guard !NotificationPreferences.isPaused(defaults) else { return }
         let sent = Set(defaults.stringArray(forKey: PlanUsageNoticePolicy.sentKey) ?? [])
@@ -168,11 +188,16 @@ final class PlanUsageCenter {
         if let existing = refreshTasks[provider] { return await existing.value }
         let id = UUID()
         let epoch = generation
+        let featureEpoch = featureRevision
         let task = Task { [weak self] () -> PlansOperationError? in
             guard let self else { return PlansOperationError(code: "cancelled") }
             let result = await self.performRefresh(provider)
             guard !Task.isCancelled, self.generation == epoch else { return PlansOperationError(code: "cancelled") }
-            self.refreshErrors[provider] = result
+            if result?.code == "feature_disabled", self.featureEnabled, self.featureRevision != featureEpoch {
+                self.refreshErrors[provider] = nil
+            } else {
+                self.refreshErrors[provider] = result
+            }
             await self.reload(provider, clearOlderRefreshError: false)
             return result
         }
@@ -190,13 +215,14 @@ final class PlanUsageCenter {
 
     private func performRefresh(_ provider: PlanUsageProvider) async -> PlansOperationError? {
         guard let runner else { return PlansOperationError(code: "storage") }
+        let featureEpoch = featureRevision
         do {
             let result = try await runner.capture(args: ["usage", "plans", "--json", "--now", "--provider", provider.rawValue], timeout: 50)
             try Task.checkCancellation()
             let envelope = try PlansEnvelope.decode(result.stdout)
             guard envelope.requestedProvider == provider.rawValue, envelope.refreshRequested,
                   let item = envelope.providers.first else { return PlansOperationError(code: "parse") }
-            featureEnabled = envelope.featureEnabled
+            if featureRevision == featureEpoch { featureEnabled = envelope.featureEnabled }
             if let error = item.error { return error }
             return result.exitCode == 0 ? nil : PlansOperationError(code: "storage")
         } catch is CancellationError { return PlansOperationError(code: "cancelled") } catch {

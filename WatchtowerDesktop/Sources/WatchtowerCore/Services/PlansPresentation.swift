@@ -182,7 +182,12 @@ package enum PlansPresentation {
         var warning = false
         if let text = PlanUsagePresentation.menuBarText(claude) {
             parts.append("Claude \(text)")
-            warning = PlanUsagePresentation.menuBarWarning(claude, now: now)
+            if let claude, !isStale(claude, now: now) {
+                for limit in visibleLimits(claude, now: now) where ["session", "weekly_all"].contains(limit.key) {
+                    let forecast = try claude.forecast(for: limit, now: now)
+                    warning = warning || limit.percent >= 70 || (forecast.drawable && forecast.state == "will_hit")
+                }
+            }
         }
         if let codex, let chosen = try mostRestrictive(codex, now: now) {
             parts.append("Codex \(duration(chosen.windowDurationMinutes)) \(Int(chosen.percent.rounded()))%")

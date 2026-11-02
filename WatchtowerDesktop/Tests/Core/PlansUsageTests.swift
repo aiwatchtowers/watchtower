@@ -130,6 +130,19 @@ final class PlansUsageTests: XCTestCase {
         XCTAssertEqual(try PlansPresentation.menuBar(claude: nil, codex: snapshot(values, known: false), show: true, now: now), "Codex 90m 30%")
     }
 
+    func testClaudeMenuWarningUsesCurrentForecastEligibility() throws {
+        let expired = limit(key: "session", percent: 50, state: "will_hit", rate: 1, hit: now.addingTimeInterval(-60))
+        let oldPrediction = snapshot([expired], provider: .claude, age: 120)
+        XCTAssertEqual(try oldPrediction.forecast(for: expired, now: now).unavailableReason, "prediction_expired")
+        XCTAssertEqual(try PlansPresentation.menuBar(claude: oldPrediction, codex: nil, show: true, now: now), "Claude 5h 50%")
+        let actual = limit(key: "session", percent: 80, state: "will_hit", rate: 1, hit: now.addingTimeInterval(-60))
+        XCTAssertEqual(try PlansPresentation.menuBar(claude: snapshot([actual], provider: .claude, age: 120),
+                                                     codex: nil, show: true, now: now), "⚠︎ Claude 5h 80%")
+        let future = limit(key: "session", percent: 50, state: "will_hit", rate: 1, hit: now.addingTimeInterval(60))
+        XCTAssertEqual(try PlansPresentation.menuBar(claude: snapshot([future], provider: .claude, age: 120),
+                                                     codex: nil, show: true, now: now), "⚠︎ Claude 5h 50%")
+    }
+
     func testCopyForEveryUnavailableReasonAndOperationError() throws {
         let reasons = [
             "disabled": "Plan limits are turned off in Features.",
