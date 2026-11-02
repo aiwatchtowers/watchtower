@@ -24,6 +24,7 @@ import (
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
 	"watchtower/internal/hub/transport/relay"
@@ -101,7 +102,17 @@ type hubRuntime struct {
 	relayID string
 	data    string
 	center  *link.Center
-	proc    *actions.Processor
+	proc    *actions.Processor // nil on a desktop host: the switcher's (processor)
+	// A desktop host's two transports (phase 3 Task 21): rel the hosted
+	// relay (nil without a relay origin), ck the CloudKit bridge client, sw
+	// the switch between them, whose Front() is tr; bridge supervises the
+	// bridge process (nil: this build has none). All nil elsewhere.
+	rel, ck transport.Transport
+	sw      *switcher.Switcher
+	bridge  *cloudkit.Supervisor
+	// relDown: the relay is not connected yet (a desktop host connects it
+	// in the link upkeep, so an unreachable relay never holds CloudKit up).
+	relDown bool
 	pub     *slices.Publisher
 	wiring  *wiring // nil without a database
 	// paying is the relay-only rules' watch (nil when they are off), and
@@ -209,7 +220,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if err := ensureEnabledAt(st, o.Clock()); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
-	id, err := loadIdentity(o.Dir)
+	id, err := o.hubIdentity(st)
 	if err != nil {
 		return nil, err
 	}
@@ -221,9 +232,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	ok := false
 	defer func() {
 		if !ok {
-			if h.tr != nil {
-				closeTransport(h.tr)
-			}
+			h.closeTransports()
 			if h.kr != nil {
 				h.kr.Wipe()
 			}
@@ -245,11 +254,15 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
-	if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
+	if o.Desktop != nil {
+		if err := h.desktopTransports(ctx, o); err != nil {
+			return nil, err
+		}
+	} else if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
-	if as, ok := h.tr.(accountStater); ok {
-		h.acct = &accountReader{read: as.AccountState, vouched: h.vouched, clock: o.Clock}
+	if as, ok := h.relayT().(accountStater); ok {
+		h.acct = &accountReader{read: as.AccountState, vouched: h.relayVouched, clock: o.Clock}
 	}
 	if o.RelayOnlyRules {
 		if h.acct == nil {
@@ -260,7 +273,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 			h.paying.timer = o.payTimer
 		}
 	}
-	if _, ok := h.tr.(zoneWatcher); !ok {
+	if _, ok := h.relayT().(zoneWatcher); !ok {
 		// A transport that sends every zone's events (memfake).
 		for _, z := range zones {
 			h.watched[z] = true
@@ -271,7 +284,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	opener := secure.NewOpener(h.kr, h.kr)
 	var pub *slices.Publisher
 	h.center = link.NewCenter(link.Config{
-		Store: st, Keys: h.kr, Opener: opener, Host: link.HeadlessHost(name, authPub), Clock: o.Clock,
+		Store: st, Keys: h.kr, Opener: opener, Host: hostInfo(o, name, authPub), Clock: o.Clock,
 		Publish: func(kinds ...string) {
 			pub.PublishSoon(toKinds(kinds)...)
 			h.kick(h.linkKick)
@@ -287,18 +300,30 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if o.Register != nil {
 		o.Register(d)
 	}
-	h.proc = actions.NewProcessor(actions.Config{
+	ac := actions.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
 		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos,
-	})
+	}
+	if o.Desktop != nil {
+		// One processor per transport, the switcher their Switch; the
+		// publisher writes through its Front (the active transport).
+		if err := h.newSwitcher(ac); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
+		}
+	} else {
+		h.proc = actions.NewProcessor(ac)
+	}
 	sweepTemps(o, st)
 	if o.DB != nil {
 		// Registered after the processor exists: the handlers' start may
 		// already late-echo a held line it ends. No pass runs before the
 		// worker starts, so the table is complete by the first dispatch.
-		if h.wiring, err = h.buildWiring(o, st, mode, d, h.proc.LateEcho); err != nil {
+		lateEcho := func(ctx context.Context, r actions.Request, out actions.Outcome) error {
+			return h.processor().LateEcho(ctx, r, out)
+		}
+		if h.wiring, err = h.buildWiring(o, st, mode, d, lateEcho); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 		}
 		// PROJ-16: a phone whose typing is taken away fails its held lines.
@@ -329,12 +354,15 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		},
 	})
 	h.pub = pub
+	if h.sw != nil {
+		h.sw.SetPublisher(pub)
+	}
 	if h.paying != nil {
 		// Paused until the first account state shows a paying phone.
 		h.paused = true
 		log.Printf("hub: relay-only rules on: paused until the account state shows a paying phone")
 	}
-	if a, ok := h.tr.(relayAdmission); ok && h.acct != nil {
+	if a, ok := h.relayT().(relayAdmission); ok && h.acct != nil {
 		// The account state Connect read takes the one door: it stamps the
 		// phones it lists and sets the vouch state.
 		st := a.LastAccountState()
@@ -371,6 +399,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 			_ = h.paying.Run(hctx, h.setPaying)
 		}()
 	}
+	h.startDesktop(hctx)
 	h.kick(h.passKick)
 	h.kick(h.linkKick)
 	h.kick(h.houseKick)
@@ -565,6 +594,7 @@ func (h *hubRuntime) setUnreachable(v bool) {
 // upkeep and housekeeping, one at a time.
 func (h *hubRuntime) work(ctx context.Context) {
 	h.cloudKitStart(ctx)
+	evA, evB := h.events()
 	passC, stopPasses := h.sup.o.passTicker(h.passTickEvery())
 	defer stopPasses()
 	links := time.NewTicker(h.sup.o.linkEvery)
@@ -577,7 +607,9 @@ func (h *hubRuntime) work(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case ev := <-h.tr.Events():
+		case ev := <-evA:
+			h.onEvent(ctx, ev)
+		case ev := <-evB:
 			h.onEvent(ctx, ev)
 		case <-h.passKick:
 			h.pass(ctx)
@@ -638,6 +670,11 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		case h.isMailbox(ev.Zone):
 			h.touch()
 			h.pass(ctx)
+			if h.sw != nil {
+				// The other transport's mailbox may have news too (a
+				// switch back, an epoch_ack): its poll runs now.
+				h.sw.Kick()
+			}
 		}
 	}
 }
@@ -656,6 +693,12 @@ func (h *hubRuntime) onControl(ctx context.Context, c transport.Control) {
 	case transport.EntitlementExpired, transport.SlotRemoved, transport.SubscriptionMoved:
 		log.Printf("hub: relay control %d: readers synced again", c.Kind)
 		h.kick(h.linkKick)
+		if h.sw != nil {
+			// A phone's relay entitlement lapsed (sim rule 16).
+			if err := h.sw.OnControl(ctx, c); err != nil {
+				log.Printf("hub: relay control %d not taken by the switch (%s)", c.Kind, errClass(err))
+			}
+		}
 	case transport.SlotAdded:
 		h.onSlotAdded()
 	case transport.SessionExpired:
@@ -667,7 +710,11 @@ func (h *hubRuntime) onControl(ctx context.Context, c transport.Control) {
 func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := h.center.OnPairingOpened(ctx, h.tr, slot); err != nil {
+	rt := h.relayT()
+	if rt == nil {
+		return
+	}
+	if err := h.center.OnPairingOpened(ctx, rt, slot); err != nil {
 		log.Printf("hub: pairing slot read failed (%s)", errClass(err))
 	}
 }
@@ -684,7 +731,7 @@ func (h *hubRuntime) pass(ctx context.Context) {
 	defer h.sweepShares(ctx)
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
-		rep, err := h.proc.Pass(pctx)
+		rep, err := h.processor().Pass(pctx)
 		cancel()
 		if err != nil {
 			h.observe(err)
@@ -710,12 +757,16 @@ func (h *hubRuntime) pass(ctx context.Context) {
 func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := h.center.PublishPairKeyboxes(ctx, h.tr); err != nil {
-		h.observe(err)
-		log.Printf("hub: pair keyboxes not written (%s)", errClass(err))
+	h.connectRelay(ctx)
+	rt := h.relayT()
+	if rt != nil {
+		if err := h.center.PublishPairKeyboxes(ctx, rt); err != nil {
+			h.observe(err)
+			log.Printf("hub: pair keyboxes not written (%s)", errClass(err))
+		}
 	}
-	vouched := h.vouched()
-	if rs, ok := h.tr.(readersSetter); ok && vouched && h.acct != nil {
+	vouched := h.relayVouched()
+	if rs, ok := rt.(readersSetter); ok && vouched && h.acct != nil {
 		// set_hub_readers is closed to an unvouched hub; the account state
 		// it is computed from comes through the one door.
 		set := func(ctx context.Context, linked []string) error {
@@ -730,7 +781,7 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 			log.Printf("hub: readers not synced (%s)", errClass(err))
 		}
 	}
-	if zw, ok := h.tr.(zoneWatcher); ok {
+	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
 		h.watchZones(ctx, zw)
 	}
 	if !vouched && h.acct != nil && h.phoneLinked() {
@@ -853,8 +904,8 @@ func zoneKind(zone, data string) string {
 // sees a slot) clears the waits. A subscription that takes means
 // the relay is reachable.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
-	if _, ok := h.tr.(relayAdmission); ok {
-		v := h.vouched()
+	if _, ok := h.relayT().(relayAdmission); ok {
+		v := h.relayVouched()
 		if v && !h.wasVouched {
 			clear(h.subRetry)
 		}
@@ -926,10 +977,12 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 		}
 	}
 	pruneRecordingJobs(h.sup.o, h.st)
-	if rep, err := h.proc.Hygiene(ctx); err != nil {
-		log.Printf("hub: hygiene failed (%s)", errClass(err))
-	} else if rep.Ran {
-		log.Printf("hub: hygiene: %d mailbox records deleted, %d ledger rows pruned", rep.Deleted, rep.Pruned)
+	for _, p := range h.processors() {
+		if rep, err := p.Hygiene(ctx); err != nil {
+			log.Printf("hub: hygiene failed (%s)", errClass(err))
+		} else if rep.Ran {
+			log.Printf("hub: hygiene: %d mailbox records deleted, %d ledger rows pruned", rep.Deleted, rep.Pruned)
+		}
 	}
 	h.sup.poke()
 }
@@ -967,7 +1020,7 @@ func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 		}
 		cancel()
 	}
-	closeTransport(h.tr)
+	h.closeTransports()
 	h.kr.Wipe()
 	h.id.Zero()
 }

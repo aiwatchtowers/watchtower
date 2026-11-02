@@ -62,6 +62,7 @@
 - `cmd/provider_policy_test.go`: `TestProviderPolicy_ConfigSetRefused`.
 - `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift`: `testOffStopsHubKeepsSetting`, `testLooseningDoesNotStartHubWhenSettingOff`.
 - Go hub (phase 1, **ask #807**), the Go twins: `internal/hub/hub_test.go::TestPolicy03_OffStopsHubKeepsSetting`, `internal/hub/hub_test.go::TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` (`MobileSync` off stops the Go hub and deletes what it published, `hub_meta.enabled` untouched; loosening never starts a hub the owner left off).
+- Go hub on a desktop host (phase 3 Task 21), the same meaning over both transports: `internal/hub/resolve_desktop_test.go::TestPolicy03_OffStopsDesktopHostHubKeepsSetting`.
 
 **Locked since:** 2026-10-25
 

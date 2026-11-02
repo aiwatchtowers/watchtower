@@ -122,53 +122,6 @@ func TestResolve_TestModeUnchangedWhenHubDirSet(t *testing.T) {
 	}
 }
 
-// TestResolve_DesktopHostNeverStartsALiveHub is Review Focus 1: a Mac with
-// the app gets no live hub even with hub_meta.enabled = 1 written by hand,
-// and nothing under the live dir or MobileHub/ changes.
-func TestResolve_DesktopHostNeverStartsALiveHub(t *testing.T) {
-	dir := liveHome(t)
-	DefaultRelayOrigin = "https://relay.example.com"
-	t.Cleanup(func() { DefaultRelayOrigin = "" })
-	setMeta(t, dir, state.MetaEnabled, "1")
-	home, _ := os.UserHomeDir()
-	support := filepath.Join(home, "Library", "Application Support", "Watchtower")
-	swift := filepath.Join(support, "MobileHub")
-	if err := os.MkdirAll(swift, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(swift, state.FileName), []byte("swift"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(20 * time.Millisecond) // a write by Resolve would show in the mtimes
-	before, beforeSwift := listing(t, dir), listing(t, swift)
-
-	for name, p := range map[string]hostkind.Probe{
-		"app bundle": desktopProbe(home, support),
-		"MobileHub/": {GOOS: "darwin", Home: home, AppSupport: support, Stat: os.Stat, ReadFile: os.ReadFile},
-	} {
-		o, mode, err := resolve(&config.Config{}, nil, p)
-		if mode != ModeOff || !errors.Is(err, ErrDesktopHost) || Refusal(err) != ReasonDesktopHost || o.Dir != "" {
-			t.Fatalf("%s: %+v mode %q err %v", name, o, mode, err)
-		}
-		var de *DesktopHostError
-		if !errors.As(err, &de) || de.Signal == "" {
-			t.Fatalf("%s: no signal in %v", name, err)
-		}
-		if _, _, kind, err := Dir(p); !errors.Is(err, ErrDesktopHost) || kind != hostkind.Desktop {
-			t.Fatalf("%s: Dir: %v", name, err)
-		}
-		if r := OffReason(&config.Config{}, ModeOff); r != "" {
-			t.Fatalf("%s: OffReason %q", name, r)
-		}
-	}
-	if after := listing(t, dir); !mapsEqual(before, after) {
-		t.Fatalf("the live dir changed:\n%v\n%v", before, after)
-	}
-	if after := listing(t, swift); !mapsEqual(beforeSwift, after) {
-		t.Fatalf("MobileHub/ changed:\n%v\n%v", beforeSwift, after)
-	}
-}
-
 func mapsEqual(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false

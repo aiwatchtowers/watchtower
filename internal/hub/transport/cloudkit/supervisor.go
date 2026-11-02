@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -24,9 +25,14 @@ const (
 // desktop host: it launches it with Config.Launch, restarts it with backoff
 // when it exits or fails to start, and stops it when its context ends.
 type Supervisor struct {
-	c     Config
-	sleep func(ctx context.Context, d time.Duration) error
+	c       Config
+	sleep   func(ctx context.Context, d time.Duration) error
+	running atomic.Bool
 }
+
+// Running reports whether a bridge process it launched is alive now (false
+// before the first launch, while it waits to restart one, and after Run).
+func (s *Supervisor) Running() bool { return s.running.Load() }
 
 // NewSupervisor returns a supervisor for c.Launch.
 func NewSupervisor(c Config) *Supervisor {
@@ -68,6 +74,8 @@ func (s *Supervisor) runOnce(ctx context.Context) {
 		log.Printf("hub: cloudkit bridge did not start (%s)", launchClass(err))
 		return
 	}
+	s.running.Store(true)
+	defer s.running.Store(false)
 	s.wait(ctx, p)
 }
 

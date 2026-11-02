@@ -1023,12 +1023,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
 	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
-		var desktop *hub.DesktopHostError
-		if errors.As(err, &desktop) {
-			logger.Printf("hub: off (%s, %s)", hub.Refusal(err), desktop.Signal)
-		} else {
-			logger.Printf("hub: off (%s)", hub.Refusal(err))
-		}
+		logger.Printf("hub: off (%s)", hub.Refusal(err))
 		return func() {}
 	}
 	// The session port's seams; the socket stays Resolve's (test mode: the
@@ -1066,7 +1061,7 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 		}
 	}()
 	if o.Mode == hub.ModeLive {
-		logger.Printf("hub: started (live, headless)")
+		logger.Printf("hub: started (live, %s)", o.Host)
 	} else {
 		logger.Printf("hub: started (test workspace)")
 	}

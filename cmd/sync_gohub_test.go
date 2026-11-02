@@ -85,7 +85,8 @@ func setGoHubProbe(t *testing.T, p hostkind.Probe) {
 
 // TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly: with no hub dir the daemon
 // starts the live hub on a headless host once it is enabled and has a relay
-// origin, and never on a desktop host.
+// origin; on a desktop host the live hub's Run holds it off beside the
+// Swift hub's state (no sidecar, no lock) until the adoption.
 func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
 	policytest.Set(t, nil)
 	base, err := os.MkdirTemp("/tmp", "hubd")
@@ -96,27 +97,46 @@ func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
 	t.Setenv(hub.EnvRelayOrigin, "http://127.0.0.1:1")
 	live, err := hub.DefaultDir()
 	require.NoError(t, err)
-	st, err := state.Open(live)
-	require.NoError(t, err)
-	require.NoError(t, st.SetMeta(state.MetaEnabled, "1"))
-	require.NoError(t, st.Close())
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
+	support, err := config.AppSupportDir()
+	require.NoError(t, err)
+	mobile := filepath.Join(support, "MobileHub")
+	require.NoError(t, os.MkdirAll(mobile, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(mobile, state.FileName), []byte("swift"), 0o600))
 	setGoHubProbe(t, hostkind.Probe{GOOS: "darwin", Home: base, Stat: os.Stat, ReadFile: func(p string) ([]byte, error) {
 		if p == "/Applications/Watchtower.app/Contents/Info.plist" {
 			return []byte("<key>CFBundleIdentifier</key><string>" + hostkind.BundleID + "</string>"), nil
 		}
 		return nil, fs.ErrNotExist
 	}})
-	startGoHub(context.Background(), &config.Config{}, nil, logger)()
-	assert.Contains(t, buf.String(), "hub: off (desktop_host, app_bundle)")
+	stopDesktop := startGoHub(context.Background(), &config.Config{}, nil, logger)
+	assert.Contains(t, buf.String(), "hub: started (live, desktop)")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		s, err := hub.ReadStatus(live)
+		require.NoError(t, err)
+		if s.State == hub.StateOff && s.Reason == hub.ReasonAwaitingAdoption && s.Host == string(hostkind.Desktop) {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "the desktop hub never reported awaiting_adoption: %+v", s)
+		time.Sleep(20 * time.Millisecond)
+	}
+	stopDesktop()
+	_, err = os.Stat(filepath.Join(live, state.FileName))
+	assert.True(t, errors.Is(err, fs.ErrNotExist), "a sidecar beside the Swift hub's state")
+	require.NoError(t, os.RemoveAll(mobile))
 
+	st, err := state.Open(live)
+	require.NoError(t, err)
+	require.NoError(t, st.SetMeta(state.MetaEnabled, "1"))
+	require.NoError(t, st.Close())
 	buf.Reset()
 	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
 	stop := startGoHub(context.Background(), &config.Config{}, nil, logger)
 	assert.Contains(t, buf.String(), "hub: started (live, headless)")
-	deadline := time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(10 * time.Second)
 	for {
 		s, err := hub.ReadStatus(live)
 		require.NoError(t, err)

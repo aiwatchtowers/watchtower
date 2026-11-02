@@ -65,6 +65,12 @@ func realTicker(d time.Duration) (<-chan time.Time, func()) {
 // shares is the transport's CloudKit linking surface; false on a transport
 // that has none (the hosted relay).
 func (h *hubRuntime) shares() (transport.Shares, bool) {
+	if h.sw != nil {
+		// A desktop host links over CloudKit (and unlinks there) whichever
+		// transport is active.
+		s, ok := h.ck.(transport.Shares)
+		return s, ok
+	}
 	if h.tr.Kind() != transport.KindCloudKit {
 		return nil, false
 	}
@@ -76,7 +82,7 @@ func (h *hubRuntime) shares() (transport.Shares, bool) {
 // relay (live events, a backstop only), CloudKitActivePass on CloudKit, where
 // each tick asks the cadence whether a pass is due.
 func (h *hubRuntime) passTickEvery() time.Duration {
-	if h.tr.Kind() == transport.KindCloudKit {
+	if h.sw != nil || h.tr.Kind() == transport.KindCloudKit {
 		return CloudKitActivePass
 	}
 	return h.sup.o.passEvery
@@ -85,9 +91,18 @@ func (h *hubRuntime) passTickEvery() time.Duration {
 // passTick is one tick of the pass ticker (worker only): on CloudKit a pass
 // runs when the cadence has one due, elsewhere every tick.
 func (h *hubRuntime) passTick(ctx context.Context) {
-	if h.tr.Kind() == transport.KindCloudKit &&
-		!cloudKitPassDue(h.sup.o.Clock(), h.lastPass, h.touched(), h.center.LinkUrgent()) {
-		return
+	now := h.sup.o.Clock()
+	switch {
+	case h.tr.Kind() == transport.KindCloudKit:
+		if !cloudKitPassDue(now, h.lastPass, h.touched(), h.center.LinkUrgent()) {
+			return
+		}
+	case h.sw != nil:
+		// A desktop host on the relay: the relay's backstop cadence on
+		// the CloudKit ticker.
+		if !h.lastPass.IsZero() && now.Sub(h.lastPass) < h.sup.o.passEvery-CloudKitActivePass/2 {
+			return
+		}
 	}
 	h.pass(ctx)
 }

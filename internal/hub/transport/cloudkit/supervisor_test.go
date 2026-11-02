@@ -184,3 +184,31 @@ func TestSupervisorStopsTheWholeProcessGroup(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Running follows the launched bridge: false before the first launch, true
+// while it lives, false once Run returned.
+func TestSupervisorRunningFollowsTheBridge(t *testing.T) {
+	st := newStubs(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := cloudkit.NewSupervisor(cloudkit.Config{Launch: func(context.Context) (*os.Process, error) {
+		return st.start("sleep 30")
+	}})
+	if s.Running() {
+		t.Fatal("running before the first launch")
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for !s.Running() {
+		if time.Now().After(deadline) {
+			t.Fatal("never running")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if s.Running() {
+		t.Fatal("still running after Run returned")
+	}
+}

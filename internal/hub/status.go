@@ -45,13 +45,36 @@ const (
 	// ReasonStartFailed: a start step failed that is neither the sidecar
 	// nor the relay (state starting, retried with backoff).
 	ReasonStartFailed = "start_failed"
-	// ReasonDesktopHost: a Mac with the Watchtower app (or the Swift hub's
-	// state) never runs a live hub.
-	ReasonDesktopHost = "desktop_host"
 	// ReasonNoRelayOrigin: no (valid) relay origin is set.
 	ReasonNoRelayOrigin = "no_relay_origin"
 	// ReasonRunDirUnusable: the session-host socket folder is unusable.
 	ReasonRunDirUnusable = "run_dir_unusable"
+	// ReasonAwaitingAdoption: a desktop host whose Swift hub state is not
+	// adopted yet (or whose keys are not handed over): no Go hub runs
+	// beside it (spec §12.1, never two hubs).
+	ReasonAwaitingAdoption = "awaiting_adoption"
+	// ReasonAdoptionFailed: the adoption stopped with an error class
+	// (hub_meta.adopt_error); Desktop retries it.
+	ReasonAdoptionFailed = "adoption_failed"
+	// ReasonSessionHostV1: a v1 session host (an older app's) still runs
+	// the sessions; the hub waits for the v2 host.
+	ReasonSessionHostV1 = "session_host_v1"
+)
+
+// Status.Adoption values: where the Swift hub's adoption stands.
+const (
+	AdoptionNone       = "none"
+	AdoptionInProgress = "in_progress"
+	AdoptionFailed     = "failed"
+	AdoptionDone       = "done"
+)
+
+// Status.Bridge values on a desktop host ("" elsewhere): the CloudKit
+// bridge runs, is being (re)started, or this build has none.
+const (
+	BridgeRunning     = "running"
+	BridgeRestarting  = "restarting"
+	BridgeUnavailable = "unavailable"
 )
 
 // Status is what `hub status` shows. Its JSON keys are the CLI's pinned keys.
@@ -68,6 +91,16 @@ type Status struct {
 	// Mode the hub's mode (test, live; "" = off).
 	Host string `json:"host"`
 	Mode string `json:"mode"`
+	// Adoption is where the Swift hub's adoption stands (Adoption*), Bridge
+	// the CloudKit bridge on a desktop host (Bridge*, "" elsewhere),
+	// Identity the identity store (keychain|file; "" when not known), and
+	// SwitchedAt (RFC 3339, "" = never) / SwitchedBy the last transport
+	// switch (a device id or entitlement_expired).
+	Adoption   string `json:"adoption"`
+	Bridge     string `json:"bridge"`
+	Identity   string `json:"identity"`
+	SwitchedAt string `json:"switched_at"`
+	SwitchedBy string `json:"switched_by"`
 }
 
 // statusFile is the status as the runtime writes it, with its pid so a

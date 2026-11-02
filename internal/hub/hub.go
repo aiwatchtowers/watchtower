@@ -8,9 +8,11 @@
 // spec §14 row 1) is FromEnv: WATCHTOWER_HUB_DIR (absolute, never the Swift
 // hub's MobileHub dir), WATCHTOWER_RELAY_ORIGIN, and
 // WATCHTOWER_HUB_TEST_WORKSPACE naming the daemon's own active workspace,
-// which must be a hubtest-* one. Its live mode (phase 2, spec §7.3) runs in
-// DefaultDir on a headless host only (hostkind), never beside the Swift hub
-// on a Mac with the app (§12.1). Every hub runs relay-only.
+// which must be a hubtest-* one. Its live mode runs in DefaultDir: on a
+// headless host relay-only (phase 2, spec §7.3); on a desktop host (phase 3,
+// desktop.go) on CloudKit and the relay behind the switcher, and never
+// beside the Swift hub's state (§12.1): Run holds it off, without the lock
+// or a sidecar, until the adoption finished.
 //
 // One hub per state dir: Run holds <dir>/hub.lock from before it opens the
 // sidecar until it returns, so a second Run (or a CLI writing directly)
@@ -112,8 +114,6 @@ func Refusal(err error) string {
 		return "swift_hub_dir"
 	case errors.Is(err, ErrNoRelayOrigin):
 		return ReasonNoRelayOrigin
-	case errors.Is(err, ErrDesktopHost):
-		return ReasonDesktopHost
 	case errors.Is(err, ErrHubDisabled):
 		return ReasonDisabled
 	case errors.Is(err, ErrPolicyOff):
@@ -152,6 +152,13 @@ type Options struct {
 	// a hub started without Resolve).
 	Mode Mode
 	Host hostkind.Kind
+	// Transports is what a desktop host's hub runs and announces to phones
+	// (["cloudkit","relay"], or ["cloudkit"] with no relay origin); nil = the
+	// hosted relay alone (a headless host, the test mode).
+	Transports []string
+	// Desktop is a desktop host's live mode (resolveDesktop): the gate, the
+	// identity store and the CloudKit bridge. nil on every other hub.
+	Desktop *Desktop
 	// RelayOnlyRules turns on spec §7.3's rules of a headless hub (the live
 	// mode sets it; FromEnv's test mode leaves it off): with no paying phone
 	// in the account state the hub pauses — it publishes nothing, applies no
@@ -326,6 +333,11 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	s := &supervisor{o: o, run: newRunID(), wake: make(chan struct{}, 1), pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{}}
+	if o.Desktop != nil && !s.awaitDesktop(ctx) {
+		// Never two hubs: no lock was taken and no sidecar opened.
+		s.setStatus(Status{State: StateOff})
+		return nil
+	}
 	lock, err := s.acquire(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -390,6 +402,11 @@ type supervisor struct {
 	nextStart time.Time
 	backoff   time.Duration
 	failure   string
+	// held is why a desktop host's hub waits to start ("" = it does not):
+	// a v1 session host answers. laterLogged: the later MobileHub/ line was
+	// logged.
+	held        string
+	laterLogged bool
 
 	statusMu sync.Mutex
 	status   Status
@@ -495,7 +512,14 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	if s.hub == nil && on && mode == policy.MobileOff {
 		s.wipeStopped(ctx)
 	}
-	if want && s.hub == nil && !time.Now().Before(s.nextStart) {
+	s.held = ""
+	if want && s.hub == nil && s.o.Desktop != nil && s.v1HostAnswers(ctx) {
+		// The daemon starts no session host of its own beside a v1 one
+		// (Desktop restarts it once, Task 19); re-checked every check.
+		s.held = ReasonSessionHostV1
+	}
+	s.laterMobileHub()
+	if want && s.hub == nil && s.held == "" && !time.Now().Before(s.nextStart) {
 		s.startHub(ctx, mode, name)
 	}
 	s.refreshStatus(mode, on)
@@ -600,11 +624,17 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		log.Printf("hub: reading the status facts failed (%s)", errClass(err))
 	}
 	st.Impl, st.HubID, st.Phones = impl, hubID, len(devices)
+	var err error
+	if st.Adoption, st.Identity, st.SwitchedAt, st.SwitchedBy, err = statusFacts(s.st, s.o.Desktop != nil); err != nil {
+		log.Printf("hub: reading the status facts failed (%s)", errClass(err))
+	}
 	switch h := s.hub; {
 	case mode == policy.MobileOff:
 		st.Reason = ReasonPolicyOff
 	case !on:
 		st.Reason = ReasonDisabled
+	case h == nil && s.held != "":
+		st.Reason = s.held
 	case h == nil && s.failure == ReasonSidecarUnreadable:
 		st.Reason = s.failure
 	case h == nil:
@@ -615,6 +645,7 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 			st.State = StatePaused
 		}
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())
+		st.Bridge = h.bridgeState()
 	}
 	s.setStatus(st)
 }
