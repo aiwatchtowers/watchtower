@@ -80,6 +80,7 @@ type Fake struct {
 	pumping     bool              // a pump goroutine owns pending
 	account     *relayv1.AccountState
 	accountRead int
+	refused     map[string]error // zone → the error its writes are refused with
 }
 
 var _ transport.Transport = (*Fake)(nil)
@@ -111,6 +112,23 @@ func (f *Fake) SetAvailable(ok bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.down = !ok
+}
+
+// RefuseWrites refuses every write into zone — the hub's saves (an item's
+// Outcome.Refused) and the phone's Write — with err until called again with
+// nil, as the hosted relay refuses a lapsed phone's mailbox
+// (ENTITLEMENT_INACTIVE). Reads and deletes go on.
+func (f *Fake) RefuseWrites(zone string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refused == nil {
+		f.refused = map[string]error{}
+	}
+	if err == nil {
+		delete(f.refused, zone)
+		return
+	}
+	f.refused[zone] = err
 }
 
 // SetHanging makes every Transport call (Save, Delete, Changes, Download)
@@ -261,6 +279,9 @@ func (f *Fake) WriteAs(creator, zone, name string, env []byte, expect transport.
 	if f.down {
 		return transport.Outcome{}, transport.ErrUnavailable
 	}
+	if err := f.refused[zone]; err != nil {
+		return transport.Outcome{}, err
+	}
 	f.frames = append(f.frames, bytes.Clone(env))
 	out := f.put(zone, name, env, "", expect)
 	if out.Saved {
@@ -282,6 +303,9 @@ func (f *Fake) WriteWithAsset(zone, name string, env, asset []byte, expect trans
 	defer f.mu.Unlock()
 	if f.down {
 		return transport.Outcome{}, transport.ErrUnavailable
+	}
+	if err := f.refused[zone]; err != nil {
+		return transport.Outcome{}, err
 	}
 	f.frames = append(f.frames, bytes.Clone(env))
 	f.attCounter++
@@ -330,6 +354,10 @@ func (f *Fake) Save(ctx context.Context, items []transport.SaveItem) ([]transpor
 		r := it.Record
 		env := r.Envelope()
 		f.frames = append(f.frames, bytes.Clone(env))
+		if err := f.refused[r.Zone()]; err != nil {
+			out[i] = transport.Outcome{Refused: err}
+			continue
+		}
 		if r.AssetPath() != "" && isPairZone(r.Zone()) {
 			out[i] = transport.Outcome{Refused: fmt.Errorf("memfake: attachment in a pairing zone: %w", transport.ErrForbidden)}
 			continue

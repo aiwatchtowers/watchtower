@@ -67,7 +67,9 @@ type Config struct {
 type sent struct {
 	plain, wire string
 	env         []byte
-	recordSeq   uint64 // last RecordSeq the phone knows at this action's name (its write or the hub's echo); 0 = never written
+	frame       secure.InnerFrame // what env seals, resealed in a newer epoch on a resend_from (sim rule 14)
+	epoch       uint32            // the epoch env is sealed in
+	recordSeq   uint64            // last RecordSeq the phone knows at this action's name (its write or the hub's echo); 0 = never written
 }
 
 // Phone is one emulated phone. Not safe for concurrent use.
@@ -100,6 +102,12 @@ type Phone struct {
 	ControlEpochs []uint32
 	// Undelivered lists the actions a skip_to gave up on.
 	Undelivered []uint64
+	// Resealed lists the outbox actions sealed again in a newer epoch on a
+	// resend_from (sim rule 14), in order.
+	Resealed []uint64
+	// Read is every hub record Sync handled, in order: "echo:<seq>:<status>"
+	// or "control:<kind>".
+	Read []string
 	// Creator, when set, is the iCloud user WriteDeviceRecord writes as
 	// (Stored.Creator, on a transport with WriteAs such as the memfake).
 	Creator string
@@ -196,12 +204,13 @@ func (p *Phone) Queue(a wire.ActionRequest) (uint64, error) {
 	}
 	plain := "a-" + p.id.String() + "-" + strconv.FormatUint(seq, 10)
 	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, "a", p.id.String()+"-"+strconv.FormatUint(seq, 10))
-	env, err := p.seal(name, secure.InnerFrame{Kind: "action", ID: plain, Payload: payload})
+	frame := secure.InnerFrame{Kind: "action", ID: plain, Payload: payload}
+	env, err := p.seal(name, frame)
 	if err != nil {
 		return 0, err
 	}
 	p.nextAction++
-	p.history[seq] = sent{plain: plain, wire: name, env: env}
+	p.history[seq] = sent{plain: plain, wire: name, env: env, frame: frame, epoch: p.cfg.Epoch}
 	p.outbox = append(p.outbox, seq)
 	return seq, nil
 }
@@ -477,6 +486,7 @@ func (p *Phone) onEcho(rec transport.Stored, f secure.InnerFrame) error {
 	} else {
 		p.Echoes[*a.ActionSeq] = a
 		p.wrote(*a.ActionSeq, rec.RecordSeq)
+		p.Read = append(p.Read, "echo:"+strconv.FormatUint(*a.ActionSeq, 10)+":"+a.Status)
 	}
 	switch a.Status {
 	case wire.StatusApplied, wire.StatusFailed, wire.StatusExpired, wire.StatusCancelled:
@@ -498,6 +508,7 @@ func (p *Phone) onControl(rec transport.Stored, f secure.InnerFrame) error {
 		return fmt.Errorf("hubtest: unreadable control: %w", err)
 	}
 	p.Controls = append(p.Controls, c)
+	p.Read = append(p.Read, "control:"+c.Kind)
 	var epoch uint32
 	if h, err := secure.ParseHeader(rec.Envelope); err == nil {
 		epoch = h.Epoch
@@ -536,12 +547,76 @@ func (p *Phone) resendFrom(from uint64) error {
 	}
 	for _, s := range slices.Sorted(slices.Values(p.outbox)) {
 		if s >= from {
+			if err := p.reseal(s); err != nil {
+				return err
+			}
 			if err := p.Send(s); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// reseal is sim rule 14: an outbox action sealed in an epoch older than the
+// phone's current one is sealed again in the current epoch with the same
+// action_seq and name (its next Send overwrites the record); Resealed counts
+// them.
+func (p *Phone) reseal(seq uint64) error {
+	s, ok := p.history[seq]
+	if !ok || s.epoch >= p.cfg.Epoch {
+		return nil
+	}
+	env, err := p.seal(s.wire, s.frame)
+	if err != nil {
+		return err
+	}
+	s.env, s.epoch = env, p.cfg.Epoch
+	p.history[seq] = s
+	p.Resealed = append(p.Resealed, seq)
+	return nil
+}
+
+// Empty is sim rule 15 for a mailbox the phone left: it first handles the
+// hub records it has not seen (Sync), then deletes everything else it can
+// tell is its own or the hub's to it — its leftover actions and controls
+// included. In a shared mailbox another phone's records are left alone.
+func (p *Phone) Empty() error {
+	if _, err := p.Sync(); err != nil {
+		return err
+	}
+	var since uint64
+	for {
+		b, err := p.cfg.Transport.Changes(context.Background(), p.zone, since)
+		if err != nil {
+			return err
+		}
+		var items []transport.DeleteItem
+		for _, rec := range b.Changed {
+			if !p.ownRecord(rec) {
+				continue
+			}
+			items = append(items, transport.DeleteItem{Name: rec.Name, Expect: transport.Expect{Mode: transport.ExpectSeq, Seq: rec.RecordSeq}})
+		}
+		if len(items) > 0 {
+			if _, err := p.cfg.Transport.Delete(context.Background(), p.zone, items); err != nil {
+				return err
+			}
+		}
+		if !b.More {
+			return nil
+		}
+		since = b.NewSeq
+	}
+}
+
+// ownRecord: rec was sealed by this phone, or by the hub to it.
+func (p *Phone) ownRecord(rec transport.Stored) bool {
+	if h, err := secure.ParseHeader(rec.Envelope); err == nil && h.Sender == p.id {
+		return true
+	}
+	_, err := p.open(rec.Name, rec.Envelope)
+	return err == nil
 }
 
 func (p *Phone) relayKey(dir secure.Direction, epoch uint32) ([]byte, error) {

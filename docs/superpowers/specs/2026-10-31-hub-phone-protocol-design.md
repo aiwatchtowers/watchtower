@@ -379,7 +379,7 @@ Plain name `c-<uuid>`, frame kind `control`, sealed like an action in the sender
 |---|---|---|---|
 | `resend_from` | hub → phone | `seq` | Go hub writes |
 | `skip_to` | phone → hub | `seq` | Go hub reads; phone Proposed |
-| `epoch_ack` | phone → hub | `epoch` (newest hub epoch the phone holds; never lowered) | Go hub records it; retirement Proposed (sim rule 14) |
+| `epoch_ack` | phone → hub | `epoch` (newest hub epoch the phone holds; never lowered) | Go hub records it; an old epoch retires once every phone acked a newer one and no held action is sealed in it, 7 days at most (sim rule 14, ask #843; Go hub phase 3 Task 20) |
 | `transport_switch` | phone → hub | `target` (`relay`\|`cloudkit`), `reason?` | Go hub answers `transport_switch_rejected` "not supported yet" until the switch is built |
 | `transport_switched` | hub → phone | `target, epoch, by, at, keybox` (the new epoch's keybox) | Proposed |
 | `transport_switch_rejected` | hub → phone | `reason`, `retry_after_s` | Go hub writes |

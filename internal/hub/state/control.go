@@ -108,6 +108,44 @@ func (s *Store) DropResendFrom(id int64, device string) error {
 	})
 }
 
+// OweOver moves device's queued echoes (kind echoKind) from queue from to
+// queue to, keeping their ids and so their order, to be written there over
+// whatever holds their names (expect none), and drops every other row of
+// from; a dropped resendKind row also forgets that its gap was asked
+// (resend_requested_from = 0). Relay sim rule 16: a phone whose relay
+// entitlement lapsed still gets the echoes it is owed, over CloudKit; the
+// controls queued for its relay mailbox are moot there. It returns how many
+// echoes moved.
+func OweOver(tx *sql.Tx, device, from, to, echoKind, resendKind string) (int64, error) {
+	if from == to {
+		return 0, nil
+	}
+	res, err := tx.Exec(`UPDATE control_queue SET mailbox = ?, expect = ?, expect_seq = NULL WHERE mailbox = ? AND kind = ?`,
+		to, ExpectNone, from, echoKind)
+	if err != nil {
+		return 0, fmt.Errorf("moving owed echoes: %w", err)
+	}
+	moved, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	res, err = tx.Exec(`DELETE FROM control_queue WHERE mailbox = ? AND kind = ?`, from, resendKind)
+	if err != nil {
+		return 0, fmt.Errorf("dropping controls: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, err
+	} else if n > 0 {
+		if err := SetResendRequested(tx, device, 0); err != nil && !errors.Is(err, ErrNoDevice) {
+			return 0, err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM control_queue WHERE mailbox = ?`, from); err != nil {
+		return 0, fmt.Errorf("dropping controls: %w", err)
+	}
+	return moved, nil
+}
+
 // RekeyControls moves the rows queued under any of from to mailbox (a
 // phone whose queue key changed: its mailbox moved between its own zone and a
 // shared one), keeping their ids and so their order. It returns how many

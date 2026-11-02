@@ -122,8 +122,12 @@ type Switcher struct {
 
 	stepMu sync.Mutex // one Step at a time
 
-	mu     sync.Mutex // guards active and every read-modify-write of the switch record
+	mu     sync.Mutex // guards active, pending, paying and every read-modify-write of the switch record
 	active transport.Kind
+	// pending is the lapses waiting for a Step, paying the last account
+	// read that answered (entitlement.go). Device ids in uuidString form.
+	pending map[string]bool
+	paying  map[string]bool
 
 	boMu    sync.Mutex // the failed-Step backoff
 	boDelay time.Duration
@@ -427,6 +431,7 @@ func (s *Switcher) PollOther(ctx context.Context) {
 		cancel()
 	}
 	s.writeOwedMarkers(ctx, "")
+	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
 	if s.Pending() && s.stepDue() {
 		s.Kick()
 	}

@@ -908,6 +908,11 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	if rotated {
 		h.pub.PublishSoon(slices.AllKinds...)
 	}
+	// Relay sim rule 14: a retired epoch's keys go once every phone acked a
+	// newer one and no held action is sealed in it, 7 days at most.
+	if err := h.kr.RetireOld(); err != nil {
+		log.Printf("hub: retiring old epochs failed (%s)", errClass(err))
+	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	if h.mode == policy.MobileWorkbenchOnly && !h.isHeld() {
