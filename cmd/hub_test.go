@@ -244,6 +244,7 @@ func desktopAppProbe() hostkind.Probe {
 // sidecar, nothing is created under the live dir (a sidecar there would
 // make the adoption refuse it).
 func TestHubCLIRefusesWritesBeforeAdoptionOnADesktopHost(t *testing.T) {
+	hubOnGOOS(t, "darwin") // the desktop verbs are a Mac's; CI also runs on Linux
 	live, _ := hubLiveCLI(t, desktopAppProbe())
 	support, err := config.AppSupportDir()
 	require.NoError(t, err)

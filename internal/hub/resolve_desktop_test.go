@@ -373,7 +373,10 @@ func TestResolve_DesktopHostNeverStartsBeforeAdoption(t *testing.T) {
 	t.Cleanup(func() { DefaultRelayOrigin = "" })
 	setMeta(t, dir, state.MetaEnabled, "1")
 	home, _ := os.UserHomeDir()
-	support := filepath.Join(home, "Library", "Application Support", "Watchtower")
+	support, err := config.AppSupportDir() // a darwin path on a Mac, <data root>/.support on Linux
+	if err != nil {
+		t.Fatal(err)
+	}
 	swift := filepath.Join(support, "MobileHub")
 	if err := os.MkdirAll(swift, 0o700); err != nil {
 		t.Fatal(err)
