@@ -375,6 +375,12 @@ final class AppState {
     /// The Go hub over its control socket (heartbeat, view inputs, status;
     /// go hub plan 3 Task 14); none under XCTest.
     private(set) var hubCenter: HubCenter?
+    /// The one-time restart of sessions from a v1 session host (go hub spec
+    /// §8 p. 4b): its notice above every tab and the other workspaces' wait
+    /// lines. Made once per app run by `startHostRestart`. The hub's adoption
+    /// awaits its `waitUntilSettled()` (go hub plan 3 order: migrate →
+    /// compact → restart step → adoption → daemon's hub).
+    private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
     /// Every line the app types into a workbench session's prompt — an
@@ -431,6 +437,9 @@ final class AppState {
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored var mobileHubStorage: MobileHubStorage?
     @ObservationIgnored var mobileHubPool: DatabasePool?
+    var hubAdoption: HubAdoptionDriver? // Mobile's hand-over to the Go hub (`startHubAdoption`)
+    /// The Swift hub never starts (never two hubs); false under XCTest only, until go hub plan 3 Task 24.
+    @ObservationIgnored var swiftHubRetired = !AppState.runsUnderXCTest
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
@@ -1862,11 +1871,15 @@ final class AppState {
         ownerAwayCenter.start()
         chatQuestionEscalator?.start()
         replaceHubCenter(cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
+        }
         vm.startHostReattach()
+        startHostRestart() // after the reattach: it stops what the reattach adopted
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
         Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
-        initMobileHub(dbPool: dbPool)
+        startMobile(dbPool: dbPool) // after the restart step, which the hand-over awaits
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {
             automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)
@@ -1882,6 +1895,17 @@ final class AppState {
         hubCenter = makeHubCenter(cliRunner)
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.start()
+    }
+
+    /// Makes the v1-host restart step once per app run (a setup re-run that
+    /// rebuilds the workbenches keeps it; it reads the current ones) and
+    /// runs its launch check after the reattach. None under XCTest: a test
+    /// builds its own step.
+    private func startHostRestart() {
+        guard hostRestart == nil, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        let step = HostRestartStep(center: terminalCenter) { [weak self] in self?.workbenchesViewModel }
+        hostRestart = step
+        Task { await step.runIfNeeded() }
     }
 
     /// The app quits: no more heartbeats, so the hub's view goes stale.

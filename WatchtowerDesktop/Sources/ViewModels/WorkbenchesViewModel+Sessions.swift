@@ -790,8 +790,10 @@ extension WorkbenchesViewModel {
     /// survived the restart, and those keep theirs.
     func sweepAttachmentsAfterReattach() async {
         await hostReattach?.value
-        guard let store = attachmentStore, let center = terminalCenter else { return }
-        let live = center.liveIDs
+        guard let store = attachmentStore, let center = terminalCenter,
+              let waiting = hostRestartWaitingRows() else { return }
+        // A row the v1-host restart will resume keeps its files too.
+        let live = center.liveIDs.union(waiting)
         await Task.detached(priority: .utility) { store.sweep(keepingSessions: live) }.value
     }
 
@@ -805,7 +807,7 @@ extension WorkbenchesViewModel {
         guard let center = terminalCenter, let host = center.sessionHost else { return }
         let listed: [SessionHostSessionInfo]
         do {
-            listed = try await host.list()
+            listed = await runsLeftForReattach(try await host.list(), host: host)
         } catch {
             NSLog("WorkbenchesViewModel: could not list the session host's sessions: %@", String(describing: error))
             return

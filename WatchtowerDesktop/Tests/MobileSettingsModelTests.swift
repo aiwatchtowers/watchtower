@@ -132,8 +132,11 @@ final class MobileSettingsModelTests: XCTestCase {
 
     func testAdoptionHoldsTheTabUntilItEnds() async throws {
         runningWith()
-        let adoption = Adoption(.inProgress(step: "copy"))
+        let adoption = Adoption(.checking)
         let model = makeModel(adoption: adoption)
+        await model.load()
+        XCTAssertEqual(model.state, .adoption(.checking))
+        adoption.adoptionState = .inProgress(step: "copy")
         await model.load()
         XCTAssertEqual(model.state, .adoption(.inProgress(step: "copy")))
         XCTAssertTrue(cli.invocations.isEmpty, "no hub read while it moves")

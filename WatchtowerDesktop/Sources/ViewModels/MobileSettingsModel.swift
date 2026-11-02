@@ -3,8 +3,8 @@ import Foundation
 import WatchtowerCore
 
 /// Where Settings → Mobile reads the one-time hand-over of Mobile to the Go
-/// hub (go hub plan 3 Task 22): `HubAdoptionDriver`'s state through the app.
-/// Task 22 conforms; until then nothing does and the tab reads the hub only.
+/// hub (go hub plan 3 Task 22): `HubAdoptionDriver`'s state through the app
+/// (`AppState`). While it is shown the tab shows it instead of the hub.
 @MainActor
 protocol MobileAdoptionSource: AnyObject {
     var adoptionState: HubAdoptionState { get }
@@ -189,7 +189,7 @@ final class MobileSettingsModel {
     }
 
     private func readOnce() async {
-        if let adopting = adoption?.adoptionState, adopting.holdsTheTab {
+        if let adopting = adoption?.adoptionState, adopting.isShown {
             state = .adoption(adopting)
             canLink = false
             return
@@ -479,15 +479,5 @@ final class MobileSettingsModel {
     func retryAdoption() async {
         await adoption?.retryAdoption()
         await load()
-    }
-}
-
-extension HubAdoptionState {
-    /// The hand-over is under way or failed: the tab shows it instead of the hub.
-    var holdsTheTab: Bool {
-        switch self {
-        case .inProgress, .failed: true
-        case .notNeeded, .done: false
-        }
     }
 }

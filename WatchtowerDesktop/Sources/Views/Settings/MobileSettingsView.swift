@@ -3,7 +3,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// Settings → Mobile tab: builds the model over the app once, on first
-/// appearance, and reads the hub again when `HubCenter` says it changed.
+/// appearance, and reads again when `HubCenter` says the hub changed or the
+/// hand-over to the Go hub moved on.
 struct MobileSettingsTab: View {
     @Environment(AppState.self) private var appState
     @State private var model: MobileSettingsModel?
@@ -21,6 +22,7 @@ struct MobileSettingsTab: View {
         }
         .onChange(of: appState.hubCenter?.status) { Task { await model?.load() } }
         .onChange(of: appState.hubCenter?.linksChanged) { Task { await model?.load() } }
+        .onChange(of: appState.hubAdoption?.state) { Task { await model?.load() } }
     }
 }
 
@@ -73,7 +75,7 @@ struct MobileSettingsView: View {
                 }
             }
         case .adoption(let adoption):
-            MobileAdoptionSection(adoption: adoption) { Task { await model.retryAdoption() } }
+            MobileHandOverView(state: adoption) { Task { await model.retryAdoption() } }
         case .off(let reason):
             MobileOffSection(model: model, copy: Copy.offCopy(reason))
         case .noPhones:
@@ -84,32 +86,6 @@ struct MobileSettingsView: View {
             MobileHubSection(model: model)
             MobilePhonesSection(model: model, rows: rows)
             MobileRecordingsSection(model: model)
-        }
-    }
-}
-
-/// The hand-over of Mobile to the new version (Task 22's state): a spinner
-/// while it runs, the reason and Retry when it failed.
-private struct MobileAdoptionSection: View {
-    let adoption: HubAdoptionState
-    let onRetry: () -> Void
-
-    var body: some View {
-        SettingsSection(title: MobileSettingsModel.sectionTitle) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                if case .inProgress = adoption { ProgressView().controlSize(.small) }
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    Text(adoption.title)
-                        .foregroundStyle(adoption.retryTitle == nil ? Color.primary : Tone.error)
-                    if let detail = adoption.detail {
-                        Text(detail).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: Spacing.medium)
-                if let retry = adoption.retryTitle {
-                    Button(retry, action: onRetry).buttonStyle(.kitPrimary)
-                }
-            }
         }
     }
 }
