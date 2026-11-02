@@ -44,8 +44,10 @@ package struct SessionSubagentObservation {
     package private(set) var finished = false
     package private(set) var awaitingResume = false
     package private(set) var parentTransition: String?
-    package var shouldReadOwn: Bool { !finished || awaitingResume }
+    package var awaitingOwnEvidence: Bool { awaitingResume || bootstrapEvidence != nil }
+    package var shouldReadOwn: Bool { !finished || awaitingOwnEvidence }
     private var resumeEvidence: ResumeEvidence?
+    private var bootstrapEvidence: ResumeEvidence?
     private var ownEntryAt: Date?
     private var ownEntryIDs: Set<String> = []
     private var own: SessionFeedLive?
@@ -59,6 +61,15 @@ package struct SessionSubagentObservation {
         snapshot: SessionFeedLive?, entries: [SessionFeedEntry], error: String?, now: Date
     ) -> String {
         var acknowledgedResume = false
+        if let evidence = bootstrapEvidence {
+            guard error == nil, let snapshot, let observed = snapshot.observedAt,
+                  now.timeIntervalSince(observed) < WorkchatLivePresentation.staleAfter else { return "unknown" }
+            if !evidence.acknowledged(by: snapshot, entries: entries) {
+                finished = false
+                return "resuming"
+            }
+            bootstrapEvidence = nil
+        }
         if awaitingResume {
             guard error == nil, let snapshot, let observed = snapshot.observedAt,
                   now.timeIntervalSince(observed) < WorkchatLivePresentation.staleAfter else {
@@ -81,10 +92,13 @@ package struct SessionSubagentObservation {
                 return "finished"
             }
         }
+        if finished, let snapshot, own != nil, !ownEvidence.acknowledged(by: snapshot, entries: entries) {
+            return "finished"
+        }
         if let snapshot { saveOwn(snapshot, entries: entries) }
         let status = SessionSubagentLifecycle.status(parentStatus: "unknown", snapshot: own, error: error, now: now)
         finished = status == "finished"
-        if finished { completedAt = own?.observedAt ?? entries.compactMap(\.at).max() }
+        if finished { completedAt = entries.filter { $0.kind == "agent" }.compactMap(\.at).max() }
         return status
     }
 
@@ -105,18 +119,36 @@ package struct SessionSubagentObservation {
             if !finished || !parentTerminal { parentTransition = "finished" }
             parentStatus = "finished"; parentStartedAt = child.startedAt
             parentTerminal = true; finished = true
+            bootstrapEvidence = nil
             return false
         }
         let catchesUpToOwn = ownAdvancedBeyondParent && !(child.startedAt.map { $0 > (own?.observedAt ?? .distantFuture) } ?? false)
-        let resumed = finished && !catchesUpToOwn && (parentStatus == "finished" || newerInterval)
+        let sameCompletedInterval = child.startedAt.map { start in
+            completedAt.map { start <= $0 } ?? (own?.turnAt.map { start <= $0 } ?? false)
+        } ?? false
+        if bootstrapEvidence != nil, sameCompletedInterval {
+            bootstrapEvidence = nil; finished = true
+            parentStatus = "running"; parentStartedAt = child.startedAt
+            parentTransition = "finished"
+            return false
+        }
+        let validateBootstrap = finished && parentStatus == nil && !sameCompletedInterval && !newerInterval
+        let resumed = (finished || bootstrapEvidence != nil) && !catchesUpToOwn && (parentStatus == "finished" || newerInterval)
         parentStatus = "running"; parentStartedAt = child.startedAt
         parentTerminal = false; ownAdvancedBeyondParent = false
         if resumed {
             resumeEvidence = own == nil ? (resumeEvidence ?? ownEvidence) : ownEvidence
+            bootstrapEvidence = nil
             awaitingResume = true; finished = false; own = nil; completedAt = nil
             parentTransition = "resuming"
+        } else if validateBootstrap {
+            // With no comparable interval clocks a fresh running parent is
+            // uncertain activity, not proof the previous run is current.
+            // Keep this one bounded observer until own evidence or close.
+            bootstrapEvidence = ownEvidence; finished = false
+            parentTransition = "resuming"
         }
-        return resumed
+        return resumed || validateBootstrap
     }
 
     private var ownEvidence: ResumeEvidence {

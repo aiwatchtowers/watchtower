@@ -198,13 +198,16 @@ func (r *liveReader) claudeLine(line []byte) {
 }
 
 func (r *liveReader) claudeAgents() {
-	sessionDir := strings.TrimSuffix(r.path, ".jsonl")
+	sessionDir := r.claudeSessionDir()
 	metas, err := readLiveMetas(sessionDir)
 	if err != nil {
 		r.live.AgentsState = "unknown"
 	}
 	for id, m := range metas {
 		a := r.agents[id]
+		if r.sidechain && a == nil {
+			continue
+		}
 		if a == nil {
 			a = &LiveAgent{Ref: SubagentRef{ToolUseID: id, Type: m.AgentType, Description: clipSummary(firstLine(m.Description))}}
 			r.agents[id] = a
@@ -445,7 +448,7 @@ func (r *liveReader) agentPath(ref SubagentRef) (string, bool) {
 	if ref.AgentID == "" || strings.ContainsAny(ref.AgentID, "/\\.") {
 		return "", false
 	}
-	path := filepath.Join(strings.TrimSuffix(r.path, ".jsonl"), "subagents", "agent-"+ref.AgentID+".jsonl")
+	path := filepath.Join(r.claudeSessionDir(), "subagents", "agent-"+ref.AgentID+".jsonl")
 	st, err := os.Lstat(path)
 	if err != nil || !st.Mode().IsRegular() {
 		return "", false
@@ -730,4 +733,13 @@ func readLiveMetas(sessionDir string) (map[string]subagentMeta, error) {
 		out[m.ToolUseID] = m
 	}
 	return out, firstErr
+}
+
+// Claude stores every descendant beside its parent in the root session's
+// flat subagents directory; the sidechain's own stem is not a session dir.
+func (r *liveReader) claudeSessionDir() string {
+	if r.sidechain {
+		return filepath.Dir(filepath.Dir(r.path))
+	}
+	return strings.TrimSuffix(r.path, ".jsonl")
 }

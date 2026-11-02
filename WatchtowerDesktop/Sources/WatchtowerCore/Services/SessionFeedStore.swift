@@ -154,7 +154,7 @@ package final class SessionFeedStore: ObservableObject {
                     onStatus(status)
                     // A fresh read clock does not make the previous run's
                     // completed transcript an acknowledgement of resume.
-                    if observation.awaitingResume, result.liveError == nil { onError(nil); return }
+                    if observation.awaitingOwnEvidence, result.liveError == nil { onError(nil); return }
                 }
                 onEntries(result.entries); onActivity(result.activity)
                 onLive(result.live, result.liveError); onError(nil)

@@ -15,6 +15,9 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
         let completedResume: Bool
         let lateOldEntry: Bool
         let resumeReadError: Bool
+        let parentInitiallyRunning: Bool
+        let unknownParentStart: Bool
+        let sameCompletedParentRun: Bool
         private let lock = NSLock()
         private var calls: [[String]] = []
         private var children = 0
@@ -33,11 +36,16 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
             laggedResume: Bool = false,
             completedResume: Bool = false,
             lateOldEntry: Bool = false,
-            resumeReadError: Bool = false
+            resumeReadError: Bool = false,
+            parentInitiallyRunning: Bool = false,
+            unknownParentStart: Bool = false,
+            sameCompletedParentRun: Bool = false
         ) {
             self.nested = nested; self.uncertainFirst = uncertainFirst; self.resume = resume
             self.laggedResume = laggedResume; self.completedResume = completedResume; self.lateOldEntry = lateOldEntry
             self.resumeReadError = resumeReadError
+            self.parentInitiallyRunning = parentInitiallyRunning; self.unknownParentStart = unknownParentStart
+            self.sameCompletedParentRun = sameCompletedParentRun
         }
         var recorded: [[String]] { lock.withLock { calls } }
         var maxConcurrent: Int { lock.withLock { maximum } }
@@ -70,12 +78,12 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
                     parents += 1
                     signalLifecycleRead()
                     if parents == 1 { parentObserver?() }
-                    return parent(child: childID, resumed: resume && parents >= 3,
+                    return parent(child: childID, resumed: parentInitiallyRunning || (resume && parents >= 3),
                                   unknown: uncertainFirst && children == 1)
                 }
                 roots += 1
                 signalLifecycleRead()
-                return parent(child: nested ? parentID : childID, resumed: resume && !nested && roots >= 3,
+                return parent(child: nested ? parentID : childID, resumed: parentInitiallyRunning || (resume && !nested && roots >= 3),
                               unknown: uncertainFirst && children == 1)
             }
             try? await Task.sleep(for: .milliseconds(1))
@@ -97,11 +105,11 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
         }
         private func parent(child: String, resumed: Bool, unknown: Bool = false) -> [String: Any] {
             let status = unknown ? "unknown" : (resumed ? "running" : "finished")
+            var agent: [String: Any] = ["ref": ["tool_use_id": child, "agent_id": child, "status": status]]
+            if !unknownParentStart { agent["started_at"] = stamp(resumed && !sameCompletedParentRun ? now - 4 : now - 60) }
             return [
                 "session_id": 7, "cursor": "c\(roots)", "entries": [], "live_ok": true,
-                "live": ["observed_at": stamp(now), "turn_active": true, "agents_state": "known",
-                         "agents": [["ref": ["tool_use_id": child, "agent_id": child, "status": status],
-                                     "started_at": stamp(resumed ? now - 4 : now - 60)]]]
+                "live": ["observed_at": stamp(now), "turn_active": true, "agents_state": "known", "agents": [agent]]
             ]
         }
     }
@@ -176,8 +184,11 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
         await checkLaggedResume(nested: true, completed: true)
     }
 
-    private func checkLaggedResume(nested: Bool, completed: Bool) async {
-        let runner = Runner(nested: nested, laggedResume: true, completedResume: completed, lateOldEntry: true)
+    private func checkLaggedResume(
+        nested: Bool, completed: Bool, initiallyRunning: Bool = false, unknownStart: Bool = false
+    ) async {
+        let runner = Runner(nested: nested, laggedResume: true, completedResume: completed, lateOldEntry: true,
+                            parentInitiallyRunning: initiallyRunning, unknownParentStart: unknownStart)
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         let acknowledged = expectation(description: "new own interval acknowledged despite delayed transcript")
         var baseline: Date?
@@ -223,6 +234,39 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(childCalls.count, 3)
         }
         if nested { XCTAssertTrue(runner.recorded.contains { $0.contains(runner.parentID) }) }
+    }
+
+    func testFreshDirectPaneRecoversAnAlreadyRunningParentBeforeOwnLogCatchesUp() async {
+        await checkLaggedResume(nested: false, completed: false, initiallyRunning: true)
+    }
+    func testFreshNestedPaneRecoversAnAlreadyRunningParentBeforeOwnLogCatchesUp() async {
+        await checkLaggedResume(nested: true, completed: false, initiallyRunning: true)
+    }
+    func testFreshPaneWithUnknownParentStartKeepsPollingUntilOwnEvidenceArrives() async {
+        await checkLaggedResume(nested: true, completed: false, initiallyRunning: true, unknownStart: true)
+    }
+    func testKnownSameCompletedParentIntervalDoesNotRepeatedlyReadHistory() async {
+        let runner = Runner(nested: true, parentInitiallyRunning: true, sameCompletedParentRun: true)
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        let completed = expectation(description: "old own completion read")
+        var sawCompletion = false
+        let task = Task {
+            await store.followSubagent(
+                runner.childID, interval: .milliseconds(1), parentToolUseID: runner.parentID, isSessionActive: { true },
+                isRunning: { true }, isOnScreen: { true }, onEntries: { _ in }, onLive: { snapshot, _ in
+                    if snapshot?.turnActive == false, !sawCompletion { sawCompletion = true; completed.fulfill() }
+                }
+            )
+        }
+        await fulfillment(of: [completed], timeout: 3)
+        for _ in 0..<3 {
+            let parent = expectation(description: "same old parent observed")
+            runner.observeNextLifecycleRead { parent.fulfill() }
+            await fulfillment(of: [parent], timeout: 3)
+        }
+        task.cancel(); await task.value
+        XCTAssertEqual(runner.recorded.filter { $0.contains(runner.childID) }.count, 1)
+        XCTAssertEqual(runner.maxConcurrent, 1)
     }
 
     func testPendingResumeSurvivesRetryAfterAnErrorBeforeTranscriptAcknowledgement() async {

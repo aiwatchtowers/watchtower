@@ -35,7 +35,7 @@ final class SessionSubagentLifecycleTests: XCTestCase {
     func testTheSameParentRunCannotRepeatedlyReopenCompletedHistory() {
         var observer = SessionSubagentObservation()
         let completed = SessionFeedLive(observedAt: now, turnActive: false)
-        let entries = [SessionFeedEntry(id: "task", kind: "owner", at: now - 60)]
+        let entries = [SessionFeedEntry(id: "report", kind: "agent", at: now - 58)]
         XCTAssertEqual(observer.receiveOwn(snapshot: completed, entries: entries, error: nil, now: now), "finished")
         let child = SessionLiveAgent(ref: SessionFeedSubagent(toolUseID: "child", status: "running"), startedAt: now - 59)
         let parent = SessionFeedLive(observedAt: now, agents: [child])
@@ -117,6 +117,21 @@ final class SessionSubagentLifecycleTests: XCTestCase {
         currentClosed.agents[0].startedAt = now - 4
         _ = observer.receiveParent(currentClosed, childID: "child", now: now)
         XCTAssertTrue(observer.finished)
+    }
+
+    func testUnknownParentClockKeepsUncertaintyUntilOwnEvidenceOrTerminalParent() {
+        var observer = SessionSubagentObservation()
+        let old = SessionFeedLive(observedAt: now, turnAt: now - 60, turnActive: false)
+        let entries = [SessionFeedEntry(id: "report", kind: "agent", at: now - 10)]
+        _ = observer.receiveOwn(snapshot: old, entries: entries, error: nil, now: now)
+        let child = SessionLiveAgent(ref: SessionFeedSubagent(toolUseID: "child", status: "running"))
+        var parent = SessionFeedLive(observedAt: now, agents: [child])
+        XCTAssertTrue(observer.receiveParent(parent, childID: "child", now: now))
+        XCTAssertEqual(observer.receiveOwn(snapshot: old, entries: entries, error: nil, now: now), "resuming")
+        XCTAssertTrue(observer.awaitingOwnEvidence); XCTAssertTrue(observer.shouldReadOwn); XCTAssertFalse(observer.finished)
+        parent.agents[0].ref.status = "finished"
+        _ = observer.receiveParent(parent, childID: "child", now: now)
+        XCTAssertTrue(observer.finished); XCTAssertFalse(observer.shouldReadOwn)
     }
 
 }
