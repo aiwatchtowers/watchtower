@@ -4,7 +4,7 @@ The Watchtower iPhone app is a window onto your Mac. It shows what is waiting fo
 
 ## Why use it
 
-You step away from your desk while a Workbench session waits on a question. The phone shows an orange card; you answer in a few taps and the session carries on. The same app lists today's meetings with their prep, and its red **Record** button sends the audio to your Mac, which transcribes it and writes the recap.
+You step away while a Workbench session waits on a question. The phone shows an orange card; a few taps answer it and the session goes on. The same app lists today's meetings with their prep, and its red **Record** button sends the audio to your Mac, which transcribes it and writes the recap.
 
 ## How it works
 
@@ -14,15 +14,15 @@ Everything is sealed with keys exchanged at linking, so iCloud holds only cipher
 
 An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps. The Mac checks for requests every 30 seconds (every 3 for five minutes after one) and writes a heartbeat every 15 minutes.
 
-A phone links to up to four Macs and switches between them; each Mac is its own hub with its own data.
+A phone links up to four Macs and switches between them; each is its own hub with its own data.
 
 ### Which builds pair
 
 iCloud keeps a Development and a Production environment; records saved in one never reach the other. The downloaded (Developer ID) Mac app and a TestFlight or App Store phone build are both Production and pair.
 
-A phone run from Xcode is Development and pairs only with a Development Mac. A mixed pair fails silently.
+A phone run from Xcode is Development and pairs only with a Development Mac. A mixed pair fails silently: the phone never sees the Mac.
 
-A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build runs a demo.
+A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build is a demo.
 
 ## Using it
 
@@ -39,7 +39,7 @@ action: hotkey:settings
 done_when: iphone.paired
 -->
 
-1. On the Mac, open Settings → **Mobile** and turn on **Sync with iPhone**. It applies at once.
+1. On the Mac, open Settings → **Mobile** and turn on **Sync with iPhone**. 
 2. Under **Phones**, press **Use Watchtower on iPhone**. A QR code appears for 10 minutes. **New code** makes another.
 3. On the iPhone, tap **Scan the code on your Mac** (or scan with the Camera app) and point it at the code.
 4. The phone shows a four-digit code. Check it matches the code on the Mac, then click **Link** there (**Refuse** cancels).
@@ -106,7 +106,7 @@ Three switches under Settings → **Workbench** on the phone:
 
 Without the typing switch, a running session's bottom bar says so, with **Turn On** right there.
 
-A running session's status shows how long it has been in that state, like **Working · 12m**.
+A session's status shows its time in that state, like **Working · 12m**.
 
 ### Answer prompts and interrupt agents
 
@@ -136,12 +136,12 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"<Mac> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
 - **"iCloud is slowing sync down"** on the Mac's Mobile tab clears on its own.
-- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant needs it once too.
+- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
-- **"<hub> works over Relay only".** That hub (a Linux box or a Mac without the Watchtower app) links only over Relay, which this version doesn't offer. Link it from its Mac app, if it has one.
+- **"<hub> works over Relay only".** That hub (a Linux box or a Mac without the Watchtower app) links only over Relay, which Watchtower on this iPhone doesn't offer yet. Link it from its Mac app, if it has one.
 - **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
-- **No Allow once on a prompt card.** The card says why (too long to show, or it edits settings). Allow it on the Mac, or tap **Deny**.
-- **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit it. Closing the window is fine; the app keeps running in the menu bar.
+- **No Allow once on a prompt card.** The card says why (too long to show in full, or it edits settings). Allow it on the Mac, or tap **Deny**.
+- **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit it. Closing the window is fine; the app stays in the menu bar.
 
 Not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 
