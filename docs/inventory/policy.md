@@ -61,7 +61,7 @@
 - `internal/historybackfill/policy_test.go`: `TestPolicyBackfill_SkipKeepsRowState`.
 - `cmd/provider_policy_test.go`: `TestProviderPolicy_ConfigSetRefused`.
 - `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift`: `testOffStopsHubKeepsSetting`, `testLooseningDoesNotStartHubWhenSettingOff`.
-- The app run as shipped once the Swift hub is retired (go hub plan 3 Task 22): `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredOffWipesAPendingSwiftStateAndKeepsSetting` (a Swift state waiting for the hand-over under `off` is wiped once: the Swift hub is built only to be disabled, never started, the toggle kept), `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredLooseningNeverStartsTheSwiftHub`.
+- The app run as shipped once the Swift hub is retired (go hub plan 3 Task 22): `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredOffWipesAPendingSwiftStateAndKeepsSetting` (a Swift state waiting for the hand-over under `off` is wiped once: the Swift hub is built only to be disabled, never started, the toggle kept), `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredLooseningNeverStartsTheSwiftHub`, `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredWipeNeverCreatesOrRepairsKeys` (the wipe holds no keyring: missing keys stay missing for the hand-over).
 - Go hub (phase 1, **ask #807**), the Go twins: `internal/hub/hub_test.go::TestPolicy03_OffStopsHubKeepsSetting`, `internal/hub/hub_test.go::TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` (`MobileSync` off stops the Go hub and deletes what it published, `hub_meta.enabled` untouched; loosening never starts a hub the owner left off).
 
 **Locked since:** 2026-10-25

@@ -117,14 +117,16 @@ struct MobileHubStorage {
     /// CloudKitTransport on those zones; the shares are of the same zones.
     /// A `MOVED` note from a newer Watchtower (`MobileHubMovedGuard`) throws
     /// `Moved` before anything in `dir` is created or opened, and before any
-    /// Keychain item is read: this app no longer runs the hub.
-    static func live(directory dir: URL = directory()) throws -> Self {
+    /// Keychain item is read: this app no longer runs the hub. `withKeys`
+    /// false (the POLICY-03 wipe before the Go hub's hand-over) reads and
+    /// creates no Keychain item at all: no keyring, nothing sealed.
+    static func live(directory dir: URL = directory(), withKeys: Bool = true) throws -> Self {
         guard !MobileHubMovedGuard.isMoved(mobileHubDir: dir) else { throw MobileHubMovedGuard.Moved() }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         let hubID = try sidecar.ensureHubID()
         let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
-        let keyring = CloudKitTransport.entitlementPresent()
+        let keyring = withKeys && CloudKitTransport.entitlementPresent()
             ? try HubKeyring(hubID: hubID, sidecar: sidecar, store: KeychainHubKeyStore(backend: SecItemKeychainBackend()))
             : nil
         let transport = CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub)

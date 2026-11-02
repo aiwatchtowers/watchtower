@@ -404,8 +404,14 @@ extension AppState {
         }
         do {
             let directory = mobileHubDirectory
-            let storage = try mobileHubStorage ?? (makeMobileHubStorage ?? { try MobileHubStorage.live(directory: directory) })()
-            if mobileHubStorage == nil {
+            // The retired branch's wipe never touches the hub's keys: a
+            // missing or partial identity must reach the hand-over's probe
+            // as it is (no_keys / keys_partial), never be created or repaired.
+            let keyless = forPolicyWipe && swiftHubRetired
+            var storage = try mobileHubStorage
+                ?? (makeMobileHubStorage ?? { try MobileHubStorage.live(directory: directory, withKeys: !keyless) })()
+            if keyless { (storage.keyring, storage.secure) = (nil, nil) }
+            if mobileHubStorage == nil, !keyless {
                 // Once per run, with the storage: CKSyncEngine learns of
                 // remote changes from pushes (the relay poll is the backstop).
                 storage.registerForPushes?()
