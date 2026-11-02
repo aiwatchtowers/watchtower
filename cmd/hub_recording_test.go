@@ -107,8 +107,9 @@ func TestHubRecordingClaimFinishJSONKeys(t *testing.T) {
 	assert.EqualValues(t, 42, m["transcript_id"])
 }
 
-// TestHubRecordingListJSONKeys: `hub recording list --json` is an array of
-// {upload_id, status, phase, percent, audio_path, event_id, started_at}
+// TestHubRecordingListJSONKeys: `hub recording list --json` is {ready, jobs},
+// jobs an array of {upload_id, status, phase, percent, audio_path, event_id,
+// started_at, error_class}
 // (pinned, Desktop's start
 // read); no sidecar yet is an empty array; refused under an agent marker
 // (the paths lead to plaintext audio).
@@ -116,7 +117,7 @@ func TestHubRecordingListJSONKeys(t *testing.T) {
 	dir := hubTestDir(t)
 	out, err := runHub(t, "recording", "list", "--json")
 	require.NoError(t, err)
-	assert.JSONEq(t, "[]", out)
+	assert.JSONEq(t, `{"ready":false,"jobs":[]}`, out, "no sidecar yet is not an empty queue")
 
 	queueJob(t, dir, "u-1")
 	st, err := state.Open(dir)
@@ -130,12 +131,18 @@ func TestHubRecordingListJSONKeys(t *testing.T) {
 	require.NoError(t, err)
 	out, err = runHub(t, "recording", "list", "--json")
 	require.NoError(t, err)
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(out), &rows), out)
+	var answer struct {
+		Ready bool             `json:"ready"`
+		Jobs  []map[string]any `json:"jobs"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &answer), out)
+	assert.ElementsMatch(t, []string{"ready", "jobs"}, hubKeysOf(decodeKeys(t, out)))
+	assert.True(t, answer.Ready)
+	rows := answer.Jobs
 	require.Len(t, rows, 2)
 	byID := map[string]map[string]any{}
 	for _, r := range rows {
-		assert.ElementsMatch(t, []string{"upload_id", "status", "phase", "percent", "audio_path", "event_id", "started_at"}, hubKeysOf(r))
+		assert.ElementsMatch(t, []string{"upload_id", "status", "phase", "percent", "audio_path", "event_id", "started_at", "error_class"}, hubKeysOf(r))
 		byID[r["upload_id"].(string)] = r
 	}
 	assert.Equal(t, "queued", byID["u-1"]["status"])

@@ -3510,7 +3510,8 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     meta_json      TEXT,
     started_at     REAL NOT NULL,
     transcribed_at REAL,
-    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1))
+    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)),
+    upload_id      TEXT -- the Go hub phone upload the recording came from (Desktop only)
 );
 
 -- An embedded chat's owner message queued but not yet sent (00157, #604;

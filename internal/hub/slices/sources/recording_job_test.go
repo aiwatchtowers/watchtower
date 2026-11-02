@@ -81,17 +81,23 @@ func TestRecordingJobFailedCarriesOnlyTheErrorClass(t *testing.T) {
 
 // TestRecordingFailureTextsPinned: the classes Desktop finishes a phone
 // recording with (PhoneRecordingQueue.FailureClass, a Go↔Swift dual path)
-// read on the phone as the Swift hub's sentences for the same failures,
-// byte for byte; an unknown class still reads as itself.
+// read on the phone as these sentences, byte for byte: never "send it
+// again" (the phone deleted its copy on received; the audio is on the Mac);
+// an unknown class still reads as itself.
 func TestRecordingFailureTextsPinned(t *testing.T) {
 	want := map[string]string{
 		state.ClassNoSpeech:            "No speech recognized",
-		state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording.",
-		state.ClassNotAudio:            "Your Mac could not save this recording: The file is not an audio recording.",
-		state.ClassUnreadable:          "Your Mac could not read this recording.",
-		state.ClassIngestFailed:        "Your Mac could not save this recording.",
-		state.ClassMissingAudio:        "The recording's audio did not reach your Mac. Send it again.",
+		state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording. It keeps the audio; you can retry it in Watchtower on the Mac.",
+		state.ClassNotAudio:            "Your Mac could not open this recording as audio. It keeps the file on the Mac.",
+		state.ClassUnreadable:          "Your Mac could not read this recording yet. It keeps the audio and will try again.",
+		state.ClassIngestFailed:        "Your Mac could not save this recording yet. It keeps the audio and will try again.",
+		state.ClassMissingAudio:        "Your Mac no longer has this recording's audio.",
 		"something_new":                "something_new",
+	}
+	for class, text := range want {
+		if class != "something_new" && strings.Contains(strings.ToLower(text), "send it again") {
+			t.Errorf("%s asks the phone to send it again", class)
+		}
 	}
 	st := openSidecar(t)
 	t0 := time.Unix(1_800_000_000, 0)

@@ -2070,13 +2070,14 @@ final class MeetingRecorderCenter {
         audioURL sourceURL: URL,
         eventID: String?,
         title: String?,
+        uploadID: String? = nil,
         config: TranscriptionConfig
     ) async throws -> URL {
         let isAudio = try await Task.detached { try await Self.isAudioRecording(sourceURL) }.value
         guard isAudio else { throw PhoneIngestError.notAudio }
         guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
         let isPrivate = config.privateByDefault // no per-recording choice on the phone
-        let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate,
+        let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate, uploadID: uploadID,
                                                             in: recordingsDirectory, store: store, date: clock())
         try await Task.detached {
             try await Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)

@@ -25,6 +25,15 @@ extension MeetingRecorderCenter {
         jobObservers[token] = nil
     }
 
+    /// The recording an ingest reserved for a Go hub upload and has not saved
+    /// yet (its pending row), nil when none: a queue that crashed mid-ingest
+    /// finds it here instead of ingesting the upload twice. Throws when the
+    /// database cannot be read.
+    func phoneRecording(forUpload uploadID: String) throws -> URL? {
+        guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
+        return try store.recording(forUpload: uploadID).map { recordingsDirectory.appendingPathComponent($0) }
+    }
+
     /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by inserting
     /// its `pending_transcripts` row EXCLUSIVELY (`PendingTranscriptStore.reserve`):
     /// when a concurrent reserver took the name first, the insert does
@@ -42,6 +51,7 @@ extension MeetingRecorderCenter {
         eventID: String?,
         title: String?,
         isPrivate: Bool,
+        uploadID: String? = nil,
         in directory: URL,
         store: PendingTranscriptStore,
         date: Date = Date()
@@ -53,7 +63,7 @@ extension MeetingRecorderCenter {
                 lost.contains($0) || isReserved($0, in: store)
             }
             if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title,
-                                       isPrivate: isPrivate, at: date) {
+                                       isPrivate: isPrivate, uploadID: uploadID, at: date) {
                 return audioURL
             }
             // Lost the race for this name; the next `uniqueRecordingURL` moves past it.

@@ -30,19 +30,28 @@ const (
 	hubListVerb      = "list the recording jobs"
 )
 
+// hubListAnswerJSON is `hub recording list --json` (pinned keys): Ready is
+// false when the hub has no queue to read yet (no sidecar, or a sidecar
+// before its migrations), so a reader never takes it for an empty queue.
+type hubListAnswerJSON struct {
+	Ready bool          `json:"ready"`
+	Jobs  []hubListJSON `json:"jobs"`
+}
+
 // hubListJSON is one row of `hub recording list --json` (pinned keys):
 // Desktop's read of the queue when it starts following it. Phase is "" and
 // Percent null until Desktop reported one. EventID ("" for none) and
 // StartedAt (Unix seconds, null when the phone did not say) are the
 // recording's origin, from which Desktop derives its title.
 type hubListJSON struct {
-	UploadID  string     `json:"upload_id"`
-	Status    string     `json:"status"`
-	Phase     string     `json:"phase"`
-	Percent   *int       `json:"percent"`
-	AudioPath string     `json:"audio_path"`
-	EventID   string     `json:"event_id"`
-	StartedAt *wire.Time `json:"started_at"`
+	UploadID   string     `json:"upload_id"`
+	Status     string     `json:"status"`
+	Phase      string     `json:"phase"`
+	Percent    *int       `json:"percent"`
+	AudioPath  string     `json:"audio_path"`
+	EventID    string     `json:"event_id"`
+	StartedAt  *wire.Time `json:"started_at"`
+	ErrorClass string     `json:"error_class"` // a failed job's class ("" otherwise), never text
 }
 
 // hubProgressJSON is `hub recording progress --json` (pinned keys).
@@ -269,7 +278,7 @@ func runHubRecordingList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	jobs, err := hubRecordingJobs(cmd, dir)
+	jobs, ready, err := hubRecordingJobs(cmd, dir)
 	if err != nil {
 		return err
 	}
@@ -277,14 +286,18 @@ func runHubRecordingList(cmd *cobra.Command, _ []string) error {
 	rows := make([]hubListJSON, 0, len(jobs))
 	for _, j := range jobs {
 		row := hubListJSON{UploadID: j.UploadID, Status: j.Status, Phase: j.Phase, Percent: j.Percent,
-			AudioPath: handlers.RecordingAudioPath(recordings, j.UploadID), EventID: j.EventID}
+			AudioPath: handlers.RecordingAudioPath(recordings, j.UploadID), EventID: j.EventID, ErrorClass: j.ErrorClass}
 		if !j.StartedAt.IsZero() {
 			row.StartedAt = &wire.Time{Time: j.StartedAt}
 		}
 		rows = append(rows, row)
 	}
 	if asJSON {
-		return hubPrint(cmd, true, rows, "")
+		return hubPrint(cmd, true, hubListAnswerJSON{Ready: ready, Jobs: rows}, "")
+	}
+	if !ready {
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "the recording queue is not ready")
+		return err
 	}
 	for _, r := range rows {
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), r.UploadID+": "+r.Status); err != nil {
@@ -294,17 +307,20 @@ func runHubRecordingList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func hubRecordingJobs(cmd *cobra.Command, dir string) ([]state.RecordingJob, error) {
+// hubRecordingJobs reads the queue; ready is false when there is no sidecar
+// or no queue table yet (nothing to read, which is not an empty queue).
+func hubRecordingJobs(cmd *cobra.Command, dir string) (jobs []state.RecordingJob, ready bool, err error) {
 	st, err := state.OpenReadOnly(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = st.Close() }()
-	if ready, err := st.RecordingQueueReady(); err != nil || !ready {
-		return nil, err
+	if ready, err = st.RecordingQueueReady(); err != nil || !ready {
+		return nil, false, err
 	}
-	return st.RecordingJobs(cmd.Context())
+	jobs, err = st.RecordingJobs(cmd.Context())
+	return jobs, err == nil, err
 }

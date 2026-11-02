@@ -11,6 +11,7 @@ private final class FakeRecordingHub: HubControlClienting, @unchecked Sendable {
     private var requests: [HubControlRequest] = []
     private var isReachable = true
     private var refusedClaims: Set<String> = []
+    private var jobOrigins: [String: (eventID: String?, startedAt: Date?)] = [:]
     let audioDir: URL
 
     init(audioDir: URL) { self.audioDir = audioDir }
@@ -20,10 +21,9 @@ private final class FakeRecordingHub: HubControlClienting, @unchecked Sendable {
         set { lock.withLock { isReachable = newValue } }
     }
 
-    /// Claims of these uploads are refused `job_state` (done, failed, hub_moved).
+    /// Claims of these uploads are refused `job_state` (done, hub_moved, an adopted failure).
     func refuseClaims(_ ids: Set<String>) { lock.withLock { refusedClaims = ids } }
 
-    private var jobOrigins: [String: (eventID: String?, startedAt: Date?)] = [:]
     /// The origin a claim of `upload` answers with.
     func setOrigin(_ upload: String, eventID: String?, startedAt: Date?) {
         lock.withLock { jobOrigins[upload] = (eventID, startedAt) }
@@ -63,26 +63,31 @@ private final class FakeRecordingHub: HubControlClienting, @unchecked Sendable {
 /// `hub recording list --json` with a scripted queue.
 private final class FakeListCLI: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
-    private var rows: [[String: Any]] = []
+    private var answer: [String: Any] = ["ready": true, "jobs": [[String: Any]]()]
     private var calls: [[String]] = []
 
     var invocations: [[String]] { lock.withLock { calls } }
 
-    func setRows(_ next: [[String: Any]]) { lock.withLock { rows = next } }
+    func setRows(_ rows: [[String: Any]], ready: Bool = true) {
+        lock.withLock { answer = ["ready": ready, "jobs": rows] }
+    }
 
     func run(args: [String]) async throws -> Data {
-        let rows = lock.withLock { () -> [[String: Any]] in
+        let answer = lock.withLock { () -> [String: Any] in
             calls.append(args)
-            return self.rows
+            return self.answer
         }
-        return try JSONSerialization.data(withJSONObject: rows)
+        return try JSONSerialization.data(withJSONObject: answer)
     }
 }
 
-/// The transcriber's observers, driven by the test.
+/// The transcriber's observers and pending reservations, driven by the test.
 @MainActor
 private final class FakeTranscriber: PhoneRecordingJobObserving {
     var observers: [UUID: MeetingRecorderCenter.JobObserver] = [:]
+    /// Upload id → the recording its ingest reserved (`pending_transcripts.upload_id`).
+    var reserved: [String: URL] = [:]
+    var lookupError: Error?
 
     func addJobObserver(_ observer: MeetingRecorderCenter.JobObserver) -> UUID {
         let token = UUID()
@@ -91,6 +96,11 @@ private final class FakeTranscriber: PhoneRecordingJobObserving {
     }
 
     func removeJobObserver(_ token: UUID) { observers[token] = nil }
+
+    func phoneRecording(forUpload uploadID: String) throws -> URL? {
+        if let lookupError { throw lookupError }
+        return reserved[uploadID]
+    }
 
     func phase(_ url: URL, _ phase: MeetingRecorderCenter.ProcessingJob.Phase) {
         observers.values.forEach { $0.phase(url, phase) }
@@ -101,12 +111,42 @@ private final class FakeTranscriber: PhoneRecordingJobObserving {
     }
 }
 
+/// The queue's backoff waits, parked until the test releases them.
+private final class RetrySleeper: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parked: [CheckedContinuation<Void, Never>] = []
+    private var all: [Duration] = []
+
+    var waits: [Duration] { lock.withLock { all } }
+    var parkedCount: Int { lock.withLock { parked.count } }
+
+    func sleep(_ duration: Duration) async {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                all.append(duration)
+                parked.append(continuation)
+            }
+        }
+    }
+
+    func releaseAll() {
+        let due = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            defer { parked = [] }
+            return parked
+        }
+        due.forEach { $0.resume() }
+    }
+}
+
+private struct CalendarDown: Error {}
+
 @MainActor
 final class PhoneRecordingQueueTests: XCTestCase {
     private var dir: URL!
     private var hub: FakeRecordingHub!
     private var cli: FakeListCLI!
     private var transcriber: FakeTranscriber!
+    private var sleeper: RetrySleeper!
     private var defaults: UserDefaults!
     private var suite: String!
     /// The audio each ingest took, and what it answered.
@@ -115,11 +155,14 @@ final class PhoneRecordingQueueTests: XCTestCase {
     private var queues: [PhoneRecordingQueue] = []
     /// This Mac's calendar: event id → title.
     private var calendar: [String: String] = [:]
+    private var calendarError: Error?
     private struct Origin: Equatable {
         let eventID: String?
         let title: String?
     }
     private var origins: [Origin] = []
+    /// What was remembered when each ingest started.
+    private var stagesAtIngest: [PhoneRecordingQueue.Tracked.Stage?] = []
 
     override func setUp() async throws {
         try await super.setUp()
@@ -128,28 +171,39 @@ final class PhoneRecordingQueueTests: XCTestCase {
         hub = FakeRecordingHub(audioDir: dir)
         cli = FakeListCLI()
         transcriber = FakeTranscriber()
+        sleeper = RetrySleeper()
         suite = "PhoneRecordingQueueTests-\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suite)
         ingested = []
         ingestError = nil
         calendar = [:]
+        calendarError = nil
         origins = []
+        stagesAtIngest = []
     }
 
     override func tearDown() async throws {
         queues.forEach { $0.stop() }
         queues = []
+        sleeper.releaseAll()
         defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: dir)
         try await super.tearDown()
     }
 
     private func makeQueue() -> PhoneRecordingQueue {
+        let sleeper: RetrySleeper = self.sleeper
+        let defaults: UserDefaults = self.defaults
         let queue = PhoneRecordingQueue(
             client: hub, cli: cli, observing: transcriber, defaults: defaults,
-            eventTitle: { [weak self] id in self?.calendar[id] },
-            ingest: { [weak self] audio, eventID, title in
+            sleep: { await sleeper.sleep($0) },
+            eventTitle: { [weak self] id in
+                if let error = self?.calendarError { throw error }
+                return self?.calendar[id]
+            },
+            ingest: { [weak self] audio, eventID, title, uploadID in
                 guard let self else { throw CancellationError() }
+                stagesAtIngest.append(Self.remembered(defaults)[uploadID]?.stage)
                 if let ingestError { throw ingestError }
                 ingested.append(audio)
                 origins.append(Origin(eventID: eventID, title: title))
@@ -161,12 +215,29 @@ final class PhoneRecordingQueueTests: XCTestCase {
         return queue
     }
 
+    private static func remembered(_ defaults: UserDefaults) -> [String: PhoneRecordingQueue.Tracked] {
+        guard let data = defaults.data(forKey: PhoneRecordingQueue.defaultsKey) else { return [:] }
+        return (try? JSONDecoder().decode([String: PhoneRecordingQueue.Tracked].self, from: data)) ?? [:]
+    }
+
     private func writeAudio(_ upload: String) throws {
         try Data([0x41]).write(to: hub.audio(upload))
     }
 
-    private func row(_ id: String, _ status: String) -> [String: Any] {
-        ["upload_id": id, "status": status, "phase": "", "percent": NSNull(), "audio_path": hub.audio(id).path]
+    private func hubHas(_ upload: String) -> Bool {
+        FileManager.default.fileExists(atPath: hub.audio(upload).path)
+    }
+
+    private func row(_ id: String, _ status: String, errorClass: String = "") -> [String: Any] {
+        ["upload_id": id, "status": status, "phase": "", "percent": NSNull(), "audio_path": hub.audio(id).path,
+         "event_id": "", "started_at": NSNull(), "error_class": errorClass]
+    }
+
+    private func waitForRetry(_ count: Int) async {
+        for _ in 0..<500 where sleeper.parkedCount < count {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        XCTAssertEqual(sleeper.parkedCount, count, "retries parked")
     }
 
     // MARK: - Claim and ingest
@@ -179,7 +250,7 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertEqual(hub.sent(HubControlRequest.recordingClaim).map(\.upload), ["u1"])
         XCTAssertEqual(ingested, [hub.audio("u1")], "the transcriber takes the file the claim named")
         XCTAssertEqual(queue.tracked["u1"]?.path, "/recordings/rec_1.m4a")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: hub.audio("u1").path), "the hub's plaintext copy goes once ingested")
+        XCTAssertTrue(hubHas("u1"), "the hub's copy stays until the transcript is saved")
 
         // A second event for it, and a rescan seeing it claimed, take nothing more.
         queue.recordingQueued("u1")
@@ -187,53 +258,27 @@ final class PhoneRecordingQueueTests: XCTestCase {
         queue.rescan()
         await queue.idle()
         XCTAssertEqual(ingested.count, 1)
-
-        // A new queue (the next launch) remembers it.
-        let next = makeQueue()
-        XCTAssertEqual(next.tracked["u1"]?.path, "/recordings/rec_1.m4a")
     }
 
-    /// The phone's title comes back from its origin, as the Swift hub's
-    /// `title_hint` path ended: a meeting on this Mac links the transcript
-    /// and takes the event's title; a meeting this Mac lacks saves ad-hoc
-    /// (the Swift hub dropped the event too, but kept the phone's title —
-    /// the one gap, the title is never stored); no event is the phone's
-    /// voice note, titled by its start.
-    func testTheEventLinkAndTitleComeBackFromTheOrigin() async throws {
-        let started = Date(timeIntervalSince1970: 1_800_000_000)
-        calendar = ["evt-1": "Acme sync"]
-        for id in ["meeting", "elsewhere", "note", "bare"] { try writeAudio(id) }
-        hub.setOrigin("meeting", eventID: "evt-1", startedAt: started)
-        hub.setOrigin("elsewhere", eventID: "evt-gone", startedAt: started)
-        hub.setOrigin("note", eventID: nil, startedAt: started)
+    func testTheUploadIsRememberedBeforeTheIngestStarts() async throws {
+        try writeAudio("u1")
         let queue = makeQueue()
-        for id in ["meeting", "elsewhere", "note", "bare"] { queue.recordingQueued(id) }
+        queue.recordingQueued("u1")
         await queue.idle()
-        XCTAssertEqual(origins, [
-            Origin(eventID: "evt-1", title: "Acme sync"),
-            Origin(eventID: nil, title: nil),
-            Origin(eventID: nil, title: PhoneRecordingQueue.voiceNoteTitle(started)),
-            Origin(eventID: nil, title: nil)
-        ])
-    }
-
-    /// The phone's voice-note title (`PhoneRecorderController.finalTitleAndEvent`), byte for byte.
-    func testVoiceNoteTitlePinned() throws {
-        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
-        XCTAssertEqual(PhoneRecordingQueue.voiceNoteTitle(Date(timeIntervalSince1970: 1_800_000_000), timeZone: utc),
-                       "Voice note — 15 Jan, 08:00")
+        XCTAssertEqual(stagesAtIngest, [.ingesting])
+        XCTAssertEqual(Self.remembered(defaults)["u1"]?.stage, .ingested)
     }
 
     func testRescanTakesTheJobsQueuedWhileNoWatchListened() async throws {
         try writeAudio("u1")
         try writeAudio("u2")
-        cli.setRows([row("u1", "queued"), row("u2", "claimed"), row("u3", "done"), row("u4", "failed")])
+        cli.setRows([row("u1", "queued"), row("u2", "claimed"), row("u3", "done"), row("u4", "failed", errorClass: "other")])
         let queue = makeQueue()
         queue.rescan()
         await queue.idle()
         XCTAssertEqual(cli.invocations, [PhoneRecordingQueue.listArgs])
         XCTAssertEqual(hub.sent(HubControlRequest.recordingClaim).map(\.upload), ["u1", "u2"],
-                       "queued, and claimed by a Desktop that quit before ingesting; never done or failed")
+                       "queued, and claimed with no reservation; never done or a failure this Desktop did not report")
         XCTAssertEqual(ingested, [hub.audio("u1"), hub.audio("u2")])
     }
 
@@ -272,6 +317,7 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertEqual(finish.transcriptID, 42)
         XCTAssertNil(finish.errorClass)
         XCTAssertNil(queue.tracked["u1"], "a done job is forgotten")
+        XCTAssertFalse(hubHas("u1"), "the hub's copy goes once the transcript is saved")
     }
 
     func testAFinishTheHubMissedIsSentAgainAtTheNextRescan() async throws {
@@ -283,6 +329,7 @@ final class PhoneRecordingQueueTests: XCTestCase {
         transcriber.finished(URL(fileURLWithPath: "/recordings/rec_1.m4a"), 42)
         await queue.idle()
         XCTAssertEqual(queue.tracked["u1"]?.pendingTranscript, 42)
+        XCTAssertTrue(hubHas("u1"), "unsent: the hub's copy stays")
         hub.reachable = true
         cli.setRows([row("u1", "claimed")])
         queue.rescan()
@@ -290,6 +337,23 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertEqual(hub.sent(HubControlRequest.recordingFinish).map(\.transcriptID), [42])
         XCTAssertNil(queue.tracked["u1"])
     }
+
+    func testARelaunchFollowsARememberedUpload() async throws {
+        try writeAudio("u1")
+        let first = makeQueue()
+        first.recordingQueued("u1")
+        await first.idle()
+        first.stop()
+        // The next launch: the recorder's recovery saves the transcript of the remembered recording.
+        let next = makeQueue()
+        XCTAssertEqual(next.tracked["u1"]?.path, "/recordings/rec_1.m4a")
+        transcriber.finished(URL(fileURLWithPath: "/recordings/rec_1.m4a"), 9)
+        await next.idle()
+        XCTAssertEqual(hub.sent(HubControlRequest.recordingFinish).map(\.transcriptID), [9])
+        XCTAssertFalse(hubHas("u1"))
+    }
+
+    // MARK: - Failures keep the audio
 
     func testFailureSendsAClassNeverText() async throws {
         try writeAudio("u1")
@@ -306,30 +370,78 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertEqual(finishes.map(\.transcriptID), [nil, nil])
         let line = try XCTUnwrap(String(bytes: JSONEncoder().encode(finishes[1]), encoding: .utf8))
         XCTAssertFalse(line.contains("Users") || line.contains("opened"), "only the class goes on: \(line)")
+        XCTAssertTrue(hubHas("u1") && hubHas("u2"), "a failed transcription keeps the hub's copy")
 
-        // An ingest that fails ends the job with its class too.
-        try writeAudio("u3")
-        ingestError = MeetingRecorderCenter.PhoneIngestError.notAudio
-        queue.recordingQueued("u3")
         // A missing file is missing_audio, before any ingest.
         queue.recordingQueued("u4")
         await queue.idle()
-        XCTAssertEqual(hub.sent(HubControlRequest.recordingFinish).suffix(2).map(\.errorClass), ["not_audio", "missing_audio"])
+        XCTAssertEqual(hub.sent(HubControlRequest.recordingFinish).last?.errorClass, "missing_audio")
+        XCTAssertEqual(ingested.count, 2)
     }
 
-    func testATransientIngestFailureIsTriedAgainNotReported() async throws {
+    /// Every ingest failure keeps the hub's audio; each is reported by
+    /// class (but a database not open yet), and all but not_audio are tried
+    /// again on their own.
+    func testEveryIngestFailureKeepsTheHubAudio() async throws {
+        let cases: [(String, Error, String?, Bool)] = [
+            ("not-audio", MeetingRecorderCenter.PhoneIngestError.notAudio, "not_audio", false),
+            ("unreadable", MeetingRecorderCenter.PhoneIngestError.unreadable("x"), "unreadable", true),
+            ("disk-full", CocoaError(.fileWriteOutOfSpace), "ingest_failed", true),
+            ("cancelled", CancellationError(), "ingest_failed", true),
+            ("db-closed", MeetingRecorderCenter.PhoneIngestError.databaseUnavailable, nil, true)
+        ]
+        let queue = makeQueue()
+        var retried = 0
+        for (id, error, reported, retries) in cases {
+            try writeAudio(id)
+            ingestError = error
+            queue.recordingQueued(id)
+            await queue.idle()
+            XCTAssertTrue(hubHas(id), "\(id): the hub's copy stays")
+            XCTAssertNil(queue.tracked[id], "\(id): nothing landed")
+            let finish = hub.sent(HubControlRequest.recordingFinish).last { $0.upload == id }
+            XCTAssertEqual(finish?.errorClass, reported, id)
+            if retries { retried += 1 }
+            await waitForRetry(retried)
+        }
+        XCTAssertEqual(sleeper.waits, Array(repeating: PhoneRecordingQueue.firstRetry, count: retried))
+    }
+
+    func testARetriedFailureBacksOffAndIngestsLater() async throws {
         try writeAudio("u1")
-        ingestError = MeetingRecorderCenter.PhoneIngestError.databaseUnavailable
+        ingestError = CocoaError(.fileWriteOutOfSpace)
         let queue = makeQueue()
         queue.recordingQueued("u1")
         await queue.idle()
-        XCTAssertTrue(hub.sent(HubControlRequest.recordingFinish).isEmpty)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: hub.audio("u1").path), "the audio stays for the retry")
+        await waitForRetry(1)
+        sleeper.releaseAll() // still failing: the next wait doubles
+        await waitForRetry(1)
+        XCTAssertEqual(sleeper.waits, [.seconds(30), .seconds(60)])
         ingestError = nil
-        cli.setRows([row("u1", "claimed")])
-        queue.rescan()
+        sleeper.releaseAll()
+        for _ in 0..<500 where ingested.isEmpty { try? await Task.sleep(for: .milliseconds(2)) }
         await queue.idle()
         XCTAssertEqual(ingested, [hub.audio("u1")])
+        XCTAssertEqual(hub.sent(HubControlRequest.recordingClaim).count, 3, "each retry claims the failed job again")
+        XCTAssertTrue(hubHas("u1"))
+    }
+
+    func testACalendarReadErrorIsTriedAgainNeverSavedAdHoc() async throws {
+        try writeAudio("u1")
+        hub.setOrigin("u1", eventID: "evt-1", startedAt: nil)
+        calendar = ["evt-1": "Acme sync"]
+        calendarError = CalendarDown()
+        let queue = makeQueue()
+        queue.recordingQueued("u1")
+        await queue.idle()
+        XCTAssertTrue(ingested.isEmpty, "not ingested ad-hoc on a read error")
+        XCTAssertTrue(hub.sent(HubControlRequest.recordingFinish).isEmpty, "nothing reported")
+        await waitForRetry(1)
+        calendarError = nil
+        sleeper.releaseAll()
+        for _ in 0..<500 where ingested.isEmpty { try? await Task.sleep(for: .milliseconds(2)) }
+        await queue.idle()
+        XCTAssertEqual(origins, [Origin(eventID: "evt-1", title: "Acme sync")])
     }
 
     func testTheOwnersRetryClaimsTheFailedJobAgain() async throws {
@@ -351,24 +463,102 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertEqual(hub.sent(HubControlRequest.recordingFinish).last?.transcriptID, 7)
     }
 
-    // MARK: - What it leaves alone
+    // MARK: - Exactly once across a crash
 
-    func testAHubMovedJobIsNeverClaimed() async throws {
-        try writeAudio("moved")
-        cli.setRows([row("moved", "failed")])
+    /// The app stopped between the ingest's reservation and remembering it
+    /// ingested: the reservation, found by upload id, is followed, not
+    /// ingested again; with no reservation the upload is ingested once.
+    func testACrashBetweenTheReservationAndTheSaveIsNotIngestedTwice() async throws {
+        try writeAudio("u1")
+        try writeAudio("u2")
+        let crashed = [
+            "u1": PhoneRecordingQueue.Tracked(stage: .ingesting, hubAudio: hub.audio("u1").path),
+            "u2": PhoneRecordingQueue.Tracked(stage: .ingesting, hubAudio: hub.audio("u2").path)
+        ]
+        defaults.set(try JSONEncoder().encode(crashed), forKey: PhoneRecordingQueue.defaultsKey)
+        transcriber.reserved["u1"] = URL(fileURLWithPath: "/recordings/rec_reserved.m4a")
+        cli.setRows([row("u1", "claimed"), row("u2", "claimed")])
         let queue = makeQueue()
         queue.rescan()
         await queue.idle()
-        XCTAssertTrue(hub.sent(HubControlRequest.recordingClaim).isEmpty, "a failed row is never claimed from the list")
+        XCTAssertEqual(ingested, [hub.audio("u2")], "only the upload with no reservation is ingested")
+        XCTAssertEqual(queue.tracked["u1"]?.stage, .ingested)
+        transcriber.finished(URL(fileURLWithPath: "/recordings/rec_reserved.m4a"), 5)
+        await queue.idle()
+        XCTAssertEqual(hub.sent(HubControlRequest.recordingFinish).map(\.transcriptID), [5])
+        XCTAssertFalse(hubHas("u1"))
+    }
 
-        // An event for it (a hub that queued it before adopting) is refused by the hub: nothing ingested, nothing reported.
+    /// Unreadable bookkeeping is a third state: claimed jobs are matched by
+    /// upload id; one with no reservation is left alone, never re-ingested.
+    func testUnreadableBookkeepingMatchesClaimedJobsByUploadID() async throws {
+        try writeAudio("u1")
+        try writeAudio("u2")
+        defaults.set(Data("not json".utf8), forKey: PhoneRecordingQueue.defaultsKey)
+        transcriber.reserved["u1"] = URL(fileURLWithPath: "/recordings/rec_reserved.m4a")
+        cli.setRows([row("u1", "claimed"), row("u2", "claimed")])
+        let queue = makeQueue()
+        XCTAssertTrue(queue.bookkeepingLost)
+        queue.rescan()
+        await queue.idle()
+        XCTAssertTrue(ingested.isEmpty)
+        XCTAssertTrue(hub.sent(HubControlRequest.recordingClaim).isEmpty)
+        XCTAssertEqual(queue.tracked["u1"]?.path, "/recordings/rec_reserved.m4a")
+        XCTAssertNil(queue.tracked["u2"])
+        XCTAssertTrue(queue.bookkeepingLost, "u2 is still undecided")
+        XCTAssertTrue(hubHas("u2"))
+    }
+
+    func testALookupErrorDefersTheCrashedUpload() async throws {
+        try writeAudio("u1")
+        defaults.set(try JSONEncoder().encode(["u1": PhoneRecordingQueue.Tracked(stage: .ingesting, hubAudio: hub.audio("u1").path)]),
+                     forKey: PhoneRecordingQueue.defaultsKey)
+        transcriber.lookupError = CalendarDown()
+        cli.setRows([row("u1", "claimed")])
+        let queue = makeQueue()
+        queue.rescan()
+        await queue.idle()
+        XCTAssertTrue(ingested.isEmpty)
+        XCTAssertEqual(queue.tracked["u1"]?.stage, .ingesting)
+    }
+
+    // MARK: - What it leaves alone
+
+    func testAnUnreadyOrEmptyListingKeepsTheBookkeeping() async throws {
+        try writeAudio("u1")
+        let queue = makeQueue()
+        queue.recordingQueued("u1")
+        await queue.idle()
+        cli.setRows([], ready: false)
+        queue.rescan()
+        await queue.idle()
+        XCTAssertNotNil(queue.tracked["u1"], "not ready: skipped")
+        cli.setRows([])
+        queue.rescan()
+        await queue.idle()
+        XCTAssertNotNil(queue.tracked["u1"], "an empty answer erases nothing")
+        cli.setRows([row("u9", "queued")])
+        queue.rescan()
+        await queue.idle()
+        XCTAssertNil(queue.tracked["u1"], "a job the hub no longer lists, while it lists others, goes")
+    }
+
+    func testAHubMovedJobIsNeverClaimed() async throws {
+        try writeAudio("moved")
+        cli.setRows([row("moved", "failed", errorClass: "hub_moved")])
+        let queue = makeQueue()
+        queue.rescan()
+        await queue.idle()
+        XCTAssertTrue(hub.sent(HubControlRequest.recordingClaim).isEmpty, "a hub_moved row is never claimed from the list")
+
+        // An event for it is refused by the hub: nothing ingested, nothing reported.
         hub.refuseClaims(["moved"])
         queue.recordingQueued("moved")
         await queue.idle()
         XCTAssertTrue(ingested.isEmpty)
         XCTAssertTrue(hub.sent(HubControlRequest.recordingFinish).isEmpty)
         XCTAssertTrue(hub.sent(HubControlRequest.recordingProgress).isEmpty)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: hub.audio("moved").path), "its kept audio is the hub's")
+        XCTAssertTrue(hubHas("moved"), "its kept audio is the hub's")
 
         // The recorder's own job for that audio (the Swift hub ingested it) is not followed.
         transcriber.phase(hub.audio("moved"), .diarizing)
@@ -387,7 +577,40 @@ final class PhoneRecordingQueueTests: XCTestCase {
         await queue.idle()
         XCTAssertTrue(ingested.isEmpty)
         XCTAssertTrue(queue.tracked.isEmpty)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: hub.audio("u1").path))
+        XCTAssertTrue(hubHas("u1"))
+    }
+
+    // MARK: - Origin
+
+    /// The phone's title comes back from its origin, as the Swift hub's
+    /// `title_hint` path ended: a meeting on this Mac links the transcript
+    /// and takes the event's title; a meeting this Mac lacks saves ad-hoc
+    /// (the Swift hub dropped the event too, but kept the phone's title —
+    /// the one gap, the title is never stored); no event is the phone's
+    /// voice note, titled by its start.
+    func testTheEventLinkAndTitleComeBackFromTheOrigin() async throws {
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        calendar = ["evt-1": "Acme sync"]
+        for id in ["meeting", "elsewhere", "note", "bare"] { try writeAudio(id) }
+        hub.setOrigin("meeting", eventID: "evt-1", startedAt: started)
+        hub.setOrigin("elsewhere", eventID: "evt-gone", startedAt: started)
+        hub.setOrigin("note", eventID: nil, startedAt: started)
+        let queue = makeQueue()
+        for id in ["meeting", "elsewhere", "note", "bare"] { queue.recordingQueued(id) }
+        await queue.idle()
+        XCTAssertEqual(origins, [
+            Origin(eventID: "evt-1", title: "Acme sync"),
+            Origin(eventID: nil, title: nil),
+            Origin(eventID: nil, title: PhoneRecordingQueue.voiceNoteTitle(started)),
+            Origin(eventID: nil, title: nil)
+        ])
+    }
+
+    /// The phone's voice-note title (`PhoneRecorderController.finalTitleAndEvent`), byte for byte.
+    func testVoiceNoteTitlePinned() throws {
+        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        XCTAssertEqual(PhoneRecordingQueue.voiceNoteTitle(Date(timeIntervalSince1970: 1_800_000_000), timeZone: utc),
+                       "Voice note — 15 Jan, 08:00")
     }
 
     // MARK: - Pinned
@@ -398,6 +621,7 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertEqual(PhoneRecordingQueue.FailureClass.allCases.map(\.rawValue), [
             "no_speech", "transcription_failed", "not_audio", "unreadable", "ingest_failed", "missing_audio"
         ])
+        XCTAssertEqual(PhoneRecordingQueue.FailureClass.allCases.filter(\.retried), [.unreadable, .ingestFailed])
         XCTAssertEqual(PhoneRecordingQueue.failureClass(transcriberMessage: "No speech recognized"), .noSpeech)
         XCTAssertEqual(PhoneRecordingQueue.failureClass(transcriberMessage: MeetingRecorderCenter.noSpeechMessage(nil)), .noSpeech)
         XCTAssertEqual(PhoneRecordingQueue.failureClass(transcriberMessage: "Model failed to load"), .transcriptionFailed)

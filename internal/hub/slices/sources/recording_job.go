@@ -24,17 +24,19 @@ const HubMovedText = "Watchtower was updated while this recording was being tran
 	"The audio is kept on your Mac; send it again if you still have it on this iPhone."
 
 // failureTexts is what a failed job's class reads as on the phone: hub_moved,
-// and the classes Desktop finishes with (state.ClassNoSpeech …), each the
-// Swift hub's sentence for the same failure (its upload echo's for the
-// ingest ones). Pinned by TestRecordingFailureTextsPinned.
+// and the classes Desktop finishes with (state.ClassNoSpeech …). On this path
+// the phone already deleted its copy when the upload was received, so no
+// text asks it to send the recording again: the audio is on the Mac, which
+// retries on its own (unreadable, ingest_failed) or keeps it for the owner.
+// Pinned by TestRecordingFailureTextsPinned.
 var failureTexts = map[string]string{
 	state.ClassHubMoved:            HubMovedText,
 	state.ClassNoSpeech:            "No speech recognized",
-	state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording.",
-	state.ClassNotAudio:            "Your Mac could not save this recording: The file is not an audio recording.",
-	state.ClassUnreadable:          "Your Mac could not read this recording.",
-	state.ClassIngestFailed:        "Your Mac could not save this recording.",
-	state.ClassMissingAudio:        "The recording's audio did not reach your Mac. Send it again.",
+	state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording. It keeps the audio; you can retry it in Watchtower on the Mac.",
+	state.ClassNotAudio:            "Your Mac could not open this recording as audio. It keeps the file on the Mac.",
+	state.ClassUnreadable:          "Your Mac could not read this recording yet. It keeps the audio and will try again.",
+	state.ClassIngestFailed:        "Your Mac could not save this recording yet. It keeps the audio and will try again.",
+	state.ClassMissingAudio:        "Your Mac no longer has this recording's audio.",
 }
 
 // RecordingJob is the recording_job slice (RecordingJobSlice, mobile POC spec

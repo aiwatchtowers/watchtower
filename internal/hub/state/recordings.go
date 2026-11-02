@@ -300,7 +300,12 @@ type RecordingOrigin struct {
 	StartedAt time.Time
 }
 
-// MaxRecordingEventID caps a stored event id; a longer one is not an id and is dropped.
+// recordingEventIDRE is the shape of a stored event id: a calendar id's charset
+// (no spaces, so no free text) and at most 256 bytes; anything else is not an
+// id and is dropped.
+var recordingEventIDRE = regexp.MustCompile(`^[A-Za-z0-9_.:@-]{1,256}$`)
+
+// MaxRecordingEventID caps a stored event id.
 const MaxRecordingEventID = 256
 
 // QueueRecording adds a queued job; a second call for the same upload keeps
@@ -312,7 +317,7 @@ func (s *Store) QueueRecording(uploadID, deviceID string, now time.Time) error {
 // QueueRecordingFrom is QueueRecording with the recording's origin.
 func (s *Store) QueueRecordingFrom(uploadID, deviceID string, o RecordingOrigin, now time.Time) error {
 	var event, started any
-	if o.EventID != "" && len(o.EventID) <= MaxRecordingEventID {
+	if recordingEventIDRE.MatchString(o.EventID) {
 		event = o.EventID
 	}
 	if !o.StartedAt.IsZero() {
@@ -329,10 +334,12 @@ func (s *Store) QueueRecordingFrom(uploadID, deviceID string, o RecordingOrigin,
 }
 
 // ClaimRecording moves a queued job to claimed (Desktop took it). A claimed
-// job claims again unchanged (Desktop restarted). A failed one claims again
-// with its class, finish and phase cleared: the owner retried the
+// job claims again unchanged (Desktop restarted). A job Desktop itself
+// failed (a DesktopFailureClasses class) claims again with its class, finish
+// and phase cleared: Desktop retries it, or the owner retried the
 // transcription on the Mac (the Swift hub's job went back to queued the same
-// way). A done job and a hub_moved one (adoption) are ErrJobState.
+// way). Every other finished job — done, hub_moved, an adopted Swift
+// failure — is terminal: ErrJobState (Plan 1b).
 func (s *Store) ClaimRecording(uploadID string, now time.Time) (RecordingJob, error) {
 	err := s.write(func(tx *sql.Tx) error {
 		job, err := recordingJobTx(tx, uploadID)
@@ -346,7 +353,7 @@ func (s *Store) ClaimRecording(uploadID string, now time.Time) (RecordingJob, er
 			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ? WHERE upload_id = ?`,
 				toReal(now), uploadID)
 			return err
-		case job.Status == RecordingFailed && job.ErrorClass != ClassHubMoved:
+		case job.Status == RecordingFailed && DesktopFailureClasses[job.ErrorClass]:
 			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ?, error_class = NULL,
 					finished_at = NULL, phase = NULL, percent = NULL
 				WHERE upload_id = ?`, toReal(now), uploadID)
@@ -560,7 +567,9 @@ const ClassHubMoved = "hub_moved"
 
 // The classes Desktop finishes a phone recording with (Swift
 // PhoneRecordingQueue.FailureClass, a Go↔Swift dual path); the
-// recording_job slice shows the Swift hub's sentence for each.
+// recording_job slice shows a fixed sentence for each. The hub keeps the
+// job's audio (the only copy: the phone deleted its own on received) until
+// the 31-day prune.
 const (
 	ClassNoSpeech            = "no_speech"
 	ClassTranscriptionFailed = "transcription_failed"
@@ -569,6 +578,13 @@ const (
 	ClassIngestFailed        = "ingest_failed"
 	ClassMissingAudio        = "missing_audio"
 )
+
+// DesktopFailureClasses are the classes above: only a job failed with one of
+// them claims again (ClaimRecording).
+var DesktopFailureClasses = map[string]bool{
+	ClassNoSpeech: true, ClassTranscriptionFailed: true, ClassNotAudio: true,
+	ClassUnreadable: true, ClassIngestFailed: true, ClassMissingAudio: true,
+}
 
 // RecordingJobKeptFor is how long a finished job (and its audio file) is
 // kept: the Swift hub's 31-day rule.
@@ -602,10 +618,11 @@ func ImportRecordingJobTx(tx *sql.Tx, j RecordingJob) (ok bool, err error) {
 }
 
 // PruneRecordingJobs deletes every finished job that ended at or before
-// olderThan (the Swift hub's 31-day rule: rows only). A hub_moved job's
-// audio, which adoption kept at <recordingsDir>/<upload_id>.m4a, goes with
-// it (a missing file is no error); every other job's audio is Desktop's and
-// is never touched here. The file goes first, so a crash between the two
+// olderThan (the Swift hub's 31-day rule: rows only). The audio the hub
+// kept at <recordingsDir>/<upload_id>.m4a goes with a hub_moved job
+// (adoption) and with a job Desktop failed (DesktopFailureClasses: Desktop
+// keeps the hub's copy on a failure); a missing file is no error. Every
+// other job's audio is Desktop's and is never touched here. The file goes first, so a crash between the two
 // leaves a row the next prune finishes. It returns the rows deleted.
 func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (int, error) {
 	jobs, err := s.finishedJobsBefore(olderThan)
@@ -615,7 +632,7 @@ func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (i
 	n := 0
 	for _, j := range jobs {
 		id := j.id
-		if j.class == ClassHubMoved && recordingsDir != "" && id != "" && filepath.Base(id) == id {
+		if (j.class == ClassHubMoved || DesktopFailureClasses[j.class]) && recordingsDir != "" && id != "" && filepath.Base(id) == id {
 			if err := os.Remove(filepath.Join(recordingsDir, id+".m4a")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return n, fmt.Errorf("removing a recording's audio: %w", err)
 			}
