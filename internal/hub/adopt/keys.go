@@ -111,6 +111,11 @@ func HandOverDesktop(ctx context.Context, hubDir string, in io.Reader, keychainW
 			keychainWorks = false
 		}
 		st, kind, recorded, err := identity.DesktopHostChoice(store, hubDir, keychainWorks)
+		if fileOnly && errors.Is(err, identity.ErrNoKeychain) {
+			// A recorded Keychain store on a platform without one
+			// (Linux CI) is the same refusal as on a Mac.
+			return nil, "", false, ErrKeychainRefused
+		}
 		if err != nil {
 			return nil, "", false, err
 		}
