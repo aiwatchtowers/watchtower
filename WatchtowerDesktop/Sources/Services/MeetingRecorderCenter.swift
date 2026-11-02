@@ -444,6 +444,8 @@ final class MeetingRecorderCenter {
     /// Each job's current task and the run owning the entry (a retry replaces it), for the phone cancel.
     @ObservationIgnored private var jobRuns: [ProcessingJob.ID: (run: UUID, task: Task<Void, Never>)] = [:]
     /// Queued jobs withdrawn by the phone cancel: their task leaves `awaitTurn` without the turn.
+    /// Jobs whose save started: the phone cancel lets them finish.
+    @ObservationIgnored private var savingJobIDs: Set<ProcessingJob.ID> = []
     @ObservationIgnored private var withdrawnJobIDs: Set<ProcessingJob.ID> = []
     /// Phone recordings (audio file names) the Go hub's adoption took over
     /// this run (go hub plan 3 Task 22): never queued, offered or saved again.
@@ -1445,7 +1447,7 @@ final class MeetingRecorderCenter {
         defaults.removeObject(forKey: Self.pendingTitleKey)
     }
 
-    private func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {
+    func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {
         guard !cancelledPhoneAudioNames.contains(entry.audioURL.lastPathComponent) else { return }
         recoverable.removeAll { $0.audioURL == entry.audioURL }
         if atHead {
@@ -1777,6 +1779,8 @@ final class MeetingRecorderCenter {
             failJob(jobID, "watchtower CLI not found — the recording and transcript are kept for retry")
             return
         }
+        savingJobIDs.insert(jobID) // the phone cancel's cut-off (`withdrawPhoneRecordingJobs`)
+        defer { savingJobIDs.remove(jobID) }
         do {
             let result = try await TranscriptSaveService(runner: runner).save(
                 transcriptText: text,
@@ -2064,14 +2068,15 @@ final class MeetingRecorderCenter {
         _ = startJobTask(jobID: job.id, config: config)
     }
 
-    /// The synchronous half of `cancelPhoneRecordingJobs` (+Upgrade): marks
-    /// the names cancelled for this run, takes their queued jobs out of the
-    /// queue (their tasks never take the turn), cancels the running one,
-    /// drops them and their recovered entries, and returns the tasks to await.
-    func withdrawPhoneRecordingJobs(_ names: Set<String>) -> [Task<Void, Never>] {
-        cancelledPhoneAudioNames.formUnion(names)
-        var tasks: [Task<Void, Never>] = []
+    /// `cancelPhoneRecordingJobs`' synchronous half (+Upgrade): returns the
+    /// cancelled tasks, and the saving ones, which finish (the save's start is the cut-off).
+    func withdrawPhoneRecordingJobs(_ names: Set<String>) -> (cancelled: [Task<Void, Never>], saving: [Task<Void, Never>]) {
+        var tasks: [Task<Void, Never>] = [], saving: [Task<Void, Never>] = []
         for job in jobs where names.contains(job.audioURL.lastPathComponent) {
+            if savingJobIDs.contains(job.id) {
+                if let task = jobRuns[job.id]?.task { saving.append(task) }
+                continue
+            }
             if queuedJobIDs.contains(job.id) {
                 withdrawnJobIDs.insert(job.id)
                 queuedJobIDs.removeAll { $0 == job.id }
@@ -2082,18 +2087,13 @@ final class MeetingRecorderCenter {
                 tasks.append(task)
             }
         }
-        jobs.removeAll { names.contains($0.audioURL.lastPathComponent) }
+        cancelledPhoneAudioNames.formUnion(names)
+        jobs.removeAll { names.contains($0.audioURL.lastPathComponent) && !savingJobIDs.contains($0.id) }
         recoverable.removeAll { names.contains($0.audioURL.lastPathComponent) }
         wakeQueueWaiters()
-        return tasks
+        return (tasks, saving)
     }
-}
 
-extension MeetingRecorderCenter.ProcessingJob.Phase {
-    var isFailed: Bool { failureMessage != nil }
-
-    var failureMessage: String? {
-        if case let .failed(message) = self { return message }
-        return nil
-    }
+    /// Releases names the adoption gave back (`releasePhoneRecordings`, +Upgrade).
+    func uncancelPhoneRecordings(_ names: Set<String>) { cancelledPhoneAudioNames.subtract(names) }
 }

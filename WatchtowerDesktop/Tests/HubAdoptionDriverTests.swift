@@ -7,8 +7,9 @@ import WatchtowerSync
 import WatchtowerTestSupport
 
 /// The Desktop's hand-over of Mobile to the Go hub (go hub plan 3 Task 22,
-/// spec §12.1–§12.2): state through `hub adopt --status`, then the settings,
-/// then the keys on stdin, then the Desktop items deleted and confirmed.
+/// spec §12.1–§12.2): state through `hub adopt --status`, the keys looked up
+/// without creating any, the settings, the keys on stdin, then the Desktop
+/// items deleted and confirmed.
 @MainActor
 final class HubAdoptionDriverTests: XCTestCase {
     private var log: AdoptionLog!
@@ -18,6 +19,8 @@ final class HubAdoptionDriverTests: XCTestCase {
     private var restartWaiters: [CheckedContinuation<Void, Never>] = []
     private var settings = HubAdoptSettings(enabled: true, startSessionAllows: [:])
     private var delivered = 0
+    private var storageCloses = true
+    private var deadline: Duration = HubAdoptionDriver.stepDeadline
 
     override func setUp() async throws {
         log = AdoptionLog()
@@ -26,6 +29,8 @@ final class HubAdoptionDriverTests: XCTestCase {
         restartSettled = true
         restartWaiters = []
         delivered = 0
+        storageCloses = true
+        deadline = HubAdoptionDriver.stepDeadline
     }
 
     private func makeDriver(
@@ -39,17 +44,21 @@ final class HubAdoptionDriverTests: XCTestCase {
                 if !self.restartSettled { await withCheckedContinuation { self.restartWaiters.append($0) } }
                 self.log.append("restart-settled")
             },
-            stopSwiftHub: { [log] in
+            policyOffWipe: { [log] in log?.append("policy-wipe") },
+            stopSwiftHub: { [weak self, log] in
                 log?.append("swift-hub-stop")
                 await Task.yield()
+                guard self?.storageCloses == true else { return false }
                 log?.append("swift-storage-closed")
+                return true
             },
             cancelPhoneRecordings: { [log] names in
                 log?.append("cancel:\(names.joined(separator: ","))")
                 await cancel?(names)
             },
-            runner: useRunner ? hub : nil,
-            keyStore: keys,
+            phoneRecordingsAdopted: { [log] in log?.append("adopted:\($0.joined(separator: ","))") },
+            releasePhoneRecordings: { [log] in log?.append("released:\($0.joined(separator: ","))") },
+            deps: HubAdoptionDeps(runner: useRunner ? hub : nil, keyStore: keys, stepDeadline: deadline),
             settings: { [weak self] in self?.settings ?? HubAdoptSettings(enabled: false, startSessionAllows: [:]) },
             settingsDelivered: { [weak self] in self?.delivered += 1 }
         ))
@@ -62,11 +71,15 @@ final class HubAdoptionDriverTests: XCTestCase {
         waiters.forEach { $0.resume() }
     }
 
+    private func present(pending: Bool = false) {
+        hub.state = .init(hubID: "hub-acme", swiftState: "present",
+                          pending: pending ? [.init(uploadID: "u-1", audioName: "rec_1.m4a")] : [])
+    }
+
     // MARK: - The whole hand-over
 
     func testHandOverRunsStateThenKeysThenCleanup() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present",
-                          pending: [.init(uploadID: "u-1", audioName: "rec_1.m4a")])
+        present(pending: true)
         try keys.seed(hubID: "hub-acme")
 
         let result = await makeDriver().run()
@@ -74,16 +87,19 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(result, .done)
         XCTAssertEqual(hub.state.identity, "confirmed")
         XCTAssertEqual(log.events, [
-            "restart-wait", "restart-settled", "cli:--status", "swift-hub-stop", "swift-storage-closed",
-            "cancel:rec_1.m4a", "cli:--settings-stdin", "cli:--status", "keychain:get:hub-acme", "cli:--keys-stdin",
+            "cli:--status", "policy-wipe", "restart-wait", "restart-settled",
+            "cli:--status", "keychain:lookup:hub-acme", "swift-hub-stop", "swift-storage-closed",
+            "cancel:rec_1.m4a", "cli:--settings-stdin", "adopted:rec_1.m4a",
+            "cli:--status", "keychain:lookup:hub-acme", "cli:--keys-stdin",
             "keychain:delete:hub-acme", "cli:--confirm-deleted"
         ])
-        XCTAssertEqual(delivered, 1, "the Desktop's copy of the toggle goes once the Go hub took it")
+        XCTAssertGreaterThanOrEqual(delivered, 1, "the Desktop's copy of the toggle goes once the Go hub took it")
         XCTAssertFalse(keys.has("hub-acme"))
+        XCTAssertEqual(keys.creations, 0, "the hand-over never creates keys")
     }
 
     func testAdoptionStopsTheSwiftHubBeforeHubAdopt() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         try keys.seed(hubID: "hub-acme")
         _ = await makeDriver().run()
         let events = log.events
@@ -91,45 +107,62 @@ final class HubAdoptionDriverTests: XCTestCase {
         let closed = try XCTUnwrap(events.firstIndex(of: "swift-storage-closed"))
         let adopt = try XCTUnwrap(events.firstIndex(of: "cli:--settings-stdin"))
         XCTAssertLessThan(stop, closed)
-        XCTAssertLessThan(closed, adopt, "the storage is closed before the first adopting hub adopt starts")
+        XCTAssertLessThan(closed, adopt, "the storage is closed before the adopting hub adopt starts")
     }
 
-    func testAdoptionWaitsForTheHostRestartStep() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+    func testAStorageThatDoesNotCloseFailsSwiftBusyBeforeHubAdopt() async throws {
+        present()
+        try keys.seed(hubID: "hub-acme")
+        storageCloses = false
+        let result = await makeDriver().run()
+        XCTAssertEqual(result, .failed(reason: "swift_busy"))
+        XCTAssertFalse(log.events.contains("cli:--settings-stdin"))
+    }
+
+    /// While the restart step waits for Continue nothing shows: the status
+    /// read is unseen and the state stays idle (no spinner).
+    func testAdoptionWaitsForTheHostRestartStepUnseen() async throws {
+        present()
         try keys.seed(hubID: "hub-acme")
         restartSettled = false
         let driver = makeDriver()
         let run = Task { await driver.run() }
-        for _ in 0..<20 { await Task.yield() }
-        XCTAssertEqual(log.events, ["restart-wait"], "nothing runs while the restart waits for Continue")
-        XCTAssertEqual(driver.state, .checking)
+        for _ in 0..<40 { await Task.yield() }
+        XCTAssertEqual(log.events, ["cli:--status", "policy-wipe", "restart-wait"],
+                       "nothing but the unseen read and the POLICY-03 check runs before Continue")
+        XCTAssertEqual(driver.state, .idle)
+        XCTAssertFalse(driver.state.isShown, "Settings → Mobile is no spinner while Continue waits")
 
         settleRestart()
         let result = await run.value
         XCTAssertEqual(result, .done)
-        XCTAssertEqual(Array(log.events.prefix(3)), ["restart-wait", "restart-settled", "cli:--status"])
     }
 
     func testRunsAfterTheRestartStep() async throws {
-        hub.state = .init(swiftState: "absent")
+        present()
+        try keys.seed(hubID: "hub-acme")
         _ = await makeDriver().run()
-        XCTAssertEqual(Array(log.events.prefix(3)), ["restart-wait", "restart-settled", "cli:--status"])
+        let events = log.events
+        XCTAssertLessThan(try XCTUnwrap(events.firstIndex(of: "restart-settled")),
+                          try XCTUnwrap(events.firstIndex(of: "swift-hub-stop")))
     }
 
     func testNoSwiftStateSkips() async {
         for swift in ["absent", "ignored"] {
             setUpLog()
             hub.state = .init(hubID: "hub-acme", swiftState: swift)
-            let result = await makeDriver().run()
+            let driver = makeDriver()
+            let result = await driver.run()
             XCTAssertEqual(result, .notNeeded, swift)
-            XCTAssertEqual(log.events, ["restart-wait", "restart-settled", "cli:--status"], swift)
+            XCTAssertEqual(log.events, ["cli:--status"], "no wait, no wipe, nothing shown: \(swift)")
+            XCTAssertFalse(driver.state.isShown)
         }
     }
 
     // MARK: - Stdin
 
     func testKeysOnlyOnStdin() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         let identity = try keys.seed(hubID: "hub-acme")
         _ = await makeDriver().run()
 
@@ -157,6 +190,15 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(settingsCall.args, ["hub", "adopt", "--settings-stdin", "--json"], "settings and keys: two calls")
     }
 
+    func testKeysPayloadIsTheThreeKeysInStandardBase64() throws {
+        let keys = HubIdentityKeys(signing: .init(), agreement: .init(), wrapKey: SymmetricKey(size: .bits256))
+        let payload = try HubAdoptionDriver.keysPayload(keys)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: String])
+        XCTAssertEqual(object["hub_sig"].flatMap { Data(base64Encoded: $0) }, keys.signing.rawRepresentation)
+        XCTAssertEqual(object["hub_kx"].flatMap { Data(base64Encoded: $0) }, keys.agreement.rawRepresentation)
+        XCTAssertEqual(object["wrap"].flatMap { Data(base64Encoded: $0) }, keys.wrapKey.withUnsafeBytes { Data($0) })
+    }
+
     /// The driver writes no file of its own and passes no extra descriptor:
     /// the runner's whole surface is argv and stdin.
     func testDriverWritesNoFileAndNamesNoSwiftHubPath() throws {
@@ -167,7 +209,7 @@ final class HubAdoptionDriverTests: XCTestCase {
     }
 
     func testStateReadOnlyThroughHubAdoptStatus() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         try keys.seed(hubID: "hub-acme")
         _ = await makeDriver().run()
         for call in hub.calls {
@@ -179,7 +221,7 @@ final class HubAdoptionDriverTests: XCTestCase {
 
     func testSettingsCarryEnabledAndAllows() async throws {
         settings = HubAdoptSettings(enabled: false, startSessionAllows: ["dev-acme": true])
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         try keys.seed(hubID: "hub-acme")
         _ = await makeDriver().run()
         let call = try XCTUnwrap(hub.calls.first { $0.args.contains("--settings-stdin") })
@@ -188,21 +230,73 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(object["start_session_allows"] as? [String: Bool], ["dev-acme": true])
     }
 
+    func testSettingsDeliveredAlsoWhenResumingAtTheKeys() async throws {
+        hub.state = .init(step: "done", hubID: "hub-acme", swiftState: "absent")
+        try keys.seed(hubID: "hub-acme")
+        _ = await makeDriver().run()
+        XCTAssertGreaterThanOrEqual(delivered, 1, "a kill after the state adoption still removes the old toggle")
+    }
+
     // MARK: - Keys
 
-    func testAFreshlyCreatedIdentityIsNoKeys() async {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present") // no Keychain items seeded
+    func testNoKeysFailsBeforeAnythingIsImportedAndCreatesNothing() async {
+        present(pending: true) // no Keychain items seeded
         let driver = makeDriver()
         let result = await driver.run()
         XCTAssertEqual(result, .failed(reason: "no_keys"))
         XCTAssertEqual(driver.state.retryTitle, "Retry")
-        XCTAssertFalse(keys.has("hub-acme"), "the fresh item is deleted again")
-        XCTAssertFalse(hub.calls.contains { $0.args.contains("--keys-stdin") }, "never handed over")
-        XCTAssertEqual(hub.state.identity, "none")
+        XCTAssertEqual(driver.state.setUpAgainTitle, "Set up Mobile again")
+        XCTAssertEqual(keys.creations, 0, "the lookup never creates an identity")
+        XCTAssertFalse(keys.has("hub-acme"))
+        XCTAssertFalse(log.events.contains("swift-hub-stop"))
+        XCTAssertFalse(log.events.contains { $0.hasPrefix("cancel:") }, "the recordings stay Desktop's")
+        XCTAssertFalse(hub.calls.contains { $0.args.contains("--settings-stdin") || $0.args.contains("--keys-stdin") })
+    }
+
+    func testAPartialIdentityIsKeysPartial() async {
+        present()
+        keys.partial = true
+        let result = await makeDriver().run()
+        XCTAssertEqual(result, .failed(reason: "keys_partial"))
+        XCTAssertNil(result.setUpAgainTitle)
+        XCTAssertEqual(keys.creations, 0)
+        XCTAssertFalse(hub.calls.contains { $0.args.contains("--settings-stdin") })
+    }
+
+    /// No keys, the owner confirms: Go sets the Swift state aside and the
+    /// next pass finds nothing to hand over (the Go hub starts fresh).
+    func testSetUpAgainSetsTheSwiftStateAsideAndEnds() async {
+        present()
+        let driver = makeDriver()
+        _ = await driver.run()
+        let result = await driver.setUpAgain()
+        XCTAssertEqual(result, .notNeeded)
+        XCTAssertEqual(hub.applied, ["--set-aside"])
+        XCTAssertEqual(hub.calls.first { $0.args.contains("--set-aside") }?.args, ["hub", "adopt", "--set-aside", "--json"])
+        XCTAssertEqual(keys.creations, 0)
+
+        setUpLog()
+        hub.state.step = "verify"
+        hub.state.swiftState = "present"
+        let refused = await driver.setUpAgain()
+        XCTAssertEqual(refused, .failed(reason: "adoption_started"))
+    }
+
+    /// A kill right after the read-only lookup: nothing was created, the next
+    /// launch looks up again and finishes.
+    func testAKillAroundTheKeyLookupResumes() async throws {
+        present()
+        try keys.seed(hubID: "hub-acme")
+        keys.killAfter = ["keychain:lookup"]
+        _ = await makeDriver().run()
+        keys.killAfter = []
+        let result = await makeDriver().run()
+        XCTAssertEqual(result, .done)
+        XCTAssertEqual(keys.creations, 0)
     }
 
     func testDesktopItemsDeletedOnlyAfterAdopted() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         try keys.seed(hubID: "hub-acme")
         hub.keysError = "wrong_keys"
         let refused = await makeDriver().run()
@@ -221,8 +315,24 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertLessThan(delete, confirm)
     }
 
+    /// `adopted` / `confirmed` count only with exit 0.
+    func testANonZeroExitIsNeverAdopted() async throws {
+        hub.state = .init(step: "done", hubID: "hub-acme", swiftState: "absent")
+        try keys.seed(hubID: "hub-acme")
+        hub.exitOne = ["--keys-stdin"]
+        let result = await makeDriver().run()
+        XCTAssertEqual(result, .failed(reason: "failed"))
+        XCTAssertTrue(keys.has("hub-acme"), "no delete without exit 0")
+
+        setUpLog()
+        hub.state = .init(step: "done", hubID: "hub-acme", identity: "adopted", swiftState: "absent")
+        hub.exitOne = ["--confirm-deleted"]
+        let confirm = await makeDriver().run()
+        XCTAssertEqual(confirm, .failed(reason: "failed"))
+    }
+
     func testCrashBeforeConfirmRetriesTheDeleteNextLaunch() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         try keys.seed(hubID: "hub-acme")
         hub.killAfter = ["--keys-stdin"] // the app dies right after the Go hub adopted
         _ = await makeDriver().run()
@@ -234,22 +344,23 @@ final class HubAdoptionDriverTests: XCTestCase {
         let result = await makeDriver().run()
         XCTAssertEqual(result, .done)
         XCTAssertEqual(log.events, [
-            "restart-wait", "restart-settled", "cli:--status", "keychain:delete:hub-acme", "cli:--confirm-deleted"
+            "cli:--status", "restart-wait", "restart-settled", "cli:--status", "keychain:delete:hub-acme", "cli:--confirm-deleted"
         ])
         XCTAssertEqual(hub.state.identity, "confirmed")
     }
 
-    func testAMissingConfirmDeletesAgainAndConfirms() async throws {
-        hub.state = .init(step: "done", hubID: "hub-acme", identity: "adopted", swiftState: "absent")
+    func testAnEmptyHubIDOnTheDeletePathNeverConfirms() async {
+        hub.state = .init(step: "done", hubID: "", identity: "adopted", swiftState: "absent")
         let result = await makeDriver().run()
-        XCTAssertEqual(result, .done)
-        XCTAssertEqual(log.events.suffix(2), ["keychain:delete:hub-acme", "cli:--confirm-deleted"])
+        XCTAssertEqual(result, .failed(reason: "no_hub_id"))
+        XCTAssertFalse(hub.calls.contains { $0.args.contains("--confirm-deleted") })
+        XCTAssertFalse(log.events.contains { $0.hasPrefix("keychain:delete") })
     }
 
     // MARK: - Failures
 
     func testFailureShowsRetryAndKeepsTheHubOff() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         try keys.seed(hubID: "hub-acme")
         hub.adoptError = "swift_schema"
         let driver = makeDriver()
@@ -266,9 +377,23 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(log.events.filter { $0 == "restart-wait" }.count, 1, "Retry does not wait for the restart again")
     }
 
-    /// Every error class of the key hand-over and the confirm ends in
-    /// `.failed(class)` with Retry; the Desktop items stay unless the Go hub
-    /// adopted the identity.
+    /// A permanent adoption failure gives the cancelled phone recordings back
+    /// to Desktop; a transient one keeps them for Retry.
+    func testAPermanentFailureReleasesThePhoneRecordings() async throws {
+        present(pending: true)
+        try keys.seed(hubID: "hub-acme")
+        hub.adoptError = "swift_schema"
+        _ = await makeDriver().run()
+        XCTAssertTrue(log.events.contains("released:rec_1.m4a"))
+        XCTAssertFalse(log.events.contains { $0.hasPrefix("adopted:") })
+
+        setUpLog()
+        present(pending: true)
+        hub.adoptError = "locked"
+        _ = await makeDriver().run()
+        XCTAssertFalse(log.events.contains { $0.hasPrefix("released:") }, "Retry will take them")
+    }
+
     func testEveryHandOverFailureClass() async throws {
         let classes = ["wrong_keys", "bad_keys", "no_sidecar", "adoption_unfinished", "cleanup_failed",
                        "keychain_refused", "locked", "failed"]
@@ -287,7 +412,6 @@ final class HubAdoptionDriverTests: XCTestCase {
         for errorClass in ["not_adopted", "locked", "failed"] {
             setUpLog()
             hub.state = .init(step: "done", hubID: "hub-acme", identity: "adopted", swiftState: "absent")
-            hub.keysError = nil
             hub.confirmError = errorClass
             let result = await makeDriver().run()
             XCTAssertEqual(result, .failed(reason: errorClass), "confirm: \(errorClass)")
@@ -297,11 +421,12 @@ final class HubAdoptionDriverTests: XCTestCase {
     func testEveryAdoptFailureClass() async throws {
         for errorClass in ["swift_schema", "swift_corrupt", "swift_hub_id", "swift_busy", "locked", "failed"] {
             setUpLog()
-            hub.state = .init(hubID: "hub-acme", swiftState: "present")
+            present()
+            try keys.seed(hubID: "hub-acme")
             hub.adoptError = errorClass
             let result = await makeDriver().run()
             XCTAssertEqual(result, .failed(reason: errorClass), errorClass)
-            XCTAssertFalse(log.events.contains { $0.hasPrefix("keychain") }, errorClass)
+            XCTAssertFalse(log.events.contains("cli:--keys-stdin"), errorClass)
         }
     }
 
@@ -314,7 +439,6 @@ final class HubAdoptionDriverTests: XCTestCase {
 
         setUpLog()
         hub.state = .init(step: "done", hubID: "hub-acme", identity: "adopted", swiftState: "absent")
-        keys.readError = false
         keys.deleteError = true
         let cleanup = await makeDriver().run()
         XCTAssertEqual(cleanup, .failed(reason: "keychain_unavailable"))
@@ -335,6 +459,61 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(result, .failed(reason: "no_hub_id"))
     }
 
+    /// A `hub adopt` child that hangs past the step deadline is cancelled
+    /// (the live runner terminates its group) and the step fails `timeout`;
+    /// Retry starts a fresh pass.
+    func testAHangingCallTimesOutAndRetryStartsFresh() async throws {
+        present()
+        try keys.seed(hubID: "hub-acme")
+        deadline = .milliseconds(100)
+        hub.hangOn = ["--settings-stdin"]
+        let driver = makeDriver()
+        let result = await driver.run()
+        XCTAssertEqual(result, .failed(reason: "timeout"))
+        XCTAssertEqual(hub.cancelled, ["--settings-stdin"], "the stuck call was cancelled, not left running")
+
+        hub.hangOn = []
+        let statusReads = hub.calls.filter { $0.args.contains("--status") }.count
+        let retried = await driver.retry()
+        XCTAssertEqual(retried, .done)
+        XCTAssertGreaterThan(hub.calls.filter { $0.args.contains("--status") }.count, statusReads, "a fresh pass reads again")
+    }
+
+    // MARK: - The live runner
+
+    private func script(_ body: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hub-adopt-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("watchtower")
+        try Data("#!/bin/sh\n\(body)\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return url
+    }
+
+    /// stdout and the exit code reach the driver even on a refusal, and
+    /// stdin arrives whole.
+    func testTheLiveRunnerReadsStdoutOnANonZeroExit() async throws {
+        let url = try script(#"read -r line; printf '{"identity":"%s"}' "$line"; exit 1"#)
+        let out = try await ProcessHubAdoptRunner(binaryPath: url.path).run(["hub", "adopt"], stdin: Data("wrong_keys\n".utf8))
+        XCTAssertEqual(out.exitCode, 1)
+        XCTAssertEqual(String(bytes: out.stdout, encoding: .utf8), #"{"identity":"wrong_keys"}"#)
+    }
+
+    /// A cancelled run (the step deadline) terminates the child's whole
+    /// process group at once, its own children included.
+    func testTheLiveRunnerTerminatesAHangingChildGroup() async throws {
+        let url = try script("sleep 60 & wait")
+        let runner = ProcessHubAdoptRunner(binaryPath: url.path)
+        let run = Task { try await runner.run(["hub", "adopt", "--status", "--json"], stdin: Data()) }
+        try await Task.sleep(for: .milliseconds(300))
+        let start = ContinuousClock.now
+        run.cancel()
+        let out = try await run.value
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(5), "terminated, not waited out")
+        XCTAssertNotEqual(out.exitCode, 0)
+    }
+
     // MARK: - Kills and cancels
 
     /// A kill at every point of the hand-over (the runner or the Keychain
@@ -342,9 +521,9 @@ final class HubAdoptionDriverTests: XCTestCase {
     /// finishes, with one state adoption and one key hand-over in all.
     func testAKillBetweenEveryStepResumesAtTheNextLaunch() async throws {
         let points: [(String, @MainActor (FakeAdoptHub, FakeHubKeyStore) -> Void)] = [
+            ("after the key lookup", { _, keys in keys.killAfter = ["keychain:lookup"] }),
             ("after the stop and the cancel", { hub, _ in hub.killBefore = ["--settings-stdin"] }),
             ("after the state adoption", { hub, _ in hub.killAfter = ["--settings-stdin"] }),
-            ("after the Keychain read", { _, keys in keys.killAfter = ["keychain:get"] }),
             ("before the keys", { hub, _ in hub.killBefore = ["--keys-stdin"] }),
             ("after the keys", { hub, _ in hub.killAfter = ["--keys-stdin"] }),
             ("after the delete", { _, keys in keys.killAfter = ["keychain:delete"] }),
@@ -353,8 +532,7 @@ final class HubAdoptionDriverTests: XCTestCase {
         ]
         for (point, kill) in points {
             setUpLog()
-            hub.state = .init(hubID: "hub-acme", swiftState: "present",
-                              pending: [.init(uploadID: "u-1", audioName: "rec_1.m4a")])
+            present(pending: true)
             try keys.seed(hubID: "hub-acme")
             kill(hub, keys)
             let first = await makeDriver().run()
@@ -367,12 +545,12 @@ final class HubAdoptionDriverTests: XCTestCase {
             XCTAssertEqual(hub.applied.filter { $0 == "--settings-stdin" }.count, 1, "one state adoption: \(point)")
             XCTAssertEqual(hub.applied.filter { $0 == "--keys-stdin" }.count, 1, "one hand-over: \(point)")
             XCTAssertFalse(keys.has("hub-acme"), point)
+            XCTAssertEqual(keys.creations, 0, point)
         }
     }
 
     func testCancelRepeatsAfterAnInterruption() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present",
-                          pending: [.init(uploadID: "u-1", audioName: "rec_1.m4a")])
+        present(pending: true)
         try keys.seed(hubID: "hub-acme")
         hub.killBefore = ["--settings-stdin"] // the app dies after the cancel, before hub adopt ran
         _ = await makeDriver().run()
@@ -388,8 +566,7 @@ final class HubAdoptionDriverTests: XCTestCase {
     }
 
     func testInFlightTranscriptionIsCancelledBeforeAdopt() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present",
-                          pending: [.init(uploadID: "u-1", audioName: "rec_1.m4a")])
+        present(pending: true)
         try keys.seed(hubID: "hub-acme")
         var running = true
         let driver = makeDriver { [log] _ in
@@ -405,7 +582,7 @@ final class HubAdoptionDriverTests: XCTestCase {
     }
 
     func testAJoinedRunIsNeverDoubled() async throws {
-        hub.state = .init(hubID: "hub-acme", swiftState: "present")
+        present()
         try keys.seed(hubID: "hub-acme")
         let driver = makeDriver()
         async let one = driver.run()
@@ -413,72 +590,6 @@ final class HubAdoptionDriverTests: XCTestCase {
         let results = await [one, two]
         XCTAssertEqual(results, [.done, .done])
         XCTAssertEqual(hub.applied.filter { $0 == "--settings-stdin" }.count, 1)
-    }
-
-    // MARK: - AppState
-
-    /// The live stop seam: the Swift hub an older launch left running stops,
-    /// its storage closes, and nothing builds it again in this run.
-    func testStopSwiftHubForAdoptionClosesTheStorageAndNeverRebuilds() async throws {
-        let suite = "WatchtowerDesktopTests.hubAdoption"
-        UserDefaults.standard.removePersistentDomain(forName: suite)
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        let sidecar = try HubSyncState.inMemoryPerHub()
-        let appState = AppState { [:] }
-        appState.mobileSyncDefaults = defaults
-        var closed = 0
-        appState.makeMobileHubStorage = {
-            var storage = try MobileHubStorage.stub(transport: StubHubTransport(), sidecar: sidecar)
-            storage.close = { closed += 1 }
-            return storage
-        }
-        appState.initMobileHub(dbPool: pool)
-        let hub = try XCTUnwrap(appState.mobileHub)
-        await awaitHubCondition("the Swift hub runs") { hub.status == .running }
-
-        await appState.stopSwiftHubForAdoption()
-
-        XCTAssertEqual(hub.status, .off)
-        XCTAssertEqual(closed, 1, "its storage is closed before the stop returns")
-        XCTAssertNil(appState.mobileHub)
-        XCTAssertTrue(appState.swiftHubRetired)
-        appState.setMobileSyncEnabled(true)
-        appState.initMobileHub(dbPool: pool)
-        XCTAssertNil(appState.mobileHub, "never two hubs: nothing builds the Swift hub again")
-    }
-
-    /// `isMobileSyncEnabled` reads `hub status --json` (through HubCenter):
-    /// off for no reason or switched off is off; off for another reason is
-    /// still the owner's on.
-    func testMobileSyncEnabledReadsTheHubStatus() {
-        let table: [(WatchtowerCore.HubStatus, Bool)] = [
-            (.init(state: "running"), true),
-            (.init(state: "starting"), true),
-            (.init(state: "paused", reason: "needs_relay"), true),
-            (.init(state: "off", reason: "locked"), true),
-            (.init(state: "off"), false),
-            (.init(state: "off", reason: "disabled"), false),
-            (.init(state: "off", reason: "policy_off"), false)
-        ]
-        for (status, on) in table {
-            XCTAssertEqual(AppState.hubIsOn(status), on, "\(status)")
-        }
-    }
-
-    func testSettingsAreTheStoredToggleReadOnce() throws {
-        let suite = "WatchtowerDesktopTests.hubAdoptionSettings"
-        UserDefaults.standard.removePersistentDomain(forName: suite)
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        let appState = AppState { [:] }
-        appState.mobileSyncDefaults = defaults
-        XCTAssertEqual(appState.hubAdoptSettings(), HubAdoptSettings(enabled: false, startSessionAllows: [:]))
-        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
-        XCTAssertEqual(appState.hubAdoptSettings(), HubAdoptSettings(enabled: true, startSessionAllows: [:]))
     }
 
     // MARK: - Helpers
@@ -491,8 +602,9 @@ final class HubAdoptionDriverTests: XCTestCase {
         hub.confirmError = nil
         hub.garbleStatus = false
         hub.applied = []
+        hub.exitOne = []
         (hub.killAfter, hub.killBefore, keys.killAfter) = ([], [], [])
-        (keys.readError, keys.deleteError) = (false, false)
+        (keys.readError, keys.deleteError, keys.partial) = (false, false, false)
     }
 
     static func sourceFile(_ relative: String) -> URL {
@@ -500,136 +612,5 @@ final class HubAdoptionDriverTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent(relative)
-    }
-}
-
-// MARK: - Fakes
-
-/// The order of everything the driver did, across its seams.
-final class AdoptionLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String] = []
-    func append(_ event: String) { lock.withLock { storage.append(event) } }
-    func reset() { lock.withLock { storage = [] } }
-    var events: [String] { lock.withLock { storage } }
-}
-
-/// The app was killed at this point: what ran before it stays done.
-struct FakeKill: Error {}
-
-/// A Go hub behind `watchtower hub adopt`: answers each verb from its state,
-/// as cmd/hub_adopt.go does (JSON on stdout even on a refusal, exit 1).
-final class FakeAdoptHub: HubAdoptRunning, @unchecked Sendable {
-    struct State {
-        var step = ""
-        var hubID = ""
-        var identity = "none"
-        var swiftState = "absent"
-        var pending: [HubAdoptStatus.PendingRecording] = []
-    }
-
-    struct Call {
-        let args: [String]
-        let stdin: Data
-    }
-
-    private let lock = NSLock()
-    private let log: AdoptionLog
-    var state = State()
-    var calls: [Call] = []
-    /// Verbs whose change was applied (not just called).
-    var applied: [String] = []
-    var adoptError: String?
-    var keysError: String?
-    var confirmError: String?
-    var garbleStatus = false
-    /// Verbs after whose change the app dies (the runner throws).
-    var killAfter: Set<String> = []
-    /// Verbs the app dies before starting.
-    var killBefore: Set<String> = []
-    var onAdopt: (@MainActor () -> Void)?
-
-    init(log: AdoptionLog) { self.log = log }
-
-    func run(_ args: [String], stdin: Data) async throws -> HubAdoptOutput {
-        let verb = args.first { $0.hasPrefix("--") && $0 != "--json" } ?? ""
-        if killBefore.contains(verb) { throw FakeKill() }
-        if verb == "--settings-stdin", let onAdopt { await onAdopt() }
-        lock.withLock { calls.append(Call(args: args, stdin: stdin)) }
-        log.append("cli:\(verb)")
-        let (object, code) = answer(verb)
-        if killAfter.contains(verb) { throw FakeKill() }
-        let data = garbleStatus && verb == "--status" ? Data("not json".utf8)
-            : try JSONSerialization.data(withJSONObject: object)
-        return HubAdoptOutput(stdout: data, exitCode: code)
-    }
-
-    private func answer(_ verb: String) -> ([String: Any], Int32) {
-        switch verb {
-        case "--status":
-            return ([
-                "step": state.step, "imported": ["devices": 0, "jobs": 0, "skipped": 0, "audio_left": 0],
-                "error": "", "hub_id": state.hubID, "identity": state.identity, "swift_state": state.swiftState,
-                "pending_recordings": state.pending.map { ["upload_id": $0.uploadID, "audio_name": $0.audioName] }
-            ], 0)
-        case "--settings-stdin":
-            if let adoptError { return (["step": "verify", "error": adoptError], 1) }
-            if state.step == "done" { return (["step": "done", "error": "already_adopted"], 1) }
-            (state.step, state.swiftState, state.pending) = ("done", "absent", [])
-            applied.append(verb)
-            return (["step": "done", "error": ""], 0)
-        case "--keys-stdin":
-            if let keysError { return (["identity": keysError], 1) }
-            guard state.step == "done" else { return (["identity": "adoption_unfinished"], 1) }
-            if state.identity != "adopted", state.identity != "confirmed" { applied.append(verb) }
-            if state.identity != "confirmed" { state.identity = "adopted" }
-            return (["identity": "adopted"], 0)
-        case "--confirm-deleted":
-            if let confirmError { return (["identity": confirmError], 1) }
-            guard state.identity == "adopted" || state.identity == "confirmed" else { return (["identity": "not_adopted"], 1) }
-            state.identity = "confirmed"
-            return (["identity": "confirmed"], 0)
-        default:
-            return (["error": "usage"], 1)
-        }
-    }
-}
-
-/// The Kit key store over an in-memory keychain, with its calls logged.
-final class FakeHubKeyStore: HubKeyStore, @unchecked Sendable {
-    private let inner = InMemoryHubKeyStore()
-    private let log: AdoptionLog
-    private let lock = NSLock()
-    private var present: Set<String> = []
-    var readError = false
-    var deleteError = false
-    var killAfter: Set<String> = []
-
-    init(log: AdoptionLog) { self.log = log }
-
-    @discardableResult
-    func seed(hubID: String) throws -> HubIdentityKeys {
-        let keys = try inner.hubIdentity(hubID: hubID).keys
-        lock.withLock { _ = present.insert(hubID) }
-        return keys
-    }
-
-    func has(_ hubID: String) -> Bool { lock.withLock { present.contains(hubID) } }
-
-    func hubIdentity(hubID: String) throws -> (keys: HubIdentityKeys, created: Bool) {
-        log.append("keychain:get:\(hubID)")
-        if readError { throw KeyStoreError.locked }
-        let loaded = try inner.hubIdentity(hubID: hubID)
-        lock.withLock { _ = present.insert(hubID) }
-        if killAfter.contains("keychain:get") { throw FakeKill() }
-        return loaded
-    }
-
-    func deleteHubIdentity(hubID: String) throws {
-        log.append("keychain:delete:\(hubID)")
-        if deleteError { throw KeyStoreError.locked }
-        try inner.deleteHubIdentity(hubID: hubID)
-        lock.withLock { _ = present.remove(hubID) }
-        if killAfter.contains("keychain:delete") { throw FakeKill() }
     }
 }

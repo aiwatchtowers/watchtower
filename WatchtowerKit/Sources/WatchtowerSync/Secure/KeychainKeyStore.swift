@@ -178,6 +178,10 @@ public final class KeychainHubKeyStore: HubKeyStore, @unchecked Sendable {
         }
     }
 
+    public func existingHubIdentity(hubID: String) throws -> HubIdentityKeys? {
+        try lock.withLock { try load(hubID) }
+    }
+
     /// nil when no item exists; all three must parse, otherwise `.corrupt`.
     private func load(_ hubID: String) throws -> HubIdentityKeys? {
         let sig = try backend.read(account: "hubid.\(hubID).sig", group: nil)

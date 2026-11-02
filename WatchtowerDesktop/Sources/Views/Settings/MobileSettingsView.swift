@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WatchtowerCore
 import WatchtowerSync
 
 /// Settings → Mobile tab: builds the model over `AppState` once, on first
@@ -10,8 +11,9 @@ struct MobileSettingsTab: View {
 
     var body: some View {
         Group {
-            if let handOver = appState.hubAdoption?.state, handOver.isShown {
-                MobileHandOverView(state: handOver) { appState.retryHubAdoption() }
+            if let handOver = Self.handOver(appState.hubAdoption?.state) {
+                MobileHandOverView(state: handOver, onRetry: appState.retryHubAdoption,
+                                   onSetUpAgain: appState.setUpMobileAgain)
                     .padding(.horizontal)
             } else if let model {
                 MobileSettingsView(model: model)
@@ -22,6 +24,13 @@ struct MobileSettingsTab: View {
         .onAppear {
             if model == nil { model = MobileSettingsViewModel(host: appState) }
         }
+    }
+
+    /// The hand-over's state when it takes the tab's place (checking, in
+    /// progress, failed); nil shows the tab's own rows.
+    static func handOver(_ state: HubAdoptionState?) -> HubAdoptionState? {
+        guard let state, state.isShown else { return nil }
+        return state
     }
 }
 

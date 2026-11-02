@@ -79,7 +79,7 @@ struct MobileHubStorage {
     /// Closes the storage's database files (`transport.db` and the sidecar),
     /// so the Go hub's adoption finds no open handle (go hub plan 3
     /// Task 22); a stub storage has nothing to close.
-    var close: () -> Void = {}
+    var close: () throws -> Void = {}
 
     /// A stub storage (tests): no CloudKit, and a hub identity in an in-memory keychain.
     static func stub(transport: any HubTransport, sidecar: HubSyncState) throws -> Self {
@@ -139,8 +139,8 @@ struct MobileHubStorage {
             secure: keyring.map { sealing(transport, keyring: $0, sidecar: sidecar) }
         )
         storage.close = {
-            try? store.close()
-            try? sidecar.queue.close()
+            try store.close()
+            try sidecar.queue.close()
         }
         return storage
     }

@@ -14,6 +14,7 @@ final class FakeMobileSettingsHost: MobileSettingsHost {
     var mobileHubInitError: String?
     var isMobileKeepAwakeEnabled = true
     var isMobileHubMoved = false
+    var mobileToggleRetired = false
     private(set) var setCalls: [Bool] = []
 
     init(enabled: Bool) {
