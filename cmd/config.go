@@ -212,6 +212,14 @@ var knownConfigKeys = map[string]bool{
 	"ai.models.light":                      true,
 	"ai.models.strong":                     true,
 	"ai.provider":                          true,
+	"ai.fallback.enabled":                  true,
+	"ai.fallback.provider":                 true,
+	"ai.providers.claude.models.light":     true,
+	"ai.providers.claude.models.strong":    true,
+	"ai.providers.codex.models.light":      true,
+	"ai.providers.codex.models.strong":     true,
+	"ai.providers.ollama.models.light":     true,
+	"ai.providers.ollama.models.strong":    true,
 	"ai.ollama_url":                        true,
 	"ai.context_budget":                    true,
 	"ai.claude_ai.connectors":              true,
@@ -338,7 +346,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := setConfigKey(configPath, key, typedValue); err != nil {
+	if err := setAIConfigKey(configPath, key, typedValue); err != nil {
 		return err
 	}
 
@@ -390,6 +398,7 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "active_workspace: %s\n", cfg.ActiveWorkspace)
 	fmt.Fprintf(out, "ai.provider: %s\n", cfg.AI.Provider)
+	fmt.Fprintf(out, "ai.routing_revision: %s\n", providers.RoutingRevision(cfg))
 	fmt.Fprintf(out, "ai.model: %s\n", cfg.AI.Model)
 	fmt.Fprintf(out, "ai.models.light: %s\n", cfg.AI.Models.Light)
 	fmt.Fprintf(out, "ai.models.strong: %s\n", cfg.AI.Models.Strong)
@@ -450,4 +459,65 @@ func writeConfigAtomic(v *viper.Viper, configPath string) error {
 		return fmt.Errorf("renaming config file: %w", err)
 	}
 	return nil
+}
+
+// setAIConfigKey stages migration and validation before the atomic replacement.
+func setAIConfigKey(path, key string, value any) error {
+	if !strings.HasPrefix(strings.ToLower(key), "ai.") {
+		return setConfigKey(path, key, value)
+	}
+	v := viper.New()
+	v.SetConfigFile(path)
+	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := providers.MigrateModelBuckets(v); err != nil {
+		return err
+	}
+	if strings.ToLower(key) == "ai.fallback.enabled" {
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("ai.fallback.enabled must be true or false; nothing was written")
+		}
+	}
+	if strings.ToLower(key) == "ai.provider" {
+		next, ok := value.(string)
+		if !ok || !config.KnownAIProvider(next) {
+			return fmt.Errorf("unknown AI provider %q", value)
+		}
+		if _, exists := v.GetStringMap("ai.providers")[next]; !exists {
+			v.Set("ai.providers."+next+".models.light", "")
+			v.Set("ai.providers."+next+".models.strong", "")
+		}
+	}
+	v.Set(key, value)
+	// Legacy model setters still edit the configured provider's current bucket.
+	id := v.GetString("ai.provider")
+	if id == "" {
+		id = config.DefaultAIProvider
+	}
+	switch strings.ToLower(key) {
+	case "ai.models.light":
+		v.Set("ai.providers."+id+".models.light", value)
+	case "ai.models.strong", "ai.model":
+		v.Set("ai.providers."+id+".models.strong", value)
+	}
+	var cfg config.Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return err
+	}
+	if err := cfg.AI.Validate(); err != nil {
+		return err
+	}
+	if err := providers.Allowed(id); err != nil {
+		return err
+	}
+	if cfg.AI.Fallback.Enabled {
+		if err := providers.Allowed(cfg.AI.Fallback.Provider); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeConfigAtomic(v, path)
 }

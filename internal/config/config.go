@@ -29,13 +29,24 @@ type AIModels struct {
 	Strong string `mapstructure:"strong"`
 }
 
+type AIProviderConfig struct {
+	Models AIModels `mapstructure:"models"`
+}
+
+type AIFallbackConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Provider string `mapstructure:"provider"`
+}
+
 type AIConfig struct {
 	// Model is the legacy single-model key. When Models.Strong is unset it is
 	// read as the strong-tier override, except when it equals the retired
 	// DefaultAIModel constant (setup used to seed that literal into config.yaml,
 	// so it means "never chose a model", not a pin).
-	Model  string   `mapstructure:"model"`
-	Models AIModels `mapstructure:"models"`
+	Model     string                      `mapstructure:"model"`
+	Models    AIModels                    `mapstructure:"models"`
+	Providers map[string]AIProviderConfig `mapstructure:"providers"`
+	Fallback  AIFallbackConfig            `mapstructure:"fallback"`
 	// ConfiguredProvider is the provider as read from config.yaml, captured at
 	// Load time and NEVER mutated by the --provider flag (which rewrites
 	// Provider via applyProviderOverride). Model resolution keys off this
@@ -604,6 +615,10 @@ func Load(configPath string) (*Config, error) {
 	}
 	// Snapshot the yaml provider before any --provider flag mutation.
 	cfg.AI.ConfiguredProvider = cfg.AI.Provider
+	cfg.AI.PreserveEmptyModelBuckets(v.GetStringMap("ai.providers"))
+	if err := cfg.AI.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Backward compat: migrate digest.workers → ai.workers.
 	// If user has digest.workers in config but hasn't set ai.workers explicitly,
