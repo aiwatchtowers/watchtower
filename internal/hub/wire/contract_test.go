@@ -34,6 +34,7 @@ type fixture struct {
 	Heartbeat         []contractCase `json:"heartbeat"`
 	UploadEcho        []contractCase `json:"upload_echo"`
 	TransportSwitched []contractCase `json:"transport_switched"`
+	SwitchRejected    []contractCase `json:"transport_switch_rejected"`
 }
 
 // contractCase is a {name, json, expect, kit} case: json decoded and
@@ -272,6 +273,34 @@ func TestHubContractFixture_TransportSwitched(t *testing.T) {
 	out, err := wire.Marshal(switched.Marker())
 	require.NoError(t, err)
 	require.Equal(t, compact(t, byName["transport_marker"].Expect), string(out), "the marker is the control minus keybox and device_id")
+}
+
+// TestHubContractFixture_SwitchRejected pins every
+// transport_switch_rejected reason the hub writes and its retry_after_s.
+func TestHubContractFixture_SwitchRejected(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	var reasons []string
+	for _, c := range f.SwitchRejected {
+		t.Run(c.Name, func(t *testing.T) {
+			var ctl wire.Control
+			require.NoError(t, json.Unmarshal(c.JSON, &ctl))
+			out, err := wire.Marshal(ctl)
+			require.NoError(t, err)
+			require.Equal(t, compact(t, c.Expect), string(out))
+			require.Equal(t, wire.ControlSwitchRejected, ctl.Kind)
+			require.Equal(t, c.Kit["reason"], *ctl.Reason)
+			if c.Kit["retry_after_s"] == nil {
+				require.Nil(t, ctl.RetryAfterS)
+			} else {
+				require.InDelta(t, c.Kit["retry_after_s"], float64(*ctl.RetryAfterS), 0)
+			}
+		})
+		reasons = append(reasons, c.Kit["reason"].(string))
+	}
+	require.ElementsMatch(t, []string{wire.SwitchTooSoon, wire.SwitchNotPaying, wire.SwitchUnavailable, wire.SwitchNotSupported}, reasons)
 }
 
 func linkURL(t *testing.T, js string) string {

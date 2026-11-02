@@ -713,5 +713,95 @@
         "keybox": null
       }
     }
+  ],
+  "transport_switch_rejected": [
+    {
+      "name": "too_soon",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000007",
+        "kind": "transport_switch_rejected",
+        "reason": "too_soon",
+        "retry_after_s": 240
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000007",
+        "kind": "transport_switch_rejected",
+        "reason": "too_soon",
+        "retry_after_s": 240
+      },
+      "kit": {
+        "reason": "too_soon",
+        "retry_after_s": 240
+      }
+    },
+    {
+      "name": "not_paying",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000008",
+        "kind": "transport_switch_rejected",
+        "reason": "not_paying"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000008",
+        "kind": "transport_switch_rejected",
+        "reason": "not_paying"
+      },
+      "kit": {
+        "reason": "not_paying",
+        "retry_after_s": null
+      }
+    },
+    {
+      "name": "unavailable",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000009",
+        "kind": "transport_switch_rejected",
+        "reason": "unavailable",
+        "retry_after_s": 60
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000009",
+        "kind": "transport_switch_rejected",
+        "reason": "unavailable",
+        "retry_after_s": 60
+      },
+      "kit": {
+        "reason": "unavailable",
+        "retry_after_s": 60
+      }
+    },
+    {
+      "name": "not_supported",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-00000000000A",
+        "kind": "transport_switch_rejected",
+        "reason": "not supported yet"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-00000000000A",
+        "kind": "transport_switch_rejected",
+        "reason": "not supported yet"
+      },
+      "kit": {
+        "reason": "not supported yet",
+        "retry_after_s": null
+      }
+    }
   ]
 }
