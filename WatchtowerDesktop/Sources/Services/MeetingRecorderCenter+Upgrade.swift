@@ -115,4 +115,25 @@ extension MeetingRecorderCenter {
         }
         return byName.keys.sorted { recoverySortKey($0) < recoverySortKey($1) }.compactMap { byName[$0] }
     }
+
+    /// Cancels and forgets Desktop's own processing of these phone recordings
+    /// (audio file names) before the Go hub adopts them (go hub plan 3
+    /// Task 22): a queued job is withdrawn, a running one cancelled, both
+    /// awaited until their tasks end; a failed job and a recovered entry are
+    /// dropped; the `pending_transcripts` rows are removed. None of them is
+    /// resumed, completed or offered again this run. Idempotent: a second
+    /// call finds nothing left to stop.
+    func cancelPhoneRecordingJobs(audioNames: [String]) async {
+        let names = Set(audioNames.map { ($0 as NSString).lastPathComponent }.filter { !$0.isEmpty })
+        guard !names.isEmpty else { return }
+        for task in withdrawPhoneRecordingJobs(names) { await task.value }
+        guard let store = pendingStore else { return }
+        for name in names.sorted() {
+            do {
+                try await store.remove(recording: name)
+            } catch {
+                print("[MeetingRecorder] could not remove a cancelled phone recording's row: \(error.localizedDescription)")
+            }
+        }
+    }
 }

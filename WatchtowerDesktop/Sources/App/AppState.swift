@@ -437,6 +437,9 @@ final class AppState {
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored var mobileHubStorage: MobileHubStorage?
     @ObservationIgnored var mobileHubPool: DatabasePool?
+    var hubAdoption: HubAdoptionDriver? // Mobile's hand-over to the Go hub (`startHubAdoption`)
+    /// The Swift hub never starts (never two hubs); false under XCTest only, until go hub plan 3 Task 24.
+    @ObservationIgnored var swiftHubRetired = !AppState.runsUnderXCTest
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
@@ -1876,7 +1879,7 @@ final class AppState {
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
         Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
-        initMobileHub(dbPool: dbPool)
+        startMobile(dbPool: dbPool) // after the restart step, which the hand-over awaits
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {
             automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)

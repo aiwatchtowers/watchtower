@@ -388,6 +388,27 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "workspaceSwitcherWaitLine-narrow", size: NSSize(width: 220, height: 190)) {
                 HostRestartShotFixtures.waitLines()
+            },
+            DesignShot(name: "mobileAdoptionLoading", size: NSSize(width: 640, height: 130)) {
+                HubAdoptionShotFixtures.screen(.checking)
+            },
+            DesignShot(name: "mobileAdoptionLoading-narrow", size: NSSize(width: 320, height: 130)) {
+                HubAdoptionShotFixtures.screen(.checking)
+            },
+            DesignShot(name: "mobileHandOverInProgress", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.inProgress(step: "rename"))
+            },
+            DesignShot(name: "mobileHandOverInProgress-narrow", size: NSSize(width: 320, height: 150)) {
+                HubAdoptionShotFixtures.screen(.inProgress(step: "rename"))
+            },
+            DesignShot(name: "mobileAdoptionFailed", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
+            },
+            DesignShot(name: "mobileAdoptionFailed-noKeys", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "no_keys"))
+            },
+            DesignShot(name: "mobileAdoptionFailed-narrow", size: NSSize(width: 320, height: 200)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.

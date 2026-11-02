@@ -10,7 +10,10 @@ struct MobileSettingsTab: View {
 
     var body: some View {
         Group {
-            if let model {
+            if let handOver = appState.hubAdoption?.state, handOver.isShown {
+                MobileHandOverView(state: handOver) { appState.retryHubAdoption() }
+                    .padding(.horizontal)
+            } else if let model {
                 MobileSettingsView(model: model)
             } else {
                 Color.clear

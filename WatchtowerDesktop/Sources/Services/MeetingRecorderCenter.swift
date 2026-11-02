@@ -441,6 +441,13 @@ final class MeetingRecorderCenter {
     /// The indicator labels them "Waiting for the recording to stop" rather
     /// than a bare "Queued" that reads as stuck.
     private(set) var jobsWaitingForCapture: Set<ProcessingJob.ID> = []
+    /// Each job's current task and the run owning the entry (a retry replaces it), for the phone cancel.
+    @ObservationIgnored private var jobRuns: [ProcessingJob.ID: (run: UUID, task: Task<Void, Never>)] = [:]
+    /// Queued jobs withdrawn by the phone cancel: their task leaves `awaitTurn` without the turn.
+    @ObservationIgnored private var withdrawnJobIDs: Set<ProcessingJob.ID> = []
+    /// Phone recordings (audio file names) the Go hub's adoption took over
+    /// this run (go hub plan 3 Task 22): never queued, offered or saved again.
+    private(set) var cancelledPhoneAudioNames: Set<String> = []
 
     // MARK: - Warm engine slot
 
@@ -1439,6 +1446,7 @@ final class MeetingRecorderCenter {
     }
 
     private func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {
+        guard !cancelledPhoneAudioNames.contains(entry.audioURL.lastPathComponent) else { return }
         recoverable.removeAll { $0.audioURL == entry.audioURL }
         if atHead {
             recoverable.insert(entry, at: 0)
@@ -1483,20 +1491,27 @@ final class MeetingRecorderCenter {
         queuedJobIDs.append(jobID)
         plannedInputs[jobID] = nil // a retry's earlier run may have kept a transcript
         refreshJobsWaitingForCapture()
-        return Task { @MainActor [weak self] in
+        let run = UUID()
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            let input = await self.awaitTurn(for: jobID)
-            await self.runJob(jobID: jobID, input: input, config: config)
+            defer { if self.jobRuns[jobID]?.run == run { self.jobRuns[jobID] = nil } }
+            let turn = await self.awaitTurn(for: jobID)
+            guard turn.claimed else { return } // withdrawn while queued: never took the turn
+            await self.runJob(jobID: jobID, input: turn.input, config: config)
         }
+        jobRuns[jobID] = (run, task)
+        return task
     }
 
     /// Parks until this job is the one `nextStartableJob` picks while no job is
     /// active, then claims the turn — and the engine slot when its input needs
     /// it. Claiming happens in the same main-actor step as the final check, so
     /// a `startRecording` racing this cannot also load a live engine. Returns
-    /// nil for a job dismissed while queued (it then ends at once).
-    private func awaitTurn(for jobID: ProcessingJob.ID) async -> JobInput? {
+    /// nil for a job dismissed while queued (it then ends at once); not
+    /// `claimed` for a job withdrawn while queued, which never takes the turn.
+    private func awaitTurn(for jobID: ProcessingJob.ID) async -> (claimed: Bool, input: JobInput?) {
         while true {
+            if withdrawnJobIDs.remove(jobID) != nil { return (false, nil) }
             if activeJobID == nil, let next = nextStartableJob(), next.id == jobID {
                 queuedJobIDs.removeAll { $0 == jobID }
                 plannedInputs[jobID] = nil
@@ -1504,7 +1519,7 @@ final class MeetingRecorderCenter {
                 if next.input?.needsEngine == true { engineJobID = jobID }
                 refreshJobsWaitingForCapture()
                 onJobTurnStartedForTesting?()
-                return next.input
+                return (true, next.input)
             }
             await withCheckedContinuation { queueWaiters.append($0) }
         }
@@ -1518,9 +1533,9 @@ final class MeetingRecorderCenter {
         let engineSlotFree = !isCapturing && liveTask == nil
         for id in queuedJobIDs where !jobsAwaitingLiveTail.contains(id) {
             // A queued job no longer in `jobs` starts at once with no input
-            // and ends (`runJob`). Nothing removes a queued job today; a
-            // future removal must wake the queue (`wakeQueueWaiters`) so its
-            // task gets here instead of waiting for an unrelated wake.
+            // and ends (`runJob`). `cancelPhoneRecordingJobs` takes its jobs
+            // out of the queue itself and wakes it (`wakeQueueWaiters`); any
+            // other removal must wake it too.
             guard let job = job(id) else { return (id, nil) }
             let input = plannedInput(for: job)
             if engineSlotFree || !input.needsEngine { return (id, input) }
@@ -1729,6 +1744,7 @@ final class MeetingRecorderCenter {
         }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
                                          samples: samples, config: config, eventID: job.eventID)
+        guard self.job(jobID) != nil else { return } // cancelled while its roles rendered
         // Keep the (role-tagged) transcript in the recording's row so a failed
         // save is retried from it instead of paying for a full
         // re-transcription — or a re-diarization (spec §7).
@@ -1857,10 +1873,15 @@ final class MeetingRecorderCenter {
                 return .failure(error)
             }
         }
-        for await (done, total) in stream {
-            updateJob(jobID) { $0.phase = .transcribing(done: done, total: total) }
+        // A cancelled job (`cancelPhoneRecordingJobs`) stops its transcription too.
+        return try await withTaskCancellationHandler {
+            for await (done, total) in stream {
+                updateJob(jobID) { $0.phase = .transcribing(done: done, total: total) }
+            }
+            return try await task.value.get()
+        } onCancel: {
+            task.cancel()
         }
-        return try await task.value.get()
     }
 
     // MARK: - Helpers
@@ -1903,6 +1924,7 @@ final class MeetingRecorderCenter {
     /// dropped: a failed job can sit here indefinitely, and its retry loads a
     /// fresh one anyway.
     private func failJob(_ id: ProcessingJob.ID, _ message: String) {
+        guard job(id) != nil else { return } // cancelled (`cancelPhoneRecordingJobs`): no notice
         updateJob(id) {
             $0.phase = .failed(message)
             $0.engine = nil
@@ -2033,45 +2055,37 @@ final class MeetingRecorderCenter {
         return base.appendingPathComponent("Watchtower/recordings", isDirectory: true)
     }
 
-    // MARK: - Phone recording ingest (mobile hub)
+    // MARK: - Phone recordings (mobile hub)
 
-    /// Ingests a recording made on the phone (AAC `.m4a`, mic only) and
-    /// enqueues it for transcription straight away — a phone recording is
-    /// transcribed automatically, so it never passes through the opt-in
-    /// `recoverable` list. The job queues behind whatever runs and, like any
-    /// job, never claims the engine while the Mac is capturing (the
-    /// single-engine invariant). `eventID` links the transcript and scopes
-    /// voice matching to the event's attendees.
-    ///
-    /// The name is reserved on the main actor, the same actor `startRecording`
-    /// picks and reserves its `.caf` name on without suspending, so ingests and
-    /// a Desktop capture of the same second never share a stem (the exclusive
-    /// create also guards writers off this actor); only the copy runs off it.
-    /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`
-    /// report under — without awaiting the job. Throws when the source is not
-    /// an audio recording (`PhoneIngestError.notAudio`) or cannot be read
-    /// (`PhoneIngestError.unreadable`), or the reservation or the
-    /// copy fails (nothing is enqueued and nothing is left behind).
-    @discardableResult
-    func ingestPhoneRecording(
-        audioURL sourceURL: URL,
-        eventID: String?,
-        title: String?,
-        config: TranscriptionConfig
-    ) async throws -> URL {
-        let isAudio = try await Task.detached { try await Self.isAudioRecording(sourceURL) }.value
-        guard isAudio else { throw PhoneIngestError.notAudio }
-        guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
-        let isPrivate = config.privateByDefault // no per-recording choice on the phone
-        let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate,
-                                                            in: recordingsDirectory, store: store, date: clock())
-        try await Task.detached {
-            try await Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)
-        }.value
+    /// Enqueues an ingested phone recording (`ingestPhoneRecording`).
+    func enqueuePhoneJob(audioURL: URL, eventID: String?, title: String?, isPrivate: Bool, config: TranscriptionConfig) {
         let job = ProcessingJob(audioURL: audioURL, eventID: eventID, title: title, isPrivate: isPrivate)
         jobs.append(job)
         _ = startJobTask(jobID: job.id, config: config)
-        return audioURL
+    }
+
+    /// The synchronous half of `cancelPhoneRecordingJobs` (+Upgrade): marks
+    /// the names cancelled for this run, takes their queued jobs out of the
+    /// queue (their tasks never take the turn), cancels the running one,
+    /// drops them and their recovered entries, and returns the tasks to await.
+    func withdrawPhoneRecordingJobs(_ names: Set<String>) -> [Task<Void, Never>] {
+        cancelledPhoneAudioNames.formUnion(names)
+        var tasks: [Task<Void, Never>] = []
+        for job in jobs where names.contains(job.audioURL.lastPathComponent) {
+            if queuedJobIDs.contains(job.id) {
+                withdrawnJobIDs.insert(job.id)
+                queuedJobIDs.removeAll { $0 == job.id }
+                plannedInputs[job.id] = nil
+            }
+            if let task = jobRuns[job.id]?.task {
+                task.cancel()
+                tasks.append(task)
+            }
+        }
+        jobs.removeAll { names.contains($0.audioURL.lastPathComponent) }
+        recoverable.removeAll { names.contains($0.audioURL.lastPathComponent) }
+        wakeQueueWaiters()
+        return tasks
     }
 }
 
