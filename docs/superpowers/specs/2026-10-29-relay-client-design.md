@@ -65,7 +65,7 @@ The seam gains surface only through **optional** protocols, the way `CompactingT
   - The DeviceCheck calls sit behind a Kit protocol with a fake in tests; the client's failure paths carry the test names of the relay's `sim/README.md` "Attestation scenarios for the Swift client". The key id lives in the Keychain next to `relay_auth` (same accessibility, never synced). The app target gets the `com.apple.developer.devicecheck.appattest-environment` entitlement (development for Debug, production for TestFlight and the App Store), matching the relay's environment check.
   - Macs do not attest (§8, hub vouching, asks #800/#801). The relay at `3a99bd7` still asks a Mac for App Attest and has no `vouch_hub` yet (relay ask #805), so until then a hub runs on the local stand only.
 - The Mac stores its `relay_device_id` in `hub_meta`; the phone stores `hub_id → mac relay_device_id` in its hub registry row. A Mac reinstall yields a new `relay_device_id`: the phone treats the hub as a new one (sim "Watchtower hub_id vs. the relay's ids").
-- The server origin is a build setting (`WATCHTOWER_RELAY_ORIGIN`, default the production origin; Debug builds may point to a local stand, §11).
+- The server origin is a build setting (`WATCHTOWER_RELAY_ORIGIN`; the default is empty until §12 p. 5 names the production origin, so a build without one is "not configured" and ships dark; Debug builds may point to a local stand, §11).
 
 ## 5. Actions: one order, one outbox, both transports
 
@@ -126,7 +126,7 @@ Recon on #1238: the ~14 s median comes mostly from actions whose effect is never
 Implemented exactly as sim rules 8–16 (they change only together, relay spec §9 p. 2):
 
 - The switch lives on the phone (Settings → Macs → transport per Mac, paying phones only) and is accepted by the hub with the 5-minute anti-flap rule toward the relay. The hub writes the transport marker record (R30) in its data zone.
-- Every switch starts a new epoch (`HubKeyring.rotate(reason: .transportSwitch)`) after the old transport's mailboxes are drained if reachable; the new keybox travels inside `transport_switched` in each phone's mailbox, not in the data zone. Old-epoch receiving keys are kept per sim rule 14 (≤ 14 days), which needs `HubKeyring.latestEpochs` and the phone's `HubLinkKeys.maxEpochs` to hold more than two epochs, and an `epoch_ack` per phone.
+- Every switch starts a new epoch (`HubKeyring.rotate(reason: .transportSwitch)`) after the old transport's mailboxes are drained if reachable; the new keybox travels inside `transport_switched` in each phone's mailbox, not in the data zone. Old-epoch receiving keys are kept per sim rule 14 for 7 days after a newer epoch arrived (ask #843; at most 8 epochs), which needs `HubKeyring.latestEpochs` and the phone's `HubLinkKeys.maxEpochs` to hold more than two epochs, and an `epoch_ack` per phone.
 - While on the hosted relay the hub keeps CloudKit zones and shares in place and polls its phones' CloudKit mailboxes every 30 s for control records (relay spec §4.1); a phone whose relay is unreachable > 60 s polls its CloudKit mailbox too. "Relay unavailable" shows after 60 s; after 10 min the phone offers **Switch to iCloud**.
 - **Subscription** (phone): StoreKit 2, auto-renewable, `appAccountToken = account_id`, Family Sharing off; the signed transaction goes to `submit_transaction`; restore = move (relay spec §3.2 p. 4); `SUBSCRIPTION_MOVED` → the old phone says so and returns to CloudKit. `ENTITLEMENT_EXPIRED` / `ENTITLEMENT_INACTIVE` → sim rule 16, including the lapsed phone's undelivered list (R32) and the Mac acting on the control's `detail` (R31).
 
@@ -149,7 +149,7 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 1. ~~`relay.proto` v1 frozen in the relay's `main`~~ — done: the proto landed in `main` with PR #2 (merge commit `3a99bd7`, which also brings the Cloudflare server and App Attest); the freeze PR #1 was closed. `buf breaking` runs against main. The contract texts are `proto/README.md` and `sim/README.md` at that commit; the Kit's `VERSION` pins `3a99bd7`, the same commit as the Go hub's copy (`internal/hub/transport/relay/VERSION`).
 2. ~~A local stand and a dev-only entitlement grant~~ — done on relay `main` (`worker/README.md` "Local stand"; App Attest is off there): the Worker under `wrangler dev` (Node, `npm ci`, a `RELAY_SESSION_SECRET` in `.dev.vars`; `http://127.0.0.1:8787`, `/v1/ws`, `/healthz`; state in `worker/.wrangler/state`). Dev endpoints: `POST /dev/entitlement` (`accountId`, `state`, `forMs`; 503 + `Retry-After` while a revocation is delivered), `/dev/account`, `/dev/pair`, `/dev/expire-mailboxes`, all keyed by `relay_device_id`. No pushes and no App Store locally. Local attachments go through the Worker's own `/v1/blob/...`, so the client treats upload/download URLs as opaque. On staging `/dev/*` needs the admin token; prod has none. From a physical iPhone: the Mac's LAN IP and an ATS exception in Debug.
 3. ~~Relay spec §4 wording fixed per R29–R32~~ — done.
-4. A CI job that builds the Watchtower Kit client and runs the interop scenarios — Phase 3.
+4. ~~A CI job that builds the Watchtower Kit client and runs the interop scenarios~~ — dropped by the owner on 2026-11-02 (the Swift part is being rewritten in Go); the interop runs locally.
 5. Staging on Cloudflare (`relay-staging.<domain>`, the owner's domain); App Store Connect product, Paid Apps Agreement, APNs and App Store Server API keys — before the launch, not before development.
 
 ## 13. Phases
@@ -162,7 +162,8 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 | 0b | Publishing on change (§6) — moved to the Go hub (ask #802) | — | #1238 |
 | 1 | Phone side of §5: `action_seq`, outbox, `ConditionalTransport` on CloudKit, control-record queue, skip and "not delivered". The hub's order and echoes are the Go hub's | 0a | new under #1240 |
 | 2 | Proto in the Kit, `HostedRelayClient` with the phone's App Attest (§4), `HostedRelayTransport`, `FakeHostedRelay`, sim twins | 0a, relay §12 p. 1 | #1239, #1240 |
-| 3 | Phone identity (`relay_auth` and the App Attest key id in the Keychain, the App Attest entitlement), linking from the phone, reaction to `transport_switched`, the phone's epoch keys; interop. Hub identity, slots, switch and epochs on the hub are the Go hub's | 1, 2, relay §12 p. 2, the Go hub | #1241, #1242, #1247 |
+| 3a | Phone identity (`relay_auth` and the App Attest key id in the Keychain, the App Attest entitlement, an empty-by-default relay origin), `LinkPayload` v4 and the hello's `relay_device_id`, linking from the phone over a relay pairing slot with `vouch_hub`, the follower and the side mailbox reader on CloudKit-visible controls, the phone's epoch keys (7-day retention, `epoch_ack`, the rule 14 reseal), Kit ↔ Go hub interop and the CI entry point. Ships dark: no Release origin. Blockers: none that is missing (Go hub 1a/1b on `main`, relay `bcca870`) | 1, 2, relay §12 p. 2 | #1241, #1242, #1247 |
+| 3b | Upgrade of a CloudKit link to the relay (`device_grant` relay fields, `add_slot`), the switch end to end with the Go hub (`transport_switched`, marker, `hub_on_relay`). Blockers: Go hub Phase 3 Tasks 18 and 20 (the switcher), Tasks 12 and 21 (relay identity in `device_grant`); a headless host with vouched admission also needs Go hub Phase 2 Task 10 | 3a, the Go hub | #1241, #1242, #1247 |
 | 4 | Phone: subscription, pushes, notification service, screens, measurements. Desktop indicators are the Go hub's | 3 | #1243, #1244, #1246 |
 | 5 | 7-day rotation with ephemeral X25519 (relay spec §7.4) — after launch | 3 | #1248 |
 
@@ -182,7 +183,8 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - Spec first, start the CloudKit-leak cleanup and publishing on change now — ask #734
 - Changes in the relay repository are done by the relay session — ask #734
 - `relay.proto` and the generated Swift are copied into the Kit, pinned to a relay commit — ask #734
-- Interop tests against the real relay server run locally and in the relay repository's CI; public Watchtower CI uses a fake server — ask #734
+- Interop tests against the real relay server run locally and in the relay repository's CI; public Watchtower CI uses a fake server — ask #734 (narrowed to local only, see the next line)
+- Relay CI interop job dropped — the Swift part is being rewritten in Go (owner, 2026-11-02, via the relay session)
 - On CloudKit a gap in a phone's actions may delay its later actions, Interrupt and permission answers included; accepted — ask #796
 - The hub side of this spec (hub order and echoes, publishing on change, hub identity, slots, switch and epochs, Desktop indicators) is written in the Go hub; this spec keeps the phone and the Kit — ask #802
 - Publishing on change: the nudge on both transports; minimum spacing ~2 s on CloudKit, 100–200 ms (150 ms) on the hosted relay only — ask #735
@@ -205,3 +207,15 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - Latency measurements stay on the device, shown in Diagnostics; p50 is checked on our devices and the relay probe, not on users' devices — author's decision, approved in ask #799
 - 7-day rotation with ephemeral keys comes after launch (relay spec §9 allows it); at launch relay links keep 90-day static-key epochs plus a new epoch per switch — author's decision, approved in ask #799 (security scope narrowed at launch)
 - Mockups for every new screen in `docs/design/mockups/relay-client/` — conversation (spec review round 1)
+- Phase 3 splits into 3a (Tasks 1–18, shippable now) and 3b (blocked on Go hub Phase 3); 3a ships with no Release relay origin, against §4's earlier "default the production origin", until §12 p. 5 — Phase 3 plan Owner approval 1
+- A code links over the hub's current transport; a phone that cannot use Relay is refused for a Mac on Relay on every path (iCloud included) instead of §8's iCloud link that only receives `hub_on_relay`; a relay-only hub is refused with "works over Relay only"; a failed paying check refuses with "Couldn't reach Relay" — Phase 3 plan Owner approval 2 (R4)
+- Pairing order: slot pre-check, then `open_pairing`; vouch then promote only after the keys; a confirmed link lives in the promoted links and every definite refusal moves it to a Settings → Macs row (Try Again / Cancel) with its keys kept — Phase 3 plan Owner approval 3 (R5, R21)
+- Epoch keys: 7 days after a newer epoch arrived, at most 8; `epoch_ack` to ordered hubs; rows sealed in an older epoch are resealed on `resend_from` with the same `action_seq` — Phase 3 plan Owner approval 4 (R8–R10)
+- Shared fixture: `device_hello` joins `hub_contract_cases.json`, the v4 cases decode on the Kit with a coherent derived relay id pair, and `testV4LinksDecodeOnThisPhone` replaces `testAV4LinkIsRefusedAsNewerByTodaysPhone` — Phase 3 plan Owner approval 5 (R6, R7)
+- Following a switch: the phone moves a hub to the new route on that route's own store and re-reads the data zone; `hub_on_relay` lists unechoed actions as Not delivered; no switch screen before Phase 4 — Phase 3 plan Owner approval 6 (R11–R13)
+- Unlinking a relay hub sends the farewell, then `remove_slot` (retried at launch), and the registry keeps an unsent relay farewell — Phase 3 plan Owner approval 7 (R14)
+- A relay-only link needs no iCloud account, and an account change ends CloudKit-route links only — Phase 3 plan Owner approval 8 (R19)
+- The Kit ↔ Go hub interop is Kit-level (`internal/hub/interop_kit_test.go` under `-tags interop` plus the Kit's `KitGoHubInteropTests`) and runs on the stand at `bcca870`, vouch included; it takes over Go hub Phase 2 Task 12's Kit half — Phase 3 plan Owner approval 9 (R15)
+- Tasks 17 (proto pin to relay `bcca870`, `Changes.resync`) and 18 (the phone's `vouch_hub`) are part of Phase 3a — Phase 3 plan Owner approval 10
+- Link failures added in review: `NOT_FOUND` at `open_pairing` shows "<Mac> isn't on Relay yet" (`LinkFailure.macNotOnRelay`); a v5 code is the "newer" case in `testANewerCodeVersionAsksToUpdateTheApp`; a full phone registry when a confirmed link finishes is `.needsOwner(.tooManyMacs)` — ask #915
+- The Keychain key id next to `relay_auth` (`AfterFirstUnlockThisDeviceOnly`) and the App Attest entitlement per configuration; the routing test `testAttestUnsupportedStaysOnCloudKit` in `WatchtowerMobile/Tests`; the `pair/<slot>` zone — ask #854, ask #799
