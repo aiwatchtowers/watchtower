@@ -106,7 +106,7 @@ private struct OwnerConfirmView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            OwnerConfirmTextView(command: request.commandLine, detail: detail)
+            OwnerConfirmTextView(command: request.commandLine, detail: detail) { decide(false) }
                 .frame(minHeight: 120, maxHeight: .infinity)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: Radius.control))
             HStack {
@@ -132,11 +132,15 @@ private struct OwnerConfirmView: View {
 /// The whole command and detail, read-only and selectable, in an AppKit
 /// text view: it lays out only what is on screen, so a page-sized detail
 /// keeps the window responsive (one SwiftUI `Text` lays it all out at once).
-/// The command is bold and the detail regular, so no detail text reads as
-/// the command.
+/// The command is bold and the detail regular and secondary, so no detail
+/// text reads as the command. Return and Enter deny there too: the text
+/// view, once clicked, would otherwise take them from the Deny button.
 private struct OwnerConfirmTextView: NSViewRepresentable {
     let command: String
     let detail: String?
+    let onReturn: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onReturn: onReturn) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
@@ -144,6 +148,7 @@ private struct OwnerConfirmTextView: NSViewRepresentable {
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
         textView.isEditable = false
         textView.isSelectable = true
+        textView.delegate = context.coordinator
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.layoutManager?.allowsNonContiguousLayout = true
@@ -153,7 +158,7 @@ private struct OwnerConfirmTextView: NSViewRepresentable {
         ])
         if let detail {
             text.append(NSAttributedString(string: "\n\n" + detail, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: size, weight: .regular), .foregroundColor: NSColor.labelColor
+                .font: NSFont.monospacedSystemFont(ofSize: size, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor
             ]))
         }
         textView.textStorage?.setAttributedString(text)
@@ -162,6 +167,20 @@ private struct OwnerConfirmTextView: NSViewRepresentable {
 
     /// The text is one request's and never changes.
     func updateNSView(_ scroll: NSScrollView, context: Context) {}
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        private let onReturn: () -> Void
+
+        init(onReturn: @escaping () -> Void) {
+            self.onReturn = onReturn
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            onReturn()
+            return true
+        }
+    }
 }
 
 private struct NoticeView: View {
