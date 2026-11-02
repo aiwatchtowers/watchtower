@@ -64,7 +64,7 @@ func (p *Processor) oldEpochAction(ctx context.Context, b mailbox, rec transport
 	if err != nil || seq == 0 {
 		return err
 	}
-	if lapsed, err := p.lapsed(b, seq, rec.ServerAt); err != nil || lapsed {
+	if lapsed, err := p.lapsed(b, seq); err != nil || lapsed {
 		return err
 	}
 	q, err := p.sealResendFrom(b, from)

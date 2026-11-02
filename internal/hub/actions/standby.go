@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -33,14 +32,13 @@ func (p *Processor) standby() bool {
 	return p.cfg.Switch != nil && !p.cfg.Switch.IsActive(p.cfg.Transport.Kind())
 }
 
-// lapsed reports whether b's phone record (an ordered action's seq, or 0;
-// its ServerAt) must not be applied on this transport (sim rule 16,
-// Switch.Lapsed); seq 0 with a zero time asks whether it is lapsed now.
-func (p *Processor) lapsed(b mailbox, seq uint64, writtenAt time.Time) (bool, error) {
+// lapsed reports whether b's phone is lapsed on this transport now (sim
+// rule 16, Switch.Lapsed); seq is the ordered action being read, or 0.
+func (p *Processor) lapsed(b mailbox, seq uint64) (bool, error) {
 	if p.cfg.Switch == nil {
 		return false, nil
 	}
-	return p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String(), seq, writtenAt)
+	return p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String(), seq)
 }
 
 // orderedSeq is an opened action's action_seq when it binds to its record
@@ -64,7 +62,7 @@ func (p *Processor) drainHeldActive(ctx context.Context, b mailbox, ps *pass) er
 	if p.standby() {
 		return nil
 	}
-	if lapsed, err := p.lapsed(b, 0, time.Time{}); err != nil || lapsed {
+	if lapsed, err := p.lapsed(b, 0); err != nil || lapsed {
 		return err
 	}
 	if err := p.drainHeld(ctx, b, ps); err != nil {

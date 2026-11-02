@@ -132,3 +132,41 @@ func TestLapsedPhoneIsLeftAndARefusedWriteIsReported(t *testing.T) {
 		}
 	})
 }
+
+// Sim rule 16: a lapse that commits after the record was read but before
+// its decision is honoured — the action is left, neither applied nor
+// echoed.
+func TestALapseCommittedMidPassIsHonoured(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		sw := &fakeSwitch{active: w.tr.Kind(), lapsedAt: 2} // read: not lapsed; decision: lapsed
+		w.withSwitch(sw)
+		seq := w.act("test_noop")
+		w.pass()
+		w.sync(w.phone)
+		w.wantCalls()
+		if name, _ := w.phone.Sealed(seq); !w.holds(name) || len(w.phone.Echoes) != 0 {
+			t.Fatal("the action was not left alone")
+		}
+		if sw.lapsedCalls < 2 {
+			t.Fatalf("the lapse was read %d times, want it again at the decision", sw.lapsedCalls)
+		}
+	})
+}
+
+// Sim rule 16: an action sent before the phone's last lapse (the phone was
+// told it is not delivered) gets an explicit final answer — expired — and
+// is never applied; the order moves on and the next action applies.
+func TestASkippedActionIsAnsweredExpired(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		sw := &fakeSwitch{active: w.tr.Kind(), skipped: true}
+		w.withSwitch(sw)
+		seq := w.act("test_noop")
+		w.settle()
+		w.wantCalls()
+		w.wantEcho(seq, wire.StatusExpired, "expired")
+		sw.skipped = false
+		w.act("test_noop")
+		w.settle()
+		w.wantCalls("test_noop:2")
+	})
+}

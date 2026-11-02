@@ -124,7 +124,7 @@ func TestALapseOutlivesARestartAndASwitchAwayAndBack(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		a, b, z := w.lapseWithAnotherPayer()
 		w.rebuild(nil) // a restart
-		if lapsed, err := w.sw.Lapsed(transport.KindRelay, a.ID().String(), 0, time.Time{}); err != nil || !lapsed {
+		if lapsed, err := w.sw.Lapsed(transport.KindRelay, a.ID().String(), 0); err != nil || !lapsed {
 			t.Fatalf("after a restart lapsed %v %v", lapsed, err)
 		}
 		roundTrip := func() {
@@ -350,6 +350,9 @@ func TestAnUnreadPreLapseActionNeverAppliesAfterTheLapseEnds(t *testing.T) {
 		w.appliedOnce(a, y)
 		if slices.Contains(w.callLog(), call(a, z)) {
 			t.Fatal("the unread pre-lapse action applied")
+		}
+		if e, ok := a.Echoes[z]; !ok || e.Status != wire.StatusExpired {
+			t.Fatalf("the skipped action got %+v, want an expired echo", e)
 		}
 	})
 }

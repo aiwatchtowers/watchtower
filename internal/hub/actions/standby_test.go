@@ -17,7 +17,11 @@ type fakeSwitch struct {
 	requests []string // "<from> <target>"
 	stale    int
 	lapsed   bool
-	inactive []string // devices reported by EntitlementInactive
+	// lapsedAt, when set, makes the lapse commit at that Lapsed call (a
+	// lapse mid-pass); lapsedCalls counts the calls.
+	lapsedAt, lapsedCalls int
+	skipped               bool
+	inactive              []string // devices reported by EntitlementInactive
 }
 
 func (f *fakeSwitch) IsActive(k transport.Kind) bool { return k == f.active }
@@ -32,8 +36,16 @@ func (f *fakeSwitch) Stale(context.Context, transport.Kind, string) (wire.Contro
 	return wire.Control{Kind: wire.ControlHubOnRelay}, 0, true, nil
 }
 
-func (f *fakeSwitch) Lapsed(transport.Kind, string, uint64, time.Time) (bool, error) {
+func (f *fakeSwitch) Lapsed(transport.Kind, string, uint64) (bool, error) {
+	f.lapsedCalls++
+	if f.lapsedAt > 0 {
+		return f.lapsedCalls >= f.lapsedAt, nil
+	}
 	return f.lapsed, nil
+}
+
+func (f *fakeSwitch) Skipped(transport.Kind, string, uint64, time.Time) (bool, error) {
+	return f.skipped, nil
 }
 
 func (f *fakeSwitch) EntitlementInactive(_ transport.Kind, device string) {

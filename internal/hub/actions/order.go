@@ -24,6 +24,7 @@ type record struct {
 	name   string
 	env    []byte
 	expect state.Control
+	at     time.Time // the transport's ServerAt (zero for a held action)
 }
 
 // actionName is an ordered action's plain record name, a-<device>-<seq>
@@ -179,7 +180,7 @@ func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.St
 		return err
 	}
 	ps.report.Read++
-	if err := p.apply(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, o, a, seq, plain, ps); err != nil {
+	if err := p.apply(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, o, a, seq, plain, ps); err != nil {
 		return err
 	}
 	return p.drainHeld(ctx, b, ps)
@@ -286,6 +287,23 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		}
 	default:
 		out, run = p.gate(b, a, reg, registered, now)
+	}
+	if run && p.cfg.Switch != nil {
+		// Sim rule 16, read again just before the decision (a lapse may
+		// have committed since the record was read, or since it was held):
+		// a lapsed phone's action is left; one it was told is not delivered
+		// is answered expired, never applied.
+		k, device := p.cfg.Transport.Kind(), b.id.String()
+		if lapsed, err := p.cfg.Switch.Lapsed(k, device, seq); err != nil || lapsed {
+			return err
+		}
+		skipped, err := p.cfg.Switch.Skipped(k, device, seq, r.at)
+		if err != nil {
+			return err
+		}
+		if skipped {
+			out, run = Outcome{Status: wire.StatusExpired, Reason: reasonExpired}, false
+		}
 	}
 	if run && reg.opts.NonIdempotent {
 		claimed, err := p.claim(ctx, b, r, o, a, key, plain, reg.opts.ReceivedEcho, now, ps)

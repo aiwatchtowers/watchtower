@@ -46,15 +46,20 @@ type Switch interface {
 	// (0 = the current one), or ok false for none. Called once per record
 	// version; it must not call back into a processor.
 	Stale(ctx context.Context, k transport.Kind, device string) (c wire.Control, epoch uint32, ok bool, err error)
-	// Lapsed reports whether a record of device on k must not be applied
-	// (sim rule 16): the phone's relay entitlement lapsed while the hub
-	// stays on the relay for another paying phone, or the record was sent
-	// before its last lapse (the phone was told it is not delivered). seq
-	// is an ordered action's action_seq (0 = none: a legacy action, an
-	// upload); writtenAt the transport's ServerAt (zero, with seq 0 = "is
-	// the phone lapsed now"). Such actions and uploads are left to the
-	// phone, never applied, now or later; its controls are read as usual.
-	Lapsed(k transport.Kind, device string, seq uint64, writtenAt time.Time) (bool, error)
+	// Lapsed reports whether device's relay entitlement is lapsed on k now
+	// while the hub stays on the relay for another paying phone (sim rule
+	// 16): its actions and uploads are left to the phone, which was told
+	// hub_on_relay over CloudKit; its controls are read as usual. seq is
+	// the ordered action being read (0 = none), remembered as sent before
+	// the lapse.
+	Lapsed(k transport.Kind, device string, seq uint64) (bool, error)
+	// Skipped reports whether a record of device on k was sent before its
+	// last lapse ended (the phone was told it is not delivered): an ordered
+	// action by its seq, a legacy action or an upload by writtenAt (the
+	// transport's ServerAt). Such an action is answered expired, never
+	// applied (the phone's retry is a new action, relay client spec §5 p.
+	// 6, protocol §7 p. 7).
+	Skipped(k transport.Kind, device string, seq uint64, writtenAt time.Time) (bool, error)
 	// EntitlementInactive reports a hub write into device's mailbox on k
 	// refused with transport.ErrEntitlementInactive (sim rule 16): the
 	// switcher acts on it outside the pass. It must not call back into a

@@ -66,28 +66,38 @@ func (s *Switcher) OnControl(_ context.Context, c transport.Control) error {
 // told such an action is not delivered and may retry it).
 const LegacySkipMargin = 2 * time.Minute
 
-// Lapsed implements actions.Switch over the sidecar, on the relay: the
-// phone is lapsed now (an ordered action read meanwhile raises
-// relay_skip_seq), or the record was sent before its last lapse — an
-// ordered action with seq ≤ relay_skip_seq (no clock involved), a legacy
-// action or an upload stamped (writtenAt, the relay's ServerAt) before the
-// lapse's time plus LegacySkipMargin.
-func (s *Switcher) Lapsed(k transport.Kind, device string, seq uint64, writtenAt time.Time) (bool, error) {
+// Lapsed implements actions.Switch over the sidecar: on the relay, the
+// phone is lapsed now; an ordered action read meanwhile raises
+// relay_skip_seq.
+func (s *Switcher) Lapsed(k transport.Kind, device string, seq uint64) (bool, error) {
 	if k != transport.KindRelay {
 		return false, nil
 	}
 	dev, linked, err := s.c.Store.Device(device)
-	if err != nil || !linked {
+	if err != nil || !linked || dev.RelayLapsedAt == nil {
 		return false, err
 	}
-	switch {
-	case dev.RelayLapsedAt != nil:
-		if seq > dev.RelaySkipSeq {
-			if err := s.c.Store.RaiseRelaySkipSeq(dev.ID, seq); err != nil {
-				return true, err
-			}
+	if seq > dev.RelaySkipSeq {
+		if err := s.c.Store.RaiseRelaySkipSeq(dev.ID, seq); err != nil {
+			return true, err
 		}
-		return true, nil
+	}
+	return true, nil
+}
+
+// Skipped implements actions.Switch over the sidecar, on the relay: the
+// record was sent before the phone's last lapse ended — an ordered action
+// with seq ≤ relay_skip_seq (no clock involved), a legacy action or an
+// upload stamped (writtenAt, the relay's ServerAt) before the lapse's time
+// plus LegacySkipMargin.
+func (s *Switcher) Skipped(k transport.Kind, device string, seq uint64, writtenAt time.Time) (bool, error) {
+	if k != transport.KindRelay {
+		return false, nil
+	}
+	dev, linked, err := s.c.Store.Device(device)
+	switch {
+	case err != nil || !linked:
+		return false, err
 	case seq > 0:
 		return seq <= dev.RelaySkipSeq, nil
 	case writtenAt.IsZero() || dev.RelaySkipBefore == nil:

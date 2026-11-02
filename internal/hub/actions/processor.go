@@ -467,16 +467,23 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 			return nil
 		}
 	} else if opened.Frame.Kind == kindAction || opened.Frame.Kind == kindRecordingUpload {
-		// Sim rule 16: left to the phone, which was told hub_on_relay over
-		// CloudKit and lists it as not delivered; never applied later.
-		if lapsed, err := p.lapsed(b, orderedSeq(b, opened), rec.ServerAt); err != nil || lapsed {
+		// Sim rule 16: a lapsed phone's record is left to it (it was told
+		// hub_on_relay over CloudKit); an upload sent before its last lapse
+		// is left too. An action sent before it is answered expired by
+		// apply.
+		if lapsed, err := p.lapsed(b, orderedSeq(b, opened)); err != nil || lapsed {
 			return err
+		}
+		if opened.Frame.Kind == kindRecordingUpload && p.cfg.Switch != nil {
+			if skipped, err := p.cfg.Switch.Skipped(p.cfg.Transport.Kind(), b.id.String(), 0, rec.ServerAt); err != nil || skipped {
+				return err
+			}
 		}
 	}
 	switch opened.Frame.Kind {
 	case kindAction:
 		ps.report.Read++
-		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, ps)
+		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, ps)
 	case kindControl:
 		ps.report.Read++
 		err = p.phoneControl(ctx, b, rec, opened, ps)
