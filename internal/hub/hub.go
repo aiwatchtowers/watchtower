@@ -446,6 +446,11 @@ type supervisor struct {
 	offDeleteAt     time.Time
 	offDeleteFailed bool
 	nextOffWipe     time.Time
+	// offWipeBackoff: the wait before the next stopped retry, doubling while
+	// tries leave records (offWipeRetry .. offWipeMaxBackoff); readLogged:
+	// a failed read of what is left was logged in this streak.
+	offWipeBackoff    time.Duration
+	offWipeReadLogged bool
 	// v1 is the last v1 session-host probe's answer (v1Known: probed in
 	// this daemon cycle; the cycle's tick forgets it).
 	v1, v1Known bool
@@ -546,10 +551,7 @@ func (s *supervisor) reconcile(ctx context.Context) {
 			// Also while paused: deleting published data is the safe direction.
 			s.stopHub(keepNothing)
 		case !on:
-			// The owner's off deletes what was published, as the policy's does (off_delete.go).
-			s.stopHub(keepNothing)
-			s.noteOffDelete(time.Now())
-			s.nextOffWipe = time.Now().Add(offWipeRetry)
+			s.ownerOff()
 		case mode == policy.MobileWorkbenchOnly && h.mode != mode:
 			s.stopHub(workbenchOnly)
 		default:
@@ -560,13 +562,7 @@ func (s *supervisor) reconcile(ctx context.Context) {
 		s.wipeStopped(ctx)
 	}
 	if s.hub == nil && !on && mode != policy.MobileOff && !time.Now().Before(s.nextOffWipe) {
-		// What the owner's off (or an earlier run) left published: retried while off.
-		if n, err := s.publishedLeft(); err == nil && n > 0 {
-			s.nextWipe = time.Time{}
-			s.wipeStopped(ctx)
-			s.noteOffDelete(time.Now())
-		}
-		s.nextOffWipe = time.Now().Add(offWipeRetry)
+		s.retryOffWipe(ctx)
 	}
 	if !want || s.hub != nil {
 		s.held = ""

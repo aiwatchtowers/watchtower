@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -8,11 +9,14 @@ import (
 )
 
 // The owner's off (go hub plan 3 Task 23 review): turning Mobile off deletes
-// what the hub published, as the Swift hub's deleteZonesForHubOff did and as
-// POLICY-03's wipe does — through the running transports before the hub
-// stops (the bridge still up), and while the hub stays off, retried from the
-// stopped wipe until nothing published is left. Linked phones and keys stay:
-// turning on again republishes.
+// the records the hub published, as POLICY-03's wipe does — through the
+// running transports before the hub stops (the bridge still up), and while
+// the hub stays off, retried from the stopped wipe until nothing published
+// is left. Only published records go: linked phones, their keyboxes, the
+// mailboxes and the keys stay, so turning on again republishes and the
+// phones read on (the Swift hub deleted its zones). Whether the owner's off
+// should also unlink phones is the owner's call (ask #956): ownerOff is the
+// one place to change.
 
 // OffDelete* are `hub status --json`'s off_delete.state values while the
 // owner's switch is off ("" while it is on).
@@ -30,8 +34,52 @@ type OffDeleteStatus struct {
 	At    string `json:"at"`
 }
 
-// offWipeRetry spaces the stopped retries of the owner's off wipe (a test seam).
-var offWipeRetry = wipeRetry
+// offWipeRetry spaces the stopped retries of the owner's off wipe; a try
+// that leaves records doubles the wait up to offWipeMaxBackoff, so a
+// permanently refused record does not start a desktop host's bridge every
+// minute (test seams).
+var (
+	offWipeRetry      = wipeRetry
+	offWipeMaxBackoff = time.Hour
+)
+
+// ownerOff is what the owner's off does to a running hub: stop it after
+// deleting what it published (keepNothing), keeping the phones linked.
+func (s *supervisor) ownerOff() {
+	s.stopHub(keepNothing)
+	now := time.Now()
+	s.noteOffDelete(now)
+	s.offWipeBackoff = offWipeRetry
+	s.nextOffWipe = now.Add(offWipeRetry)
+}
+
+// retryOffWipe is the stopped retry while the owner's switch is off: what
+// the off (or an earlier run) left published is wiped again, the wait
+// doubling while records stay; a failed read is logged once per streak.
+func (s *supervisor) retryOffWipe(ctx context.Context) {
+	n, err := s.publishedLeft()
+	switch {
+	case err != nil:
+		if !s.offWipeReadLogged {
+			s.offWipeReadLogged = true
+			log.Printf("hub: off: reading what is left published failed (%s): retried", errClass(err))
+		}
+	case n > 0:
+		s.offWipeReadLogged = false
+		s.nextWipe = time.Time{}
+		s.wipeStopped(ctx)
+		s.noteOffDelete(time.Now())
+	default:
+		s.offWipeReadLogged = false
+	}
+	switch {
+	case err == nil && n > 0 && s.offDeleteFailed:
+		s.offWipeBackoff = min(max(2*s.offWipeBackoff, offWipeRetry), offWipeMaxBackoff)
+	default:
+		s.offWipeBackoff = offWipeRetry
+	}
+	s.nextOffWipe = time.Now().Add(s.offWipeBackoff)
+}
 
 // keepNothing is the wipe's filter: every published kind goes.
 func keepNothing(slices.Kind) bool { return false }

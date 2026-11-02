@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
@@ -100,5 +101,50 @@ func TestOffDeleteIsEmptyWhileOn(t *testing.T) {
 	r, _ := ownerOffRig(t)
 	if d := r.rec.last().OffDelete; d != (OffDeleteStatus{}) {
 		t.Fatalf("off_delete while on: %+v", d)
+	}
+}
+
+// TestOffWipeBacksOffWhileRecordsStay: a stopped retry that leaves records
+// doubles its wait up to the cap (a permanently refused record does not
+// start a desktop host's bridge every minute); a read failure is logged
+// once per streak and keeps the base wait.
+func TestOffWipeBacksOffWhileRecordsStay(t *testing.T) {
+	prevRetry, prevMax := offWipeRetry, offWipeMaxBackoff
+	offWipeRetry, offWipeMaxBackoff = time.Second, 4*time.Second
+	t.Cleanup(func() { offWipeRetry, offWipeMaxBackoff = prevRetry, prevMax })
+	r, data := ownerOffRig(t)
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	// The relay refuses every delete: what was published stays.
+	for i := 0; i < 4; i++ {
+		r.fake.FailNext("delete", transport.ErrForbidden)
+	}
+	if len(liveRecords(t, r.fake, data)) == 0 {
+		t.Fatal("nothing published to wipe")
+	}
+	s := &supervisor{o: r.options().withDefaults(), st: st, offWipeBackoff: offWipeRetry} // as ownerOff left it
+	var waits []time.Duration
+	for i := 0; i < 4; i++ {
+		s.offDeleteFailed = true
+		before := time.Now()
+		s.retryOffWipe(context.Background())
+		waits = append(waits, s.nextOffWipe.Sub(before).Round(time.Second))
+	}
+	if want := []time.Duration{2 * time.Second, 4 * time.Second, 4 * time.Second, 4 * time.Second}; !slices.Equal(waits, want) {
+		t.Fatalf("waits %v, want %v", waits, want)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.offWipeBackoff = 4 * time.Second
+	s.retryOffWipe(context.Background()) // the store is closed: the read fails
+	if !s.offWipeReadLogged || s.offWipeBackoff != time.Second {
+		t.Fatalf("a failed read: logged %v, backoff %v", s.offWipeReadLogged, s.offWipeBackoff)
 	}
 }

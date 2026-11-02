@@ -90,7 +90,7 @@ It is end-to-end encrypted.
 
 Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception.
 
-A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes what your Mac published to iCloud; if that fails, **Settings → Mobile** says so and the Mac tries again while sync stays off.
+A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published to iCloud; linked phones stay linked (with their keys and mailboxes) and get them again when you turn it back on. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink a phone, remove it.
 
 ## How much an assistant can read in one session
 <!-- learn

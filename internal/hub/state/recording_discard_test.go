@@ -83,10 +83,10 @@ func TestDiscardRecordingWithoutItsAudioStillRemovesTheRow(t *testing.T) {
 	}
 }
 
-// A claim that comes first (a Retry re-claims a job Desktop failed) wins:
-// the Discard finds a claimed job, refuses, and leaves the row and its
-// audio for the transcription under way.
-func TestDiscardRecordingLosesToAClaim(t *testing.T) {
+// Regression guard: a claim that comes first (a Retry re-claims a job
+// Desktop failed) wins — the Discard finds a claimed job, refuses, and
+// leaves the row and its audio for the transcription under way.
+func TestDiscardRecordingAfterAClaimIsRefused(t *testing.T) {
 	s := openTest(t)
 	dir := t.TempDir()
 	failedJob(t, s, "u4", ClassNotAudio)
@@ -105,5 +105,48 @@ func TestDiscardRecordingLosesToAClaim(t *testing.T) {
 	}
 	if ok, err := s.HasRecording("u4"); err != nil || !ok {
 		t.Fatalf("the claimed job went: %v %v", ok, err)
+	}
+}
+
+// A claim that races in while the Discard holds its transaction (between
+// its status read and its commit) waits for it and then finds no job:
+// never a claimed job whose audio the Discard removed.
+func TestDiscardRecordingAndAClaimInterleaved(t *testing.T) {
+	s := openTest(t)
+	dir := t.TempDir()
+	failedJob(t, s, "u5", ClassNotAudio)
+	audio := filepath.Join(dir, "u5.m4a")
+	if err := os.WriteFile(audio, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claimed := make(chan error, 1)
+	started := make(chan struct{})
+	prev := discardAfterRead
+	discardAfterRead = func() {
+		go func() {
+			close(started)
+			_, err := s.ClaimRecording("u5", time.Unix(1_800_000_200, 0))
+			claimed <- err
+		}()
+		<-started
+		time.Sleep(50 * time.Millisecond) // the claim is now waiting for the write lock
+	}
+	t.Cleanup(func() { discardAfterRead = prev })
+	if err := s.DiscardRecording(dir, "u5"); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	select {
+	case err := <-claimed:
+		if !errors.Is(err, ErrNoRecordingJob) {
+			t.Fatalf("the interleaved claim: %v, want no job", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interleaved claim never finished")
+	}
+	if _, err := os.Stat(audio); !os.IsNotExist(err) {
+		t.Fatalf("the audio is still there: %v", err)
+	}
+	if ok, err := s.HasRecording("u5"); err != nil || ok {
+		t.Fatalf("the row came back: %v %v", ok, err)
 	}
 }

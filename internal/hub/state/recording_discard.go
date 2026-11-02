@@ -19,6 +19,10 @@ import (
 // audio file is no error; a file that cannot be removed is reported, the
 // row already gone (nothing would ever prune it otherwise, so the error
 // says so).
+// discardAfterRead runs inside the Discard's transaction after its status
+// read (a test seam: an interleaved claim).
+var discardAfterRead = func() {}
+
 func (s *Store) DiscardRecording(recordingsDir, uploadID string) error {
 	err := s.write(func(tx *sql.Tx) error {
 		job, err := recordingJobTx(tx, uploadID)
@@ -28,6 +32,7 @@ func (s *Store) DiscardRecording(recordingsDir, uploadID string) error {
 		if job.Status != RecordingFailed {
 			return ErrJobState
 		}
+		discardAfterRead()
 		if _, err := tx.Exec(`DELETE FROM recording_jobs WHERE upload_id = ? AND status = 'failed'`, uploadID); err != nil {
 			return fmt.Errorf("discarding a recording: %w", err)
 		}
