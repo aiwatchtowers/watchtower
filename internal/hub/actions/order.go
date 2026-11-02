@@ -149,7 +149,7 @@ func (p *Processor) action(ctx context.Context, b mailbox, r record, o secure.Op
 // begun → outcome_unknown, RelayProcessor processAction). Any other own
 // record is no work. o is rec opened under b's key (OwnEchoFor).
 func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, ps *pass) error {
-	if o.Frame.Kind != kindAction {
+	if o.Frame.Kind != kindAction || p.standby() { // on standby nothing is applied
 		return nil
 	}
 	var a wire.ActionRequest

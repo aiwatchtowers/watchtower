@@ -375,6 +375,12 @@ final class AppState {
     /// The Go hub over its control socket (heartbeat, view inputs, status;
     /// go hub plan 3 Task 14); none under XCTest.
     private(set) var hubCenter: HubCenter?
+    /// The one-time restart of sessions from a v1 session host (go hub spec
+    /// §8 p. 4b): its notice above every tab and the other workspaces' wait
+    /// lines. Made once per app run by `startHostRestart`. The hub's adoption
+    /// awaits its `waitUntilSettled()` (go hub plan 3 order: migrate →
+    /// compact → restart step → adoption → daemon's hub).
+    private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
     /// Phone recordings on the Go hub, claimed, reported and finished over
@@ -1865,7 +1871,11 @@ final class AppState {
         ownerAwayCenter.start()
         chatQuestionEscalator?.start()
         replaceHubCenter(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
+        }
         vm.startHostReattach()
+        startHostRestart() // after the reattach: it stops what the reattach adopted
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
         Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
@@ -1895,6 +1905,17 @@ final class AppState {
         hubCenter?.onRecordingQueued = { [weak queue = phoneRecordingQueue] in queue?.recordingQueued($0) }
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.start()
+    }
+
+    /// Makes the v1-host restart step once per app run (a setup re-run that
+    /// rebuilds the workbenches keeps it; it reads the current ones) and
+    /// runs its launch check after the reattach. None under XCTest: a test
+    /// builds its own step.
+    private func startHostRestart() {
+        guard hostRestart == nil, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        let step = HostRestartStep(center: terminalCenter) { [weak self] in self?.workbenchesViewModel }
+        hostRestart = step
+        Task { await step.runIfNeeded() }
     }
 
     /// The app quits: no more heartbeats, so the hub's view goes stale.

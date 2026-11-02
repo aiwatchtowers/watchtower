@@ -65,3 +65,31 @@ func TestLateEchoWhilePausedIsQueuedForTheResume(t *testing.T) {
 		w.wantEcho(seq, wire.StatusApplied, "")
 	})
 }
+
+// Pause holds are per reason: the admission gate (SetPaused) and the
+// transport switch (PauseFor) never lift each other's pause, in either order.
+func TestPauseReasonsNeverLiftEachOther(t *testing.T) {
+	for _, gateFirst := range []bool{true, false} {
+		w := newWorld(t, "relay")
+		if gateFirst {
+			w.proc.SetPaused(true)
+			w.proc.PauseFor("transport_switch")
+		} else {
+			w.proc.PauseFor("transport_switch")
+			w.proc.SetPaused(true)
+		}
+		seq := w.act("test_noop")
+		w.proc.ResumeFor("transport_switch")
+		if rep := w.pass(); rep != (PassReport{}) {
+			t.Fatalf("gate first %v: the switch lifted the gate's pause: %+v", gateFirst, rep)
+		}
+		w.proc.PauseFor("transport_switch")
+		w.proc.SetPaused(false)
+		if rep := w.pass(); rep != (PassReport{}) {
+			t.Fatalf("gate first %v: the gate lifted the switch's pause: %+v", gateFirst, rep)
+		}
+		w.proc.ResumeFor("transport_switch")
+		w.settle()
+		w.wantEcho(seq, wire.StatusApplied, "")
+	}
+}

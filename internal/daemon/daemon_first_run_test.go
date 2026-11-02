@@ -183,22 +183,29 @@ func TestDaemon_PeopleSituationsReadErrorIsAFailedAttempt(t *testing.T) {
 	assert.True(t, d.lastPeople.IsZero(), "a failed run does not stamp")
 }
 
+// A covered window needs the same window twice. Without a stamp the run is a
+// FirstRun whose window ends "now" in Unix seconds, so two such runs match
+// only when they fall in the same second (the CI flake). Both runs here use
+// a stale stamp (past the 24 h throttle): the regular window ending at the
+// start of today, identical for both.
 func TestDaemon_PeopleCoveredRunStamps(t *testing.T) {
 	d, database := firstRunTestSetup(t)
 	seedFirstRunMessages(t, database)
 	seedFirstRunSituation(t, database)
 	gen := attachPeoplePipeline(d, database)
+	stale := time.Now().Add(-48 * time.Hour)
+	d.lastPeople = stale
 	d.phasePeopleCards(context.Background())
 	require.Positive(t, gen.calls)
+	require.True(t, d.lastPeople.After(stale), "the generating run stamps")
 
-	// A restart without last_people.txt: every user already has a card.
-	d.lastPeople = time.Time{}
-	require.NoError(t, os.Remove(d.lastPeoplePath()))
+	// The next day's cycle on the same window: every user already has a card.
+	d.lastPeople = stale
 	calls := gen.calls
 	d.phasePeopleCards(context.Background())
 
 	assert.Equal(t, calls, gen.calls, "a covered window reaches no AI")
-	assert.False(t, d.lastPeople.IsZero(), "a covered window stamps the throttle")
+	assert.True(t, d.lastPeople.After(stale), "a covered window stamps the throttle")
 }
 
 func TestDaemon_PeopleGeneratedRunStamps(t *testing.T) {
