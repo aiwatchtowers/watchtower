@@ -144,6 +144,17 @@ func (p *Poller) storeUsage(now time.Time, st db.PlanUsageStatus, u Usage) error
 		}
 		u.Limits[i].Projection = project(now, l, hist)
 	}
+	windows := make([]WindowLimit, 0, len(u.Limits))
+	current := map[string]bool{}
+	for _, l := range u.Limits {
+		w := ClaudeWindowLimit(l)
+		windows = append(windows, w)
+		current[l.Key] = w.ResetsAt != nil
+	}
+	plot, err := BuildPlot(now, windows, true, current)
+	if err != nil {
+		return fmt.Errorf("planusage: build plot: %w", err)
+	}
 	limits, err := json.Marshal(u.Limits)
 	if err != nil {
 		return fmt.Errorf("planusage: encode limits: %w", err)
@@ -156,6 +167,7 @@ func (p *Poller) storeUsage(now time.Time, st db.PlanUsageStatus, u Usage) error
 	st.State, st.Reason, st.LastError, st.LastErrorAt = "ok", "", "", nil
 	st.FetchedAt = &now
 	st.LimitsJSON, st.BreakdownJSON = string(limits), string(breakdown)
+	st.PlotJSON = plot
 	if err := p.Store.UpsertPlanUsageStatus(st); err != nil {
 		return err
 	}

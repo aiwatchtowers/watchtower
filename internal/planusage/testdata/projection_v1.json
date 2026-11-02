@@ -1,0 +1,40 @@
+{
+  "plot_json": {
+    "schema_version": 1,
+    "fetched_at": "2026-11-02T09:00:00Z",
+    "limits": {
+      "session": {
+        "start_at": "2026-11-02T09:00:00Z",
+        "start_percent": 40,
+        "end_at": "2026-11-02T11:00:00Z",
+        "end_percent": 60
+      }
+    }
+  },
+  "limit": {
+    "key": "session",
+    "label": "5 hours",
+    "group": "session",
+    "percent": 40,
+    "window_duration_minutes": 300,
+    "resets_at": "2026-11-02T11:00:00Z",
+    "projection": {
+      "state": "safe",
+      "hit_at": "2026-11-02T15:00:00Z",
+      "rate_per_hour": 10
+    }
+  },
+  "projection": {
+    "state": "safe",
+    "hit_at": "2026-11-02T15:00:00Z",
+    "rate_per_hour": 10,
+    "drawable": true,
+    "unavailable_reason": null,
+    "line": {
+      "start_at": "2026-11-02T09:00:00Z",
+      "start_percent": 40,
+      "end_at": "2026-11-02T11:00:00Z",
+      "end_percent": 60
+    }
+  }
+}
