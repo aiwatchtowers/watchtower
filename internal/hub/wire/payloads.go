@@ -27,9 +27,15 @@ const (
 	// SwitchedByEntitlement is transport_switched's by when the relay
 	// entitlement lapsed rather than a phone asking.
 	SwitchedByEntitlement = "entitlement_expired"
-	// SwitchTooSoon is transport_switch_rejected's reason within the
-	// anti-flap window (with retry_after_s).
-	SwitchTooSoon = "too_soon"
+	// The transport_switch_rejected reasons: within the anti-flap window
+	// (with retry_after_s); toward the relay from a phone the relay account
+	// does not list as paying (owner decision pending, ask #941); the hub
+	// could not record the request (with retry_after_s: ask again); a hub
+	// that cannot switch (no second transport).
+	SwitchTooSoon      = "too_soon"
+	SwitchNotPaying    = "not_paying"
+	SwitchUnavailable  = "unavailable"
+	SwitchNotSupported = "not supported yet"
 )
 
 // Heartbeat flavors and sharing states.

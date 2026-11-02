@@ -398,11 +398,17 @@ func TestLastAcceptedSwitchWins(t *testing.T) {
 		if w.epoch() != e {
 			t.Fatalf("epoch %d, want %d (no switch ran)", w.epoch(), e)
 		}
-		if _, by, ok, _ := w.sw.SwitchedAt(); !ok || by != b.ID().String() {
-			t.Fatalf("switched_by %q", by)
+		// A no-op undo is no switch: anti-flap does not restart.
+		if _, _, ok, _ := w.sw.SwitchedAt(); ok {
+			t.Fatal("switched_at written for a switch that never ran")
+		}
+		// Both requesters are told where the hub runs (a's was replaced).
+		for _, ph := range []*hubtest.Phone{a, b} {
+			if c, ok := ph.LastSwitch(); !ok || *c.Target != wire.TransportCloudKit {
+				t.Fatalf("no answer for a requester: %+v", ph.Controls)
+			}
 		}
 		// One after the other: the later one is where the hub ends.
-		w.advance(10 * time.Minute)
 		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}

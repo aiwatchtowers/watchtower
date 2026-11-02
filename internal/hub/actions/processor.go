@@ -424,8 +424,8 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		}
 	}
 	if p.standby() {
-		if left, err := p.onStandby(ctx, b, rec, opened); left || err != nil {
-			return err
+		if p.onStandby(ctx, b, rec, opened) {
+			return nil
 		}
 	}
 	switch opened.Frame.Kind {

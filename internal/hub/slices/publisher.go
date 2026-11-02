@@ -136,9 +136,10 @@ type Publisher struct {
 	// since one is.
 	unlinkedSeen bool
 
-	mu          sync.Mutex // guards the dirty set, the pause and lastPublish
-	paused      bool       // Pause: no cycle runs, the dirty set waits
-	resumed     bool       // Resume: Run's next step is one full diff
+	mu          sync.Mutex      // guards the dirty set, the pause and lastPublish
+	paused      bool            // a hold: no cycle runs, the dirty set waits
+	holds       map[string]bool // the PauseFor reasons held
+	resumed     bool            // Resume: Run's next step is one full diff
 	dirty       map[Kind]bool
 	firstDirty  time.Time // monotonic, first PublishSoon of the dirty set
 	lastDirty   time.Time // monotonic, latest PublishSoon
@@ -198,20 +199,40 @@ func (p *Publisher) PublishSoon(kinds ...Kind) {
 // Pause stops publishing (spec §7.3, a headless hub with no paying phone):
 // no cycle runs until Resume, and the kinds marked meanwhile stay dirty. It
 // returns once a cycle already running has ended, so nothing is saved or
-// deleted after it.
-func (p *Publisher) Pause() {
+// deleted after it. Pause and Resume hold and release the admission gate's
+// own reason ("") of PauseFor/ResumeFor.
+func (p *Publisher) Pause() { p.PauseFor("") }
+
+// Resume ends a Pause: Run's next step is one full diff, which covers what
+// changed during the pause. A Resume without a Pause does nothing.
+func (p *Publisher) Resume() { p.ResumeFor("") }
+
+// PauseFor holds the publisher for reason. Holds are a set: it runs again
+// only once every reason was released, so one pauser (the transport switch)
+// never lifts another's (the admission gate). It returns once a cycle
+// already running has ended.
+func (p *Publisher) PauseFor(reason string) {
 	p.mu.Lock()
+	if p.holds == nil {
+		p.holds = map[string]bool{}
+	}
+	p.holds[reason] = true
 	p.paused = true
 	p.mu.Unlock()
 	p.cycleMu.Lock()
 	p.cycleMu.Unlock() //nolint:staticcheck // SA2001: only waits for the running cycle
 }
 
-// Resume ends a Pause: Run's next step is one full diff, which covers what
-// changed during the pause. A Resume without a Pause does nothing.
-func (p *Publisher) Resume() {
+// ResumeFor releases reason's hold; the last release resumes with one full
+// diff. Releasing a reason that holds nothing does nothing.
+func (p *Publisher) ResumeFor(reason string) {
 	p.mu.Lock()
-	if !p.paused {
+	if !p.holds[reason] {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.holds, reason)
+	if len(p.holds) > 0 {
 		p.mu.Unlock()
 		return
 	}

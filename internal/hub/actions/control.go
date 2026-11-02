@@ -23,7 +23,7 @@ import (
 
 // SwitchNotSupported is transport_switch_rejected's reason on a hub that
 // cannot switch transports (no Switch): the phone stops waiting at once.
-const SwitchNotSupported = "not supported yet"
+const SwitchNotSupported = wire.SwitchNotSupported
 
 // Switch is the hub's transport switcher as a processor sees it
 // (internal/hub/switcher). A hub without one (headless, relay-only) answers
@@ -248,8 +248,10 @@ func (p *Processor) epochAck(ctx context.Context, b mailbox, rec transport.Store
 // (sim rules 8–10). Accepted, the request is marked read and the switcher
 // carries the switch out after the pass; rejected (*SwitchRejected), the
 // phone gets transport_switch_rejected with the reason and retry_after_s,
-// queued with the read mark; any other error leaves the request unread for
-// the next pass. A target that is no transport is read with no effect.
+// queued with the read mark; any other error (the switcher could not record
+// it) is answered the same way with wire.SwitchUnavailable and
+// SwitchRetryAfter, so the phone asks again and the mailbox never waits on
+// it. A target that is no transport is read with no effect.
 func (p *Processor) requestSwitch(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, c wire.Control) error {
 	if c.Target == nil || (*c.Target != wire.TransportRelay && *c.Target != wire.TransportCloudKit) {
 		log.Printf("hub: a transport_switch of device %s names no transport: dropped", b.id)
@@ -261,10 +263,14 @@ func (p *Processor) requestSwitch(ctx context.Context, b mailbox, rec transport.
 	}
 	err := p.cfg.Switch.Request(ctx, b.id.String(), transport.Kind(*c.Target), reason)
 	var rej *SwitchRejected
+	if err != nil && !errors.As(err, &rej) {
+		log.Printf("hub: device %s asked for a transport switch: not recorded (%s)", b.id, errClass(err))
+		rej = &SwitchRejected{Reason: wire.SwitchUnavailable, RetryAfter: SwitchRetryAfter}
+	}
 	switch {
 	case err == nil:
 		return p.markRead(ctx, b, rec, o)
-	case errors.As(err, &rej):
+	default:
 		why := rej.Reason
 		ctl := wire.Control{Kind: wire.ControlSwitchRejected, Reason: &why}
 		if rej.RetryAfter > 0 {
@@ -286,8 +292,10 @@ func (p *Processor) requestSwitch(ctx context.Context, b mailbox, rec transport.
 		log.Printf("hub: device %s asked for a transport switch: rejected, %s", b.id, why)
 		return nil
 	}
-	return err
 }
+
+// SwitchRetryAfter is the wait a phone gets with wire.SwitchUnavailable.
+const SwitchRetryAfter = time.Minute
 
 // rejectSwitch answers a phone's transport_switch with
 // transport_switch_rejected("not supported yet"), queued in the transaction
