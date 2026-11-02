@@ -106,42 +106,74 @@ package final class SessionFeedStore: ObservableObject {
         activity = nil; live = nil; liveError = nil; liveLoaded = false
     }
 
-    /// A subagent opened in the pane: one read now, then while `isRunning`
-    /// (its marker says `running`) one more every `interval`. Reads due while
-    /// `isOnScreen` is false are skipped. Each good read hands its entries and
-    /// activity to `onEntries`/`onActivity` and clears the error; a failed one reports it to
-    /// `onError`. With `readsMainFeed` each tick also reads the main feed
-    /// after it (the main poll is stopped while a subagent is open), so the
-    /// markers — and the status `isRunning` reads from them — stay current.
-    /// Returns when finished or cancelled.
+    /// One serial loop for the open pane. While the root stays active,
+    /// completed child history pauses but its immediate parent is observed
+    /// for resume. No per-agent timer or tree walk is started.
     package func followSubagent(
         _ toolUseID: String,
         interval: Duration = .seconds(3),
         readsMainFeed: Bool = false,
+        parentToolUseID: String? = nil,
+        isSessionActive: (() -> Bool)? = nil,
         isRunning: () -> Bool,
         isOnScreen: () -> Bool,
         onEntries: ([SessionFeedEntry]) -> Void,
         onActivity: (SessionFeedActivity?) -> Void = { _ in },
         onLive: (SessionFeedLive?, String?) -> Void = { _, _ in },
+        onStatus: (String) -> Void = { _ in },
         onError: (String?) -> Void = { _ in }
     ) async {
         guard !runnerMissing else { return }
-        func tick() async {
-            guard isOnScreen() else { return }
+        var observation = SessionSubagentObservation()
+        func readChild() async {
             do {
-                let read = try await subagentFeed(toolUseID)
-                if Task.isCancelled { return }
-                onEntries(read.entries)
-                onActivity(read.activity)
-                onLive(read.live, read.liveError)
-                onError(nil)
+                let result = try await subagentFeed(toolUseID)
+                guard !Task.isCancelled else { return }
+                if isSessionActive != nil {
+                    onStatus(observation.receiveOwn(snapshot: result.live, entries: result.entries,
+                                                    error: result.liveError, now: .now))
+                }
+                onEntries(result.entries); onActivity(result.activity)
+                onLive(result.live, result.liveError); onError(nil)
             } catch {
-                if !Task.isCancelled { onError(error.localizedDescription); onLive(nil, WorkchatLivePresentation.unavailable) }
+                guard !Task.isCancelled else { return }
+                if isSessionActive != nil {
+                    onStatus(observation.receiveOwn(snapshot: nil, entries: [], error: error.localizedDescription, now: .now))
+                }
+                onError(error.localizedDescription); onLive(nil, WorkchatLivePresentation.unavailable)
             }
-            if readsMainFeed, !Task.isCancelled { await poller.refresh() }
+        }
+        func tick() async {
+            guard isOnScreen(), !Task.isCancelled else { return }
+            let readOwn = isSessionActive == nil || !observation.finished
+            if readOwn { await readChild() }
+            guard !Task.isCancelled, isOnScreen() else { return }
+            // An inactive session still gets its one opening history read.
+            if let isSessionActive, !isSessionActive() { return }
+            var parent: SessionFeedLive?
+            if isSessionActive != nil, observation.finished, !readOwn, let parentToolUseID {
+                do {
+                    let result = try await subagentFeed(parentToolUseID)
+                    if result.liveError == nil { parent = result.live; onError(nil) } else { onError(result.liveError) }
+                } catch {
+                    // Surface the failed parent read without discarding the
+                    // completed interval; retry its parent next tick.
+                    parent = nil; onError(error.localizedDescription)
+                }
+            }
+            guard !Task.isCancelled, isOnScreen() else { return }
+            if readsMainFeed || isSessionActive != nil { await poller.refresh() }
+            guard !Task.isCancelled, isOnScreen() else { return }
+            if let isSessionActive, !isSessionActive() { return }
+            if isSessionActive != nil, parentToolUseID == nil, liveError == nil { parent = live }
+            if isSessionActive != nil,
+               observation.receiveParent(parent, childID: toolUseID, now: .now) {
+                onStatus("running")
+                await readChild()
+            }
         }
         await tick()
-        while isRunning() {
+        while isSessionActive?() ?? isRunning() {
             try? await Task.sleep(for: interval)
             if Task.isCancelled { return }
             await tick()

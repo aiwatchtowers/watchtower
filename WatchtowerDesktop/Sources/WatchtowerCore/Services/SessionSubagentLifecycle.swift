@@ -24,16 +24,51 @@ package enum SessionSubagentLifecycle {
     }
 }
 
-/// The raw parent marker can restart a resumed direct child. Own completion
-/// intentionally is not part of the key, so it does not cause a second poll.
+/// Identity/foreground/retry changes restart the pane's single observer.
+/// Lifecycle updates are consumed inside that loop, never by self-cancelling it.
 package struct SessionSubagentFollowKey: Hashable {
     package let follow: AnyHashable
     package let retry: UUID
-    package let parentStatus: String
+    package let parentToolUseID: String?
 
-    package init(follow: AnyHashable, retry: UUID, parentStatus: String) {
+    package init(follow: AnyHashable, retry: UUID, parentToolUseID: String?) {
         self.follow = follow
         self.retry = retry
-        self.parentStatus = parentStatus
+        self.parentToolUseID = parentToolUseID
+    }
+}
+
+/// The open pane's observation state. Completed history stays paused while
+/// its immediate parent's actual snapshots supply evidence of another run.
+package struct SessionSubagentObservation {
+    package private(set) var finished = false
+    private var own: SessionFeedLive?
+    private var completedAt: Date?
+    private var parentStatus: String?
+    private var parentStartedAt: Date?
+
+    package mutating func receiveOwn(
+        snapshot: SessionFeedLive?, entries: [SessionFeedEntry], error: String?, now: Date
+    ) -> String {
+        if let snapshot { own = snapshot }
+        let status = SessionSubagentLifecycle.status(parentStatus: "unknown", snapshot: own, error: error, now: now)
+        finished = status == "finished"
+        if finished { completedAt = entries.compactMap(\.at).max() ?? own?.observedAt }
+        return status
+    }
+
+    package mutating func receiveParent(_ snapshot: SessionFeedLive?, childID: String, now: Date) -> Bool {
+        guard let snapshot, let observed = snapshot.observedAt,
+              now.timeIntervalSince(observed) < WorkchatLivePresentation.staleAfter,
+              let child = snapshot.agents.first(where: { $0.id == childID }),
+              child.ref.status == "running" || child.ref.status == "finished" else { return false }
+        let newerInterval = child.startedAt.map { start in
+            parentStartedAt.map { start > $0 } ?? (completedAt.map { start > $0 } ?? false)
+        } ?? false
+        let resumed = finished && child.ref.status == "running" && (parentStatus == "finished" || newerInterval)
+        parentStatus = child.ref.status
+        parentStartedAt = child.startedAt
+        if resumed { finished = false; own = nil; completedAt = nil }
+        return resumed
     }
 }

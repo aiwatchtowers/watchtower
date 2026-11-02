@@ -418,7 +418,7 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(store.liveError, "Activity unavailable", "older CLI is an explicit unavailable state")
     }
 
-    func testNestedOwnCompletionStopsFurtherChildPollingWhileMainSessionWorks() async {
+    func testLegacyFollowWithoutParentObservationStopsOnOwnCompletion() async {
         let stamp = "2026-11-02T12:00:00Z"
         let now = SessionFeedEntry.parseDate(stamp) ?? .distantPast
         let completed = #"{"live_ok":true,"live":{"observed_at":"2026-11-02T12:00:00Z","turn_active":false,"#

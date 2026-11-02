@@ -23,17 +23,25 @@ final class SessionSubagentLifecycleTests: XCTestCase {
         unresolved.agentsState = "unknown"
         XCTAssertEqual(SessionSubagentLifecycle.status(parentStatus: "running", snapshot: unresolved, error: nil, now: now), "unknown")
     }
-    func testParentResumeRestartsButOwnCompletionDoesNotChangeFollowKey() {
+    func testParentIdentityChangesKeyButLifecycleDoesNotRestartTheObserver() {
         let retry = UUID()
-        let initial = SessionSubagentFollowKey(follow: "root-working", retry: retry, parentStatus: "running")
-        let ownCompleted = SessionSubagentFollowKey(follow: "root-working", retry: retry, parentStatus: "running")
-        XCTAssertEqual(initial, ownCompleted)
-        let parentFinished = SessionSubagentFollowKey(follow: "root-working", retry: retry, parentStatus: "finished")
-        XCTAssertNotEqual(initial, parentFinished)
-        let parentResumed = SessionSubagentFollowKey(follow: "root-working", retry: retry, parentStatus: "running")
-        XCTAssertNotEqual(parentFinished, parentResumed)
-        let active = SessionFeedLive(observedAt: now, turnActive: true)
-        XCTAssertEqual(SessionSubagentLifecycle.status(parentStatus: "running", snapshot: active, error: nil, now: now + 11), "running")
+        let initial = SessionSubagentFollowKey(follow: "root-working", retry: retry, parentToolUseID: "parent-a")
+        let completed = SessionSubagentFollowKey(follow: "root-working", retry: retry, parentToolUseID: "parent-a")
+        XCTAssertEqual(initial, completed)
+        let differentParent = SessionSubagentFollowKey(follow: "root-working", retry: retry, parentToolUseID: "parent-b")
+        XCTAssertNotEqual(initial, differentParent)
+    }
+
+    func testTheSameParentRunCannotRepeatedlyReopenCompletedHistory() {
+        var observer = SessionSubagentObservation()
+        let completed = SessionFeedLive(observedAt: now, turnActive: false)
+        let entries = [SessionFeedEntry(id: "task", kind: "owner", at: now - 60)]
+        XCTAssertEqual(observer.receiveOwn(snapshot: completed, entries: entries, error: nil, now: now), "finished")
+        let child = SessionLiveAgent(ref: SessionFeedSubagent(toolUseID: "child", status: "running"), startedAt: now - 59)
+        let parent = SessionFeedLive(observedAt: now, agents: [child])
+        XCTAssertTrue(observer.receiveParent(parent, childID: "child", now: now))
+        XCTAssertEqual(observer.receiveOwn(snapshot: completed, entries: entries, error: nil, now: now), "finished")
+        XCTAssertFalse(observer.receiveParent(parent, childID: "child", now: now))
     }
 
 }

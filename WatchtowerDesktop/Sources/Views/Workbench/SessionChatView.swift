@@ -216,6 +216,7 @@ struct SessionChatView: View {
             SessionChatSubagentView(
                 store: store,
                 subagent: subagent,
+                parentToolUseID: path.stack.dropLast().last?.toolUseID,
                 status: { currentSubagentStatus(subagent) },
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
