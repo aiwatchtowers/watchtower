@@ -118,7 +118,7 @@ const (
 	errSecItemNotFound = -25300
 )
 
-// systemKeychain is keychainOps over the Security framework.
+// systemKeychain is KeychainOps over the Security framework.
 type systemKeychain struct{}
 
 // keychainCall runs one call with C copies of the service and account.
@@ -129,7 +129,7 @@ func keychainCall(service, account string, fn func(svc, acct *C.char) C.OSStatus
 	return int32(fn(svc, acct))
 }
 
-func (systemKeychain) put(service, account string, data []byte) error {
+func (systemKeychain) Put(service, account string, data []byte) error {
 	if len(data) == 0 {
 		return errors.New("identity: refusing to store an empty item")
 	}
@@ -142,7 +142,7 @@ func (systemKeychain) put(service, account string, data []byte) error {
 	return nil
 }
 
-func (systemKeychain) get(service, account string, buf []byte) (int, bool, error) {
+func (systemKeychain) Get(service, account string, buf []byte) (int, bool, error) {
 	var n C.int
 	st := keychainCall(service, account, func(svc, acct *C.char) C.OSStatus {
 		return C.wt_kc_get(svc, acct, unsafe.Pointer(&buf[0]), C.int(len(buf)), &n)
@@ -156,7 +156,7 @@ func (systemKeychain) get(service, account string, buf []byte) (int, bool, error
 	return int(n), true, nil
 }
 
-func (systemKeychain) del(service, account string) error {
+func (systemKeychain) Del(service, account string) error {
 	st := keychainCall(service, account, func(svc, acct *C.char) C.OSStatus {
 		return C.wt_kc_delete(svc, acct)
 	})

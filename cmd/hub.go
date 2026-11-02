@@ -66,11 +66,20 @@ func hubWrite(req hub.ControlRequest, direct func(dir string, st *state.Store) (
 	if err != nil {
 		return hub.ControlAnswer{}, err
 	}
+	return hubWriteAt(dir, req, func(lock *state.Lock) (hub.ControlAnswer, error) {
+		return hubWriteDirect(dir, lock, direct)
+	})
+}
+
+// hubWriteAt is hubWrite in dir with a direct step that gets the held lock
+// (and releases it) and opens what it needs itself: `hub adopt
+// --confirm-deleted` must not create a sidecar.
+func hubWriteAt(dir string, req hub.ControlRequest, direct func(lock *state.Lock) (hub.ControlAnswer, error)) (hub.ControlAnswer, error) {
 	deadline := time.Now().Add(hubLockWait)
 	for {
 		lock, err := state.AcquireLock(dir)
 		if err == nil {
-			a, err := hubWriteDirect(dir, lock, direct)
+			a, err := direct(lock)
 			if err != nil {
 				return a, err
 			}
