@@ -9,31 +9,37 @@
 // Only a person switches (rule 8): a phone's transport_switch, or the relay
 // entitlement lapsing (by = "entitlement_expired"); a transport failure
 // never does. Toward the relay a switch is accepted at least AntiFlap after
-// the previous accepted one; toward CloudKit always and at once (rules
-// 9–10). The last accepted request wins.
+// the previous one; toward CloudKit always and at once (rules 9–10). The
+// last accepted request wins.
 //
 // An accepted switch (rule 11; Step) runs in this order, each step durable
 // in hub_meta so a restart finishes the same switch and never rotates twice:
-//  1. every phone's mailbox on the old transport is finished in the old
-//     epoch if it answers within OldSideTimeout (never waiting on an
-//     unreachable one);
-//  2. the epoch rotates once (identity.ReasonTransportSwitch);
-//  3. transport_switched{target, epoch, by, at, keybox} is queued for every
-//     phone on both transports (one control id, two copies), the copy on the
-//     old transport sealed in the old epoch; toward the relay, hub_on_relay
-//     to the CloudKit mailbox of every ordered phone that does not pay;
-//     hub_meta.transport moves in the same transaction;
-//  4. the old transport's queue is flushed and its data zone gets the
-//     transport marker sealed in the old epoch (phone contract point 6a),
-//     both before the hub stops publishing there; the relay's data zone
-//     always gets the marker (point 4), in the new epoch when the relay is
-//     the new transport;
-//  5. the new transport becomes the one actions are applied from (its
-//     mailboxes are read from the start, so what waited there on standby is
-//     read now) and the publisher's next cycle is one full diff there.
+//  1. the publisher is held (its own pause reason) from acceptance until the
+//     new transport is active;
+//  2. every phone's mailbox on the old transport is finished in the old
+//     epoch if it answers within the old-side timeout (never waiting on an
+//     unreachable one), then the old transport's processor is paused, so
+//     nothing is sealed there in the new epoch;
+//  3. the epoch rotates once (identity.ReasonTransportSwitch; switched_at and
+//     switched_by are written with it);
+//  4. one transaction queues transport_switched{target, epoch, by, at, keybox}
+//     for every phone on both transports (one control id per phone, the old
+//     copy sealed in an epoch that phone holds), toward the relay
+//     hub_on_relay to the CloudKit mailbox of every ordered phone that does
+//     not pay, sets hub_meta.transport, rewinds the new transport's
+//     mailboxes and owes the markers; the in-memory active transport moves
+//     with the commit. A phone whose copy cannot be sealed is logged and
+//     skipped, never stopping the switch;
+//  5. the new transport's queue is written and the publisher resumes there
+//     (a full diff);
+//  6. off the switch's path (PollOther): the old transport's queue (the
+//     notices) and its data-zone marker sealed in the old epoch (phone
+//     contract point 6a); the relay's data zone always gets the marker
+//     (point 4). The publisher has stopped publishing there since step 1.
 //
 // A notice or a marker that could not be written stays owed: the queue rows
-// are retried by every pass of their processor, the markers by Run.
+// are retried by every pass of their processor, the markers by PollOther. A
+// Step that fails is retried with backoff (1 s doubling to 60 s).
 package switcher
 
 import (
@@ -54,37 +60,44 @@ import (
 )
 
 const (
-	// AntiFlap is the least time between an accepted switch and the next
-	// one toward the relay (rule 9).
+	// AntiFlap is the least time between a switch and the next one toward
+	// the relay (rule 9).
 	AntiFlap = 5 * time.Minute
 	// OtherPoll is how often Run polls the inactive transport's mailboxes
 	// (rule 11) and retries the owed markers.
 	OtherPoll = 30 * time.Second
 	// OldSideTimeout bounds every call into the transport the hub leaves or
-	// does not run on, so an unreachable one never holds a switch up.
+	// does not run on, so an unreachable (or hanging) one never holds a
+	// switch up.
 	OldSideTimeout = 10 * time.Second
+	// The backoff of a failed Step.
+	backoffFirst = time.Second
+	backoffMax   = time.Minute
+	// pauseReason is the switch's own hold on the publisher.
+	pauseReason = "transport_switch"
 )
 
-// hub_meta keys: the active transport ("cloudkit"|"relay"), the last accepted
-// switch's time (seconds since 1970 as a decimal string, like enabled_at)
-// and who asked (a device id or wire.SwitchedByEntitlement), and the switch
-// record (switchRecord, JSON).
+// hub_meta keys: the active transport ("cloudkit"|"relay"), the last switch's
+// time (seconds since 1970 as a decimal string, like enabled_at) and who
+// asked (a device id or wire.SwitchedByEntitlement), and the switch record
+// (switchRecord, JSON). metaAdoptedAt is the adoption's (internal/hub/adopt).
 const (
 	MetaTransport  = "transport"
 	MetaSwitchedAt = "switched_at"
 	MetaSwitchedBy = "switched_by"
 	metaSwitch     = "transport_switch"
+	metaAdoptedAt  = "adopted_at"
 )
 
 // Config wires a Switcher. Relay may be nil (a desktop host without a relay
 // origin: CloudKit only, every switch toward the relay rejected). Actions is
 // the processors' template: the switcher sets Transport and Switch per
-// transport. Publisher (optional) is paused across a switch and resumed on
-// the new transport (a full diff); it publishes on Front(). Keyboxes is the
-// link center's (the payload of each linked phone's keybox, the bytes the
-// data zone's keybox carries). Paying (optional) is which linked phones pay
-// for the relay, by device id. Clock defaults to Actions.Clock, then
-// time.Now.
+// transport. Publisher (optional) publishes on Front(); the switch holds it
+// under its own reason. Keyboxes is the link center's (each linked phone's
+// keybox payload, the bytes the data zone's keybox carries). Paying
+// (optional) is which linked phones pay for the relay, by device id.
+// OldSideTimeout (0 = OldSideTimeout) bounds each old-side step. Clock
+// defaults to Actions.Clock, then time.Now.
 type Config struct {
 	Store           *state.Store
 	Keys            *identity.Keyring
@@ -93,6 +106,7 @@ type Config struct {
 	Publisher       *slices.Publisher
 	Keyboxes        func() ([]wire.Keybox, error)
 	Paying          func(ctx context.Context) (map[string]bool, error)
+	OldSideTimeout  time.Duration
 	Clock           func() time.Time
 }
 
@@ -115,16 +129,26 @@ type Switcher struct {
 	// (entitlement.go). Device ids in uuidString form.
 	lapsed  map[string]bool
 	pending map[string]bool
+
+	boMu    sync.Mutex // the failed-Step backoff
+	boDelay time.Duration
+	boUntil time.Time
 }
 
 var _ actions.Switch = (*Switcher)(nil)
 
-// New builds the switcher and its processors; the active transport is
-// hub_meta.transport (CloudKit when unset, the relay on a hub with no
-// CloudKit side).
+// New builds the switcher and its processors. The active transport is
+// hub_meta.transport; unset (decided once, then stored): CloudKit on a hub
+// that adopted the Swift hub's state, the relay on a hub whose phones are
+// all relay links (an existing relay hub becoming a desktop host), else
+// CloudKit when the hub has it. A switch in flight holds the publisher and,
+// once rotated, pauses the old transport's processor until Step finishes it.
 func New(c Config) (*Switcher, error) {
 	if c.CloudKit == nil && c.Relay == nil {
 		return nil, errors.New("switcher: no transport")
+	}
+	if c.Keyboxes == nil {
+		return nil, errors.New("switcher: no keyboxes")
 	}
 	if c.Clock == nil {
 		c.Clock = c.Actions.Clock
@@ -149,6 +173,16 @@ func New(c Config) (*Switcher, error) {
 		return nil, err
 	}
 	s.active = active
+	r, ok, err := s.record()
+	if err != nil {
+		return nil, err
+	}
+	if ok && !r.Done {
+		s.holdPublisher()
+		if r.Epoch != 0 {
+			s.pauseOld(r)
+		}
+	}
 	return s, nil
 }
 
@@ -157,14 +191,47 @@ func (s *Switcher) storedActive() (transport.Kind, error) {
 	if err != nil {
 		return "", err
 	}
-	k := transport.Kind(v)
-	if ok && s.transport(k) != nil {
+	if k := transport.Kind(v); ok && s.transport(k) != nil {
 		return k, nil
 	}
-	if s.c.CloudKit != nil {
+	k, err := s.defaultActive()
+	if err != nil {
+		return "", err
+	}
+	if err := s.c.Store.SetMeta(MetaTransport, string(k)); err != nil {
+		return "", err
+	}
+	return k, nil
+}
+
+func (s *Switcher) defaultActive() (transport.Kind, error) {
+	if s.c.CloudKit == nil {
+		return transport.KindRelay, nil
+	}
+	if s.c.Relay == nil {
 		return transport.KindCloudKit, nil
 	}
-	return transport.KindRelay, nil
+	if _, adopted, err := s.c.Store.Meta(metaAdoptedAt); err != nil || adopted {
+		return transport.KindCloudKit, err
+	}
+	devices, err := s.c.Store.Devices()
+	if err != nil {
+		return "", err
+	}
+	ck, err := s.c.Store.CloudKitLinks()
+	if err != nil {
+		return "", err
+	}
+	relayLinked := false
+	for _, d := range devices {
+		if d.RelayDeviceID != "" {
+			relayLinked = true
+		}
+	}
+	if relayLinked && ck == 0 {
+		return transport.KindRelay, nil
+	}
+	return transport.KindCloudKit, nil
 }
 
 // transport is k's transport, nil when the hub has none of that kind.
@@ -236,6 +303,46 @@ func (s *Switcher) other() transport.Kind {
 	return k
 }
 
+func (s *Switcher) oldSide() time.Duration {
+	if s.c.OldSideTimeout > 0 {
+		return s.c.OldSideTimeout
+	}
+	return OldSideTimeout
+}
+
+// holdPublisher / releasePublisher hold the publisher under the switch's own
+// reason (another pauser's hold is never lifted here).
+func (s *Switcher) holdPublisher() {
+	if s.c.Publisher != nil {
+		s.c.Publisher.PauseFor(pauseReason)
+	}
+}
+
+func (s *Switcher) releasePublisher() {
+	if s.c.Publisher != nil {
+		s.c.Publisher.ResumeFor(pauseReason)
+	}
+}
+
+// SetPublisher wires the publisher built on Front() (it needs the switcher
+// first); a switch in flight holds it at once.
+func (s *Switcher) SetPublisher(p *slices.Publisher) {
+	s.stepMu.Lock()
+	defer s.stepMu.Unlock()
+	s.c.Publisher = p
+	if s.Pending() {
+		s.holdPublisher()
+	}
+}
+
+// pauseOld pauses the processor of the transport r leaves (between its
+// rotation and its announce nothing may be sealed there in the new epoch).
+func (s *Switcher) pauseOld(r switchRecord) {
+	if p := s.procs[r.From]; p != nil {
+		p.SetPaused(true)
+	}
+}
+
 // Kick asks Run to Step now (a request was accepted).
 func (s *Switcher) Kick() {
 	select {
@@ -244,45 +351,88 @@ func (s *Switcher) Kick() {
 	}
 }
 
-// Run carries accepted switches out and polls the inactive transport's
-// mailboxes every OtherPoll (rule 11), retrying the owed markers, until ctx
-// ends.
+// stepDue reports whether a failed Step's backoff has run out.
+func (s *Switcher) stepDue() bool {
+	s.boMu.Lock()
+	defer s.boMu.Unlock()
+	return !time.Now().Before(s.boUntil)
+}
+
+// noteStep moves the backoff: reset on success, else 1 s doubling to 60 s.
+// One log line per streak of failures, one when it ends.
+func (s *Switcher) noteStep(err error) {
+	s.boMu.Lock()
+	defer s.boMu.Unlock()
+	if err == nil {
+		if s.boDelay > 0 {
+			log.Printf("hub: transport switch: carried out after retries")
+		}
+		s.boDelay, s.boUntil = 0, time.Time{}
+		return
+	}
+	if s.boDelay == 0 {
+		log.Printf("hub: transport switch: %s; retrying with backoff", errClass(err))
+		s.boDelay = backoffFirst
+	} else {
+		s.boDelay = min(2*s.boDelay, backoffMax)
+	}
+	s.boUntil = time.Now().Add(s.boDelay)
+}
+
+func (s *Switcher) resetBackoff() {
+	s.boMu.Lock()
+	s.boDelay, s.boUntil = 0, time.Time{}
+	s.boMu.Unlock()
+}
+
+// backoffWait is how long until a failed Step may run again (0 = now).
+func (s *Switcher) backoffWait() time.Duration {
+	s.boMu.Lock()
+	defer s.boMu.Unlock()
+	return max(time.Until(s.boUntil), 0)
+}
+
+// Run carries accepted switches out (a failed Step backs off) and polls
+// the inactive transport's mailboxes every OtherPoll (rule 11), writing the
+// owed notices and markers, until ctx ends.
 func (s *Switcher) Run(ctx context.Context) error {
-	t := time.NewTicker(OtherPoll)
-	defer t.Stop()
 	for {
-		if err := s.Step(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("hub: transport switch: %s", errClass(err))
+		if s.stepDue() {
+			s.noteStep(s.Step(ctx))
 		}
 		s.PollOther(ctx)
-		// Sim rule 14: an old epoch's keys go once every phone acked a
-		// newer one and nothing sealed in it is held (7 days at most).
-		if err := s.c.Keys.RetireOld(); err != nil {
-			log.Printf("hub: retiring old epochs: %s", errClass(err))
+		wait := OtherPoll
+		if w := s.backoffWait(); w > 0 && w < wait {
+			wait = w
 		}
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return ctx.Err()
 		case <-s.kick:
 		case <-t.C:
 		}
+		t.Stop()
 	}
 }
 
 // PollOther is one pass over the inactive transport's mailboxes (bounded by
-// OldSideTimeout): the phones' controls there are read, a phone that wrote
-// there gets its answer, and that transport's queue is written; then the
-// owed markers. An unreachable side is logged and left for the next poll.
+// the old-side timeout): the phones' controls there are read, a phone that
+// wrote there gets its answer, and that transport's queue is written (the
+// switch notices among it); then the owed markers. An unreachable side is
+// logged and left for the next poll. A pending switch kicks Run unless a
+// failed Step is backing off.
 func (s *Switcher) PollOther(ctx context.Context) {
 	if k := s.other(); k != "" {
-		octx, cancel := context.WithTimeout(ctx, OldSideTimeout)
+		octx, cancel := context.WithTimeout(ctx, s.oldSide())
 		if _, err := s.procs[k].Pass(octx); err != nil && ctx.Err() == nil {
 			log.Printf("hub: polling the %s mailboxes: %s", k, errClass(err))
 		}
 		cancel()
 	}
-	s.writeOwedMarkers(ctx)
-	if s.Pending() {
+	s.writeOwedMarkers(ctx, "")
+	if s.Pending() && s.stepDue() {
 		s.Kick()
 	}
 }

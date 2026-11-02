@@ -90,4 +90,59 @@ final class HubContractFixtureTests: XCTestCase {
             }
         }
     }
+
+    /// The phone's reading of `transport_switched.keybox` (phone contract
+    /// point 3): a string of unpadded base64url (RFC 4648 §5 alphabet
+    /// `A–Z a–z 0–9 - _`, no `=`) is the sealed keybox envelope; any other
+    /// value, or a string outside that alphabet, reads as no keybox.
+    private func switchKeybox(_ value: Any?) -> Data? {
+        guard let text = value as? String, !text.isEmpty else { return nil }
+        let alphabet = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        guard text.unicodeScalars.allSatisfy(alphabet.contains) else { return nil }
+        var base64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        return Data(base64Encoded: base64)
+    }
+
+    func testTransportSwitchedCarriesTheKeyboxAsUnpaddedBase64URL() throws {
+        let cases = try XCTUnwrap(load()["transport_switched"])
+        XCTAssertEqual(cases.count, 4)
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let json = try XCTUnwrap(fixtureCase["json"] as? [String: Any], name)
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(json["kind"] as? String, "transport_switched", name)
+            XCTAssertEqual(json["target"] as? String, kit["target"] as? String, name)
+            XCTAssertEqual((json["epoch"] as? NSNumber)?.uint32Value, (kit["epoch"] as? NSNumber)?.uint32Value, name)
+            let keybox = switchKeybox(json["keybox"])
+            if let want = kit["keybox"] as? String {
+                XCTAssertEqual(json["keybox"] as? String, want, name)
+                XCTAssertNotNil(keybox, name)
+                XCTAssertFalse(want.contains("="), "unpadded: \(name)")
+            } else {
+                XCTAssertNil(keybox, "an object or absent keybox reads as none: \(name)")
+            }
+            if name == "transport_marker" {
+                XCTAssertNil(json["device_id"], name)
+                XCTAssertNil(json["keybox"], name)
+            }
+        }
+        XCTAssertNil(switchKeybox("AQID=="), "padding is not the contract")
+        XCTAssertNil(switchKeybox("AQ+/"), "the standard alphabet is not the contract")
+    }
+
+    func testTransportSwitchRejectedReasonsArePinned() throws {
+        let cases = try XCTUnwrap(load()["transport_switch_rejected"])
+        var reasons: [String] = []
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let json = try XCTUnwrap(fixtureCase["json"] as? [String: Any], name)
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(json["kind"] as? String, "transport_switch_rejected", name)
+            XCTAssertEqual(json["reason"] as? String, kit["reason"] as? String, name)
+            XCTAssertEqual((json["retry_after_s"] as? NSNumber)?.intValue, (kit["retry_after_s"] as? NSNumber)?.intValue, name)
+            reasons.append(try XCTUnwrap(kit["reason"] as? String, name))
+        }
+        XCTAssertEqual(Set(reasons), ["too_soon", "not_paying", "unavailable", "not supported yet"])
+    }
 }

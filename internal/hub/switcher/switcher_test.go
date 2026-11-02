@@ -48,7 +48,9 @@ type world struct {
 	ck      transport.Transport // the hub's CloudKit side
 	ckStore hubtest.Records     // the phones' CloudKit store
 	ckFake  *memfake.Fake       // the CloudKit records (availability)
+	bridge  *bridgefake.Fake    // the bridge (bridgefake flavour), nil otherwise
 	sw      *switcher.Switcher
+	cfg     switcher.Config
 	center  *link.Center
 	pub     *hubslices.Publisher
 
@@ -56,6 +58,7 @@ type world struct {
 	now    time.Time
 	calls  []string
 	paying map[string]bool
+	payErr error
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -104,7 +107,7 @@ func newWorld(t *testing.T, flavour string) *world {
 		b := bridgefake.Serve(t, dir, bridgefake.WithClock(w.clock))
 		client := cloudkit.New(cloudkit.Config{Dir: dir, HubID: w.keys.HubID().String(), RelayID: hubRelayID, Clock: w.clock})
 		t.Cleanup(func() { _ = client.Close() })
-		w.ck, w.ckFake, w.ckStore = client, b.Store(), b.PhoneRecords(w.keys.HubID().String())
+		w.ck, w.ckFake, w.ckStore, w.bridge = client, b.Store(), b.PhoneRecords(w.keys.HubID().String()), b
 	}
 	disp := actions.NewDispatcher()
 	disp.Register("test_noop", func(_ context.Context, r actions.Request) actions.Outcome {
@@ -120,7 +123,7 @@ func newWorld(t *testing.T, flavour string) *world {
 	sealer := secure.NewSealer(w.keys)
 	opener := secure.NewOpener(w.keys, w.keys)
 	w.center = link.NewCenter(link.Config{Store: st, Keys: w.keys, Opener: opener, Clock: w.clock})
-	w.sw, err = switcher.New(switcher.Config{
+	w.cfg = switcher.Config{
 		Store: st, Keys: w.keys, Relay: w.relay, CloudKit: w.ck,
 		Actions: actions.Config{
 			Store: st, Sealer: sealer, Opener: opener, Keys: w.keys, Dispatcher: disp,
@@ -130,17 +133,38 @@ func newWorld(t *testing.T, flavour string) *world {
 		Paying: func(context.Context) (map[string]bool, error) {
 			w.mu.Lock()
 			defer w.mu.Unlock()
+			if w.payErr != nil {
+				return nil, w.payErr
+			}
 			return maps.Clone(w.paying), nil
 		},
-	})
-	if err != nil {
-		t.Fatal(err)
+		OldSideTimeout: testOldSide,
 	}
+	w.rebuild(nil)
+	return w
+}
+
+// testOldSide is the old-side timeout the tests run with.
+const testOldSide = 300 * time.Millisecond
+
+// rebuild makes a new switcher (a restart) over the same sidecar and
+// transports, with mut applied to the config, and a publisher on its front.
+func (w *world) rebuild(mut func(*switcher.Config)) {
+	w.t.Helper()
+	cfg := w.cfg
+	if mut != nil {
+		mut(&cfg)
+	}
+	sw, err := switcher.New(cfg)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	w.sw = sw
 	w.pub = hubslices.NewPublisher(hubslices.Config{
-		Store: st, Transport: w.sw.Front(), Sealer: sealer, DataZone: transport.DataZone(hubRelayID),
+		Store: w.st, Transport: sw.Front(), Sealer: cfg.Actions.Sealer, DataZone: transport.DataZone(hubRelayID),
 		Sources: []hubslices.Source{hubslices.GrantSource(w.center)}, Clock: w.clock,
 	})
-	return w
+	sw.SetPublisher(w.pub)
 }
 
 // addPhone links a phone on CloudKit holding the current keys; pays marks it
@@ -181,7 +205,9 @@ func (w *world) onCloudKit(ph *hubtest.Phone) {
 // the switch step.
 func (w *world) hub() {
 	w.t.Helper()
-	_, _ = w.sw.ActiveProcessor().Pass(w.ctx)
+	pctx, cancel := context.WithTimeout(w.ctx, 2*testOldSide)
+	_, _ = w.sw.ActiveProcessor().Pass(pctx)
+	cancel()
 	if err := w.sw.Step(w.ctx); err != nil {
 		w.t.Fatalf("step: %v", err)
 	}
@@ -398,11 +424,17 @@ func TestLastAcceptedSwitchWins(t *testing.T) {
 		if w.epoch() != e {
 			t.Fatalf("epoch %d, want %d (no switch ran)", w.epoch(), e)
 		}
-		if _, by, ok, _ := w.sw.SwitchedAt(); !ok || by != b.ID().String() {
-			t.Fatalf("switched_by %q", by)
+		// A no-op undo is no switch: anti-flap does not restart.
+		if _, _, ok, _ := w.sw.SwitchedAt(); ok {
+			t.Fatal("switched_at written for a switch that never ran")
+		}
+		// Both requesters are told where the hub runs (a's was replaced).
+		for _, ph := range []*hubtest.Phone{a, b} {
+			if c, ok := ph.LastSwitch(); !ok || *c.Target != wire.TransportCloudKit {
+				t.Fatalf("no answer for a requester: %+v", ph.Controls)
+			}
 		}
 		// One after the other: the later one is where the hub ends.
-		w.advance(10 * time.Minute)
 		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}

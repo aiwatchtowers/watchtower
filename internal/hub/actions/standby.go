@@ -54,32 +54,36 @@ func (p *Processor) drainHeldActive(ctx context.Context, b mailbox, ps *pass) er
 // onStandby routes one opened phone record on standby: left is true when it
 // was left to the phone (answered at most once per record version); false
 // for the records read as on the active side.
-func (p *Processor) onStandby(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened) (left bool, err error) {
+func (p *Processor) onStandby(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened) (left bool) {
 	switch o.Frame.Kind {
 	case kindDevice:
-		return false, nil
+		return false
 	case kindControl:
 		var c wire.Control
 		if decodes(o.Frame.Payload, &c) && (c.Kind == wire.ControlSwitch || c.Kind == wire.ControlEpochAck) {
-			return false, nil
+			return false
 		}
 	case kindAction, kindRecordingUpload:
 	default:
-		return true, nil // an unknown kind has no work on either side
+		return true // an unknown kind has no work on either side
 	}
-	return true, p.answerStale(ctx, b, rec)
+	p.answerStale(ctx, b, rec)
+	return true
 }
 
 // answerStale queues the switcher's answer to a record b's phone left on
-// this standby transport, once per record version.
-func (p *Processor) answerStale(ctx context.Context, b mailbox, rec transport.Stored) error {
+// this standby transport, once per record version. An answer that cannot be
+// made (the switcher, sealing or the queue failed) is logged and left for
+// the record's next version: it never stalls the mailbox.
+func (p *Processor) answerStale(ctx context.Context, b mailbox, rec transport.Stored) {
 	key := b.zone + "\x00" + rec.Name
 	if seq, ok := p.staleSeen[key]; ok && seq == rec.RecordSeq {
-		return nil
+		return
 	}
 	c, epoch, ok, err := p.cfg.Switch.Stale(ctx, p.cfg.Transport.Kind(), b.id.String())
 	if err != nil {
-		return err
+		log.Printf("hub: device %s wrote on the standby transport: no answer (%s)", b.id, errClass(err))
+		return
 	}
 	if ok {
 		sealer := p.cfg.Sealer
@@ -87,11 +91,12 @@ func (p *Processor) answerStale(ctx context.Context, b mailbox, rec transport.St
 			sealer = sealer.InEpoch(epoch)
 		}
 		q, err := p.sealControlIn(sealer, b, c)
-		if err != nil {
-			return err
+		if err == nil {
+			err = p.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error { return state.Enqueue(tx, q.control(b.queue)) })
 		}
-		if err := p.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error { return state.Enqueue(tx, q.control(b.queue)) }); err != nil {
-			return err
+		if err != nil {
+			log.Printf("hub: device %s wrote on the standby transport: no answer (%s)", b.id, errClass(err))
+			return
 		}
 		log.Printf("hub: device %s wrote on the standby %s transport: answered %s", b.id, p.cfg.Transport.Kind(), c.Kind)
 	}
@@ -99,7 +104,20 @@ func (p *Processor) answerStale(ctx context.Context, b mailbox, rec transport.St
 		p.staleSeen = map[string]uint64{}
 	}
 	p.staleSeen[key] = rec.RecordSeq
-	return nil
+}
+
+// MailboxZones lists the phone mailbox zones on this processor's transport
+// (the switcher rewinds them in its own transaction, state.SetZoneTokenTx).
+func (p *Processor) MailboxZones() ([]string, error) {
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, g := range byZone(boxes) {
+		out = append(out, g.zone)
+	}
+	return out, nil
 }
 
 // Rewind resets the stored change tokens of every phone mailbox on this

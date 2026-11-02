@@ -70,21 +70,23 @@ func TestTransportSwitchGoesToTheSwitcher(t *testing.T) {
 			t.Fatalf("rejections %+v", got)
 		}
 
-		// A failure leaves the request unread for the next pass.
-		sw.reject = errors.New("account state unreadable")
-		id, err = w.phone.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target})
-		if err != nil {
+		// A switcher failure never stalls the mailbox: the phone is told to
+		// ask again, and the actions behind the request are applied.
+		sw.reject = errors.New("the sidecar is busy")
+		if _, err := w.phone.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = w.proc.Pass(w.ctx)
-		if !w.holds(w.phone.ControlWireName(id)) {
-			t.Fatal("a failed request was deleted")
+		seq := w.act("test_noop")
+		if _, err := w.proc.Pass(w.ctx); err != nil {
+			t.Fatalf("a switcher failure came out of the pass: %v", err)
 		}
-		sw.reject = nil
 		w.settle()
-		if w.holds(w.phone.ControlWireName(id)) || len(sw.requests) != 4 {
-			t.Fatalf("the request was not read again: %v", sw.requests)
+		w.wantCalls(noops(seq)...)
+		got = w.controls(wire.ControlSwitchRejected)
+		if len(got) != 2 || *got[1].Reason != wire.SwitchUnavailable || got[1].RetryAfterS == nil || *got[1].RetryAfterS != 60 {
+			t.Fatalf("rejections %+v", got)
 		}
+		w.wantEmptyMailbox()
 	})
 }
 

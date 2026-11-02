@@ -73,9 +73,10 @@ func saveOwedTx(tx *sql.Tx, owed map[transport.Kind]uint32) error {
 	return state.SetMetaTx(tx, metaMarkersOwed, string(raw))
 }
 
-// writeOwedMarkers writes every owed marker it can; one that does not land
-// stays owed for the next try (Run's poll).
-func (s *Switcher) writeOwedMarkers(ctx context.Context) {
+// writeOwedMarkers writes every owed marker it can (only's, when only is
+// set), each within the old-side timeout; one that does not land stays owed
+// for the next try (PollOther).
+func (s *Switcher) writeOwedMarkers(ctx context.Context, only transport.Kind) {
 	owed, err := owedTx(s.c.Store.Meta)
 	if err != nil || len(owed) == 0 {
 		return
@@ -85,6 +86,9 @@ func (s *Switcher) writeOwedMarkers(ctx context.Context) {
 		return
 	}
 	for k, epoch := range owed {
+		if only != "" && k != only {
+			continue
+		}
 		t := s.transport(k)
 		if t == nil {
 			s.markerWritten(k, epoch)
@@ -101,15 +105,15 @@ func (s *Switcher) writeOwedMarkers(ctx context.Context) {
 // writeMarker seals the marker in epoch and saves it over whatever marker
 // t's data zone holds.
 func (s *Switcher) writeMarker(ctx context.Context, t transport.Transport, epoch uint32, payload []byte) error {
-	sealer := s.sealer
-	if current, err := s.c.Keys.CurrentEpoch(); err == nil && epoch != current {
-		sealer = sealer.InEpoch(epoch)
+	rec, err := s.sealer.InEpoch(epoch).Data(s.data, wire.MarkerPlain, "", payload, nil, "")
+	if err != nil {
+		// That epoch is gone (or newer than any): seal in the current one.
+		rec, err = s.sealer.Data(s.data, wire.MarkerPlain, "", payload, nil, "")
 	}
-	rec, err := sealer.Data(s.data, wire.MarkerPlain, "", payload, nil, "")
 	if err != nil {
 		return fmt.Errorf("switcher: sealing the marker: %w", err)
 	}
-	wctx, cancel := context.WithTimeout(ctx, OldSideTimeout)
+	wctx, cancel := context.WithTimeout(ctx, s.oldSide())
 	defer cancel()
 	out, err := t.Save(wctx, []transport.SaveItem{{Record: rec}})
 	if err == nil && (len(out) != 1 || !out[0].Saved) {

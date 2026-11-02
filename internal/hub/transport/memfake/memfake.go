@@ -68,6 +68,7 @@ type Fake struct {
 
 	mu          sync.Mutex
 	down        bool
+	hang        chan struct{} // SetHanging: closed when the hang ends
 	failures    map[string][]error
 	zones       map[string]*zoneState
 	frames      [][]byte
@@ -128,6 +129,39 @@ func (f *Fake) RefuseWrites(zone string, err error) {
 		return
 	}
 	f.refused[zone] = err
+}
+
+// SetHanging makes every Transport call (Save, Delete, Changes, Download)
+// hang — neither answer nor fail — until its context ends or SetHanging(false),
+// as an unreachable server that never answers does. A phone's Write is not
+// held; its Changes is (a test keeps its phones off a hanging store).
+func (f *Fake) SetHanging(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case on && f.hang == nil:
+		f.hang = make(chan struct{})
+	case !on && f.hang != nil:
+		close(f.hang)
+		f.hang = nil
+	}
+}
+
+// hold waits while the fake hangs: until ctx ends (its error) or the hang
+// is lifted.
+func (f *Fake) hold(ctx context.Context) error {
+	f.mu.Lock()
+	h := f.hang
+	f.mu.Unlock()
+	if h == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-h:
+		return nil
+	}
 }
 
 // FailNext makes the next call of op ("save", "delete", "changes" or
@@ -307,6 +341,9 @@ func (f *Fake) Save(ctx context.Context, items []transport.SaveItem) ([]transpor
 			assets[i] = b
 		}
 	}
+	if err := f.hold(ctx); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.gate("save"); err != nil {
@@ -348,6 +385,9 @@ func (f *Fake) Delete(ctx context.Context, zone string, items []transport.Delete
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := f.hold(ctx); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.gate("delete"); err != nil {
@@ -378,6 +418,9 @@ func (f *Fake) Delete(ctx context.Context, zone string, items []transport.Delete
 // or above anything the zone issued is transport.ErrTokenExpired.
 func (f *Fake) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
 	if err := ctx.Err(); err != nil {
+		return transport.Batch{}, err
+	}
+	if err := f.hold(ctx); err != nil {
 		return transport.Batch{}, err
 	}
 	f.mu.Lock()
@@ -423,6 +466,9 @@ func (f *Fake) Changes(ctx context.Context, zone string, since uint64) (transpor
 // to dst with mode 0600; an attachment of another zone is ErrForbidden.
 func (f *Fake) Download(ctx context.Context, zone, attachmentID, dst string) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := f.hold(ctx); err != nil {
 		return err
 	}
 	f.mu.Lock()

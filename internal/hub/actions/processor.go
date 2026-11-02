@@ -434,8 +434,8 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		}
 	}
 	if p.standby() {
-		if left, err := p.onStandby(ctx, b, rec, opened); left || err != nil {
-			return err
+		if p.onStandby(ctx, b, rec, opened) {
+			return nil
 		}
 	} else if p.lapsed(b) && (opened.Frame.Kind == kindAction || opened.Frame.Kind == kindRecordingUpload) {
 		return nil // sim rule 16: left to the phone, told hub_on_relay over CloudKit
