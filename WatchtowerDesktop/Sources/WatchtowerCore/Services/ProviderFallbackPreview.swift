@@ -4,7 +4,7 @@
 package struct ProviderFallbackPreview {
     package enum Provider: String, CaseIterable {
         case claude = "Claude", codex = "Codex"
-        package var other: Provider { self == .claude ? .codex : .claude }
+        package var other: Self { self == .claude ? .codex : .claude }
     }
 
     package enum State: String, CaseIterable {
@@ -67,39 +67,125 @@ package struct ProviderFallbackPreview {
         let p = preferred.rawValue, r = reserve.rawValue
         switch state {
         case .empty:
-            return Copy(title: "Add a reserve provider", detail: "Connect \(r) to keep supported AI tasks working when \(p) reaches its limit.", action: "Connect \(r)", emphasis: .neutral)
+            return Copy(
+                title: "Add a reserve provider",
+                detail: "Connect \(r) to keep supported AI tasks working when \(p) reaches its limit.",
+                action: "Connect \(r)",
+                emphasis: .neutral
+            )
         case .checking:
-            return Copy(title: "Checking \(r)", detail: "Checking the installed CLI and sign-in. This does not send an AI prompt.", action: nil, emphasis: .neutral, busy: true)
+            return Copy(
+                title: "Checking \(r)",
+                detail: "Checking the installed CLI and sign-in. This does not send an AI prompt.",
+                action: nil,
+                emphasis: .neutral, busy: true
+            )
         case .connectionError:
-            return Copy(title: "Couldn't connect \(r)", detail: "Sign in to the \(r) CLI, then try again. \(p) is still your preferred provider.", action: "Retry", emphasis: .error)
+            return Copy(
+                title: "Couldn't connect \(r)",
+                detail: "Sign in to the \(r) CLI, then try again. \(p) is still your preferred provider.",
+                action: "Retry",
+                emphasis: .error
+            )
         case .notInstalled:
-            return Copy(title: "\(r) CLI wasn't found", detail: "Install the CLI or set its path in AI settings, then connect again.", action: "Open setup", emphasis: .error)
+            return Copy(
+                title: "\(r) CLI wasn't found",
+                detail: "Install the CLI or set its path in AI settings, then connect again.",
+                action: "Open setup",
+                emphasis: .error
+            )
         case .notVerified:
-            return Copy(title: "\(r) connection isn't verified", detail: "Sign-in metadata isn't available. Test connection sends a short AI request using your account.", action: "Test connection", emphasis: .warning)
+            return Copy(
+                title: "\(r) connection isn't verified",
+                detail: "Sign-in metadata isn't available. Test connection sends a short AI request using your account.",
+                action: "Test connection",
+                emphasis: .warning
+            )
         case .connectionNetworkError:
-            return Copy(title: "Couldn't check \(r)", detail: "The connection check couldn't reach the service. Your saved sign-in has not been changed.", action: "Retry", emphasis: .error)
+            return Copy(
+                title: "Couldn't check \(r)",
+                detail: "The connection check couldn't reach the service. Your saved sign-in has not been changed.",
+                action: "Retry",
+                emphasis: .error
+            )
         case .ready:
-            return Copy(title: "Reserve ready", detail: "\(r) can take supported requests when \(p) reaches its limit. Model access is checked on the first request.", action: "Save", emphasis: .success)
+            return Copy(
+                title: "Reserve ready",
+                detail: "\(r) can take supported requests when \(p) reaches its limit. Model access is checked on the first request.",
+                action: "Save",
+                emphasis: .success
+            )
         case .applying:
-            return Copy(title: "Applying provider settings", detail: "Finishing the current background task before applying this change. Workbench sessions keep running.", action: nil, emphasis: .neutral, busy: true)
+            return Copy(
+                title: "Applying provider settings",
+                detail: "Finishing the current background task before applying this change. Workbench sessions keep running.",
+                action: nil,
+                emphasis: .neutral, busy: true
+            )
         case .applyError:
-            return Copy(title: "Settings saved; background update failed", detail: "The running background service still uses its previous settings. Retry to apply the saved settings.", action: "Retry", emphasis: .error)
+            return Copy(
+                title: "Settings saved; background update failed",
+                detail: "The running background service still uses its previous settings. Retry to apply the saved settings.",
+                action: "Retry",
+                emphasis: .error
+            )
         case .fallback:
-            return Copy(title: "Using \(r)", detail: "\(p) reached its limit. Next recovery check: 14:30. Supported AI tasks continue with \(r).", action: nil, emphasis: .warning)
+            return Copy(
+                title: "Using \(r)",
+                detail: "\(p) reached its limit. Next recovery check: 14:30. Supported AI tasks continue with \(r).",
+                action: nil,
+                emphasis: .warning
+            )
         case .bothLimited:
-            return Copy(title: "AI is waiting for limits to reset", detail: "Both providers reached their limits. Unprocessed source data is kept; syncing continues. Next recovery check: 14:30.", action: "Check again", emphasis: .warning)
+            return Copy(
+                title: "AI is waiting for limits to reset",
+                detail: "Both providers reached their limits. Unprocessed source data is kept; syncing continues. Next recovery check: 14:30.",
+                action: "Check again",
+                emphasis: .warning
+            )
         case .probing:
-            return Copy(title: "Checking \(p)'s recovery", detail: "One waiting task is checking availability. Other supported tasks continue with \(r).", action: nil, emphasis: .neutral, busy: true)
+            return Copy(
+                title: "Checking \(p)'s recovery",
+                detail: "One waiting task is checking availability. Other supported tasks continue with \(r).",
+                action: nil,
+                emphasis: .neutral, busy: true
+            )
         case .recovered:
-            return Copy(title: "\(p) is available again", detail: "Background tasks have returned to \(p). This chat stays with \(r) until you switch.", action: "Use \(p)", emphasis: .success)
+            return Copy(
+                title: "\(p) is available again",
+                detail: "Background tasks have returned to \(p). This chat stays with \(r) until you switch.",
+                action: "Use \(p)",
+                emphasis: .success
+            )
         case .stopped:
-            return Copy(title: "Limit reached after work started", detail: "This turn has stopped. Review its existing actions before sending a new message. Nothing will be repeated automatically.", action: "Review actions", emphasis: .warning)
+            return Copy(
+                title: "Limit reached after work started",
+                detail: "This turn has stopped. Review its existing actions before sending a new message. Nothing will be " +
+                    "repeated automatically.",
+                action: "Review actions",
+                emphasis: .warning
+            )
         case .pinned:
-            return Copy(title: "This chat is pinned to \(p)", detail: "Its chosen model stays unchanged. To use the reserve, change this chat to Preferred + reserve and use Auto model.", action: "Change provider choice", emphasis: .neutral)
+            return Copy(
+                title: "This chat is pinned to \(p)",
+                detail: "Its chosen model stays unchanged. To use the reserve, change this chat to Preferred + reserve and use Auto model.",
+                action: "Change provider choice",
+                emphasis: .neutral
+            )
         case .unsupported:
-            return Copy(title: "This request needs \(p)", detail: "The reserve cannot use a required attachment or tool. The message is kept for you to retry when \(p) is available.", action: nil, emphasis: .warning)
+            return Copy(
+                title: "This request needs \(p)",
+                detail: "The reserve cannot use a required attachment or tool. The message is kept for you to retry when \(p) is available.",
+                action: nil,
+                emphasis: .warning
+            )
         case .policy:
-            return Copy(title: "\(p) is blocked by your organization", detail: "No provider was started. Your saved choices are kept. Choose a provider your organization allows.", action: nil, emphasis: .error)
+            return Copy(
+                title: "\(p) is blocked by your organization",
+                detail: "No provider was started. Your saved choices are kept. Choose a provider your organization allows.",
+                action: nil,
+                emphasis: .error
+            )
         }
     }
 }
