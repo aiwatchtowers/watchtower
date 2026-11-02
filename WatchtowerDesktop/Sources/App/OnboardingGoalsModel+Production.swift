@@ -15,6 +15,8 @@ extension OnboardingGoalsModel {
         return OnboardingGoalsModel(
             defaults: defaults,
             checkCLI: {
+                // findInPath's PATH step needs the login-shell environment.
+                _ = await Constants.resolvedEnvironmentAsync()
                 let inputs = await MainActor.run { () -> OnboardingCLIProbe.Inputs in
                     let config = ConfigService()
                     let claudePath = config.claudePath?.trimmingCharacters(in: .whitespaces) ?? ""
@@ -30,12 +32,14 @@ extension OnboardingGoalsModel {
                     inputs,
                     test: { try await WatchtowerAIService.testConnection(provider: $0).provider },
                     switchProvider: { provider in
-                        try await run(["config", "set", "ai.provider", provider])
                         // No Claude Code here either: Workbench sessions
-                        // start the same agent.
+                        // start the same agent. ai.provider goes last, so a
+                        // failed write leaves it unset and Check again
+                        // switches again.
                         if ConfigService.readWorkbenchDefaultAgent().rawValue != provider {
                             try await run(["config", "set", "workbench.default_agent", provider])
                         }
+                        try await run(["config", "set", "ai.provider", provider])
                     }
                 )
             },
