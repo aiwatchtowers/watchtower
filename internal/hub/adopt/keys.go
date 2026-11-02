@@ -205,7 +205,10 @@ func handOverWith(ctx context.Context, hubDir string, in io.Reader, pick picker)
 func handOver(ctx context.Context, store *state.Store, id identity.Identity, st identity.Staging, kind string, recorded bool) (string, error) {
 	fail := func(step, class string, err error) (string, error) {
 		err = fmt.Errorf("adopt: key hand-over, %s: %w", step, err)
-		if cerr := cleanup(ctx, store, st); cerr != nil {
+		// Only the adopted record's failure comes after the promotion: the
+		// live identity nothing adopted goes too, so a retry (into another
+		// store, too) leaves nothing orphaned.
+		if cerr := cleanup(ctx, store, st, step == "adopted"); cerr != nil {
 			log.Printf("hub adopt: cleanup after a failed key hand-over failed (%s)", step)
 			return ClassCleanupFailed, errors.Join(err, ErrCleanupFailed, cerr)
 		}
@@ -281,9 +284,13 @@ func handOver(ctx context.Context, store *state.Store, id identity.Identity, st 
 	return IdentityAdopted, nil
 }
 
-// cleanup removes a failed hand-over's staged copy and identity record.
-func cleanup(ctx context.Context, store *state.Store, st identity.Staging) error {
+// cleanup removes a failed hand-over's staged copy and identity record, and
+// the live identity when the failure came after the promotion.
+func cleanup(ctx context.Context, store *state.Store, st identity.Staging, promoted bool) error {
 	derr := st.DeleteStaged()
+	if promoted {
+		derr = errors.Join(derr, st.Delete())
+	}
 	merr := store.WithTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`DELETE FROM hub_meta WHERE key = ?`, MetaIdentity)
 		return err

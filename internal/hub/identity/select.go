@@ -18,6 +18,9 @@ type Staging interface {
 	SaveStaged(Identity) error
 	PromoteStaged() error
 	DeleteStaged() error
+	// Delete removes the live identity (a hand-over whose adopted record
+	// failed after the promotion); a missing one is not an error.
+	Delete() error
 }
 
 // MetaIdentityStore is the hub_meta key that records a desktop host's

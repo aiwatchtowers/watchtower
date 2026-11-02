@@ -713,6 +713,13 @@ func TestHandOverFailureCleansUp(t *testing.T) {
 					if f.adoptedOK(t) {
 						t.Error("the hub may start after a failed hand-over")
 					}
+					// No live identity is left behind, the promoted one
+					// included (step adopted): nothing adopted it.
+					if !deleteFails {
+						if _, err := inner.Load(); !errors.Is(err, identity.ErrNoIdentity) {
+							t.Errorf("a live identity is left: %v", err)
+						}
+					}
 				})
 			})
 		}
