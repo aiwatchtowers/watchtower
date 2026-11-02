@@ -28,6 +28,9 @@ final class PlanUsageCenter {
     private(set) var refreshingProviders: Set<PlanUsageProvider> = []
     private(set) var loadedProviders: Set<PlanUsageProvider> = []
     private(set) var featureEnabled = true
+    /// A poll advances presentation time even when an unchanged DB row compares
+    /// equal, so always-visible labels re-evaluate freshness and countdowns.
+    private(set) var presentationNow: Date
     var isRefreshing: Bool { !refreshingProviders.isEmpty }
     /// The tray's history backfill line (`BackfillProgress.line`); nil when
     /// nothing loads. Rides this poll so the tray needs no timer of its own.
@@ -59,6 +62,7 @@ final class PlanUsageCenter {
         self.notifier = notifier
         self.defaults = defaults
         self.now = now
+        presentationNow = now()
     }
 
     func start() {
@@ -86,6 +90,7 @@ final class PlanUsageCenter {
         let epoch = generation
         await reloadBackfillLine()
         guard !Task.isCancelled, epoch == generation else { return }
+        presentationNow = now()
         async let claude: Void = reload(.claude, expectedGeneration: epoch)
         async let codex: Void = reload(.codex, expectedGeneration: epoch)
         _ = await (claude, codex)
@@ -112,7 +117,7 @@ final class PlanUsageCenter {
     func presentation(_ provider: PlanUsageProvider, at date: Date? = nil) throws -> PlansProviderPresentation {
         try PlansPresentation.card(provider: provider, status: providerStatus(provider), error: providerError(provider),
                                    refreshing: refreshingProviders.contains(provider) || !loadedProviders.contains(provider),
-                                   now: date ?? now(), enabled: featureEnabled)
+                                   now: date ?? presentationNow, enabled: featureEnabled)
     }
 
     private func reload(
@@ -127,6 +132,7 @@ final class PlanUsageCenter {
             let fresh = try await dbPool.read { try PlanUsageQueries.status($0, provider: provider) }
             // Stopped while the read ran: drop the result.
             guard !Task.isCancelled, epoch == generation else { return }
+            presentationNow = now()
             if provider == .claude { status = fresh } else { codexStatus = fresh }
             if clearOlderRefreshError, fresh?.state == "ok", fresh?.fetchedAt != previousFetched {
                 refreshErrors[provider] = nil
@@ -139,6 +145,7 @@ final class PlanUsageCenter {
             }
         } catch {
             guard !Task.isCancelled, epoch == generation else { return }
+            presentationNow = now()
             // Hide the failed provider's retained values instead of freezing them as current.
             if provider == .claude { status = nil } else { codexStatus = nil }
             loadedProviders.insert(provider)
@@ -238,7 +245,7 @@ final class PlanUsageCenter {
     /// "⚠︎ 5h 92% · 7d 59%", the same without the mark, or nil.
     func menuBarLabel(showText: Bool) -> String? {
         guard featureEnabled else { return nil }
-        do { return try PlansPresentation.menuBar(claude: status, codex: codexStatus, show: showText, now: now()) } catch {
+        do { return try PlansPresentation.menuBar(claude: status, codex: codexStatus, show: showText, now: presentationNow) } catch {
             NSLog("PlanUsageCenter: menu snapshot is invalid")
             return nil
         }
@@ -248,7 +255,7 @@ final class PlanUsageCenter {
     var trayLines: [String] {
         guard featureEnabled else { return [] }
         return [status, codexStatus].compactMap { $0 }.flatMap { status in
-            do { return try PlansPresentation.tray(status, now: now()) } catch {
+            do { return try PlansPresentation.tray(status, now: presentationNow) } catch {
                 NSLog("PlanUsageCenter: tray snapshot is invalid")
                 return []
             }

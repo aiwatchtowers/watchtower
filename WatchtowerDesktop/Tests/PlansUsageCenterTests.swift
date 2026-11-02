@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -90,14 +91,18 @@ final class PlansUsageCenterTests: XCTestCase {
             try db.execute(sql: "ALTER TABLE plan_usage_status RENAME TO saved_plan_usage_status")
             try db.execute(sql: "CREATE VIEW plan_usage_status AS SELECT * FROM saved_plan_usage_status WHERE hold_plan_read() = 1")
         }
-        let center = PlanUsageCenter(dbPool: pool, runner: nil)
+        var clock = Date(timeIntervalSince1970: 1_793_610_000)
+        let center = PlanUsageCenter(dbPool: pool, runner: nil) { clock }
         let task = Task { await center.reload() }
         await fulfillment(of: [entered], timeout: 3)
+        let stoppedAt = center.presentationNow
+        clock = clock.addingTimeInterval(901)
         center.stop()
         release.signal()
         await task.value
         XCTAssertNil(center.status)
         XCTAssertFalse(center.loadedProviders.contains(.claude))
+        XCTAssertEqual(center.presentationNow, stoppedAt, "a stopped provider read must not advance presentation time")
     }
 
     func testStopDuringBackfillReadDoesNotStartProviderReadsOrNotify() async throws {
@@ -133,11 +138,14 @@ final class PlansUsageCenterTests: XCTestCase {
         let suite = "PlansUsageCenterTests.backfill.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let center = PlanUsageCenter(dbPool: pool, runner: nil, notifier: notifier, defaults: defaults) { at }
+        var clock = at
+        let center = PlanUsageCenter(dbPool: pool, runner: nil, notifier: notifier, defaults: defaults) { clock }
         var callbacks = 0
         center.onStatus = { _ in callbacks += 1 }
         let task = Task { await center.reload() }
         await fulfillment(of: [entered], timeout: 3)
+        let stoppedAt = center.presentationNow
+        clock = clock.addingTimeInterval(901)
         center.stop()
         release.signal()
         await task.value
@@ -147,6 +155,7 @@ final class PlansUsageCenterTests: XCTestCase {
         XCTAssertTrue(center.loadedProviders.isEmpty)
         XCTAssertEqual(callbacks, 0)
         XCTAssertTrue(notifier.notices.isEmpty)
+        XCTAssertEqual(center.presentationNow, stoppedAt, "a stopped backfill read must not publish a late clock tick")
     }
 
     func testSuccessfulFeatureLoadReenablesWithoutAnotherLimitsRefresh() async throws {
@@ -221,6 +230,58 @@ final class PlansUsageCenterTests: XCTestCase {
         XCTAssertEqual(center.menuBarLabel(showText: true), "Claude 5h 4%")
         XCTAssertFalse(center.trayLines.isEmpty)
         XCTAssertNotEqual(try center.presentation(.codex).summary, PlansPresentation.reasonText("disabled"))
+    }
+
+    func testUnchangedSnapshotReloadInvalidatesMenuWhenClockMakesCodexStale() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO codex_plan_usage_status
+                (id,state,fetched_at,updated_at,scope,identity_known,limits_json)
+                VALUES (1,'ok','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z',?,1,
+                '[{"key":"quota","label":"5 hours","group":"session","percent":42,"window_duration_minutes":300,
+                  "resets_at":"2026-11-02T11:00:00Z","projection":{"state":"collecting","hit_at":null,"rate_per_hour":0}}]');
+                """, arguments: [String(repeating: "a", count: 64)])
+        }
+        var clock = try XCTUnwrap(PlanUsageDates.parse("2026-11-02T09:00:00Z"))
+        let center = PlanUsageCenter(dbPool: pool, runner: nil) { clock }
+        await center.reload()
+        XCTAssertEqual(center.menuBarLabel(showText: true), "Codex 5h 42%")
+        let changed = ObservationFlag()
+        let trayChanged = ObservationFlag()
+        let cardChanged = ObservationFlag()
+        withObservationTracking {
+            _ = center.menuBarLabel(showText: true)
+        } onChange: {
+            changed.mark()
+        }
+        withObservationTracking {
+            _ = center.trayLines
+        } onChange: {
+            trayChanged.mark()
+        }
+        withObservationTracking {
+            do { _ = try center.presentation(.codex) } catch { XCTFail("valid fixture must produce a card: \(error)") }
+        } onChange: {
+            cardChanged.mark()
+        }
+        clock = clock.addingTimeInterval(901)
+        await center.reload() // Same DB row, fresh values compare equal.
+        XCTAssertTrue(changed.value, "the menu label must invalidate when freshness changes without a DB write")
+        XCTAssertNil(center.menuBarLabel(showText: true))
+        XCTAssertTrue(trayChanged.value)
+        XCTAssertTrue(cardChanged.value)
+        XCTAssertTrue(center.trayLines.isEmpty)
+        XCTAssertTrue(try center.presentation(.codex).isStale)
+        XCTAssertTrue(try center.presentation(.codex).limits.isEmpty)
+    }
+
+    final class ObservationFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var changed = false
+        var value: Bool { lock.withLock { changed } }
+        func mark() { lock.withLock { changed = true } }
     }
 
     final class RecordingNotifier: PlanUsageNotifying {

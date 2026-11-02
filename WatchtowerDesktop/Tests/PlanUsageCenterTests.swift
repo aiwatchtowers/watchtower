@@ -6,9 +6,14 @@ import WatchtowerTestSupport
 
 @MainActor
 final class PlanUsageCenterTests: XCTestCase {
-    final class StubRunner: CLIRunnerProtocol {
-        var calls: [[String]] = []
-        func run(args: [String]) async throws -> Data { calls.append(args); return Data() }
+    final class StubRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [[String]] = []
+        var calls: [[String]] { lock.withLock { recorded } }
+        func run(args: [String]) async throws -> Data {
+            lock.withLock { recorded.append(args) }
+            return Data()
+        }
     }
 
     private var pool: DatabasePool!
