@@ -34,6 +34,28 @@ final class HubAdoptionStateTests: XCTestCase {
         XCTAssertNil(HubAdoptionState.done.retryTitle)
         XCTAssertEqual(HubAdoptionState.notNeeded.title, "")
         XCTAssertNil(HubAdoptionState.notNeeded.detail)
+        XCTAssertEqual(HubAdoptionState.idle.title, "")
+        XCTAssertEqual(HubAdoptionState.failed(reason: "keys_partial").detail,
+                       "Some of this Mac's encryption keys are missing. Nothing was changed.")
+        XCTAssertEqual(HubAdoptionState.failed(reason: "timeout").detail,
+                       "The move took too long and was stopped. Retry continues where it stopped.")
+    }
+
+    /// The way out of `no_keys` and its confirmation (agent decision, PR #605 review).
+    func testSetUpAgainCopy() {
+        XCTAssertEqual(HubAdoptionState.failed(reason: "no_keys").setUpAgainTitle, "Set up Mobile again")
+        XCTAssertNil(HubAdoptionState.failed(reason: "keys_partial").setUpAgainTitle)
+        XCTAssertNil(HubAdoptionState.checking.setUpAgainTitle)
+        XCTAssertEqual(HubAdoptionState.setUpAgainQuestion, "Set up Mobile again?")
+        XCTAssertEqual(HubAdoptionState.setUpAgainMessage,
+                       "Your phones need to be linked again. The old Mobile data is kept aside on this Mac, unused.")
+        XCTAssertEqual(HubAdoptionState.setUpAgainConfirmTitle, "Set Up Again")
+        XCTAssertEqual(HubAdoptionState.cancelTitle, "Cancel")
+    }
+
+    func testDecodesTheSetAsideAnswer() throws {
+        let answer = try JSONDecoder().decode(HubAdoptSetAsideAnswer.self, from: Data(#"{"set_aside":"done"}"#.utf8))
+        XCTAssertEqual(answer.setAside, "done")
     }
 
     /// Every class the Go verb or the driver can end in has its own line,
@@ -42,7 +64,8 @@ final class HubAdoptionStateTests: XCTestCase {
         let classes = [
             "swift_schema", "swift_corrupt", "swift_hub_id", "swift_busy", "no_hub_id", "no_keys", "wrong_keys",
             "bad_keys", "keychain_unavailable", "keychain_refused", "cleanup_failed", "no_sidecar",
-            "adoption_unfinished", "not_adopted", "locked", "no_cli", "failed"
+            "adoption_unfinished", "not_adopted", "locked", "no_cli", "failed", "keys_partial", "timeout",
+            "adoption_started"
         ]
         for reason in classes {
             let text = try? XCTUnwrap(HubAdoptionState.reasonTexts[reason], reason)
@@ -68,6 +91,7 @@ final class HubAdoptionStateTests: XCTestCase {
         XCTAssertTrue(HubAdoptionState.inProgress(step: "copy").isShown)
         XCTAssertTrue(HubAdoptionState.failed(reason: "failed").isShown)
         XCTAssertFalse(HubAdoptionState.notNeeded.isShown, "nothing to hand over draws nothing")
+        XCTAssertFalse(HubAdoptionState.idle.isShown, "no spinner while the restart's Continue waits")
         XCTAssertFalse(HubAdoptionState.done.isShown)
     }
 

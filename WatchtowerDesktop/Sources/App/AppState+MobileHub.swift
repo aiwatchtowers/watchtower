@@ -42,6 +42,9 @@ extension AppState {
         // MobileSync = off (#608) cannot be turned on from here, whatever
         // the view shows; the stored toggle is left as it was.
         if enabled, mobileSyncLockedByPolicy { return }
+        // The Go hub holds the toggle now (Task 23 drives it): inert, and
+        // `mobileSyncEnabled` is never written back.
+        if swiftHubRetired { return }
         // Moved to a newer Watchtower: nothing turns on here; off still goes through.
         if enabled, resolveMobileHubMoved() { return }
         mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
@@ -57,6 +60,8 @@ extension AppState {
     }
 
     var mobileSyncLockedByPolicy: Bool { managedPolicy.policy.mobileSyncMode == "off" }
+
+    var mobileToggleRetired: Bool { swiftHubRetired }
 
     /// Reads the downgrade guard's `MOVED` note into `isMobileHubMoved` and
     /// returns it: a newer Watchtower runs the phone hub, so this app starts
@@ -91,7 +96,7 @@ extension AppState {
             } else if let pool = mobileHubPool {
                 wipeHubForPolicyOff(dbPool: pool)
             }
-        } else if previous == "off", legacySwiftHubToggle, !resolveMobileHubMoved() {
+        } else if previous == "off", !swiftHubRetired, legacySwiftHubToggle, !resolveMobileHubMoved() {
             if let hub = mobileHub {
                 Task { await hub.start() }
             } else if let pool = mobileHubPool {
@@ -372,7 +377,7 @@ extension AppState {
     func wipeHubForPolicyOff(dbPool: DatabasePool) {
         guard mobileSyncPolicy.current == "off", mobileHub == nil, !policyOffWipeDone,
               mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey) else { return }
-        guard let hub = buildRunHub(dbPool: dbPool) else {
+        guard let hub = buildRunHub(dbPool: dbPool, forPolicyWipe: true) else {
             // Moved to a newer Watchtower: that app owns the phone now; the
             // policy tick does not retry.
             if isMobileHubMoved { policyOffWipeDone = true }
@@ -385,17 +390,25 @@ extension AppState {
     /// Builds the run's hub over its one storage (opened on first use) into
     /// `mobileHub`; nil (the error kept) when it cannot be built, and nil with
     /// no error once a newer Watchtower runs the hub (spec §12.1).
-    private func buildRunHub(dbPool: DatabasePool) -> MobileHubService? {
-        // The Go hub owns Mobile in this app run: never two hubs.
-        guard !swiftHubRetired else { return nil }
+    /// Once the Go hub owns Mobile (`swiftHubRetired`) it is built only to
+    /// wipe for `MobileSync = off` (POLICY-03) a Swift state that still waits
+    /// for adoption, and never started: never two hubs.
+    private func buildRunHub(dbPool: DatabasePool, forPolicyWipe: Bool = false) -> MobileHubService? {
+        guard !swiftHubRetired || (forPolicyWipe && hubAdoption?.swiftStatePending == true) else { return nil }
         guard !resolveMobileHubMoved() else {
             Self.mobileHubLogger.notice("mobile hub moved to a newer Watchtower; not starting")
             return nil
         }
         do {
             let directory = mobileHubDirectory
-            let storage = try mobileHubStorage ?? (makeMobileHubStorage ?? { try MobileHubStorage.live(directory: directory) })()
-            if mobileHubStorage == nil {
+            // The retired branch's wipe never touches the hub's keys: a
+            // missing or partial identity must reach the hand-over's probe
+            // as it is (no_keys / keys_partial), never be created or repaired.
+            let keyless = forPolicyWipe && swiftHubRetired
+            var storage = try mobileHubStorage
+                ?? (makeMobileHubStorage ?? { try MobileHubStorage.live(directory: directory, withKeys: !keyless) })()
+            if keyless { (storage.keyring, storage.secure) = (nil, nil) }
+            if mobileHubStorage == nil, !keyless {
                 // Once per run, with the storage: CKSyncEngine learns of
                 // remote changes from pushes (the relay poll is the backstop).
                 storage.registerForPushes?()
@@ -413,16 +426,11 @@ extension AppState {
 }
 
 extension AppState {
-    /// Whether this process runs under XCTest (the Swift hub's own suites
-    /// still build it there; no test reaches this Mac's hub or Keychain).
-    nonisolated static var runsUnderXCTest: Bool {
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil || NSClassFromString("XCTestCase") != nil
-    }
-
     /// Mobile at the end of `initWorkbenches`: the hand-over to the Go hub,
     /// or (under XCTest only) the Swift hub its own suites still build.
     func startMobile(dbPool: DatabasePool) {
         if swiftHubRetired {
+            mobileHubPool = dbPool // for the POLICY-03 wipe only (`buildRunHub`)
             startHubAdoption()
         } else {
             initMobileHub(dbPool: dbPool)
@@ -439,15 +447,32 @@ extension AppState {
         Task { _ = await driver.run() }
     }
 
+    /// Settings → Mobile's **Retry** after a failed hand-over.
+    func retryHubAdoption() {
+        guard let driver = hubAdoption else { return }
+        Task { _ = await driver.retry() }
+    }
+
+    /// Settings → Mobile's **Set up Mobile again**, once the owner confirmed.
+    func setUpMobileAgain() {
+        guard let driver = hubAdoption else { return }
+        Task { _ = await driver.setUpAgain() }
+    }
+
     private func liveHubAdoptionDriver() -> HubAdoptionDriver {
-        HubAdoptionDriver(seams: .init(
-            waitForHostRestart: { [weak self] in await self?.hostRestart?.waitUntilSettled() },
-            stopSwiftHub: { [weak self] in await self?.stopSwiftHubForAdoption() },
-            cancelPhoneRecordings: { [weak self] in
-                await self?.meetingRecorderCenter.cancelPhoneRecordingJobs(audioNames: $0)
-            },
+        let deps = hubAdoptionDeps ?? HubAdoptionDeps(
             runner: Constants.findCLIPath().map { ProcessHubAdoptRunner(binaryPath: $0) },
-            keyStore: KeychainHubKeyStore(backend: SecItemKeychainBackend()),
+            keyStore: KeychainHubKeyStore(backend: SecItemKeychainBackend())
+        )
+        let recorder = meetingRecorderCenter
+        return HubAdoptionDriver(seams: .init(
+            waitForHostRestart: { [weak self] in await self?.hostRestart?.waitUntilSettled() },
+            policyOffWipe: { [weak self] in await self?.wipeSwiftStateForPolicyOff() },
+            stopSwiftHub: { [weak self] in await self?.stopSwiftHubForAdoption() ?? false },
+            cancelPhoneRecordings: { await recorder.cancelPhoneRecordingJobs(audioNames: $0) },
+            phoneRecordingsAdopted: { await recorder.forgetPhoneRecordings(audioNames: $0) },
+            releasePhoneRecordings: { await recorder.releasePhoneRecordings(audioNames: $0) },
+            deps: deps,
             settings: { [weak self] in
                 self?.hubAdoptSettings() ?? HubAdoptSettings(enabled: false, startSessionAllows: [:])
             },
@@ -465,17 +490,38 @@ extension AppState {
         HubAdoptSettings(enabled: mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey), startSessionAllows: [:])
     }
 
-    /// Stops the Swift hub for the hand-over and returns once its storage is
-    /// closed: `hub adopt` needs its files closed and cannot see an idle open
-    /// handle. Nothing builds it again in this run.
-    func stopSwiftHubForAdoption() async {
+    /// POLICY-03 before the hand-over: `MobileSync = off`, the owner's toggle
+    /// on and a Swift state not adopted yet: the Swift hub is built only to be
+    /// disabled (what it published is removed), exactly as before the Go hub.
+    func wipeSwiftStateForPolicyOff() async {
+        guard let pool = mobileHubPool else { return }
+        wipeHubForPolicyOff(dbPool: pool)
+        await mobileHub?.waitUntilStopped()
+    }
+
+    /// Stops the Swift hub for the hand-over; true once its storage is
+    /// closed (`hub adopt` needs its files closed and cannot see an idle
+    /// open handle). A close that fails is tried once more after a second;
+    /// still failing, false (the driver fails with `swift_busy`, the storage
+    /// is kept for Retry). Nothing builds the hub again in this run.
+    func stopSwiftHubForAdoption() async -> Bool {
         swiftHubRetired = true
+        mobileHubPool = nil
         let hub = mobileHub
         mobileHub = nil
         hub?.dispose()
         await hub?.waitUntilStopped()
-        mobileHubStorage?.close()
-        mobileHubStorage = nil
-        mobileHubPool = nil
+        guard let storage = mobileHubStorage else { return true }
+        for attempt in 0..<2 {
+            do {
+                try storage.close()
+                mobileHubStorage = nil
+                return true
+            } catch {
+                Self.mobileHubLogger.error("the Swift hub's storage did not close (attempt \(attempt + 1))")
+                if attempt == 0 { try? await Task.sleep(for: .seconds(1)) }
+            }
+        }
+        return false
     }
 }

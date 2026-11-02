@@ -456,6 +456,8 @@ final class MeetingRecorderCenter {
     /// Each job's current task and the run owning the entry (a retry replaces it), for the phone cancel.
     @ObservationIgnored private var jobRuns: [ProcessingJob.ID: (run: UUID, task: Task<Void, Never>)] = [:]
     /// Queued jobs withdrawn by the phone cancel: their task leaves `awaitTurn` without the turn.
+    /// Jobs whose save started: the phone cancel lets them finish.
+    @ObservationIgnored private var savingJobIDs: Set<ProcessingJob.ID> = []
     @ObservationIgnored private var withdrawnJobIDs: Set<ProcessingJob.ID> = []
     /// Phone recordings (audio file names) the Go hub's adoption took over
     /// this run (go hub plan 3 Task 22): never queued, offered or saved again.
@@ -1457,7 +1459,7 @@ final class MeetingRecorderCenter {
         defaults.removeObject(forKey: Self.pendingTitleKey)
     }
 
-    private func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {
+    func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {
         guard !cancelledPhoneAudioNames.contains(entry.audioURL.lastPathComponent) else { return }
         recoverable.removeAll { $0.audioURL == entry.audioURL }
         if atHead {
@@ -1789,6 +1791,8 @@ final class MeetingRecorderCenter {
             failJob(jobID, "watchtower CLI not found — the recording and transcript are kept for retry")
             return
         }
+        savingJobIDs.insert(jobID) // the phone cancel's cut-off (`withdrawPhoneRecordingJobs`)
+        defer { savingJobIDs.remove(jobID) }
         do {
             let result = try await TranscriptSaveService(runner: runner).save(
                 transcriptText: text,
@@ -1910,24 +1914,6 @@ final class MeetingRecorderCenter {
         if job.phase != before {
             jobPhaseChanged(job.audioURL, job.phase)
         }
-    }
-
-    /// Why a recording yielded no text. A bare "No speech recognized" hid
-    /// the usual cause: the call's audio never reached the recording (the
-    /// activity sidecar's system channel is silent throughout or went
-    /// silent and stayed so), leaving only a quiet room microphone.
-    nonisolated static func noSpeechMessage(_ activity: MicActivity?) -> String {
-        guard let activity else { return "No speech recognized" }
-        var watch = CallAudioWatch(binSec: MicActivity.binDuration)
-        activity.bins.forEach { watch.add(system: $0.sys) }
-        if watch.neverHeardCall {
-            return "No speech recognized — no call audio was captured at all. If this was a call, \(callAudioOutputHint)"
-        }
-        if let gap = watch.openGap {
-            return "No speech recognized — call audio stopped at \(TranscriptFormatting.formatTimecode(gap.startSec)) "
-                + "and never came back — \(callAudioOutputHint)"
-        }
-        return "No speech recognized"
     }
 
     /// Fails a job and fires the failure notification. The job stays in the
@@ -2068,14 +2054,15 @@ final class MeetingRecorderCenter {
         _ = startJobTask(jobID: job.id, config: config)
     }
 
-    /// The synchronous half of `cancelPhoneRecordingJobs` (+Upgrade): marks
-    /// the names cancelled for this run, takes their queued jobs out of the
-    /// queue (their tasks never take the turn), cancels the running one,
-    /// drops them and their recovered entries, and returns the tasks to await.
-    func withdrawPhoneRecordingJobs(_ names: Set<String>) -> [Task<Void, Never>] {
-        cancelledPhoneAudioNames.formUnion(names)
-        var tasks: [Task<Void, Never>] = []
+    /// `cancelPhoneRecordingJobs`' synchronous half (+Upgrade): returns the
+    /// cancelled tasks, and the saving ones, which finish (the save's start is the cut-off).
+    func withdrawPhoneRecordingJobs(_ names: Set<String>) -> (cancelled: [Task<Void, Never>], saving: [Task<Void, Never>]) {
+        var tasks: [Task<Void, Never>] = [], saving: [Task<Void, Never>] = []
         for job in jobs where names.contains(job.audioURL.lastPathComponent) {
+            if savingJobIDs.contains(job.id) {
+                if let task = jobRuns[job.id]?.task { saving.append(task) }
+                continue
+            }
             if queuedJobIDs.contains(job.id) {
                 withdrawnJobIDs.insert(job.id)
                 queuedJobIDs.removeAll { $0 == job.id }
@@ -2086,9 +2073,13 @@ final class MeetingRecorderCenter {
                 tasks.append(task)
             }
         }
-        jobs.removeAll { names.contains($0.audioURL.lastPathComponent) }
+        cancelledPhoneAudioNames.formUnion(names)
+        jobs.removeAll { names.contains($0.audioURL.lastPathComponent) && !savingJobIDs.contains($0.id) }
         recoverable.removeAll { names.contains($0.audioURL.lastPathComponent) }
         wakeQueueWaiters()
-        return tasks
+        return (tasks, saving)
     }
+
+    /// Releases names the adoption gave back (`releasePhoneRecordings`, +Upgrade).
+    func uncancelPhoneRecordings(_ names: Set<String>) { cancelledPhoneAudioNames.subtract(names) }
 }

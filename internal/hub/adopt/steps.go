@@ -276,17 +276,7 @@ var swiftOriginals = []string{
 // dir synced), so an older app never starts the Swift hub over what is
 // left; only then are the originals removed, and done recorded as next.
 func (r *run) moved() error {
-	if err := os.MkdirAll(r.mobile, 0o700); err != nil {
-		return fmt.Errorf("adopt: the MobileHub dir: %w", err)
-	}
-	tmp := filepath.Join(r.mobile, "."+MovedName+".tmp")
-	if err := writeSynced(tmp, []byte(movedNote(r.hub))); err != nil {
-		return fmt.Errorf("adopt: writing the moved note: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(r.mobile, MovedName)); err != nil {
-		return fmt.Errorf("adopt: writing the moved note: %w", err)
-	}
-	if err := syncDir(r.mobile); err != nil {
+	if err := r.writeMovedNote(); err != nil {
 		return err
 	}
 	if err := hook("moved:note"); err != nil {
@@ -305,6 +295,22 @@ func (r *run) moved() error {
 		return err
 	}
 	return st.SetMeta(MetaAdoptStep, string(StepDone))
+}
+
+// writeMovedNote makes MOVED durable: written, synced, renamed into place,
+// the dir synced (the moved step, and SetAside).
+func (r *run) writeMovedNote() error {
+	if err := os.MkdirAll(r.mobile, 0o700); err != nil {
+		return fmt.Errorf("adopt: the MobileHub dir: %w", err)
+	}
+	tmp := filepath.Join(r.mobile, "."+MovedName+".tmp")
+	if err := writeSynced(tmp, []byte(movedNote(r.hub))); err != nil {
+		return fmt.Errorf("adopt: writing the moved note: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(r.mobile, MovedName)); err != nil {
+		return fmt.Errorf("adopt: writing the moved note: %w", err)
+	}
+	return syncDir(r.mobile)
 }
 
 // How rawOpen opens a file.

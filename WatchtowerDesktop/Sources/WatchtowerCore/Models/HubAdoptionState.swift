@@ -5,7 +5,10 @@ import Foundation
 /// Mobile shows for it lives here, pinned by `HubAdoptionStateTests`; the
 /// owner accepted this copy (ask #906).
 package enum HubAdoptionState: Equatable, Sendable {
-    /// The adoption state is being read (`hub adopt --status`).
+    /// Not started yet, or waiting for the v1-host restart's Continue:
+    /// nothing shows (the launch's status read is unseen too).
+    case idle
+    /// The hand-over's pass reads where it stands (`hub adopt --status`).
     case checking
     /// Nothing to hand over: no Swift hub state on this Mac, or one the Go
     /// hub refuses as a later `MobileHub` (no Retry then).
@@ -25,6 +28,14 @@ package enum HubAdoptionState: Equatable, Sendable {
     package static let failedTitle = "Mobile could not move to the new version"
     package static let doneTitle = "Mobile moved to the new version"
     package static let retryButtonTitle = "Retry"
+    /// The way out of `no_keys` (agent decision, go hub plan 3 Task 22
+    /// review): the old state is set aside and the phones link again.
+    package static let setUpAgainButtonTitle = "Set up Mobile again"
+    package static let setUpAgainQuestion = "Set up Mobile again?"
+    package static let setUpAgainMessage =
+        "Your phones need to be linked again. The old Mobile data is kept aside on this Mac, unused."
+    package static let setUpAgainConfirmTitle = "Set Up Again"
+    package static let cancelTitle = "Cancel"
     /// The hand-over's steps as the owner sees them: copy, verify, move,
     /// migrate, keys.
     package static let stepCount = 5
@@ -32,7 +43,7 @@ package enum HubAdoptionState: Equatable, Sendable {
     package var title: String {
         switch self {
         case .checking: Self.checkingTitle
-        case .notNeeded: ""
+        case .idle, .notNeeded: ""
         case .inProgress: Self.movingTitle
         case .failed: Self.failedTitle
         case .done: Self.doneTitle
@@ -59,6 +70,11 @@ package enum HubAdoptionState: Equatable, Sendable {
         return nil
     }
 
+    /// Offered only when this Mac has no keys for the old state.
+    package var setUpAgainTitle: String? {
+        self == .failed(reason: "no_keys") ? Self.setUpAgainButtonTitle : nil
+    }
+
     /// The progress bar's value while the hand-over runs.
     package var progress: Double? {
         guard case let .inProgress(step) = self else { return nil }
@@ -69,7 +85,7 @@ package enum HubAdoptionState: Equatable, Sendable {
     package var isShown: Bool {
         switch self {
         case .checking, .inProgress, .failed: true
-        case .notNeeded, .done: false
+        case .idle, .notNeeded, .done: false
         }
     }
 
@@ -105,6 +121,9 @@ package enum HubAdoptionState: Equatable, Sendable {
         "swift_busy": "The old Mobile hub was still writing. Retry in a moment.",
         "no_hub_id": "The old Mobile data has no hub identity. Nothing was changed.",
         "no_keys": "This Mac's encryption keys are missing. Your phones need to be linked again.",
+        "keys_partial": "Some of this Mac's encryption keys are missing. Nothing was changed.",
+        "timeout": "The move took too long and was stopped. Retry continues where it stopped.",
+        "adoption_started": "The move had already started, so the old data cannot be set aside. Retry continues it.",
         "wrong_keys": "This Mac's encryption keys do not open the old Mobile data. Nothing was changed.",
         "bad_keys": "This Mac's encryption keys could not be read. Nothing was changed.",
         "keychain_unavailable": "The Keychain could not be read. Unlock this Mac and retry.",
@@ -199,6 +218,13 @@ package struct HubAdoptStatus: Decodable, Equatable, Sendable {
         if !step.isEmpty || swiftState == "present" { return .adoptState }
         return .nothing // absent, or ignored (a later MobileHub: never imported, no Retry)
     }
+}
+
+/// `hub adopt --set-aside --json`: `done`, or the error class.
+package struct HubAdoptSetAsideAnswer: Decodable, Equatable, Sendable {
+    package let setAside: String
+
+    enum CodingKeys: String, CodingKey { case setAside = "set_aside" }
 }
 
 /// `hub adopt --settings-stdin --json`: the step reached and the error class.

@@ -24,6 +24,14 @@ struct MobileSettingsTab: View {
         .onChange(of: appState.hubCenter?.linksChanged) { Task { await model?.load() } }
         .onChange(of: appState.hubAdoption?.state) { Task { await model?.load() } }
     }
+
+    /// The hand-over's state when it takes the tab's place (checking, in
+    /// progress, failed); nil shows the hub's own rows. The model's
+    /// `.adoption` state follows the same rule (`HubAdoptionState.isShown`).
+    static func handOver(_ state: HubAdoptionState?) -> HubAdoptionState? {
+        guard let state, state.isShown else { return nil }
+        return state
+    }
 }
 
 /// Settings → Mobile over `watchtower hub …` (go hub plan 3 Task 23,
@@ -75,7 +83,11 @@ struct MobileSettingsView: View {
                 }
             }
         case .adoption(let adoption):
-            MobileHandOverView(state: adoption) { Task { await model.retryAdoption() } }
+            MobileHandOverView(
+                state: adoption,
+                onRetry: { Task { await model.retryAdoption() } },
+                onSetUpAgain: { Task { await model.setUpMobileAgain() } }
+            )
         case .off(let reason):
             MobileOffSection(model: model, copy: Copy.offCopy(reason))
         case .noPhones:

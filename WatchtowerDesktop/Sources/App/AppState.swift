@@ -375,11 +375,8 @@ final class AppState {
     /// The Go hub over its control socket (heartbeat, view inputs, status;
     /// go hub plan 3 Task 14); none under XCTest.
     var hubCenter: HubCenter? // set by replaceHubCenter (AppState+MobileSettings)
-    /// The one-time restart of sessions from a v1 session host (go hub spec
-    /// §8 p. 4b): its notice above every tab and the other workspaces' wait
-    /// lines. Made once per app run by `startHostRestart`. The hub's adoption
-    /// awaits its `waitUntilSettled()` (go hub plan 3 order: migrate →
-    /// compact → restart step → adoption → daemon's hub).
+    /// The one-time v1-host restart (go hub spec §8 p. 4b), made by `startHostRestart`; the
+    /// adoption awaits its `waitUntilSettled()` (order: migrate → compact → restart → adoption).
     private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
@@ -444,7 +441,9 @@ final class AppState {
     @ObservationIgnored var mobileHubPool: DatabasePool?
     var hubAdoption: HubAdoptionDriver? // Mobile's hand-over to the Go hub (`startHubAdoption`)
     /// The Swift hub never starts (never two hubs); false under XCTest only, until go hub plan 3 Task 24.
-    @ObservationIgnored var swiftHubRetired = !AppState.runsUnderXCTest
+    @ObservationIgnored var swiftHubRetired =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil && NSClassFromString("XCTestCase") == nil
+    @ObservationIgnored var hubAdoptionDeps: HubAdoptionDeps? // the hand-over's runner and keys; nil: the live ones
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?

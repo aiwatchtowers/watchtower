@@ -41,6 +41,7 @@ func init() {
 	c.Flags().Bool("status", false, "print where the adoption stands")
 	c.Flags().Bool("keys-stdin", false, "hand the app's hub keys over, as JSON on stdin")
 	c.Flags().Bool("confirm-deleted", false, "record that the app deleted its own hub keys")
+	c.Flags().Bool("set-aside", false, "set the Swift hub's state aside, unimported (this Mac has no keys for it; phones link again)")
 	c.Flags().String("mobile-hub", "", "the Swift hub's dir (tests only)")
 	_ = c.Flags().MarkHidden("mobile-hub")
 	hubCmd.AddCommand(c)
@@ -55,15 +56,16 @@ func runHubAdopt(cmd *cobra.Command, _ []string) error {
 	settingsIn, _ := cmd.Flags().GetBool("settings-stdin")
 	keysIn, _ := cmd.Flags().GetBool("keys-stdin")
 	confirm, _ := cmd.Flags().GetBool("confirm-deleted")
+	setAside, _ := cmd.Flags().GetBool("set-aside")
 	// One call, one job: the keys never share stdin with the settings.
 	n := 0
-	for _, b := range []bool{status, settingsIn, keysIn, confirm} {
+	for _, b := range []bool{status, settingsIn, keysIn, confirm, setAside} {
 		if b {
 			n++
 		}
 	}
 	if n != 1 {
-		return errors.New("usage: watchtower hub adopt --status or --settings-stdin, or --keys-stdin or --confirm-deleted (one per call)")
+		return errors.New("usage: watchtower hub adopt --status or --settings-stdin, or --keys-stdin, --confirm-deleted or --set-aside (one per call)")
 	}
 	if keysIn || confirm {
 		return runHubAdoptKeys(cmd, asJSON, keysIn)
@@ -79,6 +81,18 @@ func runHubAdopt(cmd *cobra.Command, _ []string) error {
 	dir, rec, err := hubAdoptDirs()
 	if err != nil {
 		return err
+	}
+	if setAside {
+		ans, line := adopt.SetAsideAnswer{SetAside: "done"}, "the Swift hub's state is set aside; the Go hub starts fresh"
+		opErr := adopt.SetAside(mobile, dir, nil)
+		if opErr != nil {
+			ans.SetAside = adopt.SetAsideClass(opErr)
+			line = fmt.Sprintf("set-aside refused (%s)", ans.SetAside)
+		}
+		if err := hubPrint(cmd, asJSON, ans, line); err != nil {
+			return err
+		}
+		return opErr
 	}
 	if status {
 		rep, err := adopt.Status(mobile, dir)

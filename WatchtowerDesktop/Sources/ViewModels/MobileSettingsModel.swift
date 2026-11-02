@@ -8,7 +8,9 @@ import WatchtowerCore
 @MainActor
 protocol MobileAdoptionSource: AnyObject {
     var adoptionState: HubAdoptionState { get }
-    func retryAdoption() async
+    func retryHandOver() async
+    /// **Set up Mobile again** after a hand-over that cannot finish, once the owner confirmed.
+    func setUpHandOverAgain() async
 }
 
 /// Settings → Mobile over `watchtower hub …` (go hub plan 3 Task 23, spec
@@ -500,7 +502,12 @@ final class MobileSettingsModel {
     }
 
     func retryAdoption() async {
-        await adoption?.retryAdoption()
+        await adoption?.retryHandOver()
+        await load()
+    }
+
+    func setUpMobileAgain() async {
+        await adoption?.setUpHandOverAgain()
         await load()
     }
 }

@@ -61,6 +61,7 @@
 - `internal/historybackfill/policy_test.go`: `TestPolicyBackfill_SkipKeepsRowState`.
 - `cmd/provider_policy_test.go`: `TestProviderPolicy_ConfigSetRefused`.
 - `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift`: `testOffStopsHubKeepsSetting`, `testLooseningDoesNotStartHubWhenSettingOff`.
+- The app run as shipped once the Swift hub is retired (go hub plan 3 Task 22): `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredOffWipesAPendingSwiftStateAndKeepsSetting` (a Swift state waiting for the hand-over under `off` is wiped once: the Swift hub is built only to be disabled, never started, the toggle kept), `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredLooseningNeverStartsTheSwiftHub`, `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift::testRetiredWipeNeverCreatesOrRepairsKeys` (the wipe holds no keyring: missing keys stay missing for the hand-over).
 - Go hub (phase 1, **ask #807**), the Go twins: `internal/hub/hub_test.go::TestPolicy03_OffStopsHubKeepsSetting`, `internal/hub/hub_test.go::TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` (`MobileSync` off stops the Go hub and deletes what it published, `hub_meta.enabled` untouched; loosening never starts a hub the owner left off).
 - Go hub on a desktop host (phase 3 Task 21), the same meaning over both transports: `internal/hub/resolve_desktop_test.go::TestPolicy03_OffStopsDesktopHostHubKeepsSetting`.
 
@@ -68,6 +69,7 @@
 
 ## Changelog
 
+- 2026-11-02 (go hub plan 3 Task 22, PR #605 review): strengthening, no guard relaxed. Two guards for the production branch (the Swift hub retired, the Go hub's hand-over): `MobileSync = off` still wipes a Swift state that has not been handed over yet, and loosening never starts the Swift hub. The two earlier Swift guards stay, on the Swift hub's own branch, until Task 24 maps them to the Go twins.
 - 2026-11-02 (Go hub phase 3 Task 21, PR #604): strengthening, no guard relaxed. POLICY-03's Go twin for a desktop host added (`internal/hub/resolve_desktop_test.go::TestPolicy03_OffStopsDesktopHostHubKeepsSetting`): MobileSync off stops the desktop host's hub and deletes what it published (on CloudKit while the bridge still runs, with the recorded identity store), `hub_meta.enabled` untouched. Text unchanged.
 - 2026-10-31 (Go hub phase 1, board #1284, **ask #807**): strengthening, no guard relaxed. POLICY-03's Go twins added for the Go hub (`internal/hub`). Text unchanged. Note `docs/features/go-hub.md`.
 - 2026-10-25 (board #608, approved 2026-10-25, asks #569 and #572): POLICY-01..03 written with the feature. Amended with it: PURGE-01 (policy origin), QC-02 (allowed list), CHAT-02/03 note (claude.ai tools off reason), AUTO-13 and the `mcp()` path (policy refusals), the mobile POC and the provider registry notes.

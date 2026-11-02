@@ -30,8 +30,14 @@ extension AppState {
 extension AppState: MobileAdoptionSource {
     var adoptionState: HubAdoptionState { hubAdoption?.state ?? .notNeeded }
 
-    func retryAdoption() async {
-        _ = await hubAdoption?.retry()
+    /// The driver runs it in its own task (`retryHubAdoption`); the tab
+    /// reads again as its state moves (`MobileSettingsTab`'s onChange).
+    func retryHandOver() async {
+        retryHubAdoption()
+    }
+
+    func setUpHandOverAgain() async {
+        setUpMobileAgain()
     }
 }
 

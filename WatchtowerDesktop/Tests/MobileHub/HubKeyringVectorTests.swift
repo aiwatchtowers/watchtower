@@ -105,6 +105,8 @@ private struct FixedHubKeyStore: HubKeyStore {
         return (keys, false)
     }
 
+    func existingHubIdentity(hubID: String) throws -> HubIdentityKeys? { try hubIdentity(hubID: hubID).keys }
+
     func deleteHubIdentity(hubID: String) throws {}
 }
 

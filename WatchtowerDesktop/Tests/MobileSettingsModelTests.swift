@@ -27,10 +27,12 @@ final class MobileSettingsModelTests: XCTestCase {
         var adoptionState: HubAdoptionState
         var retries = 0
         init(_ state: HubAdoptionState) { adoptionState = state }
-        func retryAdoption() async {
+        func retryHandOver() async {
             retries += 1
             adoptionState = .done
         }
+
+        func setUpHandOverAgain() async {}
     }
 
     private func makeModel(
