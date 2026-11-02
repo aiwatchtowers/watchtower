@@ -46,6 +46,9 @@ const (
 	ReasonCap    Reason = "cap"
 	ReasonUnlink Reason = "unlink"
 	ReasonManual Reason = "manual"
+	// ReasonTransportSwitch: every accepted transport switch begins an
+	// epoch (relay sim rule 11, internal/hub/switcher).
+	ReasonTransportSwitch Reason = "transport_switch"
 )
 
 var (
@@ -607,7 +610,7 @@ var ErrSkipRotation = errors.New("identity: rotation skipped")
 // writes nothing and is returned.
 func (k *Keyring) RotateWith(r Reason, also func(*sql.Tx) error) error {
 	switch r {
-	case ReasonAge, ReasonCap, ReasonUnlink, ReasonManual:
+	case ReasonAge, ReasonCap, ReasonUnlink, ReasonManual, ReasonTransportSwitch:
 	default:
 		return fmt.Errorf("identity: unknown rotation reason %q", r)
 	}

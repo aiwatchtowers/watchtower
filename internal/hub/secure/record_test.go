@@ -271,6 +271,39 @@ func TestSealer_ZeroesEveryKeyItWasHanded(t *testing.T) {
 	}
 }
 
+// InEpoch seals in an older epoch the phone still holds (the switch notice
+// into the transport being left), never in a newer or unaccepted one.
+func TestSealer_InEpochSealsInTheOlderEpoch(t *testing.T) {
+	ks := newKeySource(t)
+	ks.epoch, ks.accepted = 2, map[uint32]bool{1: true, 2: true}
+	old := NewSealer(ks).InEpoch(1)
+	dev := ks.k.deviceID
+	plain := "c-" + dev.String()
+	wire, _ := old.WireName(ZoneRelay, plain)
+	rec, err := old.ToPhone("mb", dev, wire, "control", plain, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := parseHeader(rec.Envelope())
+	if err != nil || h.Epoch != 1 {
+		t.Fatalf("relay record epoch %d, %v", h.Epoch, err)
+	}
+	data, err := old.Data("dz", "transport-marker", "", []byte(`{}`), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, err := parseHeader(data.Envelope()); err != nil || h.Epoch != 1 {
+		t.Fatalf("data record epoch %d, %v", h.Epoch, err)
+	}
+	if _, err := NewSealer(ks).InEpoch(3).Data("dz", "transport-marker", "", []byte(`{}`), nil, ""); !errors.Is(err, ErrEpochNotCurrent) {
+		t.Fatalf("a newer epoch: %v", err)
+	}
+	ks.accepted = map[uint32]bool{2: true}
+	if _, err := old.ToPhone("mb", dev, wire, "control", plain, []byte(`{}`)); !errors.Is(err, ErrEpochNotAccepted) {
+		t.Fatalf("an epoch the phone's keys are no longer accepted in: %v", err)
+	}
+}
+
 func TestSealer_RefusesMisuse(t *testing.T) {
 	ks := newKeySource(t)
 	s := NewSealer(ks)

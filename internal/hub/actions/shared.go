@@ -92,10 +92,7 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 	var errs []error
 	failed := map[secure.ID]bool{}
 	for _, b := range g.boxes {
-		err := p.drainHeld(ctx, b, ps)
-		if err == nil {
-			err = p.retryUploads(ctx, b, ps)
-		}
+		err := p.drainHeldActive(ctx, b, ps)
 		if err != nil && !errors.Is(err, errBudget) {
 			failed[b.id] = true
 		}

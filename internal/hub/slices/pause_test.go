@@ -76,6 +76,32 @@ func TestCycleWhilePausedWritesNothing(t *testing.T) {
 	}
 }
 
+// Holds are per reason: the transport switch's release never lifts the
+// admission gate's pause, and the other way round.
+func TestPauseReasonsHoldUntilEveryOneIsReleased(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	src := &fakeSource{kind: "target"}
+	src.set(item("1", `{"v":1}`))
+	p := r.publisher(src)
+	p.Pause()              // the admission gate
+	p.PauseFor("switch")   // the transport switch
+	p.ResumeFor("switch")  // the switch is done
+	p.ResumeFor("unknown") // releases nothing
+	if rep, _ := p.Cycle(context.Background(), nil); !rep.Aborted || rep.Saved != 0 {
+		t.Fatalf("the admission pause was lifted by another reason: %+v", rep)
+	}
+	p.PauseFor("switch")
+	p.Resume()
+	if rep, _ := p.Cycle(context.Background(), nil); !rep.Aborted {
+		t.Fatalf("the switch's pause was lifted by the gate: %+v", rep)
+	}
+	p.ResumeFor("switch")
+	r.advance(time.Second)
+	if rep := r.cycle(p); rep.Saved != 1 {
+		t.Fatalf("cycle after both releases = %+v", rep)
+	}
+}
+
 // Run hands a failed cycle's error to OnError (an ENTITLEMENT_INACTIVE save
 // makes the hub re-read its account state).
 func TestRunHandsAFailedSaveToOnError(t *testing.T) {
