@@ -108,6 +108,40 @@ func (s *Store) DropResendFrom(id int64, device string) error {
 	})
 }
 
+// RekeyControls moves the rows queued under any of from to mailbox (a
+// phone whose queue key changed: its mailbox moved between its own zone and a
+// shared one), keeping their ids and so their order. It returns how many
+// moved; a store whose rows are all under mailbox already writes nothing.
+func (s *Store) RekeyControls(from []string, mailbox string) (int64, error) {
+	var n int64
+	for _, old := range from {
+		if old == mailbox {
+			continue
+		}
+		var pending bool
+		if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM control_queue WHERE mailbox = ?)`, old).Scan(&pending); err != nil {
+			return n, fmt.Errorf("listing controls: %w", err)
+		}
+		if !pending {
+			continue
+		}
+		var moved int64
+		err := s.write(func(tx *sql.Tx) error {
+			res, err := tx.Exec(`UPDATE control_queue SET mailbox = ? WHERE mailbox = ?`, mailbox, old)
+			if err != nil {
+				return fmt.Errorf("moving controls: %w", err)
+			}
+			moved, err = res.RowsAffected()
+			return err
+		})
+		if err != nil {
+			return n, err
+		}
+		n += moved
+	}
+	return n, nil
+}
+
 // ControlFailed counts a failed write and keeps its error class (a class
 // only, never error text) for the next pass's retry.
 func (s *Store) ControlFailed(id int64, class string) error {

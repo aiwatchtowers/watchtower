@@ -10,8 +10,8 @@ import (
 )
 
 // The relay sim's order tests (relay repo sim/README.md rules 2, 4–6), on
-// real envelopes and both memfake kinds: relay (record_seq) and cloudkit
-// (opaque change tags).
+// real envelopes and every memfake kind: relay (record_seq), cloudkit
+// (opaque change tags) and cloudkit behind the shared mailbox (kindShared).
 
 func noops(seqs ...uint64) []string {
 	out := make([]string, len(seqs))

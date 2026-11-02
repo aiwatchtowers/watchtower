@@ -25,7 +25,7 @@ func (w *world) controls(kind string) []wire.Control {
 
 func (w *world) pending() int {
 	w.t.Helper()
-	rows, err := w.st.PendingControls(w.phone.Zone())
+	rows, err := w.st.PendingControls(w.queue(w.phone))
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestEchoOwedIsRetriedEveryPass(t *testing.T) {
 			if r := w.pass(); r.ControlsWritten != 0 {
 				t.Fatalf("pass %d %+v", i, r)
 			}
-			rows, err := w.st.PendingControls(w.phone.Zone())
+			rows, err := w.st.PendingControls(w.queue(w.phone))
 			if err != nil || len(rows) != 1 || rows[0].Attempts != i {
 				t.Fatalf("pass %d: queue %+v, %v", i, rows, err)
 			}
@@ -207,7 +207,7 @@ func TestTransportSwitchIsRejectedNotSupportedYet(t *testing.T) {
 		if len(w.phone.Controls) != 1 {
 			t.Fatalf("controls %+v", w.phone.Controls)
 		}
-		if w.proc.cfg.Transport != w.fake {
+		if w.proc.cfg.Transport != w.tr {
 			t.Fatal("the hub's transport changed")
 		}
 		w.wantEmptyMailbox()
@@ -329,7 +329,7 @@ func TestResendFromRefusedForGoodAsksTheGapAgain(t *testing.T) {
 		}
 		w.act("test_noop")
 		// The pass saves the held echo of 3, then resend_from(2): refuse that one for good.
-		w.proc.cfg.Transport = &failSave{Fake: w.fake, n: 2, err: transport.ErrForbidden}
+		w.use(&failSave{Fake: w.fake, n: 2, err: transport.ErrForbidden})
 		w.pass()
 		if w.pending() != 0 {
 			t.Fatalf("%d rows still queued", w.pending())

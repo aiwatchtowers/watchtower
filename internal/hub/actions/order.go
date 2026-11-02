@@ -147,15 +147,8 @@ func (p *Processor) action(ctx context.Context, b mailbox, r record, o secure.Op
 // the next action whose ledger row is still begun is answered
 // outcome_unknown — never re-run — so the order moves on (the Swift hub's
 // begun → outcome_unknown, RelayProcessor processAction). Any other own
-// record is no work.
-func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.Stored, ps *pass) error {
-	o, err := p.cfg.Opener.OwnEcho(b.zone, rec.Name, rec.Envelope)
-	if err != nil {
-		if droppable(err) {
-			return nil
-		}
-		return err
-	}
+// record is no work. o is rec opened under b's key (OwnEchoFor).
+func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, ps *pass) error {
 	if o.Frame.Kind != kindAction {
 		return nil
 	}
@@ -213,7 +206,7 @@ func (p *Processor) repeat(ctx context.Context, b mailbox, r record, o secure.Op
 		if err := mark(tx, b, r.name, o); err != nil {
 			return err
 		}
-		return state.Enqueue(tx, q.control(b.zone))
+		return state.Enqueue(tx, q.control(b.queue))
 	}); err != nil {
 		return err
 	}
@@ -246,13 +239,13 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 		if err := state.Hold(tx, device, seq, r.name, r.env); err != nil {
 			return err
 		}
-		if err := state.Enqueue(tx, echo.control(b.zone)); err != nil {
+		if err := state.Enqueue(tx, echo.control(b.queue)); err != nil {
 			return err
 		}
 		if resend == nil {
 			return nil
 		}
-		if err := state.Enqueue(tx, resend.control(b.zone)); err != nil {
+		if err := state.Enqueue(tx, resend.control(b.queue)); err != nil {
 			return err
 		}
 		return state.SetResendRequested(tx, device, from)
@@ -333,7 +326,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		if err := mark(tx, b, r.name, o); err != nil { // the deciding commit for idempotent kinds
 			return err
 		}
-		if err := state.Enqueue(tx, final.control(b.zone)); err != nil {
+		if err := state.Enqueue(tx, final.control(b.queue)); err != nil {
 			return err
 		}
 		if p.fault != nil {
@@ -383,7 +376,7 @@ func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Ope
 		if recv == nil {
 			return nil
 		}
-		return state.Enqueue(tx, recv.control(b.zone))
+		return state.Enqueue(tx, recv.control(b.queue))
 	})
 	if errors.Is(err, state.ErrClaimed) {
 		return false, nil
@@ -441,6 +434,11 @@ func sameID(s string, id secure.ID) bool {
 // copy rolled it back) is dropped and its gap asked for again.
 func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 	device := b.id.String()
+	if p.fault != nil {
+		if err := p.fault("drain " + device); err != nil {
+			return err
+		}
+	}
 	for {
 		dev, linked, err := p.cfg.Store.Device(device)
 		if err != nil || !linked {
@@ -522,7 +520,7 @@ func (p *Processor) reaskHeld(ctx context.Context, b mailbox, seq, from uint64) 
 		if err := state.DropHeld(tx, device, seq); err != nil {
 			return err
 		}
-		if err := state.Enqueue(tx, q.control(b.zone)); err != nil {
+		if err := state.Enqueue(tx, q.control(b.queue)); err != nil {
 			return err
 		}
 		return state.SetResendRequested(tx, device, from)

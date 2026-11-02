@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -23,7 +24,19 @@ import (
 
 const hubRelayID = "hubrelaytest"
 
-var kinds = []transport.Kind{transport.KindRelay, transport.KindCloudKit}
+// kindShared is the CloudKit memfake behind a SharedMailbox adapter: every
+// phone of the hub on the one shared mailbox zone, as on CloudKit's RelayZone.
+const kindShared transport.Kind = "cloudkit-shared"
+
+var kinds = []transport.Kind{transport.KindRelay, transport.KindCloudKit, kindShared}
+
+// sharedMailbox is the memfake as CloudKit names mailboxes: every phone's is
+// transport.SharedMailboxZone (the cloudkit client's MailboxFor).
+type sharedMailbox struct{ transport.Transport }
+
+func (sharedMailbox) MailboxFor(hub, _ string) string { return transport.SharedMailboxZone(hub) }
+
+var _ transport.SharedMailbox = sharedMailbox{}
 
 // world is one hub (sidecar, keyring, processor) and its linked phones on
 // one memfake transport, with a settable clock and a log of handler calls.
@@ -38,6 +51,12 @@ type world struct {
 	proc   *Processor
 	phone  *hubtest.Phone
 	sealer *secure.Sealer
+	links  *link.Center
+	// tr is the transport the processor started on (w.fake, or the shared
+	// mailbox over it).
+	tr transport.Transport
+	// mailbox is every phone's zone on kindShared ("" = its own).
+	mailbox string
 
 	mu    sync.Mutex
 	now   time.Time
@@ -65,15 +84,26 @@ func newWorld(t *testing.T, kind transport.Kind) *world {
 	if w.keys, err = identity.NewKeyring(w.ident, st, w.clock); err != nil {
 		t.Fatal(err)
 	}
-	w.fake = memfake.New(kind, w.clock)
+	var tr transport.Transport
+	if kind == kindShared {
+		w.fake = memfake.New(transport.KindCloudKit, w.clock)
+		w.mailbox = transport.SharedMailboxZone(hubRelayID)
+		tr = sharedMailbox{w.fake}
+	} else {
+		w.fake = memfake.New(kind, w.clock)
+		tr = w.fake
+	}
 	w.disp = NewDispatcher()
 	w.disp.Register("test_noop", w.recording(Outcome{Status: wire.StatusApplied}), KindOptions{})
 	w.disp.Register("board_comment_add", w.recording(Outcome{Status: wire.StatusApplied}), KindOptions{})
 	w.sealer = secure.NewSealer(w.keys)
+	opener := secure.NewOpener(w.keys, w.keys)
+	w.links = link.NewCenter(link.Config{Store: st, Keys: w.keys, Opener: opener, Clock: w.clock})
 	w.proc = NewProcessor(Config{
-		Store: st, Transport: w.fake, Sealer: w.sealer, Opener: secure.NewOpener(w.keys, w.keys), Keys: w.keys,
-		Dispatcher: w.disp, HubRelayID: hubRelayID, Clock: w.clock,
+		Store: st, Transport: tr, Sealer: w.sealer, Opener: opener, Keys: w.keys,
+		Dispatcher: w.disp, HubRelayID: hubRelayID, Clock: w.clock, Links: w.links,
 	})
+	w.tr = tr
 	w.phone = w.addPhone()
 	return w
 }
@@ -91,7 +121,7 @@ func (w *world) addPhone() *hubtest.Phone {
 	}
 	ph, err := hubtest.New(hubtest.Config{
 		Hub: w.keys.HubID(), HubKX: w.ident.Agreement.PublicKey(), MetaKey: meta, Epoch: epoch,
-		HubRelayID: hubRelayID, Transport: w.fake, Clock: w.clock,
+		HubRelayID: hubRelayID, Transport: w.fake, Clock: w.clock, Mailbox: w.mailbox,
 	})
 	if err != nil {
 		w.t.Fatal(err)
@@ -207,6 +237,23 @@ func (w *world) wantEcho(seq uint64, status, reason string) wire.ActionRequest {
 	return e
 }
 
+// use puts tr under the processor, behind the shared mailbox on kindShared.
+func (w *world) use(tr transport.Transport) {
+	if w.mailbox != "" {
+		tr = sharedMailbox{tr}
+	}
+	w.proc.cfg.Transport = tr
+}
+
+// queue is ph's control_queue key: its zone, or zone@<device> in the shared
+// mailbox.
+func (w *world) queue(ph *hubtest.Phone) string {
+	if w.mailbox != "" {
+		return w.mailbox + "@" + ph.ID().String()
+	}
+	return ph.Zone()
+}
+
 func (w *world) wantCalls(want ...string) {
 	w.t.Helper()
 	if got := w.callLog(); !slices.Equal(got, want) {
@@ -292,7 +339,7 @@ func TestOrderAndLedgerCommitInOneTransaction(t *testing.T) {
 			if d := w.device(w.phone); d.LastAppliedActionSeq != 0 {
 				t.Fatalf("last applied moved to %d without the ledger", d.LastAppliedActionSeq)
 			}
-			if rows, _ := w.st.PendingControls(w.phone.Zone()); len(rows) != 0 {
+			if rows, _ := w.st.PendingControls(w.queue(w.phone)); len(rows) != 0 {
 				t.Fatalf("%d echoes queued by a rolled back transaction", len(rows))
 			}
 			w.proc.fault = nil
@@ -537,7 +584,7 @@ func TestRecordInAnotherPhonesMailboxDropped(t *testing.T) {
 		t.Fatalf("pass %+v", r)
 	}
 	w.wantCalls()
-	if rows, _ := w.st.PendingControls(w.phone.Zone()); len(rows) != 0 {
+	if rows, _ := w.st.PendingControls(w.queue(w.phone)); len(rows) != 0 {
 		t.Fatalf("%d answers to a misplaced record", len(rows))
 	}
 	if _, _, ok, _ := w.st.RelaySeen(name, other.ID().String()); ok {
@@ -661,7 +708,7 @@ func TestRelinkDuringApplyCommitsNothing(t *testing.T) {
 	if d := w.device(w.phone); d.LastAppliedActionSeq != 0 {
 		t.Errorf("the old link's apply moved the new link's order to %d", d.LastAppliedActionSeq)
 	}
-	if rows, _ := w.st.PendingControls(w.phone.Zone()); len(rows) != 0 {
+	if rows, _ := w.st.PendingControls(w.queue(w.phone)); len(rows) != 0 {
 		t.Errorf("%d echoes queued for the old link", len(rows))
 	}
 	if tok, _ := w.st.ZoneToken(w.phone.Zone()); tok != 0 {
