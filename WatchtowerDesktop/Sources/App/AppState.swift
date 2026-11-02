@@ -383,9 +383,7 @@ final class AppState {
     private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
-    /// Phone recordings on the Go hub, claimed, reported and finished over
-    /// its control socket (go hub plan 3 Task 17); with the hub center only.
-    @ObservationIgnored private(set) var phoneRecordingQueue: PhoneRecordingQueue?
+    @ObservationIgnored private(set) var phoneRecordingQueue: PhoneRecordingQueue? // `replacePhoneRecordingQueue`
     /// Every line the app types into a workbench session's prompt — an
     /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
     /// one queue per session (PROJ-12).
@@ -1889,20 +1887,11 @@ final class AppState {
 
     /// The Go hub's center for a rebuilt workbench state, the previous one stopped.
     private func replaceHubCenter(
-        dbPool: DatabasePool,
-        cliRunner: (any CLIRunnerProtocol)?,
-        workbenches vm: WorkbenchesViewModel,
-        agentStates: SessionAgentStateCenter
+        dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
     ) {
         hubCenter?.stop()
-        phoneRecordingQueue?.stop()
         hubCenter = makeHubCenter(cliRunner)
-        phoneRecordingQueue = hubCenter.map { _ in
-            PhoneRecordingQueue.live(cli: cliRunner, recorder: meetingRecorderCenter, dbPool: dbPool)
-        }
-        phoneRecordingQueue?.start()
-        hubCenter?.onWatchConnected = { [weak queue = phoneRecordingQueue] in queue?.rescan() }
-        hubCenter?.onRecordingQueued = { [weak queue = phoneRecordingQueue] in queue?.recordingQueued($0) }
+        phoneRecordingQueue = replacePhoneRecordingQueue(phoneRecordingQueue, hub: hubCenter, dbPool: dbPool, cliRunner: cliRunner)
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.start()
     }
