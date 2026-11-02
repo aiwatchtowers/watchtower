@@ -84,6 +84,9 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 	if err == nil {
 		var u Usage
 		if u, err = parse(body); err == nil {
+			if ctx.Err() != nil {
+				return pollInterval, ctx.Err()
+			}
 			return pollInterval, p.storeUsage(now, st, u)
 		}
 		err = &parseError{err}
@@ -198,7 +201,15 @@ func (p *Poller) save(st db.PlanUsageStatus, cause error) error {
 		// Not joined: Run silences ErrNoCredentials, and a failed write must still be logged.
 		return fmt.Errorf("planusage: write status: %w (while handling: %v)", err, cause)
 	}
-	return cause
+	if cause != nil {
+		code := safeStoredReason(st.Reason)
+		var timeout interface{ Timeout() bool }
+		if errors.Is(cause, context.DeadlineExceeded) || errors.As(cause, &timeout) && timeout.Timeout() {
+			code = "timeout"
+		}
+		return &OperationError{Code: code, Cause: cause}
+	}
+	return nil
 }
 
 // Run polls until ctx ends: first after 10 s, then at PollOnce's delay.
