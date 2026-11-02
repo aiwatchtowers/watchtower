@@ -102,7 +102,7 @@ func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
 	var calls, disabled atomic.Int32
 	p := &Provider{Name: "codex", Workspace: t.TempDir(), LockWait: 35 * time.Millisecond, Budget: time.Second,
 		Poll:         func(context.Context) (time.Duration, error) { calls.Add(1); return pollInterval, nil },
-		MarkDisabled: func() error { disabled.Add(1); return nil }}
+		MarkDisabled: func(context.Context) error { disabled.Add(1); return nil }}
 	unlock, err := fsutil.LockFile(context.Background(), p.lockPath())
 	require.NoError(t, err)
 	first, err := os.Stat(p.lockPath())

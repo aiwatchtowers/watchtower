@@ -60,7 +60,7 @@ type Provider struct {
 	Workspace    string
 	Enabled      func() (bool, error)
 	Poll         func(context.Context) (time.Duration, error)
-	MarkDisabled func() error
+	MarkDisabled func(context.Context) error
 	Logger       *log.Logger
 	Budget       time.Duration
 	LockWait     time.Duration
@@ -138,7 +138,7 @@ func (p *Provider) poll(parent context.Context, manual bool) (time.Duration, err
 	}
 	if !enabled {
 		if !manual && p.MarkDisabled != nil {
-			if err := p.MarkDisabled(); err != nil {
+			if err := p.MarkDisabled(ctx); err != nil {
 				return pollInterval, &OperationError{Code: "storage", Cause: err}
 			}
 		}
@@ -169,7 +169,7 @@ func (p *Provider) Disable(ctx context.Context) error {
 		return &OperationError{Code: ErrorCode(err), Cause: err}
 	}
 	if p.MarkDisabled != nil {
-		return p.MarkDisabled()
+		return p.MarkDisabled(ctx)
 	}
 	return nil
 }
@@ -220,7 +220,16 @@ type CodexPoller struct {
 }
 
 func (p *CodexPoller) PollOnce(ctx context.Context) (time.Duration, error) {
-	if _, err := p.Store.GetCodexPlanUsageStatus(); err != nil {
+	previousFailures := p.failures
+	defer func() {
+		if ctx.Err() != nil {
+			p.failures = previousFailures
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return pollInterval, err
+	}
+	if _, err := p.Store.GetCodexPlanUsageStatusContext(ctx); err != nil {
 		return pollInterval, &OperationError{Code: "storage", Cause: err}
 	}
 	snapshot, err := p.Read(ctx)
@@ -228,7 +237,7 @@ func (p *CodexPoller) PollOnce(ctx context.Context) (time.Duration, error) {
 		return pollInterval, ctx.Err()
 	}
 	if err == nil {
-		if err := StoreCodexUsage(p.Store, p.Now(), snapshot); err != nil {
+		if err := StoreCodexUsageContext(ctx, p.Store, p.Now(), snapshot); err != nil {
 			return pollInterval, &OperationError{Code: "storage", Cause: err}
 		}
 		p.failures = 0
@@ -243,7 +252,7 @@ func (p *CodexPoller) PollOnce(ctx context.Context) (time.Duration, error) {
 		p.failures++
 		delay = backoff(p.failures)
 	}
-	if err := StoreCodexFailure(p.Store, p.Now(), snapshot, code); err != nil {
+	if err := StoreCodexFailureContext(ctx, p.Store, p.Now(), snapshot, code); err != nil {
 		return delay, &OperationError{Code: "storage", Cause: err}
 	}
 	return delay, &OperationError{Code: code}

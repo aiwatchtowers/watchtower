@@ -61,10 +61,10 @@ func newPlanProviders(database *db.DB, cfg *config.Config, logger *log.Logger) p
 					}
 				}
 				return delay, err
-			}, MarkDisabled: func() error { return planusage.MarkDisabled(database, time.Now()) }},
+			}, MarkDisabled: func(ctx context.Context) error { return planusage.MarkDisabledContext(ctx, database, time.Now()) }},
 		&planusage.Provider{Name: "codex", Workspace: cfg.WorkspaceDir(), Enabled: planUsageEnabled, Logger: logger, Poll: codexPoller.PollOnce,
-			MarkDisabled: func() error {
-				st, err := database.GetCodexPlanUsageStatus()
+			MarkDisabled: func(ctx context.Context) error {
+				st, err := database.GetCodexPlanUsageStatusContext(ctx)
 				if err != nil {
 					return err
 				}
@@ -72,7 +72,7 @@ func newPlanProviders(database *db.DB, cfg *config.Config, logger *log.Logger) p
 					st = &db.CodexPlanUsageStatus{PlanUsageStatus: db.PlanUsageStatus{LimitsJSON: "[]", BreakdownJSON: "[]", PlotJSON: "{}"}}
 				}
 				st.State, st.Reason, st.UpdatedAt = "disabled", "", time.Now().UTC()
-				return database.UpsertCodexPlanUsageStatus(*st)
+				return database.UpsertCodexPlanUsageStatusContext(ctx, *st)
 			}},
 	}
 }

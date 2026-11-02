@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -54,16 +55,23 @@ func planNullTime(t *time.Time) sql.NullString {
 // InsertPlanUsageSamples writes one poll's samples in one transaction; a
 // repeated (limit_key, taken_at) is ignored.
 func (db *DB) InsertPlanUsageSamples(samples []PlanUsageSample) error {
-	tx, err := db.Begin()
+	return db.InsertPlanUsageSamplesContext(context.Background(), samples)
+}
+
+func (db *DB) InsertPlanUsageSamplesContext(ctx context.Context, samples []PlanUsageSample) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("plan usage samples: begin: %w", err)
 	}
 	defer tx.Rollback() // no-op after Commit
 	for _, s := range samples {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO plan_usage_samples (taken_at, limit_key, percent, resets_at) VALUES (?, ?, ?, ?)`,
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plan_usage_samples (taken_at, limit_key, percent, resets_at) VALUES (?, ?, ?, ?)`,
 			planTime(s.TakenAt), s.LimitKey, s.Percent, planTime(s.ResetsAt)); err != nil {
 			return fmt.Errorf("plan usage samples: insert %s: %w", s.LimitKey, err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("plan usage samples: commit: %w", err)
@@ -74,7 +82,11 @@ func (db *DB) InsertPlanUsageSamples(samples []PlanUsageSample) error {
 // PlanUsageSamplesSince returns limitKey's samples taken at or after since,
 // oldest first.
 func (db *DB) PlanUsageSamplesSince(limitKey string, since time.Time) ([]PlanUsageSample, error) {
-	rows, err := db.Query(`SELECT taken_at, percent, resets_at FROM plan_usage_samples
+	return db.PlanUsageSamplesSinceContext(context.Background(), limitKey, since)
+}
+
+func (db *DB) PlanUsageSamplesSinceContext(ctx context.Context, limitKey string, since time.Time) ([]PlanUsageSample, error) {
+	rows, err := db.QueryContext(ctx, `SELECT taken_at, percent, resets_at FROM plan_usage_samples
 		WHERE limit_key = ? AND taken_at >= ? ORDER BY taken_at`, limitKey, planTime(since))
 	if err != nil {
 		return nil, fmt.Errorf("plan usage samples: query %s: %w", limitKey, err)
@@ -100,7 +112,11 @@ func (db *DB) PlanUsageSamplesSince(limitKey string, since time.Time) ([]PlanUsa
 
 // PrunePlanUsageSamples deletes samples taken before the cutoff.
 func (db *DB) PrunePlanUsageSamples(before time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM plan_usage_samples WHERE taken_at < ?`, planTime(before))
+	return db.PrunePlanUsageSamplesContext(context.Background(), before)
+}
+
+func (db *DB) PrunePlanUsageSamplesContext(ctx context.Context, before time.Time) (int64, error) {
+	res, err := db.ExecContext(ctx, `DELETE FROM plan_usage_samples WHERE taken_at < ?`, planTime(before))
 	if err != nil {
 		return 0, fmt.Errorf("plan usage samples: prune: %w", err)
 	}
@@ -109,10 +125,19 @@ func (db *DB) PrunePlanUsageSamples(before time.Time) (int64, error) {
 
 // UpsertPlanUsageStatus replaces the singleton status row.
 func (db *DB) UpsertPlanUsageStatus(s PlanUsageStatus) error {
+	return db.UpsertPlanUsageStatusContext(context.Background(), s)
+}
+
+func (db *DB) UpsertPlanUsageStatusContext(ctx context.Context, s PlanUsageStatus) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("plan usage status: begin publication: %w", err)
+	}
+	defer tx.Rollback()
 	if s.PlotJSON == "" {
 		s.PlotJSON = "{}"
 	}
-	_, err := db.Exec(`INSERT INTO plan_usage_status
+	_, err = tx.ExecContext(ctx, `INSERT INTO plan_usage_status
 		(id, state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at, plot_json)
 		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET state=excluded.state, reason=excluded.reason, plan=excluded.plan,
@@ -123,15 +148,25 @@ func (db *DB) UpsertPlanUsageStatus(s PlanUsageStatus) error {
 	if err != nil {
 		return fmt.Errorf("plan usage status: upsert: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("plan usage status: commit publication: %w", err)
+	}
 	return nil
 }
 
 // GetPlanUsageStatus reads the singleton row; nil, nil before the first write.
 func (db *DB) GetPlanUsageStatus() (*PlanUsageStatus, error) {
+	return db.GetPlanUsageStatusContext(context.Background())
+}
+
+func (db *DB) GetPlanUsageStatusContext(ctx context.Context) (*PlanUsageStatus, error) {
 	var s PlanUsageStatus
 	var fetched, lastErrAt sql.NullString
 	var updated string
-	err := db.QueryRow(`SELECT state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at, plot_json
+	err := db.QueryRowContext(ctx, `SELECT state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at, plot_json
 		FROM plan_usage_status WHERE id = 1`).Scan(&s.State, &s.Reason, &s.Plan, &fetched, &s.LastError, &lastErrAt, &s.LimitsJSON, &s.BreakdownJSON, &updated, &s.PlotJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

@@ -2,6 +2,7 @@ package planusage
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +15,10 @@ import (
 // CodexStore is the publication/history slice used by the adapter. Network and
 // process calls must complete before any of these methods open a transaction.
 type CodexStore interface {
-	GetCodexPlanUsageStatus() (*db.CodexPlanUsageStatus, error)
-	UpsertCodexPlanUsageStatus(db.CodexPlanUsageStatus) error
-	PublishCodexPlanUsage(db.CodexPlanUsageStatus, []db.CodexPlanUsageSample) error
-	CodexPlanUsageHistory(string, string, time.Time, time.Time, time.Time) ([]db.PlanUsageSample, error)
+	GetCodexPlanUsageStatusContext(context.Context) (*db.CodexPlanUsageStatus, error)
+	UpsertCodexPlanUsageStatusContext(context.Context, db.CodexPlanUsageStatus) error
+	PublishCodexPlanUsageContext(context.Context, db.CodexPlanUsageStatus, []db.CodexPlanUsageSample) error
+	CodexPlanUsageHistoryContext(context.Context, string, string, time.Time, time.Time, time.Time) ([]db.PlanUsageSample, error)
 }
 
 func codexLimits(snapshot codex.UsageSnapshot) ([]WindowLimit, error) {
@@ -62,6 +63,13 @@ func codexLimits(snapshot codex.UsageSnapshot) ([]WindowLimit, error) {
 // happen before the single atomic status+samples publication. The caller holds
 // the provider lock across the fetch and this function.
 func StoreCodexUsage(store CodexStore, now time.Time, snapshot codex.UsageSnapshot) error {
+	return StoreCodexUsageContext(context.Background(), store, now, snapshot)
+}
+
+func StoreCodexUsageContext(ctx context.Context, store CodexStore, now time.Time, snapshot codex.UsageSnapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now = now.UTC().Truncate(time.Second)
 	limits, err := codexLimits(snapshot)
 	if err != nil {
@@ -78,7 +86,7 @@ func StoreCodexUsage(store CodexStore, now time.Time, snapshot codex.UsageSnapsh
 			s := db.PlanUsageSample{LimitKey: l.Key, TakenAt: now, Percent: l.Percent}
 			if l.ResetsAt != nil {
 				s.ResetsAt = *l.ResetsAt
-				history, err = store.CodexPlanUsageHistory(snapshot.Scope, l.Key, now.Add(-lookback(l.Group)), now, *l.ResetsAt)
+				history, err = store.CodexPlanUsageHistoryContext(ctx, snapshot.Scope, l.Key, now.Add(-lookback(l.Group)), now, *l.ResetsAt)
 				if err != nil {
 					return fmt.Errorf("codex plan usage: load projection history: %w", err)
 				}
@@ -108,19 +116,29 @@ func StoreCodexUsage(store CodexStore, now time.Time, snapshot codex.UsageSnapsh
 	st := db.CodexPlanUsageStatus{PlanUsageStatus: db.PlanUsageStatus{State: "ok", Plan: snapshot.PlanType,
 		FetchedAt: &now, UpdatedAt: now, LimitsJSON: string(encoded), BreakdownJSON: "[]", PlotJSON: plot},
 		Scope: snapshot.Scope, IdentityKnown: snapshot.IdentityKnown, OrdinaryUsageAllowed: snapshot.OrdinaryUsageAllowed}
-	return store.PublishCodexPlanUsage(st, samples)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return store.PublishCodexPlanUsageContext(ctx, st, samples)
 }
 
 // StoreCodexFailure stores only closed safe source codes, never transport text.
 // A response that did not confirm the last scope invalidates identity proof.
 // Last-good plot/fetchedAt survive for diagnostics but are ineligible to draw.
 func StoreCodexFailure(store CodexStore, now time.Time, snapshot codex.UsageSnapshot, code string) error {
+	return StoreCodexFailureContext(context.Background(), store, now, snapshot, code)
+}
+
+func StoreCodexFailureContext(ctx context.Context, store CodexStore, now time.Time, snapshot codex.UsageSnapshot, code string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	switch code {
 	case "no_credentials", "unsupported_auth", "cli_missing", "unsupported_cli", "network", "parse", "timeout":
 	default:
 		return errors.New("codex plan usage: invalid source error code")
 	}
-	previous, err := store.GetCodexPlanUsageStatus()
+	previous, err := store.GetCodexPlanUsageStatusContext(ctx)
 	if err != nil {
 		return fmt.Errorf("codex plan usage: read retained status: %w", err)
 	}
@@ -141,7 +159,10 @@ func StoreCodexFailure(store CodexStore, now time.Time, snapshot codex.UsageSnap
 		st.State = "unavailable"
 	}
 	st.UpdatedAt, st.LastErrorAt = now, &now
-	return store.UpsertCodexPlanUsageStatus(st)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return store.UpsertCodexPlanUsageStatusContext(ctx, st)
 }
 
 // DecodeWindowLimits validates stored quota/projection values without inventing
