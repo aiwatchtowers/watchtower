@@ -441,6 +441,11 @@ type supervisor struct {
 	// nextWipe: a desktop host's stopped policy wipe (which starts the
 	// bridge) is not tried again before it.
 	nextWipe time.Time
+	// The owner's off wipe (off_delete.go): its last try, whether it left
+	// published records, and when the stopped retry may run again.
+	offDeleteAt     time.Time
+	offDeleteFailed bool
+	nextOffWipe     time.Time
 	// v1 is the last v1 session-host probe's answer (v1Known: probed in
 	// this daemon cycle; the cycle's tick forgets it).
 	v1, v1Known bool
@@ -539,7 +544,12 @@ func (s *supervisor) reconcile(ctx context.Context) {
 		switch {
 		case mode == policy.MobileOff:
 			// Also while paused: deleting published data is the safe direction.
-			s.stopHub(func(slices.Kind) bool { return false })
+			s.stopHub(keepNothing)
+		case !on:
+			// The owner's off deletes what was published, as the policy's does (off_delete.go).
+			s.stopHub(keepNothing)
+			s.noteOffDelete(time.Now())
+			s.nextOffWipe = time.Now().Add(offWipeRetry)
 		case mode == policy.MobileWorkbenchOnly && h.mode != mode:
 			s.stopHub(workbenchOnly)
 		default:
@@ -548,6 +558,15 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	}
 	if s.hub == nil && on && mode == policy.MobileOff {
 		s.wipeStopped(ctx)
+	}
+	if s.hub == nil && !on && mode != policy.MobileOff && !time.Now().Before(s.nextOffWipe) {
+		// What the owner's off (or an earlier run) left published: retried while off.
+		if n, err := s.publishedLeft(); err == nil && n > 0 {
+			s.nextWipe = time.Time{}
+			s.wipeStopped(ctx)
+			s.noteOffDelete(time.Now())
+		}
+		s.nextOffWipe = time.Now().Add(offWipeRetry)
 	}
 	if !want || s.hub != nil {
 		s.held = ""
@@ -682,6 +701,7 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		st.Reason = ReasonPolicyOff
 	case !on:
 		st.Reason = ReasonDisabled
+		st.OffDelete = s.offDeleteStatus()
 	case h == nil && s.held != "":
 		st.Reason = s.held
 	case h == nil && s.failure == ReasonSidecarUnreadable:

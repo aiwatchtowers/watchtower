@@ -209,9 +209,8 @@ extension AppState {
         )
         // A changed watched chat goes out within seconds, not on the next tick.
         chats?.onChange = { [weak publisher] in publisher?.nudge(kinds: [.sessionChat]) }
-        let keepAwake = makeKeepAwake(dbPool: dbPool, sidecar: sidecar, liveness: liveness, hasPhone: hasPhone)
         let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, chats, inputs]
-        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings, keepAwake]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
         let hub = try assembleMobileHub(
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
             recordingUploads: .init { [recordings, mobileSyncPolicy] upload, audio in
@@ -221,19 +220,6 @@ extension AppState {
         )
         wireTyping(hub.linkCenter, inputs: inputs)
         return hub
-    }
-
-    /// The Mac stays awake while a session runs and the phone has been in touch (ask #614).
-    private func makeKeepAwake(
-        dbPool: DatabasePool, sidecar: HubSyncState, liveness: SessionLivenessBox, hasPhone: @escaping @Sendable () -> Bool
-    ) -> KeepAwakeCompanion {
-        let defaults = mobileSyncDefaults
-        return KeepAwakeCompanion(
-            assertion: MacAwakeAssertion(),
-            enabled: { defaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true },
-            liveBoardSessions: { KeepAwakeCompanion.liveBoardSessions(dbPool, liveIDs: liveness.current.liveIDs) },
-            lastPhoneContact: { hasPhone() ? sidecar.lastPhoneContact() : nil }
-        )
     }
 
     /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every

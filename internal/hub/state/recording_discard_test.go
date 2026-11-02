@@ -82,3 +82,28 @@ func TestDiscardRecordingWithoutItsAudioStillRemovesTheRow(t *testing.T) {
 		t.Fatalf("the row is still there: %v %v", ok, err)
 	}
 }
+
+// A claim that comes first (a Retry re-claims a job Desktop failed) wins:
+// the Discard finds a claimed job, refuses, and leaves the row and its
+// audio for the transcription under way.
+func TestDiscardRecordingLosesToAClaim(t *testing.T) {
+	s := openTest(t)
+	dir := t.TempDir()
+	failedJob(t, s, "u4", ClassNotAudio)
+	audio := filepath.Join(dir, "u4.m4a")
+	if err := os.WriteFile(audio, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimRecording("u4", time.Unix(1_800_000_100, 0)); err != nil {
+		t.Fatalf("re-claiming a Desktop failure: %v", err)
+	}
+	if err := s.DiscardRecording(dir, "u4"); !errors.Is(err, ErrJobState) {
+		t.Fatalf("discard after a claim: %v", err)
+	}
+	if _, err := os.Stat(audio); err != nil {
+		t.Fatalf("the claimed job's audio went: %v", err)
+	}
+	if ok, err := s.HasRecording("u4"); err != nil || !ok {
+		t.Fatalf("the claimed job went: %v %v", ok, err)
+	}
+}

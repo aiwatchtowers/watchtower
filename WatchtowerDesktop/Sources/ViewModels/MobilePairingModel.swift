@@ -147,7 +147,7 @@ final class MobilePairingModel: Identifiable {
             }
             let failure = await started.failure()
             guard let self, run == self.generation else { return }
-            self.ended(failure)
+            self.streamEnded(failure)
         }
     }
 
@@ -218,8 +218,8 @@ final class MobilePairingModel: Identifiable {
     }
 
     /// The stream ended without linked or refused: the CLI's failure, or the
-    /// generic refusal.
-    private func ended(_ failure: String?) {
+    /// generic refusal (the design shots end their own).
+    func streamEnded(_ failure: String?) {
         switch step {
         case .linked, .refused, .failed: return
         default: finish(.failed(failure ?? Self.unknownRefusal))

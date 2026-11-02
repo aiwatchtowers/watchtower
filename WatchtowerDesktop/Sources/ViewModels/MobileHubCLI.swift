@@ -56,6 +56,11 @@ struct MobileHubCLI {
         let switchedBy: String?
         let keptRecordings: Kept?
         let cloudKit: CloudKit?
+        /// `off_delete.state` while the owner's switch is off: ok, pending, failed.
+        let offDelete: String?
+        /// A Desktop transcriber ever sent the hub a heartbeat (recordings can
+        /// go on); true from an older CLI that does not say.
+        let transcriber: Bool
 
         enum CodingKeys: String, CodingKey {
             case state, reason, transport, recordings, name, bridge
@@ -63,6 +68,12 @@ struct MobileHubCLI {
             case switchedBy = "switched_by"
             case keptRecordings = "kept_recordings"
             case cloudKit = "cloudkit"
+            case offDelete = "off_delete"
+            case transcriber
+        }
+
+        private struct OffDelete: Decodable {
+            let state: String?
         }
 
         init(
@@ -75,7 +86,9 @@ struct MobileHubCLI {
             switchedAt: Date? = nil,
             switchedBy: String? = nil,
             keptRecordings: Kept? = nil,
-            cloudKit: CloudKit? = nil
+            cloudKit: CloudKit? = nil,
+            offDelete: String? = nil,
+            transcriber: Bool = true
         ) {
             self.state = state
             self.reason = reason
@@ -87,6 +100,8 @@ struct MobileHubCLI {
             self.switchedBy = switchedBy
             self.keptRecordings = keptRecordings
             self.cloudKit = cloudKit
+            self.offDelete = offDelete
+            self.transcriber = transcriber
         }
 
         init(from decoder: any Decoder) throws {
@@ -105,6 +120,9 @@ struct MobileHubCLI {
             switchedBy = try text(.switchedBy)
             keptRecordings = try c.decodeIfPresent(Kept.self, forKey: .keptRecordings)
             cloudKit = try c.decodeIfPresent(CloudKit.self, forKey: .cloudKit)
+            let off = try c.decodeIfPresent(OffDelete.self, forKey: .offDelete)?.state
+            offDelete = off?.isEmpty == false ? off : nil
+            transcriber = try c.decodeIfPresent(Bool.self, forKey: .transcriber) ?? true
         }
     }
 
@@ -156,6 +174,19 @@ struct MobileHubCLI {
     /// nil: the watchtower binary was not found; every call throws.
     let runner: (any CLIRunnerProtocol)?
 
+    /// `hub recordings on|off --json`: the switch as it stands, and the
+    /// refusal's class (`no_transcriber`) when it was refused.
+    struct RecordingsAnswer: Decodable, Equatable {
+        let recordings: String
+        let stored: Bool
+        let error: String?
+    }
+
+    /// A read gives up after `readTimeout`, a write after `writeTimeout`:
+    /// a hung call never leaves the tab loading or a row busy.
+    nonisolated static let readTimeout: TimeInterval = 15
+    nonisolated static let writeTimeout: TimeInterval = 30
+
     nonisolated static let statusArgs = ["hub", "status", "--json"]
     nonisolated static let phonesArgs = ["hub", "phones", "--json"]
     nonisolated static let recordingJobsArgs = ["hub", "recording", "list", "--json"]
@@ -176,11 +207,16 @@ struct MobileHubCLI {
         try Self.decoder.decode(RecordingJobs.self, from: await output(Self.recordingJobsArgs))
     }
 
-    func run(_ args: [String]) async throws { _ = try await output(args) }
+    func run(_ args: [String]) async throws { _ = try await output(args, timeout: Self.writeTimeout) }
 
-    private func output(_ args: [String]) async throws -> Data {
+    func setRecordings(_ on: Bool) async throws -> RecordingsAnswer {
+        try Self.decoder.decode(RecordingsAnswer.self, from: await output(Self.recordingsArgs(on), timeout: Self.writeTimeout))
+    }
+
+    /// One call; a read unless a `timeout` says otherwise.
+    private func output(_ args: [String], timeout: TimeInterval? = nil) async throws -> Data {
         guard let runner else { throw CLIRunnerError.binaryNotFound }
-        return try await runner.run(args: args)
+        return try await runner.run(args: args, timeout: timeout ?? Self.readTimeout)
     }
 
     /// The CLI's own sentence for a refusal (`Error: <text>` on stderr), else

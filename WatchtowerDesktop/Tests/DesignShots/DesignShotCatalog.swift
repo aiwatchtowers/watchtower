@@ -415,7 +415,7 @@ enum DesignShotCatalog {
             DesignShot(name: frame.name, size: frame.size) { MobileSettingsShotFixtures.screen(frame) }
         } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
             // The pairing sheet over `hub pair --json --stream`, mockup §11–§13.
-            DesignShot(name: shot.rawValue, size: NSSize(width: 380, height: 380)) { MobileSettingsShotFixtures.pairing(shot) }
+            DesignShot(name: shot.rawValue, size: NSSize(width: 380, height: 400)) { MobileSettingsShotFixtures.pairing(shot) }
         } + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {

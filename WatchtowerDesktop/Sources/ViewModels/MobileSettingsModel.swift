@@ -96,11 +96,6 @@ final class MobileSettingsModel {
     nonisolated static let refreshInterval: Duration = .seconds(30)
     nonisolated static let startingRefreshInterval: Duration = .seconds(5)
 
-    /// The classes Desktop fails a phone recording with (Task 17).
-    nonisolated static let desktopFailureClasses: Set<String> = [
-        "no_speech", "transcription_failed", "not_audio", "unreadable", "ingest_failed", "missing_audio"
-    ]
-
     private(set) var state: State = .loading
     private(set) var recordingsOn = false
     /// False once the hub refused `on` for want of a transcriber: the switch is off-only.
@@ -110,7 +105,9 @@ final class MobileSettingsModel {
     /// The hub's transport as `hub status` names it (`cloudkit`, `relay`).
     private(set) var hubTransport: String?
     private(set) var hubSwitchedLine: String?
-    private(set) var hubLine: String?
+    private(set) var hubLine: HubLine?
+    /// Today's off-delete line while the owner's switch is off.
+    private(set) var offDeleteLine: String?
     /// Today's iCloud lines (the Swift hub's tab): the build cannot use
     /// iCloud, the account's sentence, CloudKit slowing sync down.
     private(set) var showsNeedsSignedBuild = false
@@ -248,8 +245,12 @@ final class MobileSettingsModel {
         macName = status.name ?? macName
         recordingsOn = status.recordings == "on"
         canLink = status.state == "running"
+            && Self.accountAllowsLinking(transport: status.transport, account: status.cloudKit?.account)
         hubLine = status.state == "off" ? nil : Self.hubLine(state: status.state, reason: status.reason)
-        showsNeedsSignedBuild = status.cloudKit?.signed == false
+        offDeleteLine = status.state == "off" ? Self.offDeleteLine(status.offDelete) : nil
+        // Only on a known fact: a hub with no status file says neither.
+        showsNeedsSignedBuild = status.bridge == "unavailable" || status.cloudKit?.account == "no_entitlement"
+        recordingsAvailable = status.transcriber
         let running = status.state != "off"
         accountLine = running ? status.cloudKit.flatMap { Self.accountLine($0.account) } : nil
         throttledSince = running ? status.cloudKit?.throttledSince : nil
@@ -275,7 +276,8 @@ final class MobileSettingsModel {
             if phone.permissionsRequested, !phone.permissionsAllowed { requests.append(Self.permissionsGrant) }
             return PhoneRow(
                 id: phone.deviceID, name: phone.name, transportLabel: label, transport: phone.transport, scope: phone.scope,
-                detailLine: ([Self.linkedText(phone.linkedAt), label] + [switchedLine].compactMap { $0 }).joined(separator: " · "),
+                detailLine: ([Self.scopeLabel(phone.scope), Self.linkedText(phone.linkedAt), label, switchedLine])
+                    .compactMap { $0 }.joined(separator: " · "),
                 switchedLine: switchedLine,
                 typing: phone.typingAllowed, permissions: phone.permissionsAllowed, startSessions: phone.startSessionsAllowed,
                 typingRequested: phone.typingRequested, permissionsRequested: phone.permissionsRequested,
@@ -288,12 +290,10 @@ final class MobileSettingsModel {
     nonisolated static func failedRecordings(_ listing: MobileHubCLI.RecordingJobs?) -> [FailedRecording] {
         guard let listing, listing.ready else { return [] }
         return listing.jobs.compactMap { job in
-            guard job.status == "failed", let errorClass = job.errorClass, Self.desktopFailureClasses.contains(errorClass) else {
+            guard job.status == "failed", let failure = job.errorClass.flatMap(PhoneRecordingQueue.FailureClass.init(rawValue:)) else {
                 return nil
             }
-            return FailedRecording(
-                id: job.uploadID, line: failedRecordingLine(errorClass), retryable: errorClass != "missing_audio"
-            )
+            return FailedRecording(id: job.uploadID, line: failedRecordingLine(failure), retryable: failure != .missingAudio)
         }
     }
 
@@ -330,17 +330,16 @@ final class MobileSettingsModel {
         busy.insert(.recordings)
         defer { busy.remove(.recordings) }
         do {
-            try await cli.run(MobileHubCLI.recordingsArgs(on))
-            recordingsError = nil
-            recordingsOn = on
-        } catch {
-            let why = MobileHubCLI.reason(error)
-            if on, why.localizedCaseInsensitiveContains("no transcriber") {
+            let answer = try await cli.setRecordings(on)
+            recordingsOn = answer.recordings == "on"
+            if answer.error == "no_transcriber" {
                 recordingsAvailable = false
                 recordingsError = Self.noTranscriber
             } else {
-                recordingsError = why
+                recordingsError = nil
             }
+        } catch {
+            recordingsError = MobileHubCLI.reason(error)
         }
         await load()
     }
@@ -469,8 +468,18 @@ final class MobileSettingsModel {
             await recordingWrite(id, MobileHubCLI.claimArgs(id), failure: Self.couldNotRetry)
             return
         }
+        busy.insert(.recording(id))
+        defer { busy.remove(.recording(id)) }
         retryInQueue(id)
         await load()
+    }
+
+    /// Link a phone needs a usable iCloud account while CloudKit carries the
+    /// hub (today: no account or a restricted one hides it); an account not
+    /// read yet does not hide it, and a Relay hub links without iCloud.
+    nonisolated static func accountAllowsLinking(transport: String?, account: String?) -> Bool {
+        guard transport == "cloudkit", let account, !account.isEmpty else { return true }
+        return account == "available"
     }
 
     /// "iCloud is slowing sync down": CloudKit has rate-limited the hub for

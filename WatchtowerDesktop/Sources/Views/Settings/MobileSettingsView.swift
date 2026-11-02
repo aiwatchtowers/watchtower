@@ -90,6 +90,7 @@ struct MobileSettingsView: View {
             )
         case .off(let reason):
             MobileOffSection(model: model, copy: Copy.offCopy(reason))
+            MobileRecordingsSection(model: model)
         case .noPhones:
             MobileHubSection(model: model)
             MobilePhonesSection(model: model, rows: [])
@@ -116,8 +117,30 @@ private struct MobileOffSection: View {
                     MobileSyncToggle(model: model)
                 }
             }
+            if let line = model.offDeleteLine {
+                Text(line).font(.caption).foregroundStyle(Tone.warning)
+            }
             MobileCloudLines(model: model)
             MobileCorpNotice(model: model)
+        }
+    }
+}
+
+/// A status line in its tone: secondary, warning or error.
+private struct MobileHubLineText: View {
+    let line: MobileSettingsModel.HubLine
+
+    var body: some View {
+        Text(line.text)
+            .font(.caption)
+            .foregroundStyle(color)
+    }
+
+    private var color: Color {
+        switch line.tone {
+        case .neutral: .secondary
+        case .warning: Tone.warning
+        case .error: Tone.error
         }
     }
 }
@@ -174,8 +197,11 @@ private struct MobileHubSection: View {
 
     var body: some View {
         SettingsSection(title: Copy.sectionTitle) {
-            SettingRow(title: Copy.toggleTitle, caption: model.hubLine ?? Copy.toggleOnCaption) {
+            SettingRow(title: Copy.toggleTitle, caption: Copy.toggleOnCaption) {
                 MobileSyncToggle(model: model)
+            }
+            if let line = model.hubLine {
+                MobileHubLineText(line: line)
             }
             MobileCorpNotice(model: model)
             SettingRow(title: Copy.macNameTitle, caption: Copy.macNameCaption) {
@@ -267,18 +293,18 @@ private struct MobilePhoneRow: View {
     var body: some View {
         let busy = model.busy.contains(.phone(row.id))
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    Text(row.name)
-                    Text(row.detailLine).font(.caption).foregroundStyle(.secondary)
+            // Wide: name, pill and action on one line; narrow (mockup §2): the
+            // pill and the action move below the lines.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    lines
+                    Spacer(minLength: Spacing.medium)
+                    trailing(busy: busy)
                 }
-                Spacer(minLength: Spacing.medium)
-                if busy { ProgressView().controlSize(.small) }
-                Chip(text: row.transportLabel, color: MobileTransportTone.color(row.transport))
-                Button(Copy.removeTitle) { model.requestRemove(row) }
-                    .buttonStyle(.kitQuiet)
-                    .foregroundStyle(Tone.error)
-                    .opacity(hovered ? 1 : 0)
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    lines
+                    HStack(spacing: Spacing.regular) { trailing(busy: busy) }
+                }
             }
             Grid(alignment: .leading, horizontalSpacing: Spacing.medium, verticalSpacing: Spacing.small) {
                 grantRow(Copy.typingLabel(row), requested: row.typingRequested, allowed: row.typing,
@@ -295,6 +321,30 @@ private struct MobilePhoneRow: View {
         }
         .kitRow(isSelected: false)
         .onHover { hovered = $0 }
+    }
+
+    private var lines: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(row.name)
+            Text(row.detailLine)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The spinner while a write runs, the transport pill, and Remove… on
+    /// hover (disabled while that phone's write is in flight).
+    @ViewBuilder
+    private func trailing(busy: Bool) -> some View {
+        if busy { ProgressView().controlSize(.small) }
+        Chip(text: row.transportLabel, color: MobileTransportTone.color(row.transport))
+        if hovered || model.pendingRemove?.id == row.id {
+            Button(Copy.removeTitle) { model.requestRemove(row) }
+                .buttonStyle(.kitQuiet)
+                .foregroundStyle(Tone.error)
+                .disabled(busy)
+        }
     }
 
     private func grantRow(

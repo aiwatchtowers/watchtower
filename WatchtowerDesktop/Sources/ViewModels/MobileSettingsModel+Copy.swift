@@ -92,31 +92,67 @@ extension MobileSettingsModel {
             return on("Mobile could not move to the new version. It stays off until it has moved.")
         case "session_host_v1":
             return on("Waiting for running sessions to restart once with this update.")
-        case "locked":
-            return on("Another Watchtower process runs Mobile on this Mac.")
-        case "sidecar_unreadable":
-            return on("Mobile's data on this Mac can't be read.")
-        case "start_failed":
-            return on("Mobile couldn't start. It tries again with the next sync.")
         case "swift_beside_go":
             return OffCopy(title: swiftBesideGoTitle, detail: swiftBesideGoDetail, showsToggle: false, toggleOn: false, managed: false)
         case "":
             return on("Mobile is not running. It starts with the next sync.")
         default:
-            return on("Mobile is off (\(reason)).")
+            return on((reasonLine(reason) ?? HubLine(text: unknownReason, tone: .warning)).text)
         }
     }
 
-    /// A running hub's line for its state or reason; nil when it just runs.
-    nonisolated static func hubLine(state: String, reason: String?) -> String? {
-        switch (state, reason ?? "") {
-        case ("starting", _): "Starting…"
-        case ("paused", _): "Paused. It goes on by itself."
-        case (_, "no_relay_origin"): "Relay is not set up on this Mac: phones link over iCloud only."
-        case (_, "relay_unreachable"): "Relay can't be reached right now. Phones on Relay wait."
-        case (_, "needs_relay"): "This hub needs Relay to link phones."
-        case (_, ""): nil
-        case let (_, other): "Mobile reports: \(other)."
+    /// A line's weight: neutral (secondary), warning or error (red, as
+    /// today's "Mobile couldn't start").
+    enum LineTone: Equatable { case neutral, warning, error }
+
+    struct HubLine: Equatable {
+        let text: String
+        let tone: LineTone
+    }
+
+    /// The owner's sentence for a status reason; never the raw identifier
+    /// (an unknown one reads `unknownReason`). nil for "" (no reason).
+    nonisolated static func reasonLine(_ reason: String) -> HubLine? {
+        func warning(_ text: String) -> HubLine { HubLine(text: text, tone: .warning) }
+        func error(_ text: String) -> HubLine { HubLine(text: text, tone: .error) }
+        switch reason {
+        case "": return nil
+        case "start_failed": return error("Mobile couldn't start. It tries again in a moment.")
+        case "sidecar_unreadable": return error("Mobile couldn't start: its data on this Mac can't be read.")
+        case "run_dir_unusable": return error("Mobile couldn't start: its folder on this Mac can't be used.")
+        case "bridge_unavailable": return error("Mobile can't run: this build can't use iCloud and has no Relay set up.")
+        case "locked": return warning("Another Watchtower process runs Mobile on this Mac.")
+        case "relay_unreachable": return warning("Relay can't be reached right now. Phones on Relay wait.")
+        case "not_vouched": return warning("Relay is waiting for a linked phone to vouch for this Mac.")
+        case "not_admitted": return warning("Relay hasn't admitted this Mac yet: a phone with a Relay subscription has to link it.")
+        case "vouch_revoked": return warning("The phone that vouched for this Mac on Relay took it back. Link a phone with Relay again.")
+        case "needs_relay": return warning("This hub needs Relay to link phones.")
+        case "no_relay_origin": return warning("Relay is not set up on this Mac: phones link over iCloud only.")
+        case "not_test_workspace": return warning("Mobile runs only in its test workspace on this Mac.")
+        default: return warning(unknownReason)
+        }
+    }
+
+    nonisolated static let unknownReason = "Mobile reports a problem this version can't name. It tries again by itself."
+
+    /// A running or starting hub's line: its reason's sentence, else
+    /// "Starting…" / "Paused…"; nil when it just runs.
+    nonisolated static func hubLine(state: String, reason: String?) -> HubLine? {
+        if let line = reasonLine(reason ?? "") { return line }
+        switch state {
+        case "starting": return HubLine(text: "Starting…", tone: .neutral)
+        case "paused": return HubLine(text: "Paused. It goes on by itself.", tone: .neutral)
+        default: return nil
+        }
+    }
+
+    /// The owner's off deleting what the hub published (`off_delete`):
+    /// today's off-delete lines; nil when it is done.
+    nonisolated static func offDeleteLine(_ state: String?) -> String? {
+        switch state {
+        case "pending": "Deleting what this Mac synced to iCloud…"
+        case "failed": "This Mac's synced data was only partly deleted. That finishes while Mobile stays off."
+        default: nil
         }
     }
 
@@ -157,6 +193,15 @@ extension MobileSettingsModel {
     /// A phone's line on the hub's current transport: "switched by Phone A today 10:42".
     nonisolated static func phoneSwitchedLine(by: String, at: Date, now: Date, names: [String: String]) -> String {
         "switched \(switchedByText(by, names: names)) \(whenText(at, now: now))"
+    }
+
+    /// The phone's Apple ID scope, as today's row says it.
+    nonisolated static func scopeLabel(_ scope: String) -> String? {
+        switch scope {
+        case "private": "Same Apple ID"
+        case "shared": "Shared"
+        default: nil
+        }
     }
 
     nonisolated static func linkedText(_ date: Date) -> String {
@@ -264,12 +309,12 @@ extension MobileSettingsModel {
 
     /// A failed phone recording's line, by the class Desktop failed it with
     /// (Task 17's `PhoneRecordingQueue.FailureClass`, a Go↔Swift dual path).
-    nonisolated static func failedRecordingLine(_ errorClass: String) -> String {
-        switch errorClass {
-        case "no_speech": "A phone recording had no speech in it"
-        case "not_audio": "A phone recording is not audio this Mac can read"
-        case "missing_audio": "A phone recording's audio is missing"
-        default: "A phone recording could not be transcribed"
+    nonisolated static func failedRecordingLine(_ failure: PhoneRecordingQueue.FailureClass) -> String {
+        switch failure {
+        case .noSpeech: "A phone recording had no speech in it"
+        case .notAudio: "A phone recording is not audio this Mac can read"
+        case .missingAudio: "A phone recording's audio is missing"
+        case .transcriptionFailed, .unreadable, .ingestFailed: "A phone recording could not be transcribed"
         }
     }
 

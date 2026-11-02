@@ -48,10 +48,18 @@ final class MacAwakeAssertion {
     static let reason = "Watchtower: a session is running and your iPhone is connected"
 
     private let power: PowerAsserting
-    private var assertionID: UInt32?
+    /// Written on the main actor only; read by `deinit` after every other
+    /// reference is gone.
+    nonisolated(unsafe) private var assertionID: UInt32?
 
     init(power: PowerAsserting = IOKitPower()) {
         self.power = power
+    }
+
+    /// An assertion still held when its owner goes away is released (a
+    /// quit drops it with the process anyway).
+    deinit {
+        if let assertionID { power.release(assertionID) }
     }
 
     var isHolding: Bool { assertionID != nil }
@@ -64,75 +72,5 @@ final class MacAwakeAssertion {
             power.release(id)
             assertionID = nil
         }
-    }
-}
-
-/// Evaluates `KeepAwakePolicy` every 30 s (the publisher's full-tick
-/// cadence) while the hub runs, and drops the assertion when the hub stops
-/// (a hub off or rebuilt; a quit ends the process, which drops it).
-final class KeepAwakeCompanion: HubCompanion, @unchecked Sendable {
-    static let interval: Duration = .seconds(30)
-
-    private let assertion: MacAwakeAssertion
-    private let enabled: @Sendable () -> Bool
-    private let liveBoardSessions: @Sendable () -> Int
-    private let lastPhoneContact: @Sendable () -> Date?
-    private let now: @Sendable () -> Date
-    private let loop = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
-
-    init(
-        assertion: MacAwakeAssertion,
-        enabled: @escaping @Sendable () -> Bool,
-        liveBoardSessions: @escaping @Sendable () -> Int,
-        lastPhoneContact: @escaping @Sendable () -> Date?,
-        now: @escaping @Sendable () -> Date = { Date() }
-    ) {
-        self.assertion = assertion
-        self.enabled = enabled
-        self.liveBoardSessions = liveBoardSessions
-        self.lastPhoneContact = lastPhoneContact
-        self.now = now
-    }
-
-    /// Live board sessions: the workbenches with a live agent session (plain shells never count), by the
-    /// slice's own query; 0 (logged) when the read fails, so the Mac is not held awake on an unknown count.
-    static func liveBoardSessions(_ pool: DatabasePool, liveIDs: Set<Int64>) -> Int {
-        guard !liveIDs.isEmpty else { return 0 }
-        do {
-            return try pool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: liveIDs).count }
-        } catch {
-            keepAwakeLogger.error("live board sessions unreadable: \(error.localizedDescription, privacy: .public)")
-            return 0
-        }
-    }
-
-    func evaluate() async {
-        let hold = KeepAwakePolicy.shouldHold(
-            enabled: enabled(), liveBoardSessions: liveBoardSessions(), lastPhoneContact: lastPhoneContact(), now: now()
-        )
-        await assertion.update(hold: hold)
-    }
-
-    func start() {
-        let task = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                await self.evaluate()
-                try? await Task.sleep(for: Self.interval)
-            }
-        }
-        loop.withLock { current in
-            current?.cancel()
-            current = task
-        }
-    }
-
-    nonisolated func stop() {
-        loop.withLock { current in
-            current?.cancel()
-            current = nil
-        }
-        // The hub stops on the main actor (`MobileHubService.stop`), so the release is immediate.
-        MainActor.assumeIsolated { assertion.update(hold: false) }
     }
 }

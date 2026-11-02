@@ -8,6 +8,8 @@ final class ScriptedHubCLI: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var answers: [[String]: Result<Data, any Error>] = [:]
     private var recorded: [[String]] = []
+    private var timeouts: [[String]: TimeInterval] = [:]
+    private var recordedUntimed: [[String]] = []
     /// Runs inside every call, before it answers (a call that takes time).
     var onRun: (@Sendable ([String]) async -> Void)?
 
@@ -33,10 +35,31 @@ final class ScriptedHubCLI: CLIRunnerProtocol, @unchecked Sendable {
         lock.withLock { answers[args] = .failure(CancellationError()) }
     }
 
+    /// The call ends as a timed-out run does (`nonZeroExit(code: -1, …)`).
+    func failAsTimeout(_ args: [String]) {
+        lock.withLock { answers[args] = .failure(CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out")) }
+    }
+
+    /// The timeout the last call of args was given.
+    func timeout(for args: [String]) -> TimeInterval? { lock.withLock { timeouts[args] } }
+
+    /// Calls made without a timeout.
+    var untimed: [[String]] { lock.withLock { recordedUntimed } }
+
+    func run(args: [String], timeout: TimeInterval) async throws -> Data {
+        lock.withLock { timeouts[args] = timeout }
+        return try await answered(args)
+    }
+
     func status(_ json: String) { answer(MobileHubCLI.statusArgs, json) }
     func phones(_ json: String) { answer(MobileHubCLI.phonesArgs, json) }
 
     func run(args: [String]) async throws -> Data {
+        lock.withLock { recordedUntimed.append(args) }
+        return try await answered(args)
+    }
+
+    private func answered(_ args: [String]) async throws -> Data {
         let answer = lock.withLock { () -> Result<Data, any Error>? in
             recorded.append(args)
             return answers[args]

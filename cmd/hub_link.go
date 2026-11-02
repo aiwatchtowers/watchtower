@@ -179,7 +179,8 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if mode == hub.ModeLive && s.Reason == hub.ReasonNoRelayOrigin {
 		line += "\n" + hubRelayOriginRemedy
 	}
-	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir)}, line)
+	out := hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir), Transcriber: hubTranscriberSeen(dir)}
+	return hubPrint(cmd, asJSON, out, line)
 }
 
 // hubStatusJSON is `hub status --json`: the runtime's status plus the
@@ -190,6 +191,21 @@ type hubStatusJSON struct {
 	Recordings     string                `json:"recordings"`
 	KeptRecordings *adopt.KeptRecordings `json:"kept_recordings,omitempty"`
 	Name           string                `json:"name"`
+	// Transcriber: a Desktop transcriber ever sent a heartbeat (recordings
+	// can be turned on); false before one did or with no sidecar.
+	Transcriber bool `json:"transcriber"`
+}
+
+// hubTranscriberSeen reads whether a Desktop heartbeat ever arrived; any
+// failure reads as no.
+func hubTranscriberSeen(dir string) bool {
+	st, err := state.OpenReadOnly(dir)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = st.Close() }()
+	_, seen, err := st.DesktopHost(time.Now())
+	return err == nil && seen
 }
 
 func runHubPhones(cmd *cobra.Command, _ []string) error {

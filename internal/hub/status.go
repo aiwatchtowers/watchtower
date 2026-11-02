@@ -110,6 +110,8 @@ type Status struct {
 	SwitchedBy string `json:"switched_by"`
 	// CloudKit is the iCloud facts on a desktop host (desktop_facts.go).
 	CloudKit CloudKitStatus `json:"cloudkit"`
+	// OffDelete is the owner's off wipe while the switch is off (off_delete.go).
+	OffDelete OffDeleteStatus `json:"off_delete"`
 }
 
 // statusFile is the status as the runtime writes it, with its pid so a

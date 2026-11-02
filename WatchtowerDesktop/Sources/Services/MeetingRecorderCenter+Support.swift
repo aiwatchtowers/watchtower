@@ -1,8 +1,8 @@
 import Foundation
+import WatchtowerCore
 
 // Small pieces of `MeetingRecorderCenter` kept out of its main file (its
-// length cap): the default recordings folder, the no-speech message and a
-// job phase's failure.
+// length cap): the default recordings folder and the no-speech message.
 
 extension MeetingRecorderCenter {
     /// `nonisolated` so it can serve as the init's default argument (evaluated
@@ -29,14 +29,5 @@ extension MeetingRecorderCenter {
                 + "and never came back — \(callAudioOutputHint)"
         }
         return "No speech recognized"
-    }
-}
-
-extension MeetingRecorderCenter.ProcessingJob.Phase {
-    var isFailed: Bool { failureMessage != nil }
-
-    var failureMessage: String? {
-        if case let .failed(message) = self { return message }
-        return nil
     }
 }

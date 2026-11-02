@@ -65,7 +65,8 @@ final class MobileSettingsModelTests: XCTestCase {
 
         let now = try XCTUnwrap(MobileHubCLI.date("2026-11-02T10:01:01Z"))
         cli.phones("[]")
-        cli.status(#"{"state":"running","cloudkit":{"account":"no_account","throttled_since":"2026-11-02T10:00:00Z","signed":true}}"#)
+        cli.status(#"{"state":"running","bridge":"running","cloudkit":"#
+            + #"{"account":"no_account","throttled_since":"2026-11-02T10:00:00Z","signed":true}}"#)
         let model = makeModel(now: now)
         await model.load()
         XCTAssertFalse(model.showsNeedsSignedBuild)
@@ -77,12 +78,22 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertFalse(early.showsSlowingLine, "59 s is not yet")
 
         // Off: an unsigned build still says so; the account and the throttle are a running hub's.
-        cli.status(#"{"state":"off","reason":"disabled","cloudkit":"#
+        cli.status(#"{"state":"off","reason":"disabled","bridge":"unavailable","cloudkit":"#
             + #"{"account":"no_account","throttled_since":"2026-11-02T10:00:00Z","signed":false}}"#)
         await model.load()
         XCTAssertTrue(model.showsNeedsSignedBuild)
         XCTAssertNil(model.accountLine)
         XCTAssertFalse(model.showsSlowingLine)
+
+        // A bridge that reports the entitlement missing says it too.
+        cli.status(#"{"state":"running","bridge":"running","cloudkit":{"account":"no_entitlement","throttled_since":"","signed":false}}"#)
+        await model.load()
+        XCTAssertTrue(model.showsNeedsSignedBuild)
+
+        // No status file yet (no daemon wrote one): signed false is not a fact, so no line.
+        cli.status(#"{"state":"off","reason":"disabled","bridge":"","cloudkit":{"account":"","throttled_since":"","signed":false}}"#)
+        await model.load()
+        XCTAssertFalse(model.showsNeedsSignedBuild)
 
         // An older CLI without the block shows none of them.
         cli.status(#"{"state":"running"}"#)
@@ -111,11 +122,122 @@ final class MobileSettingsModelTests: XCTestCase {
     func testRetryGoesThroughTheRecordingQueue() async {
         runningWith()
         var queued: [String] = []
-        let model = Model(cli: cli, retryRecording: { queued.append($0) }, defaults: defaults)
+        var busyWhileQueued = false
+        var model: Model!
+        model = Model(cli: cli, retryRecording: { id in
+            queued.append(id)
+            busyWhileQueued = model.busy.contains(.recording(id))
+        }, defaults: defaults)
         await model.load()
         await model.retryRecording("u-7")
         XCTAssertEqual(queued, ["u-7"])
+        XCTAssertTrue(busyWhileQueued, "the row is busy while it goes")
+        XCTAssertTrue(model.busy.isEmpty)
         XCTAssertTrue(cli.writes.isEmpty)
+    }
+
+    /// Every status reason reads as an owner's sentence, never its
+    /// identifier; a starting hub with a reason shows the reason, not
+    /// "Starting…" forever; start-type failures are errors (red).
+    func testEveryReasonHasOwnerCopy() async {
+        let errors = ["start_failed", "sidecar_unreadable", "run_dir_unusable", "bridge_unavailable"]
+        let warnings = ["locked", "relay_unreachable", "not_vouched", "not_admitted", "vouch_revoked", "needs_relay",
+                        "no_relay_origin", "not_test_workspace", "something_newer"]
+        for reason in errors + warnings {
+            let line = Model.reasonLine(reason)
+            XCTAssertNotNil(line, reason)
+            XCTAssertFalse(line?.text.contains("_") ?? true, "\(reason) shows an identifier")
+            XCTAssertEqual(line?.tone, errors.contains(reason) ? .error : .warning, reason)
+            XCTAssertEqual(Model.hubLine(state: "starting", reason: reason), line, "starting with \(reason)")
+            XCTAssertFalse(Model.offCopy(reason).detail?.contains("_") ?? false, reason)
+        }
+        XCTAssertEqual(Model.reasonLine("start_failed")?.text, "Mobile couldn't start. It tries again in a moment.")
+        XCTAssertEqual(Model.reasonLine("locked")?.text, "Another Watchtower process runs Mobile on this Mac.")
+        XCTAssertEqual(Model.reasonLine("relay_unreachable")?.text, "Relay can't be reached right now. Phones on Relay wait.")
+        XCTAssertEqual(Model.reasonLine("not_vouched")?.text, "Relay is waiting for a linked phone to vouch for this Mac.")
+        XCTAssertEqual(Model.reasonLine("not_admitted")?.text,
+                       "Relay hasn't admitted this Mac yet: a phone with a Relay subscription has to link it.")
+        XCTAssertEqual(Model.reasonLine("vouch_revoked")?.text,
+                       "The phone that vouched for this Mac on Relay took it back. Link a phone with Relay again.")
+        XCTAssertEqual(Model.reasonLine("bridge_unavailable")?.text,
+                       "Mobile can't run: this build can't use iCloud and has no Relay set up.")
+        XCTAssertEqual(Model.reasonLine("something_newer")?.text, Model.unknownReason)
+        XCTAssertNil(Model.reasonLine(""))
+        XCTAssertEqual(Model.hubLine(state: "starting", reason: ""), Model.HubLine(text: "Starting…", tone: .neutral))
+
+        cli.status(#"{"state":"starting","reason":"start_failed"}"#)
+        cli.phones("[]")
+        let model = makeModel()
+        await model.load()
+        XCTAssertEqual(model.hubLine, Model.HubLine(text: "Mobile couldn't start. It tries again in a moment.", tone: .error))
+        XCTAssertFalse(model.canLink)
+    }
+
+    /// The owner's off deletes what the hub published: today's off-delete
+    /// line while it is pending or failed, none once done or while on.
+    func testOffDeleteLine() async {
+        XCTAssertEqual(Model.offDeleteLine("pending"), "Deleting what this Mac synced to iCloud…")
+        XCTAssertEqual(Model.offDeleteLine("failed"),
+                       "This Mac's synced data was only partly deleted. That finishes while Mobile stays off.")
+        XCTAssertNil(Model.offDeleteLine("ok"))
+        XCTAssertNil(Model.offDeleteLine(nil))
+        cli.status(#"{"state":"off","reason":"disabled","off_delete":{"state":"failed","at":"2026-11-02T10:00:00Z"}}"#)
+        let model = makeModel()
+        await model.load()
+        XCTAssertEqual(model.offDeleteLine, Model.offDeleteLine("failed"))
+        cli.status(#"{"state":"off","reason":"disabled","off_delete":{"state":"ok","at":"2026-11-02T10:00:00Z"}}"#)
+        await model.load()
+        XCTAssertNil(model.offDeleteLine)
+    }
+
+    /// Link a phone needs a usable iCloud account while CloudKit carries the
+    /// hub: no account or a restricted one hides it, as today; Relay links without it.
+    func testLinkNeedsAUsableAccountOnCloudKit() async {
+        XCTAssertTrue(Model.accountAllowsLinking(transport: "cloudkit", account: "available"))
+        XCTAssertFalse(Model.accountAllowsLinking(transport: "cloudkit", account: "no_account"))
+        XCTAssertFalse(Model.accountAllowsLinking(transport: "cloudkit", account: "restricted"))
+        XCTAssertFalse(Model.accountAllowsLinking(transport: "cloudkit", account: "temporarily_unavailable"))
+        XCTAssertTrue(Model.accountAllowsLinking(transport: "cloudkit", account: ""), "not read yet")
+        XCTAssertTrue(Model.accountAllowsLinking(transport: "relay", account: "no_account"))
+        cli.status(#"{"state":"running","transport":"cloudkit","cloudkit":{"account":"no_account","throttled_since":"","signed":true}}"#)
+        cli.phones("[]")
+        let model = makeModel()
+        await model.load()
+        XCTAssertFalse(model.canLink, "no account: no code")
+        model.linkPhone()
+        XCTAssertNil(model.pairing)
+    }
+
+    /// Reads give up after 15 s and writes after 30 s, so a hung call never
+    /// leaves the tab loading or a row busy.
+    func testEveryCallHasATimeout() async {
+        runningWith()
+        let model = makeModel()
+        await model.load()
+        await model.rename("Studio")
+        XCTAssertEqual(MobileHubCLI.readTimeout, 15)
+        XCTAssertEqual(MobileHubCLI.writeTimeout, 30)
+        XCTAssertEqual(cli.timeout(for: MobileHubCLI.statusArgs), 15)
+        XCTAssertEqual(cli.timeout(for: MobileHubCLI.phonesArgs), 15)
+        XCTAssertEqual(cli.timeout(for: MobileHubCLI.nameArgs("Studio")), 30)
+        XCTAssertTrue(cli.untimed.isEmpty, "a call without a timeout: \(cli.untimed)")
+
+        cli.fail(MobileHubCLI.statusArgs, stderr: "")
+        cli.failAsTimeout(MobileHubCLI.nameArgs("Late"))
+        await model.rename("Late")
+        XCTAssertTrue(model.busy.isEmpty, "a timed-out write leaves nothing busy")
+        XCTAssertNotNil(model.notice)
+        if case .loading = model.state { XCTFail("a timed-out read left the tab loading") }
+    }
+
+    /// Go's RFC 3339 with nanoseconds (`time.Time` JSON) decodes for
+    /// throttled_since and phone_contact_at.
+    func testRFC3339NanoDecodes() throws {
+        let nano = "2026-11-02T10:42:00.123456789Z"
+        let date = try XCTUnwrap(MobileHubCLI.date(nano))
+        XCTAssertEqual(date.timeIntervalSince1970, 1_793_616_120.123, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(HubControlAnswer.rfc3339(nano)).timeIntervalSince1970, 1_793_616_120.123, accuracy: 0.001)
+        XCTAssertNotNil(MobileHubCLI.date("2026-11-02T10:42:00+01:00"))
     }
 
     private func runningWith(_ phones: String...) {
@@ -161,7 +283,9 @@ final class MobileSettingsModelTests: XCTestCase {
                 XCTAssertEqual(model.isOn, copy.toggleOn, c.json)
             }
         }
-        XCTAssertEqual(Model.offCopy("vouch_revoked").detail, "Mobile is off (vouch_revoked).")
+        XCTAssertEqual(Model.offCopy("vouch_revoked").detail,
+                       "The phone that vouched for this Mac on Relay took it back. Link a phone with Relay again.")
+        XCTAssertEqual(Model.offCopy("something_newer").detail, Model.unknownReason)
 
         runningWith(MobileHubFixture.phoneA)
         let model = makeModel()
@@ -173,8 +297,8 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertNil(model.hubLine)
         XCTAssertEqual(Model.emptyText, "No phones linked")
         XCTAssertEqual(Model.emptyDetail, "Link one to see this Mac's board and sessions on your phone.")
-        XCTAssertEqual(Model.hubLine(state: "starting", reason: nil), "Starting…")
-        XCTAssertEqual(Model.hubLine(state: "running", reason: "no_relay_origin"),
+        XCTAssertEqual(Model.hubLine(state: "starting", reason: nil)?.text, "Starting…")
+        XCTAssertEqual(Model.hubLine(state: "running", reason: "no_relay_origin")?.text,
                        "Relay is not set up on this Mac: phones link over iCloud only.")
     }
 
@@ -226,7 +350,8 @@ final class MobileSettingsModelTests: XCTestCase {
     func testDecodesPinnedStatusKeys() async throws {
         cli.status("""
         {"state":"running","reason":"","hub_id":"h","relay_device_id":"","transport":"relay","impl":"go","dir":"/x",\
-        "phones":1,"host":"desktop","mode":"live","recordings":"off","name":"Work Mac","bridge":"running",\
+        "phones":1,"host":"desktop","mode":"live","recordings":"off","name":"Work Mac","bridge":"unavailable",\
+        "transcriber":true,"off_delete":{"state":"","at":""},\
         "cloudkit":{"account":"restricted","throttled_since":"2026-11-02T10:00:00Z","signed":false},\
         "adoption":"done","identity":"keychain","switched_at":"2026-11-02T10:42:00.123Z","switched_by":"AAAA0001",\
         "kept_recordings":{"count":2,"remove_at":"2026-11-14T08:00:00Z","dir":"/tmp/acme-recordings"}}
@@ -237,6 +362,8 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertEqual(model.hubTransport, "relay")
         XCTAssertFalse(model.recordingsOn)
         XCTAssertTrue(model.showsNeedsSignedBuild)
+        XCTAssertTrue(model.recordingsAvailable)
+        XCTAssertNil(model.offDeleteLine)
         XCTAssertEqual(model.accountLine, "Mobile isn't available on this Mac: iCloud is restricted by your organization.")
         XCTAssertEqual(model.throttledSince, MobileHubCLI.date("2026-11-02T10:00:00Z"))
         XCTAssertEqual(model.keptRecordings?.count, 2)
@@ -265,10 +392,14 @@ final class MobileSettingsModelTests: XCTestCase {
 
         XCTAssertEqual(byID["AAAA0001"]?.transportLabel, "Relay")
         XCTAssertEqual(byID["AAAA0001"]?.switchedLine, "switched by Phone A today \(time)")
-        XCTAssertEqual(byID["AAAA0001"]?.detailLine, "\(linked) · Relay · switched by Phone A today \(time)")
+        XCTAssertEqual(byID["AAAA0001"]?.detailLine, "Shared · \(linked) · Relay · switched by Phone A today \(time)")
         XCTAssertEqual(byID["BBBB0002"]?.transportLabel, "iCloud")
         XCTAssertNil(byID["BBBB0002"]?.switchedLine, "not on the transport the switch chose")
-        XCTAssertEqual(byID["BBBB0002"]?.detailLine, "\(linked) · iCloud")
+        XCTAssertEqual(byID["BBBB0002"]?.detailLine, "Same Apple ID · \(linked) · iCloud")
+        // Today's scope label on the row (the deleted view test's assertion).
+        XCTAssertEqual(Model.scopeLabel("private"), "Same Apple ID")
+        XCTAssertEqual(Model.scopeLabel("shared"), "Shared")
+        XCTAssertNil(Model.scopeLabel("weird"))
         XCTAssertEqual(byID["CCCC0003"]?.transportLabel, "Waiting for Relay")
         XCTAssertEqual(model.hubSwitchedLine, "Switched to Relay by Phone A · today \(time)")
 
@@ -313,17 +444,28 @@ final class MobileSettingsModelTests: XCTestCase {
         runningWith()
         let model = makeModel()
         await model.load()
+        cli.answer(MobileHubCLI.recordingsArgs(false), #"{"recordings":"off","stored":true}"#)
         await model.setRecordings(false)
         XCTAssertEqual(cli.writes, [["hub", "recordings", "off", "--json"]])
 
-        cli.fail(MobileHubCLI.recordingsArgs(true), stderr: "Error: this host has no transcriber\n")
-        cli.status(#"{"state":"running","recordings":"off"}"#)
+        // The refusal is the structured class on stdout (exit 0, stored false).
+        cli.answer(MobileHubCLI.recordingsArgs(true), #"{"recordings":"off","stored":false,"error":"no_transcriber"}"#)
+        cli.status(#"{"state":"running","recordings":"off","transcriber":false}"#)
         await model.setRecordings(true)
         XCTAssertEqual(cli.writes.last, ["hub", "recordings", "on", "--json"])
         XCTAssertEqual(model.recordingsError, "This host has no transcriber.")
         XCTAssertEqual(Model.noTranscriber, "This host has no transcriber.")
-        XCTAssertFalse(model.recordingsAvailable, "off-only from now")
+        XCTAssertFalse(model.recordingsAvailable, "off-only while no transcriber was seen")
         XCTAssertFalse(model.recordingsOn)
+
+        // A Desktop heartbeat arrived since: the next read makes it available again.
+        cli.status(#"{"state":"running","recordings":"off","transcriber":true}"#)
+        await model.load()
+        XCTAssertTrue(model.recordingsAvailable)
+
+        cli.fail(MobileHubCLI.recordingsArgs(true), stderr: "Error: the hub did not answer")
+        await model.setRecordings(true)
+        XCTAssertEqual(model.recordingsError, "The hub did not answer.")
         XCTAssertEqual(Model.recordingsTitle, "Transcribe phone recordings on this Mac")
         XCTAssertEqual(Model.turningOn, "Turning on…")
     }
@@ -417,6 +559,10 @@ final class MobileSettingsModelTests: XCTestCase {
         let model = makeModel()
         await model.load()
         XCTAssertEqual(model.keptRecordings, three)
+
+        cli.status(#"{"state":"off","reason":"disabled","kept_recordings":{"count":3,"remove_at":"2026-11-14T08:00:00Z","dir":"/tmp/acme"}}"#)
+        await model.load()
+        XCTAssertEqual(model.keptRecordings, three, "the line shows while Mobile is off too")
 
         cli.status(MobileHubFixture.running)
         await model.load()

@@ -44,10 +44,32 @@ enum MobileSettingsShotFixtures {
         }
     }
 
+    /// Every pairing step and refusal (mockup §11–§13).
     enum Pairing: String, CaseIterable {
+        case starting = "mobilePairingStarting"
         case qr = "mobilePairingQR"
+        case waiting = "mobilePairingWaiting"
         case sas = "mobilePairingSAS"
+        case linked = "mobilePairingLinked"
         case refused = "mobilePairingRefused"
+        case expired = "mobilePairingRefused-expired"
+        case unknownCode = "mobilePairingRefused-unknownCode"
+        case notConfirmed = "mobilePairingRefused-notConfirmed"
+        case tooMany = "mobilePairingRefused-tooMany"
+        case unknownReason = "mobilePairingRefused-unknownReason"
+        case failed = "mobilePairingFailed"
+
+        var refusal: String? {
+            switch self {
+            case .refused: "used_code"
+            case .expired: "expired_code"
+            case .unknownCode: "unknown_code"
+            case .notConfirmed: "not_confirmed"
+            case .tooMany: "too_many_requests"
+            case .unknownReason: "something_new"
+            default: nil
+            }
+        }
     }
 
     /// A fixed moment, so "switched by … today" reads the same every run.
@@ -98,14 +120,27 @@ enum MobileSettingsShotFixtures {
     static func pairing(_ shot: Pairing) -> AnyView {
         let model = MobilePairingModel(streamer: nil, now: { now }, sleep: { _ in withUnsafeCurrentTask { $0?.cancel() } })
         let expires = ISO8601DateFormatter().string(from: now.addingTimeInterval(581))
+        let qr = #"{"event":"qr","url":"watchtower://link?d=eyJ2IjoxLCJob3N0IjoiYWNtZSJ9","expires_at":"\#(expires)"}"#
+        let sas = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827"}"#
         switch shot {
+        case .starting:
+            break
         case .qr:
-            model.receive(#"{"event":"qr","url":"watchtower://link?d=eyJ2IjoxLCJob3N0IjoiYWNtZSJ9","expires_at":"\#(expires)"}"#)
+            model.receive(qr)
+            model.tick()
+        case .waiting:
+            model.receive(qr)
+            model.receive(#"{"event":"waiting"}"#)
             model.tick()
         case .sas:
-            model.receive(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827"}"#)
-        case .refused:
-            model.receive(#"{"event":"refused","reason":"used_code"}"#)
+            model.receive(sas)
+        case .linked:
+            model.receive(sas)
+            model.receive(#"{"event":"linked","device_id":"AAAA0001"}"#)
+        case .failed:
+            model.streamEnded("The hub is not running.")
+        case .refused, .expired, .unknownCode, .notConfirmed, .tooMany, .unknownReason:
+            model.receive(#"{"event":"refused","reason":"\#(shot.refusal ?? "")"}"#)
         }
         return AnyView(MobilePairingSheet(model: model) {}
             .frame(maxWidth: .infinity, maxHeight: .infinity)

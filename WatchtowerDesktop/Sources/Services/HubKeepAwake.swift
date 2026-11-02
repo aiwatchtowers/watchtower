@@ -29,7 +29,8 @@ final class HubKeepAwake {
     private let inputs: Inputs
     private let now: () -> Date
     private let sleep: @Sendable (Duration) async -> Void
-    private var loop: Task<Void, Never>?
+    /// Written on the main actor only; cancelled by `deinit`.
+    nonisolated(unsafe) private var loop: Task<Void, Never>?
 
     init(
         assertion: MacAwakeAssertion? = nil,
@@ -41,6 +42,11 @@ final class HubKeepAwake {
         self.inputs = inputs
         self.now = now
         self.sleep = sleep
+    }
+
+    /// The loop ends with its owner; the assertion's own `deinit` releases it.
+    deinit {
+        loop?.cancel()
     }
 
     var isHolding: Bool { assertion.isHolding }
