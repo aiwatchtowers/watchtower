@@ -196,7 +196,7 @@ package final class OwnerConfirmServer {
         case .tooLong:
             return OwnerConfirmIO.write(fd, OwnerConfirmReply(decision: OwnerConfirmReply.denied,
                                                               reason: Self.tooLargeReason))
-        case .none:
+        case .noLine:
             return
         }
         let pid = OwnerConfirmIO.peerPID(fd)

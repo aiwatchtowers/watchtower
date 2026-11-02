@@ -103,8 +103,8 @@ final class OwnerConfirmIO: @unchecked Sendable {
         case line(Data)
         /// The line ran past the limit: the request is refused with a reason.
         case tooLong
-        /// No line within the time, or the connection closed first.
-        case none
+        /// No line: the time ran out, or the connection closed or failed first.
+        case noLine
     }
 
     /// The request line (its newline not included, at most `limit` bytes
@@ -116,11 +116,11 @@ final class OwnerConfirmIO: @unchecked Sendable {
         var buf = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             let left = deadline.timeIntervalSinceNow
-            guard left > 0 else { return .none }
+            guard left > 0 else { return .noLine }
             var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             guard poll(&pfd, 1, Int32(max(1, left * 1000))) > 0 else { continue }
             let n = read(fd, &buf, buf.count)
-            guard n > 0 else { return .none }
+            guard n > 0 else { return .noLine }
             if let end = buf[0..<n].firstIndex(of: UInt8(ascii: "\n")) {
                 guard data.count + end + 1 <= limit else { return .tooLong }
                 data.append(contentsOf: buf[0..<end])

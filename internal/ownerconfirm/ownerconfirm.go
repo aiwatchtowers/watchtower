@@ -127,25 +127,48 @@ func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	defer stop()
 	if _, werr := conn.Write(line); werr != nil {
-		// The Desktop may have refused the request and closed the
-		// connection with its reason already written: that reason is the
-		// answer, not the broken pipe.
-		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-		if rep, rerr := readReply(conn); rerr == nil {
-			return rep, nil
-		}
-		return Reply{}, fmt.Errorf("sending the confirmation request: Watchtower Desktop closed the connection "+
-			"before reading it (%d bytes): %w", len(line), werr)
+		return writeFailed(ctx, conn, werr, len(line))
 	}
 	rep, err := readReply(conn)
 	if err != nil {
-		var ne net.Error
-		if ctx.Err() != nil || (errors.As(err, &ne) && ne.Timeout()) {
+		if timedOut(ctx, err) {
 			return Reply{}, fmt.Errorf("no answer from Watchtower Desktop in time: %w", err)
 		}
 		return Reply{}, fmt.Errorf("reading the Desktop's answer: %w", err)
 	}
 	return rep, nil
+}
+
+// timedOut is true when err comes from ctx ending or a deadline passing.
+func timedOut(ctx context.Context, err error) bool {
+	var ne net.Error
+	return ctx.Err() != nil || (errors.As(err, &ne) && ne.Timeout())
+}
+
+// writeFailed is Ask's answer when sending the request failed. The Desktop
+// may have refused the request and closed the connection with its denial
+// already written: that denial is the answer, not the broken pipe. A
+// "confirmed" read there is never taken — the Desktop did not read the
+// whole request — and a write that ran out of time is reported as such,
+// without waiting longer.
+func writeFailed(ctx context.Context, conn net.Conn, werr error, size int) (Reply, error) {
+	if timedOut(ctx, werr) {
+		return Reply{}, fmt.Errorf("no answer from Watchtower Desktop in time: %w", werr)
+	}
+	readBy := time.Now().Add(time.Second)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(readBy) {
+		readBy = dl
+	}
+	_ = conn.SetReadDeadline(readBy)
+	rep, rerr := readReply(conn)
+	if rerr == nil && rep.Decision == Denied {
+		return rep, nil
+	}
+	if rerr == nil {
+		rerr = fmt.Errorf("an answer of %q to a request it did not read", rep.Decision)
+	}
+	return Reply{}, fmt.Errorf("sending the confirmation request (%d bytes): Watchtower Desktop closed the connection "+
+		"before reading it: %w (reading its answer: %v)", size, werr, rerr)
 }
 
 // encodeRequest is req's wire line with its newline: HTML characters are
@@ -157,7 +180,7 @@ func encodeRequest(req Request) ([]byte, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(req); err != nil { // Encode ends the line with '\n'
-		return nil, err
+		return nil, fmt.Errorf("encoding the confirmation request: %w", err)
 	}
 	if buf.Len() > MaxRequestBytes {
 		return nil, fmt.Errorf("%w: %d bytes, at most %d", ErrRequestTooLarge, buf.Len(), MaxRequestBytes)
