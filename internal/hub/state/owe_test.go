@@ -99,8 +99,8 @@ func TestLapseRelayIsACompareAndSet(t *testing.T) {
 		t.Fatalf("end %v %v", ended, err)
 	}
 	d, _, _ := s.Device(dev)
-	if d.RelayLapsedAt != nil || d.RelaySkipBefore == nil || !d.RelaySkipBefore.Equal(at) {
-		t.Fatalf("after the end: lapsed %v skip %v", d.RelayLapsedAt, d.RelaySkipBefore)
+	if d.RelayLapsedAt != nil || d.RelaySkipBefore == nil || !d.RelaySkipBefore.Equal(at) || d.RelaySkipSeq != 3 {
+		t.Fatalf("after the end: lapsed %v skip %v seq %d (want 3, the held one)", d.RelayLapsedAt, d.RelaySkipBefore, d.RelaySkipSeq)
 	}
 	if ended, _ := s.EndRelayLapse(dev); ended {
 		t.Fatal("ended twice")

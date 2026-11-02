@@ -36,9 +36,6 @@ func (p *Processor) oldEpochAction(ctx context.Context, b mailbox, rec transport
 	if p.standby() || ps.resent[b.id] {
 		return nil
 	}
-	if lapsed, err := p.lapsed(b, rec.ServerAt); err != nil || lapsed {
-		return err
-	}
 	key := b.zone + "\x00" + rec.Name
 	if seq, ok := p.oldSeen[key]; ok && seq == rec.RecordSeq {
 		return nil
@@ -63,8 +60,11 @@ func (p *Processor) oldEpochAction(ctx context.Context, b mailbox, rec transport
 		return errRelinked
 	}
 	from := dev.LastAppliedActionSeq + 1
-	isAction, err := p.namesNextAction(b, rec.Name, from)
-	if err != nil || !isAction {
+	seq, err := p.namesNextAction(b, rec.Name, from)
+	if err != nil || seq == 0 {
+		return err
+	}
+	if lapsed, err := p.lapsed(b, seq, rec.ServerAt); err != nil || lapsed {
 		return err
 	}
 	q, err := p.sealResendFrom(b, from)
@@ -101,19 +101,19 @@ func sealedBy(env []byte, device secure.ID) (uint32, bool) {
 	return h.Epoch, true
 }
 
-// namesNextAction reports whether name is the wire name of one of b's
-// actions from action_seq from on (within maxOldEpochScan).
-func (p *Processor) namesNextAction(b mailbox, name string, from uint64) (bool, error) {
+// namesNextAction is the action_seq of the action of b whose wire name is
+// name, looked for from action_seq from on (within maxOldEpochScan); 0 for none.
+func (p *Processor) namesNextAction(b mailbox, name string, from uint64) (uint64, error) {
 	meta, err := p.cfg.Keys.MetaKey()
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	defer clear(meta)
 	prefix := b.id.String() + "-"
 	for s := from; s < from+maxOldEpochScan; s++ {
 		if secure.RecordName(meta, secure.ZoneRelay, "a", prefix+strconv.FormatUint(s, 10)) == name {
-			return true, nil
+			return s, nil
 		}
 	}
-	return false, nil
+	return 0, nil
 }

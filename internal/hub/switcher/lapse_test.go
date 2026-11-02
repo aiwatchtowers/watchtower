@@ -124,7 +124,7 @@ func TestALapseOutlivesARestartAndASwitchAwayAndBack(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		a, b, z := w.lapseWithAnotherPayer()
 		w.rebuild(nil) // a restart
-		if lapsed, err := w.sw.Lapsed(transport.KindRelay, a.ID().String(), time.Time{}); err != nil || !lapsed {
+		if lapsed, err := w.sw.Lapsed(transport.KindRelay, a.ID().String(), 0, time.Time{}); err != nil || !lapsed {
 			t.Fatalf("after a restart lapsed %v %v", lapsed, err)
 		}
 		roundTrip := func() {
@@ -290,4 +290,28 @@ func ackAll(t *testing.T, w *world, epoch uint32) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The cut for ordered actions is the action_seq, not a time: with the
+// Mac's clock 30 s ahead of the relay's, an action written 1 s after the
+// lapse ended is applied, and the one sent before it still never is.
+func TestAnActionAfterTheLapseAppliesWhateverTheClockSkew(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		w.rebuild(func(c *switcher.Config) {
+			c.Clock = func() time.Time { return w.clock().Add(30 * time.Second) }
+		})
+		a, b, z := w.lapseWithAnotherPayer()
+		w.payAgain(a) // 1 s later by the relay's clock
+		w.sw.PollOther(w.ctx)
+		if w.lapsedNow(a) {
+			t.Fatal("still lapsed after paying again")
+		}
+		w.onRelay(a)
+		y := w.act(a)
+		w.settle(a, b)
+		w.appliedOnce(a, y)
+		if slices.Contains(w.callLog(), call(a, z)) {
+			t.Fatal("the not-delivered action applied")
+		}
+	})
 }

@@ -59,10 +59,20 @@ func (s *Switcher) OnControl(_ context.Context, c transport.Control) error {
 	return s.lapse(device, false)
 }
 
-// Lapsed implements actions.Switch over the sidecar: on the relay, a phone
-// lapsed now, or a record written (writtenAt, the relay's ServerAt) before
-// its last lapse.
-func (s *Switcher) Lapsed(k transport.Kind, device string, writtenAt time.Time) (bool, error) {
+// LegacySkipMargin widens the time cut for a lapsed phone's legacy relay
+// actions (no action_seq): one the relay stamped up to this long after the
+// lapse, by the Mac's clock, is still taken as sent before it, so a clock
+// skew between the Mac and the relay errs toward skipping (the phone was
+// told such an action is not delivered and may retry it).
+const LegacySkipMargin = 2 * time.Minute
+
+// Lapsed implements actions.Switch over the sidecar, on the relay: the
+// phone is lapsed now (an ordered action read meanwhile raises
+// relay_skip_seq), or the record was sent before its last lapse — an
+// ordered action with seq ≤ relay_skip_seq (no clock involved), a legacy
+// action or an upload stamped (writtenAt, the relay's ServerAt) before the
+// lapse's time plus LegacySkipMargin.
+func (s *Switcher) Lapsed(k transport.Kind, device string, seq uint64, writtenAt time.Time) (bool, error) {
 	if k != transport.KindRelay {
 		return false, nil
 	}
@@ -70,10 +80,20 @@ func (s *Switcher) Lapsed(k transport.Kind, device string, writtenAt time.Time) 
 	if err != nil || !linked {
 		return false, err
 	}
-	if dev.RelayLapsedAt != nil {
+	switch {
+	case dev.RelayLapsedAt != nil:
+		if seq > dev.RelaySkipSeq {
+			if err := s.c.Store.RaiseRelaySkipSeq(dev.ID, seq); err != nil {
+				return true, err
+			}
+		}
 		return true, nil
+	case seq > 0:
+		return seq <= dev.RelaySkipSeq, nil
+	case writtenAt.IsZero() || dev.RelaySkipBefore == nil:
+		return false, nil
 	}
-	return !writtenAt.IsZero() && dev.RelaySkipBefore != nil && !writtenAt.After(*dev.RelaySkipBefore), nil
+	return writtenAt.Before(dev.RelaySkipBefore.Add(LegacySkipMargin)), nil
 }
 
 // EntitlementInactive implements actions.Switch: a write into device's relay

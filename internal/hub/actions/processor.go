@@ -469,7 +469,7 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 	} else if opened.Frame.Kind == kindAction || opened.Frame.Kind == kindRecordingUpload {
 		// Sim rule 16: left to the phone, which was told hub_on_relay over
 		// CloudKit and lists it as not delivered; never applied later.
-		if lapsed, err := p.lapsed(b, rec.ServerAt); err != nil || lapsed {
+		if lapsed, err := p.lapsed(b, orderedSeq(b, opened), rec.ServerAt); err != nil || lapsed {
 			return err
 		}
 	}

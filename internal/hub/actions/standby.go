@@ -33,13 +33,28 @@ func (p *Processor) standby() bool {
 	return p.cfg.Switch != nil && !p.cfg.Switch.IsActive(p.cfg.Transport.Kind())
 }
 
-// lapsed reports whether b's phone record written at writtenAt (zero =
-// now) must not be applied on this transport (sim rule 16, Switch.Lapsed).
-func (p *Processor) lapsed(b mailbox, writtenAt time.Time) (bool, error) {
+// lapsed reports whether b's phone record (an ordered action's seq, or 0;
+// its ServerAt) must not be applied on this transport (sim rule 16,
+// Switch.Lapsed); seq 0 with a zero time asks whether it is lapsed now.
+func (p *Processor) lapsed(b mailbox, seq uint64, writtenAt time.Time) (bool, error) {
 	if p.cfg.Switch == nil {
 		return false, nil
 	}
-	return p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String(), writtenAt)
+	return p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String(), seq, writtenAt)
+}
+
+// orderedSeq is an opened action's action_seq when it binds to its record
+// as an ordered action, else 0.
+func orderedSeq(b mailbox, o secure.Opened) uint64 {
+	var a wire.ActionRequest
+	if o.Frame.Kind != kindAction || !decodes(o.Frame.Payload, &a) {
+		return 0
+	}
+	seq, _, ok := bindAction(b, o, a)
+	if !ok {
+		return 0
+	}
+	return seq
 }
 
 // drainHeldActive drains b's held actions and retries its held uploads,
@@ -49,7 +64,7 @@ func (p *Processor) drainHeldActive(ctx context.Context, b mailbox, ps *pass) er
 	if p.standby() {
 		return nil
 	}
-	if lapsed, err := p.lapsed(b, time.Time{}); err != nil || lapsed {
+	if lapsed, err := p.lapsed(b, 0, time.Time{}); err != nil || lapsed {
 		return err
 	}
 	if err := p.drainHeld(ctx, b, ps); err != nil {
