@@ -303,6 +303,10 @@ final class WorkbenchesViewModel {
     /// waits for it, so a row whose run the host still holds is adopted,
     /// not relaunched beside it.
     @ObservationIgnored var hostReattach: Task<Void, Never>?
+    /// The v1-host restart's list (`HostRestartList`, go hub spec §8 p. 4b),
+    /// read by the reattach and the attachment sweep; nil (tests, unless
+    /// they set one) = no list.
+    @ObservationIgnored var hostRestartListURL: URL?
     /// Projects an `openMostRecentSession` is running for, and targets a
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []

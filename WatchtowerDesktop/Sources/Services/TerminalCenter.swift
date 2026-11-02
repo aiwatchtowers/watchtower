@@ -342,6 +342,15 @@ final class TerminalCenter {
         sessionHost = await client.ensureRunning() ? client : nil
     }
 
+    /// The session host client, connected: the one that answered at launch,
+    /// or the launch's client asked to connect (or start a host) once more.
+    /// nil when no client was begun or no host answers.
+    func connectedSessionHost() async -> SessionHostClient? {
+        guard let client = sessionHost ?? sessionHostClient, await client.ensureRunning() else { return nil }
+        sessionHost = client
+        return client
+    }
+
     var liveIDs: Set<Int64> {
         Set(states.compactMap { $0.value == .running ? $0.key : nil })
     }
@@ -1115,6 +1124,10 @@ final class TerminalCenter {
         // Recorded before the guards, so an unavailable session is still
         // found — and cleaned up — by its project.
         rows[id] = session
+        if launchesHeldForHostRestart {
+            states[id] = .unavailable(Self.launchHeldReason)
+            return nil
+        }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: session.folderPath, isDirectory: &isDirectory),
               isDirectory.boolValue else {
@@ -1329,13 +1342,80 @@ final class TerminalCenter {
                 }
             }
         }
-        // The group is gone, but the host may not have reaped the child
-        // yet and refuses to forget a running run: asked again once.
+        await forgetReaped(info, host: host)
+    }
+
+    /// The group is gone, but the host may not have reaped the child yet
+    /// and refuses to forget a running run: asked again once.
+    private func forgetReaped(_ info: SessionHostSessionInfo, host: SessionHostClient) async {
         let forgot = await host.forget(row: info.row, run: info.run)
         if !forgot {
             await signaller.sleep(Self.pollStep)
             await host.forget(row: info.row, run: info.run)
         }
+    }
+
+    // MARK: The one-time v1-host restart (go hub spec §8 p. 4b)
+
+    /// Stops one run of a v1 session host for `HostRestartStep` as Stop
+    /// Sessions does, then forgets it in the host. The run this center
+    /// holds for its row goes through `close`: dropped from `processes`
+    /// first, then hung up and killed after `killGrace`, so its exit reports
+    /// `closedByApp` and no PROJ-18 cleanup touches its worktree or branch
+    /// before the resume. A run nothing here holds (another workspace's, or
+    /// one the reattach left) is hung up and killed by pid the same way; an
+    /// exited one is only forgotten.
+    /// Whether the host forgot the run: a refused forget (the child not
+    /// reaped yet) is asked again, up to `reapPolls` times.
+    @discardableResult
+    func stopForHostRestart(_ info: SessionHostSessionInfo) async -> Bool {
+        guard let host = sessionHost else { return false }
+        let key = SessionHostAttachRequest(row: info.row, run: info.run)
+        let held = (info.scope.isEmpty || info.scope == sessionHostScope)
+            && (processes[info.row] as? HostedTerminalSession)?.key == key
+        if held {
+            await close(sessionID: info.row)
+        } else if !info.exited {
+            await hangUpUntilGone(pid_t(info.pid))
+        }
+        for attempt in 0...Self.reapPolls {
+            if attempt > 0 { await signaller.sleep(Self.pollStep) }
+            if await host.forget(row: info.row, run: info.run) { return true }
+        }
+        return false
+    }
+
+    /// A hang-up, `killGrace`, then SIGKILL and a short wait for the reap.
+    private func hangUpUntilGone(_ pid: pid_t) async {
+        guard pid > 0 else { return }
+        signaller.signal(pid, SIGHUP)
+        var waited: Duration = .zero
+        while waited < Self.killGrace, signaller.isAlive(pid) {
+            await signaller.sleep(Self.pollStep)
+            waited += Self.pollStep
+        }
+        guard signaller.isAlive(pid) else { return }
+        signaller.signal(pid, SIGKILL)
+        for _ in 0..<Self.reapPolls where signaller.isAlive(pid) {
+            await signaller.sleep(Self.pollStep)
+        }
+    }
+
+    /// While the v1-host restart stops the old host's runs (go hub spec §8
+    /// p. 4b step 2), no session launches: a run started then would land on
+    /// the host about to go. A launch meanwhile says why in its pane.
+    @ObservationIgnored var launchesHeldForHostRestart = false
+
+    static let launchHeldReason = "[Watchtower] Sessions are restarting after the update. Try again in a moment."
+
+    /// A row the v1-host restart found no conversation for (no transcript,
+    /// no rollout): shown as a stopped session whose resume failed, the
+    /// state a failed `--resume` ends in, so the pane offers Start fresh and
+    /// nothing starts it anew on its own.
+    func showResumeFailure(_ session: TerminalSession) {
+        guard states[session.id] != .running else { return }
+        rows[session.id] = session
+        states[session.id] = .exited(nil)
     }
 
     /// The owner closes the session: a hosted run gets the host's Stop
