@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
 	"watchtower/internal/sqlcipher"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPlanUsage_ContextPublicationWaitCancelsWithoutWrites(t *testing.T) {
@@ -31,7 +32,8 @@ func TestPlanUsage_ContextPublicationWaitCancelsWithoutWrites(t *testing.T) {
 			// forcing publication to wait inside database/sql rather than a fetch.
 			held, err := d.Conn(context.Background())
 			require.NoError(t, err)
-			defer held.Close()
+			// Best-effort fallback if an assertion exits before the explicit close below.
+			defer func() { _ = held.Close() }()
 			waits := d.Stats().WaitCount
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()

@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var updatePlansGoldens = flag.Bool("update-plans", false, "update aggregate v1 synthetic goldens")

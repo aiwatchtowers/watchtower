@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
+
+	"github.com/stretchr/testify/require"
 )
 
 // A read can have a result ready when cancellation arrives. Returning that
@@ -150,13 +151,12 @@ func TestPollOnce_CancelDuringStorageDoesNotPublish(t *testing.T) {
 			require.Equal(t, 3, p.failures)
 			// Claude samples still precede status. Unpublished observations remain
 			// invisible to the published-history query after cancellation.
-			reset := *before.FetchedAt
 			var limits []WindowLimit
 			limits, err = DecodeWindowLimits(before.LimitsJSON)
 			require.NoError(t, err)
 			for _, l := range limits {
 				if l.ResetsAt != nil {
-					reset = *l.ResetsAt
+					reset := *l.ResetsAt
 					history, err := d.PlanUsageHistory(l.Key, at(9, 0), *before.FetchedAt, reset)
 					require.NoError(t, err)
 					for _, s := range history {

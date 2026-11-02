@@ -188,7 +188,7 @@ func (p *Provider) Run(ctx context.Context) error {
 		}
 		next, err := p.PollOnce(ctx)
 		if ctx.Err() != nil {
-			return nil
+			return nil //nolint:nilerr // Cancellation ends the scheduler normally; source errors are logged below.
 		}
 		if err != nil && ErrorCode(err) != "busy" && ErrorCode(err) != "feature_disabled" && p.Logger != nil {
 			p.Logger.Printf("%s plan usage: %s (next poll in %s)", p.Name, ErrorCode(err), next)

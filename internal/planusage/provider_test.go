@@ -14,11 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProvider_SchedulerBackoffResetAndBusy(t *testing.T) {

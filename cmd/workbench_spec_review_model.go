@@ -19,65 +19,65 @@ import (
 
 // Session selection is local to this review; config.yaml and other agents stay unchanged.
 func specReviewSessionConfig(ctx context.Context, database *db.DB, askID int64, cfg *config.Config) (*config.Config, string, error) {
-	copy := *cfg
-	copy.AI.ConfiguredProvider = cfg.AI.ConfiguredProviderID()
-	if copy.AI.Provider == "" {
-		copy.AI.Provider = "claude"
+	sessionCfg := *cfg
+	sessionCfg.AI.ConfiguredProvider = cfg.AI.ConfiguredProviderID()
+	if sessionCfg.AI.Provider == "" {
+		sessionCfg.AI.Provider = "claude"
 	}
-	_, model := providers.ResolveModelsFor(&copy, copy.AI.Provider)
+	_, model := providers.ResolveModelsFor(&sessionCfg, sessionCfg.AI.Provider)
 	ask, err := database.GetOwnerAskByID(askID)
 	if err != nil {
-		return &copy, model, err
+		return &sessionCfg, model, err
 	}
 	if !ask.SessionID.Valid {
-		return &copy, model, nil
+		return &sessionCfg, model, nil
 	}
 	session, err := database.GetTerminalSession(ask.SessionID.Int64)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
-		return &copy, model, nil
+		return &sessionCfg, model, nil
 	}
 	if err != nil {
-		return &copy, model, err
+		return &sessionCfg, model, err
 	}
 	if session.Kind != "claude" && session.Kind != "codex" {
-		return &copy, model, nil
+		return &sessionCfg, model, nil
 	}
-	copy.AI.Provider = session.Kind
-	_, model = providers.ResolveModelsFor(&copy, session.Kind)
+	sessionCfg.AI.Provider = session.Kind
+	_, model = providers.ResolveModelsFor(&sessionCfg, session.Kind)
 	if session.Kind == "codex" && session.TranscriptPath.Valid && session.TranscriptPath.String != "" {
 		exact, err := specReviewTranscriptModelContext(ctx, session.TranscriptPath.String, true)
 		if exact != "" {
 			model = exact
 		}
-		return &copy, model, err
+		return &sessionCfg, model, err
 	}
 	if session.Kind == "claude" {
 		path, err := specReviewClaudeTranscript(ctx, database, session)
 		if err != nil || path == "" {
-			return &copy, model, err
+			return &sessionCfg, model, err
 		}
 		exact, err := specReviewTranscriptModelContext(ctx, path, false)
 		if exact != "" {
 			model = exact
 		}
-		return &copy, model, err
+		return &sessionCfg, model, err
 	}
 	conversations, err := sessionFeedConversations(ctx, database, session)
 	if err != nil {
-		return &copy, model, err
+		return &sessionCfg, model, err
 	}
 	if len(conversations) == 0 {
-		return &copy, model, nil
+		return &sessionCfg, model, nil
 	}
 	latest := conversations[len(conversations)-1]
 	exact, err := specReviewTranscriptModelContext(ctx, latest.Path, latest.Codex)
 	if err != nil {
-		return &copy, model, err
+		return &sessionCfg, model, err
 	}
 	if exact != "" {
 		model = exact
 	} // Deliberately bypass retired-model/family normalization.
-	return &copy, model, nil
+	return &sessionCfg, model, nil
 }
 
 // Only the selected main conversation is read, never a neighbouring session or subagent.

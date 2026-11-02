@@ -13,12 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/planusage"
+
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func runUsagePlansCmd(t *testing.T, args ...string) (planusage.Envelope, string, error) {
