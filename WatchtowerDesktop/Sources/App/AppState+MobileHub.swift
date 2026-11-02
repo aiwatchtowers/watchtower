@@ -3,9 +3,6 @@ import GRDB
 import os
 import WatchtowerCore
 
-/// Settings → Mobile drives the toggle and reads the hub through these.
-extension AppState: MobileSettingsHost {}
-
 extension AppState {
     /// "Keep this Mac awake for the iPhone": on unless the owner turned it off (ask #614).
     var isMobileKeepAwakeEnabled: Bool {

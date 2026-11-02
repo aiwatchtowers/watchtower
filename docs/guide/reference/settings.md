@@ -65,9 +65,11 @@ since: 0.24.0
 
 ## Mobile
 
-- **Sync with iPhone** (off by default) makes this Mac the hub for the iPhone app, through your own iCloud. On a build without iCloud signing it says **Needs a signed build**. **Use Watchtower on iPhone** shows a QR code valid for 10 minutes. See [iPhone](../features/iphone.md).
-- **Keep this Mac awake for the iPhone** (on by default; shown while Sync with iPhone is on) stops the Mac from sleeping on its own while a session runs and a linked phone has been in touch in the last 24 hours. A closed lid on battery still sleeps the Mac.
-- Each linked phone shows **Same Apple ID** or **Shared** and one line per permission, each with **Allow…** or **Revoke**: typing into your sessions, starting sessions (allowed only once typing is: **Starting sessions needs typing**) and answering permission prompts. **Remove…** unlinks it.
+- **Mobile sync** (off by default) makes this Mac the hub for the iPhone app. While it is off, the row says why (for example **Mobile is turned off by your organization**, with no switch). **Link a phone…** shows a QR code valid for 10 minutes. See [iPhone](../features/iphone.md).
+- **Mac name** is the name phones show. **Transcribe phone recordings on this Mac** turns phone recordings on or off; a Mac with no transcriber says **This host has no transcriber.** **Transport** says whether phones sync over iCloud or Relay, and who switched it last.
+- **Keep this Mac awake for the iPhone** (on by default; shown while Mobile sync is on) stops the Mac from sleeping on its own while a session runs and a linked phone has been in touch in the last 24 hours. A closed lid on battery still sleeps the Mac.
+- Each linked phone shows its link date and transport (**iCloud**, **Relay** or **Waiting for Relay**) and one line per permission, each with **Allow…** or **Revoke**: typing into your sessions, starting sessions (allowed only once typing is: **Starting sessions needs typing**) and answering permission prompts. **Remove…** (on hover) unlinks it.
+- **Recordings** lists phone recordings the Mac could not transcribe, with **Retry** and **Discard…**, and those the update left untranscribed, with **Show in Finder**.
 
 ## Profile
 <!-- learn

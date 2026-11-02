@@ -430,7 +430,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 func opClass(op string) string {
 	for _, known := range []string{OpUnlink, OpAllow, OpName, OpEnable, OpDisable, OpPair, OpConfirm,
 		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish, OpRecordings,
-		OpDesktopView, OpRecordingProgress, OpDesktopWatch, OpConfirmDeleted} {
+		OpDesktopView, OpRecordingProgress, OpDesktopWatch, OpConfirmDeleted, OpRecordingDiscard} {
 		if op == known {
 			return known
 		}
@@ -475,6 +475,8 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return s.setRecordings(r.On)
 	case OpRecordingProgress:
 		return s.recordingProgress(r)
+	case OpRecordingDiscard:
+		return s.recordingDiscard(r)
 	case OpDesktopView:
 		if len(r.Hidden) > MaxViewIDs || len(r.DisplayOver) > MaxViewIDs {
 			return ControlAnswer{Error: ErrClassTooManyIDs}

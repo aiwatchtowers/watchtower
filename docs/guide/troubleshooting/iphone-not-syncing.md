@@ -7,25 +7,24 @@ The phone shows "Mac offline", never finds the Mac, an answered ask stays on **W
 - On **Now**: "Mac online · 12s", "Mac offline · 13m" or "Mac not connected".
 - A change that stays at **Waiting for your Mac**.
 - While linking: "This code expired", "This code can't be used", or "Sign in to iCloud on this iPhone to use Watchtower".
-- On the Mac, **Settings → Mobile** shows **Needs a signed build**, "iCloud is slowing sync down" or "Mobile is run by a newer Watchtower".
+- On the Mac, **Settings → Mobile** shows why Mobile is off, says iCloud is not reachable, or shows "Mobile is run by a newer Watchtower".
 - "<Mac> hasn't synced for a day" or "<Mac> removed this phone".
 
 ## Why
 
-The Mac is the hub. It publishes your data into your iCloud and applies the phone's changes only while Watchtower runs on an awake Mac with **Sync with iPhone** on. The phone calls the Mac online while its heartbeat, written every 15 minutes, is under 35 minutes old. Quitting Watchtower or sleeping the Mac stops the hub; closing the window does not.
+The Mac is the hub. It publishes your data into your iCloud and applies the phone's changes only while Watchtower runs on an awake Mac with **Mobile sync** on. The phone calls the Mac online while its heartbeat, written every 15 minutes, is under 35 minutes old. Quitting Watchtower or sleeping the Mac stops the hub; closing the window does not.
 
 ## Fix
 
-1. On the Mac, open Watchtower (closing the window is fine), keep the Mac awake and open **Settings → Mobile**. Turn on **Sync with iPhone**.
-2. **Needs a signed build:** the Mac build has no iCloud signing and cannot turn sync on. Use the downloaded Developer ID app.
+1. On the Mac, open Watchtower (closing the window is fine), keep the Mac awake and open **Settings → Mobile**. Turn on **Mobile sync**.
+2. **iCloud is not reachable from this Mac:** a build without iCloud signing cannot use iCloud; phones on Relay keep working. Use the downloaded Developer ID app.
 3. Check iCloud: both devices must be signed in to iCloud. A Mac with iCloud off says "Mobile isn't available on this Mac: iCloud is off."
 4. The phone never sees the Mac: check the build pairing. The downloaded Mac app pairs with a TestFlight or App Store phone. A phone run from Xcode pairs only with a Mac built for the Development environment; mixed pairs fail silently.
 5. **Code expired or can't be used:** press **New code** on the Mac and scan again. A code lasts 10 minutes and works for one phone.
 6. **Waiting for your Mac:** wake the Mac. Pending changes apply when it wakes, and the Mac checks for them every 30 seconds.
 7. **Hasn't synced for a day:** if the Mac changed its iCloud account, link again.
 8. **Removed this phone:** that hub is frozen. Tap **Forget** on the phone and link again with **Add Mac**.
-9. **iCloud is slowing sync down:** wait; it clears on its own.
-10. **Mobile is run by a newer Watchtower:** you opened an older Watchtower after an update moved the iPhone sync to the new version. This older app leaves the phone alone. Install the latest Watchtower and open it; the phone keeps its link.
+9. **Mobile is run by a newer Watchtower:** you opened an older Watchtower after an update moved the iPhone sync to the new version. This older app leaves the phone alone. Install the latest Watchtower and open it; the phone keeps its link.
 
 ## How to check
 

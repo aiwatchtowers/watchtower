@@ -66,7 +66,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 
 | Verb | `--json` keys (pinned) |
 |---|---|
-| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`) |
+| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`); phase 3: `kept_recordings` (absent at 0), `name` (the name phones show: `hub name`'s value, else the short host name; Settings → Mobile's Mac name row) |
 | `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
@@ -77,6 +77,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
 | `hub recording claim --upload <id>` | `upload_id`, `audio_path`, `status` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
+| `hub recording discard --upload <id>` (owner; phase 3 Task 23: a `failed` job only, else `job_state`; deletes `<recordings>/<upload_id>.m4a` then the row, through the running hub's `recording_discard` op so the phone's `recording_job` slice drops it) | `upload_id`, `discarded` |
 | `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
 | `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
 

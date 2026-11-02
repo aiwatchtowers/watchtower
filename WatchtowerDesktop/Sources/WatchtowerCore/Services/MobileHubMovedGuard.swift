@@ -10,6 +10,8 @@ import Foundation
 public enum MobileHubMovedGuard {
     public static let noteName = "MOVED"
     public static let message = "Mobile is run by a newer Watchtower"
+    /// The one section's title of that Settings → Mobile (`MobileMovedView`).
+    public static let sectionTitle = "iPhone"
     /// The line that marks the move; a readable note without it is ignored.
     static let implLine = "hub_impl=go"
     /// The note is two short lines; nothing past this is read.

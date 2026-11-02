@@ -8,7 +8,7 @@ You step away from your desk while a Workbench session waits on a question. The 
 
 ## How it works
 
-The Mac is the **hub**. With **Sync with iPhone** on, it publishes a slice of your data (asks, Workbench boards and sessions, calendar, recaps) into your iCloud. The phone reads that slice and sends its changes back as requests, which the Mac applies when it is awake.
+The Mac is the **hub**. With **Mobile sync** on, it publishes a slice of your data (asks, Workbench boards and sessions, calendar, recaps) into your iCloud. The phone reads that slice and sends its changes back as requests, which the Mac applies when it is awake.
 
 Everything is sealed with keys exchanged when you link, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's chat (below).
 
@@ -22,7 +22,7 @@ iCloud keeps a Development and a Production environment, and records saved in on
 
 A phone run from Xcode is Development, and only pairs with a Mac built for Development. Mixed pairs fail silently: the phone never sees the Mac.
 
-A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build runs a demo.
+A Mac build without iCloud signing links phones over Relay only. An unsigned phone build runs a demo.
 
 ## Using it
 
@@ -30,7 +30,7 @@ A Mac build without iCloud signing shows **Needs a signed build** and cannot tur
 <!-- learn
 id: iphone-link
 title: Link your iPhone
-text: Turn on **Sync with iPhone** in **Settings → Mobile**, press **Use Watchtower on iPhone** and scan the code.
+text: Turn on **Mobile sync** in **Settings → Mobile**, press **Link a phone…** and scan the code.
 area: iphone
 level: basics
 kind: feature
@@ -39,13 +39,13 @@ action: hotkey:settings
 done_when: iphone.paired
 -->
 
-1. On the Mac, open Settings → **Mobile** and turn on **Sync with iPhone**. It applies at once.
-2. Under **Phones**, press **Use Watchtower on iPhone**. A QR code appears for 10 minutes. **New code** makes another.
+1. On the Mac, open Settings → **Mobile** and turn on **Mobile sync**. It applies at once.
+2. Under **Phones**, press **Link a phone…**. A QR code appears for 10 minutes. **New code** makes another.
 3. On the iPhone, tap **Scan the code on your Mac** (or scan with the Camera app) and point it at the code.
 4. The phone shows a four-digit code. Check it matches the code on the Mac, then click **Link** there (**Refuse** cancels).
 5. The phone shows **Linked to <Mac name>**. **Continue** asks for notification permission and opens **Now**.
 
-If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares; the phone row says **Same Apple ID** or **Shared**.
+If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares. Each phone row says how it syncs (**iCloud**, **Relay** or **Waiting for Relay**) and who switched it last. Failed phone recordings wait under **Recordings** (**Retry**, **Discard…**).
 
 ### Use the three tabs
 <!-- learn
@@ -129,13 +129,12 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 
 ## When it's empty or wrong
 
-- **The Mac doesn't show up on the phone.** Check that Watchtower is open on the Mac, **Sync with iPhone** is on, the Mac is awake, the build is signed, and iCloud is on. If it still does not appear, check the environment pairing above.
+- **The Mac doesn't show up on the phone.** Check that Watchtower is open on the Mac, **Mobile sync** is on, the Mac is awake, the build is signed, and iCloud is on. If it still does not appear, check the environment pairing above.
 - **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone needs an iCloud account; the Mac needs one too ("Mobile isn't available on this Mac: iCloud is off.").
 - **Another Apple ID won't link.** The message "This Mac can't share with another Apple ID right now" means the Mac's share failed. Show a new code and try again.
 - **"<Mac> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
-- **"iCloud is slowing sync down"** on the Mac's Mobile tab clears on its own.
 - **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
 - **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.

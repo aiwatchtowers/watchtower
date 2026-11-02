@@ -366,7 +366,13 @@ enum DesignShotCatalog {
             DesignShot(name: "mobileSettingsMoved-narrow", size: NSSize(width: 320, height: 180)) {
                 MobileMovedShotFixtures.screen()
             }
-        ] + CleanupShotFixtures.Frame.allCases.map { frame in
+        ] + MobileSettingsShotFixtures.Frame.allCases.map { frame in
+            // Settings → Mobile over `watchtower hub …` (go hub phase 3 Task 23), mockup §1–§9.
+            DesignShot(name: frame.name, size: frame.size) { MobileSettingsShotFixtures.screen(frame) }
+        } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
+            // The pairing sheet over `hub pair --json --stream`, mockup §11–§13.
+            DesignShot(name: shot.rawValue, size: NSSize(width: 380, height: 380)) { MobileSettingsShotFixtures.pairing(shot) }
+        } + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
                 CleanupShotFixtures.screen(frame)

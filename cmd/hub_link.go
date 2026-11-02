@@ -185,16 +185,17 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if mode == hub.ModeLive && s.Reason == hub.ReasonNoRelayOrigin {
 		line += "\n" + hubRelayOriginRemedy
 	}
-	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept}, line)
+	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir)}, line)
 }
 
 // hubStatusJSON is `hub status --json`: the runtime's status plus the
-// recording switch and the recordings an adoption kept (additive keys;
-// kept_recordings absent at count 0).
+// recording switch, the recordings an adoption kept and the name phones show
+// for the hub (additive keys; kept_recordings absent at count 0).
 type hubStatusJSON struct {
 	hub.Status
 	Recordings     string                `json:"recordings"`
 	KeptRecordings *adopt.KeptRecordings `json:"kept_recordings,omitempty"`
+	Name           string                `json:"name"`
 }
 
 func runHubPhones(cmd *cobra.Command, _ []string) error {

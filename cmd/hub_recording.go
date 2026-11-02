@@ -83,7 +83,7 @@ func init() {
 	progress.Flags().String("phase", "", "transcribing, diarizing or summarizing")
 	progress.Flags().Int("percent", 0, "percent done, 0-100 (transcribing only)")
 	progress.Flags().Bool("json", false, "print JSON")
-	recording.AddCommand(claim, finish, progress)
+	recording.AddCommand(claim, finish, progress, newHubRecordingDiscardCmd())
 	hubCmd.AddCommand(desktop, recording)
 }
 

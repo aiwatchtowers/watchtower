@@ -197,6 +197,25 @@ final class HubCenterTests: XCTestCase {
         await waitUntil("only status events change it") { center.status == HubCenter.Status(state: "paused", reason: "locked") }
     }
 
+    /// Settings → Mobile reads again on a switch and on a linked phone
+    /// (Task 23); other pairing steps and events do not count.
+    func testSwitchedAndLinkedEventsBumpLinksChanged() async {
+        let center = makeCenter()
+        center.start()
+        await waitUntil("the stream is open") { client.watches == 1 }
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        client.emit(.pair(kind: "qr", deviceID: nil))
+        client.emit(.switched)
+        await waitUntil("the switch") { center.linksChanged == 1 }
+        client.emit(.pair(kind: "sas", deviceID: "AABB"))
+        client.emit(.pair(kind: "linked", deviceID: "AABB"))
+        await waitUntil("the linked phone") { center.linksChanged == 2 }
+        client.emit(.recordingQueued(uploadID: "u-1"))
+        client.emit(.status(HubCenter.Status(state: "paused")))
+        await waitUntil("the later status") { center.status?.state == "paused" }
+        XCTAssertEqual(center.linksChanged, 2)
+    }
+
     func testNoHubFallsBackToCLIStatus() async throws {
         client.reachable = false
         let cli = FakeCLIRunner(stdout: Data(#"{"state":"off","reason":"desktop_host","host":"desktop","recordings":"off"}"#.utf8))

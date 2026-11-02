@@ -39,6 +39,9 @@ final class HubCenter {
     nonisolated static let notRunning = Status(state: "off")
 
     private(set) var status: Status?
+    /// Bumped on each `switched` event and each pairing that linked a phone:
+    /// what Settings → Mobile reads again on (Task 23).
+    private(set) var linksChanged = 0
 
     @ObservationIgnored private let client: any HubControlClienting
     @ObservationIgnored private let cli: (any CLIRunnerProtocol)?
@@ -212,7 +215,9 @@ final class HubCenter {
                     watchedStatus(next)
                 case let .status(next):
                     watchedStatus(next)
-                case .recordingQueued, .pair, .switched, .unknown:
+                case .switched, .pair(kind: "linked", deviceID: _):
+                    linksChanged += 1
+                case .recordingQueued, .pair, .unknown:
                     break
                 }
             }

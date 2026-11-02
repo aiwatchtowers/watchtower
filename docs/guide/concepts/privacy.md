@@ -14,7 +14,7 @@ Removing an account deletes its sign-in file. With **Delete an account's data wh
 
 In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits.
 
-Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Sync with iPhone** and remove the phone before you reset.
+Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Mobile sync** and remove the phone before you reset.
 
 ## Watchtower stays out of Time Machine
 <!-- learn
@@ -75,14 +75,14 @@ Other network traffic: calls to each source's own service, Knowledge search open
 <!-- learn
 id: privacy-iphone-encrypted
 title: iPhone sync is end-to-end encrypted
-text: **Sync with iPhone** goes through your own iCloud, sealed with keys only your Mac and paired phones hold.
+text: **Mobile sync** goes through your own iCloud, sealed with keys only your Mac and paired phones hold.
 area: iphone
 level: next
 kind: feature
 since: 0.24.0
 -->
 
-Nothing, unless you turn on **Sync with iPhone** in **Settings → Mobile**. It is off by default.
+Nothing, unless you turn on **Mobile sync** in **Settings → Mobile**. It is off by default.
 
 When it is on, your Mac publishes a trimmed view of its data to your own iCloud (CloudKit) for your iPhone app: Workbench boards with their targets and comments, sessions and their reports, asks, a session's chat (only while the phone has it open), calendar events, meeting transcripts and recaps, and the status of phone recordings (never tokens). The phone sends back actions and recordings.
 
