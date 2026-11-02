@@ -140,7 +140,7 @@ private struct OwnerConfirmTextView: NSViewRepresentable {
     let detail: String?
     let onReturn: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onReturn: onReturn) }
+    func makeCoordinator() -> OwnerConfirmReturnDenies { OwnerConfirmReturnDenies(onReturn: onReturn) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
@@ -167,19 +167,22 @@ private struct OwnerConfirmTextView: NSViewRepresentable {
 
     /// The text is one request's and never changes.
     func updateNSView(_ scroll: NSScrollView, context: Context) {}
+}
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        private let onReturn: () -> Void
+/// The confirm window's text view delegate: Return and Enter (`insertNewline`)
+/// deny, as they do on the Deny button; every other command is the text
+/// view's.
+final class OwnerConfirmReturnDenies: NSObject, NSTextViewDelegate {
+    private let onReturn: () -> Void
 
-        init(onReturn: @escaping () -> Void) {
-            self.onReturn = onReturn
-        }
+    init(onReturn: @escaping () -> Void) {
+        self.onReturn = onReturn
+    }
 
-        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
-            onReturn()
-            return true
-        }
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        onReturn()
+        return true
     }
 }
 
