@@ -59,9 +59,63 @@ final class PlansScreenTests: XCTestCase {
         let lines = PlansShotFixtures.trayLines(PlansShotFixtures.model())
         let review = try XCTUnwrap(lines.first { $0.contains("Review quota") })
         var didOpen = false
-        let rows = PlansTrayRows(lines: lines) { didOpen = true }
+        let rows = PlansTrayRows(model: PlansMenuPresentation(screen: PlansShotFixtures.model()),
+                                 openPlans: { didOpen = true }, refresh: { _ in })
         try rows.inspect().find(button: review).tap()
         XCTAssertTrue(didOpen)
+    }
+
+    func testMenuStateMessagesAndProviderRetryRouteRemainVisible() throws {
+        let screen = PlansShotFixtures.model(.error)
+        let model = PlansMenuPresentation(screen: screen)
+        XCTAssertFalse(model.providers[0].lines.isEmpty)
+        XCTAssertTrue(model.providers[1].lines.isEmpty)
+        XCTAssertEqual(model.providers[1].message, "Couldn't update Codex limits. Retry to update.")
+        var refreshed: [PlanUsageProvider] = []
+        var opened = false
+        let tray = TrayMenuContent(isRunning: false, syncProgress: nil, daemonError: nil, cliStoreError: nil,
+                                   voicesPendingCount: 0, planUsagePresentation: model,
+                                   planUsageAction: { opened = true }, planUsageRefresh: { refreshed.append($0) },
+                                   updateVersion: nil, updateAction: {}, syncNowAction: {}, quickCaptureAction: {},
+                                   voicesAction: {}, reviewVoicesAction: {}, trainVoicesAction: {}, openAction: {}, settingsAction: {})
+        try tray.inspect().find(button: "Retry Codex").tap()
+        XCTAssertEqual(refreshed, [.codex])
+        XCTAssertFalse(opened)
+        try tray.inspect().find(button: "Refresh Claude").tap()
+        XCTAssertEqual(refreshed, [.codex, .claude])
+        try tray.inspect().find(button: "Open Plans").tap()
+        XCTAssertTrue(opened)
+    }
+
+    func testMenuEmptyLoadingBusyAndUnknownIdentityCopy() throws {
+        let empty = PlansMenuPresentation(screen: PlansShotFixtures.model(.empty))
+        XCTAssertEqual(empty.providers.map(\.message), ["No Claude plan data yet. Refresh to load limits.",
+                                                        "No Codex plan data yet. Refresh to load limits."])
+        XCTAssertEqual(empty.providers.map(\.action), ["Refresh Claude", "Refresh Codex"])
+        let loading = PlansMenuPresentation(screen: PlansShotFixtures.model(.loading))
+        XCTAssertEqual(loading.providers.map(\.message), ["Loading Claude limits…", "Loading Codex limits…"])
+        XCTAssertTrue(loading.providers.allSatisfy { !$0.canRefresh && $0.lines.isEmpty })
+        let loadingRows = PlansTrayRows(model: loading, openPlans: {}, refresh: { _ in })
+        XCTAssertTrue(try loadingRows.inspect().find(button: "Refreshing Codex…").isDisabled())
+        let busy = PlansMenuPresentation(screen: PlansShotFixtures.model(.busy))
+        XCTAssertEqual(busy.providers.map(\.message), ["Refreshing Claude limits…", "Refreshing Codex limits…"])
+        XCTAssertTrue(busy.providers.allSatisfy { !$0.canRefresh && !$0.lines.isEmpty })
+        let unknown = PlansShotFixtures.model(.unknownID)
+        XCTAssertFalse(unknown.providers[1].showsSummary)
+        XCTAssertEqual(unknown.providers[1].primary?.forecast, "Current usage only — account identity is unavailable.")
+        let card = PlansProviderCard(provider: unknown.providers[1], enabled: true) {}
+        let copies = try card.inspect().findAll(ViewType.Text.self) {
+            try $0.string() == "Current usage only — account identity is unavailable."
+        }
+        XCTAssertEqual(copies.count, 1)
+        let menu = PlansMenuPresentation(screen: unknown)
+        XCTAssertEqual(menu.providers[1].message, "Current usage only — account identity is unavailable.")
+        XCTAssertTrue(menu.providers[1].lines.allSatisfy { !$0.contains("account identity") })
+        let stale = PlansMenuPresentation(screen: PlansShotFixtures.model(.stale))
+        XCTAssertEqual(stale.providers[1].action, "Retry Codex")
+        XCTAssertTrue(stale.providers[1].lines.isEmpty)
+        let disabled = PlansMenuPresentation(screen: PlansShotFixtures.model(.disabled))
+        XCTAssertTrue(disabled.providers.allSatisfy { !$0.canRefresh && $0.lines.isEmpty })
     }
 
     /// Explicit screenshot command renders only Plans, without opening any windows.

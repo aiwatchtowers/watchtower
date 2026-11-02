@@ -9,13 +9,14 @@ package enum PlansPeriod: String, CaseIterable, Sendable {
 package struct PlansScreenProvider: Identifiable, Sendable {
     package let presentation: PlansProviderPresentation
     package let status: PlanUsageStatus?
-    package let showsSummary: Bool
+    package let summaryNeeded: Bool
     package let hasError: Bool
     package var id: PlanUsageProvider { presentation.provider }
     package var planLabel: String { id == .codex && presentation.limits.isEmpty ? "" : presentation.plan }
     package var primary: PlansLimitPresentation? {
         presentation.limits.first { duration($0) == 10080 } ?? presentation.limits.first
     }
+    package var showsSummary: Bool { summaryNeeded && presentation.summary != primary?.forecast }
     package var session: PlansLimitPresentation? { presentation.limits.first { duration($0) == 300 } }
     package var otherLimits: [PlansLimitPresentation] {
         presentation.limits.filter { $0.key != primary?.key && $0.key != session?.key }
@@ -33,7 +34,7 @@ package struct PlansScreenPresentation: Sendable {
     package let providers: [PlansScreenProvider]
     package let now: Date
     package let enabled: Bool
-    package var isRefreshing: Bool { providers.contains { $0.presentation.isRefreshing } }
+    package var isRefreshing: Bool { enabled && providers.contains { $0.presentation.isRefreshing } }
     package var hasLimits: Bool { providers.contains { !$0.presentation.limits.isEmpty } }
     package var hasDetails: Bool {
         providers.contains { !$0.otherLimits.isEmpty ||
@@ -105,20 +106,21 @@ package struct PlansScreenPresentation: Sendable {
         self.enabled = enabled
         providers = PlanUsageProvider.allCases.map { provider in
             let status = provider == .claude ? claude : codex
+            let isRefreshing = enabled && refreshing.contains(provider)
             do {
                 let card = try PlansPresentation.card(provider: provider, status: status, error: errors[provider],
-                                                      refreshing: refreshing.contains(provider), now: now, enabled: enabled)
+                                                      refreshing: isRefreshing, now: now, enabled: enabled)
                 let hasError = errors[provider] != nil || ["error", "unavailable"].contains(status?.state ?? "")
                 let showsSummary = hasError || card.isStale || status?.ordinaryUsageAllowed == false ||
                     (provider == .codex && status?.identityKnown != true)
-                return PlansScreenProvider(presentation: card, status: status, showsSummary: showsSummary, hasError: hasError)
+                return PlansScreenProvider(presentation: card, status: status, summaryNeeded: showsSummary, hasError: hasError)
             } catch {
                 // One invalid snapshot must not suppress the other subscription.
                 let card = PlansProviderPresentation(provider: provider, title: provider.title, plan: "",
                                                      summary: PlansPresentation.errorText("storage", provider: provider),
                                                      freshness: "Not updated yet",
-                                                     action: "Retry", isRefreshing: refreshing.contains(provider), isStale: true, limits: [])
-                return PlansScreenProvider(presentation: card, status: nil, showsSummary: true, hasError: true)
+                                                     action: "Retry", isRefreshing: isRefreshing, isStale: true, limits: [])
+                return PlansScreenProvider(presentation: card, status: nil, summaryNeeded: true, hasError: true)
             }
         }
     }

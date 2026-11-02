@@ -104,11 +104,11 @@ enum PlansShotFixtures {
 
     static var menuShots: [DesignShot] {
         [State.filled, .empty, .loading, .error, .busy, .scoped, .unknownID, .stale, .disabled].map { state in
-            DesignShot(name: "plans-menu-\(state.rawValue)", size: NSSize(width: 1120, height: 520)) {
+            DesignShot(name: "plans-menu-\(state.rawValue)", size: NSSize(width: 1120, height: 760)) {
                 menuScreen(state, show: state != .disabled)
             }
         } + [
-            DesignShot(name: "plans-menu-off", size: NSSize(width: 1120, height: 520)) { menuScreen(.filled, show: false) },
+            DesignShot(name: "plans-menu-off", size: NSSize(width: 1120, height: 760)) { menuScreen(.filled, show: false) },
             DesignShot(name: "plans-menu-narrow", size: NSSize(width: 620, height: 90)) { menuScreen(.filled, barOnly: true) }
         ]
     }
@@ -119,12 +119,12 @@ enum PlansShotFixtures {
                                                     codex: model.providers[1].status, show: show, now: now)) ?? ""
         return AnyView(VStack(alignment: .leading, spacing: Spacing.large) {
             Text(label).font(.caption).monospacedDigit()
-            if !barOnly { PlansTrayRows(lines: trayLines(model)) {} }
+            if !barOnly { PlansTrayRows(model: PlansMenuPresentation(screen: model), openPlans: {}, refresh: { _ in }) }
             Spacer()
         }.padding(Spacing.page).frame(maxWidth: .infinity, alignment: .leading).detailBackground())
     }
 
     static func trayLines(_ model: PlansScreenPresentation) -> [String] {
-        model.providers.compactMap(\.status).flatMap { (try? PlansPresentation.tray($0, now: now)) ?? [] }
+        PlansMenuPresentation(screen: model).providers.flatMap(\.lines)
     }
 }

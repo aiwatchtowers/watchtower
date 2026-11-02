@@ -14,4 +14,6 @@ The explicit render test writes both appearances to `/tmp/watchtower-plans-produ
 
 The production differences follow the approved final specification: Retry and manual sign-in guidance replace draft Connect buttons; stale or unconfirmed Codex values are hidden; unknown identity allows current numbers but no chart; unavailable and expired forecasts show their reason. Additional Codex quotas remain visible. Menu shots host the actual existing NSMenu plan items, without redesigning the rest of the tray menu.
 
+The popup keeps provider headings and state messages when no quota can be shown. Its Refresh/Retry actions target the named provider; quota rows and Open Plans navigate to the Plans screen.
+
 Layout and behavior sources: design ask #919, menu ask #931, specification ask #934 and implementation plan ask #936.
