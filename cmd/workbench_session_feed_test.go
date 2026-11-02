@@ -111,7 +111,7 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 		feedUser("u3", "<task-notification>\n<task-id>t1</task-id>\n<summary>CI done</summary>\n</task-notification>"),
 	)
 	got := fx.feedJSON(t)
-	assert.Equal(t, []string{"activity", "cursor", "entries", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
 	entries := got["entries"].([]any)
 	require.Len(t, entries, 5)
 	assert.Equal(t, []string{"at", "conversation", "id", "kind", "text"}, feedKeys(entries[0].(map[string]any)))
@@ -223,7 +223,7 @@ func TestSessionFeed_SubagentDrillIn(t *testing.T) {
 
 	top := fx.feedJSON(t, "--subagent", "toolu_1")
 	assert.Equal(t, "", top["cursor"])
-	assert.Equal(t, []string{"activity", "cursor", "entries", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
 	assert.Len(t, top["subagents"], 1)
 	assert.Equal(t, "toolu_2", top["subagents"].([]any)[0].(map[string]any)["id"])
 

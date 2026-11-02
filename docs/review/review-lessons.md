@@ -2539,3 +2539,12 @@ Entry format:
 - weak-dimension: none on a 20-file mechanical flag removal.
 - rule-gap (candidate, dim 5): *a spec whose amendments section promises inline fixes gets its inline text fixed (or struck through with a pointer) in the same PR that adds the amendment.*
 - outcome: TBD
+
+## 2026-11-02 — wt/session-19 — verdict: changes-needed
+
+- contested: child transcript hints need the latest parent status timestamp as their comparison point; an interval start is a timer anchor, not a status watermark. Otherwise an older running hint revives a closed agent. [6]
+- false-positive: none among the seven deduplicated findings; nested Claude polling has an older similar limitation, but adding the Codex nested route exposes the same stale fallback in newly supported behavior. [8]
+- miss: lifecycle-plus-limit composition was caught only by the test-analysis lane: reconciling child completion after truncation can retain finished rows and exclude the only running agent. [6/7]
+- weak-dimension: 7. Single-agent and text-turn cases passed, but attachment-only turns, sibling failure isolation, nested completion and more-than-cap lifecycle cases were absent.
+- rule-gap: no new binding rule needed; existing absent-versus-error, temporal ordering and behavioral regression-test rules apply. The external Codex lane was unavailable after automatic approval review rejected diff transmission; the four remaining lanes were independently judged.
+- outcome: TBD

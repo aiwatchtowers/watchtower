@@ -132,10 +132,14 @@ package struct SessionFeedPayload: Decodable, Sendable {
     package var subagents: [SessionFeedEntry]
     /// The agent's open tool call; nil = none (or an older CLI).
     package var activity: SessionFeedActivity?
+    package var live: SessionFeedLive?
+    package var liveOK: Bool
+    package var liveError: String?
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
-        case cursor, entries, subagents, activity
+        case cursor, entries, subagents, activity, live
+        case liveOK = "live_ok", liveError = "live_error"
     }
 
     package init(from decoder: Decoder) throws {
@@ -145,5 +149,8 @@ package struct SessionFeedPayload: Decodable, Sendable {
         entries = try c.decodeIfPresent([SessionFeedEntry].self, forKey: .entries) ?? []
         subagents = try c.decodeIfPresent([SessionFeedEntry].self, forKey: .subagents) ?? []
         activity = try c.decodeIfPresent(SessionFeedActivity.self, forKey: .activity)
+        live = try c.decodeIfPresent(SessionFeedLive.self, forKey: .live)
+        liveOK = try c.decodeIfPresent(Bool.self, forKey: .liveOK) ?? false
+        liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
     }
 }
