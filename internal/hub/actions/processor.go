@@ -466,18 +466,13 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		if p.onStandby(ctx, b, rec, opened) {
 			return nil
 		}
-	} else if opened.Frame.Kind == kindAction || opened.Frame.Kind == kindRecordingUpload {
-		// Sim rule 16: a lapsed phone's record is left to it (it was told
-		// hub_on_relay over CloudKit); an upload sent before its last lapse
-		// is left too. An action sent before it is answered expired by
-		// apply.
+	} else if opened.Frame.Kind == kindAction {
+		// Sim rule 16: a lapsed phone's action is left to it (it was told
+		// hub_on_relay over CloudKit). One sent before its last lapse is
+		// answered expired by apply; an upload is answered failed by
+		// settleUpload, so the phone keeps the audio.
 		if lapsed, err := p.lapsed(b, orderedSeq(b, opened)); err != nil || lapsed {
 			return err
-		}
-		if opened.Frame.Kind == kindRecordingUpload && p.cfg.Switch != nil {
-			if skipped, err := p.cfg.Switch.Skipped(p.cfg.Transport.Kind(), b.id.String(), 0, rec.ServerAt); err != nil || skipped {
-				return err
-			}
 		}
 	}
 	switch opened.Frame.Kind {
@@ -489,7 +484,7 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		err = p.phoneControl(ctx, b, rec, opened, ps)
 	case kindRecordingUpload:
 		ps.report.Read++
-		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, rec.AttachmentID, ps)
+		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, rec.AttachmentID, ps)
 	case kindDevice:
 		if !b.shared {
 			return nil // the relay path reads no device records (phase 1 handling)

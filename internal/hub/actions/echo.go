@@ -33,6 +33,10 @@ const (
 	reasonOutcomeUnknown  = "outcome_unknown"
 	reasonUnsupported     = "unsupported_in_poc"
 	reasonWriteFailed     = "write_failed"
+	// reasonNotDelivered: an upload a lapsed relay phone sent (sim rule
+	// 16); the hub's ledger class (an upload echo's reason reads as none
+	// on today's Kit, protocol §7.7).
+	reasonNotDelivered = "not_delivered"
 	// ReasonNotSupported: this host does not record (protocol §9); the
 	// recording intake answers it too.
 	ReasonNotSupported = "not_supported"
@@ -44,6 +48,9 @@ const (
 	wrongHubMessage   = "This was sent to another Mac."
 	clockAheadMessage = "Your iPhone's and Mac's clocks differ by more than 5 minutes — check Date & Time on both."
 	restartedMessage  = "The Mac restarted while applying this"
+	// notDeliveredUploadMessage is the failed echo of an upload a lapsed
+	// relay phone sent: the phone keeps the audio and may send it again.
+	notDeliveredUploadMessage = "Your Relay subscription ended before your Mac got this recording. It stays on your iPhone; send it again."
 )
 
 // knownStatuses are the statuses a handler may answer with.
