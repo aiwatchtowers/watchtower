@@ -123,6 +123,7 @@ struct WorkchatRunningAgentsPicker: View {
                 .frame(height: min(CGFloat(rows.count), 3) * ListLayout.rowMinHeight * 2)
             }
         }
+        .padding(Spacing.large)
         .frame(width: PaneWidth.sideListMax)
         .popoverSurface()
     }
