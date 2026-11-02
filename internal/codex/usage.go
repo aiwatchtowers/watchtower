@@ -68,8 +68,8 @@ type usageWindow struct {
 // bin must be the resolved CLI path; env is its complete environment. codexHome
 // identifies the config namespace (normally OwnerHome()). No auth files are read.
 // A parse failure can return verified identity metadata alongside the safe error.
-func ReadUsage(ctx context.Context, bin string, env []string, codexHome string) (UsageSnapshot, error) {
-	out := UsageSnapshot{Quotas: []UsageQuota{}}
+func ReadUsage(ctx context.Context, bin string, env []string, codexHome string) (out UsageSnapshot, err error) {
+	out = UsageSnapshot{Quotas: []UsageQuota{}}
 	budget, cancel := context.WithTimeout(ctx, appServerBudget)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -82,7 +82,17 @@ func ReadUsage(ctx context.Context, bin string, env []string, codexHome string) 
 	if err != nil {
 		return out, usageFailure(ctx, budget, err)
 	}
-	defer s.Close()
+	defer func() {
+		closeErr := s.Close()
+		// Close owns the final bounded phase of this fetch. Its cancellation
+		// must not turn a partially completed conversation into a success.
+		if err == nil && (closeErr != nil || ctx.Err() != nil || errors.Is(budget.Err(), context.DeadlineExceeded)) {
+			if closeErr == nil {
+				closeErr = ctx.Err()
+			}
+			err = usageFailure(ctx, budget, closeErr)
+		}
+	}()
 	if err = s.initialize(budget); err != nil {
 		return out, usageFailure(ctx, budget, err)
 	}

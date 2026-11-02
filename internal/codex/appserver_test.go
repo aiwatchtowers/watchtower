@@ -93,7 +93,13 @@ func runFakeAppServer(mode string) int {
 		}
 		// A notification first, as the real server sends them unasked.
 		_ = out.Encode(map[string]any{"method": "remoteControl/status/changed", "params": map[string]any{}})
-		_ = out.Encode(fakeAnswer(strings.TrimSuffix(mode, "-child"), *req.ID, req.Method))
+		_ = out.Encode(fakeAnswer(strings.TrimSuffix(strings.TrimSuffix(mode, "-child"), "-eof-hang"), *req.ID, req.Method))
+	}
+	if mode == "usage-eof-hang" {
+		if path := os.Getenv("WT_USAGE_EOF"); path != "" {
+			_ = os.WriteFile(path, []byte("eof"), 0600)
+		}
+		time.Sleep(30 * time.Second)
 	}
 	return 0
 }

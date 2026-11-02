@@ -166,3 +166,54 @@ func TestReadUsageCancellationReaps(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Complete RPC replies are insufficient: the app-server must also exit within
+// the conversation budget, and caller cancellation during Close must survive.
+func TestReadUsageCloseFailure(t *testing.T) {
+	for _, cancelDuringClose := range []bool{false, true} {
+		name := "timeout"
+		if cancelDuringClose {
+			name = "cancelled"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFakeServer(t, "usage-eof-hang", nil)
+			eofPath := t.TempDir() + "/eof"
+			f.env = append(f.env, `WT_USAGE_ACCOUNT={"account":{"type":"chatgpt"}}`, "WT_USAGE_LIMITS="+usageFixture, "WT_USAGE_EOF="+eofPath)
+			bin, _ := os.Executable()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			watcherDone := make(chan struct{})
+			if cancelDuringClose {
+				go func() {
+					defer close(watcherDone)
+					tick := time.NewTicker(time.Millisecond)
+					defer tick.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-tick.C:
+							if _, err := os.Stat(eofPath); err == nil {
+								cancel()
+								return
+							}
+						}
+					}
+				}()
+			} else {
+				close(watcherDone)
+			}
+			got, err := ReadUsage(ctx, bin, f.env, "home")
+			<-watcherDone
+			if usageCode(err) != name {
+				t.Fatalf("Close returned success/wrong error: %+v %v", got, err)
+			}
+			if _, err := os.Stat(eofPath); err != nil {
+				t.Fatal("did not reach Close after successful RPCs", err)
+			}
+			if !got.IdentityKnown || len(got.Quotas) != 3 {
+				t.Fatal("RPC replies did not complete", got)
+			}
+		})
+	}
+}
