@@ -149,8 +149,9 @@ func (c *canary) saveHubRecords() {
 	items = append(items, transport.SaveItem{Record: alert}, transport.SaveItem{Record: sig}, transport.SaveItem{Record: kb}, transcript)
 
 	c.mControl, c.cID = c.mark("control.reason"), "0F0E0D0C-0000-4000-8000-000000000001"
-	cPayload, err := wire.Marshal(wire.Control{ID: c.cID, Kind: wire.ControlSwitched, Reason: &c.mControl,
-		Keybox: &wire.Keybox{Grant: wire.DeviceGrant{DeviceID: c.phone.ID().String(), Name: c.mControl}, Keys: &c.keys}})
+	// transport_switched carries the sealed keybox envelope (phone contract point 3).
+	sealedKeybox := base64.RawURLEncoding.EncodeToString(kb.Envelope())
+	cPayload, err := wire.Marshal(wire.Control{ID: c.cID, Kind: wire.ControlSwitched, Reason: &c.mControl, Keybox: &sealedKeybox})
 	if err != nil {
 		t.Fatal(err)
 	}

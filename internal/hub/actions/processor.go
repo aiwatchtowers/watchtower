@@ -35,6 +35,9 @@ type Config struct {
 	// Links applies the phones' device records (device_record.go); nil
 	// leaves them alone.
 	Links Links
+	// Switch is the hub's transport switcher (control.go); nil on a hub
+	// with one transport, which rejects every transport_switch.
+	Switch Switch
 	// Hello takes the hellos of CloudKit's shared RelayZone (the link
 	// lane's, link.Center.HandleCloudKitHello). An error leaves the page
 	// to be read again next pass (a hello re-read decides nothing new).
@@ -62,11 +65,17 @@ type Processor struct {
 	held map[string]*heldUpload
 	// batch, when set (tests), replaces BatchLimit as a pass's budget.
 	batch int
-	// paused (SetPaused) is read under mu by every transport-facing entry.
+	// paused (any PauseFor reason held) is read under mu by every
+	// transport-facing entry; holds is the reasons held (holdMu).
 	paused atomic.Bool
+	holdMu sync.Mutex
+	holds  map[string]bool
 	// strikes holds, per record version of a shared zone, the failures of
 	// its content (shared.go); guarded by mu.
 	strikes map[string]*strikeEntry
+	// staleSeen is the record versions answered on standby (standby.go):
+	// zone and wire name → RecordSeq; guarded by mu.
+	staleSeen map[string]uint64
 }
 
 // SetPaused pauses the processor (spec §7.3, a headless hub with no paying
@@ -74,13 +83,39 @@ type Processor struct {
 // and write nothing and return at once; a LateEcho records its outcome and
 // queues the echo, which the first pass after the pause writes. The ledger,
 // the held actions and the control queue stay as they are. SetPaused(true)
-// returns once a pass already running has ended.
+// returns once a pass already running has ended. SetPaused holds and
+// releases the admission gate's own reason ("") of PauseFor/ResumeFor.
 func (p *Processor) SetPaused(on bool) {
-	p.paused.Store(on)
 	if on {
-		p.mu.Lock()
-		p.mu.Unlock() //nolint:staticcheck // SA2001: only waits for the running pass
+		p.PauseFor("")
+	} else {
+		p.ResumeFor("")
 	}
+}
+
+// PauseFor holds the processor for reason. Holds are a set: it runs again
+// only once every reason was released, so one pauser (the transport switch)
+// never lifts another's (the admission gate). It returns once a pass already
+// running has ended.
+func (p *Processor) PauseFor(reason string) {
+	p.holdMu.Lock()
+	if p.holds == nil {
+		p.holds = map[string]bool{}
+	}
+	p.holds[reason] = true
+	p.paused.Store(true)
+	p.holdMu.Unlock()
+	p.mu.Lock()
+	p.mu.Unlock() //nolint:staticcheck // SA2001: only waits for the running pass
+}
+
+// ResumeFor releases reason's hold; the processor runs again once no
+// reason holds it. Releasing a reason that holds nothing does nothing.
+func (p *Processor) ResumeFor(reason string) {
+	p.holdMu.Lock()
+	defer p.holdMu.Unlock()
+	delete(p.holds, reason)
+	p.paused.Store(len(p.holds) > 0)
 }
 
 // PassReport counts one pass: phone records read (opened), actions applied
@@ -160,7 +195,9 @@ func (p *Processor) mailboxes() ([]mailbox, error) {
 		b := mailbox{id: id, zone: zone, queue: zone, link: d.LinkNonce, linkedAt: d.LinkedAt}
 		if zone == shared {
 			b.queue, b.shared = shared+"@"+id.String(), true
-			if d.RelayDeviceID != "" {
+			// With a switcher the relay mailbox's queue is the relay
+			// processor's own, never moved here.
+			if d.RelayDeviceID != "" && p.cfg.Switch == nil {
 				b.oldQueues = []string{transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID)}
 			}
 		}
@@ -255,10 +292,7 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 		for _, b := range g.boxes {
 			// Held actions that are next in line first: a drain an earlier
 			// pass left at the batch limit (or a crash) resumes here.
-			err := p.drainHeld(ctx, b, ps)
-			if err == nil {
-				err = p.retryUploads(ctx, b, ps)
-			}
+			err := p.drainHeldActive(ctx, b, ps)
 			if err == nil {
 				err = p.readMailbox(ctx, b, ps)
 			}
@@ -416,6 +450,11 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		}
 		if err := p.fault("opened " + b.id.String() + " " + rec.Name); err != nil {
 			return err
+		}
+	}
+	if p.standby() {
+		if p.onStandby(ctx, b, rec, opened) {
+			return nil
 		}
 	}
 	switch opened.Frame.Kind {

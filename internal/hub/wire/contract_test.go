@@ -31,8 +31,10 @@ type fixture struct {
 		RelayCoder  string          `json:"relay_coder"`
 		LinkEncoder string          `json:"link_encoder"`
 	} `json:"encoding"`
-	Heartbeat  []contractCase `json:"heartbeat"`
-	UploadEcho []contractCase `json:"upload_echo"`
+	Heartbeat         []contractCase `json:"heartbeat"`
+	UploadEcho        []contractCase `json:"upload_echo"`
+	TransportSwitched []contractCase `json:"transport_switched"`
+	SwitchRejected    []contractCase `json:"transport_switch_rejected"`
 }
 
 // contractCase is a {name, json, expect, kit} case: json decoded and
@@ -224,6 +226,81 @@ func TestParseLinkURL_Refusals(t *testing.T) {
 	require.ErrorIs(t, err, wire.ErrBadHubKey)
 	_, err = wire.ParseLinkURL(linkURL(t, `{"v":4,"hub_sig":"`+one+`","hub_kx":"`+one+`"}`))
 	require.ErrorContains(t, err, "hub_id")
+}
+
+// TestHubContractFixture_TransportSwitched pins transport_switched (phone
+// contract point 3): keybox is a base64url string of the sealed keybox
+// envelope (a phone reads any other value as no keybox; the hub never writes
+// one and refuses to read one), and the transport marker (point 4) is the
+// control without keybox and device_id.
+func TestHubContractFixture_TransportSwitched(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	byName := map[string]contractCase{}
+	for _, c := range f.TransportSwitched {
+		byName[c.Name] = c
+	}
+	require.Len(t, byName, 4)
+	for _, c := range f.TransportSwitched {
+		t.Run(c.Name, func(t *testing.T) {
+			var ctl wire.Control
+			err := json.Unmarshal(c.JSON, &ctl)
+			if string(c.Expect) == "null" {
+				require.Error(t, err, "Go never reads a keybox that is not a string")
+				require.Nil(t, c.Kit["keybox"], "the phone reads it as no keybox")
+				return
+			}
+			require.NoError(t, err)
+			out, err := wire.Marshal(ctl)
+			require.NoError(t, err)
+			require.Equal(t, compact(t, c.Expect), string(out), "Go writes the fixture's bytes")
+			require.Equal(t, wire.ControlSwitched, ctl.Kind)
+			require.Equal(t, c.Kit["target"], *ctl.Target)
+			require.InDelta(t, c.Kit["epoch"], float64(*ctl.Epoch), 0)
+			if c.Kit["keybox"] == nil {
+				require.Nil(t, ctl.Keybox)
+			} else {
+				require.Equal(t, c.Kit["keybox"], *ctl.Keybox)
+				_, err := base64.RawURLEncoding.DecodeString(*ctl.Keybox)
+				require.NoError(t, err, "unpadded base64url")
+			}
+		})
+	}
+	var switched wire.Control
+	require.NoError(t, json.Unmarshal(byName["switched_with_keybox"].JSON, &switched))
+	out, err := wire.Marshal(switched.Marker())
+	require.NoError(t, err)
+	require.Equal(t, compact(t, byName["transport_marker"].Expect), string(out), "the marker is the control minus keybox and device_id")
+}
+
+// TestHubContractFixture_SwitchRejected pins every
+// transport_switch_rejected reason the hub writes and its retry_after_s.
+func TestHubContractFixture_SwitchRejected(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	var reasons []string
+	for _, c := range f.SwitchRejected {
+		t.Run(c.Name, func(t *testing.T) {
+			var ctl wire.Control
+			require.NoError(t, json.Unmarshal(c.JSON, &ctl))
+			out, err := wire.Marshal(ctl)
+			require.NoError(t, err)
+			require.Equal(t, compact(t, c.Expect), string(out))
+			require.Equal(t, wire.ControlSwitchRejected, ctl.Kind)
+			require.Equal(t, c.Kit["reason"], *ctl.Reason)
+			if c.Kit["retry_after_s"] == nil {
+				require.Nil(t, ctl.RetryAfterS)
+			} else {
+				require.InDelta(t, c.Kit["retry_after_s"], float64(*ctl.RetryAfterS), 0)
+			}
+		})
+		reasons = append(reasons, c.Kit["reason"].(string))
+	}
+	require.ElementsMatch(t, []string{wire.SwitchTooSoon, wire.SwitchNotPaying, wire.SwitchUnavailable, wire.SwitchNotSupported}, reasons)
 }
 
 func linkURL(t *testing.T, js string) string {

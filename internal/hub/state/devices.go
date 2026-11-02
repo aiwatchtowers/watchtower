@@ -196,3 +196,13 @@ func LinkNonceTx(tx *sql.Tx, id string) (nonce string, ok bool, err error) {
 	}
 	return n.String, true, nil
 }
+
+// CloudKitLinks counts the phones linked over CloudKit: they carry the
+// iCloud user that created their hello; a relay link carries none.
+func (s *Store) CloudKitLinks() (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM devices WHERE user_record_name <> ''`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting CloudKit links: %w", err)
+	}
+	return n, nil
+}

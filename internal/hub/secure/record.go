@@ -124,14 +124,16 @@ func canonicalID(raw string) string {
 // dataKinds is SliceKind without device_grant (Keybox) and ask_alert (Alert);
 // relayKinds is SecureTransport.relayKinds. A new Kit kind is added here in the
 // same change. "control" is the RC control record (`c-<uuid>`: resend_from,
-// skip_to and the switch controls, wire.Control in the payload).
+// skip_to and the switch controls, wire.Control in the payload). "transport"
+// is the switcher's transport marker (transport-marker, phone contract
+// point 4), not a slice: a Kit that predates it stores it unindexed.
 var (
 	dataKinds = []string{
 		"briefing", "inbox_item", "target", "track", "digest", "digest_topic", "calendar_event", "person_card",
 		"situation", "meeting_transcript", "day_plan", "day_plan_item", "feature_state", "stream_digest",
 		"slack_account", "google_account", "jira_account", heartbeatName, "recording_job", "workbench",
 		"workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
-		"session_timeline", "permission_request", "session_chat",
+		"session_timeline", "permission_request", "session_chat", "transport",
 	}
 	relayKinds = []string{"action", "recording_upload", "device", "control"}
 )
@@ -144,6 +146,47 @@ func NewSealer(k KeySource) *Sealer { return &Sealer{k: k} }
 
 // WireName maps a plain record name to its wire name in z.
 func (s *Sealer) WireName(z Zone, plain string) (string, error) { return wireName(s.k, z, plain) }
+
+// InEpoch is a Sealer that seals in epoch instead of the current one: the
+// transport switch's notice into the transport it leaves, which the phones
+// there open with the keys they hold (phone contract point 6a). epoch must
+// not be newer than the current one; a relay record needs an epoch the
+// phone's keys are still accepted in (AcceptsRelayEpoch), a data record an
+// epoch the keyring holds. Everything else is the Sealer's.
+func (s *Sealer) InEpoch(epoch uint32) *Sealer {
+	return &Sealer{k: pinnedEpoch{KeySource: s.k, epoch: epoch}}
+}
+
+// pinnedEpoch is a KeySource whose current epoch is a given older one.
+type pinnedEpoch struct {
+	KeySource
+	epoch uint32
+}
+
+// ErrEpochNotCurrent refuses a pinned epoch newer than the current one.
+var ErrEpochNotCurrent = errors.New("secure: the pinned epoch is newer than the current one")
+
+func (p pinnedEpoch) CurrentEpoch() (uint32, error) {
+	current, err := p.KeySource.CurrentEpoch()
+	if err != nil {
+		return 0, err
+	}
+	if p.epoch > current {
+		return 0, ErrEpochNotCurrent
+	}
+	return p.epoch, nil
+}
+
+func (p pinnedEpoch) RelayKey(dir Direction, device ID, epoch uint32) ([]byte, error) {
+	ok, err := p.KeySource.AcceptsRelayEpoch(epoch, device)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrEpochNotAccepted
+	}
+	return p.KeySource.RelayKey(dir, device, epoch)
+}
 
 // Data seals a DataZone slice record (class data, signed by hub_sig): frame
 // kind = the plain name before its first '-', frame id = the plain name. A
