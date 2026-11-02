@@ -52,6 +52,10 @@ func TestMain(m *testing.M) {
 }
 
 func runFakeAppServer(mode string) int {
+	if path := os.Getenv("WT_USAGE_CWD"); path != "" {
+		cwd, _ := os.Getwd()
+		_ = os.WriteFile(path, []byte(cwd), 0600)
+	}
 	// Before anything is spawned, so the test's cleanup always knows the group.
 	if err := os.WriteFile(os.Getenv(fakePGIDEnv), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		return 2
@@ -96,6 +100,12 @@ func runFakeAppServer(mode string) int {
 
 func fakeAnswer(mode string, id int, method string) map[string]any {
 	switch {
+	case method == "account/read" && mode == "usage-error":
+		return map[string]any{"id": id, "error": map[string]any{"code": 401, "message": "SECRET_ACCOUNT SECRET_EMAIL SECRET_TOKEN"}}
+	case method == "account/read" && mode == "usage":
+		return map[string]any{"id": id, "result": json.RawMessage(os.Getenv("WT_USAGE_ACCOUNT"))}
+	case method == "account/rateLimits/read" && mode == "usage":
+		return map[string]any{"id": id, "result": json.RawMessage(os.Getenv("WT_USAGE_LIMITS"))}
 	case method == "initialize":
 		return map[string]any{"id": id, "result": map[string]any{"userAgent": "fake/0"}}
 	case method == "hooks/list" && mode == "ok":
