@@ -162,12 +162,28 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
                 }
                 // The hub sidecar's own handle; its own test pins the rest.
                 if name.hasPrefix("HubSyncState"), Self.isSidecarWrite(String(line[range])) { continue }
+                // The CloudKit bridge's own ledger (see
+                // testTheBridgeTagMapIsItsOwnFile): a separate process
+                // writing a private file nothing else opens.
+                if name == "BridgeTagMap.swift", String(line[range]).hasPrefix("try queue.") { continue }
                 XCTFail("\(name):\(index + 1) writes the database synchronously; await the writer instead")
             }
         }
         XCTAssertGreaterThan(scanned, 500, "the scan found too few files: wrong path?")
         XCTAssertEqual(exempted, Set(Self.offMainWrites.keys).union(Self.otherExemptWrites.keys),
                        "each exemption names exactly one line that is still there; drop one whose write moved")
+    }
+
+    /// The CloudKit bridge (`WatchtowerCloudBridge.app`, its own process)
+    /// keeps tag and cursor numbers in `<hub dir>/cloudkit/bridge.db`, a
+    /// private DatabaseQueue only the bridge opens — no daemon, hook, CLI or
+    /// Desktop handle can hold its write lock, so the busy wait #590 is about
+    /// cannot happen there. Only that receiver in that file is exempt.
+    func testTheBridgeTagMapIsItsOwnFile() throws {
+        let file = Self.sources.appendingPathComponent("CloudBridgeCore/BridgeTagMap.swift")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(text.contains("queue = try DatabaseQueue(path: path)"), "the bridge ledger is its own DatabaseQueue")
+        XCTAssertFalse(text.contains("DatabasePool"), "the bridge ledger never opens the workspace database")
     }
 
     /// A hub ledger write through the sidecar: its `queue`, or a nested
