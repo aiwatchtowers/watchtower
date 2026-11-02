@@ -8,6 +8,21 @@ import XCTest
 /// select — and anchor a comment to — text in doc B the owner never chose.
 @MainActor
 final class DocumentTextViewTests: XCTestCase {
+    func testDocumentLinkClickIsConsumedAndPassedToTheHost() throws {
+        let url = try XCTUnwrap(URL(string: "file:///work/demo/shot.png"))
+        var opened: [URL] = []
+        let view = DocumentTextView(text: NSAttributedString(string: "mockup"), contentID: "ask/1",
+                                    selection: .constant(.init(location: 0, length: 0)),
+                                    onOpenLink: { opened.append($0) }, onClick: { _ in })
+        let coordinator = view.makeCoordinator()
+        XCTAssertTrue(coordinator.textView(NSTextView(), clickedOnLink: url, at: 0))
+        XCTAssertEqual(opened, [url])
+        coordinator.parent.onOpenLink = nil
+        XCTAssertTrue(coordinator.textView(NSTextView(), clickedOnLink: url, at: 0),
+                      "without a host, AppKit must still never open a file URL")
+        XCTAssertEqual(opened, [url])
+    }
+
     func testCarriedOnlyForTheSameContentAndInBounds() {
         let sel = NSRange(location: 3, length: 4)
         XCTAssertEqual(DocumentSelectionCarry.carried(sel, sameContent: true, newLength: 20), sel)

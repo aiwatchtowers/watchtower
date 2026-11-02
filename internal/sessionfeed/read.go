@@ -2,9 +2,12 @@ package sessionfeed
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
@@ -76,6 +79,16 @@ func AskLookupFor(d *db.DB, workbenchID int64) AskLookup {
 // speed.
 func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, error) {
 	for _, c := range convs {
+		if c.Codex {
+			res, path, err := findCodexSubagent(c, toolUseID, 0)
+			if err != nil {
+				return nil, "", err
+			}
+			if res != nil {
+				return res, path, nil
+			}
+			continue
+		}
 		feed, err := Build([]Conversation{c}, nil, nil)
 		if err != nil {
 			return nil, "", err
@@ -120,3 +133,65 @@ func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth in
 	}
 	return nil, "", nil
 }
+
+func findCodexSubagent(c Conversation, selector string, depth int) (*Result, string, error) {
+	if depth >= maxSubagentDepth || !strings.HasPrefix(selector, "codex:") {
+		return nil, "", nil
+	}
+	live, err := LiveOf(c, false, time.Now())
+	if err != nil {
+		return nil, "", err
+	}
+	// A broken sibling is irrelevant to a direct selection. Resolve all
+	// direct matches before descending into unrelated child branches.
+	for _, a := range live.Agents {
+		if a.Ref.ToolUseID != selector {
+			continue
+		}
+		path, ok := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		if !ok {
+			return nil, "", &selectedCodexSubagentError{fmt.Errorf("subagent transcript unavailable")}
+		}
+		child := Conversation{Path: path, AgentSessionID: a.Ref.AgentID, Codex: true}
+		nested, err := LiveOf(child, false, time.Now())
+		if err != nil {
+			return nil, "", &selectedCodexSubagentError{err}
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, "", &selectedCodexSubagentError{err}
+		}
+		defer f.Close()
+		res, err := ParseCodex(f, 0, child.AgentSessionID)
+		if err != nil {
+			return nil, "", &selectedCodexSubagentError{err}
+		}
+		for _, n := range nested.Agents {
+			ref := n.Ref
+			res.Entries = append(res.Entries, Entry{ID: ref.ToolUseID, Kind: KindSubagent, Subagent: &ref, At: n.StartedAt, Conversation: child.AgentSessionID})
+		}
+		return res, path, nil
+	}
+	for _, a := range live.Agents {
+		path, ok := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		if !ok {
+			continue
+		}
+		child := Conversation{Path: path, AgentSessionID: a.Ref.AgentID, Codex: true}
+		res, path, err := findCodexSubagent(child, selector, depth+1)
+		if res != nil {
+			return res, path, err
+		}
+		var selected *selectedCodexSubagentError
+		if errors.As(err, &selected) {
+			return nil, "", err
+		}
+		// Only this unrelated branch failed. A direct selected target's
+		// error is returned by its direct pass rather than poisoning siblings.
+	}
+	return nil, "", nil
+}
+
+// This error belongs to the requested target, rather than an unrelated
+// branch encountered while looking for it.
+type selectedCodexSubagentError struct{ error }

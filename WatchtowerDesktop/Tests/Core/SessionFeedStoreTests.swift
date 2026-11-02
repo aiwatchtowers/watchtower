@@ -393,4 +393,47 @@ final class SessionFeedStoreTests: XCTestCase {
             return Data("{}".utf8)
         }
     }
+    func testLiveEnvelopeFailureKeepsSnapshotButNeverMasqueradesAsFresh() async {
+        let live = #"{"observed_at":"2026-11-02T12:00:00Z","turn_active":true,"#
+            + #""current":{"id":"t","tool":"Read","summary":"a.swift"},"agents":[],"agents_state":"known"}"#
+        let runner = FakeRunner([
+            .success("{\"live_ok\":true,\"live\":\(live),\"entries\":[],\"cursor\":\"c1\"}"),
+            .success(#"{"live_ok":false,"live_error":"Activity unavailable","entries":[],"cursor":"c2"}"#),
+            .failure(NSError(domain: "test", code: 1)),
+            .success(#"{"entries":[],"cursor":"c3"}"#)
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        XCTAssertEqual(store.live?.current?.summary, "a.swift")
+        XCTAssertNil(store.liveError)
+        await store.refresh()
+        XCTAssertEqual(store.live?.current?.summary, "a.swift")
+        XCTAssertEqual(store.liveError, "Activity unavailable")
+        await store.refresh()
+        XCTAssertNotNil(store.error)
+        XCTAssertEqual(store.liveError, "Activity unavailable")
+        store.clearActivity()
+        XCTAssertNil(store.live); XCTAssertFalse(store.liveLoaded)
+        await store.refresh()
+        XCTAssertEqual(store.liveError, "Activity unavailable", "older CLI is an explicit unavailable state")
+    }
+
+    func testLegacyFollowWithoutParentObservationStopsOnOwnCompletion() async {
+        let stamp = "2026-11-02T12:00:00Z"
+        let now = SessionFeedEntry.parseDate(stamp) ?? .distantPast
+        let completed = #"{"live_ok":true,"live":{"observed_at":"2026-11-02T12:00:00Z","turn_active":false,"#
+            + #""agents":[],"agents_state":"known"},"entries":[],"cursor":""}"#
+        let runner = FakeRunner([.success(completed), .success(payload())])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        var selectedStatus = "running" // B was opened from A, absent in the root markers.
+        await store.followSubagent("nested-b", interval: .milliseconds(1), readsMainFeed: true,
+                                   isRunning: { selectedStatus == "running" }, isOnScreen: { true },
+                                   onEntries: { _ in }, onLive: { snapshot, error in
+            selectedStatus = SessionSubagentLifecycle.status(parentStatus: "running", snapshot: snapshot, error: error, now: now)
+        })
+        XCTAssertEqual(selectedStatus, "finished")
+        XCTAssertEqual(runner.calls.filter { $0.contains("--subagent") }.count, 1)
+        XCTAssertEqual(runner.calls.count, 2, "one final main-feed refresh; no repeated child polls")
+    }
+
 }

@@ -5,6 +5,18 @@ import WatchtowerCore
 
 @MainActor
 final class DocumentAttributedStringTests: XCTestCase {
+    func testReviewLinksAreClickableWithoutChangingCommentOffsets() throws {
+        let doc = DocumentRendering.render("See [mockup](file:///work/demo/shot.png) and [web](https://example.com).")
+        let plain = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil)
+        let clickable = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil, clickableLinks: true)
+        let range = (doc.text as NSString).range(of: "mockup")
+        XCTAssertNil(plain.attribute(.link, at: range.location, effectiveRange: nil))
+        XCTAssertEqual(clickable.attribute(.link, at: range.location, effectiveRange: nil) as? URL,
+                       URL(string: "file:///work/demo/shot.png"))
+        XCTAssertEqual(clickable.string, plain.string, "comment offsets remain anchored on the same text")
+        XCTAssertFalse(clickable === plain, "link policy is part of the render cache key")
+    }
+
     func testHighlightsMarkAnchoredRangesAndTheActiveOneIsStronger() {
         let doc = DocumentRendering.render("# Plan\n\nKeep the retry budget small.")
         let range = (doc.text as NSString).range(of: "retry budget")

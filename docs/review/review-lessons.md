@@ -2530,3 +2530,38 @@ Entry format:
 - weak-dimension: 7. The pure table test fails on revert, but the VM-level guards (`testBoardOnlyPageUsesTheMainFolder`, the PROJ-10 branch test) stay green only because their fixtures have no live session; their names now overstate what they pin.
 - rule-gap (candidate, dim 8): *a change to a pure policy with more than one consumer names every consumer in the PR description and either covers or excludes each; a guard test whose fixture cannot reach the new branch is extended with that fixture.*
 - outcome: TBD
+
+## 2026-11-01 — fix/codex-no-daemon (PR #573: drop `--no-daemon` from the codex launch args — codex-cli 0.145 removed the flag and refuses to start; `devpack.CodexLaunchArgs`, golden, `launch_cases.json`, Swift fixtures, help text, spec §15 note; panel: prosecutor (2) + codex (0), 3 specialists DOWN (not installed); judge verified against 9a7d0e281 by reading the diff and grep, no runs) — verdict: approve
+
+- contested (F1, held minor): the prosecutor said the new §15 note does not explain why dropping the flag is safe for line 293. It does ("the TUI never started a shared daemon (C11) … a daemon starts only through `codex remote-control start`"), so that half was dismissed. The other half holds: §15's preamble promises "inline text is updated where plainly wrong", and lines 119/127 (§4.2 args shape) now are. [5]
+- false-positive: none dismissed outright; F1's "note lacks rationale" half did not survive a read of the note.
+- miss: none; the fix's Go assertions (`Args[:2]`, golden) and the trust-hash golden loop index (`i := 1`) both fail on the pre-fix code, so §6's regression-test rule is met without a new test.
+- weak-dimension: none on a 20-file mechanical flag removal.
+- rule-gap (candidate, dim 5): *a spec whose amendments section promises inline fixes gets its inline text fixed (or struck through with a pointer) in the same PR that adds the amendment.*
+- outcome: TBD
+
+## 2026-11-02 — wt/session-19 — verdict: changes-needed
+
+- contested: child transcript hints need the latest parent status timestamp as their comparison point; an interval start is a timer anchor, not a status watermark. Otherwise an older running hint revives a closed agent. [6]
+- false-positive: none among the seven deduplicated findings; nested Claude polling has an older similar limitation, but adding the Codex nested route exposes the same stale fallback in newly supported behavior. [8]
+- miss: lifecycle-plus-limit composition was caught only by the test-analysis lane: reconciling child completion after truncation can retain finished rows and exclude the only running agent. [6/7]
+- weak-dimension: 7. Single-agent and text-turn cases passed, but attachment-only turns, sibling failure isolation, nested completion and more-than-cap lifecycle cases were absent.
+- rule-gap: no new binding rule needed; existing absent-versus-error, temporal ordering and behavioral regression-test rules apply. The external Codex lane was unavailable after automatic approval review rejected diff transmission; the four remaining lanes were independently judged.
+- outcome: TBD
+
+## 2026-11-02 — fix/owner-confirm-broken-pipe (board #913: owner-confirm request line 64 KB → 8 MiB on both sides, Go pre-dial size check + unescaped HTML + reply read after a broken write, Swift one-pass `readLine` → `LineRead`, oversized → denied with a reason; 6 files +202/−22; panel: prosecutor (7) + codex (0) + all three pr-review-toolkit specialists; judge verified against bf1bf8f49 by reading, no runs) — verdict: changes-needed
+
+- contested (broken-write fallback, held major, 3 lanes): after `conn.Write` fails, `Ask` resets the read deadline to now+1 s and accepts any reply. When the write failed because ctx ended (`AfterFunc` set the deadline), this overruns the wait, labels a timeout as "Desktop closed the connection", and would accept even `confirmed` for a request the Desktop never read whole. The fallback exists only to pick up a refusal's reason. **On a confirmation gate, a reply read after a failed send is accepted only when it refuses; a ctx/deadline failure skips the read.** [9]
+- contested (window render, held major, 2 lanes): raising a size limit 128× also raises what the consumer renders. The window draws the detail as one SwiftUI `Text` in a non-lazy ScrollView and recomputes `displayDetail` on every body run on the main actor. Capping the shown text would break AGENT-07's "whole detail, no clipping", so the fix has to keep the whole text (computed once, NSTextView-backed if it stalls). Changing the contract is a question for the owner. [4]
+- false-positive (dismissed): the Go large-detail test "doesn't reproduce": the regression is pinned by the early-close and pre-dial tests, and a revert of either side's limit fails a test. Desktop not logging `.tooLong`: the reason goes back to the CLI. The constants pinned to a hard-coded number on each side is house practice.
+- miss: codex reported none. The deadline/Confirmed fallback was found by the prosecutor, the silent-failure-hunter and pr-test-analyzer.
+- weak-dimension: 7. The new hand-written line reader has no boundary test (limit−1, limit, a newline in a later chunk, EOF); I checked the off-by-one only by reading.
+- rule-gap (candidate, dim 8): *a PR that raises a size or count limit names every consumer of the bigger input (renderers, buffers, per-connection memory) and says why each one copes.*
+- outcome: TBD
+
+## 2026-11-02 — prep/provider-fallback (#1482, faa546990) — verdict: approve
+
+- contested: presentation-only baseline acceptance is scoped to shared copy, registered scenes, semantic tests and rendered assets; the approved plan schedules full runtime gates at implementation phase boundaries. Mockups do not establish routing behavior. [6/7]
+- weak-dimension: independent review breadth was limited: external Codex was unavailable after sandbox failure and automatic approval rejection of unauthorized diff transmission; all three toolkit specialist APIs were unavailable. Prosecutor and judge found no substantive issue; unavailable lanes are not clean reviews.
+- rule-gap: no new rule; distinguish verification of a proposed presentation contract from verification of the future runtime feature.
+- outcome: TBD

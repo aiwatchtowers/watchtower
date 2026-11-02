@@ -15,8 +15,10 @@ struct TerminalsSection: View {
             ForEach(vm.sessionRows(sessions)) { row in
                 TerminalSessionRow(row: row, actions: actions)
                     .tag(WorkbenchesPanelItem.terminal(row.id))
+                    .sessionRowDrag(session: row.session, listID: nil, displayed: sessions) {
+                        vm.moveSessions(sessions, projectID: nil, from: $0, to: $1)
+                    }
             }
-            .onMove { vm.moveSessions(sessions, projectID: nil, from: $0, to: $1) }
             // Shown on the terminal's own page when one is on screen.
             if vm.selectedStandalone == nil, let error = vm.standaloneSessionError {
                 Text(error).font(.caption).foregroundStyle(.red).listRowSeparator(.hidden)

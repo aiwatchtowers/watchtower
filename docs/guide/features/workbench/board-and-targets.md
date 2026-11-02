@@ -130,6 +130,16 @@ action: nav:projects
 Drag a target onto another to nest it, or right-click a card for **Move to** and **Move to Top Level**. A target never goes under itself or its sub-tasks.
 
 **Delete…** in a card's right-click or its panel's **…** menu removes it for good with its comments and images; its sub-tasks move to the top level.
+<!-- learn
+id: board-delete-target
+title: Remove a target from the board
+text: Choose **Delete…** on a target to remove it permanently; its sub-tasks move to the top level.
+area: development
+level: next
+kind: feature
+since: 0.26.4
+action: nav:projects
+-->
 
 To look at one feature alone, click **Open group** in its panel, double-click its Kanban lane header, or right-click it in the list for **Open Group**. A path bar reads **Board › #249 Title › #252 Title**; **Leave group** goes up one level.
 

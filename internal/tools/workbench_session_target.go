@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"watchtower/internal/db"
@@ -59,16 +60,17 @@ func NewSetSessionTarget(sessionEnv func() string) *Tool {
 			if err != nil {
 				return nil, err
 			}
-			if err := d.SetSessionTarget(session, sql.NullInt64{Int64: a.TargetID, Valid: a.TargetID > 0}, leaves); err != nil {
+			if err := d.SetSessionTarget(session, sql.NullInt64{Int64: a.TargetID, Valid: a.TargetID > 0}); err != nil {
 				return nil, err
 			}
-			return map[string]any{"session_id": session, "target_id": a.TargetID, "stamped": stampedCount(a.TargetID, leaves)}, nil
+			return map[string]any{"session_id": session, "target_id": a.TargetID, "stamped": len(leaves)}, nil
 		},
 	}
 }
 
 // planSessionTarget resolves the calling session and validates the target
-// without writing; it returns the session id and the leaves to stamp.
+// without writing; it returns the session id and the leaves of the target's
+// subtree (the leaves the binding stamp takes; none when clearing).
 func planSessionTarget(ctx context.Context, d *db.DB, b Binding, a setSessionTargetArgs, sessionEnv func() string) (int64, []int64, error) {
 	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
@@ -136,35 +138,26 @@ func boardLeaves(n db.BoardNode, out []int64) []int64 {
 	return out
 }
 
-// stampedCount is the number of targets SetSessionTarget stamps: the target
-// itself plus its leaves (one when the target is its own leaf).
-func stampedCount(targetID int64, leaves []int64) int {
-	if targetID == 0 {
-		return 0
-	}
-	n := 1
-	for _, l := range leaves {
-		if l != targetID {
-			n++
-		}
-	}
-	return n
-}
-
 // BindSessionTarget is the CLI's twin of set_session_target: it binds session
 // sessionID of workbench workbenchID to targetID (0 clears) under the same
-// checks and returns how many targets were stamped.
+// checks and returns "stamped": the number of leaves in the bound target's
+// subtree (the target itself when it is a leaf; 0 when clearing). The
+// binding stamp on the session takes those leaves; no row is written per
+// leaf.
 func BindSessionTarget(d *db.DB, workbenchID, sessionID, targetID int64) (int, error) {
 	s, err := d.GetTerminalSession(sessionID)
-	if err != nil {
+	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return 0, &ValidationError{Msg: fmt.Sprintf("session %d is not an agent session of this workbench", sessionID)}
+	}
+	if err != nil {
+		return 0, fmt.Errorf("binding session %d: %w", sessionID, err)
 	}
 	leaves, err := checkSessionTarget(d, workbenchID, s, targetID)
 	if err != nil {
 		return 0, err
 	}
-	if err := d.SetSessionTarget(sessionID, sql.NullInt64{Int64: targetID, Valid: targetID > 0}, leaves); err != nil {
+	if err := d.SetSessionTarget(sessionID, sql.NullInt64{Int64: targetID, Valid: targetID > 0}); err != nil {
 		return 0, err
 	}
-	return stampedCount(targetID, leaves), nil
+	return len(leaves), nil
 }

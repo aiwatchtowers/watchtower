@@ -50,8 +50,8 @@ The report's **progress scope** of session S:
    targets stay in the report's lists (`targets`, timeline) but not in
    `progress`. No ownership exclusion here: a bound group shows the whole
    group's progress, whoever moved its leaves. If the bound target is not on
-   the board (archived, or deleted — the FK is `ON DELETE SET NULL`), S falls
-   back to rule 2.
+   the board (archived, or deleted — the FK is `ON DELETE SET NULL`) or is
+   `dismissed`, S falls back to rule 2.
 2. **S has no session target**: the scope is today's — linked targets plus the
    subtrees of linked targets that have children — **minus every leaf owned
    by another session**.
@@ -59,14 +59,20 @@ The report's **progress scope** of session S:
 **Ownership** is decided for **leaves only** (progress counts leaves). The
 owner of a leaf is the session with the latest
 *status stamp* for it among all agent sessions of the workbench. A session's
-status stamp for a target is:
+status stamp for a leaf is the later of:
 
 - `status_at` on its link row, set when that session's write **changed the
   leaf's status** (an `update_target` with a new `status`, or a `column` move
-  that changes the status), **created** it (`create_targets`), or **bound the
-  session to a target whose subtree holds it** (`set_session_target`, see
-  below);
-- a link row with `status_at` NULL (a comment or ask only) gives no ownership.
+  that changes the status) or **created** it (`create_targets`); a link row
+  with `status_at` NULL (a comment or ask only) gives no ownership;
+- its **binding stamp**, when the leaf is under the session's bound target and
+  that target takes effect (on the board, not archived, not dismissed):
+  `COALESCE(terminal_sessions.target_bound_at, created_at)`. A re-binding
+  (`set_session_target` or the CLI) sets `target_bound_at`; a target set at
+  launch counts as a binding at `created_at` (ask #880). The stamp lives on
+  the session, not in link rows: other readers (phone timeline, session
+  cleanup, review context, escalation) treat a link row as "this session
+  touched it", so a binding writes no row per leaf (final review).
 
 **Old rows.** The migration sets `status_at = last_at` on every existing row
 once. Before this change there is no record of which write was a status
@@ -97,15 +103,16 @@ through the two entry points below; the Desktop never UPDATEs it.
   `finish_session` (`terminalSessionOf`; no session → refused with
   `set_session_target needs a Watchtower terminal session`, before any row or
   audit row). Applied directly and audited like the other workbench writes.
-  When non-zero it links the target and **stamps every leaf of its subtree**
-  for the session (`status_at = now`), so the bound session takes those leaves
-  from other unbound sessions at once (otherwise re-pointing would not move
-  the numbers until the new session changes a status). The `target_id` write
-  and the leaf stamps are **one write transaction** (`BEGIN IMMEDIATE`, no
-  reads of the board inside it beyond the subtree ids, collected first): a
-  failure rolls back both and the tool fails like any write (the registry's
-  `failed` audit row), unlike the best-effort `linkSession` of the other
-  tools. The CLI uses the same db function. Refused with a clear
+  It writes `target_id` and `target_bound_at = now` (NULL when cleared) and,
+  when non-zero, one status-stamped link of the bound target itself — no row
+  per leaf. The binding stamp takes the subtree's leaves from other unbound
+  sessions at once (otherwise re-pointing would not move the numbers until the
+  new session changes a status). These writes are **one write transaction**
+  (`BEGIN IMMEDIATE`, the board read before it): a failure rolls back both and
+  the tool fails like any write (the registry's `failed` audit row), unlike
+  the best-effort `linkSession` of the other tools. The result's `stamped` is
+  the number of leaves under the bound target (0 when cleared); no row is
+  written for them. The CLI uses the same db function. Refused with a clear
   error when the target is not on the board (archived) or is `dismissed`:
   rule 1 would fall straight back to rule 2 and the call would look like a
   no-op. A `done` target may be bound (it shows N/N).
@@ -160,9 +167,24 @@ whether it wrote a status (the plain `status` path and the column path) and
 `Execute` passes that; `create_targets` passes the flag for every created
 target.
 
-`db.SessionTargetOwners(workbenchID) map[targetID]sessionID` computes
-ownership in one query (window over `terminal_session_targets` joined to
-`terminal_sessions` of the workbench and of kinds `claude`/`codex`).
+Migration `00168_session_target_bound_at.sql` adds the binding stamp
+(final review):
+
+```sql
+-- +goose Up
+ALTER TABLE terminal_sessions ADD COLUMN target_bound_at TEXT;
+-- +goose Down
+ALTER TABLE terminal_sessions DROP COLUMN target_bound_at;
+```
+
+`db.SessionLeafOwners(workbenchID)` returns the latest link stamp per target
+(session and `status_at`, window over `terminal_session_targets` joined to the
+workbench's `claude`/`codex` sessions); `db.SessionBindings(workbenchID)`
+returns each such session's bound target and binding stamp. The session report
+folds the binding stamps over the leaves of each effective bound target on the
+board it already loads (`leafOwners`), latest stamp winning, a tie going to the
+higher session id across both sources. `db.SetSessionTarget(session, target)`
+is the one binding write.
 
 ## Report
 
@@ -231,7 +253,7 @@ the checkmark on the current target and "None" when unbound.
 | Work outside a bound target: in the report, not in the number, no marker | owner, ask #846 |
 | Old links: one-time backfill `status_at = last_at` (comments-only old rows may own) | agent |
 | Ownership on leaves only; moving a group takes nothing | agent |
-| Binding stamps the subtree's leaves (re-pointing moves numbers at once) | agent |
+| Binding takes the subtree's leaves (re-pointing moves numbers at once; now through the session's binding stamp) | agent |
 | Binding refused for archived/dismissed targets; `done` allowed | agent |
 | Submenu sketch instead of a DesignShot (native menu) | agent |
 | `create_targets` counts as a status stamp | agent |
@@ -243,6 +265,9 @@ the checkmark on the current target and "None" when unbound.
 | One Go writer (MCP tool + CLI), Desktop through the CLI | agent |
 | Submenu on the row menu, reusing the Move to… outline; no new screen | agent |
 | Ties → higher session id | agent |
+| Binding stamp stored on the session (`target_bound_at`), not link rows; binding links only the bound target | final review |
+| Launch target is a binding at `created_at` | ask #880 |
+| Dismissed bound target → rule 2, no binding stamp | final review |
 | Re-binding also changes the `finish_session` ticket (one field) | owner, ask #850 |
 
 ## Left to the builder

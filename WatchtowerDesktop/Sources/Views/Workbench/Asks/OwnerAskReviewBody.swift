@@ -17,6 +17,7 @@ import WatchtowerCore
 /// comment never re-sets or re-lays out the text; boxes are measured only
 /// on text already laid out (`DocumentTextView.Coordinator.visibleRects`).
 struct OwnerAskReviewBody: View {
+    @Environment(\.openURL) private var openURL
     let asks: OwnerAsksViewModel
     let ask: OwnerAsk
     /// Comments are added and edited only while the ask is open and no
@@ -97,7 +98,7 @@ struct OwnerAskReviewBody: View {
         }
         let focus = ask.payload.focus.compactMap { documents.range(of: $0, askID: askID) }
         let placed = ranges.compactMap(\.self)
-        let text = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil, typography: ReviewTypography.style)
+        let text = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil, typography: ReviewTypography.style, clickableLinks: true)
         return GeometryReader { geo in
             let marginWidth = OwnerAskMarginLayout.width(total: geo.size.width, comments: margin.count)
             let textWidth = geo.size.width - marginWidth
@@ -114,13 +115,15 @@ struct OwnerAskReviewBody: View {
                     trackedRects: $rects,
                     textExtent: $extent,
                     highlightRanges: placed,
-                    onComment: editable ? { body, range in addComment(body, on: range, in: doc) } : nil
-                ) { location in
-                    // A click on a highlight picks its comment.
-                    guard let index = ranges.firstIndex(where: { $0.map { NSLocationInRange(location, $0) } ?? false })
-                    else { return }
-                    activeComment = margin[index].id
-                }
+                    onComment: editable ? { body, range in addComment(body, on: range, in: doc) } : nil,
+                    onOpenLink: { openURL($0) },
+                    onClick: { location in
+                        // A click on a highlight picks its comment.
+                        guard let index = ranges.firstIndex(where: { $0.map { NSLocationInRange(location, $0) } ?? false })
+                        else { return }
+                        activeComment = margin[index].id
+                    }
+                )
                 // Boxes are looked up by the range they were measured for:
                 // a pass before the next report shows nothing, never a
                 // box of another passage.

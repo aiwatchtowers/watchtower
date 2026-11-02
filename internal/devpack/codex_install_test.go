@@ -237,7 +237,7 @@ func TestCodexTrust_HashedStringsAreTheLaunchStrings(t *testing.T) {
 
 	golden := strings.Split(strings.TrimSpace(readTestFile(t, filepath.Join("testdata", "codex_launch_args.golden"))), "\n")
 	var goldenHooks []string
-	for i := 2; i < len(golden); i += 2 {
+	for i := 1; i < len(golden); i += 2 {
 		if golden[i-1] == "-c" && strings.HasPrefix(golden[i], "hooks.") {
 			goldenHooks = append(goldenHooks, golden[i-1], golden[i])
 		}

@@ -92,6 +92,38 @@ final class OwnerConfirmServerTests: XCTestCase {
         XCTAssertEqual(deniedReply?.decision, OwnerConfirmReply.denied)
     }
 
+    /// A Confluence page edit's detail is the whole page: a request far over
+    /// the old 64 KB line is read whole and its window shows it all (the
+    /// 2026-11-02 `broken pipe` on Approve).
+    func testALargeRequestIsReadWhole() async throws {
+        try start()
+        let detail = "Args: " + String(repeating: "<p>страница &amp; текст</p>", count: 40_000)
+        let pending = ask(OwnerConfirmRequest(verb: "approve an action", detail: detail,
+                                              args: ["actions", "approve", "5"]))
+        try await waitForPrompt()
+        XCTAssertEqual(prompts[0].request.detail, detail)
+        prompts[0].answer(true)
+        let reply = await pending.value
+        XCTAssertEqual(reply?.decision, OwnerConfirmReply.confirmed)
+    }
+
+    /// Past the limit the request is refused with a reason the CLI reads,
+    /// never a silent close; no window opens.
+    func testARequestOverTheLimitIsDeniedWithAReason() async throws {
+        try start()
+        let detail = String(repeating: "a", count: OwnerConfirmServer.maxRequestBytes)
+        let reply = await ask(OwnerConfirmRequest(verb: "approve an action", detail: detail,
+                                                  args: ["actions", "approve", "5"])).value
+        XCTAssertEqual(reply?.decision, OwnerConfirmReply.denied)
+        XCTAssertEqual(reply?.reason, OwnerConfirmServer.tooLargeReason)
+        XCTAssertTrue(prompts.isEmpty)
+    }
+
+    /// Dual path: Go `ownerconfirm.MaxRequestBytes` is the same 8 MiB.
+    func testTheRequestLimitMatchesGo() {
+        XCTAssertEqual(OwnerConfirmServer.maxRequestBytes, 8 << 20)
+    }
+
     func testOneWindowAtATime() async throws {
         try start()
         let first = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]))

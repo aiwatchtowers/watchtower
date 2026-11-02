@@ -12,6 +12,15 @@ package final class SessionFeedStore: ObservableObject {
     /// included); the live line shows it, it is never an entry.
     @Published package private(set) var activity: SessionFeedActivity?
 
+    @Published package private(set) var live: SessionFeedLive?
+    @Published package private(set) var liveError: String?
+    @Published package private(set) var liveLoaded = false
+    private var liveGeneration = 0
+    /// Only the selected child: preserve expected resume across Retry or a
+    /// foreground task restart without starting any additional observer.
+    private var subagentObservation: (key: SubagentObservationKey, value: SessionSubagentObservation)?
+    private var subagentObservationGeneration = 0
+
     /// No CLI binary was found: the pane shows the error and never polls.
     package let runnerMissing: Bool
     /// Every read of the pane goes through it, so a read already in flight
@@ -69,55 +78,134 @@ package final class SessionFeedStore: ObservableObject {
     package func refresh() async {
         var args = ["workbench", "session-feed", "--session", String(sessionID), "--json"]
         if !cursor.isEmpty { args += ["--after", cursor] }
+        let generation = liveGeneration
         do {
             let payload = try Self.decode(try await read(args))
             merge(payload.entries)
             merge(payload.subagents)
             cursor = payload.cursor
-            activity = payload.activity
+            if generation == liveGeneration {
+                activity = payload.activity
+                liveLoaded = true
+                if payload.liveOK == true, let snapshot = payload.live {
+                    live = snapshot
+                    liveError = nil
+                } else {
+                    liveError = payload.liveError ?? WorkchatLivePresentation.unavailable
+                }
+            }
             error = nil
         } catch {
             self.error = error.localizedDescription
+            if generation == liveGeneration {
+                liveLoaded = true
+                liveError = WorkchatLivePresentation.unavailable
+            }
         }
     }
 
     /// The session left working: the old step must not flash on the next turn.
-    package func clearActivity() { activity = nil }
+    package func clearActivity() {
+        liveGeneration += 1
+        subagentObservation = nil
+        subagentObservationGeneration += 1
+        activity = nil; live = nil; liveError = nil; liveLoaded = false
+    }
 
-    /// A subagent opened in the pane: one read now, then while `isRunning`
-    /// (its marker says `running`) one more every `interval`. Reads due while
-    /// `isOnScreen` is false are skipped. Each good read hands its entries and
-    /// activity to `onEntries`/`onActivity` and clears the error; a failed one reports it to
-    /// `onError`. With `readsMainFeed` each tick also reads the main feed
-    /// after it (the main poll is stopped while a subagent is open), so the
-    /// markers — and the status `isRunning` reads from them — stay current.
-    /// Returns when finished or cancelled.
+    /// One serial loop for the open pane. While the root stays active,
+    /// completed child history pauses but its immediate parent is observed
+    /// for resume. No per-agent timer or tree walk is started.
     package func followSubagent(
         _ toolUseID: String,
         interval: Duration = .seconds(3),
         readsMainFeed: Bool = false,
+        parentToolUseID: String? = nil,
+        isSessionActive: (() -> Bool)? = nil,
         isRunning: () -> Bool,
         isOnScreen: () -> Bool,
         onEntries: ([SessionFeedEntry]) -> Void,
         onActivity: (SessionFeedActivity?) -> Void = { _ in },
+        onLive: (SessionFeedLive?, String?) -> Void = { _, _ in },
+        onStatus: (String) -> Void = { _ in },
         onError: (String?) -> Void = { _ in }
     ) async {
         guard !runnerMissing else { return }
-        func tick() async {
-            guard isOnScreen() else { return }
-            do {
-                let read = try await subagentFeed(toolUseID)
-                if Task.isCancelled { return }
-                onEntries(read.entries)
-                onActivity(read.activity)
-                onError(nil)
-            } catch {
-                if !Task.isCancelled { onError(error.localizedDescription) }
+        if isSessionActive != nil { subagentObservationGeneration += 1 }
+        let generation = subagentObservationGeneration
+        func isCurrentObservation() -> Bool { isSessionActive == nil || generation == subagentObservationGeneration }
+        let observationKey = SubagentObservationKey(child: toolUseID, parent: parentToolUseID)
+        if isSessionActive != nil, subagentObservation?.key != observationKey {
+            subagentObservation = (observationKey, SessionSubagentObservation())
+        }
+        var observation = isSessionActive != nil ? (subagentObservation?.value ?? SessionSubagentObservation()) : SessionSubagentObservation()
+        func rememberObservation() {
+            if isSessionActive != nil, isCurrentObservation(), subagentObservation?.key == observationKey {
+                subagentObservation = (observationKey, observation)
             }
-            if readsMainFeed, !Task.isCancelled { await poller.refresh() }
+        }
+        func readChild() async {
+            do {
+                let result = try await subagentFeed(toolUseID)
+                guard !Task.isCancelled, isCurrentObservation() else { return }
+                if isSessionActive != nil {
+                    let status = observation.receiveOwn(snapshot: result.live, entries: result.entries,
+                                                        error: result.liveError, now: .now)
+                    rememberObservation()
+                    onStatus(status)
+                    // A fresh read clock does not make the previous run's
+                    // completed transcript an acknowledgement of resume.
+                    if observation.awaitingOwnEvidence, result.liveError == nil { onError(nil); return }
+                }
+                onEntries(result.entries); onActivity(result.activity)
+                onLive(result.live, result.liveError); onError(nil)
+            } catch {
+                guard !Task.isCancelled, isCurrentObservation() else { return }
+                if isSessionActive != nil {
+                    let status = observation.receiveOwn(snapshot: nil, entries: [], error: error.localizedDescription, now: .now)
+                    rememberObservation()
+                    onStatus(status)
+                }
+                onError(error.localizedDescription); onLive(nil, WorkchatLivePresentation.unavailable)
+            }
+        }
+        func readParent() async -> SessionFeedLive? {
+            if isSessionActive != nil, let parentToolUseID {
+                // Only the immediate parent, never a tree-wide fan-out.
+                do {
+                    let result = try await subagentFeed(parentToolUseID)
+                    guard !Task.isCancelled, isCurrentObservation() else { return nil }
+                    onError(result.liveError)
+                    return result.liveError == nil ? result.live : nil
+                } catch {
+                    guard !Task.isCancelled, isCurrentObservation() else { return nil }
+                    onError(error.localizedDescription)
+                }
+            } else if readsMainFeed || isSessionActive != nil {
+                await poller.refresh()
+                return liveError == nil ? live : nil
+            }
+            return nil
+        }
+        var opening = true
+        func tick() async {
+            guard isOnScreen(), !Task.isCancelled, isCurrentObservation() else { return }
+            let readOwn = opening || isSessionActive == nil || observation.shouldReadOwn
+            opening = false
+            if readOwn { await readChild() }
+            guard !Task.isCancelled, isOnScreen(), isCurrentObservation() else { return }
+            if let isSessionActive, !isSessionActive() { return }
+            let parent = await readParent()
+            guard !Task.isCancelled, isOnScreen(), isCurrentObservation() else { return }
+            if let isSessionActive, !isSessionActive() { return }
+            if isSessionActive != nil {
+                let resumed = observation.receiveParent(parent, childID: toolUseID, now: .now)
+                rememberObservation()
+                if let status = observation.parentTransition { onStatus(status) }
+                if resumed { await readChild() }
+            }
         }
         await tick()
-        while isRunning() {
+        while isCurrentObservation() && (isSessionActive?() ?? isRunning()) {
             try? await Task.sleep(for: interval)
             if Task.isCancelled { return }
             await tick()
@@ -126,12 +214,16 @@ package final class SessionFeedStore: ObservableObject {
 
     /// The feed of one subagent run with its own open tool call; not merged
     /// into the main feed.
-    package func subagentFeed(_ toolUseID: String) async throws -> (entries: [SessionFeedEntry], activity: SessionFeedActivity?) {
+    package func subagentFeed(
+        _ toolUseID: String
+    ) async throws -> (entries: [SessionFeedEntry], activity: SessionFeedActivity?, live: SessionFeedLive?, liveError: String?) {
         let data = try await read([
             "workbench", "session-feed", "--session", String(sessionID), "--subagent", toolUseID, "--json"
         ])
         let payload = try Self.decode(data)
-        return (payload.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }, payload.activity)
+        return (payload.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }, payload.activity,
+                payload.liveOK == true ? payload.live : nil,
+                payload.liveOK == true ? nil : (payload.liveError ?? WorkchatLivePresentation.unavailable))
     }
 
     /// Runs one CLI read after the one before it has finished. The read
@@ -169,4 +261,9 @@ package final class SessionFeedStore: ObservableObject {
 /// this is never called.
 private struct UnavailableRunner: CLIRunnerProtocol {
     func run(args: [String]) async throws -> Data { Data() }
+}
+
+private struct SubagentObservationKey: Equatable {
+    let child: String
+    let parent: String?
 }

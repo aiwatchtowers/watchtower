@@ -60,6 +60,7 @@ struct DocumentTextView: NSViewRepresentable {
     /// changing them redraws, never re-sets or re-lays out the text (an
     /// owner ask's comments on a 2 MiB snapshot).
     var highlightRanges: [NSRange] = []
+    var onOpenLink: ((URL) -> Void)?
     let onClick: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -151,6 +152,14 @@ struct DocumentTextView: NSViewRepresentable {
             if carried != selected {
                 DispatchQueue.main.async { [parent] in parent.selection = carried }
             }
+            return true
+        }
+
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            if let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) {
+                parent.onOpenLink?(url)
+            }
+            // Never let AppKit launch a document link directly.
             return true
         }
 

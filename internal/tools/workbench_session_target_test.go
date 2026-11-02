@@ -2,6 +2,7 @@ package tools
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -73,9 +74,7 @@ func TestProj14_SetSessionTargetRefusesArchived(t *testing.T) {
 	board, err := fx.d.GetWorkbenchBoard(fx.a)
 	require.NoError(t, err)
 	require.Len(t, board, 1)
-	if !board[0].Archived {
-		t.Skip("could not archive the seeded target through the view")
-	}
+	require.True(t, board[0].Archived, "precondition: the seeded target is archived")
 	reg := askRegistry(t, fx.d, strconv.FormatInt(s, 10))
 	_, err = proposeIn(t, reg, fx.a, "set_session_target", setTargetArgs(fx.aTarget))
 	assert.Contains(t, refusal(t, err), "archived")
@@ -118,28 +117,26 @@ func TestProj14_SetSessionTargetRefusesShellSession(t *testing.T) {
 	assert.Zero(t, countActions(t, fx.d))
 }
 
-func TestProj14_SetSessionTargetStampsSubtreeLeaves(t *testing.T) {
+// PROJ-14 (final review): binding a group writes one link row (the group,
+// status-stamped) and the session's binding stamp, never a row per leaf;
+// stamped is the number of leaves under the bound target.
+func TestProj14_SetSessionTargetStampsTheBinding(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	group := fx.aTarget
 	g := sql.NullInt64{Int64: group, Valid: true}
-	l1 := db.SeedTestWorkbenchTarget(t, fx.d, fx.a, g, "Leaf one")
-	l2 := db.SeedTestWorkbenchTarget(t, fx.d, fx.a, g, "Leaf two")
-	other := seedTerminalSession(t, fx.d, fx.a)
+	db.SeedTestWorkbenchTarget(t, fx.d, fx.a, g, "Leaf one")
+	db.SeedTestWorkbenchTarget(t, fx.d, fx.a, g, "Leaf two")
 	mine := seedTerminalSession(t, fx.d, fx.a)
-	for _, id := range []int64{l1, l2} {
-		require.NoError(t, fx.d.SetSessionTarget(other, sql.NullInt64{Int64: id, Valid: true}, nil))
-	}
-	owners, err := fx.d.SessionLeafOwners(fx.a)
-	require.NoError(t, err)
-	require.EqualValues(t, other, owners[l1])
 
 	reg := askRegistry(t, fx.d, strconv.FormatInt(mine, 10))
 	out := mustApply(t, reg, fx.a, "set_session_target", setTargetArgs(group))
-	assert.EqualValues(t, 3, out["stamped"], "the group and its two leaves")
-	owners, err = fx.d.SessionLeafOwners(fx.a)
-	require.NoError(t, err)
-	assert.EqualValues(t, mine, owners[l1])
-	assert.EqualValues(t, mine, owners[l2])
+	assert.EqualValues(t, 2, out["stamped"], "the group's two leaves")
+	assert.Equal(t, []int64{group}, linkedTargets(t, fx.d, mine), "one link row: the bound group")
+	var statusAt, boundAt sql.NullString
+	require.NoError(t, fx.d.QueryRow(`SELECT l.status_at, s.target_bound_at FROM terminal_session_targets l
+		JOIN terminal_sessions s ON s.id = l.session_id WHERE l.session_id = ?`, mine).Scan(&statusAt, &boundAt))
+	assert.True(t, statusAt.Valid, "the group's link is status-stamped")
+	assert.True(t, boundAt.Valid, "the session carries the binding stamp")
 }
 
 func TestProj14_SetSessionTargetAuditRow(t *testing.T) {
@@ -180,4 +177,17 @@ func TestBindSessionTarget(t *testing.T) {
 	n, err = BindSessionTarget(fx.d, fx.a, s, 0)
 	require.NoError(t, err)
 	assert.Zero(t, n)
+}
+
+func TestBindSessionTarget_MissingSessionIsRefusedDBErrorIsNot(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	_, err := BindSessionTarget(fx.d, fx.a, 999999, fx.aTarget)
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve, "a missing session is a refusal")
+
+	s := seedTerminalSession(t, fx.d, fx.a)
+	require.NoError(t, fx.d.Close())
+	_, err = BindSessionTarget(fx.d, fx.a, s, fx.aTarget)
+	require.Error(t, err)
+	assert.False(t, errors.As(err, &ve), "a database error is not a refusal: %v", err)
 }

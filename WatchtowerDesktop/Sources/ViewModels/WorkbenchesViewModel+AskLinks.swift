@@ -5,7 +5,8 @@ import WatchtowerCore
 /// the root of the ask's session and opened where the page shows them.
 extension WorkbenchesViewModel {
     /// A workbench path clicked in an ask's text (#394): the file in Files
-    /// at the line, beside the terminal (a terminal link's placement); an
+    /// at the line, beside the terminal; decoded raster images open in the
+    /// image app. An
     /// expanded drawer goes back beside it so the file shows. The file
     /// opens by its resolved path, so `./a.go` and `a.go` are one tab.
     /// False — and nothing opened — for a path that is not a file of the
@@ -18,6 +19,15 @@ extension WorkbenchesViewModel {
         guard let project = summaries.first(where: { $0.id == projectID })?.project,
               let place = await askLinkRoot(target.path, project: project, sessionID: sessionID),
               !Task.isCancelled else { return false }
+        let fileURL = place.root.folder.appendingPathComponent(place.path)
+        if ["png", "jpg", "jpeg", "gif", "webp"].contains(fileURL.pathExtension.lowercased()) {
+            let decodable = await Task.detached(priority: .userInitiated) {
+                WorkbenchImageLoader.load(at: fileURL, maxPixel: WorkbenchImageLoader.viewerMaxPixel).image != nil
+            }.value
+            guard decodable, !Task.isCancelled, openAskImage(fileURL) else { return false }
+            asks.drawerExpanded = false
+            return true
+        }
         let opened = OpenQuicklyTarget(path: place.path, line: target.line, col: target.col)
         await openFile(at: opened, root: place.root, beside: true)
         // After the open: collapsing the drawer may take the clicked view
@@ -99,7 +109,9 @@ extension WorkbenchesViewModel {
     }
 
     private static func fileOf(_ rawPath: String, in root: CodeRoot) -> (root: CodeRoot, path: String)? {
-        WorkbenchFolderPath.resolve(rawPath, folder: root.folder.path).map { (root, $0) }
+        guard let relative = OwnerAskDocumentLink.relativePath(rawPath, folder: root.folder.path)
+            ?? OwnerAskDocumentLink.relativePath(rawPath, folder: root.folder.resolvingSymlinksInPath().path) else { return nil }
+        return WorkbenchFolderPath.resolve(relative, folder: root.folder.path).map { (root, $0) }
     }
 
     /// Puts a workbench session on its page the way a panel click does

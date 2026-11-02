@@ -29,6 +29,7 @@ struct CommentableDocumentText: View {
     /// text and a generic note; the host's own error line says why. nil
     /// offers no commenting: the text is only selectable.
     let onComment: ((_ body: String, _ range: NSRange) async -> Bool)?
+    var onOpenLink: ((URL) -> Void)?
     let onClick: (Int) -> Void
 
     @State private var selectionRect: CGRect?
@@ -56,6 +57,7 @@ struct CommentableDocumentText: View {
                 trackedRects: trackedRects,
                 textExtent: textExtent,
                 highlightRanges: highlightRanges,
+                onOpenLink: onOpenLink,
                 onClick: onClick
             )
             .overlay(alignment: .topLeading) { commentButton(in: geo.size) }

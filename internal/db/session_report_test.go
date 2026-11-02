@@ -477,7 +477,10 @@ func TestSessionLeafOwners_LatestStatusWinsTieHigherID(t *testing.T) {
 	setStatusAt(t, d, s4, leafB, "2026-10-01T12:00:00Z")
 	got, err := d.SessionLeafOwners(pid)
 	require.NoError(t, err)
-	assert.Equal(t, map[int64]int64{leafA: s2, leafB: s4}, got)
+	assert.Equal(t, map[int64]LeafStamp{
+		leafA: {SessionID: s2, At: "2026-10-01T11:00:00Z"},
+		leafB: {SessionID: s4, At: "2026-10-01T12:00:00Z"},
+	}, got)
 }
 
 func TestSessionLeafOwners_NullStatusAtGivesNothing(t *testing.T) {
@@ -533,6 +536,15 @@ func TestMigration00167_BackfillsStatusAtFromLastAt(t *testing.T) {
 	assert.Equal(t, lastAt, statusAt)
 }
 
+func boundAt(t *testing.T, d *DB, sid int64) sql.NullString {
+	t.Helper()
+	var v sql.NullString
+	require.NoError(t, d.QueryRow(`SELECT target_bound_at FROM terminal_sessions WHERE id = ?`, sid).Scan(&v))
+	return v
+}
+
+// TestSetSessionTarget_OneTransaction: the target_id write and the target's
+// link are one transaction; a failing link insert leaves target_id unchanged.
 func TestSetSessionTarget_OneTransaction(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "set-target-tx.db"))
 	require.NoError(t, err)
@@ -540,35 +552,35 @@ func TestSetSessionTarget_OneTransaction(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	target := insertWorkbenchTargetRow(t, d, pid, "t")
 	s := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
-	// 999999 has no targets row: its link insert fails the foreign key.
-	err = d.SetSessionTarget(s, nullID(target), []int64{999999})
-	require.Error(t, err)
+	_, err = d.Exec(`CREATE TRIGGER block_link BEFORE INSERT ON terminal_session_targets
+		BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
+	require.NoError(t, err)
+	require.Error(t, d.SetSessionTarget(s, nullID(target)))
 	var tid sql.NullInt64
 	require.NoError(t, d.QueryRow(`SELECT target_id FROM terminal_sessions WHERE id = ?`, s).Scan(&tid))
 	assert.False(t, tid.Valid, "target_id must be unchanged")
-	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
+	assert.False(t, boundAt(t, d, s).Valid, "target_bound_at must be unchanged")
 }
 
-func TestSetSessionTarget_Idempotent(t *testing.T) {
-	d, err := Open(filepath.Join(t.TempDir(), "set-target-idem.db"))
+// TestSetSessionTarget_WritesBindingStampAndOneLink: binding a group links the
+// group only (no per-leaf rows) and stamps the session's target_bound_at.
+func TestSetSessionTarget_WritesBindingStampAndOneLink(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "set-target-one.db"))
 	require.NoError(t, err)
 	defer d.Close()
 	pid := newTestWorkbench(t, d)
-	target := insertWorkbenchTargetRow(t, d, pid, "t")
-	leaf := insertWorkbenchTargetRow(t, d, pid, "leaf")
+	group := insertWorkbenchTargetRow(t, d, pid, "group")
+	_ = SeedTestWorkbenchTarget(t, d, pid, nullID(group), "leaf one")
+	_ = SeedTestWorkbenchTarget(t, d, pid, nullID(group), "leaf two")
 	s := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
-	require.NoError(t, d.SetSessionTarget(s, nullID(target), []int64{leaf}))
-	setStatusAt(t, d, s, leaf, "2000-01-01T00:00:00Z")
-	require.NoError(t, d.SetSessionTarget(s, nullID(target), []int64{leaf}))
-	var statusAt string
-	require.NoError(t, d.QueryRow(`SELECT status_at FROM terminal_session_targets WHERE session_id = ? AND target_id = ?`,
-		s, leaf).Scan(&statusAt))
-	assert.NotEqual(t, "2000-01-01T00:00:00Z", statusAt, "stamp moved")
-	assert.Equal(t, 2, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
-	owners, err := d.SessionLeafOwners(pid)
-	require.NoError(t, err)
-	assert.Equal(t, s, owners[target])
-	assert.Equal(t, s, owners[leaf])
+	require.NoError(t, d.SetSessionTarget(s, nullID(group)))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets
+		WHERE session_id = ? AND target_id = ? AND status_at IS NOT NULL`, s, group))
+	at := boundAt(t, d, s)
+	require.True(t, at.Valid)
+	_, perr := time.Parse(time.RFC3339, at.String)
+	assert.NoError(t, perr)
 }
 
 func TestSetSessionTarget_ClearKeepsLinks(t *testing.T) {
@@ -578,10 +590,56 @@ func TestSetSessionTarget_ClearKeepsLinks(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	target := insertWorkbenchTargetRow(t, d, pid, "t")
 	s := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
-	require.NoError(t, d.SetSessionTarget(s, nullID(target), nil))
-	require.NoError(t, d.SetSessionTarget(s, sql.NullInt64{}, nil))
+	require.NoError(t, d.SetSessionTarget(s, nullID(target)))
+	require.NoError(t, d.SetSessionTarget(s, sql.NullInt64{}))
 	var tid sql.NullInt64
 	require.NoError(t, d.QueryRow(`SELECT target_id FROM terminal_sessions WHERE id = ?`, s).Scan(&tid))
 	assert.False(t, tid.Valid)
+	assert.False(t, boundAt(t, d, s).Valid, "clearing clears the binding stamp")
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
+}
+
+// TestSessionBindings_StampIsBoundAtElseCreatedAt: a session bound after
+// launch carries target_bound_at; a launch target carries created_at; unbound,
+// shell and foreign sessions are left out.
+func TestSessionBindings_StampIsBoundAtElseCreatedAt(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "bindings.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	a := insertWorkbenchTargetRow(t, d, pid, "a")
+	b := insertWorkbenchTargetRow(t, d, pid, "b")
+	f := insertWorkbenchTargetRow(t, d, other, "f")
+	launched := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	rebound := newAgentStateRow(t, d, pid, "codex", nextSessionUUID())
+	_ = newAgentStateRow(t, d, pid, "claude", nextSessionUUID()) // unbound
+	shell := newAgentStateRow(t, d, pid, "shell", nil)
+	foreign := newAgentStateRow(t, d, other, "claude", nextSessionUUID())
+	_, err = d.Exec(`UPDATE terminal_sessions SET target_id = ?, created_at = '2026-10-01T08:00:00Z' WHERE id = ?`, a, launched)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_sessions SET target_id = ?, created_at = '2026-10-01T08:00:00Z',
+		target_bound_at = '2026-10-02T09:00:00Z' WHERE id = ?`, b, rebound)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id IN (?, ?)`, a, shell, foreign)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id = ?`, f, foreign)
+	require.NoError(t, err)
+	got, err := d.SessionBindings(pid)
+	require.NoError(t, err)
+	assert.Equal(t, []SessionBinding{
+		{SessionID: launched, TargetID: a, At: "2026-10-01T08:00:00Z"},
+		{SessionID: rebound, TargetID: b, At: "2026-10-02T09:00:00Z"},
+	}, got)
+}
+
+func TestMigration00168_AddsTargetBoundAt(t *testing.T) {
+	t.Parallel()
+	raw, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	require.NoError(t, gooseUpTo(raw, "migrations", 168))
+	_, err = raw.Exec(`SELECT target_bound_at FROM terminal_sessions`)
+	require.NoError(t, err)
 }

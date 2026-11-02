@@ -10,6 +10,7 @@ import WatchtowerCore
 struct SessionChatSubagentView: View {
     let store: SessionFeedStore
     let subagent: SessionFeedSubagent
+    let parentToolUseID: String?
     /// The subagent's status in the main feed's current markers.
     let status: () -> String
     /// The session works or has background subagents running.
@@ -23,28 +24,51 @@ struct SessionChatSubagentView: View {
 
     @State private var entries: [SessionFeedEntry] = []
     @State private var activity: SessionFeedActivity?
+    @State private var observedStatus: String?
+    @State private var live: SessionFeedLive?
+    @State private var liveError: String?
+    @State private var liveLoaded = false
+    @State private var refreshID = UUID()
     @State private var loading = true
     @State private var error: String?
     @State private var markdown = SessionFeedMarkdownCache()
     @State private var expandedEvents: Set<String> = []
 
+    private var currentStatus: String {
+        observedStatus ?? SessionSubagentLifecycle.status(parentStatus: status(), snapshot: live, error: liveError, now: .now)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             content
             // Always the row, empty or not: the run does not jump.
-            WorkchatActivityLine(line: liveLine(activity, entries))
+            WorkchatLiveLine(snapshot: live, error: liveError, loaded: liveLoaded,
+                             working: currentStatus != "finished" && isActive(), stateAt: nil,
+                             onRetry: { refreshID = UUID() }, onOpenAgent: onOpenSubagent)
         }
-            .task(id: followKey) {
+            .task(id: SessionSubagentFollowKey(follow: followKey, retry: refreshID, parentToolUseID: parentToolUseID)) {
                 await store.followSubagent(
                     subagent.toolUseID,
                     readsMainFeed: true,
-                    isRunning: { status() == "running" && isActive() },
+                    parentToolUseID: parentToolUseID,
+                    isSessionActive: isActive,
+                    isRunning: { currentStatus == "running" && isActive() },
                     isOnScreen: isOnScreen,
                     onEntries: {
                         entries = $0
                         loading = false
                     },
                     onActivity: { activity = $0 },
+                    onLive: {
+                        if let snapshot = $0 { live = snapshot }
+                        liveError = $1; liveLoaded = true
+                    },
+                    onStatus: { next in
+                        if next == "resuming" || (next == "running" && observedStatus == "finished") {
+                            live = nil; liveLoaded = false; liveError = nil
+                        }
+                        observedStatus = next
+                    },
                     onError: {
                         error = $0
                         if $0 != nil { loading = false }
@@ -52,6 +76,9 @@ struct SessionChatSubagentView: View {
                 )
                 // The follow ended (finished or stopped): no stale step.
                 activity = nil
+                // Keep the completed snapshot as lifecycle evidence: dropping it
+                // would resurrect the initially pushed `running` marker.
+                if !isActive() { live = nil }
             }
     }
 

@@ -37,7 +37,7 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 	if err != nil {
 		return nil, err
 	}
-	owners, err := d.SessionLeafOwners(workbenchID)
+	owners, err := loadOwners(d, b, workbenchID)
 	if err != nil {
 		return nil, err
 	}

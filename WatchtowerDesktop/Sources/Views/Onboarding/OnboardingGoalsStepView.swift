@@ -202,7 +202,7 @@ struct OnboardingGoalsStepView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-        case .ready(let provider):
+        case .ready(let provider, _):
             HStack(spacing: 6) {
                 Circle().fill(.green).frame(width: 6, height: 6)
                 Text("\(Self.cliName(provider)) found and signed in")
@@ -229,10 +229,11 @@ struct OnboardingGoalsStepView: View {
             Label("Claude Code or Codex CLI is required", systemImage: "exclamationmark.triangle")
                 .font(.headline)
                 .foregroundStyle(.orange)
-            Text("The assistant, Workbench and every AI feature run on it. Install it and sign in from Terminal:")
+            Text("The assistant, Workbench and every AI feature run on it. Install one and sign in from Terminal:")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             codeBlock("npm install -g @anthropic-ai/claude-code && claude")
+            codeBlock("npm install -g @openai/codex && codex login")
             Text(reason)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -240,12 +241,12 @@ struct OnboardingGoalsStepView: View {
                 .lineLimit(3)
             HStack(spacing: 16) {
                 Button("Check again") { Task { await model.runCLICheck() } }
-                Button("Set the path manually") { showManualPath.toggle() }.buttonStyle(.link)
+                Button("Set the Claude Code path manually") { showManualPath.toggle() }.buttonStyle(.link)
                 Button("No npm?") { showNodeHelp.toggle() }.buttonStyle(.link)
             }
             if showManualPath { manualPathRow }
             if showNodeHelp {
-                Text("Install Node.js first from nodejs.org, then run the command above.")
+                Text("Install Node.js first from nodejs.org, then run one of the commands above.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
