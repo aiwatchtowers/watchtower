@@ -38,8 +38,9 @@ Customize screen never loses what was picked.
  │         Development in Workbench   (default: all four)           │
  │  "Customize features →"  · assistant language row · AI CLI check │
  │  Continue blocked until `watchtower ai test` passes              │
- │  (ai.provider unset + Claude fails → `ai test --provider codex`; │
- │   on success `config set ai.provider codex` — OnboardingCLIProbe)│
+ │  (ai.provider unset, no claude binary, Claude fails → `ai test   │
+ │   --provider codex`; on success ai.provider + workbench agent    │
+ │   := codex, wroteChanges — OnboardingCLIProbe)                   │
  │  Continue: workspace init (no Slack yet) → history depth (unset) │
  │            → digest.language (if changed) → features             │
  └───────────────┬──────────────────────────────────────────────────┘

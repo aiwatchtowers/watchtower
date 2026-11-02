@@ -10,69 +10,77 @@ final class OnboardingCLIProbeTests: XCTestCase {
     /// Records the calls and answers per provider (nil = configured).
     private actor Fake {
         var tests: [String?] = []
-        var setProviders: [String] = []
+        var switches: [String] = []
         let working: Set<String>
-        let setFails: Bool
+        let switchFails: Bool
 
-        init(working: Set<String>, setFails: Bool = false) {
+        init(working: Set<String>, switchFails: Bool = false) {
             self.working = working
-            self.setFails = setFails
+            self.switchFails = switchFails
         }
 
         func test(_ provider: String?, configured: String) throws -> String {
             tests.append(provider)
             let effective = provider ?? configured
             guard working.contains(effective) else { throw Failure(message: "\(effective) not signed in") }
-            return provider ?? configured
+            return effective
         }
 
-        func set(_ provider: String) throws {
-            setProviders.append(provider)
-            if setFails { throw Failure(message: "config locked") }
+        func switchTo(_ provider: String) throws {
+            switches.append(provider)
+            if switchFails { throw Failure(message: "config locked") }
         }
     }
 
-    private func run(configured: String?, fake: Fake) async -> OnboardingCLICheck {
-        let effective = (configured?.isEmpty ?? true) ? "claude" : configured!
+    private func run(
+        configured: String? = nil,
+        unreadable: Bool = false,
+        claudeInstalled: Bool = false,
+        fake: Fake
+    ) async -> OnboardingCLICheck {
+        let trimmed = configured?.trimmingCharacters(in: .whitespaces) ?? ""
+        let effective = trimmed.isEmpty ? "claude" : trimmed
         return await OnboardingCLIProbe.check(
-            configuredProvider: configured,
+            .init(configuredProvider: configured, configUnreadable: unreadable, claudeInstalled: claudeInstalled),
             test: { try await fake.test($0, configured: effective) },
-            setProvider: { try await fake.set($0) }
+            switchProvider: { try await fake.switchTo($0) }
         )
     }
 
     func testConfiguredWorks_noFallback() async {
         let fake = Fake(working: ["claude", "codex"])
-        let result = await run(configured: nil, fake: fake)
+        let result = await run(claudeInstalled: true, fake: fake)
         XCTAssertEqual(result, .ready(provider: "claude"))
         let tests = await fake.tests
-        let sets = await fake.setProviders
+        let switches = await fake.switches
         XCTAssertEqual(tests, [nil])
-        XCTAssertEqual(sets, [])
+        XCTAssertEqual(switches, [])
     }
 
-    func testUnsetProvider_onlyCodex_switchesToCodex() async {
+    func testNoClaude_onlyCodex_switchesToCodex() async {
         let fake = Fake(working: ["codex"])
-        let result = await run(configured: nil, fake: fake)
-        XCTAssertEqual(result, .ready(provider: "codex"))
+        let result = await run(fake: fake)
+        XCTAssertEqual(result, .ready(provider: "codex", switched: true))
         let tests = await fake.tests
-        let sets = await fake.setProviders
+        let switches = await fake.switches
         XCTAssertEqual(tests, [nil, "codex"])
-        XCTAssertEqual(sets, ["codex"])
+        XCTAssertEqual(switches, ["codex"])
     }
 
-    func testEmptyProvider_treatedAsUnset() async {
+    func testBlankProvider_treatedAsUnset() async {
         let fake = Fake(working: ["codex"])
         let result = await run(configured: "  ", fake: fake)
-        XCTAssertEqual(result, .ready(provider: "codex"))
+        XCTAssertEqual(result, .ready(provider: "codex", switched: true))
     }
 
-    func testNeitherWorks_reportsTheConfiguredFailure() async {
-        let fake = Fake(working: [])
-        let result = await run(configured: nil, fake: fake)
+    func testClaudeInstalledButFailing_neverSwitched() async {
+        // A transient error, a timeout or an expired Claude sign-in must not
+        // move an owner who has Claude Code onto Codex for good.
+        let fake = Fake(working: ["codex"])
+        let result = await run(claudeInstalled: true, fake: fake)
         XCTAssertEqual(result, .failed("claude not signed in"))
-        let sets = await fake.setProviders
-        XCTAssertEqual(sets, [])
+        let tests = await fake.tests
+        XCTAssertEqual(tests, [nil])
     }
 
     func testExplicitProvider_neverSwitched() async {
@@ -83,9 +91,25 @@ final class OnboardingCLIProbeTests: XCTestCase {
         XCTAssertEqual(tests, [nil])
     }
 
-    func testCodexWorksButSaveFails_isFailed() async {
-        let fake = Fake(working: ["codex"], setFails: true)
-        let result = await run(configured: nil, fake: fake)
+    func testUnreadableConfig_neverSwitched() async {
+        let fake = Fake(working: ["codex"])
+        let result = await run(unreadable: true, fake: fake)
+        XCTAssertEqual(result, .failed("claude not signed in"))
+        let switches = await fake.switches
+        XCTAssertEqual(switches, [])
+    }
+
+    func testNeitherWorks_reportsBothReasons() async {
+        let fake = Fake(working: [])
+        let result = await run(fake: fake)
+        XCTAssertEqual(result, .failed("Claude Code: claude not signed in\nCodex CLI: codex not signed in"))
+        let switches = await fake.switches
+        XCTAssertEqual(switches, [])
+    }
+
+    func testCodexWorksButSwitchFails_isFailed() async {
+        let fake = Fake(working: ["codex"], switchFails: true)
+        let result = await run(fake: fake)
         guard case .failed(let message) = result else { return XCTFail("expected failed, got \(result)") }
         XCTAssertTrue(message.contains("config locked"))
     }

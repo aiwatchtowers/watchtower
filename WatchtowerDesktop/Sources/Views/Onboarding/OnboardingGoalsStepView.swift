@@ -202,7 +202,7 @@ struct OnboardingGoalsStepView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-        case .ready(let provider):
+        case .ready(let provider, _):
             HStack(spacing: 6) {
                 Circle().fill(.green).frame(width: 6, height: 6)
                 Text("\(Self.cliName(provider)) found and signed in")
@@ -246,7 +246,7 @@ struct OnboardingGoalsStepView: View {
             }
             if showManualPath { manualPathRow }
             if showNodeHelp {
-                Text("Install Node.js first from nodejs.org, then run the command above.")
+                Text("Install Node.js first from nodejs.org, then run one of the commands above.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

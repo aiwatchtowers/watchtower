@@ -15,10 +15,28 @@ extension OnboardingGoalsModel {
         return OnboardingGoalsModel(
             defaults: defaults,
             checkCLI: {
-                await OnboardingCLIProbe.check(
-                    configuredProvider: await MainActor.run { ConfigService().aiProvider },
+                let inputs = await MainActor.run { () -> OnboardingCLIProbe.Inputs in
+                    let config = ConfigService()
+                    let claudePath = config.claudePath?.trimmingCharacters(in: .whitespaces) ?? ""
+                    let claudeInstalled = (!claudePath.isEmpty && FileManager.default.isExecutableFile(atPath: claudePath))
+                        || Constants.findInPath("claude") != nil
+                    return OnboardingCLIProbe.Inputs(
+                        configuredProvider: config.aiProvider,
+                        configUnreadable: config.parseError != nil,
+                        claudeInstalled: claudeInstalled
+                    )
+                }
+                return await OnboardingCLIProbe.check(
+                    inputs,
                     test: { try await WatchtowerAIService.testConnection(provider: $0).provider },
-                    setProvider: { try await run(["config", "set", "ai.provider", $0]) }
+                    switchProvider: { provider in
+                        try await run(["config", "set", "ai.provider", provider])
+                        // No Claude Code here either: Workbench sessions
+                        // start the same agent.
+                        if ConfigService.readWorkbenchDefaultAgent().rawValue != provider {
+                            try await run(["config", "set", "workbench.default_agent", provider])
+                        }
+                    }
                 )
             },
             actions: OnboardingGoalsActions(

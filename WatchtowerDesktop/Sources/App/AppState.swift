@@ -545,6 +545,10 @@ final class AppState {
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
         managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
+        // Setup's Codex fallback rewrote ai.provider: an open chat follows.
+        self.onboardingGoals.onProviderSwitched = { [weak self] provider in
+            self?.chatViewModel?.switchProvider(AIProvider.fromConfig(provider))
+        }
         managedPolicy.onRefresh = { [weak self] _ in self?.retryPolicyOffWipe() }
     }
 
