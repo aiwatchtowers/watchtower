@@ -315,3 +315,41 @@ func TestAnActionAfterTheLapseAppliesWhateverTheClockSkew(t *testing.T) {
 		}
 	})
 }
+
+// The lapse never ends blind: an ordered action the phone sent before the
+// lapse and the hub never read is found in the relay mailbox when the lapse
+// ends and never applied; an action written after it applies. A mailbox
+// that cannot be read keeps the phone lapsed until the next poll.
+func TestAnUnreadPreLapseActionNeverAppliesAfterTheLapseEnds(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay, b)
+		z := w.act(a) // on the relay; no hub pass reads it
+		w.lapse(a)
+		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
+			t.Fatal(err)
+		}
+		a.Forget(z) // R32: listed as not delivered
+		w.payAgain(a)
+		w.relay.SetAvailable(false)
+		w.sw.PollOther(w.ctx)
+		if !w.lapsedNow(a) {
+			t.Fatal("the lapse ended without reading the mailbox")
+		}
+		w.relay.SetAvailable(true)
+		w.sw.PollOther(w.ctx)
+		if w.lapsedNow(a) {
+			t.Fatal("still lapsed after paying again")
+		}
+		if d, _, _ := w.st.Device(a.ID().String()); d.RelaySkipSeq != z {
+			t.Fatalf("relay_skip_seq %d, want %d", d.RelaySkipSeq, z)
+		}
+		w.onRelay(a)
+		y := w.act(a)
+		w.settle(a, b)
+		w.appliedOnce(a, y)
+		if slices.Contains(w.callLog(), call(a, z)) {
+			t.Fatal("the unread pre-lapse action applied")
+		}
+	})
+}

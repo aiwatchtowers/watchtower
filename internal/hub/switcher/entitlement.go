@@ -246,7 +246,7 @@ func (s *Switcher) recheckLapsed(ctx context.Context) {
 	}
 	for _, d := range lapsed {
 		if paying[canonical(d)] {
-			s.endLapse(d)
+			s.endLapse(ctx, d)
 		}
 	}
 }
@@ -259,11 +259,30 @@ func (s *Switcher) endLapseIfPaying(ctx context.Context, device string) {
 		return
 	}
 	if paying, err := s.readPaying(ctx); err == nil && paying[canonical(dev.ID)] {
-		s.endLapse(dev.ID)
+		s.endLapse(ctx, dev.ID)
 	}
 }
 
-func (s *Switcher) endLapse(device string) {
+// endLapse ends device's lapse, never blind: the phone's relay mailbox is
+// read first and relay_skip_seq raised to the highest action_seq there, so
+// nothing it sent before the lapse ends — read by the hub or not, listed
+// by the phone as not delivered — is ever applied; what it writes later has
+// a higher seq. A mailbox that cannot be read keeps the phone lapsed until
+// the next poll.
+func (s *Switcher) endLapse(ctx context.Context, device string) {
+	if rp := s.procs[transport.KindRelay]; rp != nil {
+		rctx, cancel := context.WithTimeout(ctx, s.oldSide())
+		seq, err := rp.HighestActionSeq(rctx, device)
+		cancel()
+		if err != nil {
+			log.Printf("hub: a relay lapse stays until its mailbox is read (%s)", errClass(err))
+			return
+		}
+		if err := s.c.Store.RaiseRelaySkipSeq(device, seq); err != nil {
+			log.Printf("hub: ending a relay lapse: %s", errClass(err))
+			return
+		}
+	}
 	ended, err := s.c.Store.EndRelayLapse(device)
 	if err != nil {
 		log.Printf("hub: ending a relay lapse: %s", errClass(err))

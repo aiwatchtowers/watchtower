@@ -117,3 +117,56 @@ func (p *Processor) namesNextAction(b mailbox, name string, from uint64) (uint64
 	}
 	return 0, nil
 }
+
+// HighestActionSeq is the highest action_seq among device's action records
+// in its mailbox on this processor's transport, read from the start (no
+// stored token moves): an action that opens gives its own seq, one that
+// does not (an epoch the hub no longer holds) its name matched as one of the
+// phone's next actions. 0 when there is none. The switcher calls it before
+// a relay lapse ends (sim rule 16), outside any pass: everything the phone
+// sent before then is skipped.
+func (p *Processor) HighestActionSeq(ctx context.Context, device string) (uint64, error) {
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return 0, err
+	}
+	var b mailbox
+	found := false
+	for _, x := range boxes {
+		if sameID(device, x.id) {
+			b, found = x, true
+		}
+	}
+	if !found {
+		return 0, nil
+	}
+	dev, linked, err := p.cfg.Store.Device(device)
+	if err != nil || !linked {
+		return 0, err
+	}
+	var highest, since uint64
+	for {
+		batch, err := p.cfg.Transport.Changes(ctx, b.zone, since)
+		if err != nil {
+			return 0, err
+		}
+		for _, rec := range batch.Changed {
+			if _, ok := sealedBy(rec.Envelope, b.id); !ok {
+				continue
+			}
+			var seq uint64
+			if o, err := p.cfg.Opener.FromPhone(b.zone, rec.Name, rec.Envelope); err == nil {
+				seq = orderedSeq(b, o)
+			} else if !droppable(err) {
+				return 0, err
+			} else if seq, err = p.namesNextAction(b, rec.Name, dev.LastAppliedActionSeq+1); err != nil {
+				return 0, err
+			}
+			highest = max(highest, seq)
+		}
+		if !batch.More {
+			return highest, nil
+		}
+		since = batch.NewSeq
+	}
+}
