@@ -1176,13 +1176,15 @@ Task 10 maps these to `.needsOwner(reason)` (point 6) and handles `HUB_NOT_VOUCH
 4. store the identity on the `LinkRecord`;
 5. send `transport_switch(relay)`, rule 9's initiator write on both transports wherever reachable, through the Phase 1 control queue;
 6. the phone stays on CloudKit until `transport_switched` (Task 11) or `transport_switch_rejected(too_soon, retry_after_s)`, whose `retry_after_s` is kept for Phase 4's "available in N min".
+7. the Go hub also rejects with `not_paying` (the phone has no subscription) and `unavailable` with `retry_after_s: 60` (the hub cannot decide right now; retry later), both approved in the Go hub's ask #942 and pinned in `hub_contract_cases.json`. `ControlPayload.reason` is a free string, so both already decode; this task maps them to a model state with a user text each (covered by a test), and the re-plan puts the texts to the owner.
 
 **Tests** (twins of the initiator half, on the fake and `InMemoryCloudTransport`):
 
 - `testUpgradeVouchesAddsTheSlotAndAsksForTheSwitch`;
 - `testTheInitiatorStaysUntilSwitchedOrRejected`;
 - `testTooSoonKeepsRetryAfter`;
-- `testAGrantWithoutRelayIdentityCannotUpgrade`.
+- `testAGrantWithoutRelayIdentityCannotUpgrade`;
+- `testNotPayingAndUnavailableRejectionsHaveTheirOwnTexts`.
 
 **Commit:** `feat: upgrade a CloudKit link to the relay — vouch, add_slot, transport_switch (#1247)`
 
