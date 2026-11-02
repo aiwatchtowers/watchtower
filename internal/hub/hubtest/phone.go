@@ -94,13 +94,20 @@ type Phone struct {
 	LegacyEchoes map[string]wire.ActionRequest
 	// UploadEchoes is the last recording_upload echo read per upload id.
 	UploadEchoes map[string]map[string]any
-	// Controls is every hub control read, in order.
-	Controls []wire.Control
+	// Controls is every hub control read, in order; ControlEpochs the
+	// epoch each one's envelope was sealed in.
+	Controls      []wire.Control
+	ControlEpochs []uint32
 	// Undelivered lists the actions a skip_to gave up on.
 	Undelivered []uint64
 	// Creator, when set, is the iCloud user WriteDeviceRecord writes as
 	// (Stored.Creator, on a transport with WriteAs such as the memfake).
 	Creator string
+
+	// dataKeys is K_data per epoch the phone was given (Keep, Follow:
+	// switch.go); cursors is the mailbox cursor per record store left (Use).
+	dataKeys map[uint32][]byte
+	cursors  map[storeZone]uint64
 }
 
 // New makes a phone with fresh keys.
@@ -491,6 +498,11 @@ func (p *Phone) onControl(rec transport.Stored, f secure.InnerFrame) error {
 		return fmt.Errorf("hubtest: unreadable control: %w", err)
 	}
 	p.Controls = append(p.Controls, c)
+	var epoch uint32
+	if h, err := secure.ParseHeader(rec.Envelope); err == nil {
+		epoch = h.Epoch
+	}
+	p.ControlEpochs = append(p.ControlEpochs, epoch)
 	if _, err := p.cfg.Transport.Delete(context.Background(), p.zone, []transport.DeleteItem{{
 		Name: rec.Name, Expect: transport.Expect{Mode: transport.ExpectSeq, Seq: rec.RecordSeq},
 	}}); err != nil {
