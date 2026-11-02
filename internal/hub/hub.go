@@ -695,6 +695,7 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		}
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())
 		st.Bridge = h.bridgeState()
+		st.CloudKit = h.cloudKitStatus()
 	}
 	s.setStatus(st)
 }
@@ -707,6 +708,7 @@ func (s *supervisor) setStatus(st Status) {
 	if d := s.o.Desktop; d != nil && st.Bridge == "" && !d.hasBridge() {
 		st.Bridge = BridgeUnavailable // also while the hub is off
 	}
+	st.CloudKit.Signed = s.o.Desktop != nil && signedBuild(st)
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	if st == s.status {

@@ -20,6 +20,32 @@ struct MobileHubCLI {
             }
         }
 
+        /// `cloudkit`: the iCloud facts of a desktop host (Task 23).
+        struct CloudKit: Decodable, Equatable {
+            /// available, no_account, restricted, temporarily_unavailable, no_entitlement; "" = not read.
+            let account: String
+            let throttledSince: Date?
+            let signed: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case account, signed
+                case throttledSince = "throttled_since"
+            }
+
+            init(account: String = "", throttledSince: Date? = nil, signed: Bool = true) {
+                self.account = account
+                self.throttledSince = throttledSince
+                self.signed = signed
+            }
+
+            init(from decoder: any Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                account = try c.decodeIfPresent(String.self, forKey: .account) ?? ""
+                throttledSince = try c.decodeIfPresent(String.self, forKey: .throttledSince).flatMap(MobileHubCLI.date)
+                signed = try c.decodeIfPresent(Bool.self, forKey: .signed) ?? true
+            }
+        }
+
         let state: String
         let reason: String?
         let transport: String?
@@ -29,12 +55,14 @@ struct MobileHubCLI {
         let switchedAt: Date?
         let switchedBy: String?
         let keptRecordings: Kept?
+        let cloudKit: CloudKit?
 
         enum CodingKeys: String, CodingKey {
             case state, reason, transport, recordings, name, bridge
             case switchedAt = "switched_at"
             case switchedBy = "switched_by"
             case keptRecordings = "kept_recordings"
+            case cloudKit = "cloudkit"
         }
 
         init(
@@ -46,7 +74,8 @@ struct MobileHubCLI {
             bridge: String? = nil,
             switchedAt: Date? = nil,
             switchedBy: String? = nil,
-            keptRecordings: Kept? = nil
+            keptRecordings: Kept? = nil,
+            cloudKit: CloudKit? = nil
         ) {
             self.state = state
             self.reason = reason
@@ -57,6 +86,7 @@ struct MobileHubCLI {
             self.switchedAt = switchedAt
             self.switchedBy = switchedBy
             self.keptRecordings = keptRecordings
+            self.cloudKit = cloudKit
         }
 
         init(from decoder: any Decoder) throws {
@@ -74,6 +104,7 @@ struct MobileHubCLI {
             switchedAt = try text(.switchedAt).flatMap(MobileHubCLI.date)
             switchedBy = try text(.switchedBy)
             keptRecordings = try c.decodeIfPresent(Kept.self, forKey: .keptRecordings)
+            cloudKit = try c.decodeIfPresent(CloudKit.self, forKey: .cloudKit)
         }
     }
 

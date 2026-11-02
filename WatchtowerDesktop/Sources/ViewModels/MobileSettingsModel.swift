@@ -109,7 +109,11 @@ final class MobileSettingsModel {
     private(set) var hubTransport: String?
     private(set) var hubSwitchedLine: String?
     private(set) var hubLine: String?
-    private(set) var showsBridgeUnavailable = false
+    /// Today's iCloud lines (the Swift hub's tab): the build cannot use
+    /// iCloud, the account's sentence, CloudKit slowing sync down.
+    private(set) var showsNeedsSignedBuild = false
+    private(set) var accountLine: String?
+    private(set) var throttledSince: Date?
     private(set) var canLink = false
     private(set) var keptRecordings: KeptRecordings?
     private(set) var failedRecordings: [FailedRecording] = []
@@ -135,6 +139,8 @@ final class MobileSettingsModel {
     @ObservationIgnored private let cli: MobileHubCLI
     @ObservationIgnored private weak var adoption: (any MobileAdoptionSource)?
     @ObservationIgnored private let pairStreamer: (any HubPairStreaming)?
+    /// Retry through Desktop's phone recording queue (it claims and transcribes).
+    @ObservationIgnored private let retryInQueue: (@MainActor (String) -> Void)?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let openInFinder: @MainActor (URL) -> Void
     @ObservationIgnored private let now: () -> Date
@@ -146,6 +152,7 @@ final class MobileSettingsModel {
     init(
         cli: (any CLIRunnerProtocol)?,
         adoption: (any MobileAdoptionSource)? = nil,
+        retryRecording: (@MainActor (String) -> Void)? = nil,
         pairStreamer: (any HubPairStreaming)? = nil,
         showsCorpNotice: Bool = false,
         defaults: UserDefaults = .standard,
@@ -156,6 +163,7 @@ final class MobileSettingsModel {
         self.cli = MobileHubCLI(runner: cli)
         self.adoption = adoption
         self.pairStreamer = pairStreamer
+        self.retryInQueue = retryRecording
         self.showsCorpNotice = showsCorpNotice
         self.defaults = defaults
         self.openInFinder = openInFinder
@@ -239,7 +247,10 @@ final class MobileSettingsModel {
         recordingsOn = status.recordings == "on"
         canLink = status.state == "running"
         hubLine = status.state == "off" ? nil : Self.hubLine(state: status.state, reason: status.reason)
-        showsBridgeUnavailable = status.state != "off" && status.bridge == "unavailable"
+        showsNeedsSignedBuild = status.cloudKit?.signed == false
+        let running = status.state != "off"
+        accountLine = running ? status.cloudKit.flatMap { Self.accountLine($0.account) } : nil
+        throttledSince = running ? status.cloudKit?.throttledSince : nil
         hubTransport = status.transport
         keptRecordings = status.keptRecordings.flatMap { kept in
             kept.count >= 1 ? KeptRecordings(count: kept.count, removeAt: kept.removeAt, dir: URL(fileURLWithPath: kept.dir)) : nil
@@ -449,10 +460,22 @@ final class MobileSettingsModel {
         openInFinder(kept.dir)
     }
 
-    /// Retry: the job is claimed again through the hub (`hub recording
-    /// claim`), and Desktop's recording queue transcribes it.
+    /// Retry: Desktop's phone recording queue claims the job again over the
+    /// control socket and transcribes it (without a queue: `hub recording claim`).
     func retryRecording(_ id: String) async {
-        await recordingWrite(id, MobileHubCLI.claimArgs(id), failure: Self.couldNotRetry)
+        guard let retryInQueue else {
+            await recordingWrite(id, MobileHubCLI.claimArgs(id), failure: Self.couldNotRetry)
+            return
+        }
+        retryInQueue(id)
+        await load()
+    }
+
+    /// "iCloud is slowing sync down": CloudKit has rate-limited the hub for
+    /// `slowingAfter` or longer (today's rule).
+    var showsSlowingLine: Bool {
+        guard let throttledSince else { return false }
+        return now().timeIntervalSince(throttledSince) >= Self.slowingAfter
     }
 
     func requestDiscard(_ recording: FailedRecording) { pendingDiscard = recording }

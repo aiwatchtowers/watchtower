@@ -216,6 +216,9 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
     /// for and when it started (Unix seconds on the wire).
     package let eventID: String?
     package let startedAt: Date?
+    /// A heartbeat answer's last phone contact (keep-awake, Task 23); nil
+    /// when no hub runs or no phone was ever in touch.
+    package let phoneContactAt: Date?
 
     package init(
         op: String? = nil,
@@ -231,7 +234,8 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         status: String? = nil,
         audioPath: String? = nil,
         eventID: String? = nil,
-        startedAt: Date? = nil
+        startedAt: Date? = nil,
+        phoneContactAt: Date? = nil
     ) {
         self.op = op
         self.event = event
@@ -247,6 +251,7 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         self.audioPath = audioPath
         self.eventID = eventID?.isEmpty == false ? eventID : nil
         self.startedAt = startedAt
+        self.phoneContactAt = phoneContactAt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -257,6 +262,7 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         case audioPath = "audio_path"
         case eventID = "event_id"
         case startedAt = "started_at"
+        case phoneContactAt = "phone_contact_at"
     }
 
     package init(from decoder: any Decoder) throws {
@@ -275,8 +281,16 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
             status: try c.decodeIfPresent(String.self, forKey: .status),
             audioPath: try c.decodeIfPresent(String.self, forKey: .audioPath),
             eventID: try c.decodeIfPresent(String.self, forKey: .eventID),
-            startedAt: try c.decodeIfPresent(Double.self, forKey: .startedAt).map { Date(timeIntervalSince1970: $0) }
+            startedAt: try c.decodeIfPresent(Double.self, forKey: .startedAt).map { Date(timeIntervalSince1970: $0) },
+            phoneContactAt: try c.decodeIfPresent(String.self, forKey: .phoneContactAt).flatMap(Self.rfc3339)
         )
+    }
+
+    /// A Go `time.Time` (RFC 3339, fractional seconds optional).
+    package static func rfc3339(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return ISO8601DateFormatter().date(from: text) ?? fractional.date(from: text)
     }
 }
 

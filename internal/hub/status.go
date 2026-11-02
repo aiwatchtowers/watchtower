@@ -108,6 +108,8 @@ type Status struct {
 	Identity   string `json:"identity"`
 	SwitchedAt string `json:"switched_at"`
 	SwitchedBy string `json:"switched_by"`
+	// CloudKit is the iCloud facts on a desktop host (desktop_facts.go).
+	CloudKit CloudKitStatus `json:"cloudkit"`
 }
 
 // statusFile is the status as the runtime writes it, with its pid so a

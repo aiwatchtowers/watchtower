@@ -439,12 +439,6 @@ extension AppState {
         Task { _ = await driver.run() }
     }
 
-    /// Settings → Mobile's **Retry** after a failed hand-over.
-    func retryHubAdoption() {
-        guard let driver = hubAdoption else { return }
-        Task { _ = await driver.retry() }
-    }
-
     private func liveHubAdoptionDriver() -> HubAdoptionDriver {
         HubAdoptionDriver(seams: .init(
             waitForHostRestart: { [weak self] in await self?.hostRestart?.waitUntilSettled() },

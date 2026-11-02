@@ -104,7 +104,26 @@ private struct MobileOffSection: View {
                     MobileSyncToggle(model: model)
                 }
             }
+            MobileCloudLines(model: model)
             MobileCorpNotice(model: model)
+        }
+    }
+}
+
+/// Today's iCloud lines: the build cannot use iCloud, the account's
+/// sentence, CloudKit slowing sync down.
+private struct MobileCloudLines: View {
+    let model: MobileSettingsModel
+
+    var body: some View {
+        if model.showsNeedsSignedBuild {
+            Text(MobileSettingsModel.needsSignedBuild).font(.caption).foregroundStyle(.secondary)
+        }
+        if let line = model.accountLine {
+            Text(line).font(.caption).foregroundStyle(Tone.warning)
+        }
+        if model.showsSlowingLine {
+            Text(MobileSettingsModel.slowingLine).font(.caption).foregroundStyle(Tone.warning)
         }
     }
 }
@@ -161,9 +180,7 @@ private struct MobileHubSection: View {
                     Chip(text: Copy.transportLabel(transport), color: MobileTransportTone.color(transport))
                 }
             }
-            if model.showsBridgeUnavailable {
-                Text(Copy.bridgeUnavailableLine).font(.caption).foregroundStyle(Tone.warning)
-            }
+            MobileCloudLines(model: model)
             SettingRow(title: Copy.keepAwakeTitle, caption: Copy.keepAwakeCaption) {
                 Toggle(Copy.keepAwakeTitle, isOn: Binding(get: { model.keepAwake }, set: { model.setKeepAwake($0) }))
                     .labelsHidden()

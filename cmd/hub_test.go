@@ -153,7 +153,10 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	require.NoError(t, err)
 	m := decodeKeys(t, out)
 	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings", "host", "mode",
-		"adoption", "bridge", "identity", "switched_at", "switched_by", "name"}, hubKeysOf(m))
+		"adoption", "bridge", "identity", "switched_at", "switched_by", "name", "cloudkit"}, hubKeysOf(m))
+	ck, ok := m["cloudkit"].(map[string]any)
+	require.True(t, ok, "cloudkit is an object")
+	assert.ElementsMatch(t, []string{"account", "throttled_since", "signed"}, hubKeysOf(ck))
 	assert.Equal(t, hub.AdoptionNone, m["adoption"])
 	assert.Equal(t, hub.StateOff, m["state"])
 	assert.Equal(t, "", m["reason"])

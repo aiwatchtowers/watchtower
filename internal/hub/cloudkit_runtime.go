@@ -142,6 +142,7 @@ func (h *hubRuntime) sweepShares(ctx context.Context) {
 func (h *hubRuntime) cloudKitEvent(ctx context.Context, ev transport.Event) bool {
 	switch {
 	case ev.AccountChanged:
+		h.refreshCloudKitAccount(ctx)
 		if s, ok := h.shares(); ok {
 			cctx, cancel := context.WithTimeout(ctx, opTimeout)
 			err := h.center.AccountChanged(cctx, s)

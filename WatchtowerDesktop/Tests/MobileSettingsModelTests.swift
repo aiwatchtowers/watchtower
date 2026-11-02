@@ -47,6 +47,75 @@ final class MobileSettingsModelTests: XCTestCase {
         )
     }
 
+    // MARK: - Today's iCloud lines (the Swift hub's tab, now from `hub status` `cloudkit`)
+
+    func testICloudLinesAsToday() async throws {
+        XCTAssertEqual(Model.needsSignedBuild, "Needs a signed build")
+        XCTAssertEqual(Model.slowingLine, "iCloud is slowing sync down")
+        XCTAssertEqual(Model.accountLine("no_account"), "Mobile isn't available on this Mac: iCloud is off.")
+        XCTAssertEqual(Model.accountLine("restricted"),
+                       "Mobile isn't available on this Mac: iCloud is restricted by your organization.")
+        XCTAssertEqual(Model.accountLine("temporarily_unavailable"),
+                       "Mobile isn't available on this Mac: iCloud account temporarily unavailable")
+        XCTAssertNil(Model.accountLine("available"))
+        XCTAssertNil(Model.accountLine(""))
+        XCTAssertNil(Model.accountLine("no_entitlement"), "Needs a signed build says it")
+
+        let now = try XCTUnwrap(MobileHubCLI.date("2026-11-02T10:01:01Z"))
+        cli.phones("[]")
+        cli.status(#"{"state":"running","cloudkit":{"account":"no_account","throttled_since":"2026-11-02T10:00:00Z","signed":true}}"#)
+        let model = makeModel(now: now)
+        await model.load()
+        XCTAssertFalse(model.showsNeedsSignedBuild)
+        XCTAssertEqual(model.accountLine, "Mobile isn't available on this Mac: iCloud is off.")
+        XCTAssertTrue(model.showsSlowingLine, "61 s of throttling")
+
+        let early = makeModel(now: try XCTUnwrap(MobileHubCLI.date("2026-11-02T10:00:59Z")))
+        await early.load()
+        XCTAssertFalse(early.showsSlowingLine, "59 s is not yet")
+
+        // Off: an unsigned build still says so; the account and the throttle are a running hub's.
+        cli.status(#"{"state":"off","reason":"disabled","cloudkit":"#
+            + #"{"account":"no_account","throttled_since":"2026-11-02T10:00:00Z","signed":false}}"#)
+        await model.load()
+        XCTAssertTrue(model.showsNeedsSignedBuild)
+        XCTAssertNil(model.accountLine)
+        XCTAssertFalse(model.showsSlowingLine)
+
+        // An older CLI without the block shows none of them.
+        cli.status(#"{"state":"running"}"#)
+        await model.load()
+        XCTAssertFalse(model.showsNeedsSignedBuild)
+        XCTAssertNil(model.accountLine)
+    }
+
+    /// A Go hub ran first and a Swift hub's state appeared beside it (ask
+    /// #949): off with its own sentence and no action.
+    func testSwiftBesideGoIsItsOwnState() async {
+        cli.status(#"{"state":"off","reason":"swift_beside_go"}"#)
+        let model = makeModel()
+        await model.load()
+        XCTAssertEqual(model.state, .off(reason: "swift_beside_go"))
+        XCTAssertEqual(Model.offCopy("swift_beside_go"), Model.OffCopy(
+            title: "Mobile is off",
+            detail: "This Mac has phone data from two Watchtower setups. Remove one of them to turn Mobile back on.",
+            showsToggle: false, toggleOn: false, managed: false
+        ))
+        XCTAssertFalse(model.canLink)
+    }
+
+    /// Retry goes through Desktop's phone recording queue, which claims and
+    /// transcribes; no CLI claim of its own.
+    func testRetryGoesThroughTheRecordingQueue() async {
+        runningWith()
+        var queued: [String] = []
+        let model = Model(cli: cli, retryRecording: { queued.append($0) }, defaults: defaults)
+        await model.load()
+        await model.retryRecording("u-7")
+        XCTAssertEqual(queued, ["u-7"])
+        XCTAssertTrue(cli.writes.isEmpty)
+    }
+
     private func runningWith(_ phones: String...) {
         cli.status(MobileHubFixture.running)
         cli.phones("[" + phones.joined(separator: ",") + "]")
@@ -155,7 +224,8 @@ final class MobileSettingsModelTests: XCTestCase {
     func testDecodesPinnedStatusKeys() async throws {
         cli.status("""
         {"state":"running","reason":"","hub_id":"h","relay_device_id":"","transport":"relay","impl":"go","dir":"/x",\
-        "phones":1,"host":"desktop","mode":"live","recordings":"off","name":"Work Mac","bridge":"unavailable",\
+        "phones":1,"host":"desktop","mode":"live","recordings":"off","name":"Work Mac","bridge":"running",\
+        "cloudkit":{"account":"restricted","throttled_since":"2026-11-02T10:00:00Z","signed":false},\
         "adoption":"done","identity":"keychain","switched_at":"2026-11-02T10:42:00.123Z","switched_by":"AAAA0001",\
         "kept_recordings":{"count":2,"remove_at":"2026-11-14T08:00:00Z","dir":"/tmp/acme-recordings"}}
         """)
@@ -164,8 +234,9 @@ final class MobileSettingsModelTests: XCTestCase {
         await model.load()
         XCTAssertEqual(model.hubTransport, "relay")
         XCTAssertFalse(model.recordingsOn)
-        XCTAssertTrue(model.showsBridgeUnavailable)
-        XCTAssertEqual(Model.bridgeUnavailableLine, "iCloud is not reachable from this Mac right now. Relay links keep working.")
+        XCTAssertTrue(model.showsNeedsSignedBuild)
+        XCTAssertEqual(model.accountLine, "Mobile isn't available on this Mac: iCloud is restricted by your organization.")
+        XCTAssertEqual(model.throttledSince, MobileHubCLI.date("2026-11-02T10:00:00Z"))
         XCTAssertEqual(model.keptRecordings?.count, 2)
         XCTAssertNotNil(model.hubSwitchedLine)
     }

@@ -104,7 +104,11 @@ func (c *Client) roundTrip(ctx context.Context, k *conn, req *bridgepb.Request, 
 	select {
 	case r := <-ch:
 		if f := r.GetFailure(); f != nil {
+			c.noteRate(rateLimited(f.GetClass()))
 			return nil, classError(f.GetClass(), mailbox)
+		}
+		if r.GetOutcomes() == nil { // an Outcomes answer is judged per record (fillOutcomes)
+			c.noteRate(false)
 		}
 		return r, nil
 	case <-k.dead:
@@ -258,6 +262,9 @@ func (c *Client) eventOf(ev *bridgepb.Event) (transport.Event, bool) {
 	case ev.GetAccountChanged():
 		return transport.Event{AccountChanged: true}, true
 	case ev.GetErrorClass() != "":
+		if rateLimited(ev.GetErrorClass()) {
+			c.noteRate(true)
+		}
 		return transport.Event{Err: classError(ev.GetErrorClass(), false)}, true
 	}
 	if name, ok := c.runtimeName(ev.GetZone()); ok {

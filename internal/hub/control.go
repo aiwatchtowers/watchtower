@@ -164,8 +164,11 @@ type ControlAnswer struct {
 	State   string `json:"state,omitempty"`
 	// ViewNeeded on a desktop heartbeat's answer: the hub holds no current
 	// desktop_view (never sent, or dropped while the heartbeat was stale).
-	ViewNeeded bool   `json:"view_needed,omitempty"`
-	Pair       string `json:"pair,omitempty"`
+	ViewNeeded bool `json:"view_needed,omitempty"`
+	// PhoneContactAt (desktop_heartbeat, a running hub only): when a phone
+	// was last in touch — the Desktop's keep-awake input (Task 23).
+	PhoneContactAt *time.Time `json:"phone_contact_at,omitempty"`
+	Pair           string     `json:"pair,omitempty"`
 }
 
 // serveControl listens on <dir>/hub.sock until the returned stop is called
@@ -475,7 +478,7 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		}
 		s.recordingsChanged() // the first beat turns the default switch on
 		s.poke()
-		return ControlAnswer{OK: true, At: &now, ViewNeeded: s.desktopBeat(now, wasFresh)}
+		return ControlAnswer{OK: true, At: &now, ViewNeeded: s.desktopBeat(now, wasFresh), PhoneContactAt: s.phoneContactAt()}
 	case OpRecordingClaim, OpRecordingFinish:
 		return s.recordingJob(r)
 	case OpRecordings:

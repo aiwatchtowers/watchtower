@@ -18,6 +18,10 @@ extension MobileSettingsModel {
     nonisolated static let toggleTitle = "Mobile sync"
     nonisolated static let toggleOnCaption = "This Mac shares its board and sessions with your linked phones."
     nonisolated static let toggleOffCaption = "Off. Linked phones are kept."
+    /// A Go hub ran first and a Swift hub's state appeared beside it (ask #949): off, no action here.
+    nonisolated static let swiftBesideGoTitle = "Mobile is off"
+    nonisolated static let swiftBesideGoDetail = "This Mac has phone data from two Watchtower setups. "
+        + "Remove one of them to turn Mobile back on."
     nonisolated static let policyTitle = "Mobile is turned off by your organization"
     nonisolated static let policyDetail = "Managed by your organization. Linked phones are kept and work again when it is allowed."
     nonisolated static let macNameTitle = "Mac name"
@@ -36,7 +40,22 @@ extension MobileSettingsModel {
     nonisolated static let keepAwakeCaption = "While a session runs and your iPhone has been in touch in the last 24 hours, "
         + "this Mac does not go to sleep on its own. A closed lid on battery still sleeps it."
     nonisolated static let corpNotice = "Work data from this Mac will be stored in your personal iCloud account."
-    nonisolated static let bridgeUnavailableLine = "iCloud is not reachable from this Mac right now. Relay links keep working."
+    nonisolated static let needsSignedBuild = "Needs a signed build"
+    nonisolated static let slowingLine = "iCloud is slowing sync down"
+    /// Throttling this long shows `slowingLine` (spec §9).
+    nonisolated static let slowingAfter: TimeInterval = 60
+
+    /// The sentence for an iCloud account the Mac can't use (today's
+    /// `MobileLinkError.account` copy); nil when it is fine or unknown, and
+    /// for a missing entitlement, which `needsSignedBuild` says.
+    nonisolated static func accountLine(_ account: String) -> String? {
+        switch account {
+        case "no_account": "Mobile isn't available on this Mac: iCloud is off."
+        case "restricted": "Mobile isn't available on this Mac: iCloud is restricted by your organization."
+        case "temporarily_unavailable": "Mobile isn't available on this Mac: iCloud account temporarily unavailable"
+        default: nil
+        }
+    }
     nonisolated static let removeTitle = "Remove…"
     nonisolated static let removeConfirmTitle = "Remove"
     nonisolated static let allowTitle = "Allow…"
@@ -79,6 +98,8 @@ extension MobileSettingsModel {
             return on("Mobile's data on this Mac can't be read.")
         case "start_failed":
             return on("Mobile couldn't start. It tries again with the next sync.")
+        case "swift_beside_go":
+            return OffCopy(title: swiftBesideGoTitle, detail: swiftBesideGoDetail, showsToggle: false, toggleOn: false, managed: false)
         case "":
             return on("Mobile is not running. It starts with the next sync.")
         default:

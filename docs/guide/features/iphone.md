@@ -22,7 +22,7 @@ iCloud keeps a Development and a Production environment, and records saved in on
 
 A phone run from Xcode is Development, and only pairs with a Mac built for Development. Mixed pairs fail silently: the phone never sees the Mac.
 
-A Mac build without iCloud signing links phones over Relay only. An unsigned phone build runs a demo.
+A Mac build without iCloud signing shows **Needs a signed build** and links over Relay only. An unsigned phone build runs a demo.
 
 ## Using it
 
@@ -132,14 +132,14 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **The Mac doesn't show up on the phone.** Check that Watchtower is open on the Mac, **Mobile sync** is on, the Mac is awake, the build is signed, and iCloud is on. If it still does not appear, check the environment pairing above.
 - **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone needs an iCloud account; the Mac needs one too ("Mobile isn't available on this Mac: iCloud is off.").
-- **Another Apple ID won't link.** The message "This Mac can't share with another Apple ID right now" means the Mac's share failed. Show a new code and try again.
+- **Another Apple ID won't link.** "This Mac can't share with another Apple ID right now": the Mac's share failed. Show a new code.
 - **"<Mac> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
-- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
+- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
 - **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
 - **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
-- **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit Watchtower. Closing the window is fine; the app keeps running in the menu bar.
+- **Nothing updates.** Mobile stops when you quit Watchtower. Closing the window is fine.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 

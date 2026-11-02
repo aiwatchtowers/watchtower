@@ -152,6 +152,10 @@ type hubRuntime struct {
 	unreachable bool
 	lastRelay   time.Time
 	lastTouch   time.Time // a phone's last write the hub saw (the active poll)
+	// storedContact: the last phone contact hub_meta holds (desktop_facts.go).
+	storedContact time.Time
+	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
+	ckAccount transport.Account
 }
 
 // loadIdentity reads the hub identity from the hub dir's 0600 file,
@@ -403,6 +407,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		}()
 	}
 	h.startDesktop(hctx)
+	h.loadPhoneContact()
 	h.kick(h.passKick)
 	h.kick(h.linkKick)
 	h.kick(h.houseKick)
@@ -952,6 +957,8 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 // housekeeping is the per-cycle upkeep: expired link requests, the epoch's
 // age and seq cap, and the daily hygiene (CloudKit sweep, ledger prune).
 func (h *hubRuntime) housekeeping(ctx context.Context) {
+	h.refreshCloudKitAccount(ctx)
+	h.savePhoneContact()
 	if err := h.center.Sweep(); err != nil {
 		log.Printf("hub: link sweep failed (%s)", errClass(err))
 	}

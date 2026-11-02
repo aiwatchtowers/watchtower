@@ -42,6 +42,9 @@ final class HubCenter {
     /// Bumped on each `switched` event and each pairing that linked a phone:
     /// what Settings → Mobile reads again on (Task 23).
     private(set) var linksChanged = 0
+    /// When a phone was last in touch, from the last answered heartbeat;
+    /// nil while no hub answers (the keep-awake's input, Task 23).
+    @ObservationIgnored private(set) var lastPhoneContact: Date?
 
     /// A watch connection got its snapshot: the hub serves its socket, so
     /// what it queued while no watch listened is read again (the phone
@@ -188,12 +191,14 @@ final class HubCenter {
             return
         }
         beatRefusedLogged = false
+        lastPhoneContact = answer.phoneContactAt
         await sendView(force: sent == nil || answer.viewNeeded)
     }
 
     /// The first beat of a streak without an answer: logged (unless simply
     /// no hub), and the status read from the CLI.
     private func noAnswer(_ error: any Error) async {
+        lastPhoneContact = nil
         guard reach != .silent else { return }
         reach = .silent
         watched = nil

@@ -10,6 +10,8 @@ import WatchtowerCore
 enum MobileSettingsShotFixtures {
     enum Frame: String, CaseIterable {
         case empty, loading, error, busy, phones, narrow, off
+        case swiftBesideGo = "swift-beside-go"
+        case iCloud = "icloud"
         case keptRecordings = "kept-recordings"
         case keptRecordingsNarrow = "kept-recordings-narrow"
 
@@ -22,6 +24,8 @@ enum MobileSettingsShotFixtures {
             case .phones: "mobileSettingsPhones"
             case .narrow: "mobileSettingsNarrow"
             case .off: "mobileSettingsOff"
+            case .swiftBesideGo: "mobileSettingsSwiftBesideGo"
+            case .iCloud: "mobileSettingsICloud"
             case .keptRecordings: "mobileSettingsKeptRecordings"
             case .keptRecordingsNarrow: "mobileSettingsKeptRecordings-narrow"
             }
@@ -31,7 +35,8 @@ enum MobileSettingsShotFixtures {
             switch self {
             case .narrow: NSSize(width: 380, height: 720)
             case .keptRecordingsNarrow: NSSize(width: 380, height: 860)
-            case .loading, .error, .off: NSSize(width: 640, height: 140)
+            case .loading, .error, .off, .swiftBesideGo: NSSize(width: 640, height: 140)
+            case .iCloud: NSSize(width: 640, height: 520)
             case .empty: NSSize(width: 640, height: 420)
             case .keptRecordings: NSSize(width: 640, height: 700)
             case .busy, .phones: NSSize(width: 640, height: 640)
@@ -59,6 +64,17 @@ enum MobileSettingsShotFixtures {
             model.present(failure: "The hub state dir is locked and no hub answers on its control socket.")
         case .off:
             model.present(status: MobileHubCLI.Status(state: "off", reason: "policy_off"), phones: [], jobs: nil)
+        case .swiftBesideGo:
+            model.present(status: MobileHubCLI.Status(state: "off", reason: "swift_beside_go"), phones: [], jobs: nil)
+        case .iCloud:
+            // Today's iCloud lines: an unsigned build, the account's sentence, CloudKit slowing sync down.
+            let cloud = MobileHubCLI.Status.CloudKit(account: "no_account", throttledSince: now.addingTimeInterval(-120), signed: false)
+            var status = running()
+            status = MobileHubCLI.Status(
+                state: status.state, transport: status.transport, recordings: status.recordings, name: status.name,
+                switchedAt: status.switchedAt, switchedBy: status.switchedBy, cloudKit: cloud
+            )
+            model.present(status: status, phones: [], jobs: nil)
         case .empty:
             model.present(status: running(), phones: [], jobs: nil)
         case .phones, .narrow:
