@@ -227,7 +227,49 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         XCTAssertTrue(wantsSocket)
     }
 
+    /// Final review I2: right after `promote_pairing` the phone is not a reader of the hub's data zone yet (Phase 3
+    /// R5), so the socket refuses it. Once the hub names the phone, the next successful pull of the data lane
+    /// subscribes it again: the zone's next record arrives live, with no stop and start and no second socket.
+    func testARefusedZoneGetsLiveEventsOnceTheHubAddsThePhoneAsAReader() async throws {
+        let (phone, tally, macs) = try await paired(macs: [1])
+        let mac = macs[0]
+        _ = try await mac.perform(.setHubReaders(Relay_V1_SetHubReaders()))
+        let session = HostedRelaySession(client: phone)
+        let store = try TransportStore.inMemory()
+        let transport = try transport(session, mac: mac, store: store)
+        await transport.start()
+        let data = dataZone(mac)
+        let refused = await until { await transport.refusedZones.contains(data) }
+        XCTAssertTrue(refused, "the socket never refused the data zone")
+
+        var readers = Relay_V1_SetHubReaders()
+        readers.phoneDeviceIds = [phone.deviceID]
+        _ = try await mac.perform(.setHubReaders(readers))
+        let mark = backend.opLog.count
+        try await transport.pull()
+        await eventually { self.subscribed(after: mark).contains(data) }
+
+        try await save(mac, data, "live")
+        await eventually {
+            (try? store.changes(in: .data, since: nil).changed.map(\.recordName))?.contains("live") == true
+        }
+        let left = await transport.refusedZones
+        XCTAssertTrue(left.isEmpty)
+        XCTAssertEqual(tally.dials, 1, "no stop and start")
+    }
+
     // MARK: - Helpers
+
+    /// Polls `condition` (pumping the fake's clock) until it holds or 5 s pass.
+    private func until(_ condition: @escaping () async -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if await condition() { return true }
+            pump()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return await condition()
+    }
 
     /// Dials and displacements (`GoingAway`) of one client.
     final class SocketTally: Sendable {

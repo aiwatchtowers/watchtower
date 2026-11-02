@@ -105,6 +105,7 @@ extension HostedRelayTransport {
                 buffered = true
             }
         }
+        await resubscribeIfRefused(zone)
         return buffered
     }
 
