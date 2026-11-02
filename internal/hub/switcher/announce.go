@@ -42,7 +42,7 @@ func (s *Switcher) Step(ctx context.Context) error {
 			skipped, err := s.rotate(r) // step 3
 			if err != nil || skipped {
 				if p := s.procs[r.From]; p != nil {
-					p.SetPaused(false) // not rotated: the old side is still the hub's
+					p.ResumeFor(pauseReason) // not rotated: the old side is still the hub's
 				}
 				if err != nil {
 					return err
@@ -272,7 +272,7 @@ func (s *Switcher) announce(r switchRecord) error {
 		return fmt.Errorf("switcher: queueing the switch notices: %w", err)
 	}
 	if p := s.procs[r.From]; p != nil {
-		p.SetPaused(false) // on standby now: it seals nothing in the new epoch
+		p.ResumeFor(pauseReason) // on standby now: it seals nothing in the new epoch
 	}
 	log.Printf("hub: transport switched from %s to %s (epoch %d, %d notices queued)", r.From, r.Target, r.Epoch, queued)
 	return nil
