@@ -28,8 +28,9 @@ final class ConfigService {
     private var providerBuckets: [String: [String: Any]] = [:]
     private var editedProviderBuckets: [String: [String: Any]] = [:]
     var aiModel: String?
-    var aiModelLight: String?
-    var aiModelStrong: String?
+    @ObservationIgnored private var editedModelTiers: Set<String> = []
+    var aiModelLight: String? { didSet { editedModelTiers.insert("light") } }
+    var aiModelStrong: String? { didSet { editedModelTiers.insert("strong") } }
     var aiOllamaURL: String?
     var aiWorkers: Int?
     var briefingHour: Int = 8
@@ -120,7 +121,7 @@ final class ConfigService {
     }
 
     func reload() {
-        defer { loadedFields = editableFields }
+        defer { resetModelEditTracking() }
         guard let str = readConfigText() else { return }
 
         do {
@@ -234,6 +235,16 @@ final class ConfigService {
         try save()
     }
 
+    private func resetModelEditTracking() {
+        editedModelTiers = []
+        editedProviderBuckets = [:]
+        loadedFields = editableFields
+    }
+
+    private func modelTierEdited(_ tier: String) -> Bool {
+        editedModelTiers.contains(tier)
+    }
+
     private func prepareProviderModels(_ ai: [String: Any]) {
         providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
         editedProviderBuckets = [:]
@@ -265,16 +276,37 @@ final class ConfigService {
         guard old != provider else { return }
         let legacy = aiModel == "claude-sonnet-4-6" ? nil : aiModel
         let strong = aiModelStrong?.isEmpty == false ? aiModelStrong : legacy
-        editedProviderBuckets[old] = ["models": [
+        let currentModels = [
             "light": Self.migratedModel(aiModelLight, provider: old),
             "strong": Self.migratedModel(strong, provider: old)
-        ]]
-        providerBuckets[old] = editedProviderBuckets[old]
+        ]
+        var edits = editedProviderBuckets[old]?["models"] as? [String: Any] ?? [:]
+        for tier in editedModelTiers { edits[tier] = currentModels[tier] }
+        if !edits.isEmpty { editedProviderBuckets[old] = ["models": edits] }
+        var cached = providerBuckets[old] ?? [:]
+        cached["models"] = currentModels
+        providerBuckets[old] = cached
         aiProvider = provider
         let models = providerBuckets[provider]?["models"] as? [String: Any] ?? [:]
         aiModelLight = models["light"] as? String
         aiModelStrong = models["strong"] as? String
         aiModel = nil
+        editedModelTiers = []
+    }
+
+    private func captureLegacyModels(
+        _ ai: [String: Any], original: String, selected: String, buckets: inout [String: [String: Any]]
+    ) {
+        guard original != selected || editedProviderBuckets[original] != nil,
+              buckets[original] == nil else { return }
+        let legacy = ai["models"] as? [String: Any] ?? [:]
+        let model = ai["model"] as? String
+        let fallback = model == "claude-sonnet-4-6" ? nil : model
+        let strong = legacy["strong"] as? String
+        buckets[original] = ["models": [
+            "light": Self.migratedModel(legacy["light"] as? String, provider: original),
+            "strong": Self.migratedModel(strong?.isEmpty == false ? strong : fallback, provider: original)
+        ]]
     }
 
     private func validateAISelection(_ selected: String, ai: [String: Any]) throws {
@@ -294,6 +326,10 @@ final class ConfigService {
     private func applyAISection(to yaml: inout [String: Any]) throws {
         var ai = (yaml["ai"] as? [String: Any]) ?? [:]
         var buckets = ai["providers"] as? [String: [String: Any]] ?? [:]
+        let selected = aiProvider ?? "claude"
+        try validateAISelection(selected, ai: ai)
+        let original = ai["provider"] as? String ?? "claude"
+        captureLegacyModels(ai, original: original, selected: selected, buckets: &buckets)
         for (id, edited) in editedProviderBuckets {
             var bucket = buckets[id] ?? [:]
             var models = bucket["models"] as? [String: Any] ?? [:]
@@ -301,29 +337,17 @@ final class ConfigService {
             bucket["models"] = models
             buckets[id] = bucket
         }
-        let selected = aiProvider ?? "claude"
-        try validateAISelection(selected, ai: ai)
-        let original = ai["provider"] as? String ?? "claude"
-        if original != selected && buckets[original] == nil {
-            let legacy = ai["models"] as? [String: Any] ?? [:]
-            let model = ai["model"] as? String
-            let fallback = model == "claude-sonnet-4-6" ? nil : model
-            let strong = legacy["strong"] as? String
-            buckets[original] = ["models": [
-                "light": Self.migratedModel(legacy["light"] as? String, provider: original),
-                "strong": Self.migratedModel(strong?.isEmpty == false ? strong : fallback, provider: original)
-            ]]
-        }
         if buckets[selected] != nil || !editedProviderBuckets.isEmpty || original != selected {
             var bucket = buckets[selected] ?? [:]
             var models = bucket["models"] as? [String: Any] ?? [:]
-            if original == selected || !editedProviderBuckets.isEmpty {
+            if modelTierEdited("light") {
                 models["light"] = aiModelLight ?? ""
-                models["strong"] = aiModelStrong ?? ""
-            } else {
-                models["light"] = models["light"] as? String ?? ""
-                models["strong"] = models["strong"] as? String ?? ""
             }
+            if modelTierEdited("strong") {
+                models["strong"] = aiModelStrong ?? ""
+            }
+            models["light"] = models["light"] as? String ?? ""
+            models["strong"] = models["strong"] as? String ?? ""
             bucket["models"] = models
             buckets[selected] = bucket
             ai["providers"] = buckets
@@ -529,12 +553,17 @@ final class ConfigService {
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)
-        editedProviderBuckets = [:]
-        loadedFields = editableFields
+        if let ai = yaml["ai"] as? [String: Any] {
+            providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
+            loadProviderModels()
+        }
+        resetModelEditTracking()
     }
 
     /// An edit made here still waits for `save()`.
-    var hasUnsavedEdits: Bool { !editedProviderBuckets.isEmpty || editableFields != loadedFields }
+    var hasUnsavedEdits: Bool {
+        !editedModelTiers.isEmpty || !editedProviderBuckets.isEmpty || editableFields != loadedFields
+    }
 
     /// Re-reads config.yaml when nothing awaits `save()`: the one shared copy
     /// (`AppState.sharedConfig`) catches up with a CLI or editor change each
@@ -546,7 +575,8 @@ final class ConfigService {
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
         "configPath", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
-        "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields", "_providerBuckets", "_editedProviderBuckets"
+        "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
+        "_providerBuckets", "_editedProviderBuckets", "editedModelTiers"
     ]
 
     /// Every settings field (the stored properties, by reflection, so a new
