@@ -232,7 +232,21 @@ func (r *vouchRig) admit(l linkedPhone) {
 	if err := l.store.PromotePairing(r.t.Context(), l.slot); err != nil {
 		r.t.Fatal(err)
 	}
-	r.waitState(StateRunning, "")
+	// The clock is frozen, so an unvouched hub's backstop read answers from
+	// its window's cache. When an in-flight HUB_NOT_VOUCHED answer lands
+	// after the slot was added it empties the transport's account state and
+	// only a fresh read reopens the gate; let one window pass per half
+	// second, as production time would.
+	tick := 0
+	eventually(r.t, 10*time.Second, "running/", func() bool {
+		if s := r.rec.last(); s.State == StateRunning && s.Reason == "" {
+			return true
+		}
+		if tick++; tick%50 == 0 {
+			r.clock.Advance(unvouchedPoll)
+		}
+		return false
+	})
 }
 
 // opsOutsidePairZones lists every zone op outside a pair/ zone and every
