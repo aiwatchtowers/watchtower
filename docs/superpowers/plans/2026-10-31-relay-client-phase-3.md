@@ -1333,3 +1333,4 @@ Already approved, listed for reference only:
 - the routing test's name and place (Phase 2 R16, ask #854);
 - the `pair/<slot>` zone in Phase 3 (Phase 2 Owner approval 6, ask #854);
 - 7-day retention for every rotation (ask #843; R8 only applies it on the phone and sets the cap).
+- Task 10 review additions (ask #915): `NOT_FOUND` at `open_pairing` shows its own failure "<Mac> isn't on Relay yet / Open Watchtower on the Mac and try again" with Try Again (`LinkFailure.macNotOnRelay`); `LinkingViewModelTests.testANewerCodeVersionAsksToUpdateTheApp` scans a v5 code, because a v4 code without `transport` now links over iCloud (joins Owner approval 5's list); a full phone registry when a confirmed link finishes is `.needsOwner(.tooManyMacs)` with "Too many Macs on this iPhone" instead of an endless retry. `LinkFailure.relayReplacementLimit` was dropped (the relay never returns that code at `open_pairing`).
