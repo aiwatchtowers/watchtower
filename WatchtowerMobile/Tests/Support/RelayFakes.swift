@@ -263,6 +263,7 @@ final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
     }
 
     func promote(slot: String) async throws {
+        await waitIfParked("promote")
         try call("promote", slot)
         let lost: (any Error)? = lock.withLock {
             if let mac = state.slotMacs[slot], !state.slots.contains(mac) { state.slots.append(mac) }

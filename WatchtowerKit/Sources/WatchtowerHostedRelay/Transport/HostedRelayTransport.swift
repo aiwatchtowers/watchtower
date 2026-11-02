@@ -49,6 +49,9 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     var attached = false
     /// Counts this transport's attaches: a `.stopped` routed to an earlier one is stale.
     var attachGeneration = 0
+    /// The relay zones the socket refused for the current attach (the session dropped them from its union):
+    /// subscribed again after the next successful pull of their lane (`resubscribeIfRefused`).
+    var refusedZones: Set<String> = []
     /// Set by an App Attest `.notSupported`/`.updateRequired`; cleared by `start()`.
     var stoppedBy: HostedRelayAttestError?
     /// Set by an App Attest `.retryLater`; cleared by `start()` and by an op that reached the relay.
@@ -270,6 +273,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
                 Self.logger.error("relay pull after a zone event failed, \(Self.kind(lanes[0]), privacy: .public)")
             }
         case let .zoneRefused(zone, error):
+            if generation == nil || generation == attachGeneration { refusedZones.insert(zone) }
             // A pair zone is both lanes: the refusal is noted once, for the relay lane (the hello's).
             await note(error, zone: cloudZones(zone).last)
         case .control:
@@ -301,10 +305,10 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         guard wantsSocket, !attached, held() == nil else { return }
         attached = true
         attachGeneration += 1
+        refusedZones = []
         let generation = attachGeneration
         let id = ObjectIdentifier(owner)
-        let zones = dataZone == mailboxZone ? [dataZone] : [dataZone, mailboxZone]
-        await session.attach(owner: id, zones: zones) { [weak self] event in
+        await session.attach(owner: id, zones: socketZones) { [weak self] event in
             await self?.handle(event, generation: generation)
         }
         // A `stop()` while attaching.
@@ -315,6 +319,19 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         guard attached else { return }
         attached = false
         await session.detach(owner: ObjectIdentifier(owner))
+    }
+
+    /// The relay zones this transport's socket subscribes (one for a pair zone).
+    nonisolated var socketZones: [String] {
+        dataZone == mailboxZone ? [dataZone] : [dataZone, mailboxZone]
+    }
+
+    /// After a successful pull of `zone`'s lane: a relay zone the socket refused for this attach is readable again
+    /// (the HTTPS read passed the same check), so the socket subscribes it again, with no stop and start.
+    func resubscribeIfRefused(_ zone: CloudZoneID) async {
+        guard attached, refusedZones.remove(zoneName(zone)) != nil else { return }
+        Self.logger.info("relay socket: subscribing a refused zone again, \(Self.kind(zone), privacy: .public)")
+        await session.resubscribe(owner: ObjectIdentifier(owner), zones: socketZones)
     }
 
     /// The socket of this transport, when attached (the sim's `isLive`).

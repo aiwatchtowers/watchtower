@@ -362,10 +362,57 @@ final class LinkStore {
         set { write(newValue, key: Keys.pending) }
     }
 
-    /// The confirmed Relay links still finishing, by hub id.
+    /// The confirmed Relay links still finishing, by hub id. Decoded per entry: an entry this build cannot read (a
+    /// `Reason` or `State` case of a newer build, after a downgrade) is skipped with a log line, never the others,
+    /// and kept as it is stored by every write (`unreadablePromotedHubIDs`).
     var promoted: [String: PromotedLink] {
-        get { read([String: PromotedLink].self, key: Keys.promoted) ?? [:] }
-        set { write(newValue.isEmpty ? nil : newValue, key: Keys.promoted) }
+        get { promotedEntries().compactMapValues(\.link) }
+        set {
+            var entries = promotedEntries().filter { $0.value.link == nil && newValue[$0.key] == nil }
+            for (hubID, link) in newValue { entries[hubID] = .link(link) }
+            write(entries.isEmpty ? nil : entries, key: Keys.promoted)
+        }
+    }
+
+    /// The hubs of the promoted entries this build cannot read: their files and keys stay (the launch's orphan pass
+    /// keeps them); a build that reads them goes on with them.
+    var unreadablePromotedHubIDs: [String] {
+        promotedEntries().filter { $0.value.link == nil }.keys.sorted()
+    }
+
+    /// One stored promoted entry: a link, or JSON this build cannot read, kept as it is.
+    private enum PromotedEntry: Codable {
+        case link(PromotedLink)
+        case unreadable(JSONValue)
+
+        var link: PromotedLink? {
+            if case .link(let link) = self { return link }
+            return nil
+        }
+
+        init(from decoder: Decoder) throws {
+            if let link = try? PromotedLink(from: decoder) {
+                self = .link(link)
+            } else {
+                self = .unreadable(try JSONValue(from: decoder))
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            switch self {
+            case .link(let link): try link.encode(to: encoder)
+            case .unreadable(let value): try value.encode(to: encoder)
+            }
+        }
+    }
+
+    private func promotedEntries() -> [String: PromotedEntry] {
+        let entries = read([String: PromotedEntry].self, key: Keys.promoted) ?? [:]
+        let unreadable = entries.values.filter { $0.link == nil }.count
+        if unreadable > 0 {
+            Self.logger.error("unreadable promoted links skipped: \(unreadable, privacy: .public)")
+        }
+        return entries
     }
 
     /// Why `confirm` did not keep the link.

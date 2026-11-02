@@ -434,6 +434,32 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(host.linkedCalls.last?.record.linkedAt, issued)
     }
 
+    /// Final review M8: one promoted entry this build cannot read (a newer build's case, after a downgrade) is
+    /// skipped; the other confirmed links still read, and every write keeps the unreadable entry as stored.
+    func testAnUnreadablePromotedEntrySkipsOnlyItself() throws {
+        let readable = try seedPromoted(relayCode(), state: .confirmed)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let key = "link.promoted"
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        var entry = try XCTUnwrap(json[otherHub] as? [String: Any])
+        entry["state"] = ["fromANewerBuild": [String: Any]()]
+        json[otherHub] = entry
+        defaults.set(try JSONSerialization.data(withJSONObject: json), forKey: key)
+
+        XCTAssertEqual(store.promoted, [hub: readable], "the readable link is not dropped")
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub])
+
+        var moved = readable
+        moved.state = .promoteSent
+        store.update(moved)
+        XCTAssertEqual(store.promoted[hub]?.state, .promoteSent)
+        store.removePromoted(hub)
+        XCTAssertTrue(store.promoted.isEmpty)
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub], "kept as stored through every write")
+        let kept = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        XCTAssertEqual((kept[otherHub] as? [String: Any])?["state"] as? [String: [String: String]], ["fromANewerBuild": [:]])
+    }
+
     func testRemovingStateDisablesTheOtherRows() {
         let state = RelaySlotsState(macs: ["m1", "m2"], removing: "m1")
         let screen = RelaySlotsModel(state: state, links: [], promoted: [])
@@ -1152,6 +1178,59 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertNil(state(otherHub))
         XCTAssertFalse(try keysHeld(otherHub))
         XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+    }
+
+    /// Final review I1: a Cancel confirmed while a resume's `promote_pairing` is on the wire waits for that attempt;
+    /// the promote lands first, the slot removal after it, and nothing of the link is left.
+    func testCancelWhileAPromoteIsOnTheWireLeavesNoRowAndNoSlot() async throws {
+        // The account's slot for this Mac, so the promote puts the Mac in slots.
+        let slot = try await relay.open(mac: mac.deviceID).slot
+        try seedPromoted(relayCode(), state: .confirmed, slot: slot)
+        relay.park("promote")
+        let model = makeModel()
+        let resume = Task { await model.resumePromotedLinks() }
+        try await poll({ self.relay.isParked("promote") }, "the promote never went out")
+
+        let cancel = Task { await model.cancelPromoted(hub) }
+        try await poll({ !model.resumer.isLive(hub) }, "the cancel never fenced the attempt")
+        XCTAssertFalse(relay.ops.contains { $0.hasPrefix("removeSlot") }, "the cancel waits for the running attempt")
+        relay.release("promote")
+        let freed = await cancel.value
+        await resume.value
+
+        XCTAssertTrue(freed)
+        XCTAssertEqual(relay.ops.filter { $0.hasPrefix("promote") || $0.hasPrefix("removeSlot") },
+                       ["promote \(slot)", "removeSlot \(mac.deviceID)"])
+        XCTAssertFalse(relay.slots.contains(mac.deviceID), "no slot leaks")
+        XCTAssertTrue(host.linkedCalls.isEmpty, "never finished")
+        XCTAssertNil(host.row(hub))
+        XCTAssertTrue(store.promoted.isEmpty)
+        XCTAssertFalse(try keysHeld())
+        XCTAssertFalse(model.resumer.running.contains(hub))
+    }
+
+    /// Final review I1: the slots screen's Remove of a Mac whose link a background resume is finishing (`prepare`
+    /// parked) stops it before `linked`: no registry row, no slot, no keys.
+    func testRemovingAFinishingMacFromSlotsDuringABackgroundFinishLeavesNoRowAndNoSlot() async throws {
+        try seedPromoted(relayCode(), state: .promoted)
+        relay.slots = [mac.deviceID, "m2", "m3"]
+        host.parksPrepare = true
+        let model = makeModel()
+        let resume = Task { await model.resumePromotedLinks() }
+        try await poll({ self.host.preparedHubIDs.contains(hub) }, "the finish never reached prepare")
+
+        let removal = Task { await model.removeFromSlots(self.mac.deviceID) }
+        try await poll({ !model.resumer.isLive(hub) }, "the removal never fenced the attempt")
+        host.parksPrepare = false
+        await removal.value
+        await resume.value
+
+        XCTAssertTrue(host.linkedCalls.isEmpty, "linked never ran after the cancel")
+        XCTAssertNil(host.row(hub))
+        XCTAssertEqual(relay.slots, ["m2", "m3"])
+        XCTAssertTrue(store.promoted.isEmpty)
+        XCTAssertFalse(try keysHeld())
+        XCTAssertNil(model.relaySlots.failed)
     }
 
     func testManageMacsAfterConfirmationContinuesTheLinkAfterARemoval() async throws {

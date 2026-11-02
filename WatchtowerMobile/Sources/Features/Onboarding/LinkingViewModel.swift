@@ -1330,6 +1330,9 @@ extension LinkingViewModel {
         case let .needsOwner(reason):
             notice = .needsOwner(macName: macName, reason: reason)
             phase = .idle
+        case .none where !resumer.isLive(hubID):
+            // Cancelled meanwhile: nothing is left to finish.
+            phase = .idle
         case .waiting, .none:
             notice = .finishingInBackground(macName: macName)
             phase = .idle
@@ -1337,16 +1340,26 @@ extension LinkingViewModel {
     }
 
     /// `prepare` on the Mac's data zone (the pairing transport goes), then `linked` with the `.relay` route: the row
-    /// is saved and the promoted entry goes. False (logged) when either throws: the link resumes later.
+    /// is saved and the promoted entry goes. False (logged) when either throws: the link resumes later. A cancel
+    /// that began meanwhile (`resumer.isLive` false after an await) stops it before `linked`, or keeps the promoted
+    /// entry after it: the cancel, which waits for this attempt, then removes the session, the row and the keys.
     private func completePromoted(_ link: PromotedLink) async -> PromotedLinkResumer.Finish {
         guard let host, let device = identity.linkedDevice(for: link.link) else { return .failed }
         do {
             _ = try await host.prepare(route: link.link.route, hubID: link.hubID, fresh: false)
+            guard resumer.isLive(link.hubID) else {
+                Self.logger.notice("promoted link cancelled while it was finishing")
+                return .failed
+            }
             try await host.linked(link.link, device: device)
         } catch HubRegistryError.full {
             return .registryFull
         } catch {
             Self.logger.error("promoted link not finished: \(error.localizedDescription, privacy: .public)")
+            return .failed
+        }
+        guard resumer.isLive(link.hubID) else {
+            Self.logger.notice("promoted link cancelled while it was finishing")
             return .failed
         }
         store.removePromoted(link.hubID)
@@ -1368,14 +1381,22 @@ extension LinkingViewModel {
     }
 
     /// Settings → Macs → Cancel (after "Cancel the link to <Mac>?"), and Remove on the slots screen for a Mac still
-    /// finishing. Never waits on `prepare`: the farewell, sealed with the keys the phone holds, goes straight into
+    /// finishing. First the running attempt for it, if any, stops (`resumer.stop`: a relay call on the wire lands
+    /// before the slot removal below; nothing after it). That wait may cover a `prepare` the attempt is inside; the
+    /// cancel itself starts none. Then the farewell, sealed with the keys the phone holds, goes straight into
     /// the mailbox (10 s bound; kept on failure); then `remove_slot`, always (kept on failure); then the hub's keys,
     /// session, directory and the promoted entry go, whatever those did. Returns whether the slot is free.
     @discardableResult
     func cancelPromoted(_ hubID: String) async -> Bool {
-        guard let link = store.promoted[hubID], let host, !ending.contains(hubID) else { return false }
+        guard store.promoted[hubID] != nil, let host, !ending.contains(hubID) else { return false }
         ending.insert(hubID)
-        defer { ending.remove(hubID) }
+        defer {
+            ending.remove(hubID)
+            resumer.forget(hubID)
+        }
+        await resumer.stop(hubID)
+        // Read again: the attempt may have moved it to a new slot.
+        guard let link = store.promoted[hubID] else { return false }
         let route = link.link.route
         var sent = false
         if let device = identity.linkedDevice(for: link.link),
@@ -1394,7 +1415,6 @@ extension LinkingViewModel {
             host.dropFarewell(hubID)
         }
         store.removePromoted(hubID)
-        resumer.forget(hubID)
         _ = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
         removeKeys(hubID)
         refreshLinks()

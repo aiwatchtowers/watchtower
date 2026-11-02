@@ -15,6 +15,8 @@ import WatchtowerSync
 ///   where one is needed (never a hello: the keys are held) and vouches and promotes.
 /// A definite refusal moves the link to `.needsOwner(reason)` with its keys kept; a transient answer changes nothing.
 /// Never a second hello, never a promote of a slot the account already shows granted, never a key deletion.
+/// A cancel (`stop`) fences the link: the attempt checks `isLive` before every relay write, store write and `finish`,
+/// and the cancel waits for it before it removes the slot and the files.
 @MainActor
 @Observable
 final class PromotedLinkResumer {
@@ -45,6 +47,11 @@ final class PromotedLinkResumer {
     @ObservationIgnored private let clock: any LinkClock
     @ObservationIgnored private var failures: [String: Int] = [:]
     @ObservationIgnored private var notBefore: [String: Date] = [:]
+    /// The running attempt of each hub, so a cancel can wait for it (`stop`).
+    @ObservationIgnored private var attempts: [String: Task<Outcome, Never>] = [:]
+    /// The hubs being cancelled: no new attempt starts, and a running one stops at its next check, before any
+    /// further relay write or `finish`.
+    @ObservationIgnored private var stopping: Set<String> = []
     /// How `finish` ended.
     enum Finish: Equatable {
         case linked
@@ -77,11 +84,15 @@ final class PromotedLinkResumer {
 
     /// One attempt for `hubID`. `ownerAsked`: the owner's Try Again (a `.needsOwner` link goes on).
     func run(_ hubID: String, ownerAsked: Bool) async -> Outcome {
-        guard !running.contains(hubID), let link = store.promoted[hubID] else { return .none }
+        guard !running.contains(hubID), !stopping.contains(hubID), let link = store.promoted[hubID] else { return .none }
         running.insert(hubID)
         failed.remove(hubID)
-        let outcome = await step(link, ownerAsked: ownerAsked)
+        let attempt = Task { await self.step(link, ownerAsked: ownerAsked) }
+        attempts[hubID] = attempt
+        var outcome = await attempt.value
+        attempts[hubID] = nil
         running.remove(hubID)
+        if stopping.contains(hubID) { outcome = .none }
         switch outcome {
         case .waiting:
             failed.insert(hubID)
@@ -96,8 +107,21 @@ final class PromotedLinkResumer {
         return outcome
     }
 
-    /// Forgets a cancelled link's attempt state.
+    /// A cancel of `hubID` begins: no new attempt starts, and the running one, if any, stops at its next check
+    /// (a relay call already on the wire still lands). Returns once that attempt ended; `forget` ends the fence.
+    func stop(_ hubID: String) async {
+        stopping.insert(hubID)
+        _ = await attempts[hubID]?.value
+    }
+
+    /// The link is still confirmed and no cancel of it began: an attempt may write to the relay or finish it.
+    func isLive(_ hubID: String) -> Bool {
+        !stopping.contains(hubID) && store.promoted[hubID] != nil
+    }
+
+    /// Forgets a cancelled or completed link's attempt state (and a cancel's fence).
     func forget(_ hubID: String) {
+        stopping.remove(hubID)
         failed.remove(hubID)
         failures[hubID] = nil
         notBefore[hubID] = nil
@@ -129,6 +153,7 @@ final class PromotedLinkResumer {
         if macs.contains(link.macDeviceID) { return await promoted(link) }
         var link = link
         if reason.needsNewSlot || clock.now() >= link.slotExpiresAt {
+            guard isLive(link.hubID) else { return .none }
             do {
                 let slot = try await relay.open(mac: link.macDeviceID)
                 link.slot = slot.slot
@@ -146,6 +171,7 @@ final class PromotedLinkResumer {
     private func vouchAndPromote(_ link: PromotedLink) async -> Outcome {
         var link = link
         if let outcome = await vouch(&link) { return outcome }
+        guard isLive(link.hubID) else { return .none }
         link.state = .promoteSent
         store.update(link)
         return await promote(link, vouchFirstIfStale: false, vouchedAgain: false)
@@ -157,6 +183,7 @@ final class PromotedLinkResumer {
             Self.logger.error("promoted link without the Mac's relay key")
             return needsOwner(link, .notConfirmed)
         }
+        guard isLive(link.hubID) else { return .none }
         do {
             try await relay.vouch(hubDeviceID: link.macDeviceID, authPub: authPub)
         } catch let refusal as HostedRelayPairing.VouchRefusal {
@@ -183,6 +210,7 @@ final class PromotedLinkResumer {
         if vouchFirstIfStale, link.vouchedAt.map({ clock.now().timeIntervalSince($0) >= Self.vouchLifetime }) ?? true {
             if let outcome = await vouch(&link) { return outcome }
         }
+        guard isLive(link.hubID) else { return .none }
         do {
             try await relay.promote(slot: link.slot)
         } catch HostedRelayError.server(code: .hubNotVouched, _) {
@@ -205,6 +233,7 @@ final class PromotedLinkResumer {
     }
 
     private func promoted(_ link: PromotedLink) async -> Outcome {
+        guard isLive(link.hubID) else { return .none }
         var link = link
         link.state = .promoted
         store.update(link)
@@ -212,6 +241,7 @@ final class PromotedLinkResumer {
     }
 
     private func complete(_ link: PromotedLink) async -> Outcome {
+        guard isLive(link.hubID) else { return .none }
         switch await finish(link) {
         case .linked: return .linked
         case .failed: return .waiting
@@ -222,6 +252,7 @@ final class PromotedLinkResumer {
     }
 
     private func needsOwner(_ link: PromotedLink, _ reason: PromotedLink.Reason) -> Outcome {
+        guard isLive(link.hubID) else { return .none }
         var link = link
         link.state = .needsOwner(reason)
         store.update(link)

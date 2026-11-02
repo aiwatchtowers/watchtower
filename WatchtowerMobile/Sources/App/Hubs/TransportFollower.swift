@@ -47,6 +47,9 @@ final class TransportFollower {
     private let now: () -> Date
     /// The opened keybox of each `transport_switched` being decided, by control id.
     private var keyboxes: [String: Keybox] = [:]
+    /// The last decision started: each one waits for the one before (`handle(_:)`), so the feed, the hydrator and the
+    /// side reader never interleave two decisions of this hub.
+    private var lastDecision: Task<Bool, Never>?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "TransportFollower")
 
     init(hubID: String, outbox: ActionOutbox, host: any TransportFollowerHost, now: @escaping () -> Date = Date.init) {
@@ -90,15 +93,29 @@ final class TransportFollower {
     }
 
     /// One input through the policy, its commands executed: true once decided (a control's `markHandled`, or a
-    /// marker's decision), false when the policy leaves it for later or a step could not be done.
+    /// marker's decision), false when the policy leaves it for later or a step could not be done. Decisions of this
+    /// hub run one at a time, in call order.
     func handle(_ input: FollowerInput) async -> Bool {
-        guard let host, let link = host.followerLink(hubID: hubID) else { return false }
+        let previous = lastDecision
+        let decision = Task {
+            _ = await previous?.value
+            return await self.decide(input)
+        }
+        lastDecision = decision
+        return await decision.value
+    }
+
+    private func decide(_ input: FollowerInput) async -> Bool {
+        guard let host, let asked = host.followerLink(hubID: hubID) else { return false }
+        let canUseRelay = await relayUse(input, asked, host)
+        // Read again after the relay call: the row may have moved meanwhile.
+        guard let link = host.followerLink(hubID: hubID) else { return false }
         guard let epoch = host.newestEpoch(hubID: hubID) else {
             Self.logger.notice("transport input waits for the Keychain")
             return false
         }
         let state = FollowerState(
-            route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: await relayUse(input, link, host),
+            route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
             leftTransport: link.leftTransport)
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
         guard !commands.isEmpty else {
@@ -166,7 +183,11 @@ final class TransportFollower {
             return false
         }
         guard await moveOutbox(plan, moves: moves) else { return false }
-        if let move = plan.move, !persist(move, next: next, link: link, host: host) { return false }
+        if let move = plan.move, !persist(move, next: next, link: link, host: host) {
+            // Nothing moved: the session goes on on its route, so its outbox writes there again.
+            if moves { await outbox.releaseFlushes() }
+            return false
+        }
         if plan.merge {
             guard case let .switched(_, _, _, _, _, controlID, _) = input, let keybox = keyboxes[controlID],
                   await host.mergeSwitchKeys(keybox, hubID: hubID) else { return false }
@@ -197,6 +218,8 @@ final class TransportFollower {
             return true
         } catch {
             Self.logger.error("outbox not moved: \(String(describing: error), privacy: .public)")
+            // The route is not written either: the session goes on where it is.
+            if moves { await outbox.releaseFlushes() }
             return false
         }
     }

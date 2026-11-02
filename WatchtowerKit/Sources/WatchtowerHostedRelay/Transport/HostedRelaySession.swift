@@ -119,6 +119,15 @@ public actor HostedRelaySession {
         }
     }
 
+    /// Subscribes `owner`'s `zones` again: a zone the socket refused (dropped from the union at the refusal) that
+    /// its owner can read again, e.g. once the hub made the phone a reader (Phase 3 R5). An owner not attached is
+    /// ignored; a zone refused again is dropped again.
+    func resubscribe(owner id: ObjectIdentifier, zones: [String]) async {
+        guard owners[id] != nil else { return }
+        owners[id]?.zones = zones
+        await syncZones()
+    }
+
     // MARK: - Account-level signals
 
     /// Yields `event` on `events`, dropping a latched case's repeat (and on a private session's
