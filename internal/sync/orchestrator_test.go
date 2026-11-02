@@ -1218,7 +1218,9 @@ func TestRunCancelledEarlyResetsTheAPIStats(t *testing.T) {
 	err := ts.orch.Run(ctx, SyncOptions{})
 	require.ErrorIs(t, err, context.Canceled)
 	require.NotZero(t, searched.Load(), "the run reached its search phase")
-	assert.NotContains(t, logs.String(), "sync complete", "finishSync never ran")
+	// finishSync's own line starts with "sync complete:"; the search phase's
+	// "search sync complete:" must not match.
+	assert.NotRegexp(t, `(?m)^sync complete: `, logs.String(), "finishSync never ran")
 	counts, retries := ts.orch.slackClient.APIStats()
 	assert.Empty(t, counts, "the cancelled run's API stats are reset")
 	assert.Zero(t, retries)
