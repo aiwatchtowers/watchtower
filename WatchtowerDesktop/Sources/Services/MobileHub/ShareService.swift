@@ -1,3 +1,4 @@
+import CloudBridgeCore
 import CloudKit
 import Foundation
 import WatchtowerSync
@@ -34,126 +35,77 @@ protocol ShareService: Sendable {
     func removeParticipants(in zone: CloudZoneID, where shouldRemove: @escaping @Sendable (ShareParticipant) -> Bool) async throws
 }
 
-/// The CloudKit implementation over the Mac user's private database.
-/// Without the iCloud entitlement (an unsigned dev build) it never touches
-/// `CKContainer`, which would crash: the account reads `.unavailable` and
-/// every other call throws `ShareServiceError.noEntitlement`. The CloudKit
-/// calls themselves are not unit-tested: they need a signed build and a real
-/// account (the A14 device smoke).
+/// The CloudKit implementation over the Mac user's private database: a wrapper over CloudBridgeCore's
+/// `CloudKitZoneShares`, the share code the Go hub's CloudKit bridge serves too (moved there in Go hub phase 3,
+/// Task 10; this wrapper goes with the Swift hub). Without the iCloud entitlement (an unsigned dev build) it
+/// never touches `CKContainer`, which would crash: the account reads `.unavailable` and every other call
+/// throws `ShareServiceError.noEntitlement`. The CloudKit calls themselves are not unit-tested: they need a
+/// signed build and a real account (the A14 device smoke).
 struct CloudKitShareService: ShareService {
     /// Names the zones whose shares this service manages.
-    let hubID: String
-    let containerID: String
-    private let entitlementPresent: @Sendable () -> Bool
+    var hubID: String { zones.hubID }
+    var containerID: String { zones.containerID }
+    private let zones: CloudKitZoneShares
 
     init(
         hubID: String,
         containerID: String = WatchtowerCloud.containerID,
         entitlementPresent: (@Sendable () -> Bool)? = nil
     ) {
-        self.hubID = hubID
-        self.containerID = containerID
-        self.entitlementPresent = entitlementPresent ?? { CloudKitTransport.entitlementPresent(containerID: containerID) }
+        zones = CloudKitZoneShares(hubID: hubID, containerID: containerID, entitlementPresent: entitlementPresent)
     }
-
-    private func requireEntitlement() throws {
-        guard entitlementPresent() else { throw ShareServiceError.noEntitlement }
-    }
-
-    private var database: CKDatabase { CKContainer(identifier: containerID).privateCloudDatabase }
 
     /// The zone-wide share of one of this hub's zones (multi-hub spec §3.4).
     func shareID(_ zone: CloudZoneID) -> CKRecord.ID {
-        CKRecord.ID(
-            recordName: CKRecordNameZoneWideShare,
-            zoneID: HubZones(scope: .private, hubID: hubID).zoneID(for: zone)
-        )
-    }
-
-    private static func publicPermission(for zone: CloudZoneID) -> CKShare.ParticipantPermission {
-        zone == .data ? .readOnly : .readWrite
+        zones.shareID(zone)
     }
 
     func accountStatus() async -> CloudAvailability {
-        guard entitlementPresent() else { return .unavailable("missing iCloud entitlement (unsigned dev build?)") }
-        do {
-            switch try await CKContainer(identifier: containerID).accountStatus() {
-            case .available: return .available
-            case .noAccount: return .noAccount
-            case .restricted: return .restricted
-            case .couldNotDetermine: return .unavailable("iCloud account status could not be determined")
-            case .temporarilyUnavailable: return .unavailable("iCloud account temporarily unavailable")
-            @unknown default: return .unavailable("unknown iCloud account status")
-            }
-        } catch {
-            return .unavailable(error.localizedDescription)
+        switch await zones.accountStatus() {
+        case .available: return .available
+        case .noAccount: return .noAccount
+        case .restricted: return .restricted
+        case .noEntitlement: return .unavailable("missing iCloud entitlement (unsigned dev build?)")
+        case .couldNotDetermine: return .unavailable("iCloud account status could not be determined")
+        case .temporarilyUnavailable: return .unavailable("iCloud account temporarily unavailable")
+        case .unknown: return .unavailable("unknown iCloud account status")
+        case .failed(let message): return .unavailable(message)
         }
     }
 
     func ensureShares() async throws -> ShareURLs {
-        try requireEntitlement()
-        var urls: [CloudZoneID: String] = [:]
-        for zone in [CloudZoneID.data, .relay] {
-            let share: CKShare
-            if let existing = try await fetchShare(zone) {
-                share = existing
-            } else {
-                let created = CKShare(recordZoneID: shareID(zone).zoneID)
-                created[CKShare.SystemFieldKey.title] = "Watchtower"
-                created.publicPermission = .none
-                share = try await save(created)
-            }
-            guard let url = share.url?.absoluteString else { throw ShareServiceError.noURL(zone) }
-            urls[zone] = url
-        }
-        return ShareURLs(data: urls[.data] ?? "", relay: urls[.relay] ?? "")
+        let urls = try await mapped { try await zones.ensureShares() }
+        return ShareURLs(data: urls.data, relay: urls.relay)
     }
 
     func setPublicLink(open: Bool) async throws {
-        try requireEntitlement()
-        for zone in [CloudZoneID.data, .relay] {
-            guard let share = try await fetchShare(zone) else { continue }
-            share.publicPermission = open ? Self.publicPermission(for: zone) : .none
-            _ = try await save(share)
-        }
+        try await mapped { try await zones.setPublicLink(open: open) }
     }
 
     func participants(in zone: CloudZoneID) async throws -> [ShareParticipant] {
-        try requireEntitlement()
-        guard let share = try await fetchShare(zone) else { return [] }
-        return share.participants.filter { $0.role != .owner }.map(Self.participant)
+        try await mapped { try await zones.participants(in: zone) }
+            .map { ShareParticipant(userRecordName: $0.userRecordName, accepted: $0.accepted) }
     }
 
     func removeParticipants(in zone: CloudZoneID, where shouldRemove: @escaping @Sendable (ShareParticipant) -> Bool) async throws {
-        try requireEntitlement()
-        guard let share = try await fetchShare(zone) else { return }
-        let leaving = share.participants.filter { $0.role != .owner && shouldRemove(Self.participant($0)) }
-        guard !leaving.isEmpty else { return }
-        leaving.forEach(share.removeParticipant)
-        _ = try await save(share)
-    }
-
-    private static func participant(_ participant: CKShare.Participant) -> ShareParticipant {
-        ShareParticipant(
-            userRecordName: participant.userIdentity.userRecordID?.recordName,
-            accepted: participant.acceptanceStatus == .accepted
-        )
-    }
-
-    /// nil when the zone has no share (or no zone yet).
-    private func fetchShare(_ zone: CloudZoneID) async throws -> CKShare? {
-        do {
-            return try await database.record(for: shareID(zone)) as? CKShare
-        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
-            return nil
+        try await mapped {
+            try await zones.removeParticipants(in: zone) {
+                shouldRemove(ShareParticipant(userRecordName: $0.userRecordName, accepted: $0.accepted))
+            }
         }
     }
 
-    private func save(_ share: CKShare) async throws -> CKShare {
-        let (results, _) = try await database.modifyRecords(saving: [share], deleting: [], savePolicy: .changedKeys)
-        guard let result = results[share.recordID] else { throw ShareServiceError.noSaveResult }
-        guard let saved = try result.get() as? CKShare else { throw ShareServiceError.noSaveResult }
-        return saved
+    /// The moved code's errors as this service has always thrown them.
+    private func mapped<T>(_ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as ZoneShareError {
+            switch error {
+            case .noEntitlement: throw ShareServiceError.noEntitlement
+            case .noSaveResult: throw ShareServiceError.noSaveResult
+            case .noURL(let zone): throw ShareServiceError.noURL(zone)
+            }
+        }
     }
 }
 

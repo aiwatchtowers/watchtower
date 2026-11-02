@@ -8,8 +8,8 @@ const keychainAvailable = false
 
 type systemKeychain struct{}
 
-func (systemKeychain) put(string, string, []byte) error { return ErrNoKeychain }
-func (systemKeychain) get(string, string, []byte) (int, bool, error) {
+func (systemKeychain) Put(string, string, []byte) error { return ErrNoKeychain }
+func (systemKeychain) Get(string, string, []byte) (int, bool, error) {
 	return 0, false, ErrNoKeychain
 }
-func (systemKeychain) del(string, string) error { return ErrNoKeychain }
+func (systemKeychain) Del(string, string) error { return ErrNoKeychain }
