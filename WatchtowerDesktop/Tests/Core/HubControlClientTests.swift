@@ -7,10 +7,19 @@ import XCTest
 /// dir whose `answer` turns each request line into the lines sent back. A
 /// connection whose request is `desktop_watch` stays open and gets every
 /// line passed to `push` afterwards.
+///
+/// Descriptor numbers are reused as soon as they are closed, so no thread
+/// ever touches a number another thread may have closed: the accept thread
+/// alone closes the listener (woken through a pipe, `stop` waits for it),
+/// and a connection is shut down, written to or closed only under `lock`
+/// while it is still listed (a stopped server's accept loop once took the
+/// next test's connection on a reused listener number and closed it).
 final class FakeHubSocket: @unchecked Sendable {
     let path: String
     private let dir: String
     private let fd: Int32
+    private let wake: (read: Int32, write: Int32)
+    private let acceptDone = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var requests: [[String: Any]] = []
     private var watchers: [Int32] = []
@@ -24,15 +33,19 @@ final class FakeHubSocket: @unchecked Sendable {
         dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("wthc-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         path = dir + "/hub.sock"
-        fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in for (i, b) in bytes.enumerated() { raw[i] = b } }
         let bound = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard bound == 0, listen(fd, 8) == 0 else { throw HubControlError.io(errno) }
+        guard bound == 0, listen(listener, 8) == 0 else { throw HubControlError.io(errno) }
+        var pipeFDs: [Int32] = [0, 0]
+        guard pipe(&pipeFDs) == 0 else { throw HubControlError.io(errno) }
+        fd = listener
+        wake = (pipeFDs[0], pipeFDs[1])
         Thread.detachNewThread { [self] in acceptAll() }
     }
 
@@ -42,35 +55,54 @@ final class FakeHubSocket: @unchecked Sendable {
     var closedCount: Int { lock.withLock { closedConnections } }
 
     func push(_ line: String) {
-        for w in lock.withLock({ watchers }) { Self.send(w, line) }
+        lock.withLock { watchers.forEach { Self.send($0, line) } }
     }
 
-    /// Closes every open connection (the hub went away) but keeps listening.
+    /// Shuts every open connection down (the hub went away) but keeps
+    /// listening; each serving thread then closes its own.
     func dropConnections() {
-        let all = lock.withLock { () -> [Int32] in
-            let all = open
+        lock.withLock {
+            open.forEach { Darwin.shutdown($0, SHUT_RDWR) }
             open = []
             watchers = []
-            return all
         }
-        all.forEach { Darwin.shutdown($0, SHUT_RDWR) }
     }
 
+    /// Stops listening and returns once the accept thread closed the
+    /// listener, so its number cannot reach the next test's socket.
     func stop() {
         lock.withLock { stopped = true }
         dropConnections()
-        Darwin.shutdown(fd, SHUT_RDWR)
-        close(fd)
+        _ = Darwin.write(wake.write, [UInt8(1)], 1)
+        acceptDone.wait()
+        close(wake.write)
         unlink(path)
         try? FileManager.default.removeItem(atPath: dir)
     }
 
     private func acceptAll() {
+        defer {
+            close(fd)
+            close(wake.read)
+            acceptDone.signal()
+        }
         while true {
+            var fds = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0),
+                       pollfd(fd: wake.read, events: Int16(POLLIN), revents: 0)]
+            guard poll(&fds, 2, -1) >= 0 || errno == EINTR else { return }
+            if fds[1].revents != 0 || lock.withLock({ stopped }) { return }
+            guard fds[0].revents != 0 else { continue }
             let c = accept(fd, nil, nil)
-            guard c >= 0 else { return }
-            if lock.withLock({ stopped }) { close(c); return }
-            lock.withLock { open.append(c) }
+            guard c >= 0 else { continue }
+            let kept = lock.withLock { () -> Bool in
+                guard !stopped else { return false }
+                open.append(c)
+                return true
+            }
+            guard kept else {
+                close(c)
+                return
+            }
             Thread.detachNewThread { [self] in serve(c) }
         }
     }
@@ -85,8 +117,8 @@ final class FakeHubSocket: @unchecked Sendable {
                     closedConnections += 1
                     open.removeAll { $0 == c }
                     watchers.removeAll { $0 == c }
+                    close(c)
                 }
-                close(c)
                 return
             }
             buffer.append(contentsOf: chunk[0..<n])
@@ -95,8 +127,11 @@ final class FakeHubSocket: @unchecked Sendable {
                 buffer = Data(buffer[buffer.index(after: end)...])
                 guard let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
                 lock.withLock { requests.append(request) }
-                for out in answer(request) { Self.send(c, out) }
-                if request["op"] as? String == "desktop_watch" { lock.withLock { watchers.append(c) } }
+                let lines = answer(request)
+                lock.withLock {
+                    for out in lines { Self.send(c, out) }
+                    if request["op"] as? String == "desktop_watch" { watchers.append(c) }
+                }
             }
         }
     }
