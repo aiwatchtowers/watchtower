@@ -118,19 +118,19 @@ func TestSyncDaemon_GoHubLiveHeadlessAndDesktopWaitsForAdoption(t *testing.T) {
 		return nil, fs.ErrNotExist
 	}})
 	stopDesktop := startGoHub(context.Background(), &config.Config{}, nil, logger)
-	assert.Contains(t, buf.String(), "hub: waiting for adoption (live, desktop, awaiting_adoption)")
+	assert.Contains(t, buf.String(), "hub: held off (live, desktop, swift_beside_go)")
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		s, err := hub.ReadStatus(live)
 		require.NoError(t, err)
-		if s.State == hub.StateOff && s.Reason == hub.ReasonAwaitingAdoption && s.Host == string(hostkind.Desktop) {
+		if s.State == hub.StateOff && s.Reason == hub.ReasonSwiftBesideGo && s.Host == string(hostkind.Desktop) {
 			break
 		}
-		require.True(t, time.Now().Before(deadline), "the desktop hub never reported awaiting_adoption: %+v", s)
+		require.True(t, time.Now().Before(deadline), "the desktop hub never reported swift_beside_go: %+v", s)
 		time.Sleep(20 * time.Millisecond)
 	}
 	lock, err := state.AcquireLock(live)
-	require.NoError(t, err, "the hub lock is held beside the Swift hub's state")
+	require.NoError(t, err, "the hub lock must be free beside the Swift hub's state")
 	require.NoError(t, lock.Release())
 	stopDesktop()
 	require.NoError(t, os.RemoveAll(mobile))

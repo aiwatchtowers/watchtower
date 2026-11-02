@@ -276,7 +276,7 @@ func TestHubCLIRefusesWritesBeforeAdoptionOnADesktopHost(t *testing.T) {
 	setHubMeta(t, live, state.MetaEnabled, "1")
 	out, err = runHub(t, "status", "--json")
 	require.NoError(t, err)
-	assert.Equal(t, hub.ReasonAwaitingAdoption, decodeKeys(t, out)["reason"])
+	assert.Equal(t, hub.ReasonSwiftBesideGo, decodeKeys(t, out)["reason"])
 	for _, args := range [][]string{{"name", "acme"}, {"disable"}, {"desktop", "heartbeat"}} {
 		_, err := runHub(t, args...)
 		require.Error(t, err, "%v", args)

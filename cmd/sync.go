@@ -1063,10 +1063,13 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 	switch {
 	case o.Desktop != nil:
 		// The hub's Run keeps the never-two-hubs gate: say what it waits for.
-		if r := hub.AdoptionWait(o); r != "" {
-			logger.Printf("hub: waiting for adoption (live, desktop, %s)", r)
-		} else {
+		switch r := hub.AdoptionWait(o); r {
+		case "":
 			logger.Printf("hub: started (live, desktop)")
+		case hub.ReasonSwiftBesideGo:
+			logger.Printf("hub: held off (live, desktop, %s)", r)
+		default:
+			logger.Printf("hub: waiting for adoption (live, desktop, %s)", r)
 		}
 	case o.Mode == hub.ModeLive:
 		logger.Printf("hub: started (live, %s)", o.Host)
