@@ -98,23 +98,37 @@ final class OwnerConfirmIO: @unchecked Sendable {
         }
     }
 
-    /// The request line, or nil when none arrives in `within` seconds, the
-    /// line is longer than `limit`, or the connection closes first.
-    static func readLine(_ fd: Int32, limit: Int, within: TimeInterval) -> Data? {
+    /// What `readLine` got from a connection.
+    enum LineRead: Equatable {
+        case line(Data)
+        /// The line ran past the limit: the request is refused with a reason.
+        case tooLong
+        /// No line within the time, or the connection closed first.
+        case none
+    }
+
+    /// The request line (its newline not included, at most `limit` bytes
+    /// with it). Each read is scanned once for the newline, so a line of
+    /// megabytes costs one pass.
+    static func readLine(_ fd: Int32, limit: Int, within: TimeInterval) -> LineRead {
         let deadline = Date().addingTimeInterval(within)
         var data = Data()
-        var buf = [UInt8](repeating: 0, count: 4096)
-        while data.count <= limit {
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
             let left = deadline.timeIntervalSinceNow
-            guard left > 0 else { return nil }
+            guard left > 0 else { return .none }
             var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             guard poll(&pfd, 1, Int32(max(1, left * 1000))) > 0 else { continue }
             let n = read(fd, &buf, buf.count)
-            guard n > 0 else { return nil }
+            guard n > 0 else { return .none }
+            if let end = buf[0..<n].firstIndex(of: UInt8(ascii: "\n")) {
+                guard data.count + end + 1 <= limit else { return .tooLong }
+                data.append(contentsOf: buf[0..<end])
+                return .line(data)
+            }
             data.append(contentsOf: buf[0..<n])
-            if let end = data.firstIndex(of: UInt8(ascii: "\n")) { return data[..<end] }
+            if data.count >= limit { return .tooLong }
         }
-        return nil
     }
 
     /// True when the peer closed its side (the CLI ended).

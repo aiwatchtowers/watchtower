@@ -16,6 +16,7 @@ package ownerconfirm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,13 @@ const FileName = "owner-confirm.sock"
 // Version is the request format the Desktop understands.
 const Version = 1
 
+// MaxRequestBytes is the longest request line, its newline included, that
+// the Desktop reads — Swift OwnerConfirmServer.maxRequestBytes, keep the two
+// equal. The detail carries an action's args in full (a Confluence page
+// edit is the whole page), so it is far above any one line of text; a
+// longer request is refused here, before anything is sent.
+const MaxRequestBytes = 8 << 20
+
 // Wait bounds how long the CLI waits for the owner's click. It stays under
 // Claude Code's default 2-minute command timeout, so an unanswered request
 // ends as a plain refusal rather than a killed command.
@@ -51,6 +59,10 @@ const (
 
 // ErrNoDesktop is Ask's error when no Desktop answers on the socket.
 var ErrNoDesktop = errors.New("no Watchtower Desktop is running for this workspace")
+
+// ErrRequestTooLarge is Ask's error when the request line is longer than
+// MaxRequestBytes.
+var ErrRequestTooLarge = errors.New("the confirmation request is too large for Watchtower Desktop")
 
 // ErrUntrustedPeer is Ask's error when the process serving the socket is not
 // the signed Watchtower app.
@@ -87,8 +99,13 @@ var VerifyPeer = VerifyDesktop
 // Ask sends req to the Desktop on socketPath and waits for its reply until
 // ctx ends. ErrNoDesktop when nothing listens there; ErrUntrustedPeer when
 // the listener fails VerifyPeer — checked before the request is sent, so an
-// impostor never sees it and its answer is never read.
+// impostor never sees it and its answer is never read; ErrRequestTooLarge,
+// before dialing, when the request is over MaxRequestBytes.
 func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
+	line, err := encodeRequest(req)
+	if err != nil {
+		return Reply{}, err
+	}
 	var d net.Dialer
 	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	conn, err := d.DialContext(dialCtx, "unix", socketPath)
@@ -109,15 +126,18 @@ func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	defer stop()
-	req.V = Version
-	line, err := json.Marshal(req)
-	if err != nil {
-		return Reply{}, err
+	if _, werr := conn.Write(line); werr != nil {
+		// The Desktop may have refused the request and closed the
+		// connection with its reason already written: that reason is the
+		// answer, not the broken pipe.
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		if rep, rerr := readReply(conn); rerr == nil {
+			return rep, nil
+		}
+		return Reply{}, fmt.Errorf("sending the confirmation request: Watchtower Desktop closed the connection "+
+			"before reading it (%d bytes): %w", len(line), werr)
 	}
-	if _, err := conn.Write(append(line, '\n')); err != nil {
-		return Reply{}, fmt.Errorf("sending the confirmation request: %w", err)
-	}
-	raw, err := bufio.NewReader(io.LimitReader(conn, 64<<10)).ReadBytes('\n')
+	rep, err := readReply(conn)
 	if err != nil {
 		var ne net.Error
 		if ctx.Err() != nil || (errors.As(err, &ne) && ne.Timeout()) {
@@ -125,9 +145,35 @@ func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 		}
 		return Reply{}, fmt.Errorf("reading the Desktop's answer: %w", err)
 	}
+	return rep, nil
+}
+
+// encodeRequest is req's wire line with its newline: HTML characters are
+// kept as they are (a page body full of < and > stays its own size), and a
+// line over MaxRequestBytes is ErrRequestTooLarge.
+func encodeRequest(req Request) ([]byte, error) {
+	req.V = Version
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(req); err != nil { // Encode ends the line with '\n'
+		return nil, err
+	}
+	if buf.Len() > MaxRequestBytes {
+		return nil, fmt.Errorf("%w: %d bytes, at most %d", ErrRequestTooLarge, buf.Len(), MaxRequestBytes)
+	}
+	return buf.Bytes(), nil
+}
+
+// readReply reads the Desktop's one reply line.
+func readReply(conn net.Conn) (Reply, error) {
+	raw, err := bufio.NewReader(io.LimitReader(conn, 64<<10)).ReadBytes('\n')
+	if err != nil {
+		return Reply{}, err
+	}
 	var rep Reply
 	if err := json.Unmarshal(raw, &rep); err != nil {
-		return Reply{}, fmt.Errorf("reading the Desktop's answer: %w", err)
+		return Reply{}, err
 	}
 	return rep, nil
 }

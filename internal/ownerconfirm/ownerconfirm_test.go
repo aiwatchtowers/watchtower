@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,4 +214,79 @@ func TestVerifyDesktopFailsClosedWithoutCodesign(t *testing.T) {
 	t.Cleanup(func() { codesignPath = orig })
 	codesignPath = "/nonexistent/codesign"
 	assert.Error(t, VerifyDesktop(context.Background(), os.Getpid()))
+}
+
+// A Confluence page edit's detail is the whole page: a request far above
+// the old 64 KB line reaches the Desktop whole, its markup unescaped.
+func TestAskSendsALargeDetailWhole(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
+	path := shortSocket(t)
+	got := make(chan Request, 1)
+	serveOnce(t, path, `{"decision":"confirmed"}`, got)
+	trustPeer(t, nil)
+	detail := "Args: " + strings.Repeat(`<p class="x">страница &amp; текст</p>`, 20_000)
+
+	rep, err := Ask(context.Background(), path, Request{Verb: "approve an action", Detail: detail,
+		Args: []string{"actions", "approve", "5"}})
+	require.NoError(t, err)
+	assert.Equal(t, Confirmed, rep.Decision)
+	assert.Equal(t, detail, (<-got).Detail)
+
+	line, err := encodeRequest(Request{Detail: "<p>&</p>"})
+	require.NoError(t, err)
+	assert.Contains(t, string(line), `"detail":"<p>&</p>"`, "HTML characters are not escaped")
+}
+
+// A request over the Desktop's limit is refused before anything is sent:
+// the owner reads why, not a broken pipe.
+func TestAskRefusesARequestOverTheLimit(t *testing.T) {
+	path := shortSocket(t)
+	got := make(chan Request, 1)
+	serveOnce(t, path, `{"decision":"confirmed"}`, got)
+	trustPeer(t, nil)
+
+	_, err := Ask(context.Background(), path, Request{Verb: "x", Detail: strings.Repeat("a", MaxRequestBytes)})
+	require.ErrorIs(t, err, ErrRequestTooLarge)
+	select {
+	case <-got:
+		t.Fatal("an oversized request was sent")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A Desktop that refuses a request mid-way (writes its reason and closes
+// while the CLI still writes) is answered by that reason, not by the
+// broken pipe of the write.
+func TestAskReadsTheReasonOfADesktopThatClosedEarly(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
+	path := shortSocket(t)
+	l, err := net.Listen("unix", path)
+	require.NoError(t, err)
+	done := make(chan struct{})
+	t.Cleanup(func() { _ = l.Close(); <-done })
+	go func() {
+		defer close(done)
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		_, _ = c.Read(make([]byte, 16))
+		_, _ = c.Write([]byte(`{"decision":"denied","reason":"the request is too large"}` + "\n"))
+		_ = c.Close()
+	}()
+	trustPeer(t, nil)
+
+	rep, err := Ask(context.Background(), path, Request{Verb: "x", Detail: strings.Repeat("a", 4<<20)})
+	require.NoError(t, err)
+	assert.Equal(t, Denied, rep.Decision)
+	assert.Equal(t, "the request is too large", rep.Reason)
+}
+
+// Dual path: Swift OwnerConfirmServer.maxRequestBytes is the same 8 MiB.
+func TestMaxRequestBytesMatchesTheDesktop(t *testing.T) {
+	assert.Equal(t, 8<<20, MaxRequestBytes)
 }

@@ -107,8 +107,11 @@ package final class OwnerConfirmServer {
     /// How long a window may wait for the owner — past the CLI's own wait
     /// (Go `ownerconfirm.Wait`, 100 s), which ends the request first.
     package nonisolated static let promptTimeout: Duration = .seconds(110)
-    /// Longest request line read.
-    package nonisolated static let maxRequestBytes = 64 * 1024
+    /// Longest request line read, its newline included — Go
+    /// `ownerconfirm.MaxRequestBytes`, keep the two equal. The detail carries
+    /// an action's args in full (a Confluence page edit is the whole page).
+    package nonisolated static let maxRequestBytes = 8 * 1024 * 1024
+    package nonisolated static let tooLargeReason = "the request is too large to show for confirmation"
     /// Open connections at once; more are closed unread.
     package nonisolated static let maxConnections = 8
     /// Seconds a connection has to send its request line.
@@ -186,7 +189,14 @@ package final class OwnerConfirmServer {
     /// One connection, on the IO queue: read the line, ask the main actor,
     /// watch for a hang-up while the owner decides, write the answer.
     nonisolated private func serve(_ fd: Int32) {
-        guard let line = OwnerConfirmIO.readLine(fd, limit: Self.maxRequestBytes, within: Self.readTimeout) else {
+        let line: Data
+        switch OwnerConfirmIO.readLine(fd, limit: Self.maxRequestBytes, within: Self.readTimeout) {
+        case let .line(read):
+            line = read
+        case .tooLong:
+            return OwnerConfirmIO.write(fd, OwnerConfirmReply(decision: OwnerConfirmReply.denied,
+                                                              reason: Self.tooLargeReason))
+        case .none:
             return
         }
         let pid = OwnerConfirmIO.peerPID(fd)
