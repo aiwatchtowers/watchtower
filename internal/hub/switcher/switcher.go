@@ -319,6 +319,17 @@ func (s *Switcher) releasePublisher() {
 	}
 }
 
+// SetPublisher wires the publisher built on Front() (it needs the switcher
+// first); a switch in flight holds it at once.
+func (s *Switcher) SetPublisher(p *slices.Publisher) {
+	s.stepMu.Lock()
+	defer s.stepMu.Unlock()
+	s.c.Publisher = p
+	if s.Pending() {
+		s.holdPublisher()
+	}
+}
+
 // pauseOld pauses the processor of the transport r leaves (between its
 // rotation and its announce nothing may be sealed there in the new epoch).
 func (s *Switcher) pauseOld(r switchRecord) {
