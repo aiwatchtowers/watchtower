@@ -110,6 +110,9 @@ type hubRuntime struct {
 	rel, ck transport.Transport
 	sw      *switcher.Switcher
 	bridge  *cloudkit.Supervisor
+	// bridgeStop ends the bridge's supervisor and waits for it (stop calls
+	// it after the policy wipe, which may need the bridge).
+	bridgeStop func()
 	// relDown: the relay is not connected yet (a desktop host connects it
 	// in the link upkeep, so an unreachable relay never holds CloudKit up).
 	relDown bool
@@ -1016,10 +1019,13 @@ func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 		if published, err := publishedRecords(h.st, keep); err != nil {
 			log.Printf("hub: reading what was published failed (%s)", errClass(err))
 		} else {
+			// While the bridge still runs: it is stopped after the wipe.
+			wipeOthers(ctx, h.usedOthers(), h.data, published)
 			wipe(ctx, h.st, h.tr, h.data, published)
 		}
 		cancel()
 	}
+	h.stopBridge()
 	h.closeTransports()
 	h.kr.Wipe()
 	h.id.Zero()

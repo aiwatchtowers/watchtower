@@ -59,6 +59,9 @@ const (
 	// ReasonSessionHostV1: a v1 session host (an older app's) still runs
 	// the sessions; the hub waits for the v2 host.
 	ReasonSessionHostV1 = "session_host_v1"
+	// ReasonBridgeUnavailable: a desktop host whose build has no CloudKit
+	// bridge and which has no relay origin either: no transport to run.
+	ReasonBridgeUnavailable = "bridge_unavailable"
 )
 
 // Status.Adoption values: where the Swift hub's adoption stands.

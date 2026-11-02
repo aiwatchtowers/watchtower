@@ -239,9 +239,10 @@ func desktopAppProbe() hostkind.Probe {
 
 // TestHubCLIRefusesWritesBeforeAdoptionOnADesktopHost is Review Focus 1 on
 // the CLI (never two hubs): beside the Swift hub's state a desktop host's
-// status says awaiting_adoption, every write exits 1 and nothing is created
-// under the live dir (a sidecar there would make the adoption refuse it);
-// reading the phones creates nothing either.
+// status says awaiting_adoption — even over a Go sidecar with enabled = 1
+// written by hand — and every write exits 1 and writes nothing; with no Go
+// sidecar, nothing is created under the live dir (a sidecar there would
+// make the adoption refuse it).
 func TestHubCLIRefusesWritesBeforeAdoptionOnADesktopHost(t *testing.T) {
 	live, _ := hubLiveCLI(t, desktopAppProbe())
 	support, err := config.AppSupportDir()
@@ -270,6 +271,20 @@ func TestHubCLIRefusesWritesBeforeAdoptionOnADesktopHost(t *testing.T) {
 	assert.Equal(t, "[]", strings.TrimSpace(out))
 	_, err = os.Stat(live)
 	assert.True(t, errors.Is(err, fs.ErrNotExist), "the live dir was created beside the Swift hub's state")
+
+	// A Go sidecar with enabled = 1 written by hand changes nothing.
+	setHubMeta(t, live, state.MetaEnabled, "1")
+	out, err = runHub(t, "status", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, hub.ReasonAwaitingAdoption, decodeKeys(t, out)["reason"])
+	for _, args := range [][]string{{"name", "acme"}, {"disable"}, {"desktop", "heartbeat"}} {
+		_, err := runHub(t, args...)
+		require.Error(t, err, "%v", args)
+		assert.Equal(t, "Mobile on this Mac is run by the Watchtower app.", err.Error(), "%v", args)
+	}
+	assert.Equal(t, "1", hubMeta(t, live, state.MetaEnabled))
+	assert.Equal(t, "", hubMeta(t, live, state.MetaDisplayName))
+	require.NoError(t, os.RemoveAll(live))
 
 	// With no Swift state (a Mac that never ran it), the owner turns it on.
 	require.NoError(t, os.RemoveAll(mobile))

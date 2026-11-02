@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"log"
+	"time"
 
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/identity"
@@ -40,8 +41,8 @@ func (o Options) hubIdentity(st *state.Store) (identity.Identity, error) {
 // transports (Options.Transports), a headless host the relay alone.
 func hostInfo(o Options, name string, authPub ed25519.PublicKey) link.HostInfo {
 	h := link.HeadlessHost(name, authPub)
-	if len(o.Transports) > 0 {
-		h.Transports = append([]string(nil), o.Transports...)
+	if o.Desktop != nil {
+		h.Transports = desktopTransportList(o)
 	}
 	return h
 }
@@ -59,18 +60,14 @@ func (h *hubRuntime) desktopTransports(ctx context.Context, o Options) error {
 		h.rel = rel
 		_, h.relDown = rel.(relayConnector)
 	}
-	c := cloudkit.Config{Dir: o.Dir, HubID: h.kr.HubID().String(), RelayID: h.relayID, Clock: o.Clock}
-	switch d := o.Desktop; {
-	case d.launch != nil:
-		c.Launch = d.launch
-	case d.Bridge != "":
-		c.Launch = bridgeLauncher(d.Bridge, o.Dir)
-	}
-	if c.Launch != nil {
-		h.bridge = cloudkit.NewSupervisor(c)
-	} else {
+	c := cloudkit.Config{Dir: o.Dir, HubID: h.kr.HubID().String(), RelayID: h.relayID, Clock: o.Clock,
+		Launch: o.Desktop.launcher(o.Dir)}
+	if c.Launch == nil {
+		// No bridge: CloudKit is neither run nor offered (relay only).
 		log.Printf("hub: this build has no CloudKit bridge: CloudKit is unavailable")
+		return nil
 	}
+	h.bridge = cloudkit.NewSupervisor(c)
 	if o.Desktop.newCloudKit != nil {
 		h.ck = o.Desktop.newCloudKit(c)
 	} else {
@@ -126,8 +123,8 @@ func (h *hubRuntime) payingByDevice(ctx context.Context) (map[string]bool, error
 // relayT is the hosted relay's transport: the one transport elsewhere, the
 // relay of a desktop host (nil without a relay origin).
 func (h *hubRuntime) relayT() transport.Transport {
-	if h.sw != nil {
-		return h.rel
+	if h.sup.o.Desktop != nil {
+		return h.rel // also before the switcher exists
 	}
 	return h.tr
 }
@@ -220,15 +217,12 @@ func (h *hubRuntime) connectRelay(ctx context.Context) {
 	}
 }
 
-// startDesktop starts a desktop host's own goroutines under the hub's
-// context: the bridge's supervisor and the switcher.
+// startDesktop starts a desktop host's own goroutines: the bridge's
+// supervisor under a context of its own (stop ends it after the policy
+// wipe, which may still need the bridge) and the switcher under the hub's.
 func (h *hubRuntime) startDesktop(ctx context.Context) {
 	if h.bridge != nil {
-		h.wg.Add(1)
-		go func() {
-			defer h.wg.Done()
-			_ = h.bridge.Run(ctx)
-		}()
+		h.bridgeStop = runBridge(h.bridge)
 	}
 	if h.sw != nil {
 		h.wg.Add(1)
@@ -237,6 +231,135 @@ func (h *hubRuntime) startDesktop(ctx context.Context) {
 			_ = h.sw.Run(ctx)
 		}()
 	}
+}
+
+// runBridge runs sup until the returned stop, which ends it (the bridge
+// process goes with it) and waits.
+func runBridge(sup *cloudkit.Supervisor) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = sup.Run(ctx)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// stopBridge stops the bridge (a no-op without one).
+func (h *hubRuntime) stopBridge() {
+	if h.bridgeStop != nil {
+		h.bridgeStop()
+		h.bridgeStop = nil
+	}
+}
+
+// usedOthers are the transports besides the active one the hub may have
+// published on: a desktop host's other transport once a switch ever moved
+// it (hub_meta.switched_at). Their deletes are best effort.
+func (h *hubRuntime) usedOthers() []transport.Transport {
+	if h.sw == nil {
+		return nil
+	}
+	if _, ok, err := h.st.Meta(switcher.MetaSwitchedAt); err != nil || !ok {
+		return nil
+	}
+	other := h.rel
+	if h.tr.Kind() == transport.KindRelay {
+		other = h.ck
+	}
+	if other == nil {
+		return nil
+	}
+	return []transport.Transport{other}
+}
+
+// wipeOthers deletes recs from zone on each of trs, best effort: the
+// sidecar forgets a record only by the active transport's answer (wipe).
+func wipeOthers(ctx context.Context, trs []transport.Transport, zone string, recs []published) {
+	if len(recs) == 0 {
+		return
+	}
+	items := make([]transport.DeleteItem, len(recs))
+	for i, r := range recs {
+		items[i] = transport.DeleteItem{Name: r.wire}
+	}
+	for _, t := range trs {
+		if _, err := t.Delete(ctx, zone, items); err != nil {
+			log.Printf("hub: deleting %d published records on the %s failed (%s)", len(recs), t.Kind(), errClass(err))
+		}
+	}
+}
+
+// bridgeUpWait bounds the wait for a bridge started only for the policy
+// wipe of a stopped hub.
+const bridgeUpWait = 10 * time.Second
+
+// wipeStoppedDesktop is a stopped desktop host's policy wipe: the identity
+// from its recorded store (never created), the active transport by
+// hub_meta.transport — CloudKit through a bridge started for the wipe and
+// stopped after it — and the other one best effort once a switch moved the
+// hub. false: nothing could be tried (retried later).
+func (s *supervisor) wipeStoppedDesktop(ctx context.Context, published []published) bool {
+	o, d := s.o, s.o.Desktop
+	store, err := d.store(s.st, o.Dir)
+	if err != nil {
+		log.Printf("hub: policy off: wipe skipped (%s)", errClass(err))
+		return false
+	}
+	id, err := store.Load()
+	if err != nil {
+		log.Printf("hub: policy off: wipe skipped (%s)", errClass(err))
+		return false
+	}
+	defer id.Zero()
+	hubID, _, err := s.st.Meta(state.MetaHubID)
+	if err != nil {
+		log.Printf("hub: policy off: wipe skipped (%s)", errClass(err))
+		return false
+	}
+	relayID := identity.RelayDeviceID(id.RelayAuth.Public().(ed25519.PublicKey))
+	var ck, rel transport.Transport
+	if launch := d.launcher(o.Dir); launch != nil {
+		c := cloudkit.Config{Dir: o.Dir, HubID: hubID, RelayID: relayID, Clock: o.Clock, Launch: launch}
+		sup := cloudkit.NewSupervisor(c)
+		stop := runBridge(sup)
+		defer stop()
+		deadline := time.Now().Add(bridgeUpWait)
+		for !sup.Running() && time.Now().Before(deadline) && ctx.Err() == nil {
+			time.Sleep(50 * time.Millisecond)
+		}
+		if d.newCloudKit != nil {
+			ck = d.newCloudKit(c)
+		} else {
+			ck = cloudkit.New(c)
+		}
+		defer closeTransport(ck)
+	}
+	if o.RelayOrigin != "" {
+		if rel, err = o.newTransport(ctx, id, s.st, nil); err != nil {
+			log.Printf("hub: policy off: no relay for the wipe (%s)", startFailure(err))
+			rel = nil
+		} else {
+			defer closeTransport(rel)
+		}
+	}
+	active, other := ck, rel
+	if v, _, _ := s.st.Meta(switcher.MetaTransport); v == string(transport.KindRelay) || ck == nil {
+		active, other = rel, ck
+	}
+	if active == nil {
+		log.Printf("hub: policy off: wipe deferred (no transport)")
+		return false
+	}
+	zone := transport.DataZone(relayID)
+	if _, ok, _ := s.st.Meta(switcher.MetaSwitchedAt); ok && other != nil {
+		wipeOthers(ctx, []transport.Transport{other}, zone, published)
+	}
+	wipe(ctx, s.st, active, zone, published)
+	return true
 }
 
 // bridgeState is the status' bridge: "" off a desktop host.

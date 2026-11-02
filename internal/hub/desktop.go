@@ -59,9 +59,45 @@ type Desktop struct {
 	Bridge string
 
 	// Test seams (nil = production).
-	newCloudKit func(c cloudkit.Config) transport.Transport
-	hostCheck   func(ctx context.Context) error // sessionhost.Dial's answer
-	launch      func(ctx context.Context) (*os.Process, error)
+	newCloudKit   func(c cloudkit.Config) transport.Transport
+	hostCheck     func(ctx context.Context) error // sessionhost.Dial's answer
+	launch        func(ctx context.Context) (*os.Process, error)
+	identityStore func(st *state.Store, dir string) (identity.Staging, error)
+}
+
+// hasBridge: this build can run the CloudKit bridge.
+func (d *Desktop) hasBridge() bool { return d.Bridge != "" || d.launch != nil }
+
+// launcher is the bridge's launcher (nil = no bridge in this build).
+func (d *Desktop) launcher(dir string) func(ctx context.Context) (*os.Process, error) {
+	switch {
+	case d.launch != nil:
+		return d.launch
+	case d.Bridge != "":
+		return bridgeLauncher(d.Bridge, dir)
+	}
+	return nil
+}
+
+// store is the recorded identity store (identity.ForDesktopHost).
+func (d *Desktop) store(st *state.Store, dir string) (identity.Staging, error) {
+	if d.identityStore != nil {
+		return d.identityStore(st, dir)
+	}
+	return identity.ForDesktopHost(st, dir, d.Keychain)
+}
+
+// desktopTransportList is what a desktop host runs and announces: CloudKit
+// when this build has the bridge, the relay when an origin is set.
+func desktopTransportList(o Options) []string {
+	var out []string
+	if o.Desktop.hasBridge() {
+		out = append(out, wire.TransportCloudKit)
+	}
+	if o.RelayOrigin != "" {
+		out = append(out, wire.TransportRelay)
+	}
+	return out
 }
 
 // desktopOptions is Resolve's answer on a desktop host: live mode in
@@ -71,13 +107,11 @@ type Desktop struct {
 // the hub off until the gate opens (awaitDesktop, reconcile).
 func desktopOptions(o Options, cfg *config.Config, p hostkind.Probe, support string) Options {
 	o.RecordingsDir = filepath.Join(support, "recordings")
-	o.Transports = []string{wire.TransportCloudKit}
 	if origin := RelayOrigin(cfg); origin != "" {
 		if err := CheckRelayOrigin(origin); err != nil {
-			log.Printf("hub: the relay origin is not valid (%s): CloudKit only", errClass(err))
+			log.Printf("hub: the relay origin is not valid (%s): no relay", errClass(err))
 		} else {
 			o.RelayOrigin = origin
-			o.Transports = append(o.Transports, wire.TransportRelay)
 		}
 	}
 	o.Desktop = &Desktop{
@@ -85,6 +119,7 @@ func desktopOptions(o Options, cfg *config.Config, p hostkind.Probe, support str
 		Keychain:     identity.KeychainUsable,
 		Bridge:       findBridge(p, os.Executable),
 	}
+	o.Transports = desktopTransportList(o)
 	return o
 }
 
@@ -128,12 +163,15 @@ func bridgeLauncher(exe, dir string) func(ctx context.Context) (*os.Process, err
 
 // desktopGate is the never-two-hubs rule (spec §12.1), read-only: the reason
 // the hub stays off ("" = it may start), the adoption's state for the
-// status, and later = a MobileHub/ sidecar beside a Go hub that already has
-// its own state (never read). No Go sidecar: awaiting_adoption while the
-// Swift one is there, else disabled (the owner never turned Mobile on). A Go
-// sidecar that never adopted, or whose adoption and key hand-over finished
-// (adopt.HubMayStart), may start; one mid-adoption waits, or says
-// adoption_failed with its error class.
+// status, and later = a MobileHub/ sidecar that appeared after the adoption
+// (never read). While MobileHub/ holds a Swift sidecar and the Go sidecar
+// has no adopted_at, the hub stays off (awaiting_adoption, or
+// adoption_failed with its error class) whatever else the Go sidecar says —
+// no adopt_step, enabled = 1 written by hand, a sidecar left by a headless
+// run. With no Swift sidecar: no Go sidecar is disabled (the owner never
+// turned Mobile on); a Go sidecar that never adopted, or whose adoption and
+// key hand-over finished (adopt.HubMayStart), may start; one mid-adoption
+// waits.
 func desktopGate(dir, mobile string) (reason, adoption string, later bool, err error) {
 	swift := fileExists(filepath.Join(mobile, state.FileName))
 	if !fileExists(filepath.Join(dir, state.FileName)) {
@@ -151,11 +189,19 @@ func desktopGate(dir, mobile string) (reason, adoption string, later bool, err e
 	if err != nil {
 		return "", "", false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
 	}
+	at, _, err := st.Meta(adopt.MetaAdoptedAt)
+	if err != nil {
+		return "", "", false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+	}
 	may, err := adopt.HubMayStart(st)
 	if err != nil {
 		return "", "", false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
 	}
 	switch {
+	case swift && at == "" && adoption == AdoptionFailed:
+		return ReasonAdoptionFailed, adoption, false, nil
+	case swift && at == "":
+		return ReasonAwaitingAdoption, adoption, false, nil
 	case may:
 		return "", adoption, swift, nil
 	case adoption == AdoptionFailed:
@@ -259,6 +305,21 @@ func FillOffFacts(s *Status, dir string, desktop bool) {
 	}
 }
 
+// AdoptionWait is the daemon's start line for a desktop host: the reason
+// its hub waits for the adoption (awaiting_adoption, adoption_failed), ""
+// when it does not. The read leaves the lock-metrics sink with o.DB.
+func AdoptionWait(o Options) string {
+	if o.Desktop == nil {
+		return ""
+	}
+	reason, _, _, err := desktopGate(o.Dir, o.Desktop.MobileHubDir)
+	keepLockMetrics(o.DB)
+	if err != nil || (reason != ReasonAwaitingAdoption && reason != ReasonAdoptionFailed) {
+		return ""
+	}
+	return reason
+}
+
 // AwaitingAdoption reports whether a desktop host's Go hub dir must not be
 // written yet: the Swift hub's state waits for its adoption (a direct CLI
 // write would create a sidecar the adoption then refuses as its own).
@@ -278,6 +339,9 @@ func (s *supervisor) awaitDesktop(ctx context.Context) bool {
 	defer tick.Stop()
 	for {
 		reason, adoption, later, err := desktopGate(s.o.Dir, s.o.Desktop.MobileHubDir)
+		// The gate's read-only open re-points this process's dblock.jsonl
+		// sink at the hub dir: the daemon's stays its database's.
+		keepLockMetrics(s.o.DB)
 		if err != nil {
 			reason = Refusal(err)
 		}
@@ -316,6 +380,40 @@ func (s *supervisor) laterMobileHub() {
 	}
 }
 
+// desktopRegate reports whether a desktop host holding its hub dir must let
+// it go: a Swift sidecar is in MobileHub/ and this sidecar has no
+// adopted_at (spec §12.1: then no Go hub runs, whatever else it says).
+func (s *supervisor) desktopRegate() bool {
+	if s.o.Desktop == nil || !fileExists(filepath.Join(s.o.Desktop.MobileHubDir, state.FileName)) {
+		return false
+	}
+	at, _, err := s.st.Meta(adopt.MetaAdoptedAt)
+	return err != nil || at == ""
+}
+
+// desktopHold is why a desktop host's hub that may start waits ("" = none):
+// no transport at all (no bridge in this build and no relay origin), or a v1
+// session host answering — probed once per daemon cycle (the cycle's tick
+// forgets the answer).
+func (s *supervisor) desktopHold(ctx context.Context) string {
+	d := s.o.Desktop
+	if d == nil {
+		return ""
+	}
+	if !d.hasBridge() && s.o.RelayOrigin == "" {
+		return ReasonBridgeUnavailable
+	}
+	if !s.v1Known {
+		s.v1, s.v1Known = s.v1HostAnswers(ctx), true
+	}
+	if s.v1 {
+		// The daemon starts no session host of its own beside a v1 one
+		// (Desktop restarts it once, Task 19).
+		return ReasonSessionHostV1
+	}
+	return ""
+}
+
 // v1HostAnswers reports whether a v1 session host (an older app's) answers
 // on the session-host socket: the hub waits for the v2 host then, and starts
 // none of its own. Nothing listening, or a v2 host, is no reason to wait.
@@ -343,7 +441,7 @@ func (s *supervisor) v1HostAnswers(ctx context.Context) bool {
 // first start; an adopted hub never does — its identity is the Swift hub's,
 // handed over before the gate opened.
 func (o Options) desktopIdentity(st *state.Store) (identity.Identity, error) {
-	store, err := identity.ForDesktopHost(st, o.Dir, o.Desktop.Keychain)
+	store, err := o.Desktop.store(st, o.Dir)
 	if err != nil {
 		return identity.Identity{}, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}

@@ -1060,9 +1060,17 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 			logger.Printf("hub: off (%s)", hub.Refusal(err))
 		}
 	}()
-	if o.Mode == hub.ModeLive {
+	switch {
+	case o.Desktop != nil:
+		// The hub's Run keeps the never-two-hubs gate: say what it waits for.
+		if r := hub.AdoptionWait(o); r != "" {
+			logger.Printf("hub: waiting for adoption (live, desktop, %s)", r)
+		} else {
+			logger.Printf("hub: started (live, desktop)")
+		}
+	case o.Mode == hub.ModeLive:
 		logger.Printf("hub: started (live, %s)", o.Host)
-	} else {
+	default:
 		logger.Printf("hub: started (test workspace)")
 	}
 	return func() {

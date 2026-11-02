@@ -83,11 +83,13 @@ func setGoHubProbe(t *testing.T, p hostkind.Probe) {
 	t.Cleanup(func() { hostProbe = orig })
 }
 
-// TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly: with no hub dir the daemon
-// starts the live hub on a headless host once it is enabled and has a relay
-// origin; on a desktop host the live hub's Run holds it off beside the
-// Swift hub's state (no sidecar, no lock) until the adoption.
-func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
+// TestSyncDaemon_GoHubLiveHeadlessAndDesktopWaitsForAdoption: with no hub
+// dir the daemon starts the live hub on a headless host once it is enabled
+// and has a relay origin; on a desktop host it says it waits for the
+// adoption, and its Run holds the hub off beside the Swift hub's state —
+// even over a Go sidecar with enabled = 1 written by hand — without the
+// lock.
+func TestSyncDaemon_GoHubLiveHeadlessAndDesktopWaitsForAdoption(t *testing.T) {
 	policytest.Set(t, nil)
 	base, err := os.MkdirTemp("/tmp", "hubd")
 	require.NoError(t, err)
@@ -100,6 +102,10 @@ func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
+	st, err := state.Open(live)
+	require.NoError(t, err)
+	require.NoError(t, st.SetMeta(state.MetaEnabled, "1"))
+	require.NoError(t, st.Close())
 	support, err := config.AppSupportDir()
 	require.NoError(t, err)
 	mobile := filepath.Join(support, "MobileHub")
@@ -112,7 +118,7 @@ func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
 		return nil, fs.ErrNotExist
 	}})
 	stopDesktop := startGoHub(context.Background(), &config.Config{}, nil, logger)
-	assert.Contains(t, buf.String(), "hub: started (live, desktop)")
+	assert.Contains(t, buf.String(), "hub: waiting for adoption (live, desktop, awaiting_adoption)")
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		s, err := hub.ReadStatus(live)
@@ -123,15 +129,11 @@ func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
 		require.True(t, time.Now().Before(deadline), "the desktop hub never reported awaiting_adoption: %+v", s)
 		time.Sleep(20 * time.Millisecond)
 	}
+	lock, err := state.AcquireLock(live)
+	require.NoError(t, err, "the hub lock is held beside the Swift hub's state")
+	require.NoError(t, lock.Release())
 	stopDesktop()
-	_, err = os.Stat(filepath.Join(live, state.FileName))
-	assert.True(t, errors.Is(err, fs.ErrNotExist), "a sidecar beside the Swift hub's state")
 	require.NoError(t, os.RemoveAll(mobile))
-
-	st, err := state.Open(live)
-	require.NoError(t, err)
-	require.NoError(t, st.SetMeta(state.MetaEnabled, "1"))
-	require.NoError(t, st.Close())
 	buf.Reset()
 	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
 	stop := startGoHub(context.Background(), &config.Config{}, nil, logger)
