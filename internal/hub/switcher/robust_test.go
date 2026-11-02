@@ -338,3 +338,53 @@ func TestAnExistingRelayHubStartsOnTheRelay(t *testing.T) {
 	w.rebuild(nil)
 	w.wantActive(transport.KindCloudKit)
 }
+
+// The announce rewinds the new transport's mailboxes: each zone token is 0
+// once the switch is done, so what waited there on standby is read again.
+func TestTheAnnounceRewindsTheNewTransportsMailboxes(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		zone := transport.MailboxZone(hubRelayID, a.RelayDeviceID())
+		if err := w.st.SetZoneToken(zone, 7); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if tok, err := w.st.ZoneToken(zone); err != nil || tok != 0 {
+			t.Fatalf("relay mailbox token %d after the announce, %v", tok, err)
+		}
+	})
+}
+
+// A linked phone whose keybox carries no keys (not confirmed) is skipped:
+// it gets no notice, every other phone does, and the switch ends.
+func TestAKeylessPhoneIsSkipped(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, keyless := w.addPhone(true), w.addPhone(true)
+		w.rebuild(func(c *switcher.Config) {
+			inner := c.Keyboxes
+			c.Keyboxes = func() ([]wire.Keybox, error) {
+				boxes, err := inner()
+				for i := range boxes {
+					if boxes[i].Grant.DeviceID == keyless.ID().String() {
+						boxes[i].Keys = nil
+					}
+				}
+				return boxes, err
+			}
+		})
+		w.ask(a, wire.TransportRelay)
+		w.settle(a, keyless)
+		w.wantActive(transport.KindRelay)
+		if _, ok := a.LastSwitch(); !ok {
+			t.Fatal("the phone with keys got no notice")
+		}
+		if _, ok := keyless.LastSwitch(); ok {
+			t.Fatalf("the keyless phone got a notice: %+v", keyless.Controls)
+		}
+	})
+}

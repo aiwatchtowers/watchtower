@@ -334,7 +334,7 @@ func (s *Switcher) SetPublisher(p *slices.Publisher) {
 // rotation and its announce nothing may be sealed there in the new epoch).
 func (s *Switcher) pauseOld(r switchRecord) {
 	if p := s.procs[r.From]; p != nil {
-		p.SetPaused(true)
+		p.PauseFor(pauseReason)
 	}
 }
 
