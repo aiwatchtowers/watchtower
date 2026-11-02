@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,4 +214,160 @@ func TestVerifyDesktopFailsClosedWithoutCodesign(t *testing.T) {
 	t.Cleanup(func() { codesignPath = orig })
 	codesignPath = "/nonexistent/codesign"
 	assert.Error(t, VerifyDesktop(context.Background(), os.Getpid()))
+}
+
+// A Confluence page edit's detail is the whole page: a request far above
+// the old 64 KB line reaches the Desktop whole, its markup unescaped.
+func TestAskSendsALargeDetailWhole(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
+	path := shortSocket(t)
+	got := make(chan Request, 1)
+	serveOnce(t, path, `{"decision":"confirmed"}`, got)
+	trustPeer(t, nil)
+	detail := "Args: " + strings.Repeat(`<p class="x">страница &amp; текст</p>`, 20_000)
+
+	rep, err := Ask(context.Background(), path, Request{Verb: "approve an action", Detail: detail,
+		Args: []string{"actions", "approve", "5"}})
+	require.NoError(t, err)
+	assert.Equal(t, Confirmed, rep.Decision)
+	assert.Equal(t, detail, (<-got).Detail)
+
+	line, err := encodeRequest(Request{Detail: "<p>&</p>"})
+	require.NoError(t, err)
+	assert.Contains(t, string(line), `"detail":"<p>&</p>"`, "HTML characters are not escaped")
+}
+
+// A request over the Desktop's limit is refused before anything is sent:
+// the owner reads why, not a broken pipe.
+func TestAskRefusesARequestOverTheLimit(t *testing.T) {
+	path := shortSocket(t)
+	got := make(chan Request, 1)
+	serveOnce(t, path, `{"decision":"confirmed"}`, got)
+	trustPeer(t, nil)
+
+	_, err := Ask(context.Background(), path, Request{Verb: "x", Detail: strings.Repeat("a", MaxRequestBytes)})
+	require.ErrorIs(t, err, ErrRequestTooLarge)
+	select {
+	case <-got:
+		t.Fatal("an oversized request was sent")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// closesEarly serves one connection that reads a few bytes, writes reply
+// ("" writes nothing) and closes while the CLI is still writing.
+func closesEarly(t *testing.T, path, reply string) {
+	t.Helper()
+	l, err := net.Listen("unix", path)
+	require.NoError(t, err)
+	done := make(chan struct{})
+	t.Cleanup(func() { _ = l.Close(); <-done })
+	go func() {
+		defer close(done)
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		_, _ = c.Read(make([]byte, 16))
+		if reply != "" {
+			_, _ = c.Write([]byte(reply + "\n"))
+		}
+		_ = c.Close()
+	}()
+}
+
+// A Desktop that refuses a request mid-way (writes its denial and closes
+// while the CLI still writes) is answered by that denial, not by the broken
+// pipe of the write.
+func TestAskReadsTheReasonOfADesktopThatClosedEarly(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
+	path := shortSocket(t)
+	closesEarly(t, path, `{"decision":"denied","reason":"the request is too large"}`)
+	trustPeer(t, nil)
+
+	rep, err := Ask(context.Background(), path, Request{Verb: "x", Detail: strings.Repeat("a", 4<<20)})
+	require.NoError(t, err)
+	assert.Equal(t, Denied, rep.Decision)
+	assert.Equal(t, "the request is too large", rep.Reason)
+}
+
+// After a broken write a "confirmed" is never taken (the Desktop did not
+// read the request), and no answer at all is the send error with its size.
+func TestAskAfterABrokenWriteFailsClosed(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
+	for name, reply := range map[string]string{"confirmed": `{"decision":"confirmed"}`, "no answer": ""} {
+		t.Run(name, func(t *testing.T) {
+			path := shortSocket(t)
+			closesEarly(t, path, reply)
+			trustPeer(t, nil)
+
+			rep, err := Ask(context.Background(), path, Request{Verb: "x", Detail: strings.Repeat("a", 4<<20)})
+			require.Error(t, err)
+			assert.Empty(t, rep.Decision)
+			assert.Contains(t, err.Error(), "sending the confirmation request (")
+			assert.Contains(t, err.Error(), "closed the connection before reading it")
+		})
+	}
+}
+
+// A write that runs out of time (a Desktop that never reads) is a timeout,
+// reported as one, and Ask returns at its deadline.
+func TestAskWriteRunningOutOfTimeIsATimeout(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
+	path := shortSocket(t)
+	l, err := net.Listen("unix", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, err := l.Accept(); err == nil {
+			accepted <- c // held open, never read
+		}
+	}()
+	t.Cleanup(func() {
+		select {
+		case c := <-accepted:
+			_ = c.Close()
+		default:
+		}
+	})
+	trustPeer(t, nil)
+	const wait = 2 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+
+	start := time.Now()
+	_, err = Ask(ctx, path, Request{Verb: "x", Detail: strings.Repeat("a", 256<<10)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no answer from Watchtower Desktop in time")
+	assert.NotContains(t, err.Error(), "closed the connection")
+	assert.Less(t, time.Since(start), wait+500*time.Millisecond, "no extra wait past the deadline")
+}
+
+// The limit counts the whole line, its newline included.
+func TestEncodeRequestLimitIsTheWholeLine(t *testing.T) {
+	empty, err := encodeRequest(Request{Detail: "a"})
+	require.NoError(t, err)
+	assert.Equal(t, byte('\n'), empty[len(empty)-1])
+	overhead := len(empty) - 1 // bytes besides the detail's one "a"
+
+	line, err := encodeRequest(Request{Detail: strings.Repeat("a", MaxRequestBytes-overhead)})
+	require.NoError(t, err)
+	assert.Len(t, line, MaxRequestBytes)
+
+	_, err = encodeRequest(Request{Detail: strings.Repeat("a", MaxRequestBytes-overhead+1)})
+	require.ErrorIs(t, err, ErrRequestTooLarge)
+}
+
+// Dual path: Swift OwnerConfirmServer.maxRequestBytes is the same 8 MiB.
+func TestMaxRequestBytesMatchesTheDesktop(t *testing.T) {
+	assert.Equal(t, 8<<20, MaxRequestBytes)
 }
