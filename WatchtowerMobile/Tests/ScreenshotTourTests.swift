@@ -165,9 +165,10 @@ final class ScreenshotTourTests: XCTestCase {
             _ source: String,
             _ reached: String,
             _ view: some View,
-            settle: Duration = .milliseconds(600)
+            settle: Duration = .milliseconds(600),
+            narrowScroll: CGFloat? = nil
         ) async throws {
-            try await host.captureThree("\(number)-\(slug)", view, settle: settle)
+            try await host.captureThree("\(number)-\(slug)", view, settle: settle, narrowScroll: narrowScroll)
             let name = URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent
             rows.append(ScreenshotHost.IndexRow(number: number, view: name, source: source, reached: "\(reached), light/dark/narrow"))
         }
@@ -189,7 +190,11 @@ final class ScreenshotTourTests: XCTestCase {
         let slots = onboarding + "RelaySlotsView.swift"
         let (slotsLinking, slotsRelay, _) = try relayLinking(.needsOwner(.slotsFull), now: now)
         await slotsLinking.manageSlots(for: DemoSeed.Relay.finishingHubID)
-        try await shot("R06", "relay-slots-full", slots, "sheet", RelaySlotsView {}.environment(slotsLinking))
+        try await shot(
+            "R06", "relay-slots-full", slots,
+            "sheet with its own Cancel (no back chevron: the mockup's 7.3 frames draw it pushed)",
+            RelaySlotsView {}.environment(slotsLinking)
+        )
         let finishingRow = try XCTUnwrap(
             RelaySlotsModel(state: slotsLinking.relaySlots, links: slotsLinking.links, promoted: slotsLinking.promotedLinks)
                 .rows.first { $0.id == DemoSeed.Relay.finishingMac }
@@ -208,7 +213,12 @@ final class ScreenshotTourTests: XCTestCase {
         try await shot("R09", "relay-slots-remove-error", slots, "sheet, the removal failed", RelaySlotsView {}.environment(slotsLinking))
 
         try await captureRelayMacs(now: now) { number, slug, reached, view, settle in
-            try await shot(number, slug, "Features/Settings/MacsView.swift", reached, view, settle: settle)
+            // The finishing row comes after the linked Macs: the narrow frame scrolls to the end of the list, where it
+            // is (at the largest Dynamic Type size it falls below the first screen).
+            try await shot(
+                number, slug, "Features/Settings/MacsView.swift", "\(reached), narrow scrolled to the finishing row", view,
+                settle: settle, narrowScroll: Self.toTheEnd
+            )
         }
         try await shot(
             "R21", "link-mac-not-on-relay", onboarding + "LinkedView.swift", "leaf view",
@@ -254,6 +264,9 @@ final class ScreenshotTourTests: XCTestCase {
             AnyView(NavigationStack { MacsView(cancelling: row) }.environment(cancel)), .seconds(2)
         )
     }
+
+    /// A narrow scroll past any list's end: `captureThree` stops at the end.
+    static let toTheEnd: CGFloat = 100_000
 
     /// R07/R20's INDEX note: the confirmation alert is presented but not in the PNG.
     static let alertGap = "The alert is not captured (iOS 26 draws it outside drawHierarchy); its copy is asserted in "
