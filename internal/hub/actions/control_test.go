@@ -180,7 +180,9 @@ func TestEpochAckRecorded(t *testing.T) {
 	})
 }
 
-func TestTransportSwitchIsRejectedNotSupportedYet(t *testing.T) {
+// A hub without a switcher (headless, relay-only: Phase 2) keeps answering
+// every transport_switch "not supported yet".
+func TestTransportSwitchOnAHeadlessHubIsRejected(t *testing.T) {
 	eachKind(t, func(t *testing.T, w *world) {
 		target := wire.TransportCloudKit
 		if w.fake.Kind() == transport.KindCloudKit {
@@ -200,7 +202,7 @@ func TestTransportSwitchIsRejectedNotSupportedYet(t *testing.T) {
 		}
 		w.settle()
 		got := w.controls(wire.ControlSwitchRejected)
-		if len(got) != 1 || got[0].Reason == nil || *got[0].Reason != switchNotSupported ||
+		if len(got) != 1 || got[0].Reason == nil || *got[0].Reason != SwitchNotSupported ||
 			got[0].DeviceID == nil || !sameID(*got[0].DeviceID, w.phone.ID()) || got[0].RetryAfterS != nil {
 			t.Fatalf("rejections %+v", got)
 		}
