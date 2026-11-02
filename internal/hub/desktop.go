@@ -163,15 +163,18 @@ func bridgeLauncher(exe, dir string) func(ctx context.Context) (*os.Process, err
 
 // desktopGate is the never-two-hubs rule (spec §12.1), read-only: the reason
 // the hub stays off ("" = it may start), the adoption's state for the
-// status, and later = a MobileHub/ sidecar that appeared after the adoption
-// (never read). While MobileHub/ holds a Swift sidecar and the Go sidecar
-// has no adopted_at, the hub stays off (awaiting_adoption, or
-// adoption_failed with its error class) whatever else the Go sidecar says —
-// no adopt_step, enabled = 1 written by hand, a sidecar left by a headless
-// run. With no Swift sidecar: no Go sidecar is disabled (the owner never
-// turned Mobile on); a Go sidecar that never adopted, or whose adoption and
-// key hand-over finished (adopt.HubMayStart), may start; one mid-adoption
-// waits.
+// status, and later = a MobileHub/ sidecar beside a Go sidecar with
+// adopted_at set (a later MobileHub: logged, never read). While MobileHub/
+// holds a Swift sidecar and the Go sidecar has no adopted_at, the hub stays
+// off whatever else the Go sidecar says: awaiting_adoption (or
+// adoption_failed with its error class) while an adoption is pending or
+// under way, swift_beside_go when the Go sidecar never adopted (a Go hub
+// ran first — enabled = 1 written by hand, a headless run's sidecar — and
+// the adoption refuses that Swift sidecar as a later MobileHub; owner ask
+// #949 decides what happens then). With no Swift sidecar: no Go sidecar is
+// disabled (the owner never turned Mobile on); a Go sidecar that never
+// adopted, or whose adoption and key hand-over finished (adopt.HubMayStart),
+// may start; one mid-adoption waits.
 func desktopGate(dir, mobile string) (reason, adoption string, later bool, err error) {
 	swift := fileExists(filepath.Join(mobile, state.FileName))
 	if !fileExists(filepath.Join(dir, state.FileName)) {
@@ -198,6 +201,8 @@ func desktopGate(dir, mobile string) (reason, adoption string, later bool, err e
 		return "", "", false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
 	}
 	switch {
+	case swift && at == "" && adoption == AdoptionNone:
+		return ReasonSwiftBesideGo, adoption, false, nil
 	case swift && at == "" && adoption == AdoptionFailed:
 		return ReasonAdoptionFailed, adoption, false, nil
 	case swift && at == "":
@@ -306,29 +311,37 @@ func FillOffFacts(s *Status, dir string, desktop bool) {
 }
 
 // AdoptionWait is the daemon's start line for a desktop host: the reason
-// its hub waits for the adoption (awaiting_adoption, adoption_failed), ""
-// when it does not. The read leaves the lock-metrics sink with o.DB.
+// its hub is held off beside Swift hub state (awaiting_adoption,
+// adoption_failed, swift_beside_go), "" when it is not. The read leaves the
+// lock-metrics sink with o.DB.
 func AdoptionWait(o Options) string {
 	if o.Desktop == nil {
 		return ""
 	}
 	reason, _, _, err := desktopGate(o.Dir, o.Desktop.MobileHubDir)
 	keepLockMetrics(o.DB)
-	if err != nil || (reason != ReasonAwaitingAdoption && reason != ReasonAdoptionFailed) {
+	if err != nil || !besideSwift(reason) {
 		return ""
 	}
 	return reason
 }
 
+// besideSwift: reason holds the hub off because of Swift hub state.
+func besideSwift(reason string) bool {
+	return reason == ReasonAwaitingAdoption || reason == ReasonAdoptionFailed || reason == ReasonSwiftBesideGo
+}
+
 // AwaitingAdoption reports whether a desktop host's Go hub dir must not be
-// written yet: the Swift hub's state waits for its adoption (a direct CLI
-// write would create a sidecar the adoption then refuses as its own).
+// written: Swift hub state is in MobileHub/ and the Go sidecar has no
+// adopted_at — awaiting_adoption or adoption_failed (a direct CLI write
+// would create a sidecar the adoption then refuses as a later MobileHub),
+// or swift_beside_go (held until owner ask #949 is answered).
 func AwaitingAdoption(dir, mobile string) (bool, error) {
 	reason, _, _, err := desktopGate(dir, mobile)
 	if err != nil {
 		return false, err
 	}
-	return reason == ReasonAwaitingAdoption || reason == ReasonAdoptionFailed, nil
+	return besideSwift(reason), nil
 }
 
 // awaitDesktop holds a desktop host's Run before the hub lock until the gate
@@ -372,8 +385,9 @@ func (s *supervisor) noteLaterMobileHub(later bool) {
 	}
 }
 
-// laterMobileHub re-checks for a later MobileHub/ while the hub holds its
-// dir (the Swift sidecar only: nothing in it is opened).
+// laterMobileHub logs a later MobileHub/ (a Swift sidecar beside an
+// adopted Go hub: desktopRegate let the hub go on) once while the hub holds
+// its dir; the Swift sidecar is only looked at, never opened.
 func (s *supervisor) laterMobileHub() {
 	if s.o.Desktop != nil && !s.laterLogged {
 		s.noteLaterMobileHub(fileExists(filepath.Join(s.o.Desktop.MobileHubDir, state.FileName)))

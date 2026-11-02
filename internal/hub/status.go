@@ -62,6 +62,10 @@ const (
 	// ReasonBridgeUnavailable: a desktop host whose build has no CloudKit
 	// bridge and which has no relay origin either: no transport to run.
 	ReasonBridgeUnavailable = "bridge_unavailable"
+	// ReasonSwiftBesideGo: a Go hub ran first (its sidecar never adopted)
+	// and a Swift hub's state appeared beside it; the adoption refuses that
+	// state, and no hub runs until the owner chooses (ask #949, pending).
+	ReasonSwiftBesideGo = "swift_beside_go"
 )
 
 // Status.Adoption values: where the Swift hub's adoption stands.

@@ -299,7 +299,7 @@ func TestDesktopHostStaysOffBesideSwiftStateWhateverTheSidecarSays(t *testing.T)
 	setMeta(t, r.dir, state.MetaEnabled, "1")
 	r.writeSwiftState()
 	r.start(r.options())
-	r.waitState(StateOff, ReasonAwaitingAdoption)
+	r.waitState(StateOff, ReasonSwiftBesideGo)
 	time.Sleep(200 * time.Millisecond)
 	if r.opens.Load() != 0 || r.dials.Load() != 0 || r.ckDial.Load() != 0 || lockHeld(t, r.dir) {
 		t.Fatal("a hub (or its lock) beside the Swift hub's state")
@@ -315,8 +315,48 @@ func TestDesktopHostStaysOffBesideSwiftStateWhateverTheSidecarSays(t *testing.T)
 	r.start(r.options())
 	r.waitState(StateRunning, "")
 	r.writeSwiftState()
-	r.waitState(StateOff, ReasonAwaitingAdoption)
+	r.waitState(StateOff, ReasonSwiftBesideGo)
 	eventually(t, 10*time.Second, "the lock let go", func() bool { return !lockHeld(t, r.dir) })
+}
+
+// TestGoHubFirstThenSwiftSidecarIsSwiftBesideGo pins owner ask #949's
+// state (pending): a Go hub that ran first (never adopted) with a Swift
+// sidecar appearing beside it is held off with its own reason,
+// swift_beside_go, which CLI writes respect; and the adoption still refuses
+// that Swift sidecar as a later MobileHub.
+func TestGoHubFirstThenSwiftSidecarIsSwiftBesideGo(t *testing.T) {
+	live := liveHome(t)
+	support, err := config.AppSupportDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setMeta(t, live, state.MetaEnabled, "1")
+	mobile := filepath.Join(support, "MobileHub")
+	if err := os.MkdirAll(mobile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mobile, state.FileName), []byte("swift"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if reason, adoption, later, err := desktopGate(live, mobile); reason != ReasonSwiftBesideGo || adoption != AdoptionNone || later || err != nil {
+		t.Fatalf("gate: %q %q later=%v %v", reason, adoption, later, err)
+	}
+	if r := DesktopOffReason(live, mobile); r != ReasonSwiftBesideGo {
+		t.Fatalf("off reason %q", r)
+	}
+	if waiting, err := AwaitingAdoption(live, mobile); !waiting || err != nil {
+		t.Fatalf("CLI writes allowed: %v %v", waiting, err)
+	}
+	if r := AdoptionWait(Options{Dir: live, Desktop: &Desktop{MobileHubDir: mobile}}); r != ReasonSwiftBesideGo {
+		t.Fatalf("daemon line reason %q", r)
+	}
+	res, err := adopt.Run(context.Background(), mobile, live, filepath.Join(support, "recordings"), adopt.Settings{}, nil)
+	if !errors.Is(err, adopt.ErrLaterMobileHub) || res.Error != adopt.ClassLaterMobileHub {
+		t.Fatalf("adopt.Run: %+v %v", res, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(mobile, state.FileName)); string(b) != "swift" {
+		t.Fatal("the Swift sidecar was touched")
+	}
 }
 
 // TestResolve_DesktopHostNeverStartsBeforeAdoption (Phase 2's
@@ -324,7 +364,9 @@ func TestDesktopHostStaysOffBesideSwiftStateWhateverTheSidecarSays(t *testing.T)
 // same meaning: no live hub beside the Swift hub's state): with
 // hub_meta.enabled = 1 written by hand into a Go sidecar that never adopted,
 // Resolve changes nothing under the live dir or MobileHub/, and the gate
-// holds the hub off (awaiting_adoption) while the Swift state is there.
+// holds the hub off while the Swift state is there (swift_beside_go: that
+// Go sidecar never adopted; a Swift state with no Go sidecar is
+// awaiting_adoption, TestDesktopHostOffUntilAdopted).
 func TestResolve_DesktopHostNeverStartsBeforeAdoption(t *testing.T) {
 	dir := liveHome(t)
 	DefaultRelayOrigin = "https://relay.example.com"
@@ -362,10 +404,10 @@ func TestResolve_DesktopHostNeverStartsBeforeAdoption(t *testing.T) {
 	}
 	// The gate (a read-only read of the hand-made sidecar) holds it off.
 	for name, o := range resolved {
-		if reason, _, _, err := desktopGate(o.Dir, o.Desktop.MobileHubDir); reason != ReasonAwaitingAdoption || err != nil {
+		if reason, _, _, err := desktopGate(o.Dir, o.Desktop.MobileHubDir); reason != ReasonSwiftBesideGo || err != nil {
 			t.Fatalf("%s: gate %q %v", name, reason, err)
 		}
-		if r := DesktopOffReason(o.Dir, o.Desktop.MobileHubDir); r != ReasonAwaitingAdoption {
+		if r := DesktopOffReason(o.Dir, o.Desktop.MobileHubDir); r != ReasonSwiftBesideGo {
 			t.Fatalf("%s: off reason %q", name, r)
 		}
 		if waiting, err := AwaitingAdoption(o.Dir, o.Desktop.MobileHubDir); !waiting || err != nil {
@@ -689,7 +731,7 @@ func TestDesktopGateKeepsTheLockMetricsSink(t *testing.T) {
 	o := r.options()
 	o.DB = d
 	r.start(o)
-	r.waitState(StateOff, ReasonAwaitingAdoption)
+	r.waitState(StateOff, ReasonSwiftBesideGo)
 	time.Sleep(200 * time.Millisecond) // a few gate reads
 	lockmetrics.Record(lockmetrics.Event{Kind: lockmetrics.KindBusy})
 	if _, err := os.Stat(filepath.Join(ws, lockmetrics.FileName)); err != nil {
