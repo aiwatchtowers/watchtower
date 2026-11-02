@@ -108,7 +108,7 @@ private struct OwnerConfirmView: View {
                 .fixedSize(horizontal: false, vertical: true)
             OwnerConfirmTextView(command: request.commandLine, detail: detail)
                 .frame(minHeight: 120, maxHeight: .infinity)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: Radius.control))
             HStack {
                 Spacer()
                 Button("Deny", role: .cancel) { decide(false) }
@@ -149,11 +149,11 @@ private struct OwnerConfirmTextView: NSViewRepresentable {
         textView.layoutManager?.allowsNonContiguousLayout = true
         let size = NSFont.preferredFont(forTextStyle: .callout).pointSize
         let text = NSMutableAttributedString(string: command, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: size, weight: .bold), .foregroundColor: NSColor.labelColor,
+            .font: NSFont.monospacedSystemFont(ofSize: size, weight: .bold), .foregroundColor: NSColor.labelColor
         ])
         if let detail {
             text.append(NSAttributedString(string: "\n\n" + detail, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: size, weight: .regular), .foregroundColor: NSColor.labelColor,
+                .font: NSFont.monospacedSystemFont(ofSize: size, weight: .regular), .foregroundColor: NSColor.labelColor
             ]))
         }
         textView.textStorage?.setAttributedString(text)
