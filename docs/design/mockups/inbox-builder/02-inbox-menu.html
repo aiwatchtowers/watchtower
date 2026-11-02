@@ -1,0 +1,63 @@
+<h2>2. Инбокс и меню артефактов</h2>
+<p class="subtitle">Принято (ask #871): вид собирается из готовых блоков, верстаешь словами в чате с живым превью.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Инбокс</div>
+  <div class="mockup-body">
+    <div style="display:flex; gap:0;">
+      <div style="width:240px; border-right:1px solid #8884; padding-right:12px; line-height:1.9">
+        <div><b>✦ Новое</b> <small style="float:right">5</small></div>
+        <div class="label" style="margin-top:10px">Каждый день</div>
+        <div>☀ Morning brief <small style="float:right">1</small></div>
+        <div style="background:#5b8def33; border-radius:6px; padding:0 6px">⏳ Ждут меня <small style="float:right">7</small></div>
+        <div class="label" style="margin-top:10px">▾ Релиз acme 2.0 <small>(папка)</small></div>
+        <div style="padding-left:14px">🚦 Блокеры релиза <small style="float:right">2</small></div>
+        <div style="padding-left:14px">📋 Статус по Jira</div>
+        <div class="label" style="margin-top:10px">Люди и идеи</div>
+        <div>👤 People</div>
+        <div>💡 Идеи и решения <small style="float:right">3</small></div>
+        <div class="label" style="margin-top:10px">Выключено</div>
+        <div style="opacity:.5">📨 Почта за неделю</div>
+        <div style="margin-top:12px; color:#5b8def">＋ Новый артефакт…</div>
+      </div>
+      <div style="flex:1; padding-left:16px; position:relative">
+        <h3 style="margin:0">⏳ Ждут меня · 7 <span style="float:right"><button class="mock-button">Изменить вид</button> <button class="mock-button">⋯</button></span></h3>
+        <small>обновлено 10 мин назад · после каждого синка</small>
+        <div style="padding:6px 0; border-bottom:1px solid #8883; margin-top:8px"><span style="color:#d33">● 2 дня</span> · Colleague A в #acme-release — «Глянешь чеклист?» <button class="mock-button" style="float:right">Ответить</button></div>
+        <div style="padding:6px 0; border-bottom:1px solid #8883"><span style="color:#d33">● 26 ч</span> · Colleague B в DM — «Согласуешь бюджет?» <button class="mock-button" style="float:right">Ответить</button></div>
+        <div style="padding:6px 0">● 3 ч · Colleague C в #acme-infra — «Кто ревьюит миграцию?» <button class="mock-button" style="float:right">Ответить</button></div>
+        <div style="position:absolute; right:0; top:44px; width:230px; border:1px solid #8886; border-radius:8px; padding:8px; background:var(--bg-secondary, #2224); line-height:1.8">
+          <div class="label">Меню «⋯» у пункта</div>
+          <div>Запустить сейчас</div>
+          <div>Изменить что собирает…</div>
+          <div>Изменить вид…</div>
+          <div>Расписание…</div>
+          <div>Переименовать / иконка</div>
+          <div>Переместить в папку ▸</div>
+          <div>Выключить</div>
+          <div>История запусков</div>
+          <div style="color:#d33">Удалить…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<p><small>Меню можно перетаскивать: порядок, папки, вложенность. «Новое» — общая лента свежего из всех пунктов. «＋ Новый артефакт» открывает чат: что собирать → как выглядит → когда.</small></p>
+
+<h3 style="margin-top:24px">Пункт меню — это что?</h3>
+<div class="options">
+  <div class="option" data-choice="one" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Одна автоматизация = один пункт</h3>
+      <p>Просто и понятно. Объединение — только папкой. Хочешь «Релиз» из трёх источников — либо папка с тремя пунктами, либо одна автоматизация, которая читает все три.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="many" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Пункт — это вид, в который можно сложить выходы нескольких автоматизаций</h3>
+      <p>Гибче, но сложнее: у пункта свой вид поверх чужих данных, непонятно, кто владеет вёрсткой.</p>
+    </div>
+  </div>
+</div>

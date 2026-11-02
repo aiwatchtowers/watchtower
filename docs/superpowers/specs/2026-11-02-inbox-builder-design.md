@@ -2,6 +2,8 @@
 
 **Board:** #1400 (umbrella). **Status:** product design for owner review; each sub-project below gets its own spec (with DesignShotCatalog mockups for every state) and plan before code.
 
+**Mockups agreed in the brainstorm** (sample data only): [`docs/design/mockups/inbox-builder/01-artifact-look.html`](../../design/mockups/inbox-builder/01-artifact-look.html) — the Look step with chat and live preview; [`docs/design/mockups/inbox-builder/02-inbox-menu.html`](../../design/mockups/inbox-builder/02-inbox-menu.html) — the Inbox with its folder menu and the ⋯ menu. Note: the second mockup predates ask #947 — its menu entries are drawn as one automation each; the model below (folders that many automations write into) is what holds. Sub-projects A and B redraw these screens in DesignShotCatalog and must not contradict them otherwise.
+
 ## Intent
 
 The owner does not open the Inbox today. It is a list of what the pipelines produced — briefs, tracks, ideas, digests — shaped by us, not by the owner. Meanwhile the most expensive background pipeline, Slack Digests, produces summaries nobody reads directly: on the owner's live install no digest has been written since mid-July and nobody noticed.
@@ -13,7 +15,7 @@ The new model:
 - **Built-in features become preinstalled automations** with their own default look: Morning brief, Track my threads, Idea finder, People, Catch Up. Their separate screens go away.
 - **Digests are removed entirely.** Each automation reads raw source data itself.
 
-Success: the Inbox is the screen the owner opens first because it holds exactly the artifacts they built; the Digests tab, the digest pipelines and their tables are gone; the background AI spend that digests cost is gone with them.
+Success: the Inbox is the screen the owner opens first because it holds exactly the artifacts they built; the Digests tab, the digest pipelines and their tables are gone; background AI spend drops (threshold under "Spend").
 
 ## Goals
 
@@ -30,6 +32,7 @@ Success: the Inbox is the screen the owner opens first because it holds exactly 
 - Hand-editing the layout in the preview (drag, resize, inline rename). The look is changed in words (ask #871).
 - Deciding the fate of Workload, Blockers, Project Map, Releases and Statistics. The owner is undecided (ask #947); they stay as they are until a separate decision.
 - The phone app's Inbox (#1170) — it will render the same blocks, but it is its own sub-project.
+- Version history of a living artifact (see Artifacts).
 
 ## Anti-goals
 
@@ -37,14 +40,15 @@ Success: the Inbox is the screen the owner opens first because it holds exactly 
 - A design flow that needs the owner to know the block names or the recipe syntax.
 - Built-in automations that are special screens in disguise: a built-in artifact uses the same blocks, folders and menu as one the owner made.
 - Replacing one expensive shared pipeline with five expensive private ones: removing digests must lower background AI spend, not move it.
+- A message silently missed: a raw window never drops messages without saying so.
 
 ## The model
 
 ### Folders (the Inbox menu)
 
-- The Inbox menu is a tree of **folders** kept as configuration (rows the Desktop and the CLI edit; not recipe files).
+- The Inbox menu is a tree of **folders** kept as configuration: database rows written only by the Go CLI (`watchtower inbox folders …`); the Desktop edits them through the CLI, like automations. Every write is compare-and-set on a per-tree `revision`, so a Desktop drag and a CLI edit at the same moment cannot both land — the loser gets "the menu changed, reload" and the Desktop re-reads. *(Agent's call.)*
 - The **root folder** is the Inbox itself: the general feed that every artifact lands in unless its automation names another folder (ask #947). It is always first and cannot be deleted or moved.
-- **Needs approval** is a built-in folder pinned under the root (ask #947). It shows proposals, Slack sends and reminders with the existing approve/reject/edit actions; its look is fixed (not designed in blocks).
+- **Needs approval** is a built-in folder pinned under the root (ask #947). It shows proposals, Slack sends and reminders. Its cards are a built-in artifact with a default look that the owner can change in words like any other (in keeping with "every Inbox item can be customised"); the Approve / Reject / Edit actions are always present and cannot be removed from the look. *(Agent's call.)*
 - Owner folders: title, icon, parent, position, hidden. Folders nest; drag to reorder and re-parent. A folder has an unread count.
 - A folder holds the artifacts of every automation that writes into it; many automations may write into one folder (ask #947). A folder has no look of its own — each artifact keeps the look its automation gave it.
 - Folders are created from the menu (**+ New folder**) and from the automation editor: when the owner says "put this into a Release folder", the agent proposes the folder and saving the automation creates it (shown in the save sheet). *(Agent's call: no separate approval step for creating a folder.)*
@@ -55,12 +59,13 @@ Success: the Inbox is the screen the owner opens first because it holds exactly 
 - An artifact is one automation output: a title, a priority, a link, actions and a **block tree**.
 - Two lifecycles, chosen per automation *(agent's call)*:
   - **feed** — every run adds new artifacts (Morning brief: one per day);
-  - **living** — the automation keeps one artifact (or one per key, e.g. per person) and each run replaces it in place (Track my threads, People). The owner sees "updated 10 min ago", not a pile of copies.
-- Read / Done / Dismiss keep their current meaning (`automation_outputs.read_at`/`dismissed_at`); a living artifact becomes unread again only when its content changed.
+  - **living** — the automation keeps one artifact per `key` (e.g. per person) and each run replaces it in place (Track my threads, People). The owner sees "updated 10 min ago", not a pile of copies. Earlier versions are not kept in v1; the run history still shows each run.
+- A living write is one upsert on `(automation_id, key)` in the run's commit transaction. Runs of one automation already never overlap (the executor's per-automation concurrency), and a key belongs to one automation, so two writers of one artifact cannot race. A retry that produces the same content (same content hash) keeps its read state; a living artifact becomes unread again only when its content hash changed.
+- Read / Done / Dismiss keep their current meaning (`automation_outputs.read_at`/`dismissed_at`).
 
 ### Blocks (v1 set, agent's call — refined in sub-project A)
 
-heading · text (markdown) · list (rows: title, subtitle, badge, tone by condition, row actions) · table · person (photo, name, role, lines) · metric row · link · actions (open, reply, chat, agent, create target — the existing `output.inbox` action kinds). Colours only through `Tone`; no row separators; rendered by DesignKit components on the Mac and later the same JSON on the phone. The block JSON is versioned and validated in Go (unknown block → the run's output is refused with a readable error, the same way a bad `output.inbox` is today).
+heading · text (markdown) · list (rows: title, subtitle, badge, tone by condition, row actions) · table · person (photo, name, role, lines) · metric row · link · actions (open, reply, chat, agent, create target — the existing `output.inbox` action kinds). Colours only through `Tone`; no row separators; rendered by DesignKit components on the Mac and later the same JSON on the phone. The block JSON is versioned and validated in Go (unknown block → the run's output is refused with a readable error, the same way a bad `output.inbox` is today). An existing markdown output (no blocks) is shown as a single text block.
 
 ### Designing the look
 
@@ -80,43 +85,61 @@ Each artifact's header and each folder entry carry **⋯**: Run now, Edit what i
 | Track my threads | reads raw windows, not digests | root | living |
 | Idea finder | reads raw windows, not digests | root | feed |
 | People | new built-in automation; replaces the People Cards pipeline and the People tab | People | living, one per person |
-| Catch Up | new built-in automation, triggered on return from absence; replaces the Catch Up tab | root | feed |
+| Catch Up | new built-in automation with a new built-in-only trigger `return` (below); replaces the Catch Up tab | root | feed |
+| Needs approval | built-in artifact over `agent_actions` / reminders (not a recipe) | Needs approval | living |
 | Reactions | unchanged (writes no artifact) | — | — |
 
-The Inbox filters Day / Messages / Tracks / Ideas / Automations are replaced by folders. Attention detection (the Messages filter, `inbox_items`) is not an automation today; see Open questions.
+**Catch Up trigger.** Automations today have schedule, button, event, manual and sync triggers; none fires on the owner's return. Sub-project D adds a built-in-only trigger `return`: the Desktop's existing absence detection (the one that opens Catch Up today) calls `automations run catch-up --since <absence start>`, and the run's window is the absence. The CATCHUP-01..04 guarantees move with it.
+
+**Filters become folders** (pending ask #952, which asks the owner to confirm this mapping): the Inbox filters Day / Messages / Tracks / Ideas / Automations go away. Existing content moves as follows — briefs and day plans: Morning brief artifacts in the root; tracks: the rows stay in `tracks` and Track my threads renders them; ideas: the rows stay in the registry and Idea finder renders them; existing automation outputs: their folder is the root, markdown shown as a text block; proposals and reminders: Needs approval; attention-detection items (`inbox_items`): per the answer to ask #952. Sub-project B owns the move.
 
 ## Removing digests
 
-Removed: the Slack Digests and Stream Digests features and their daemon phases, daily/weekly rollups, `digests`/`digest_topics`/`stream_digests` (and dependent views/indexes) by migration, the Digests tab, `get_digest`/`list_digests` and the `digests:read` capability, the `digest`/`trends`/`decisions` CLI, `needsDigests` readiness and the onboarding/feature-manager entries. Each consumer:
+Removed: the Slack Digests and Stream Digests features and their daemon phases, daily/weekly rollups, `digests`/`digest_topics`/`stream_digests` (and dependent views/indexes), the Digests tab, `get_digest`/`list_digests` and the `digests:read` capability, the `digest`/`trends`/`decisions` CLI, `needsDigests` readiness and the onboarding/feature-manager entries. The removals beyond the digests themselves are confirmed or refused in ask #952.
+
+**Desktop readers** (all must stop reading before the tables go): `DigestQueries`, `StreamDigestQueries`, `DigestViewModel`, `DigestDetailView`/`DecisionDetailView`, `StreamDigest` model, `TargetPrefillBuilder` (prefill from a digest), `CatchUpQueries`/`CatchUpViewModel`/`CatchUpSourceCard`, `TrackQueries`/`TracksViewModel`, `IdeaQueries`/`IdeaMention`, `JiraQueries`, `ChannelStatsQueries`, `ReadinessQueries`/`Readiness`, `EmptyStateCopy` and the Home "turn on Digests" copy, `SidebarCountsViewModel`, `DatabaseObserver`, `AutomationCardPresentation`, `UsageView`, `PipelineRun`. Sub-project E starts with a sweep (`grep` over `WatchtowerDesktop`, `WatchtowerKit`, `WatchtowerMobile`) and a test that the Desktop opens a database without the tables.
+
+**Dropping the tables, in two releases.** Release N stops every read and write (Go and Swift) and leaves the tables in place; release N+1 drops them by migration. So a one-version rollback still opens the database, and nothing in N depends on the tables existing. Digest history is not exported (pending ask #952). *(Agent's call on the two-step.)*
 
 | Consumer | After |
 |---|---|
-| Track my threads, Idea finder (Slack), People | read a **raw window** primitive (below) |
+| Track my threads, Idea finder (Slack), People | read the **raw window** primitive (below) |
 | Idea finder (mail, Jira) | reads raw mail/Jira windows instead of stream digests |
-| Morning brief | reads tracks, targets, calendar, approvals and a raw window of the owner's channels; loses the "what happened in channels" digest roll-up |
+| Morning brief | reads tracks, targets, calendar, approvals; the "what happened in your channels" section is decided in ask #952 |
 | Catch Up | reads raw windows for the absence period itself |
-| Meeting prep | person context from the People artifacts instead of digest `situations` |
-| Knowledge search | the digest-topic source is dropped (raw messages, mail and Jira are indexed already) |
-| "Discussed without a Jira ticket" detector | removed (could return later as a template automation) |
-| Memory `digest_compare` (dark) | removed |
+| Meeting prep | person context from the People artifacts; when People is off or has no card for an attendee, from a raw window of that person's recent messages *(agent's call)* |
+| Knowledge search | the digest-topic source is dropped (raw messages, mail and Jira are indexed already) — pending ask #952 |
+| "Discussed without a Jira ticket" detector | removed or kept — ask #952 |
+| Memory `digest_compare` (dark, off by default) | removed |
 | History backfill | no digest chunk; backfill only fills raw data |
 
-**Raw window primitive.** One shared, non-AI step: "messages since my last run that concern the owner" — mentions, DMs, threads the owner is in, watched channels and the owner's chosen channels — with per-run caps. It is mechanical (no LLM), so five automations reading it cost five prompts over already-filtered text instead of one prompt over every channel. This is how the anti-goal on spend is met; sub-project C measures tokens before/after on a fixture.
+### Raw window primitive
+
+One shared, non-AI step: the messages since this automation's cursor that concern the owner. *(Agent's call, refined in sub-project C.)*
+
+- **Scope:** mentions of the owner, DMs, threads the owner wrote in, watched channels and channels the owner adds per automation. Everything else is invisible to these automations — this is a narrowing, stated here so it can be refused.
+- **Cursor:** per automation, kept in its state, advanced only when the run ends `succeeded`. A failed, cancelled or interrupted run leaves it, so the next run sees the same messages again.
+- **Caps:** v1 defaults 500 messages and 200 000 characters per run, oldest first. When the cap cuts the window, the cursor moves to the last message included — the rest come in the next run, not lost. When the backlog is older than 7 days the run includes the newest 7 days and the artifact says "N older messages skipped" with the count; the skip is never silent.
+- **Untrusted input:** the window is returned as structured JSON (author, channel, time, text) and reaches the model only through `llm()`'s input, which is fenced as data (`fenceData`), never concatenated into the prompt. This follows epic #551's split: the primitive parses and filters (no AI), the automation processes. Rendered blocks show source text as plain text; reply actions are bound to the message's own thread and channel and still go through the approval path. The digest layer was itself an LLM over raw text, so this is not a new exposure, but the fence becomes mandatory for every built-in.
+
+### Spend
+
+Before sub-project C ships, measure background tokens per day of digests + tracks + people + ideas on the owner's install (`pipeline_runs`/`llm_calls`, read-only) as the baseline. Target: the new built-ins together use at most 50 % of that baseline, on a fixture in tests and on the live install for one week after release. Missing the target blocks sub-project E (digests are not dropped while the replacement is dearer). *(Agent's call on the 50 %.)*
 
 ## Contracts touched (inventory)
 
-TRACKS-01..07 (source changes from digests to raw windows; the guarantees stay), IDEA-01/02/05 (floors and provenance re-keyed from digest topics to messages), CATCHUP-01..04 (moves into an automation), BACKFILL-02 (digest half removed), knowledge-search KB source list, automations AUTO-* (new `blocks`, `folder`, `key` fields on `output.inbox`; capability `digests:read` removed), inbox-pulse INBOX-02/05/09 (depends on the Messages decision). Each change the owner has not explicitly approved is filed as its own ask before the sub-project's review.
+TRACKS-01..07 (source changes from digests to raw windows; the guarantees stay), IDEA-01/02/05 (floors and provenance re-keyed from digest topics to messages), CATCHUP-01..04 (moves into an automation), BACKFILL-02 (digest half removed), knowledge-search KB source list, automations AUTO-* (new `blocks`, `folder`, `key` fields on `output.inbox`; new `return` trigger; capability `digests:read` removed), inbox-pulse INBOX-02/05/09 (depends on the Messages decision). Each change the owner has not explicitly approved is filed as its own ask before the sub-project's review.
 
 ## Sub-projects (order)
 
-- **A. Blocks and the Look step** — block schema (Go validation, Swift renderer in DesignKit), `output.inbox` `blocks`/`key`, living artifacts, dry-run preview pane in the editor.
-- **B. Folders and the Inbox menu** — folder config (migration, CLI, Desktop), root and Needs approval, `folder` on outputs, ⋯ management, + New artifact, replacing the five filters.
-- **C. Raw window primitive; built-ins off digests** — the primitive, Track my threads / Idea finder / Morning brief moved, token measurement.
-- **D. People and Catch Up as built-ins** — new entries, artifacts, meeting prep re-pointed, tabs removed.
-- **E. Drop digests** — pipelines, migration dropping the tables, tab, tools, CLI, features, readiness, guide pages, inventory.
+- **A. Blocks and the Look step** — block schema (Go validation, Swift renderer in DesignKit), `output.inbox` `blocks`/`key`, living artifacts and their upsert, dry-run preview pane in the editor.
+- **B. Folders and the Inbox menu** — folder config (migration, CLI with compare-and-set, Desktop), root and Needs approval, `folder` on outputs, ⋯ management, + New artifact, replacing the five filters and moving the existing Inbox content.
+- **C. Raw window primitive; built-ins off digests** — the primitive (scope, cursor, caps, fence), Track my threads / Idea finder / Morning brief moved, spend baseline and measurement.
+- **D. People and Catch Up as built-ins** — new entries, the `return` trigger, artifacts, meeting prep re-pointed, tabs removed.
+- **E. Drop digests** — release N: every Go and Swift reader removed, pipelines, tab, tools, CLI, features, readiness, guide pages, inventory; release N+1: the migration dropping the tables.
 - **F. Phone renders blocks** — with #1170.
 
-A and B can run in parallel; C before D and E; E last on the Mac side.
+A and B can run in parallel; C before D and E; E last on the Mac side and only once the spend target is met.
 
 ## Decisions
 
@@ -129,9 +152,5 @@ A and B can run in parallel; C before D and E; E last on the Mac side.
 - The root folder is the general Inbox where everything lands unless a nested folder is named — ask #947.
 - Approvals live in a built-in folder Needs approval — ask #947.
 - Catch Up moves into the Inbox as a built-in; Workload/Blockers/Project Map/Releases/Statistics undecided, out of scope — ask #947.
-- Feed vs living lifecycles; folder creation without its own approval; deleting a folder moves its contents up; script emits blocks directly; v1 block set; raw window primitive is mechanical — decided by the agent.
-
-## Open questions (for the owner)
-
-1. What becomes of attention detection (the Messages filter): a built-in automation writing into the root, a fixed built-in folder like Needs approval, or removed?
-2. Does the Morning brief keep a "what happened in your channels" section (paid for from the raw window), or is it dropped with digests?
+- Filters replaced by folders and the content mapping; the Messages detector; the brief's channel section; removing the "without Jira" detector, the digest CLI, the KB digest source, the digest tools; no export of digest history — ask #952 (open).
+- Needs approval cards customisable with fixed actions; feed vs living lifecycles, no version history; living upsert and read-state rule; folder writes through the CLI with compare-and-set; folder creation without its own approval; deleting a folder moves its contents up; script emits blocks directly; v1 block set; raw window scope, cursor, caps and 7-day skip; meeting prep fallback; `return` trigger for Catch Up; two-release table drop; 50 % spend target — decided by the agent.
