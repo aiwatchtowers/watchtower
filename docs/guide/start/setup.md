@@ -21,9 +21,9 @@ The **Assistant language** row sets the language of Catch Up, briefings, tracks 
 
 ## The AI command-line tool must be signed in
 
-Every AI feature runs through the Claude Code or Codex command-line tool on your Mac. Watchtower checks that one of them is installed and signed in, and **Continue** stays off until it is found ("Continue unlocks once the CLI is found").
+Every AI feature runs through the Claude Code or Codex command-line tool on your Mac. Watchtower checks that one of them is installed and signed in, and **Continue** stays off until it is found ("Continue unlocks once the CLI is found"). It tries Claude Code first; if you have not picked a provider and only Codex works, Watchtower picks Codex for you ("Codex CLI found and signed in"). A provider you picked in **Settings → System → AI** is never switched.
 
-If the check fails, a box shows the install command and three helpers: **Check again**, **Set the path manually** (a **Browse…** button and **Use this path**) and **No npm?** (you need Node.js first, from nodejs.org). More on providers is in [AI providers, models and cost](../concepts/ai-providers-and-cost.md).
+If the check fails, a box shows the install commands for both tools and three helpers: **Check again**, **Set the Claude Code path manually** (a **Browse…** button and **Use this path**) and **No npm?** (you need Node.js first, from nodejs.org). More on providers is in [AI providers, models and cost](../concepts/ai-providers-and-cost.md).
 
 ## What the Connect step shows
 

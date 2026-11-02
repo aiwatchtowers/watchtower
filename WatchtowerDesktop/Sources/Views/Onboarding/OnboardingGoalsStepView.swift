@@ -229,10 +229,11 @@ struct OnboardingGoalsStepView: View {
             Label("Claude Code or Codex CLI is required", systemImage: "exclamationmark.triangle")
                 .font(.headline)
                 .foregroundStyle(.orange)
-            Text("The assistant, Workbench and every AI feature run on it. Install it and sign in from Terminal:")
+            Text("The assistant, Workbench and every AI feature run on it. Install one and sign in from Terminal:")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             codeBlock("npm install -g @anthropic-ai/claude-code && claude")
+            codeBlock("npm install -g @openai/codex && codex login")
             Text(reason)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -240,7 +241,7 @@ struct OnboardingGoalsStepView: View {
                 .lineLimit(3)
             HStack(spacing: 16) {
                 Button("Check again") { Task { await model.runCLICheck() } }
-                Button("Set the path manually") { showManualPath.toggle() }.buttonStyle(.link)
+                Button("Set the Claude Code path manually") { showManualPath.toggle() }.buttonStyle(.link)
                 Button("No npm?") { showNodeHelp.toggle() }.buttonStyle(.link)
             }
             if showManualPath { manualPathRow }

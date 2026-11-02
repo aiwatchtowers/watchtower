@@ -3,7 +3,7 @@ import WatchtowerCore
 
 extension OnboardingGoalsModel {
     /// The Goals step wired to the real CLI: `ai test` for the check (the
-    /// old Claude step's health check), `workspace init` / `config set` /
+    /// old Claude step's health check, with the Codex fallback), `workspace init` / `config set` /
     /// the Feature Manager for Continue.
     static func production(defaults: UserDefaults, featureManager: FeatureManagerService) -> OnboardingGoalsModel {
         // Resolved per call, not once here: AppState is built before the CLI
@@ -15,11 +15,11 @@ extension OnboardingGoalsModel {
         return OnboardingGoalsModel(
             defaults: defaults,
             checkCLI: {
-                do {
-                    return .ready(provider: try await WatchtowerAIService.testConnection().provider)
-                } catch {
-                    return .failed(error.localizedDescription)
-                }
+                await OnboardingCLIProbe.check(
+                    configuredProvider: await MainActor.run { ConfigService().aiProvider },
+                    test: { try await WatchtowerAIService.testConnection(provider: $0).provider },
+                    setProvider: { try await run(["config", "set", "ai.provider", $0]) }
+                )
             },
             actions: OnboardingGoalsActions(
                 initWorkspace: { try await run(["workspace", "init", "--json"]) },
