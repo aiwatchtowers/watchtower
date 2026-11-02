@@ -144,7 +144,12 @@ struct SessionChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Spacing.cozy)
             } else if path.isRoot, composerShown, let workchat {
-                WorkchatActivityLine(line: activityLine)
+                WorkchatLiveLine(snapshot: permission == nil ? store.live : nil,
+                                 error: permission == nil ? store.liveError : nil,
+                                 loaded: store.liveLoaded, working: working && permission == nil,
+                                 stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
+                                 onRetry: { Task { await store.poller.refresh() } },
+                                 onOpenAgent: { path.push($0) })
                 Divider()
                 // No card to carry it: a failed permission read shows here.
                 if permission == nil, let error = workchat.permissionError {
@@ -197,6 +202,11 @@ struct SessionChatView: View {
         let onScreen: Bool
     }
 
+    private func currentSubagentStatus(_ subagent: SessionFeedSubagent) -> String {
+        store.live?.agents.first { $0.id == subagent.toolUseID }?.ref.status
+            ?? SessionFeedSubagent.currentStatus(of: subagent, in: store.entries)
+    }
+
     /// One subagent in place of the feed: the path bar, its run, and the
     /// read-only line where the composer would be.
     private func subagentScreen(_ subagent: SessionFeedSubagent) -> some View {
@@ -206,7 +216,7 @@ struct SessionChatView: View {
             SessionChatSubagentView(
                 store: store,
                 subagent: subagent,
-                status: { SessionFeedSubagent.currentStatus(of: subagent, in: store.entries) },
+                status: { currentSubagentStatus(subagent) },
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
@@ -214,7 +224,7 @@ struct SessionChatView: View {
                     let lastAgent = entries.last { $0.kind == "agent" }
                     return WorkchatActivityPresenter.subagentLine(
                         activity: activity, sessionWorking: working,
-                        subagentStatus: SessionFeedSubagent.currentStatus(of: subagent, in: store.entries),
+                        subagentStatus: currentSubagentStatus(subagent),
                         stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
                         lastAgentAt: lastAgent?.at)
                 },

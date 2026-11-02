@@ -23,6 +23,10 @@ struct SessionChatSubagentView: View {
 
     @State private var entries: [SessionFeedEntry] = []
     @State private var activity: SessionFeedActivity?
+    @State private var live: SessionFeedLive?
+    @State private var liveError: String?
+    @State private var liveLoaded = false
+    @State private var refreshID = UUID()
     @State private var loading = true
     @State private var error: String?
     @State private var markdown = SessionFeedMarkdownCache()
@@ -32,9 +36,11 @@ struct SessionChatSubagentView: View {
         VStack(spacing: 0) {
             content
             // Always the row, empty or not: the run does not jump.
-            WorkchatActivityLine(line: liveLine(activity, entries))
+            WorkchatLiveLine(snapshot: live, error: liveError, loaded: liveLoaded,
+                             working: status() == "running" && isActive(), stateAt: nil,
+                             onRetry: { refreshID = UUID() }, onOpenAgent: onOpenSubagent)
         }
-            .task(id: followKey) {
+            .task(id: SubagentLiveFollowKey(follow: followKey, retry: refreshID)) {
                 await store.followSubagent(
                     subagent.toolUseID,
                     readsMainFeed: true,
@@ -45,6 +51,10 @@ struct SessionChatSubagentView: View {
                         loading = false
                     },
                     onActivity: { activity = $0 },
+                    onLive: {
+                        if let snapshot = $0 { live = snapshot }
+                        liveError = $1; liveLoaded = true
+                    },
                     onError: {
                         error = $0
                         if $0 != nil { loading = false }
@@ -52,6 +62,7 @@ struct SessionChatSubagentView: View {
                 )
                 // The follow ended (finished or stopped): no stale step.
                 activity = nil
+                if status() != "running" || !isActive() { live = nil }
             }
     }
 
@@ -99,4 +110,9 @@ struct SessionChatSubagentView: View {
     private func toggleEvent(_ id: String) {
         if expandedEvents.contains(id) { expandedEvents.remove(id) } else { expandedEvents.insert(id) }
     }
+}
+
+private struct SubagentLiveFollowKey: Hashable {
+    let follow: AnyHashable
+    let retry: UUID
 }

@@ -393,4 +393,29 @@ final class SessionFeedStoreTests: XCTestCase {
             return Data("{}".utf8)
         }
     }
+    func testLiveEnvelopeFailureKeepsSnapshotButNeverMasqueradesAsFresh() async {
+        let live = #"{"observed_at":"2026-11-02T12:00:00Z","turn_active":true,"#
+            + #""current":{"id":"t","tool":"Read","summary":"a.swift"},"agents":[],"agents_state":"known"}"#
+        let runner = FakeRunner([
+            .success("{\"live_ok\":true,\"live\":\(live),\"entries\":[],\"cursor\":\"c1\"}"),
+            .success(#"{"live_ok":false,"live_error":"Activity unavailable","entries":[],"cursor":"c2"}"#),
+            .failure(NSError(domain: "test", code: 1)),
+            .success(#"{"entries":[],"cursor":"c3"}"#)
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        XCTAssertEqual(store.live?.current?.summary, "a.swift")
+        XCTAssertNil(store.liveError)
+        await store.refresh()
+        XCTAssertEqual(store.live?.current?.summary, "a.swift")
+        XCTAssertEqual(store.liveError, "Activity unavailable")
+        await store.refresh()
+        XCTAssertNotNil(store.error)
+        XCTAssertEqual(store.liveError, "Activity unavailable")
+        store.clearActivity()
+        XCTAssertNil(store.live); XCTAssertFalse(store.liveLoaded)
+        await store.refresh()
+        XCTAssertEqual(store.liveError, "Activity unavailable", "older CLI is an explicit unavailable state")
+    }
+
 }

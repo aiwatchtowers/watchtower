@@ -58,6 +58,9 @@ type sessionFeedJSON struct {
 	Cursor         string                 `json:"cursor"`
 	Entries        []sessionFeedEntryJSON `json:"entries"`
 	Activity       *sessionfeed.Activity  `json:"activity"` // the agent's open tool call, or null
+	Live           *sessionfeed.Live      `json:"live"`
+	LiveOK         bool                   `json:"live_ok"`
+	LiveError      string                 `json:"live_error,omitempty"`
 	Subagents      []sessionFeedEntryJSON `json:"subagents"`
 	Skipped        int                    `json:"skipped"`
 	UnknownRecords map[string]int         `json:"unknown_records"`
@@ -161,7 +164,9 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 		if err != nil {
 			return out, err
 		}
-		out.Activity = sessionFeedActivity(path, false, true)
+		codex := strings.HasPrefix(sub, "codex:")
+		out.Activity = sessionFeedActivity(path, codex, !codex)
+		setSessionFeedLive(&out, sessionfeed.Conversation{Path: path, Codex: codex, AgentSessionID: strings.TrimPrefix(sub, "codex:")}, !codex)
 		var markers []sessionfeed.Entry
 		for _, e := range res.Entries {
 			if e.Kind == sessionfeed.KindSubagent {
@@ -183,11 +188,23 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 	if len(convs) > 0 {
 		last := convs[len(convs)-1]
 		out.Activity = sessionFeedActivity(last.Path, last.Codex, false)
+		setSessionFeedLive(&out, last, false)
 	}
 	out.Entries, out.Subagents = toSessionFeedEntries(feed.Entries), toSessionFeedEntries(feed.Subagents)
 	out.Skipped = feed.Skipped
 	maps.Copy(out.UnknownRecords, feed.Unknown)
 	return out, nil
+}
+
+// The live hint has its own failure envelope: exit-0 feed reads must not
+// silently leave a previous tool looking current when the hint failed.
+func setSessionFeedLive(out *sessionFeedJSON, c sessionfeed.Conversation, sidechain bool) {
+	live, err := sessionfeed.LiveOf(c, sidechain, time.Now())
+	if err != nil {
+		out.LiveError = "Activity unavailable"
+		return
+	}
+	out.Live, out.LiveOK = live, true
 }
 
 // sessionFeedActivity reads the open tool call at the transcript's tail. A

@@ -3,8 +3,10 @@ package sessionfeed
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
@@ -76,6 +78,16 @@ func AskLookupFor(d *db.DB, workbenchID int64) AskLookup {
 // speed.
 func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, error) {
 	for _, c := range convs {
+		if c.Codex {
+			res, path, err := findCodexSubagent(c, toolUseID, 0)
+			if err != nil {
+				return nil, "", err
+			}
+			if res != nil {
+				return res, path, nil
+			}
+			continue
+		}
 		feed, err := Build([]Conversation{c}, nil, nil)
 		if err != nil {
 			return nil, "", err
@@ -116,6 +128,46 @@ func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth in
 		}
 		if found, foundPath, err := findSubagent(sessionDir, res.Entries, toolUseID, depth+1); err != nil || found != nil {
 			return found, foundPath, err
+		}
+	}
+	return nil, "", nil
+}
+
+func findCodexSubagent(c Conversation, selector string, depth int) (*Result, string, error) {
+	if depth >= maxSubagentDepth || !strings.HasPrefix(selector, "codex:") {
+		return nil, "", nil
+	}
+	live, err := LiveOf(c, false, time.Now())
+	if err != nil {
+		return nil, "", err
+	}
+	for _, a := range live.Agents {
+		path, ok := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		if !ok {
+			continue
+		}
+		child := Conversation{Path: path, AgentSessionID: a.Ref.AgentID, Codex: true}
+		if a.Ref.ToolUseID == selector {
+			f, err := os.Open(path)
+			if err != nil {
+				return nil, "", err
+			}
+			defer f.Close()
+			res, err := ParseCodex(f, 0, child.AgentSessionID)
+			if err != nil {
+				return nil, "", err
+			}
+			nested, err := LiveOf(child, false, time.Now())
+			if err == nil {
+				for _, n := range nested.Agents {
+					ref := n.Ref
+					res.Entries = append(res.Entries, Entry{ID: ref.ToolUseID, Kind: KindSubagent, Subagent: &ref, At: n.StartedAt, Conversation: child.AgentSessionID})
+				}
+			}
+			return res, path, nil
+		}
+		if res, path, err := findCodexSubagent(child, selector, depth+1); res != nil || err != nil {
+			return res, path, err
 		}
 	}
 	return nil, "", nil

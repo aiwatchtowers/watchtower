@@ -92,6 +92,36 @@ enum DesignShotCatalog {
             DesignShot(name: "workchat-activity-agents-unknown", size: NSSize(width: 720, height: 400)) {
                 AnyView(WorkchatLiveProposalShot(model: .unknownAgents, narrow: false, agentsOpen: false))
             },
+            DesignShot(name: "workchat-activity-actual-busy", size: NSSize(width: 720, height: 400)) {
+                AnyView(WorkchatLiveProposalShot(model: .busy, narrow: false, agentsOpen: false, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-narrow", size: NSSize(width: 340, height: 400)) {
+                AnyView(WorkchatLiveProposalShot(model: .busy, narrow: true, agentsOpen: false, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-agents-open", size: NSSize(width: 720, height: 480)) {
+                AnyView(WorkchatLiveProposalShot(model: .busy, narrow: false, agentsOpen: true, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-overflow", size: NSSize(width: 720, height: 480)) {
+                AnyView(WorkchatLiveProposalShot(model: .overflow, narrow: false, agentsOpen: true, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-empty", size: NSSize(width: 720, height: 300)) {
+                AnyView(WorkchatLiveProposalShot(model: .empty, narrow: false, agentsOpen: false, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-loading", size: NSSize(width: 720, height: 400)) {
+                AnyView(WorkchatLiveProposalShot(model: .loading, narrow: false, agentsOpen: false, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-thinking", size: NSSize(width: 720, height: 400)) {
+                AnyView(WorkchatLiveProposalShot(model: .thinking, narrow: false, agentsOpen: false, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-error", size: NSSize(width: 720, height: 400)) {
+                AnyView(WorkchatLiveProposalShot(model: .error, narrow: false, agentsOpen: false, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-stale", size: NSSize(width: 720, height: 400)) {
+                AnyView(WorkchatLiveProposalShot(model: .stale, narrow: false, agentsOpen: false, usesLiveImplementation: true))
+            },
+            DesignShot(name: "workchat-activity-actual-agents-unknown", size: NSSize(width: 720, height: 400)) {
+                AnyView(WorkchatLiveProposalShot(model: .unknownAgents, narrow: false, agentsOpen: false, usesLiveImplementation: true))
+            },
             DesignShot(name: "workchat-live-line", size: NSSize(width: 560, height: 120)) {
                 AnyView(DesignShotFixtures.workchatLiveLine().padding(12).shotFrame().detailBackground())
             },

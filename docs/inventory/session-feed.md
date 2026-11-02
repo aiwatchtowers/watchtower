@@ -49,7 +49,7 @@
 
 **Status:** Enforced
 
-**Observable:** `workbench session-feed --json` emits `session_id`, `cursor`, `entries`, `activity`, `subagents`, `skipped`, `unknown_records`; `activity` is `null` or `{tool, summary, started_at, more}` (the agent's open tool call, read from the transcript tail at request time, independent of `--after`); an entry has `id`, `kind`, `at`, `text`, `conversation` and, when set, `ask_id`, `title`, `via`, `event_type`, `subagent`; a `subagent` object has `tool_use_id`, `agent_id`, `type`, `description`, `status`. The Desktop decodes these; renaming a key breaks the app silently.
+**Observable:** `workbench session-feed --json` emits `session_id`, `cursor`, `entries`, `activity`, `subagents`, `skipped`, `unknown_records`; `live`, `live_ok` and optional `live_error` are additive Desktop hint fields (ask #932, 2026-11-02); `activity` is `null` or `{tool, summary, started_at, more}` (the agent's open tool call, read from the transcript tail at request time, independent of `--after`); an entry has `id`, `kind`, `at`, `text`, `conversation` and, when set, `ask_id`, `title`, `via`, `event_type`, `subagent`; a `subagent` object has `tool_use_id`, `agent_id`, `type`, `description`, `status`. The Desktop decodes these; renaming a key breaks the app silently.
 
 **Test guards:**
 - `cmd/workbench_session_feed_test.go::TestSessionFeedJSON_PinnedKeys`
@@ -97,3 +97,5 @@
 
 - 2026-10-19 (board #711, owner approval ask #400): FEED-02 amended — Claude Code notices are event entries. FEED-03 lists `event_type`. Spec `docs/superpowers/specs/2026-10-18-workchat-design.md`.
 - 2026-10-21 (board #846; the owner's decisions ask #481, spec approval ask #482): FEED-03 gains `activity`. Spec `docs/superpowers/specs/2026-10-21-workchat-polish-design.md`.
+
+- 2026-11-02 (board #1481, asks #932/#933): FEED-03 additive `live`/`live_ok`/`live_error` envelope, keeping existing activity/entry semantics. Current/last actions and bounded agent lifecycle never become tool entries, database text or mobile activity. Guards added: `internal/sessionfeed/live_test.go::TestLiveCompletedActionSurvivesPollingAndNewTurnResets`, `TestLiveClaudeBackgroundSurvivesLaunchResultAndMainEnd`, `TestLiveCodexLifecycleAndSafeDrillIn`, `TestLiveUnavailableInputsNeverReportZeroAgents`; Desktop `WorkchatLivePresentationTests` and `SessionFeedStoreTests.testLiveEnvelopeFailureKeepsSnapshotButNeverMasqueradesAsFresh`.

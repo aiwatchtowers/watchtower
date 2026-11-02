@@ -12,6 +12,11 @@ package final class SessionFeedStore: ObservableObject {
     /// included); the live line shows it, it is never an entry.
     @Published package private(set) var activity: SessionFeedActivity?
 
+    @Published package private(set) var live: SessionFeedLive?
+    @Published package private(set) var liveError: String?
+    @Published package private(set) var liveLoaded = false
+    private var liveGeneration = 0
+
     /// No CLI binary was found: the pane shows the error and never polls.
     package let runnerMissing: Bool
     /// Every read of the pane goes through it, so a read already in flight
@@ -69,20 +74,37 @@ package final class SessionFeedStore: ObservableObject {
     package func refresh() async {
         var args = ["workbench", "session-feed", "--session", String(sessionID), "--json"]
         if !cursor.isEmpty { args += ["--after", cursor] }
+        let generation = liveGeneration
         do {
             let payload = try Self.decode(try await read(args))
             merge(payload.entries)
             merge(payload.subagents)
             cursor = payload.cursor
-            activity = payload.activity
+            if generation == liveGeneration {
+                activity = payload.activity
+                liveLoaded = true
+                if payload.liveOK == true, let snapshot = payload.live {
+                    live = snapshot
+                    liveError = nil
+                } else {
+                    liveError = payload.liveError ?? WorkchatLivePresentation.unavailable
+                }
+            }
             error = nil
         } catch {
             self.error = error.localizedDescription
+            if generation == liveGeneration {
+                liveLoaded = true
+                liveError = WorkchatLivePresentation.unavailable
+            }
         }
     }
 
     /// The session left working: the old step must not flash on the next turn.
-    package func clearActivity() { activity = nil }
+    package func clearActivity() {
+        liveGeneration += 1
+        activity = nil; live = nil; liveError = nil; liveLoaded = false
+    }
 
     /// A subagent opened in the pane: one read now, then while `isRunning`
     /// (its marker says `running`) one more every `interval`. Reads due while
@@ -100,6 +122,7 @@ package final class SessionFeedStore: ObservableObject {
         isOnScreen: () -> Bool,
         onEntries: ([SessionFeedEntry]) -> Void,
         onActivity: (SessionFeedActivity?) -> Void = { _ in },
+        onLive: (SessionFeedLive?, String?) -> Void = { _, _ in },
         onError: (String?) -> Void = { _ in }
     ) async {
         guard !runnerMissing else { return }
@@ -110,9 +133,10 @@ package final class SessionFeedStore: ObservableObject {
                 if Task.isCancelled { return }
                 onEntries(read.entries)
                 onActivity(read.activity)
+                onLive(read.live, read.liveError)
                 onError(nil)
             } catch {
-                if !Task.isCancelled { onError(error.localizedDescription) }
+                if !Task.isCancelled { onError(error.localizedDescription); onLive(nil, WorkchatLivePresentation.unavailable) }
             }
             if readsMainFeed, !Task.isCancelled { await poller.refresh() }
         }
@@ -126,12 +150,16 @@ package final class SessionFeedStore: ObservableObject {
 
     /// The feed of one subagent run with its own open tool call; not merged
     /// into the main feed.
-    package func subagentFeed(_ toolUseID: String) async throws -> (entries: [SessionFeedEntry], activity: SessionFeedActivity?) {
+    package func subagentFeed(
+        _ toolUseID: String
+    ) async throws -> (entries: [SessionFeedEntry], activity: SessionFeedActivity?, live: SessionFeedLive?, liveError: String?) {
         let data = try await read([
             "workbench", "session-feed", "--session", String(sessionID), "--subagent", toolUseID, "--json"
         ])
         let payload = try Self.decode(data)
-        return (payload.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }, payload.activity)
+        return (payload.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }, payload.activity,
+                payload.liveOK == true ? payload.live : nil,
+                payload.liveOK == true ? nil : (payload.liveError ?? WorkchatLivePresentation.unavailable))
     }
 
     /// Runs one CLI read after the one before it has finished. The read
