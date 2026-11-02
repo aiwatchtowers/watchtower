@@ -188,6 +188,8 @@ type Options struct {
 	// soonTimer is the link check's short retry after a link change (nil =
 	// a real one).
 	soonTimer func(time.Duration) (<-chan time.Time, func())
+	// passTicker is the worker's mailbox pass ticker (nil = a real one).
+	passTicker func(time.Duration) (<-chan time.Time, func())
 	// staleAfter is the stale check's delay after a Desktop heartbeat (0 =
 	// staleCheckAfter); published sees every publishSoon (nil = none).
 	staleAfter time.Duration
@@ -238,6 +240,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.soonTimer == nil {
 		o.soonTimer = realTimer
+	}
+	if o.passTicker == nil {
+		o.passTicker = realTicker
 	}
 	if o.writeTimeout <= 0 {
 		o.writeTimeout = controlWriteTimeout

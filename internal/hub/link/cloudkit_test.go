@@ -1513,3 +1513,137 @@ func TestAFailedIssueNeverClosesAnotherIssuesLink(t *testing.T) {
 		t.Errorf("the second code does not link: %+v %v", got, err)
 	}
 }
+
+// A shared phone's own unlink (its device record, unlinked: true) on
+// CloudKit is RemoveCloudKit: its iCloud user leaves both shares at once,
+// without waiting for a pass; a failed removal unlinks it all the same and
+// is left to the sweep.
+func TestAPhonesOwnUnlinkOnCloudKitDropsTheParticipant(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	a := newPhone(t)
+	r.linkCK(a, code.Nonce, sharedHello("_colleague-a"))
+	unlinked := true
+	rec := DeviceRecord{
+		Payload: wire.DevicePayload{DeviceID: a.id.String(), Scope: wire.ScopeShared, UserRecordName: "_colleague-a", Unlinked: &unlinked},
+		Creator: "_colleague-a", Shares: r.s,
+	}
+	if err := r.c.ApplyDeviceRecord(r.ctx, a.id.String(), rec); err != nil {
+		t.Fatalf("ApplyDeviceRecord: %v", err)
+	}
+	if r.linked(a) {
+		t.Fatal("still linked")
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); len(got) != 0 {
+			t.Errorf("%s: %v", z, got)
+		}
+	}
+
+	code = r.issueCK()
+	r.s.join("_colleague-b")
+	b := newPhone(t)
+	r.linkCK(b, code.Nonce, sharedHello("_colleague-b"))
+	r.s.setFailing("remove_participants")
+	rec.Payload.DeviceID, rec.Payload.UserRecordName, rec.Creator = b.id.String(), "_colleague-b", "_colleague-b"
+	if err := r.c.ApplyDeviceRecord(r.ctx, b.id.String(), rec); err != nil {
+		t.Fatalf("a failed participant removal after the unlink is no error: %v", err)
+	}
+	if r.linked(b) {
+		t.Fatal("still linked after a failed removal")
+	}
+	if r.sweepMark() != "1" {
+		t.Fatal("the failed removal is not left to the sweep")
+	}
+}
+
+// pairEvents drains the center's events, counting them by kind.
+func pairEvents(c *Center) map[string]int {
+	out := map[string]int{}
+	for {
+		select {
+		case ev := <-c.Events():
+			out[ev.Kind]++
+		default:
+			return out
+		}
+	}
+}
+
+// A held-back page brings the same hello record version back: read three
+// times, it is decided once — one SAS, one participant read per share, one
+// refusal — and a new version of the record is decided again.
+func TestAHelloReReadIsNotDecidedAgain(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	a := newPhone(t)
+	zone := transport.SharedMailboxZone(testRelayID)
+	rec := transport.Stored{Zone: zone, Name: a.name(), Envelope: r.hello(a, code.Nonce, sharedHello("_colleague-a")),
+		Creator: "_colleague-a", RecordSeq: 7}
+	pairEvents(r.c)
+	r.s.takeCalls()
+	for i := range 3 {
+		p, err := r.c.HandleCloudKitHello(r.ctx, r.s, rec)
+		switch {
+		case i == 0 && (err != nil || p.Code == ""):
+			t.Fatalf("first read: %+v, %v", p, err)
+		case i > 0 && !errors.Is(err, ErrHelloDropped):
+			t.Fatalf("read %d decided again: %+v, %v", i+1, p, err)
+		}
+	}
+	if n := r.s.count(r.s.takeCalls(), "participants"); n != 2 {
+		t.Fatalf("%d participant reads, want one per share", n)
+	}
+	if ev := pairEvents(r.c); ev[EventSAS] != 1 {
+		t.Fatalf("events %v, want one sas", ev)
+	}
+
+	// A refusal (the code expired) is answered once too.
+	r.advance(time.Hour)
+	b := newPhone(t)
+	refused := transport.Stored{Zone: zone, Name: b.name(), Envelope: r.hello(b, code.Nonce, sharedHello("_colleague-a")),
+		Creator: "_colleague-a", RecordSeq: 9}
+	for range 3 {
+		_, _ = r.c.HandleCloudKitHello(r.ctx, r.s, refused)
+	}
+	if ev := pairEvents(r.c); ev[EventRefused] != 1 {
+		t.Fatalf("events %v, want one refusal", ev)
+	}
+	// A new version of the record is a new hello.
+	refused.RecordSeq = 10
+	if _, err := r.c.HandleCloudKitHello(r.ctx, r.s, refused); err != nil {
+		t.Fatalf("a new version: %v", err)
+	}
+}
+
+// The shared RelayZone's hellos are read with no phone linked only while a
+// code is open or a link is urgent (an answering close's grace).
+func TestWantsHellosOnlyWhileACodeIsOpenOrALinkIsUrgent(t *testing.T) {
+	r := newCKRig(t)
+	if r.c.WantsHellos() {
+		t.Fatal("wanted with no code")
+	}
+	r.issueCK()
+	if !r.c.WantsHellos() {
+		t.Fatal("not wanted with a code open")
+	}
+	r.advance(time.Hour)
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil { // the expiry close: the grace runs
+		t.Fatal(err)
+	}
+	if !r.c.WantsHellos() {
+		t.Fatal("not wanted during the answer grace")
+	}
+	r.advance(DefaultSweep.AnswerGrace)
+	if r.c.WantsHellos() {
+		t.Fatal("wanted after the grace, with the code expired")
+	}
+	if _, _, err := r.c.Issue(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.c.WantsHellos() {
+		t.Fatal("not wanted with a relay code open")
+	}
+}
