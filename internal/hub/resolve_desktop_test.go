@@ -184,11 +184,14 @@ func TestDesktopHostOffUntilAdopted(t *testing.T) {
 		t.Fatalf("MobileHub/ changed:\n%v\n%v", before, after)
 	}
 
-	// The adoption moved the Swift state in and stopped mid-way.
+	// The adoption moved the Swift state in and stopped mid-way. Its Go
+	// sidecar is written while the Swift one is still there (the gate holds
+	// at every intermediate state: a real adoption renames a finished copy
+	// in), then the Swift one goes.
+	setMeta(t, r.dir, adopt.MetaAdoptStep, string(adopt.StepSettings), state.MetaEnabled, "1")
 	if err := os.Remove(filepath.Join(r.mobile, state.FileName)); err != nil {
 		t.Fatal(err)
 	}
-	setMeta(t, r.dir, adopt.MetaAdoptStep, string(adopt.StepSettings), state.MetaEnabled, "1")
 	r.waitStatus("in progress", func(s Status) bool {
 		return s.Reason == ReasonAwaitingAdoption && s.Adoption == AdoptionInProgress
 	})
