@@ -1,6 +1,7 @@
 import SwiftUI
 import DesignKit
 import XCTest
+import ViewInspector
 import WatchtowerCore
 @testable import WatchtowerDesktop
 
@@ -21,4 +22,14 @@ final class WorkchatLiveLineTests: XCTestCase {
             XCTAssertEqual(ViewRenderProbe.fittingHeight(line, width: 340), ListLayout.lineMinHeight)
         }
     }
+    func testUnknownEmptyPickerRendersUnknownInsteadOfZero() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let unknown = SessionFeedLive(observedAt: now, agentsState: "unknown")
+        let picker = WorkchatRunningAgentsPicker(snapshot: unknown, error: nil, now: now) { _ in }
+        let texts = try picker.inspect().findAll(ViewType.Text.self).map { try $0.string() }
+        XCTAssertTrue(texts.contains("Running agents · unknown"))
+        XCTAssertTrue(texts.contains("Agent status unavailable"))
+        XCTAssertFalse(texts.contains("Running agents · 0"))
+    }
+
 }

@@ -79,7 +79,7 @@ struct WorkchatRunningAgentsPicker: View {
     var body: some View {
         let rows = WorkchatLivePresentation.agentRows(snapshot, error: error, now: now)
         return VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text(WorkchatLivePresentation.agentsTitle(count: rows.count + (snapshot?.agentsMore ?? 0)))
+            Text(WorkchatLivePresentation.agentsTitle(snapshot: snapshot))
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if snapshot?.agentsState != "known" {
                 Text(WorkchatLivePresentation.unknownAgents).font(.caption).foregroundStyle(.secondary)

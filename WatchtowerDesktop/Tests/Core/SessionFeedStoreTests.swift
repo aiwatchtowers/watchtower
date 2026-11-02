@@ -418,4 +418,22 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(store.liveError, "Activity unavailable", "older CLI is an explicit unavailable state")
     }
 
+    func testNestedOwnCompletionStopsFurtherChildPollingWhileMainSessionWorks() async {
+        let stamp = "2026-11-02T12:00:00Z"
+        let now = SessionFeedEntry.parseDate(stamp) ?? .distantPast
+        let completed = #"{"live_ok":true,"live":{"observed_at":"2026-11-02T12:00:00Z","turn_active":false,"#
+            + #""agents":[],"agents_state":"known"},"entries":[],"cursor":""}"#
+        let runner = FakeRunner([.success(completed), .success(payload())])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        var selectedStatus = "running" // B was opened from A, absent in the root markers.
+        await store.followSubagent("nested-b", interval: .milliseconds(1), readsMainFeed: true,
+                                   isRunning: { selectedStatus == "running" }, isOnScreen: { true },
+                                   onEntries: { _ in }, onLive: { snapshot, error in
+            selectedStatus = SessionSubagentLifecycle.status(parentStatus: "running", snapshot: snapshot, error: error, now: now)
+        })
+        XCTAssertEqual(selectedStatus, "finished")
+        XCTAssertEqual(runner.calls.filter { $0.contains("--subagent") }.count, 1)
+        XCTAssertEqual(runner.calls.count, 2, "one final main-feed refresh; no repeated child polls")
+    }
+
 }

@@ -69,6 +69,12 @@ package enum WorkchatLivePresentation {
     }
     private static func workingText(_ snapshot: SessionFeedLive) -> String { working }
     package static func agentsTitle(count: Int) -> String { "Running agents · \(count)" }
+    package static func agentsTitle(snapshot: SessionFeedLive?) -> String {
+        guard let snapshot, snapshot.agentsState == "known",
+              !snapshot.agents.contains(where: { $0.ref.status == "unknown" }) else { return "Running agents · unknown" }
+        let count = snapshot.agents.filter { $0.ref.status != "finished" }.count + snapshot.agentsMore
+        return agentsTitle(count: count)
+    }
     package static func moreAgents(_ count: Int) -> String { "\(count) more agents" }
     package static func agentRows(_ snapshot: SessionFeedLive?, error: String? = nil, now: Date) -> [AgentRow] {
         guard error == nil, let snapshot, let observed = snapshot.observedAt,

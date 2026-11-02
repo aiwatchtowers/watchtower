@@ -32,19 +32,23 @@ struct SessionChatSubagentView: View {
     @State private var markdown = SessionFeedMarkdownCache()
     @State private var expandedEvents: Set<String> = []
 
+    private var currentStatus: String {
+        SessionSubagentLifecycle.status(parentStatus: status(), snapshot: live, error: liveError, now: .now)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             content
             // Always the row, empty or not: the run does not jump.
             WorkchatLiveLine(snapshot: live, error: liveError, loaded: liveLoaded,
-                             working: status() == "running" && isActive(), stateAt: nil,
+                             working: currentStatus == "running" && isActive(), stateAt: nil,
                              onRetry: { refreshID = UUID() }, onOpenAgent: onOpenSubagent)
         }
-            .task(id: SubagentLiveFollowKey(follow: followKey, retry: refreshID)) {
+            .task(id: SessionSubagentFollowKey(follow: followKey, retry: refreshID, parentStatus: status())) {
                 await store.followSubagent(
                     subagent.toolUseID,
                     readsMainFeed: true,
-                    isRunning: { status() == "running" && isActive() },
+                    isRunning: { currentStatus == "running" && isActive() },
                     isOnScreen: isOnScreen,
                     onEntries: {
                         entries = $0
@@ -62,7 +66,9 @@ struct SessionChatSubagentView: View {
                 )
                 // The follow ended (finished or stopped): no stale step.
                 activity = nil
-                if status() != "running" || !isActive() { live = nil }
+                // Keep the completed snapshot as lifecycle evidence: dropping it
+                // would resurrect the initially pushed `running` marker.
+                if !isActive() { live = nil }
             }
     }
 
@@ -110,9 +116,4 @@ struct SessionChatSubagentView: View {
     private func toggleEvent(_ id: String) {
         if expandedEvents.contains(id) { expandedEvents.remove(id) } else { expandedEvents.insert(id) }
     }
-}
-
-private struct SubagentLiveFollowKey: Hashable {
-    let follow: AnyHashable
-    let retry: UUID
 }

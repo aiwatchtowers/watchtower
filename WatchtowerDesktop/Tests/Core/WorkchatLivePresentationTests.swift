@@ -87,4 +87,13 @@ final class WorkchatLivePresentationTests: XCTestCase {
         XCTAssertNil(WorkchatLivePresentation.elapsed(from: nil, now: now))
         XCTAssertEqual(WorkchatLivePresentation.elapsed(from: now + 100, now: now), "0:00")
     }
+    func testUnknownPickerTitleNeverClaimsZeroRunningAgents() {
+        let unknown = SessionFeedLive(observedAt: now, agentsState: "unknown")
+        XCTAssertEqual(WorkchatLivePresentation.agentsTitle(snapshot: unknown), "Running agents · unknown")
+        XCTAssertEqual(row(unknown)?.agentsBadge, "?")
+        XCTAssertEqual(WorkchatLivePresentation.agentsTitle(snapshot: snapshot()), "Running agents · 0")
+        let unresolved = SessionLiveAgent(ref: SessionFeedSubagent(toolUseID: "unknown"))
+        XCTAssertEqual(WorkchatLivePresentation.agentsTitle(snapshot: snapshot(agents: [unresolved])), "Running agents · unknown")
+    }
+
 }

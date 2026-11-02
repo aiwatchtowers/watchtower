@@ -3,7 +3,9 @@ package sessionfeed
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,19 +15,21 @@ import (
 
 const liveWindow = 4 << 20
 const maxLiveAgents = 32
+const maxLiveAgentCandidates = 128
 
 // Live is an on-demand, cursor-independent snapshot. Activity keeps its old
 // meaning; completed actions and agent state live only in this new envelope.
 type Live struct {
-	ObservedAt   time.Time   `json:"observed_at"`
-	Conversation string      `json:"conversation"`
-	TurnAt       time.Time   `json:"turn_at"`
-	TurnActive   bool        `json:"turn_active"`
-	Current      *LiveAction `json:"current"`
-	Latest       *LiveAction `json:"latest"`
-	Agents       []LiveAgent `json:"agents"`
-	AgentsState  string      `json:"agents_state"`
-	AgentsMore   int         `json:"agents_more"`
+	ObservedAt      time.Time   `json:"observed_at"`
+	Conversation    string      `json:"conversation"`
+	TurnAt          time.Time   `json:"turn_at"`
+	TurnActive      bool        `json:"turn_active"`
+	Current         *LiveAction `json:"current"`
+	Latest          *LiveAction `json:"latest"`
+	Agents          []LiveAgent `json:"agents"`
+	AgentsState     string      `json:"agents_state"`
+	AgentsMore      int         `json:"agents_more"`
+	inspectedAgents int
 }
 type LiveAction struct {
 	ID          string    `json:"id"`
@@ -40,6 +44,8 @@ type LiveAgent struct {
 	StartedAt time.Time   `json:"started_at"`
 	Action    *LiveAction `json:"action"`
 	CanOpen   bool        `json:"can_open"`
+	statusAt  time.Time
+	resumedAt time.Time
 }
 type liveReader struct {
 	live       *Live
@@ -101,52 +107,7 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if !c.Codex {
 		r.claudeAgents()
 	}
-	ids := make([]string, 0, len(r.agents))
-	for id := range r.agents {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool {
-		a, b := r.agents[ids[i]], r.agents[ids[j]]
-		if (a.Ref.Status == StatusFinished) != (b.Ref.Status == StatusFinished) {
-			return b.Ref.Status == StatusFinished
-		}
-		if a.StartedAt.Equal(b.StartedAt) {
-			return ids[i] < ids[j]
-		}
-		return a.StartedAt.Before(b.StartedAt)
-	})
-	for _, id := range ids {
-		a := r.agents[id]
-		if a.Ref.Status == StatusUnknown {
-			live.AgentsState = "unknown"
-		}
-		if len(live.Agents) >= maxLiveAgents {
-			if a.Ref.Status != StatusFinished {
-				live.AgentsMore++
-			}
-			continue
-		}
-		if path, ok := r.agentPath(a.Ref); ok {
-			a.CanOpen = true
-			if c.Codex {
-				action, status, at, e := codexChildHint(path)
-				if e != nil {
-					a.Ref.Status = StatusUnknown
-					live.AgentsState = "unknown"
-				} else {
-					if !at.Before(a.StartedAt) && status != "" {
-						a.Ref.Status = status
-					}
-					if a.Ref.Status == StatusRunning {
-						a.Action = action
-					}
-				}
-			} else if activity, e := ActivityOf(path, false, true); e == nil && activity != nil {
-				a.Action = &LiveAction{Tool: activity.Tool, Summary: activity.Summary, StartedAt: activity.StartedAt}
-			}
-		}
-		live.Agents = append(live.Agents, *a)
-	}
+	r.reconcileAgents()
 	return live, nil
 }
 func (r *liveReader) reset(at time.Time) {
@@ -186,32 +147,18 @@ func (r *liveReader) claudeLine(line []byte) {
 	}
 	at, _ := time.Parse(time.RFC3339Nano, rec.Timestamp)
 	if rec.Type == "user" && !rec.IsMeta && !rec.IsCompact {
-		// A result is not a new owner turn. Classification also excludes notices.
-		var text string
-		if json.Unmarshal(rec.Message.Content, &text) == nil && strings.TrimSpace(text) != "" {
+		if e, ok := userEntry(rec); ok {
 			r.recognized = true
-			if e, ok := classifyUserText("", text); ok && (e.Kind == KindOwner || e.Kind == KindAskAnswer) {
+			if e.Kind == KindOwner || e.Kind == KindAskAnswer || e.Kind == KindWatchtower {
 				r.reset(at)
 			}
 		}
 		var blocks []block
-		if json.Unmarshal(rec.Message.Content, &blocks) == nil && len(blocks) > 0 {
-			r.recognized = true
-			hasResult := false
+		if json.Unmarshal(rec.Message.Content, &blocks) == nil {
 			for _, b := range blocks {
 				if b.Type == "tool_result" {
-					hasResult = true
+					r.recognized = true
 					r.complete(b.ToolUseID, at)
-				}
-			}
-			if !hasResult {
-				for _, b := range blocks {
-					if b.Type == "text" {
-						if e, ok := classifyUserText("", b.Text); ok && (e.Kind == KindOwner || e.Kind == KindAskAnswer) {
-							r.reset(at)
-							break
-						}
-					}
 				}
 			}
 		}
@@ -252,9 +199,8 @@ func (r *liveReader) claudeLine(line []byte) {
 
 func (r *liveReader) claudeAgents() {
 	sessionDir := strings.TrimSuffix(r.path, ".jsonl")
-	metas, _ := readMetas(sessionDir)
-	files, _ := filepath.Glob(filepath.Join(sessionDir, "subagents", "agent-*.meta.json"))
-	if len(files) > len(metas) {
+	metas, err := readLiveMetas(sessionDir)
+	if err != nil {
 		r.live.AgentsState = "unknown"
 	}
 	for id, m := range metas {
@@ -346,7 +292,7 @@ func (r *liveReader) codexLine(line []byte) {
 	case "collab_agent_spawn_end":
 		r.agent(p.NewThreadID, p.CallID, p.Prompt, normalizeAgentStatus(p.Status), at)
 	case "collab_resume_end":
-		r.agent(p.ReceiverThreadID, "", "", normalizeAgentStatus(p.Status), at)
+		r.resumeAgent(p.ReceiverThreadID, "", normalizeAgentStatus(p.Status), at)
 	case "collab_close_end":
 		r.agent(p.ReceiverThreadID, "", "", StatusFinished, at)
 	case "collab_agent_interaction_end":
@@ -393,6 +339,13 @@ func (r *liveReader) agent(id, toolID, description, status string, at time.Time)
 	}
 	// toolID is intentionally not the drill-in selector: resumes keep the id.
 	_ = toolID
+	if at.Before(a.statusAt) {
+		return
+	}
+	if at.Equal(a.statusAt) && a.Ref.Status == StatusFinished && status == StatusRunning {
+		return
+	}
+	a.statusAt = at
 	if a.Ref.Status != StatusRunning && status == StatusRunning {
 		a.StartedAt = at
 	}
@@ -433,7 +386,11 @@ func (r *liveReader) codexCollabItem(raw json.RawMessage, at time.Time) {
 		if (p.Tool == "closeAgent" || p.Tool == "close_agent") && p.Status == "completed" {
 			status = StatusFinished
 		}
-		r.agent(id, "", p.Prompt, status, at)
+		if p.Tool == "resumeAgent" || p.Tool == "resume_agent" {
+			r.resumeAgent(id, p.Prompt, status, at)
+		} else {
+			r.agent(id, "", p.Prompt, status, at)
+		}
 	}
 }
 func (r *liveReader) codexToolResult(a LiveAction, raw json.RawMessage, at time.Time) {
@@ -474,7 +431,11 @@ func (r *liveReader) codexToolResult(a LiveAction, raw json.RawMessage, at time.
 		status = StatusFinished
 	}
 	if result.AgentID != "" {
-		r.agent(result.AgentID, a.ID, "", status, at)
+		if name == "resume_agent" {
+			r.resumeAgent(result.AgentID, "", status, at)
+		} else {
+			r.agent(result.AgentID, a.ID, "", status, at)
+		}
 	}
 }
 func (r *liveReader) agentPath(ref SubagentRef) (string, bool) {
@@ -608,4 +569,165 @@ func codexChildHint(path string) (*LiveAction, string, time.Time, error) {
 		action = nil
 	}
 	return action, status, at, nil
+}
+
+// A resume is a new interval, even when a provider's timestamp resolution
+// gives it the same stamp as the previous terminal event.
+func (r *liveReader) resumeAgent(id, description, status string, at time.Time) {
+	r.agent(id, "", description, status, at)
+	a := r.agents[id]
+	if a == nil || at.Before(a.statusAt) || status != StatusRunning {
+		return
+	}
+	a.Ref.Status = StatusRunning
+	a.statusAt = at
+	a.resumedAt = at
+	a.StartedAt = at
+}
+
+// Inspect a bounded, newest-first set before applying the visible cap. A
+// parent's stale spawn acknowledgement is not proof a child still runs.
+func (r *liveReader) reconcileAgents() {
+	ids := make([]string, 0, len(r.agents))
+	for id := range r.agents {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := r.agents[ids[i]], r.agents[ids[j]]
+		// Explicitly terminal parents need not displace potentially active
+		// candidates from the bounded inspection budget.
+		if (a.Ref.Status == StatusFinished) != (b.Ref.Status == StatusFinished) {
+			return b.Ref.Status == StatusFinished
+		}
+		at, bt := a.statusAt, b.statusAt
+		if at.IsZero() {
+			at = a.StartedAt
+		}
+		if bt.IsZero() {
+			bt = b.StartedAt
+		}
+		if at.Equal(bt) {
+			return ids[i] > ids[j]
+		}
+		return at.After(bt)
+	})
+	if len(ids) > maxLiveAgentCandidates {
+		ids = ids[:maxLiveAgentCandidates]
+		r.live.AgentsState = "unknown"
+	}
+	for _, id := range ids {
+		a := r.agents[id]
+		r.live.inspectedAgents++
+		if path, ok := r.agentPath(a.Ref); ok {
+			a.CanOpen = true
+			if r.codex {
+				action, status, at, err := codexChildHint(path)
+				if err != nil {
+					a.Ref.Status = StatusUnknown
+				} else {
+					newer := at.After(a.statusAt)
+					equalTerminal := at.Equal(a.statusAt) && status == StatusFinished && !at.Equal(a.resumedAt)
+					if status != "" && (newer || equalTerminal) {
+						if status == StatusRunning && a.Ref.Status != StatusRunning {
+							a.StartedAt = at
+						}
+						a.Ref.Status = status
+						a.statusAt = at
+					}
+					if a.Ref.Status == StatusRunning {
+						a.Action = action
+					}
+				}
+			} else if activity, err := ActivityOf(path, false, true); err == nil && activity != nil {
+				a.Action = &LiveAction{Tool: activity.Tool, Summary: activity.Summary, StartedAt: activity.StartedAt}
+			}
+		}
+		if a.Ref.Status == StatusUnknown {
+			r.live.AgentsState = "unknown"
+		}
+	}
+	// Reconciliation can finish old children: only now choose visible rows.
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := r.agents[ids[i]], r.agents[ids[j]]
+		if (a.Ref.Status == StatusFinished) != (b.Ref.Status == StatusFinished) {
+			return b.Ref.Status == StatusFinished
+		}
+		if a.StartedAt.Equal(b.StartedAt) {
+			return ids[i] < ids[j]
+		}
+		return a.StartedAt.Before(b.StartedAt)
+	})
+	for _, id := range ids {
+		a := r.agents[id]
+		if len(r.live.Agents) >= maxLiveAgents {
+			if a.Ref.Status == StatusRunning {
+				r.live.AgentsMore++
+			}
+			continue
+		}
+		r.live.Agents = append(r.live.Agents, *a)
+	}
+}
+
+// Metadata absence is a known empty set; unreadability/malformed files are
+// not. Limit every sidecar read and the number examined during a live poll.
+func readLiveMetas(sessionDir string) (map[string]subagentMeta, error) {
+	dir := filepath.Join(sessionDir, "subagents")
+	out := map[string]subagentMeta{}
+	st, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	if !st.IsDir() {
+		return out, fmt.Errorf("subagent metadata is not a directory")
+	}
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return out, err
+	}
+	var firstErr error
+	examined := 0
+	for _, entry := range files {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".meta.json") {
+			continue
+		}
+		if examined >= maxLiveAgentCandidates {
+			firstErr = fmt.Errorf("subagent metadata exceeds live budget")
+			break
+		}
+		examined++
+		path := filepath.Join(dir, name)
+		st, e := os.Lstat(path)
+		if e != nil || !st.Mode().IsRegular() || st.Size() > 64<<10 {
+			firstErr = fmt.Errorf("subagent metadata unavailable")
+			continue
+		}
+		f, e := os.Open(path)
+		if e != nil {
+			firstErr = e
+			continue
+		}
+		raw, e := io.ReadAll(io.LimitReader(f, (64<<10)+1))
+		_ = f.Close()
+		if e != nil {
+			firstErr = e
+			continue
+		}
+		if len(raw) > 64<<10 {
+			firstErr = fmt.Errorf("subagent metadata exceeds live budget")
+			continue
+		}
+		var m subagentMeta
+		if json.Unmarshal(raw, &m) != nil || m.ToolUseID == "" {
+			firstErr = fmt.Errorf("invalid subagent metadata")
+			continue
+		}
+		m.agentID = strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".meta.json")
+		out[m.ToolUseID] = m
+	}
+	return out, firstErr
 }
