@@ -27,7 +27,16 @@ private struct SessionRowDragModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { rowSize = $0 }
+            // Observe behind the row: onGeometryChange on the row itself
+            // cuts off PanelTab's trailing fill across the panel edge.
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { rowSize = geometry.size }
+                        .onChange(of: geometry.size) { _, size in rowSize = size }
+                }
+                .allowsHitTesting(false)
+            }
             .overlay {
                 if isTargeted {
                     RoundedRectangle(cornerRadius: PanelTab.cornerRadius)
