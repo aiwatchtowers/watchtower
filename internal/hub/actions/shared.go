@@ -108,6 +108,16 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 				ps.report.Remaining += len(batch.Changed) - i
 				return errBudget
 			}
+			if p.cfg.Hello != nil && isHello(rec) {
+				if err := p.cfg.Hello(ctx, rec); err != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					heldBack = true // read again next pass
+					errs = append(errs, fmt.Errorf("actions: a hello of the shared mailbox: %w", err))
+				}
+				continue
+			}
 			b, own, ok, err := p.owner(g, rec)
 			if !ok {
 				continue // nobody's here: dropped with no answer (D9)
@@ -152,6 +162,37 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 		errs = append(errs, fmt.Errorf("actions: reading the shared mailbox: %w", err))
 	}
 	return errs
+}
+
+// isHello: rec is a phone's hello (its envelope's class), the link lane's.
+func isHello(rec transport.Stored) bool {
+	h, err := secure.ParseHeader(rec.Envelope)
+	return err == nil && h.Class == secure.ClassHello
+}
+
+// withHelloZone adds CloudKit's shared RelayZone, with no phone in it, when
+// no linked phone put it in groups and hellos are wanted: for a pass while
+// the lane takes them (Config.Hello) and Config.HelloWanted says a code is
+// open or a link urgent; for the hygiene (always), so stale hellos age out
+// with no phone linked.
+func (p *Processor) withHelloZone(groups []zoneGroup, hygiene bool) []zoneGroup {
+	if p.cfg.Transport.Kind() != transport.KindCloudKit {
+		return groups
+	}
+	if !hygiene && (p.cfg.Hello == nil || (p.cfg.HelloWanted != nil && !p.cfg.HelloWanted())) {
+		return groups
+	}
+	sm, ok := p.cfg.Transport.(transport.SharedMailbox)
+	if !ok {
+		return groups
+	}
+	zone := sm.MailboxFor(p.cfg.HubRelayID, "")
+	for _, g := range groups {
+		if g.zone == zone {
+			return groups
+		}
+	}
+	return append(groups, zoneGroup{zone: zone, shared: true})
 }
 
 // owner finds the phone of g a record belongs to: a phone's record
