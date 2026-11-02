@@ -162,9 +162,7 @@ struct TrayMenuContent: View {
                 Text("CLI store: \(cliStoreError)")
             }
             // One item per line: an NSMenu item carries a single title.
-            ForEach(Array(planUsageLines.enumerated()), id: \.offset) { _, line in
-                Button(line, action: planUsageAction)
-            }
+            PlansTrayRows(lines: planUsageLines, action: planUsageAction)
             ForEach(modelDownloads) { download in
                 Text(Self.modelDownloadText(download))
                 if case .failed = download.state {

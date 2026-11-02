@@ -1,10 +1,11 @@
 #!/bin/bash
-# Render only the PlansShotFixtures entries also registered in DesignShotCatalog.
-# Uses the real DesignKit, fixture views and ViewRenderProbe without linking ML.
+# Reproduce the approved reference mockups from archived design fixtures.
+# Production DesignShotCatalog renders the real PlansContent instead.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 build_dir="${TMPDIR:-/tmp}/watchtower-plans-render"
-mkdir -p "$build_dir/modules" docs/design/mockups/plans
+plans_output_dir="${1:-docs/design/mockups/plans}"
+mkdir -p "$build_dir/modules" "$plans_output_dir"
 xcode_dir="$(xcode-select -p)"
 platform_dir="$xcode_dir/Platforms/MacOSX.platform/Developer"
 framework_dir="$platform_dir/Library/Frameworks"
@@ -23,7 +24,7 @@ swiftc -parse-as-library "${args[@]}" -F "$framework_dir" -I "$platform_dir/usr/
     -Xlinker -rpath -Xlinker "$platform_dir/usr/lib" \
     -Xlinker -rpath -Xlinker "$shared_dir" \
     scripts/design/RenderPlansMockups.swift WatchtowerDesktop/Tests/ViewRenderProbe.swift \
-    WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+Plans.swift \
-    WatchtowerDesktop/Tests/DesignShots/PlansMockupModelTests.swift -o "$build_dir/render"
+    scripts/design/approved-plans/PlansMockups.swift \
+    scripts/design/approved-plans/PlansMockupModelTests.swift -o "$build_dir/render"
 "$build_dir/render" --test
-"$build_dir/render" "${1:-docs/design/mockups/plans}"
+"$build_dir/render" "$plans_output_dir"

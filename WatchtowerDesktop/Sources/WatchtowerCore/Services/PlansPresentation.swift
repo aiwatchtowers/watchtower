@@ -10,6 +10,7 @@ package struct PlansLimitPresentation: Equatable, Sendable {
     package let windowStart: Date?
     package let line: PlanUsageLine?
     package let history: [PlanUsageSample]
+    package let unavailableReason: String?
 }
 
 package struct PlansProviderPresentation: Equatable, Sendable {
@@ -103,7 +104,7 @@ package enum PlansPresentation {
         return PlansLimitPresentation(key: limit.key, title: limit.label,
                                       percent: PlanUsagePresentation.percentText(limit.percent), reset: resetText,
                                       forecast: text, tone: tone, windowStart: start, line: projection.line,
-                                      history: status.currentHistory(for: limit))
+                                      history: status.currentHistory(for: limit), unavailableReason: projection.unavailableReason)
     }
 
     package static func card(
