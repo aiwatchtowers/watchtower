@@ -127,6 +127,12 @@ package enum PendingTranscriptQueries {
 
     /// The audio paths saved transcripts point at: a `rec_*` file there was
     /// saved, not lost.
+    /// The saved transcript of the recording at `audioPath` (the newest), nil when none.
+    package static func savedTranscriptID(_ db: Database, audioPath: String) throws -> Int64? {
+        try Int64.fetchOne(db, sql: "SELECT id FROM meeting_transcripts WHERE audio_path = ? ORDER BY id DESC LIMIT 1",
+                           arguments: [audioPath])
+    }
+
     package static func savedAudioPaths(_ db: Database) throws -> Set<String> {
         Set(try String.fetchAll(db, sql: "SELECT audio_path FROM meeting_transcripts WHERE audio_path IS NOT NULL"))
     }

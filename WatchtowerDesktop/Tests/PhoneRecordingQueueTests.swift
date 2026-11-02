@@ -102,6 +102,14 @@ private final class FakeTranscriber: PhoneRecordingJobObserving {
         return reserved[uploadID]
     }
 
+    /// Recording path → its saved transcript.
+    var saved: [String: Int64] = [:]
+
+    func savedPhoneTranscript(audioURL: URL) throws -> Int64? {
+        if let lookupError { throw lookupError }
+        return saved[audioURL.path]
+    }
+
     func phase(_ url: URL, _ phase: MeetingRecorderCenter.ProcessingJob.Phase) {
         observers.values.forEach { $0.phase(url, phase) }
     }
@@ -163,6 +171,8 @@ final class PhoneRecordingQueueTests: XCTestCase {
     private var origins: [Origin] = []
     /// What was remembered when each ingest started.
     private var stagesAtIngest: [PhoneRecordingQueue.Tracked.Stage?] = []
+    /// Runs inside the ingest after the reservation (the recorder reporting early).
+    private var duringIngest: ((URL) -> Void)?
 
     override func setUp() async throws {
         try await super.setUp()
@@ -180,6 +190,7 @@ final class PhoneRecordingQueueTests: XCTestCase {
         calendarError = nil
         origins = []
         stagesAtIngest = []
+        duringIngest = nil
     }
 
     override func tearDown() async throws {
@@ -201,13 +212,16 @@ final class PhoneRecordingQueueTests: XCTestCase {
                 if let error = self?.calendarError { throw error }
                 return self?.calendar[id]
             },
-            ingest: { [weak self] audio, eventID, title, uploadID in
+            ingest: { [weak self] audio, eventID, title, uploadID, reserved in
                 guard let self else { throw CancellationError() }
                 stagesAtIngest.append(Self.remembered(defaults)[uploadID]?.stage)
                 if let ingestError { throw ingestError }
                 ingested.append(audio)
                 origins.append(Origin(eventID: eventID, title: title))
-                return URL(fileURLWithPath: "/recordings/rec_\(ingested.count).m4a")
+                let url = URL(fileURLWithPath: "/recordings/rec_\(ingested.count).m4a")
+                reserved(url)
+                duringIngest?(url)
+                return url
             }
         )
         queue.start()
@@ -520,6 +534,63 @@ final class PhoneRecordingQueueTests: XCTestCase {
         await queue.idle()
         XCTAssertTrue(ingested.isEmpty)
         XCTAssertEqual(queue.tracked["u1"]?.stage, .ingesting)
+    }
+
+    /// The recorder can report before the ingest returns: the path is set
+    /// at the reservation, so even a finish that early is followed.
+    func testTheJobsCallbacksBeforeTheIngestReturnsFindTheUpload() async throws {
+        try writeAudio("u1")
+        duringIngest = { [weak self] url in
+            self?.transcriber.phase(url, .transcribing(done: 0, total: 0))
+            self?.transcriber.finished(url, 11)
+        }
+        let queue = makeQueue()
+        queue.recordingQueued("u1")
+        await queue.idle()
+        await queue.idle()
+        XCTAssertEqual(hub.sent(HubControlRequest.recordingFinish).map(\.transcriptID), [11])
+        XCTAssertNil(queue.tracked["u1"])
+        XCTAssertFalse(hubHas("u1"))
+    }
+
+    /// A crash after the save dropped the pending row but before the finish
+    /// was remembered: the rescan finds the saved transcript by the
+    /// recording and reports it; one still pending is left to the recorder.
+    func testASaveTheAppDidNotReportIsFinishedAtTheRescan() async throws {
+        try writeAudio("u1")
+        try writeAudio("u2")
+        let remembered = [
+            "u1": PhoneRecordingQueue.Tracked(stage: .ingested, path: "/recordings/rec_a.m4a", hubAudio: hub.audio("u1").path),
+            "u2": PhoneRecordingQueue.Tracked(stage: .ingested, path: "/recordings/rec_b.m4a", hubAudio: hub.audio("u2").path)
+        ]
+        defaults.set(try JSONEncoder().encode(remembered), forKey: PhoneRecordingQueue.defaultsKey)
+        transcriber.saved["/recordings/rec_a.m4a"] = 12
+        transcriber.reserved["u2"] = URL(fileURLWithPath: "/recordings/rec_b.m4a")
+        transcriber.saved["/recordings/rec_b.m4a"] = 13 // an older save of the same path: still pending wins
+        cli.setRows([row("u1", "claimed"), row("u2", "claimed")])
+        let queue = makeQueue()
+        queue.rescan()
+        await queue.idle()
+        let finishes = hub.sent(HubControlRequest.recordingFinish)
+        XCTAssertEqual(finishes.map(\.upload), ["u1"])
+        XCTAssertEqual(finishes.map(\.transcriptID), [12])
+        XCTAssertFalse(hubHas("u1"))
+        XCTAssertTrue(hubHas("u2"))
+        XCTAssertNotNil(queue.tracked["u2"])
+    }
+
+    func testARetryARestartInterruptedWaitsForTheBackoff() async throws {
+        try writeAudio("u1")
+        cli.setRows([row("u1", "failed", errorClass: "ingest_failed"), row("u2", "failed", errorClass: "not_audio")])
+        let queue = makeQueue()
+        queue.rescan()
+        await queue.idle()
+        XCTAssertTrue(hub.sent(HubControlRequest.recordingClaim).isEmpty, "not at once")
+        await waitForRetry(1)
+        XCTAssertEqual(sleeper.waits, [PhoneRecordingQueue.firstRetry])
+        queue.rescan()
+        await queue.idle()
+        XCTAssertEqual(sleeper.waits.count, 1, "one retry per job")
     }
 
     // MARK: - What it leaves alone

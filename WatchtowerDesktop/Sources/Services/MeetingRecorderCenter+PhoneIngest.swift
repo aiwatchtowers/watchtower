@@ -34,6 +34,13 @@ extension MeetingRecorderCenter {
         return try store.recording(forUpload: uploadID).map { recordingsDirectory.appendingPathComponent($0) }
     }
 
+    /// The saved transcript of the phone recording at `audioURL`, nil when
+    /// none was saved. Throws when the database cannot be read.
+    func savedPhoneTranscript(audioURL: URL) throws -> Int64? {
+        guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
+        return try store.savedTranscriptID(audioPath: audioURL.path)
+    }
+
     /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by inserting
     /// its `pending_transcripts` row EXCLUSIVELY (`PendingTranscriptStore.reserve`):
     /// when a concurrent reserver took the name first, the insert does

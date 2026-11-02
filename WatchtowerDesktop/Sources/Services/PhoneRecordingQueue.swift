@@ -12,6 +12,7 @@ protocol PhoneRecordingJobObserving: AnyObject {
     func addJobObserver(_ observer: MeetingRecorderCenter.JobObserver) -> UUID
     func removeJobObserver(_ token: UUID)
     func phoneRecording(forUpload uploadID: String) throws -> URL?
+    func savedPhoneTranscript(audioURL: URL) throws -> Int64?
 }
 
 extension MeetingRecorderCenter: PhoneRecordingJobObserving {}
@@ -46,10 +47,13 @@ extension MeetingRecorderCenter: PhoneRecordingJobObserving {}
 @MainActor
 final class PhoneRecordingQueue {
     /// Lands the audio in the transcriber's queue, linked to `eventID`,
-    /// titled `title` and reserved under `uploadID`; returns the ingested
-    /// file, the key its job callbacks report under. Production:
+    /// titled `title` and reserved under `uploadID`; calls `reserved` with
+    /// the recording's file before its job can report anything, and returns
+    /// it, the key its job callbacks report under. Production:
     /// `MeetingRecorderCenter.ingestPhoneRecording`.
-    typealias Ingest = @MainActor (_ audio: URL, _ eventID: String?, _ title: String?, _ uploadID: String) async throws -> URL
+    typealias Ingest = @MainActor (
+        _ audio: URL, _ eventID: String?, _ title: String?, _ uploadID: String, _ reserved: @escaping @MainActor (URL) -> Void
+    ) async throws -> URL
     /// The title of a calendar event on this Mac; nil when it is not here;
     /// throws when the calendar cannot be read.
     typealias EventTitle = @MainActor (_ eventID: String) async throws -> String?
@@ -193,10 +197,11 @@ final class PhoneRecordingQueue {
         PhoneRecordingQueue(
             client: HubControlClient(socketPath: HubControlClient.defaultSocketPath()), cli: cli, observing: recorder,
             eventTitle: { id in try await dbPool.read { try CalendarQueries.fetchEventLink($0, id: id)?.title } },
-            ingest: { [weak recorder] audio, eventID, title, uploadID in
+            ingest: { [weak recorder] audio, eventID, title, uploadID, reserved in
                 guard let recorder else { throw CancellationError() }
                 return try await recorder.ingestPhoneRecording(
-                    audioURL: audio, eventID: eventID, title: title, uploadID: uploadID, config: .fromDefaults()
+                    audioURL: audio, eventID: eventID, title: title, uploadID: uploadID, onReserved: reserved,
+                    config: .fromDefaults()
                 )
             }
         )
@@ -277,8 +282,9 @@ final class PhoneRecordingQueue {
                     tracked[row.uploadID]?.pendingError = nil // the hub took it before the answer was lost
                     save()
                 }
-                if tracked[row.uploadID] == nil, FailureClass(rawValue: row.errorClass)?.retried == true {
-                    await take(row.uploadID) // a retry a restart interrupted
+                if tracked[row.uploadID] == nil, retries[row.uploadID] == nil,
+                   FailureClass(rawValue: row.errorClass)?.retried == true {
+                    retryLater(row.uploadID) // a retry a restart interrupted, after the backoff
                 }
             default:
                 break
@@ -294,7 +300,11 @@ final class PhoneRecordingQueue {
     private func resume(_ row: Row) async -> Bool {
         let id = row.uploadID
         if let entry = tracked[id], entry.stage == .ingested {
-            await resendFinish(id, entry)
+            if entry.pendingTranscript == nil, entry.pendingError == nil, !entry.failed, let path = entry.path {
+                await finishIfSaved(id, path: path)
+            } else {
+                await resendFinish(id, entry)
+            }
             return false
         }
         // Ingesting when the app stopped, or never remembered: the ingest's
@@ -319,6 +329,25 @@ final class PhoneRecordingQueue {
         save()
         await take(id)
         return false
+    }
+
+    /// An ingested upload with no finish to send: once its reservation is
+    /// gone, the transcript may have been saved while the app was stopping
+    /// (the pending row goes before the save is reported); a saved one is
+    /// reported now, else the recorder still holds it (or the owner dismissed it).
+    private func finishIfSaved(_ id: String, path: String) async {
+        let saved: Int64?
+        do {
+            guard try observing?.phoneRecording(forUpload: id) == nil else { return } // still pending
+            saved = try observing?.savedPhoneTranscript(audioURL: URL(fileURLWithPath: path))
+        } catch {
+            Self.logger.notice("phone recording \(id, privacy: .public): transcripts unreadable, next rescan")
+            return
+        }
+        guard let saved else { return }
+        tracked[id]?.pendingTranscript = saved
+        save()
+        await finish(id, transcriptID: saved)
     }
 
     private func list() async -> Listing? {
@@ -353,7 +382,12 @@ final class PhoneRecordingQueue {
         tracked[uploadID] = Tracked(stage: .ingesting, hubAudio: path)
         save()
         do {
-            let ingested = try await ingest(audio, origin.eventID, origin.title, uploadID)
+            // The path is known before the job starts, so its first callback finds it.
+            let ingested = try await ingest(audio, origin.eventID, origin.title, uploadID) { [weak self] url in
+                guard let self, self.tracked[uploadID] != nil else { return }
+                self.tracked[uploadID]?.path = url.path
+                self.save()
+            }
             tracked[uploadID]?.stage = .ingested
             tracked[uploadID]?.path = ingested.path
             attempts[uploadID] = nil

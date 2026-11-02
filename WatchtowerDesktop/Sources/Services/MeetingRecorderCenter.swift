@@ -216,7 +216,6 @@ final class MeetingRecorderCenter {
 
     /// Observers of the same two events (`addJobObserver`).
     @ObservationIgnored var jobObservers: [UUID: JobObserver] = [:]
-
     private func jobPhaseChanged(_ audioURL: URL, _ phase: ProcessingJob.Phase) {
         onJobPhase?(audioURL, phase)
         jobObservers.values.forEach { $0.phase(audioURL, phase) }
@@ -2071,6 +2070,7 @@ final class MeetingRecorderCenter {
         eventID: String?,
         title: String?,
         uploadID: String? = nil,
+        onReserved: ((URL) -> Void)? = nil,
         config: TranscriptionConfig
     ) async throws -> URL {
         let isAudio = try await Task.detached { try await Self.isAudioRecording(sourceURL) }.value
@@ -2079,6 +2079,7 @@ final class MeetingRecorderCenter {
         let isPrivate = config.privateByDefault // no per-recording choice on the phone
         let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate, uploadID: uploadID,
                                                             in: recordingsDirectory, store: store, date: clock())
+        onReserved?(audioURL) // before the job can report anything under it
         try await Task.detached {
             try await Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)
         }.value

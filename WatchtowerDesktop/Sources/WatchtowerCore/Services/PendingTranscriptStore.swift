@@ -30,6 +30,8 @@ package protocol PendingTranscriptStore: Sendable {
         async throws -> Bool
     /// The recording reserved for a Go hub upload, nil when none is pending.
     func recording(forUpload uploadID: String) throws -> String?
+    /// The saved transcript of the recording at `audioPath`, nil when none.
+    func savedTranscriptID(audioPath: String) throws -> Int64?
 }
 
 extension PendingTranscriptStore {
@@ -41,6 +43,8 @@ extension PendingTranscriptStore {
     }
 
     package func recording(forUpload uploadID: String) throws -> String? { nil }
+
+    package func savedTranscriptID(audioPath: String) throws -> Int64? { nil }
 }
 
 /// `PendingTranscriptStore` over the Desktop's database writer.
@@ -72,6 +76,10 @@ package struct DatabasePendingTranscriptStore: PendingTranscriptStore {
 
     package func recording(forUpload uploadID: String) throws -> String? {
         try writer.read { try PendingTranscriptQueries.recording($0, forUpload: uploadID) }
+    }
+
+    package func savedTranscriptID(audioPath: String) throws -> Int64? {
+        try writer.read { try PendingTranscriptQueries.savedTranscriptID($0, audioPath: audioPath) }
     }
 
     @discardableResult
