@@ -48,7 +48,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - **Desktop screens** (spec §12.4, `docs/design/desktop-style-guide.md`, workbench rule for screen specs): each changed screen gets (a) its mockup states in `docs/design/mockups/go-hub/index.html` (Task 3), (b) a `DesignShotCatalog` entry per state — **empty, loading, error with Retry, busy, narrow width** — on fixture data (`acme`, `example.com`), (c) every UI string defined in its model (no literal in the view) and pinned by a model test, (d) colours only through `Tone`/semantic styles, `SettingsSection` + `.kitRow`, no row separators, (e) `make desktop-shots DESKTOP_SHOTS=<dir>` compared with the mockup before review, PNGs attached to the PR.
 - **Pinned copy** (spec text, verbatim): "Mobile is run by a newer Watchtower"; "Running sessions restart once with this update; their conversations continue" + **Continue**; "N sessions wait to resume" (`1 session waits to resume` for one); "[Watchtower] the session host is not running"; "No phones linked"; "This session can't take typed text right now".
 - **Swift** follows the "Swift / Desktop conventions" of `docs/review/review-rules.md` and the `add-desktop-feature` skill; every Swift task runs `make lint-swift` (lint-diff is Go-only).
-- Sidecar migrations continue from the newest file on `feature/go-hub`: `00007` is Phase 2's `00007_relay_admission.sql` (Phase 2 Task 10, the vouch, shipped), so Task 5 is `00008` and Task 20 is `00009`. Re-check when each task starts.
+- Sidecar migrations continue from the newest file on `feature/go-hub`: `00007` is Phase 2's `00007_relay_admission.sql` (Phase 2 Task 10, the vouch, shipped), so Task 5 is `00008`, Task 17 is `00009_recording_origin.sql` and Task 20 is `00010`. Re-check when each task starts.
 - Inner loop only per task (`go test ./internal/hub/<pkg>`, `make test-swift FILTER=…`, `make kit-test FILTER=…`, `make lint-diff`, `make lint-swift`); the full gate runs once, in Task 25.
 
 ## Review Focus
@@ -378,7 +378,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Test: `internal/hub/adopt/{adopt_test.go,steps_test.go,recordings_test.go}`, `cmd/hub_adopt_test.go`, `internal/hub/slices/sources/recording_job_test.go`
 
 **Interfaces:**
-- Consumes: Plan 1a `state.Open`/`AcquireLock`, every sidecar migration present on the branch (`00001`–`00008` when Task 13 landed; Task 20 adds `00009` — the test derives the list from the embedded FS); Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
+- Consumes: Plan 1a `state.Open`/`AcquireLock`, every sidecar migration present on the branch (`00001`–`00008` when Task 13 landed; Task 17 adds `00009`, Task 20 `00010` — the test derives the list from the embedded FS); Phase 2 `held_uploads`; Task 5 `recording_jobs` (`phase`, `percent`), `state.ErrorClass`.
 - Produces:
   ```go
   package adopt
@@ -489,6 +489,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Interfaces:**
 - Consumes: Task 5 `recording_progress`, `desktop_watch`; Plan 1b `recording_claim` → `{"upload_id","audio_path","status"}`, `recording_finish`; Task 13 adopted rows (in-progress ones arrive `failed`/`hub_moved`, never claimable).
 - Produces: on `recording_queued` (and once at start for jobs already `queued`/`claimed` by this Desktop — read by `hub recording list --json`, added here with pinned keys `[{"upload_id","status","phase","percent","audio_path"}]`): claim → `MeetingRecorderCenter.ingestPhoneRecording(audioURL:eventID:title:config: .fromDefaults())` (the returned URL is the transcript's) → each processing phase → `recording_progress` → `recording_finish --transcript` or `--error <class>`. A `failed`/`hub_moved` row is never claimed or reported; the recorder's own pending job for that audio is left alone.
+  - **Origin (agent decision, coordinator review):** `00009_recording_origin.sql` adds nullable `recording_jobs.event_id` (an opaque calendar id, allowlisted `id`; event_id is an id, not content — ask #843 is about the audio file name) and `started_at` (REAL); the Go intake stores the upload's `event_id`/`started_at`, never `title_hint`. The claim answer carries `event_id`/`started_at`, and `hub recording list --json` adds the keys `event_id`, `started_at`. Desktop passes the event id to `ingestPhoneRecording(eventID:)` when this Mac's calendar has it, with that event's title (the phone's meeting title), else saves ad-hoc; no event → the phone's voice-note title `Voice note — d MMM, HH:mm` from `started_at`. Remaining gap: a meeting this Mac's calendar lacks loses its title (the Swift hub kept `title_hint`).
 - **Depends on:** Task 14
 
 - [ ] **Step 1: Failing tests:** `testQueuedRecordingIsClaimedAndIngested`, `testProgressPhasesReachTheHub` (transcribing 0→100, diarizing, summarizing), `testFinishCarriesTheTranscriptID`, `testFailureSendsAClassNeverText`, `testAHubMovedJobIsNeverClaimed`, `testNoHubLeavesTheQueueAlone`.
@@ -559,7 +560,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 **Files:**
 - Modify: `internal/hub/identity/keyring.go` (multi-epoch retention: today's `window()` holds the current epoch and the previous one only), `internal/hub/state/keys.go` (`Epoch`, `InsertEpoch`, `RetireEpoch` gain `reason` and `retire_after`; per-device acked epoch), `internal/hub/switcher/entitlement.go` (new), `internal/hub/actions/control.go` (resend for an unknown epoch, second-copy delete), `internal/hub/transport/relay/transport.go` (`ENTITLEMENT_EXPIRED` read from the existing `transport.Control.Detail`)
-- Create: `internal/hub/state/migrations/00009_switch_epochs.sql`
+- Create: `internal/hub/state/migrations/00010_switch_epochs.sql`
 - Test: `internal/hub/switcher/sim_entitlement_test.go`, `internal/hub/identity/retention_test.go`
 
 **Interfaces:**
@@ -570,7 +571,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
   func (k *Keyring) Retained() ([]uint32, error)              // every epoch whose relay-lane keys are still accepted
   func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) error // rule 14 with the 7-day cap
   ```
-  - `00009`: `ALTER TABLE hub_epochs ADD COLUMN reason TEXT CHECK (reason IN ('age','cap','unlink','manual','transport_switch'))`, `retire_after REAL` (timestamps and an enum only; `hub_epochs` today has `epoch, sealed_keys, created_at, first_seq, retired_at`, no reason).
+  - `00010`: `ALTER TABLE hub_epochs ADD COLUMN reason TEXT CHECK (reason IN ('age','cap','unlink','manual','transport_switch'))`, `retire_after REAL` (timestamps and an enum only; `hub_epochs` today has `epoch, sealed_keys, created_at, first_seq, retired_at`, no reason).
   - Rule 14: an action sealed in an epoch no longer held → `resend_from(seq)` once per record version. Rule 15: the hub deletes what it read and a second copy of a control id unread. Rule 16: `ENTITLEMENT_EXPIRED` with `detail` naming a phone → act as that phone's `transport_switch(cloudkit, reason=entitlement_expired)`; no other paying phone → move to CloudKit (rule 11); another paying phone → stay, apply none of that phone's relay actions, `hub_on_relay` over CloudKit; an echo refused on the relay (`ENTITLEMENT_INACTIVE`) is owed and written over CloudKit **before** `hub_on_relay`. Plan 1a's queued entitlement/quota controls (sim rule 7a drops) are revisited: `ENTITLEMENT_INACTIVE` on a hub write now triggers rule 16 for the phone of that mailbox.
 - **Depends on:** Task 18
 
@@ -749,7 +750,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 
 7. **Keys on stdin.** `hub adopt --keys-stdin --json`, a separate call from `--settings-stdin`: Foundation's `Process` spawns with `POSIX_SPAWN_CLOEXEC_DEFAULT`, so an inherited fd 3 never reaches the child. Still an inherited pipe, never a file, argv or the control socket (Global Constraints, Tasks 16, 22, 25 M2).
 8. **Signals reused from Plan 1a.** `Sealer.Signal` and the publisher's `sig-` save/delete on CloudKit already exist; no `Signals` capability, no signal frames, no `SignalSource`. The bridge only keeps its query subscription on `sig-` records (Tasks 4, 10, 15).
-9. **Migration numbering.** The sidecar ends at Phase 2's `00007_relay_admission.sql` (Phase 2 Task 10, the vouch, shipped): Task 5 is `00008`, Task 20 is `00009`.
+9. **Migration numbering.** The sidecar ends at Phase 2's `00007_relay_admission.sql` (Phase 2 Task 10, the vouch, shipped): Task 5 is `00008`, Task 17 is `00009` (recording origin), Task 20 is `00010`.
 10. **`CloudBridgeCore` library + own test target.** The bridge code is a library over `WatchtowerSync` only, the executable is `main.swift`, the tests are their own target; both bridge folders are excluded from the app and Desktop test targets. Frames are hand-coded (no `swift-protobuf` in `Package.resolved`) (Tasks 4, 10).
 11. **`transport` value set** in `hub phones --json`: `cloudkit|relay|pending` (`pending` = a relay link not yet vouched, which Phase 2 Task 10 already answers in `hub phones`), one set for both tasks (Task 21).
 

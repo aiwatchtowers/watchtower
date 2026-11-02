@@ -23,6 +23,12 @@ private final class FakeRecordingHub: HubControlClienting, @unchecked Sendable {
     /// Claims of these uploads are refused `job_state` (done, failed, hub_moved).
     func refuseClaims(_ ids: Set<String>) { lock.withLock { refusedClaims = ids } }
 
+    private var jobOrigins: [String: (eventID: String?, startedAt: Date?)] = [:]
+    /// The origin a claim of `upload` answers with.
+    func setOrigin(_ upload: String, eventID: String?, startedAt: Date?) {
+        lock.withLock { jobOrigins[upload] = (eventID, startedAt) }
+    }
+
     var sent: [HubControlRequest] { lock.withLock { requests } }
     func sent(_ op: String) -> [HubControlRequest] { sent.filter { $0.op == op } }
 
@@ -37,7 +43,11 @@ private final class FakeRecordingHub: HubControlClienting, @unchecked Sendable {
             if lock.withLock({ refusedClaims.contains(upload) }) {
                 return HubControlAnswer(op: request.op, error: "job_state")
             }
-            return HubControlAnswer(op: request.op, ok: true, uploadID: upload, status: "claimed", audioPath: audio(upload).path)
+            let origin = lock.withLock { jobOrigins[upload] }
+            return HubControlAnswer(
+                op: request.op, ok: true, uploadID: upload, status: "claimed", audioPath: audio(upload).path,
+                eventID: origin?.eventID, startedAt: origin?.startedAt
+            )
         case HubControlRequest.recordingFinish:
             return HubControlAnswer(op: request.op, ok: true, uploadID: upload, status: request.transcriptID != nil ? "done" : "failed")
         default:
@@ -103,6 +113,13 @@ final class PhoneRecordingQueueTests: XCTestCase {
     private var ingested: [URL] = []
     private var ingestError: Error?
     private var queues: [PhoneRecordingQueue] = []
+    /// This Mac's calendar: event id → title.
+    private var calendar: [String: String] = [:]
+    private struct Origin: Equatable {
+        let eventID: String?
+        let title: String?
+    }
+    private var origins: [Origin] = []
 
     override func setUp() async throws {
         try await super.setUp()
@@ -115,6 +132,8 @@ final class PhoneRecordingQueueTests: XCTestCase {
         defaults = UserDefaults(suiteName: suite)
         ingested = []
         ingestError = nil
+        calendar = [:]
+        origins = []
     }
 
     override func tearDown() async throws {
@@ -126,12 +145,17 @@ final class PhoneRecordingQueueTests: XCTestCase {
     }
 
     private func makeQueue() -> PhoneRecordingQueue {
-        let queue = PhoneRecordingQueue(client: hub, cli: cli, observing: transcriber, defaults: defaults) { [weak self] audio in
-            guard let self else { throw CancellationError() }
-            if let ingestError { throw ingestError }
-            ingested.append(audio)
-            return URL(fileURLWithPath: "/recordings/rec_\(ingested.count).m4a")
-        }
+        let queue = PhoneRecordingQueue(
+            client: hub, cli: cli, observing: transcriber, defaults: defaults,
+            eventTitle: { [weak self] id in self?.calendar[id] },
+            ingest: { [weak self] audio, eventID, title in
+                guard let self else { throw CancellationError() }
+                if let ingestError { throw ingestError }
+                ingested.append(audio)
+                origins.append(Origin(eventID: eventID, title: title))
+                return URL(fileURLWithPath: "/recordings/rec_\(ingested.count).m4a")
+            }
+        )
         queue.start()
         queues.append(queue)
         return queue
@@ -167,6 +191,37 @@ final class PhoneRecordingQueueTests: XCTestCase {
         // A new queue (the next launch) remembers it.
         let next = makeQueue()
         XCTAssertEqual(next.tracked["u1"]?.path, "/recordings/rec_1.m4a")
+    }
+
+    /// The phone's title comes back from its origin, as the Swift hub's
+    /// `title_hint` path ended: a meeting on this Mac links the transcript
+    /// and takes the event's title; a meeting this Mac lacks saves ad-hoc
+    /// (the Swift hub dropped the event too, but kept the phone's title —
+    /// the one gap, the title is never stored); no event is the phone's
+    /// voice note, titled by its start.
+    func testTheEventLinkAndTitleComeBackFromTheOrigin() async throws {
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        calendar = ["evt-1": "Acme sync"]
+        for id in ["meeting", "elsewhere", "note", "bare"] { try writeAudio(id) }
+        hub.setOrigin("meeting", eventID: "evt-1", startedAt: started)
+        hub.setOrigin("elsewhere", eventID: "evt-gone", startedAt: started)
+        hub.setOrigin("note", eventID: nil, startedAt: started)
+        let queue = makeQueue()
+        for id in ["meeting", "elsewhere", "note", "bare"] { queue.recordingQueued(id) }
+        await queue.idle()
+        XCTAssertEqual(origins, [
+            Origin(eventID: "evt-1", title: "Acme sync"),
+            Origin(eventID: nil, title: nil),
+            Origin(eventID: nil, title: PhoneRecordingQueue.voiceNoteTitle(started)),
+            Origin(eventID: nil, title: nil)
+        ])
+    }
+
+    /// The phone's voice-note title (`PhoneRecorderController.finalTitleAndEvent`), byte for byte.
+    func testVoiceNoteTitlePinned() throws {
+        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        XCTAssertEqual(PhoneRecordingQueue.voiceNoteTitle(Date(timeIntervalSince1970: 1_800_000_000), timeZone: utc),
+                       "Voice note — 15 Jan, 08:00")
     }
 
     func testRescanTakesTheJobsQueuedWhileNoWatchListened() async throws {
@@ -363,8 +418,11 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertEqual(try keys(.finish("u1", errorClass: "no_speech")),
                        ["op": "recording_finish", "upload": "u1", "error_class": "no_speech"])
         let answer = try JSONDecoder().decode(HubControlAnswer.self, from: Data(
-            #"{"ok":true,"upload_id":"u1","status":"claimed","audio_path":"/tmp/u1.m4a"}"#.utf8))
+            #"{"ok":true,"upload_id":"u1","status":"claimed","audio_path":"/tmp/u1.m4a","event_id":"evt-1","started_at":1800000000.5}"#
+                .utf8))
         XCTAssertEqual(answer.audioPath, "/tmp/u1.m4a")
         XCTAssertEqual(answer.status, "claimed")
+        XCTAssertEqual(answer.eventID, "evt-1")
+        XCTAssertEqual(answer.startedAt, Date(timeIntervalSince1970: 1_800_000_000.5))
     }
 }

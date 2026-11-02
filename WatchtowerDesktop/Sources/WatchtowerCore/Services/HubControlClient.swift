@@ -212,6 +212,10 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
     /// (`queued`, `claimed`, `done`, `failed`); the claim's audio file.
     package let status: String?
     package let audioPath: String?
+    /// The claimed job's origin: the calendar event the phone recorded it
+    /// for and when it started (Unix seconds on the wire).
+    package let eventID: String?
+    package let startedAt: Date?
 
     package init(
         op: String? = nil,
@@ -225,7 +229,9 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         pair: String? = nil,
         deviceID: String? = nil,
         status: String? = nil,
-        audioPath: String? = nil
+        audioPath: String? = nil,
+        eventID: String? = nil,
+        startedAt: Date? = nil
     ) {
         self.op = op
         self.event = event
@@ -239,6 +245,8 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         self.deviceID = deviceID
         self.status = status
         self.audioPath = audioPath
+        self.eventID = eventID?.isEmpty == false ? eventID : nil
+        self.startedAt = startedAt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -247,6 +255,8 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         case uploadID = "upload_id"
         case deviceID = "device_id"
         case audioPath = "audio_path"
+        case eventID = "event_id"
+        case startedAt = "started_at"
     }
 
     package init(from decoder: any Decoder) throws {
@@ -263,7 +273,9 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
             pair: try c.decodeIfPresent(String.self, forKey: .pair),
             deviceID: try c.decodeIfPresent(String.self, forKey: .deviceID),
             status: try c.decodeIfPresent(String.self, forKey: .status),
-            audioPath: try c.decodeIfPresent(String.self, forKey: .audioPath)
+            audioPath: try c.decodeIfPresent(String.self, forKey: .audioPath),
+            eventID: try c.decodeIfPresent(String.self, forKey: .eventID),
+            startedAt: try c.decodeIfPresent(Double.self, forKey: .startedAt).map { Date(timeIntervalSince1970: $0) }
         )
     }
 }

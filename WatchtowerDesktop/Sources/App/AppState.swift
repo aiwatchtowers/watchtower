@@ -1864,7 +1864,7 @@ final class AppState {
         ownerPresenceCenter?.start()
         ownerAwayCenter.start()
         chatQuestionEscalator?.start()
-        replaceHubCenter(cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        replaceHubCenter(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         vm.startHostReattach()
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
@@ -1879,12 +1879,17 @@ final class AppState {
 
     /// The Go hub's center for a rebuilt workbench state, the previous one stopped.
     private func replaceHubCenter(
-        cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
+        dbPool: DatabasePool,
+        cliRunner: (any CLIRunnerProtocol)?,
+        workbenches vm: WorkbenchesViewModel,
+        agentStates: SessionAgentStateCenter
     ) {
         hubCenter?.stop()
         phoneRecordingQueue?.stop()
         hubCenter = makeHubCenter(cliRunner)
-        phoneRecordingQueue = hubCenter.map { _ in PhoneRecordingQueue.live(cli: cliRunner, recorder: meetingRecorderCenter) }
+        phoneRecordingQueue = hubCenter.map { _ in
+            PhoneRecordingQueue.live(cli: cliRunner, recorder: meetingRecorderCenter, dbPool: dbPool)
+        }
         phoneRecordingQueue?.start()
         hubCenter?.onWatchConnected = { [weak queue = phoneRecordingQueue] in queue?.rescan() }
         hubCenter?.onRecordingQueued = { [weak queue = phoneRecordingQueue] in queue?.recordingQueued($0) }

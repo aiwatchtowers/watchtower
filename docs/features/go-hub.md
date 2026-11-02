@@ -76,7 +76,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub desktop heartbeat` (darwin only) | `desktop_at` |
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
 | `hub recording claim --upload <id>` (a failed job claims again for the owner's Retry; `done` and `hub_moved` never) | `upload_id`, `audio_path`, `status` |
-| `hub recording list` (read only; refused under an agent marker) | array of `upload_id`, `status`, `phase`, `percent`, `audio_path` |
+| `hub recording list` (read only; refused under an agent marker) | array of `upload_id`, `status`, `phase`, `percent`, `audio_path`, `event_id`, `started_at` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
 | `hub recording progress --upload <id> --phase transcribing\|diarizing\|summarizing [--percent N]` (tests and the lock-free path; Desktop uses the socket op) | `upload_id`, `status`, `phase`, `percent` |
 | `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
@@ -114,6 +114,9 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
   a slot; a re-link clears it).
 - `00008_desktop_recordings` — `recording_jobs.phase` (`transcribing|diarizing|summarizing`) and `percent` (0–100,
   transcribing only) of a claimed job, as Desktop reports them; no file name.
+- `00009_recording_origin` — `recording_jobs.event_id` (the calendar event the phone recorded for, an opaque id) and
+  `started_at` (REAL), so Desktop links the transcript and rebuilds the phone's title (phase 3 Task 17); never the
+  upload's `title_hint` (content).
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -193,7 +196,8 @@ Recorded for the owner; each was a review ruling during phase 1.
    - `recording_progress` (`upload`, `phase`, `percent`): the `recording_job` slice then reads `transcribing` with its
      percent, `diarizing` or `summarizing`, as the Swift slice; a claimed job with no phase yet reads `queued` (it
      waits in the Mac's transcriber queue, as the Swift hub's job did).
-   - `recording_claim`'s answer carries `audio_path` (Desktop never derives it).
+   - `recording_claim`'s answer carries `audio_path` (Desktop never derives it) and the job's origin, `event_id` and
+     `started_at` (Unix seconds).
 
    **Done (phase 3 Task 17): the Desktop recording queue.** `PhoneRecordingQueue` (beside the Swift hub's
    `PhoneRecordingJobs` until Task 24) claims a job on `recording_queued` and on a rescan of `hub recording list
@@ -204,8 +208,11 @@ Recorded for the owner; each was a review ruling during phase 1.
    retried, never reported). The slice shows the Swift hub's sentence for each class (`failureTexts`, pinned by
    `TestRecordingFailureTextsPinned`; Swift `testFailureClassesPinned` pins the classes). A failed row is never
    claimed from the list; the owner's Retry of a failure the queue reported claims it again. The uploads it took
-   (ids, the Mac's recording path, an unsent finish) are remembered in the app's defaults. Not carried yet: the
-   upload's `event_id` and `title_hint` (the Go intake reads neither), so a phone recording saves ad-hoc.
+   (ids, the Mac's recording path, an unsent finish) are remembered in the app's defaults. The title comes back
+   from the origin, never stored: an `event_id` this Mac's calendar has links the transcript and takes the event's
+   title (the phone's meeting title); one it lacks saves ad-hoc and untitled (the Swift hub dropped the event too but
+   kept `title_hint` — the one remaining gap); no event is the phone's voice note, `Voice note — d MMM, HH:mm` from
+   `started_at` (`PhoneRecordingQueue.voiceNoteTitle`, pinned).
    - `desktop_watch`: the answer (`{op, ok, state, reason}`, the current status as a snapshot) is the stream's first
      line, then `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
      device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines.

@@ -91,9 +91,10 @@ type RecordingJob struct {
 	ErrorClass   string
 	Phase        string // "" until Desktop reported one
 	Percent      *int   // only while transcribing
-	CreatedAt    time.Time
-	ClaimedAt    time.Time
-	FinishedAt   time.Time
+	RecordingOrigin
+	CreatedAt  time.Time
+	ClaimedAt  time.Time
+	FinishedAt time.Time
 }
 
 func realMeta(t time.Time) string { return strconv.FormatFloat(toReal(t), 'f', 3, 64) }
@@ -289,12 +290,37 @@ func (s *Store) HasRecording(uploadID string) (bool, error) {
 	return n > 0, nil
 }
 
+// RecordingOrigin is where a phone recording came from: the calendar event
+// it was recorded for (an opaque calendar id, "" for a voice note) and when
+// it started (zero when the phone did not say). Ids and a time only: the
+// phone's title is content and is never stored; Desktop derives it from the
+// Mac's calendar.
+type RecordingOrigin struct {
+	EventID   string
+	StartedAt time.Time
+}
+
+// MaxRecordingEventID caps a stored event id; a longer one is not an id and is dropped.
+const MaxRecordingEventID = 256
+
 // QueueRecording adds a queued job; a second call for the same upload keeps
 // the first row.
 func (s *Store) QueueRecording(uploadID, deviceID string, now time.Time) error {
+	return s.QueueRecordingFrom(uploadID, deviceID, RecordingOrigin{}, now)
+}
+
+// QueueRecordingFrom is QueueRecording with the recording's origin.
+func (s *Store) QueueRecordingFrom(uploadID, deviceID string, o RecordingOrigin, now time.Time) error {
+	var event, started any
+	if o.EventID != "" && len(o.EventID) <= MaxRecordingEventID {
+		event = o.EventID
+	}
+	if !o.StartedAt.IsZero() {
+		started = toReal(o.StartedAt)
+	}
 	return s.write(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, created_at)
-			VALUES (?, ?, 'queued', ?)`, uploadID, deviceKey(deviceID), toReal(now))
+		_, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, created_at, event_id, started_at)
+			VALUES (?, ?, 'queued', ?, ?, ?)`, uploadID, deviceKey(deviceID), toReal(now), event, started)
 		if err != nil {
 			return fmt.Errorf("queueing a recording: %w", err)
 		}
@@ -449,19 +475,25 @@ func recordingJobTx(tx *sql.Tx, uploadID string) (RecordingJob, error) {
 	return j, nil
 }
 
-const recordingJobColumns = `upload_id, device_id, status, transcript_id, error_class, phase, percent, created_at, claimed_at, finished_at`
+const recordingJobColumns = `upload_id, device_id, status, transcript_id, error_class, phase, percent, created_at, claimed_at, finished_at,
+	event_id, started_at`
 
 // scanRecordingJob reads one row of recordingJobColumns.
 func scanRecordingJob(r interface{ Scan(...any) error }) (RecordingJob, error) {
 	var (
-		j                 RecordingJob
-		tid, pct          sql.NullInt64
-		class, phase      sql.NullString
-		created           float64
-		claimed, finished sql.NullFloat64
+		j                          RecordingJob
+		tid, pct                   sql.NullInt64
+		class, phase, event        sql.NullString
+		created                    float64
+		claimed, finished, started sql.NullFloat64
 	)
-	if err := r.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &phase, &pct, &created, &claimed, &finished); err != nil {
+	if err := r.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &phase, &pct, &created, &claimed, &finished,
+		&event, &started); err != nil {
 		return RecordingJob{}, err
+	}
+	j.EventID = event.String
+	if started.Valid {
+		j.StartedAt = fromReal(started.Float64)
 	}
 	if tid.Valid {
 		j.TranscriptID = &tid.Int64

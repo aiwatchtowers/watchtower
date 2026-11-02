@@ -3,10 +3,13 @@ package actions
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -49,6 +52,30 @@ func (w *uploadWorld) echo(id string) map[string]any {
 		w.t.Fatalf("no echo of upload %s", id)
 	}
 	return e
+}
+
+// TestRecordingUploadOriginReachesTheIntake: the upload's event_id and
+// started_at reach the intake; its title_hint does not (content).
+func TestRecordingUploadOriginReachesTheIntake(t *testing.T) {
+	w := newUploadWorld(t)
+	w.next = RecordingOutcome{Status: wire.StatusReceived}
+	id := w.phone.ID()
+	body, _ := json.Marshal(map[string]any{"id": "u1", "status": "pending", "duration_sec": 5, "device_id": id.String(),
+		"event_id": "evt-1", "started_at": 1_800_000_000.5, "title_hint": "Acme sync"})
+	if _, err := w.phone.WriteUpload("u1", body, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if len(w.calls) != 1 {
+		t.Fatalf("intake calls %+v", w.calls)
+	}
+	o := w.calls[0].Origin
+	if o.EventID != "evt-1" || !o.StartedAt.Equal(time.Unix(1_800_000_000, 500_000_000)) {
+		t.Errorf("origin = %+v", o)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", w.calls[0]), "Acme") {
+		t.Error("the title hint reached the intake")
+	}
 }
 
 func TestRecordingUploadFromALinkedPhoneIsEchoed(t *testing.T) {

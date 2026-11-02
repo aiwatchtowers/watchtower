@@ -144,6 +144,10 @@ type ControlAnswer struct {
 	Status       string     `json:"status,omitempty"`
 	TranscriptID *int64     `json:"transcript_id,omitempty"`
 	AudioPath    string     `json:"audio_path,omitempty"`
+	// EventID and StartedAt are the claimed job's origin (claim only): the
+	// calendar event it was recorded for and its start (Unix seconds).
+	EventID   string     `json:"event_id,omitempty"`
+	StartedAt *wire.Time `json:"started_at,omitempty"`
 	// Recordings is the switch after a recordings request: "on" | "off".
 	Recordings string `json:"recordings,omitempty"`
 	// Phase and Percent are a job's progress after a recording_progress;
@@ -598,8 +602,14 @@ func (s *supervisor) recordingJob(r ControlRequest) ControlAnswer {
 	}
 	s.poke()
 	a := ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
-	if r.Op == OpRecordingClaim && s.o.RecordingsDir != "" {
-		a.AudioPath = handlers.RecordingAudioPath(s.o.RecordingsDir, job.UploadID)
+	if r.Op == OpRecordingClaim {
+		if s.o.RecordingsDir != "" {
+			a.AudioPath = handlers.RecordingAudioPath(s.o.RecordingsDir, job.UploadID)
+		}
+		a.EventID = job.EventID
+		if !job.StartedAt.IsZero() {
+			a.StartedAt = &wire.Time{Time: job.StartedAt}
+		}
 	}
 	return a
 }

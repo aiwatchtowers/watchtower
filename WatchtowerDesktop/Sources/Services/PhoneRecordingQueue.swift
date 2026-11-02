@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import os
 import WatchtowerCore
 
@@ -36,10 +37,12 @@ extension MeetingRecorderCenter: PhoneRecordingJobObserving {}
 /// reach the hub in order. Logs carry upload ids and classes only (FILES-01).
 @MainActor
 final class PhoneRecordingQueue {
-    /// Lands the audio in the transcriber's queue; returns the ingested
-    /// file, the key its job callbacks report under. Production:
-    /// `MeetingRecorderCenter.ingestPhoneRecording`.
-    typealias Ingest = @MainActor (_ audio: URL) async throws -> URL
+    /// Lands the audio in the transcriber's queue, linked to `eventID` and
+    /// titled `title`; returns the ingested file, the key its job callbacks
+    /// report under. Production: `MeetingRecorderCenter.ingestPhoneRecording`.
+    typealias Ingest = @MainActor (_ audio: URL, _ eventID: String?, _ title: String?) async throws -> URL
+    /// The title of a calendar event on this Mac; nil when it is not here.
+    typealias EventTitle = @MainActor (_ eventID: String) async -> String?
 
     /// One upload this Desktop took.
     struct Tracked: Codable, Equatable {
@@ -95,6 +98,7 @@ final class PhoneRecordingQueue {
     private weak var observing: (any PhoneRecordingJobObserving)?
     private let defaults: UserDefaults
     private let ingest: Ingest
+    private let eventTitle: EventTitle
     private let removeFile: (URL) throws -> Void
     private let fileExists: (URL) -> Bool
     private static let logger = Logger(subsystem: "com.watchtower.desktop", category: "PhoneRecordingQueue")
@@ -118,6 +122,7 @@ final class PhoneRecordingQueue {
         defaults: UserDefaults = .standard,
         removeFile: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) },
         fileExists: @escaping (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
+        eventTitle: @escaping EventTitle,
         ingest: @escaping Ingest
     ) {
         self.client = client
@@ -126,19 +131,57 @@ final class PhoneRecordingQueue {
         self.defaults = defaults
         self.removeFile = removeFile
         self.fileExists = fileExists
+        self.eventTitle = eventTitle
         self.ingest = ingest
         tracked = Self.load(defaults)
     }
 
     /// The app's queue on the hub's socket: the audio goes through the
-    /// transcriber's phone ingest with Settings' transcription config.
-    static func live(cli: (any CLIRunnerProtocol)?, recorder: MeetingRecorderCenter) -> PhoneRecordingQueue {
+    /// transcriber's phone ingest with Settings' transcription config, the
+    /// event's title read from this Mac's calendar.
+    static func live(
+        cli: (any CLIRunnerProtocol)?, recorder: MeetingRecorderCenter, dbPool: DatabasePool
+    ) -> PhoneRecordingQueue {
         PhoneRecordingQueue(
-            client: HubControlClient(socketPath: HubControlClient.defaultSocketPath()), cli: cli, observing: recorder
-        ) { [weak recorder] audio in
-            guard let recorder else { throw CancellationError() }
-            return try await recorder.ingestPhoneRecording(audioURL: audio, eventID: nil, title: nil, config: .fromDefaults())
+            client: HubControlClient(socketPath: HubControlClient.defaultSocketPath()), cli: cli, observing: recorder,
+            eventTitle: { id in
+                do {
+                    return try await dbPool.read { try CalendarQueries.fetchEventLink($0, id: id)?.title }
+                } catch {
+                    Self.logger.error("phone recording: calendar unreadable (\(Self.code(error), privacy: .public))")
+                    return nil
+                }
+            },
+            ingest: { [weak recorder] audio, eventID, title in
+                guard let recorder else { throw CancellationError() }
+                return try await recorder.ingestPhoneRecording(audioURL: audio, eventID: eventID, title: title, config: .fromDefaults())
+            }
+        )
+    }
+
+    /// The phone's title for a recording with no event (`PhoneRecorderController`'s
+    /// voice note, a Kit↔Desktop dual path): "Voice note — d MMM, HH:mm".
+    nonisolated static func voiceNoteTitle(_ startedAt: Date, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "d MMM, HH:mm"
+        return "Voice note — \(formatter.string(from: startedAt))"
+    }
+
+    /// The event and title the phone gave the recording, from its origin:
+    /// an event on this Mac links it and gives the event's title, as the
+    /// phone titles a meeting recording; an event this Mac's calendar lacks
+    /// is dropped (saved ad-hoc, as the Swift hub did) and the title with
+    /// it, since the title is never stored; no event is the phone's voice
+    /// note, titled by its start.
+    private func origin(of answer: HubControlAnswer) async -> (eventID: String?, title: String?) {
+        if let id = answer.eventID {
+            if let title = await eventTitle(id) { return (id, title) }
+            Self.logger.info("phone recording \(answer.uploadID ?? "", privacy: .public): event not on this Mac, ingested ad-hoc")
+            return (nil, nil)
         }
+        return (nil, answer.startedAt.map { Self.voiceNoteTitle($0) })
     }
 
     // MARK: - Lifecycle
@@ -228,9 +271,10 @@ final class PhoneRecordingQueue {
             await finish(uploadID, failure: .missingAudio)
             return
         }
+        let (eventID, title) = await origin(of: answer)
         let ingested: URL
         do {
-            ingested = try await ingest(audio)
+            ingested = try await ingest(audio, eventID, title)
         } catch {
             guard let failure = Self.failureClass(ingestError: error) else {
                 Self.logger.notice("phone recording \(uploadID, privacy: .public): ingest deferred")

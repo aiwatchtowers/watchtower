@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/hub"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
 )
 
 // The recording verbs and the Desktop heartbeat are Desktop's alone (spec
@@ -31,13 +32,17 @@ const (
 
 // hubListJSON is one row of `hub recording list --json` (pinned keys):
 // Desktop's read of the queue when it starts following it. Phase is "" and
-// Percent null until Desktop reported one.
+// Percent null until Desktop reported one. EventID ("" for none) and
+// StartedAt (Unix seconds, null when the phone did not say) are the
+// recording's origin, from which Desktop derives its title.
 type hubListJSON struct {
-	UploadID  string `json:"upload_id"`
-	Status    string `json:"status"`
-	Phase     string `json:"phase"`
-	Percent   *int   `json:"percent"`
-	AudioPath string `json:"audio_path"`
+	UploadID  string     `json:"upload_id"`
+	Status    string     `json:"status"`
+	Phase     string     `json:"phase"`
+	Percent   *int       `json:"percent"`
+	AudioPath string     `json:"audio_path"`
+	EventID   string     `json:"event_id"`
+	StartedAt *wire.Time `json:"started_at"`
 }
 
 // hubProgressJSON is `hub recording progress --json` (pinned keys).
@@ -271,8 +276,12 @@ func runHubRecordingList(cmd *cobra.Command, _ []string) error {
 	recordings := handlers.RecordingsDirUnder(dir)
 	rows := make([]hubListJSON, 0, len(jobs))
 	for _, j := range jobs {
-		rows = append(rows, hubListJSON{UploadID: j.UploadID, Status: j.Status, Phase: j.Phase, Percent: j.Percent,
-			AudioPath: handlers.RecordingAudioPath(recordings, j.UploadID)})
+		row := hubListJSON{UploadID: j.UploadID, Status: j.Status, Phase: j.Phase, Percent: j.Percent,
+			AudioPath: handlers.RecordingAudioPath(recordings, j.UploadID), EventID: j.EventID}
+		if !j.StartedAt.IsZero() {
+			row.StartedAt = &wire.Time{Time: j.StartedAt}
+		}
+		rows = append(rows, row)
 	}
 	if asJSON {
 		return hubPrint(cmd, true, rows, "")

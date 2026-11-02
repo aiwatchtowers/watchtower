@@ -139,8 +139,30 @@ func TestRecordingClaimAnswerCarriesTheAudioPath(t *testing.T) {
 	}
 	s.o.RecordingsDir = ""
 	_ = st.QueueRecording("u2", "AAAAAAAA-0000-4000-8000-000000000001", time.Now())
-	if a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u2"}, nil); !a.OK || a.AudioPath != "" {
-		t.Errorf("claim without a recordings dir = %+v", a)
+	if a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u2"}, nil); !a.OK || a.AudioPath != "" ||
+		a.EventID != "" || a.StartedAt != nil {
+		t.Errorf("claim without a recordings dir or an origin = %+v", a)
+	}
+}
+
+// TestRecordingClaimAnswerCarriesTheOrigin: the claim names the calendar
+// event the phone recorded for and its start, so Desktop links the
+// transcript and derives the phone's title; never the title itself.
+func TestRecordingClaimAnswerCarriesTheOrigin(t *testing.T) {
+	r := newViewRig(t)
+	st, s := r.s.st, r.s
+	started := time.Unix(1_800_000_000, 0)
+	if err := st.QueueRecordingFrom("u1", "AAAAAAAA-0000-4000-8000-000000000001",
+		state.RecordingOrigin{EventID: "evt-1", StartedAt: started}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u1"}, nil)
+	if !a.OK || a.EventID != "evt-1" || a.StartedAt == nil || !a.StartedAt.Equal(started) {
+		t.Errorf("claim = %+v", a)
+	}
+	line, _ := json.Marshal(a)
+	if !bytes.Contains(line, []byte(`"started_at":1800000000`)) {
+		t.Errorf("started_at goes as Unix seconds: %s", line)
 	}
 }
 

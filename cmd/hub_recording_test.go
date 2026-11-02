@@ -108,7 +108,8 @@ func TestHubRecordingClaimFinishJSONKeys(t *testing.T) {
 }
 
 // TestHubRecordingListJSONKeys: `hub recording list --json` is an array of
-// {upload_id, status, phase, percent, audio_path} (pinned, Desktop's start
+// {upload_id, status, phase, percent, audio_path, event_id, started_at}
+// (pinned, Desktop's start
 // read); no sidecar yet is an empty array; refused under an agent marker
 // (the paths lead to plaintext audio).
 func TestHubRecordingListJSONKeys(t *testing.T) {
@@ -118,7 +119,11 @@ func TestHubRecordingListJSONKeys(t *testing.T) {
 	assert.JSONEq(t, "[]", out)
 
 	queueJob(t, dir, "u-1")
-	queueJob(t, dir, "u-2")
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	started := time.Unix(1_800_000_000, 0)
+	require.NoError(t, st.QueueRecordingFrom("u-2", "aabb", state.RecordingOrigin{EventID: "evt-1", StartedAt: started}, time.Now()))
+	require.NoError(t, st.Close())
 	_, err = runHub(t, "recording", "claim", "--upload", "u-2")
 	require.NoError(t, err)
 	_, err = runHub(t, "recording", "progress", "--upload", "u-2", "--phase", "transcribing", "--percent", "40")
@@ -130,7 +135,7 @@ func TestHubRecordingListJSONKeys(t *testing.T) {
 	require.Len(t, rows, 2)
 	byID := map[string]map[string]any{}
 	for _, r := range rows {
-		assert.ElementsMatch(t, []string{"upload_id", "status", "phase", "percent", "audio_path"}, hubKeysOf(r))
+		assert.ElementsMatch(t, []string{"upload_id", "status", "phase", "percent", "audio_path", "event_id", "started_at"}, hubKeysOf(r))
 		byID[r["upload_id"].(string)] = r
 	}
 	assert.Equal(t, "queued", byID["u-1"]["status"])
@@ -140,6 +145,10 @@ func TestHubRecordingListJSONKeys(t *testing.T) {
 	assert.Equal(t, "claimed", byID["u-2"]["status"])
 	assert.Equal(t, "transcribing", byID["u-2"]["phase"])
 	assert.EqualValues(t, 40, byID["u-2"]["percent"])
+	assert.Equal(t, "", byID["u-1"]["event_id"])
+	assert.Nil(t, byID["u-1"]["started_at"])
+	assert.Equal(t, "evt-1", byID["u-2"]["event_id"])
+	assert.EqualValues(t, 1_800_000_000, byID["u-2"]["started_at"])
 
 	t.Setenv(agentEnvMarkers[0], "1")
 	_, err = runHub(t, "recording", "list", "--json")
