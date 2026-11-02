@@ -23,9 +23,11 @@ private struct SessionRowDragModifier: ViewModifier {
     let move: (IndexSet, Int) -> Void
 
     @State private var isTargeted = false
+    @State private var rowSize: CGSize?
 
     func body(content: Content) -> some View {
         content
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { rowSize = $0 }
             .overlay {
                 if isTargeted {
                     RoundedRectangle(cornerRadius: PanelTab.cornerRadius)
@@ -34,10 +36,7 @@ private struct SessionRowDragModifier: ViewModifier {
                 }
             }
             .draggable(SessionRowDrag.payload(listID: listID, sessionID: session.id)) {
-                Text(session.title)
-                    .font(.callout)
-                    .lineLimit(1)
-                    .padding(Spacing.compact)
+                SessionRowDragPreview(size: rowSize) { content }
             }
             .dropDestination(for: String.self) { payloads, _ in
                 isTargeted = false
@@ -48,5 +47,21 @@ private struct SessionRowDragModifier: ViewModifier {
                 move(offsets.source, offsets.destination)
                 return true
             } isTargeted: { isTargeted = $0 }
+    }
+}
+
+/// The lifted row keeps its layout, state and badges. A preview is hosted
+/// outside the List, so it must supply both the List's width constraint and
+/// an opaque surface; otherwise long titles expand and only text is visible.
+struct SessionRowDragPreview<Content: View>: View {
+    let size: CGSize?
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .frame(width: size?.width, height: size?.height, alignment: .leading)
+            .background(Surface.window)
+            .clipShape(RoundedRectangle(cornerRadius: PanelTab.cornerRadius))
+            .allowsHitTesting(false)
     }
 }
