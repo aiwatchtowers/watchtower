@@ -20,7 +20,7 @@ import (
 )
 
 // Mode is how a hub runs: the phase-1 test mode (WATCHTOWER_HUB_DIR in a
-// hubtest-* workspace), the live mode of a headless host, or off.
+// hubtest-* workspace), the live mode (a headless or a desktop host), or off.
 type Mode string
 
 // The modes.
@@ -32,23 +32,11 @@ const (
 
 // Why a live hub does not start (each also a Refusal class).
 var (
-	// ErrDesktopHost: the Watchtower app (or the Swift hub's state) is on
-	// this Mac; its mobile link is the app's, never a second hub's.
-	ErrDesktopHost = errors.New("hub: mobile on this Mac is run by the Watchtower app")
 	// ErrHubDisabled: the owner has not turned the live hub on (hub enable).
 	ErrHubDisabled = errors.New("hub: the hub is turned off")
 	// ErrPolicyOff: the managed MobileSync policy is off.
 	ErrPolicyOff = errors.New("hub: the MobileSync policy is off")
 )
-
-// DesktopHostError is ErrDesktopHost with the hostkind signal that found the
-// app (for the daemon's log line).
-type DesktopHostError struct{ Signal string }
-
-func (e *DesktopHostError) Error() string { return ErrDesktopHost.Error() }
-
-// Is makes errors.Is(err, ErrDesktopHost) hold.
-func (e *DesktopHostError) Is(target error) bool { return target == ErrDesktopHost }
 
 // Resolve is the daemon's only way to a hub: the Options to Run (o.Mode is
 // ModeTest or ModeLive), or the reason (Refusal(err)) the hub stays off.
@@ -56,13 +44,14 @@ func (e *DesktopHostError) Is(target error) bool { return target == ErrDesktopHo
 // WATCHTOWER_HUB_DIR set: the phase-1 test mode through FromEnv, exactly as
 // before (a set dir never falls back to live). Else the host kind decides,
 // once, here (no re-check while the hub runs, ask #827): a desktop host gets
-// no live hub and nothing under the live dir or MobileHub/ is created or
-// opened. On a headless host the live hub in DefaultDir starts only when its
+// resolveDesktop's live mode, whose gate Run keeps (nothing under the live
+// dir or MobileHub/ is created or opened here). On a headless host the live
+// hub in DefaultDir starts only when its
 // sidecar exists with hub_meta.enabled = 1 (read-only; the dir is never
 // created here), the MobileSync policy is not off, a valid relay origin is
 // set and the session-host socket folder is usable.
 func Resolve(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, error) {
-	kind, signal := hostkind.Detect(p)
+	kind, _ := hostkind.Detect(p)
 	if os.Getenv(EnvHubDir) != "" {
 		o, _, err := FromEnv(cfg, d)
 		if err != nil {
@@ -72,20 +61,10 @@ func Resolve(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, error) {
 		return o, nil
 	}
 	if kind == hostkind.Desktop {
-		return Options{}, &DesktopHostError{Signal: signal}
+		return resolveDesktop(cfg, d, p)
 	}
 	dir, origin, err := liveGate(cfg)
-	// state.OpenReadOnly (reading the switch) re-points this process's
-	// dblock.jsonl sink at the hub dir; the daemon's stays its database's.
-	// d is nil only for a hub with no database (Options.DB nil, tests).
-	if d != nil {
-		path, ferr := mainFile(context.Background(), d)
-		if ferr != nil {
-			log.Printf("hub: the lock-metrics sink stays in the hub dir (%s)", errClass(ferr))
-		} else {
-			lockmetrics.Configure(path)
-		}
-	}
+	keepLockMetrics(d)
 	if err != nil {
 		return Options{}, err
 	}
@@ -100,6 +79,48 @@ func Resolve(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, error) {
 		SessionStart: sessionstart.Deps{Socket: sock}, Mode: ModeLive, Host: kind,
 		RelayOnlyRules: true,
 	}, nil
+}
+
+// resolveDesktop is a desktop host's live mode (phase 3 Task 21): always
+// Options for Run, which holds the hub off -- without the hub lock, without
+// creating or opening the sidecar -- until the never-two-hubs gate opens
+// (adoption finished and keys handed over, or no Swift state and Mobile
+// turned on), then keeps it off while a v1 session host answers or the
+// MobileSync policy is off, re-checking each cycle: Resolve runs once per
+// daemon start. A desktop host needs no relay origin (CloudKit only without
+// one) and runs no relay-only rules (CloudKit is free).
+func resolveDesktop(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, error) {
+	dir, err := DefaultDir()
+	if err != nil {
+		return Options{}, err
+	}
+	support, err := config.AppSupportDir()
+	if err != nil {
+		return Options{}, err
+	}
+	keepLockMetrics(d)
+	sock, err := sessionhost.DefaultSocket()
+	if err != nil {
+		return Options{}, fmt.Errorf("%w: %w", sessionhost.ErrRunDirUnusable, err)
+	}
+	o := Options{Dir: dir, DB: d, SessionStart: sessionstart.Deps{Socket: sock}, Mode: ModeLive, Host: hostkind.Desktop}
+	return desktopOptions(o, cfg, p, support), nil
+}
+
+// keepLockMetrics points this process's dblock.jsonl sink back at the
+// daemon's database: state.OpenReadOnly (reading the switch) re-points it at
+// the hub dir. d is nil only for a hub with no database (Options.DB nil,
+// tests).
+func keepLockMetrics(d *db.DB) {
+	if d == nil {
+		return
+	}
+	path, err := mainFile(context.Background(), d)
+	if err != nil {
+		log.Printf("hub: the lock-metrics sink stays in the hub dir (%s)", errClass(err))
+		return
+	}
+	lockmetrics.Configure(path)
 }
 
 // liveGate is the live hub's start rule on a headless host: its dir and
@@ -149,15 +170,12 @@ func liveEnabled(dir string) (bool, error) {
 }
 
 // Dir is the hub dir the `hub …` CLI works in and the host's kind:
-// WATCHTOWER_HUB_DIR when set (test mode), else DefaultDir on a headless
-// host (live mode), else ErrDesktopHost. Nothing is created.
+// WATCHTOWER_HUB_DIR when set (test mode), else DefaultDir (live mode, on a
+// headless and a desktop host alike). Nothing is created.
 func Dir(p hostkind.Probe) (dir string, mode Mode, kind hostkind.Kind, err error) {
-	kind, signal := hostkind.Detect(p)
+	kind, _ = hostkind.Detect(p)
 	if dir := os.Getenv(EnvHubDir); dir != "" {
 		return dir, ModeTest, kind, nil
-	}
-	if kind == hostkind.Desktop {
-		return "", ModeOff, kind, &DesktopHostError{Signal: signal}
 	}
 	dir, err = DefaultDir()
 	if err != nil {

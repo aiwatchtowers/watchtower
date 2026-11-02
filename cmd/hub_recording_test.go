@@ -3,6 +3,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/hub/state"
 )
 
@@ -187,9 +191,41 @@ func TestHubRecordingVerbUsage(t *testing.T) {
 	assert.Error(t, err)
 	_, err = runHub(t, "recording", "claim", "--upload", "nope", "--json")
 	assert.ErrorContains(t, err, "no recording job")
-	t.Setenv(hubDirEnv, "")
+	// A headless host has no app: nothing may beat there.
+	live, _ := hubLiveCLI(t, linuxProbe())
 	_, err = runHub(t, "desktop", "heartbeat")
-	assert.ErrorContains(t, err, hubDirEnv)
+	assert.ErrorContains(t, err, "no Watchtower app")
+	_, err = os.Stat(live)
+	assert.True(t, errors.Is(err, fs.ErrNotExist), "a refused heartbeat created the live dir")
+}
+
+// TestDesktopHeartbeatAcceptedOnALiveDesktopHost: with no test-mode dir, a
+// desktop host's Desktop beats into its live hub (once the Swift hub's state
+// is adopted, or with none), after which `hub recordings on` is accepted and
+// a claimed job's audio is in the transcriber's <app support>/recordings.
+func TestDesktopHeartbeatAcceptedOnALiveDesktopHost(t *testing.T) {
+	hubOnGOOS(t, "darwin")
+	live, _ := hubLiveCLI(t, desktopAppProbe())
+	out, err := runHub(t, "desktop", "heartbeat", "--json")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"desktop_at"}, hubKeysOf(decodeKeys(t, out)))
+	st, err := state.Open(live)
+	require.NoError(t, err)
+	fresh, seen, err := st.DesktopHost(time.Now())
+	require.NoError(t, st.Close())
+	require.NoError(t, err)
+	assert.True(t, fresh && seen)
+
+	out, err = runHub(t, "recordings", "on", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "on", decodeKeys(t, out)["recordings"])
+
+	queueJob(t, live, "u-1")
+	out, err = runHub(t, "recording", "claim", "--upload", "u-1", "--json")
+	require.NoError(t, err)
+	support, err := config.AppSupportDir()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(support, "recordings", "u-1.m4a"), decodeKeys(t, out)["audio_path"])
 }
 
 func TestDesktopHeartbeatRefusedUnderAnAgentMarker(t *testing.T) {

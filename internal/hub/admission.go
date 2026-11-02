@@ -191,9 +191,13 @@ func (h *hubRuntime) applyGate() {
 	h.gateHeld = want
 	if want {
 		h.pub.Pause()
-		h.proc.SetPaused(true)
+		for _, p := range h.processors() {
+			p.SetPaused(true)
+		}
 	} else {
-		h.proc.SetPaused(false)
+		for _, p := range h.processors() {
+			p.SetPaused(false)
+		}
 		h.pub.Resume()
 		h.kick(h.passKick)
 	}
@@ -235,7 +239,7 @@ func (h *hubRuntime) vouchReason() string {
 // account state before the event went out, so the gate opens at once and the
 // phones it lists are stamped. A repeat changes nothing.
 func (h *hubRuntime) onSlotAdded() {
-	if a, ok := h.tr.(relayAdmission); ok {
+	if a, ok := h.relayT().(relayAdmission); ok {
 		st := a.LastAccountState()
 		if h.acct != nil {
 			h.acct.seed(st)

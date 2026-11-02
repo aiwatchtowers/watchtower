@@ -38,6 +38,16 @@ type Device struct {
 	// the hub in a slot (zero = not yet). Read only: MarkRelayAdmitted
 	// writes it, LinkDevice clears it.
 	RelayAdmittedAt time.Time
+	// RelayLapsedAt is set while the phone's relay entitlement is lapsed
+	// and the hub stays on the relay (sim rule 16). RelaySkipSeq and
+	// RelaySkipBefore, kept after the lapse ends, cut off the relay
+	// actions sent before it (never applied): ordered ones by action_seq
+	// (the highest the hub saw at or during the lapse), legacy ones by the
+	// lapse's time. Read only: LapseRelay, RaiseRelaySkipSeq and
+	// EndRelayLapse write them, LinkDevice clears them.
+	RelayLapsedAt   *time.Time
+	RelaySkipBefore *time.Time
+	RelaySkipSeq    uint64
 }
 
 // MarkRelayAdmitted stamps at on the linked phones among relayIDs (their
@@ -73,7 +83,7 @@ const deviceColumns = `device_id, name, scope, linked_at, signing_key, agreement
 
 // deviceRead is what a read selects: the link's columns and the relay's
 // admission stamp, which only MarkRelayAdmitted writes (a re-link clears it).
-const deviceRead = deviceColumns + `, relay_admitted_at`
+const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -85,17 +95,28 @@ func scanDevice(r rowScanner) (Device, error) {
 		lastApplied, resnd int64
 		acked              int64
 		admitted           sql.NullFloat64
+		lapsed, skip       sql.NullFloat64
+		skipSeq            int64
 	)
 	err := r.Scan(&d.ID, &d.Name, &d.Scope, &linked, &d.SigningKey, &d.AgreementKey, &nonce,
 		&d.TypingAllowed, &d.TypingRequested, &d.PermissionsAllowed, &d.PermissionsRequested,
 		&d.StartSessionsAllowed, &d.StartSessionsGranted,
-		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted)
+		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq)
 	if err != nil {
 		return Device{}, err
 	}
 	if admitted.Valid {
 		d.RelayAdmittedAt = fromReal(admitted.Float64)
 	}
+	if lapsed.Valid {
+		t := fromReal(lapsed.Float64)
+		d.RelayLapsedAt = &t
+	}
+	if skip.Valid {
+		t := fromReal(skip.Float64)
+		d.RelaySkipBefore = &t
+	}
+	d.RelaySkipSeq = uint64(max(skipSeq, 0))
 	d.LinkedAt = fromReal(linked)
 	d.LinkNonce = nonce.String
 	d.RelayDeviceID = relayID.String
@@ -136,6 +157,55 @@ func (s *Store) Device(id string) (Device, bool, error) {
 		return Device{}, false, fmt.Errorf("reading a device: %w", err)
 	}
 	return d, true, nil
+}
+
+// LapseRelay marks device lapsed on the relay as of at (sim rule 16), in the
+// caller's transaction, and drops its held actions (echoed held, so the
+// phone lists them as not delivered); relay_skip_seq becomes the highest
+// action_seq the hub saw (applied or held). It is a compare-and-set: false,
+// and nothing written, when the phone is already lapsed or not linked.
+func LapseRelay(tx *sql.Tx, device string, at time.Time) (bool, error) {
+	res, err := tx.Exec(`UPDATE devices SET relay_lapsed_at = ?, relay_skip_before = ?,
+		relay_skip_seq = max(relay_skip_seq, last_applied_action_seq,
+			ifnull((SELECT max(action_seq) FROM held_actions h WHERE h.device_id = devices.device_id COLLATE NOCASE), 0))
+		WHERE device_id = ? COLLATE NOCASE AND relay_lapsed_at IS NULL`, toReal(at), toReal(at), device)
+	if err != nil {
+		return false, fmt.Errorf("marking a relay lapse: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return false, err
+	}
+	if _, err := tx.Exec(`DELETE FROM held_actions WHERE device_id = ? COLLATE NOCASE`, device); err != nil {
+		return false, fmt.Errorf("dropping a lapsed phone's held actions: %w", err)
+	}
+	return true, nil
+}
+
+// RaiseRelaySkipSeq raises device's relay_skip_seq to seq (never lowers
+// it): an ordered relay action the hub read while the phone is lapsed.
+func (s *Store) RaiseRelaySkipSeq(device string, seq uint64) error {
+	return s.write(func(tx *sql.Tx) error {
+		return updateDevice(tx, device, seq,
+			`UPDATE devices SET relay_skip_seq = max(relay_skip_seq, ?) WHERE device_id = ? COLLATE NOCASE`)
+	})
+}
+
+// EndRelayLapse ends device's relay lapse (a fresh account read lists it
+// paying); relay_skip_before stays. It reports whether a lapse ended.
+func (s *Store) EndRelayLapse(device string) (bool, error) {
+	ended := false
+	err := s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE devices SET relay_lapsed_at = NULL
+			WHERE device_id = ? COLLATE NOCASE AND relay_lapsed_at IS NOT NULL`, device)
+		if err != nil {
+			return fmt.Errorf("ending a relay lapse: %w", err)
+		}
+		n, err := res.RowsAffected()
+		ended = n > 0
+		return err
+	})
+	return ended, err
 }
 
 // SetLastApplied moves device's last applied action_seq, in the caller's

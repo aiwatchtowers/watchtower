@@ -86,17 +86,26 @@ func (s *Switcher) Pending() bool {
 // accepted. An accepted request is recorded (the last one wins) and carried
 // out by Step; a request for the transport the hub is on or moving to
 // changes nothing and re-sends the asking phone where the hub runs. It never
-// calls into a processor's pass.
-func (s *Switcher) Request(ctx context.Context, from string, target transport.Kind, _ string) error {
+// calls into a processor's pass. A request toward CloudKit with reason
+// entitlement_expired is the phone's lapse (sim rule 16, entitlement.go).
+func (s *Switcher) Request(ctx context.Context, from string, target transport.Kind, reason string) error {
 	if s.transport(target) == nil {
 		return &actions.SwitchRejected{Reason: actions.SwitchNotSupported}
 	}
 	person := from != wire.SwitchedByEntitlement
+	if person && target == transport.KindCloudKit && reason == wire.SwitchedByEntitlement {
+		return s.lapse(from, true)
+	}
 	if !person && target != transport.KindCloudKit {
 		return &actions.SwitchRejected{Reason: actions.SwitchNotSupported}
 	}
 	if target == transport.KindRelay && person && !s.canFollowToRelay(ctx, from) {
 		return &actions.SwitchRejected{Reason: wire.SwitchNotPaying}
+	}
+	if target == transport.KindRelay && person {
+		// A lapsed phone that pays again (a fresh account read lists it)
+		// is lapsed no more, whether or not the hub moves.
+		s.endLapseIfPaying(ctx, from)
 	}
 	now := s.now()
 	s.mu.Lock()
@@ -288,7 +297,7 @@ func (s *Switcher) canFollowToRelay(ctx context.Context, device string) bool {
 	}
 	pctx, cancel := context.WithTimeout(ctx, s.oldSide())
 	defer cancel()
-	paying, err := s.c.Paying(pctx)
+	paying, err := s.readPaying(pctx)
 	if err != nil {
 		log.Printf("hub: switch: the relay account is unreadable (%s): the phone counts as paying", errClass(err))
 		return true

@@ -19,11 +19,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/hub"
 	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
@@ -50,12 +52,20 @@ func hubShortDir(t *testing.T) string {
 // linkTestPhone writes a linked phone straight into dir's sidecar.
 func linkTestPhone(t *testing.T, dir string) string {
 	t.Helper()
+	return linkTestPhoneWith(t, dir, func(*state.Device) {})
+}
+
+// linkTestPhoneWith links a phone whose row edit changed first.
+func linkTestPhoneWith(t *testing.T, dir string, edit func(*state.Device)) string {
+	t.Helper()
 	p, err := hubtest.New(hubtest.Config{})
 	require.NoError(t, err)
 	st, err := state.Open(dir)
 	require.NoError(t, err)
 	defer func() { _ = st.Close() }()
-	require.NoError(t, st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, p.Device()) }))
+	d := p.Device()
+	edit(&d)
+	require.NoError(t, st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, d) }))
 	return strings.ToUpper(p.ID().String())
 }
 
@@ -142,7 +152,9 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	out, err := runHub(t, "status", "--json")
 	require.NoError(t, err)
 	m := decodeKeys(t, out)
-	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings", "host", "mode", "name"}, hubKeysOf(m))
+	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings", "host", "mode",
+		"adoption", "bridge", "identity", "switched_at", "switched_by", "name"}, hubKeysOf(m))
+	assert.Equal(t, hub.AdoptionNone, m["adoption"])
 	assert.Equal(t, hub.StateOff, m["state"])
 	assert.Equal(t, "", m["reason"])
 	assert.Equal(t, dir, m["dir"])
@@ -215,33 +227,70 @@ func TestHubStatusPrintsTheNoRelayOriginRemedy(t *testing.T) {
 	assert.NotContains(t, out, "no_relay_origin")
 }
 
-// TestHubCLIRefusesTheLiveDirOnADesktopHost is Review Focus 1 on the CLI: a
-// Mac with the app shows off/desktop_host, every other verb exits 1, and
-// nothing is created under the live dir.
-func TestHubCLIRefusesTheLiveDirOnADesktopHost(t *testing.T) {
-	desktop := hostkind.Probe{GOOS: "darwin", Stat: os.Stat, ReadFile: func(p string) ([]byte, error) {
+// desktopAppProbe is a darwin probe whose /Applications holds the app.
+func desktopAppProbe() hostkind.Probe {
+	return hostkind.Probe{GOOS: "darwin", Stat: os.Stat, ReadFile: func(p string) ([]byte, error) {
 		if p == "/Applications/Watchtower.app/Contents/Info.plist" {
 			return []byte("<key>CFBundleIdentifier</key><string>" + hostkind.BundleID + "</string>"), nil
 		}
 		return nil, fs.ErrNotExist
 	}}
-	live, _ := hubLiveCLI(t, desktop)
+}
+
+// TestHubCLIRefusesWritesBeforeAdoptionOnADesktopHost is Review Focus 1 on
+// the CLI (never two hubs): beside the Swift hub's state a desktop host's
+// status says awaiting_adoption — even over a Go sidecar with enabled = 1
+// written by hand — and every write exits 1 and writes nothing; with no Go
+// sidecar, nothing is created under the live dir (a sidecar there would
+// make the adoption refuse it).
+func TestHubCLIRefusesWritesBeforeAdoptionOnADesktopHost(t *testing.T) {
+	live, _ := hubLiveCLI(t, desktopAppProbe())
+	support, err := config.AppSupportDir()
+	require.NoError(t, err)
+	mobile := filepath.Join(support, "MobileHub")
+	require.NoError(t, os.MkdirAll(mobile, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(mobile, state.FileName), []byte("swift"), 0o600))
 	out, err := runHub(t, "status", "--json")
 	require.NoError(t, err)
 	m := decodeKeys(t, out)
 	assert.Equal(t, hub.StateOff, m["state"])
-	assert.Equal(t, hub.ReasonDesktopHost, m["reason"])
+	assert.Equal(t, hub.ReasonAwaitingAdoption, m["reason"])
 	assert.Equal(t, string(hostkind.Desktop), m["host"])
-	assert.Equal(t, "", m["dir"])
+	assert.Equal(t, string(hub.ModeLive), m["mode"])
+	assert.Equal(t, live, m["dir"])
 	for _, args := range [][]string{
-		{"enable"}, {"disable"}, {"phones"}, {"name", "acme"}, {"unlink", "X"}, {"allow", "X", "typing"}, {"pair", "--json", "--stream"},
+		{"enable"}, {"disable"}, {"name", "acme"}, {"unlink", "X"}, {"allow", "X", "typing"},
+		{"desktop", "heartbeat"}, {"recordings", "on"},
 	} {
 		_, err := runHub(t, args...)
 		require.Error(t, err, "%v", args)
 		assert.Equal(t, "Mobile on this Mac is run by the Watchtower app.", err.Error(), "%v", args)
 	}
+	out, err = runHub(t, "phones", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "[]", strings.TrimSpace(out))
 	_, err = os.Stat(live)
-	assert.True(t, errors.Is(err, fs.ErrNotExist), "the live dir was created on a desktop host")
+	assert.True(t, errors.Is(err, fs.ErrNotExist), "the live dir was created beside the Swift hub's state")
+
+	// A Go sidecar with enabled = 1 written by hand changes nothing.
+	setHubMeta(t, live, state.MetaEnabled, "1")
+	out, err = runHub(t, "status", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, hub.ReasonAwaitingAdoption, decodeKeys(t, out)["reason"])
+	for _, args := range [][]string{{"name", "acme"}, {"disable"}, {"desktop", "heartbeat"}} {
+		_, err := runHub(t, args...)
+		require.Error(t, err, "%v", args)
+		assert.Equal(t, "Mobile on this Mac is run by the Watchtower app.", err.Error(), "%v", args)
+	}
+	assert.Equal(t, "1", hubMeta(t, live, state.MetaEnabled))
+	assert.Equal(t, "", hubMeta(t, live, state.MetaDisplayName))
+	require.NoError(t, os.RemoveAll(live))
+
+	// With no Swift state (a Mac that never ran it), the owner turns it on.
+	require.NoError(t, os.RemoveAll(mobile))
+	_, err = runHub(t, "enable")
+	require.NoError(t, err)
+	assert.Equal(t, "1", hubMeta(t, live, state.MetaEnabled))
 }
 
 func TestHubEnableCreatesTheLiveDirOnAHeadlessHost(t *testing.T) {
@@ -308,6 +357,41 @@ func TestHubPhonesJSONKeys(t *testing.T) {
 		"permissions_allowed", "permissions_requested", "start_sessions_allowed", "start_sessions_granted", "ordered",
 		"last_applied_action_seq", "transport"}, hubKeysOf(list[0]))
 	assert.Equal(t, id, list[0]["device_id"])
+
+	// transport takes each of cloudkit|relay|pending: a relay link not yet
+	// admitted is pending; an admitted one is on the relay, or on CloudKit
+	// while a hub with both transports is; a CloudKit (or adopted) link is
+	// on CloudKit.
+	transportOf := func() map[string]any {
+		t.Helper()
+		out, err := runHub(t, "phones", "--json")
+		require.NoError(t, err)
+		var list []map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &list), out)
+		got := map[string]any{}
+		for _, p := range list {
+			got[p["device_id"].(string)] = p["transport"]
+		}
+		return got
+	}
+	assert.Equal(t, "pending", transportOf()[id])
+	ck := linkTestPhoneWith(t, dir, func(d *state.Device) { d.RelayDeviceID = "" })
+	assert.Equal(t, "cloudkit", transportOf()[ck])
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	devices, err := st.Devices()
+	require.NoError(t, err)
+	for _, d := range devices {
+		if d.RelayDeviceID != "" {
+			_, err = st.MarkRelayAdmitted([]string{d.RelayDeviceID}, time.Now())
+			require.NoError(t, err)
+		}
+	}
+	require.NoError(t, st.SetMeta(switcher.MetaTransport, "relay"))
+	require.NoError(t, st.Close())
+	assert.Equal(t, map[string]any{id: "relay", ck: "cloudkit"}, transportOf())
+	setHubMeta(t, dir, switcher.MetaTransport, "cloudkit")
+	assert.Equal(t, map[string]any{id: "cloudkit", ck: "cloudkit"}, transportOf())
 }
 
 // A phone linked over the relay shows transport "pending" until the relay

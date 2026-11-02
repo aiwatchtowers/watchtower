@@ -1023,12 +1023,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
 	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
-		var desktop *hub.DesktopHostError
-		if errors.As(err, &desktop) {
-			logger.Printf("hub: off (%s, %s)", hub.Refusal(err), desktop.Signal)
-		} else {
-			logger.Printf("hub: off (%s)", hub.Refusal(err))
-		}
+		logger.Printf("hub: off (%s)", hub.Refusal(err))
 		return func() {}
 	}
 	// The session port's seams; the socket stays Resolve's (test mode: the
@@ -1065,9 +1060,17 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 			logger.Printf("hub: off (%s)", hub.Refusal(err))
 		}
 	}()
-	if o.Mode == hub.ModeLive {
-		logger.Printf("hub: started (live, headless)")
-	} else {
+	switch {
+	case o.Desktop != nil:
+		// The hub's Run keeps the never-two-hubs gate: say what it waits for.
+		if r := hub.AdoptionWait(o); r != "" {
+			logger.Printf("hub: waiting for adoption (live, desktop, %s)", r)
+		} else {
+			logger.Printf("hub: started (live, desktop)")
+		}
+	case o.Mode == hub.ModeLive:
+		logger.Printf("hub: started (live, %s)", o.Host)
+	default:
 		logger.Printf("hub: started (test workspace)")
 	}
 	return func() {
