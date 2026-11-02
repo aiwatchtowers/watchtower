@@ -1382,7 +1382,8 @@ extension LinkingViewModel {
 
     /// Settings → Macs → Cancel (after "Cancel the link to <Mac>?"), and Remove on the slots screen for a Mac still
     /// finishing. First the running attempt for it, if any, stops (`resumer.stop`: a relay call on the wire lands
-    /// before the slot removal below; nothing after it). Never waits on `prepare`: the farewell, sealed with the keys the phone holds, goes straight into
+    /// before the slot removal below; nothing after it). That wait may cover a `prepare` the attempt is inside; the
+    /// cancel itself starts none. Then the farewell, sealed with the keys the phone holds, goes straight into
     /// the mailbox (10 s bound; kept on failure); then `remove_slot`, always (kept on failure); then the hub's keys,
     /// session, directory and the promoted entry go, whatever those did. Returns whether the slot is free.
     @discardableResult

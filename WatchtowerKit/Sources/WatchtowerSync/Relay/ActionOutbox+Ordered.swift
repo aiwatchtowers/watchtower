@@ -223,8 +223,8 @@ extension ActionOutbox {
 
     /// The hub moved to another transport: once the operation in flight on the chain ends, this outbox writes
     /// nothing more (every later pass returns an empty report), so no action reaches the transport the hub left.
-    /// The session on the new transport flushes the same rows. For good: a held outbox belongs to a session that is
-    /// being replaced.
+    /// The session on the new transport flushes the same rows. A held outbox belongs to a session that is being
+    /// replaced; `releaseFlushes()` undoes the hold only when the move fails before anything moved.
     public func holdFlushes() async {
         _ = try? await onChain { await self.setFlushesHeld() }.value
     }
