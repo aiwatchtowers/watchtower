@@ -21,6 +21,10 @@ const (
 // control_queue.kind values: an echo of an action record, or a control kind.
 const queueEcho = "echo"
 
+// QueueEcho is control_queue.kind of a queued echo (the switcher moves a
+// lapsed phone's owed echoes, sim rule 16).
+const QueueEcho = queueEcho
+
 // Wire reasons this package answers with (the Kit's ActionReason).
 const (
 	reasonDeviceNotLinked = "device_not_linked"

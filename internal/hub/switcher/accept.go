@@ -81,12 +81,18 @@ func (s *Switcher) Pending() bool {
 // it is always accepted. An accepted request is recorded (the last one
 // wins) and carried out by Step; a request for the transport the hub is on
 // or moving to changes nothing and re-sends the asking phone the notice of
-// where the hub runs. It never calls into a processor's pass.
-func (s *Switcher) Request(ctx context.Context, from string, target transport.Kind, _ string) error {
+// where the hub runs. A request toward CloudKit with reason
+// entitlement_expired is the phone's lapse (sim rule 16, entitlement.go):
+// the hub moves only when no other phone pays for the relay. It never calls
+// into a processor's pass.
+func (s *Switcher) Request(ctx context.Context, from string, target transport.Kind, reason string) error {
 	if s.transport(target) == nil {
 		return &actions.SwitchRejected{Reason: actions.SwitchNotSupported}
 	}
 	person := from != wire.SwitchedByEntitlement
+	if person && target == transport.KindCloudKit && reason == wire.SwitchedByEntitlement {
+		return s.lapse(ctx, from)
+	}
 	if !person && target != transport.KindCloudKit {
 		return &actions.SwitchRejected{Reason: actions.SwitchNotSupported}
 	}
@@ -111,6 +117,11 @@ func (s *Switcher) Request(ctx context.Context, from string, target transport.Ki
 			s.answerWhereItRuns(from)
 		}
 		return nil
+	}
+	if target == transport.KindRelay {
+		s.mu.Lock()
+		delete(s.lapsed, canonical(from)) // it pays again (checked above)
+		s.mu.Unlock()
 	}
 	log.Printf("hub: transport switch to %s accepted", target)
 	s.Kick()

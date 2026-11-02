@@ -16,6 +16,8 @@ type fakeSwitch struct {
 	reject   error
 	requests []string // "<from> <target>"
 	stale    int
+	lapsed   bool
+	inactive []string // devices reported by EntitlementInactive
 }
 
 func (f *fakeSwitch) IsActive(k transport.Kind) bool { return k == f.active }
@@ -28,6 +30,12 @@ func (f *fakeSwitch) Request(_ context.Context, from string, target transport.Ki
 func (f *fakeSwitch) Stale(context.Context, transport.Kind, string) (wire.Control, uint32, bool, error) {
 	f.stale++
 	return wire.Control{Kind: wire.ControlHubOnRelay}, 0, true, nil
+}
+
+func (f *fakeSwitch) Lapsed(transport.Kind, string) bool { return f.lapsed }
+
+func (f *fakeSwitch) EntitlementInactive(_ transport.Kind, device string) {
+	f.inactive = append(f.inactive, device)
 }
 
 func (w *world) withSwitch(f *fakeSwitch) {

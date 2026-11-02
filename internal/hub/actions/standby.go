@@ -32,10 +32,17 @@ func (p *Processor) standby() bool {
 	return p.cfg.Switch != nil && !p.cfg.Switch.IsActive(p.cfg.Transport.Kind())
 }
 
+// lapsed reports whether b's phone lapsed on this transport (sim rule 16,
+// Switch.Lapsed): none of its actions or uploads is applied here.
+func (p *Processor) lapsed(b mailbox) bool {
+	return p.cfg.Switch != nil && p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String())
+}
+
 // drainHeldActive drains b's held actions and retries its held uploads,
-// on the active transport only: on standby nothing is applied.
+// on the active transport only and never for a lapsed phone: on standby
+// nothing is applied.
 func (p *Processor) drainHeldActive(ctx context.Context, b mailbox, ps *pass) error {
-	if p.standby() {
+	if p.standby() || p.lapsed(b) {
 		return nil
 	}
 	if err := p.drainHeld(ctx, b, ps); err != nil {

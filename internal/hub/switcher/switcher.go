@@ -108,8 +108,13 @@ type Switcher struct {
 
 	stepMu sync.Mutex // one Step at a time
 
-	mu     sync.Mutex // guards active and every read-modify-write of the switch record
+	mu     sync.Mutex // guards active, lapsed, pending and every read-modify-write of the switch record
 	active transport.Kind
+	// lapsed is the phones whose relay entitlement lapsed while the hub
+	// stays on the relay; pending the lapses waiting for a Step
+	// (entitlement.go). Device ids in uuidString form.
+	lapsed  map[string]bool
+	pending map[string]bool
 }
 
 var _ actions.Switch = (*Switcher)(nil)
@@ -250,6 +255,11 @@ func (s *Switcher) Run(ctx context.Context) error {
 			log.Printf("hub: transport switch: %s", errClass(err))
 		}
 		s.PollOther(ctx)
+		// Sim rule 14: an old epoch's keys go once every phone acked a
+		// newer one and nothing sealed in it is held (7 days at most).
+		if err := s.c.Keys.RetireOld(); err != nil {
+			log.Printf("hub: retiring old epochs: %s", errClass(err))
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

@@ -73,6 +73,10 @@ type Processor struct {
 	// staleSeen is the record versions answered on standby (standby.go):
 	// zone and wire name → RecordSeq; guarded by mu.
 	staleSeen map[string]uint64
+	// oldSeen is the record versions answered resend_from for an epoch the
+	// hub no longer holds (epoch.go): zone and wire name → RecordSeq;
+	// guarded by mu.
+	oldSeen map[string]uint64
 }
 
 // SetPaused pauses the processor (spec §7.3, a headless hub with no paying
@@ -232,6 +236,9 @@ type pass struct {
 	report PassReport
 	budget int
 	nudges []string
+	// resent is the phones asked resend_from this pass for an action in an
+	// epoch the hub no longer holds (epoch.go): one ask per phone per pass.
+	resent map[secure.ID]bool
 }
 
 // Pass reads every linked phone's mailbox from its stored change token,
@@ -394,6 +401,9 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		if !droppable(err) {
 			return err
 		}
+		if errors.Is(err, secure.ErrEpochNotAccepted) {
+			return p.oldEpochAction(ctx, b, rec, ps)
+		}
 		if errors.Is(err, secure.ErrWrongClass) && !b.shared { // the hub's own records come back through the feed
 			o, err := p.cfg.Opener.OwnEcho(b.zone, rec.Name, rec.Envelope)
 			if err != nil {
@@ -427,6 +437,8 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		if left, err := p.onStandby(ctx, b, rec, opened); left || err != nil {
 			return err
 		}
+	} else if p.lapsed(b) && (opened.Frame.Kind == kindAction || opened.Frame.Kind == kindRecordingUpload) {
+		return nil // sim rule 16: left to the phone, told hub_on_relay over CloudKit
 	}
 	switch opened.Frame.Kind {
 	case kindAction:

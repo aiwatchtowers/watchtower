@@ -28,6 +28,7 @@ func (s *Switcher) Step(ctx context.Context) error {
 		// Resume without a Pause does nothing.
 		defer s.c.Publisher.Resume()
 	}
+	s.lapses(ctx)
 	for {
 		r, ok, err := s.record()
 		if err != nil || !ok || r.Done {
@@ -311,6 +312,9 @@ func (s *Switcher) leave(ctx context.Context, r switchRecord) {
 func (s *Switcher) arrive(ctx context.Context, r switchRecord) {
 	s.mu.Lock()
 	s.active = r.Target
+	if r.Target != transport.KindRelay {
+		s.lapsed = nil // off the relay nobody is lapsed there; back on it, rule 10 asks who pays
+	}
 	s.mu.Unlock()
 	if p := s.procs[r.Target]; p != nil {
 		if err := p.Rewind(); err != nil {

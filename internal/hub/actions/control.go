@@ -46,6 +46,17 @@ type Switch interface {
 	// (0 = the current one), or ok false for none. Called once per record
 	// version; it must not call back into a processor.
 	Stale(ctx context.Context, k transport.Kind, device string) (c wire.Control, epoch uint32, ok bool, err error)
+	// Lapsed reports whether device's relay entitlement lapsed while the
+	// hub stays on the relay for another paying phone (sim rule 16): on k
+	// none of its actions or uploads is applied — they are left to the
+	// phone, which was sent hub_on_relay over CloudKit. Its controls are
+	// read as usual.
+	Lapsed(k transport.Kind, device string) bool
+	// EntitlementInactive reports a hub write into device's mailbox on k
+	// refused with transport.ErrEntitlementInactive (sim rule 16): the
+	// switcher acts on it outside the pass. It must not call back into a
+	// processor.
+	EntitlementInactive(k transport.Kind, device string)
 }
 
 // SwitchRejected is Switch.Request's refusal: the reason and the wait the
@@ -82,6 +93,21 @@ func (p *Processor) SealControlFor(device string, c wire.Control, epoch uint32) 
 		return q.control(b.queue), true, nil
 	}
 	return state.Control{}, false, nil
+}
+
+// QueueOf is device's control_queue key on this processor's transport; ok
+// is false when the phone has no mailbox here.
+func (p *Processor) QueueOf(device string) (queue string, ok bool, err error) {
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return "", false, err
+	}
+	for _, b := range boxes {
+		if sameID(device, b.id) {
+			return b.queue, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // sealControl seals c as a hub control c-<uuid> for b's phone: a new id, and
@@ -414,9 +440,12 @@ func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, faile
 // refusedForGood reports a write the transport will never take, whatever the
 // retries: the record is too large, or this hub may not write that mailbox.
 // Everything else waits in the queue: an outage or rate limit passes, a full
-// mailbox empties as the phone deletes what it read, and a lapsed
-// entitlement or an outdated protocol waits for the switch (phase 3) or an
-// update rather than losing the write.
+// mailbox empties as the phone deletes what it read, and an outdated
+// protocol waits for an update rather than losing the write. A lapsed
+// entitlement waits too: with a switcher it is reported
+// (Switch.EntitlementInactive) and the switcher moves the phone's owed
+// echoes over CloudKit (sim rule 16); without one (a headless hub) the row
+// waits for the phone to pay again.
 func refusedForGood(err error) bool {
 	return errors.Is(err, transport.ErrRecordTooLarge) || errors.Is(err, transport.ErrForbidden)
 }
@@ -452,6 +481,11 @@ func (p *Processor) writeQueued(ctx context.Context, b mailbox, c state.Control,
 					return true, p.cfg.Store.DropResendFrom(c.ID, b.id.String())
 				}
 				return true, p.cfg.Store.ControlDone(c.ID)
+			}
+			if p.cfg.Switch != nil && errors.Is(err, transport.ErrEntitlementInactive) {
+				// Sim rule 16: the phone's relay entitlement lapsed. The
+				// switcher moves what is owed to it over CloudKit.
+				p.cfg.Switch.EntitlementInactive(p.cfg.Transport.Kind(), b.id.String())
 			}
 			return false, p.cfg.Store.ControlFailed(c.ID, errClass(err))
 		}
