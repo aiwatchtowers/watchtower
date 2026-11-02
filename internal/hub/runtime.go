@@ -116,6 +116,9 @@ type hubRuntime struct {
 	gateMu    sync.Mutex
 	gateHeld  bool
 
+	// ctx is the hub's own context (cancelled by stop): the CloudKit share
+	// calls an owner request starts run under it (cloudkit_runtime.go).
+	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	watched map[string]bool // zones subscribed (worker only)
@@ -123,6 +126,9 @@ type hubRuntime struct {
 	// wasVouched is the vouch state the last link upkeep saw (worker only).
 	subRetry   map[string]*subRetry
 	wasVouched bool
+	// lastPass is when the last mailbox pass started (worker only): the
+	// CloudKit cadence counts from it (cloudkit_runtime.go).
+	lastPass time.Time
 
 	passKick, linkKick, houseKick chan struct{}
 	// soonKick opens the link check's short-retry window (linkSoonFor).
@@ -285,6 +291,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
+		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos,
 	})
 	sweepTemps(o, st)
 	if o.DB != nil {
@@ -337,7 +344,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	h.applyGate()
 
 	hctx, cancel := context.WithCancel(context.Background())
-	h.cancel = cancel
+	h.ctx, h.cancel = hctx, cancel
 	if h.wiring != nil {
 		h.wiring.openWatch(ctx, o.DB, h.touched, o.Clock)
 		// Seeded before the publisher's start cycle reads the timeline.
@@ -557,8 +564,9 @@ func (h *hubRuntime) setUnreachable(v bool) {
 // work is the hub's one worker: transport events, mailbox passes, link
 // upkeep and housekeeping, one at a time.
 func (h *hubRuntime) work(ctx context.Context) {
-	passes := time.NewTicker(h.sup.o.passEvery)
-	defer passes.Stop()
+	h.cloudKitStart(ctx)
+	passC, stopPasses := h.sup.o.passTicker(h.passTickEvery())
+	defer stopPasses()
 	links := time.NewTicker(h.sup.o.linkEvery)
 	defer links.Stop()
 	house := time.NewTicker(houseEvery)
@@ -573,8 +581,8 @@ func (h *hubRuntime) work(ctx context.Context) {
 			h.onEvent(ctx, ev)
 		case <-h.passKick:
 			h.pass(ctx)
-		case <-passes.C:
-			h.pass(ctx)
+		case <-passC:
+			h.passTick(ctx)
 		case <-h.linkKick:
 			h.linkUpkeep(ctx)
 		case <-links.C:
@@ -596,6 +604,9 @@ func (h *hubRuntime) work(ctx context.Context) {
 
 // onEvent handles one transport event.
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
+	if h.cloudKitEvent(ctx, ev) {
+		return
+	}
 	h.noteNotVouched(ev.Err)
 	if h.paying != nil {
 		h.paying.Observe(ev, nil)
@@ -669,6 +680,8 @@ func (h *hubRuntime) pass(ctx context.Context) {
 	if h.sup.o.onPass != nil {
 		h.sup.o.onPass()
 	}
+	h.lastPass = h.sup.o.Clock()
+	defer h.sweepShares(ctx)
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
 		rep, err := h.proc.Pass(pctx)

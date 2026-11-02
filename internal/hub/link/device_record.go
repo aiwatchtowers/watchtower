@@ -57,12 +57,26 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 	}
 	if r.Payload.Unlinked != nil && *r.Payload.Unlinked {
 		log.Printf("hub link: phone %s unlinked itself", strings.ToUpper(device))
-		if err := c.Unlink(device); err != nil && !errors.Is(err, state.ErrNoDevice) {
-			return err
-		}
-		return nil
+		return c.unlinkItself(ctx, r.Shares, device)
 	}
 	return c.rewrite(ctx, device, r.Payload)
+}
+
+// unlinkItself is a phone's own unlink through BeginRemove: on CloudKit
+// (shares set) its iCloud user leaves the shares at once (the processor's
+// pass already runs off any owner request, so it waits for the share
+// calls here), elsewhere it is Unlink. A participant removal that failed is
+// left to the sweep.
+func (c *Center) unlinkItself(ctx context.Context, shares transport.Shares, device string) error {
+	finish, err := c.BeginRemove(ctx, device)
+	if errors.Is(err, state.ErrNoDevice) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	finish(ctx, shares)
+	return nil
 }
 
 // accepts is the Swift hub's check that a device record comes from the

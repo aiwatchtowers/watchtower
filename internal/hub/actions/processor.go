@@ -35,6 +35,16 @@ type Config struct {
 	// Links applies the phones' device records (device_record.go); nil
 	// leaves them alone.
 	Links Links
+	// Hello takes the hellos of CloudKit's shared RelayZone (the link
+	// lane's, link.Center.HandleCloudKitHello). An error leaves the page
+	// to be read again next pass (a hello re-read decides nothing new).
+	// Set, the zone is read on every pass even with no phone linked yet,
+	// so a first phone's hello is seen. nil leaves hellos alone.
+	Hello func(ctx context.Context, rec transport.Stored) error
+	// HelloWanted, when set, says whether the zone is worth that read
+	// while no phone is linked (link.Center.WantsHellos: a code open or a
+	// link urgent); nil reads it on every pass.
+	HelloWanted func() bool
 }
 
 // Processor reads the phones' mailboxes and applies their actions. Pass and
@@ -237,7 +247,7 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 		return ps.report, err
 	}
 	var errs []error
-	for _, g := range byZone(boxes) {
+	for _, g := range p.withHelloZone(byZone(boxes), false) {
 		if g.shared { // CloudKit's one RelayZone: read once for every phone (shared.go)
 			errs = append(errs, p.passShared(ctx, g, ps)...)
 			continue
