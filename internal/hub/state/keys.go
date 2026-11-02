@@ -127,26 +127,20 @@ func EndRetention(tx *sql.Tx, epoch uint32, at time.Time) error {
 	return nil
 }
 
-// HeldEnvelopes is the sealed envelope of every held action, every phone's
-// (the keyring reads the epochs they are sealed in, sim rule 14).
-func (s *Store) HeldEnvelopes() ([][]byte, error) {
-	rows, err := s.db.Query(`SELECT envelope FROM held_actions`)
+// SealedIn reports whether a held action or a queued write (an echo or a
+// control still owed to a phone) is sealed in epoch, in the caller's
+// transaction (sim rule 14: such an epoch keeps its keys). It reads the
+// epoch field of each envelope's header (bytes 38–41, big endian), never
+// the envelope itself.
+func SealedIn(tx *sql.Tx, epoch uint32) (bool, error) {
+	be := []byte{byte(epoch >> 24), byte(epoch >> 16), byte(epoch >> 8), byte(epoch)}
+	var used bool
+	err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM held_actions WHERE substr(envelope, 39, 4) = ?)
+		OR EXISTS (SELECT 1 FROM control_queue WHERE substr(envelope, 39, 4) = ?)`, be, be).Scan(&used)
 	if err != nil {
-		return nil, fmt.Errorf("listing held actions: %w", err)
+		return false, fmt.Errorf("reading what is sealed in an epoch: %w", err)
 	}
-	defer rows.Close()
-	var out [][]byte
-	for rows.Next() {
-		var env []byte
-		if err := rows.Scan(&env); err != nil {
-			return nil, fmt.Errorf("reading a held action: %w", err)
-		}
-		out = append(out, env)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing held actions: %w", err)
-	}
-	return out, nil
+	return used, nil
 }
 
 // WipeSliceHashes forgets every pushed record's payload hash in the caller's

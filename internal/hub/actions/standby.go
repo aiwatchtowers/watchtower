@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -32,18 +33,24 @@ func (p *Processor) standby() bool {
 	return p.cfg.Switch != nil && !p.cfg.Switch.IsActive(p.cfg.Transport.Kind())
 }
 
-// lapsed reports whether b's phone lapsed on this transport (sim rule 16,
-// Switch.Lapsed): none of its actions or uploads is applied here.
-func (p *Processor) lapsed(b mailbox) bool {
-	return p.cfg.Switch != nil && p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String())
+// lapsed reports whether b's phone record written at writtenAt (zero =
+// now) must not be applied on this transport (sim rule 16, Switch.Lapsed).
+func (p *Processor) lapsed(b mailbox, writtenAt time.Time) (bool, error) {
+	if p.cfg.Switch == nil {
+		return false, nil
+	}
+	return p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String(), writtenAt)
 }
 
 // drainHeldActive drains b's held actions and retries its held uploads,
 // on the active transport only and never for a lapsed phone: on standby
 // nothing is applied.
 func (p *Processor) drainHeldActive(ctx context.Context, b mailbox, ps *pass) error {
-	if p.standby() || p.lapsed(b) {
+	if p.standby() {
 		return nil
+	}
+	if lapsed, err := p.lapsed(b, time.Time{}); err != nil || lapsed {
+		return err
 	}
 	if err := p.drainHeld(ctx, b, ps); err != nil {
 		return err

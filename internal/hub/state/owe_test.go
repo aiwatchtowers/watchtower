@@ -63,3 +63,46 @@ func TestOweOverMovesEchoesAndDropsTheRest(t *testing.T) {
 		t.Fatalf("resend_requested_from %d, want 0", d.ResendRequestedFrom)
 	}
 }
+
+// LapseRelay is a compare-and-set that drops the phone's held actions;
+// EndRelayLapse keeps relay_skip_before.
+func TestLapseRelayIsACompareAndSet(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	const dev = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"
+	at := time.Unix(1_700_000_000, 0)
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := LinkDevice(tx, Device{ID: dev, Name: "Phone", Scope: "private", LinkedAt: at}); err != nil {
+			return err
+		}
+		return Hold(tx, dev, 3, "w3", []byte{1})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var firsts []bool
+	for range 2 {
+		if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+			first, err := LapseRelay(tx, dev, at)
+			firsts = append(firsts, first)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !firsts[0] || firsts[1] {
+		t.Fatalf("compare-and-set answers %v", firsts)
+	}
+	if held, _ := s.HeldActions(dev); len(held) != 0 {
+		t.Fatalf("held actions left %+v", held)
+	}
+	if ended, err := s.EndRelayLapse(dev); err != nil || !ended {
+		t.Fatalf("end %v %v", ended, err)
+	}
+	d, _, _ := s.Device(dev)
+	if d.RelayLapsedAt != nil || d.RelaySkipBefore == nil || !d.RelaySkipBefore.Equal(at) {
+		t.Fatalf("after the end: lapsed %v skip %v", d.RelayLapsedAt, d.RelaySkipBefore)
+	}
+	if ended, _ := s.EndRelayLapse(dev); ended {
+		t.Fatal("ended twice")
+	}
+}

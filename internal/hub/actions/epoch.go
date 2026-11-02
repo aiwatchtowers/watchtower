@@ -33,8 +33,11 @@ const maxOldEpochScan = 1024
 // transport and for a phone that has not lapsed, is answered; anything else
 // is dropped with no answer, as before.
 func (p *Processor) oldEpochAction(ctx context.Context, b mailbox, rec transport.Stored, ps *pass) error {
-	if p.standby() || p.lapsed(b) || ps.resent[b.id] {
+	if p.standby() || ps.resent[b.id] {
 		return nil
+	}
+	if lapsed, err := p.lapsed(b, rec.ServerAt); err != nil || lapsed {
+		return err
 	}
 	key := b.zone + "\x00" + rec.Name
 	if seq, ok := p.oldSeen[key]; ok && seq == rec.RecordSeq {

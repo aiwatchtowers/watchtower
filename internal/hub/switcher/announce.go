@@ -22,7 +22,7 @@ import (
 func (s *Switcher) Step(ctx context.Context) error {
 	s.stepMu.Lock()
 	defer s.stepMu.Unlock()
-	s.lapses(ctx)
+	s.lapses()
 	for {
 		r, ok, err := s.record()
 		if err != nil || !ok || r.Done {
@@ -300,7 +300,7 @@ func (s *Switcher) freeOrderedPhones() ([]state.Device, error) {
 	}
 	pctx, cancel := context.WithTimeout(context.Background(), s.oldSide())
 	defer cancel()
-	paying, err := s.c.Paying(pctx)
+	paying, err := s.readPaying(pctx)
 	if err != nil {
 		return nil, err
 	}

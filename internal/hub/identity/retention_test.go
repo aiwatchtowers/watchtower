@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"slices"
 	"testing"
 	"time"
@@ -141,10 +142,11 @@ func TestSwitchEpochRetiredWhenEveryPhoneAcked(t *testing.T) {
 	}
 }
 
-// RetireOld reads the acks off the device rows and the held actions' epochs
-// off their envelopes: a phone that never acked keeps the old keys for the
-// full 7 days.
-func TestRetireOldReadsAcksAndHeldActions(t *testing.T) {
+// RetireOld reads the acks off the device rows, and the retiring
+// transaction checks what is held or queued (F3/F7): an epoch a held action
+// or a queued write is sealed in keeps its keys; a phone that never acked
+// keeps them for the full 7 days.
+func TestRetireOldReadsAcksHeldActionsAndQueuedWrites(t *testing.T) {
 	st := openStore(t)
 	c := newClock()
 	k := newKeyring(t, st, c)
@@ -158,14 +160,47 @@ func TestRetireOldReadsAcksAndHeldActions(t *testing.T) {
 	if got := retained(t, k); !slices.Equal(got, []uint32{1, 2}) {
 		t.Fatalf("retained %v before the ack", got)
 	}
-	if err := st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.AckEpoch(tx, dev.String(), 2) }); err != nil {
+	ctx := context.Background()
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error { return state.AckEpoch(tx, dev.String(), 2) }); err != nil {
+		t.Fatal(err)
+	}
+	sealedIn := func(epoch uint32) []byte {
+		env := make([]byte, 80)
+		binary.BigEndian.PutUint32(env[38:42], epoch)
+		return env
+	}
+	for _, step := range []struct {
+		name string
+		add  func(tx *sql.Tx) error
+		drop string
+	}{
+		{"held action", func(tx *sql.Tx) error { return state.Hold(tx, dev.String(), 5, "w5", sealedIn(1)) }, `DELETE FROM held_actions`},
+		{"queued write", func(tx *sql.Tx) error {
+			return state.Enqueue(tx, state.Control{Mailbox: "m", RecordName: "w6", Kind: "hub_on_relay", Envelope: sealedIn(1), Expect: state.ExpectAbsent})
+		}, `DELETE FROM control_queue`},
+	} {
+		if err := st.WithTx(ctx, step.add); err != nil {
+			t.Fatal(err)
+		}
+		if err := k.RetireOld(); err != nil {
+			t.Fatal(err)
+		}
+		if got := retained(t, k); !slices.Equal(got, []uint32{1, 2}) {
+			t.Fatalf("retained %v with a %s sealed in epoch 1", got, step.name)
+		}
+		if err := st.WithTx(ctx, func(tx *sql.Tx) error { _, err := tx.Exec(step.drop); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A row sealed in another epoch does not hold epoch 1.
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error { return state.Hold(tx, dev.String(), 7, "w7", sealedIn(2)) }); err != nil {
 		t.Fatal(err)
 	}
 	if err := k.RetireOld(); err != nil {
 		t.Fatal(err)
 	}
 	if got := retained(t, k); !slices.Equal(got, []uint32{2}) {
-		t.Fatalf("retained %v after every phone acked", got)
+		t.Fatalf("retained %v after every phone acked and nothing is sealed in 1", got)
 	}
 }
 

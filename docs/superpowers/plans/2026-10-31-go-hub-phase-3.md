@@ -699,7 +699,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 **Interfaces:** none.
 - **Depends on:** Task 24
 
-- [ ] **Step 1: Automated gate:** `make test`, `make test-swift`, `make lint-all`, `make relay-interop RELAY=../relay`, `make kit-test`, `make mobile-test` (phone unchanged, must still pass) → all PASS.
+- [ ] **Step 1: Automated gate:** `make test`, `make test-swift`, `make lint-all`, `make relay-interop RELAY=../relay` (also the Task 20 entitlement scenarios against the stand's `/dev/entitlement`, pending from Task 20: no relay `worker/` checkout there and the switcher not yet wired into the runtime until Task 21), `make kit-test`, `make mobile-test` (phone unchanged, must still pass) → all PASS.
 - [ ] **Step 2: Manual checks on a real Mac** (owner's machine, a **copy** of the live data root first: `cp -R` into a scratch user account or a second macOS user — never the live install before the copy passes):
   - M1 Adoption: a Mac with today's release and a linked phone → install the build → the v1-host notice appears, **Continue** → sessions resume → Settings → Mobile shows "hand-over in progress" then the phone list; `hub status --json` `adoption: done`, same `hub_id`; the phone (today's App Store/TestFlight build) keeps working without re-pairing: asks, board move, session line typed, permission answer, recording upload (received, transcribed, progress phases on the phone).
   - M2 Interrupt: kill Desktop during the hand-over (after `hub adopt` state, before `--keys-stdin`) → relaunch finishes; Keychain shows the Desktop items deleted only after `adopted`.
@@ -729,7 +729,7 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 - Consumes: Phone contract points 3–7; Tasks 18, 20.
 - **Depends on:** Task 26; the blockers above.
 
-- [ ] **Step 1:** Interop (Go phone emulator) `TestInterop_SwitchBothWays` against the local stand + `bridgefake`; then real devices: a paying phone switches the Mac to the relay (vouch + `add_slot` for the upgraded link, `transport_switched` with the keybox, the free phone gets `hub_on_relay`), back to iCloud at once, a second switch to the relay within 5 min refused with "available in N min", an entitlement lapse falls back per rule 16 with nothing dropped silently, and after each switch a phone that knows only the old transport reads the notice there (contract point 6a).
+- [ ] **Step 1:** Interop (Go phone emulator) `TestInterop_SwitchBothWays` against the local stand + `bridgefake`; then real devices: a paying phone switches the Mac to the relay (vouch + `add_slot` for the upgraded link, `transport_switched` with the keybox, the free phone gets `hub_on_relay`), back to iCloud at once, a second switch to the relay within 5 min refused with "available in N min", an entitlement lapse falls back per rule 16 with nothing dropped silently (also as interop scenarios with `/dev/entitlement`, carried from Task 20), and after each switch a phone that knows only the old transport reads the notice there (contract point 6a).
 - [ ] **Step 2: Commit** `docs: transport switch verified end to end`.
 
 ---

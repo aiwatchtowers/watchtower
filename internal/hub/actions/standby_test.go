@@ -32,7 +32,7 @@ func (f *fakeSwitch) Stale(context.Context, transport.Kind, string) (wire.Contro
 	return wire.Control{Kind: wire.ControlHubOnRelay}, 0, true, nil
 }
 
-func (f *fakeSwitch) Lapsed(transport.Kind, string) bool { return f.lapsed }
+func (f *fakeSwitch) Lapsed(transport.Kind, string, time.Time) (bool, error) { return f.lapsed, nil }
 
 func (f *fakeSwitch) EntitlementInactive(_ transport.Kind, device string) {
 	f.inactive = append(f.inactive, device)

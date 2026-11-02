@@ -388,15 +388,16 @@ func (k *Keyring) Retained() ([]uint32, error) {
 
 // RetireIfDone is relay sim rule 14 with the 7-day cap: a retired epoch
 // still retained ends now when every linked phone acked a newer epoch
-// (acked: device id → its acked epoch) and no held action is sealed in it
-// (heldIn). The current epoch is never retired here; a retention is only
-// ever shortened.
+// (acked: device id → its acked epoch) and nothing sealed in it is held or
+// queued: heldIn (the caller's view) and, in the retiring transaction,
+// state.SealedIn over held_actions and control_queue. The current epoch is
+// never retired here; a retention is only ever shortened.
 func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) error {
 	kept, err := k.retainedEpochs()
 	if err != nil {
 		return err
 	}
-	var done []uint32
+	var candidates []uint32
 	for _, e := range kept[:len(kept)-1] {
 		if heldIn[e.Epoch] {
 			continue
@@ -409,18 +410,30 @@ func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) 
 			}
 		}
 		if all {
-			done = append(done, e.Epoch)
+			candidates = append(candidates, e.Epoch)
 		}
 	}
-	if len(done) == 0 {
+	if len(candidates) == 0 {
 		return nil
 	}
 	now := k.now()
+	var done []uint32
 	err = k.st.WithTx(context.Background(), func(tx *sql.Tx) error {
-		for _, e := range done {
+		done = done[:0]
+		for _, e := range candidates {
+			// Checked with the write: a held action or a queued write
+			// (an owed echo, a control) sealed in e keeps its keys.
+			used, err := state.SealedIn(tx, e)
+			if err != nil {
+				return err
+			}
+			if used {
+				continue
+			}
 			if err := state.EndRetention(tx, e, now); err != nil {
 				return err
 			}
+			done = append(done, e)
 		}
 		return nil
 	})
@@ -434,8 +447,10 @@ func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) 
 }
 
 // RetireOld is RetireIfDone over the sidecar: every linked phone's acked
-// epoch (devices.acked_epoch, a phone that never acked counts as 0) and the
-// epoch each held action's envelope is sealed in.
+// epoch (devices.acked_epoch, a phone that never acked counts as 0); the
+// held actions and queued writes are checked inside the retiring
+// transaction (state.SealedIn). The runtime's housekeeping is its one
+// caller.
 func (k *Keyring) RetireOld() error {
 	devices, err := k.st.Devices()
 	if err != nil {
@@ -445,19 +460,7 @@ func (k *Keyring) RetireOld() error {
 	for _, d := range devices {
 		acked[d.ID] = d.AckedEpoch
 	}
-	envs, err := k.st.HeldEnvelopes()
-	if err != nil {
-		return err
-	}
-	heldIn := map[uint32]bool{}
-	for _, env := range envs {
-		h, err := secure.ParseHeader(env)
-		if err != nil {
-			continue // a held row that does not parse is dropped by its drain
-		}
-		heldIn[h.Epoch] = true
-	}
-	return k.RetireIfDone(acked, heldIn)
+	return k.RetireIfDone(acked, nil)
 }
 
 // KeyboxKeys are the keys a linked phone's keybox carries (spec §2.3): the
