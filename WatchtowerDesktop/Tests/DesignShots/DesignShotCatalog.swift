@@ -4,7 +4,7 @@ import SwiftUI
 import XCTest
 @testable import DesignKitCatalog
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 import WatchtowerTestSupport
 
 /// One rendered shot of the Desktop design kit's reference screens (style
@@ -42,6 +42,12 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "sessions-panel", size: NSSize(width: 300, height: 140)) {
                 AnyView(DesignShotFixtures.sessionsPanel())
+            },
+            DesignShot(name: "session-drag-preview", size: NSSize(width: 300, height: 140)) {
+                DesignShotFixtures.sessionDragPreview(width: 276, busy: false)
+            },
+            DesignShot(name: "session-drag-preview-narrow-busy", size: NSSize(width: 190, height: 140)) {
+                DesignShotFixtures.sessionDragPreview(width: 166, busy: true)
             },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
@@ -586,6 +592,31 @@ enum DesignShotFixtures {
             .panelSurface()
             Color.clear.detailBackground()
         })
+    }
+
+    /// The same preview wrapper and row as a live drag, including a title
+    /// much wider than the narrow panel. No live session or VM is needed.
+    static func sessionDragPreview(width: CGFloat, busy: Bool) -> AnyView {
+        let session = TerminalSession(
+            id: 42, projectID: 1, kind: .codex,
+            title: "acme billing export and invoice reconciliation",
+            titleSource: .user, folderPath: "/tmp/acme",
+            createdAt: "2026-10-01T12:00:00Z", lastActiveAt: "2026-10-01T12:00:00Z"
+        )
+        let row = SessionSwitcherPresentation.Row(
+            session: session, state: busy ? .live(.working) : .notStarted,
+            caption: busy ? "Working" : "Not running", badge: nil, shortcut: nil
+        )
+        let content = TerminalSessionRow(
+            row: row, actions: SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }),
+            reportLine: "#42 · 3/5", reportProgress: 0.6, opensIn: .chat
+        )
+        .panelTab(isSelected: true)
+        let height = ViewRenderProbe.fittingHeight(AnyView(content), width: width)
+        return AnyView(SessionRowDragPreview(size: CGSize(width: width, height: height)) { content }
+            .padding(Spacing.medium)
+            .shotFrame()
+            .panelBackground())
     }
 
     // MARK: - Chat
