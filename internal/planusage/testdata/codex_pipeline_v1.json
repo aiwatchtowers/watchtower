@@ -1,0 +1,182 @@
+{
+  "envelope": {
+    "schema_version": 1,
+    "requested_provider": "codex",
+    "refresh_requested": false,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "codex",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "not_requested",
+        "status": {
+          "state": "ok",
+          "reason": "",
+          "plan": "pro",
+          "fetched_at": "2026-11-02T09:20:00Z",
+          "updated_at": "2026-11-02T09:20:00Z",
+          "last_error": "",
+          "stale": false,
+          "history_available": true,
+          "ordinary_usage_allowed": true,
+          "limits": [
+            {
+              "key": "5:codex:primary:10080",
+              "label": "Weekly",
+              "group": "weekly",
+              "percent": 50,
+              "window_duration_minutes": 10080,
+              "resets_at": "2026-11-04T09:00:00Z",
+              "projection": {
+                "state": "will_hit",
+                "hit_at": "2026-11-02T11:00:00Z",
+                "rate_per_hour": 29.999999999999975,
+                "drawable": true,
+                "unavailable_reason": null,
+                "line": {
+                  "start_at": "2026-11-02T09:20:00Z",
+                  "start_percent": 50,
+                  "end_at": "2026-11-02T11:00:00Z",
+                  "end_percent": 100
+                }
+              }
+            },
+            {
+              "key": "5:codex:secondary:300",
+              "label": "5 hours",
+              "group": "session",
+              "percent": 30,
+              "window_duration_minutes": 300,
+              "resets_at": "2026-11-02T11:00:00Z",
+              "projection": {
+                "state": "safe",
+                "hit_at": "2026-11-02T11:39:59.999999999Z",
+                "rate_per_hour": 30.00000000000001,
+                "drawable": true,
+                "unavailable_reason": null,
+                "line": {
+                  "start_at": "2026-11-02T09:20:00Z",
+                  "start_percent": 30,
+                  "end_at": "2026-11-02T11:00:00Z",
+                  "end_percent": 80.00000000000001
+                }
+              }
+            }
+          ],
+          "breakdown": []
+        }
+      }
+    ]
+  },
+  "now": "2026-11-02T09:20:00Z",
+  "samples": [
+    {
+      "scope": "b1801cf1105839b746f0ce18d6598d47a7b1c726ec8a9ee7d78b42e03b9f2aa8",
+      "limit_key": "5:codex:primary:10080",
+      "taken_at": "2026-11-02T09:00:00Z",
+      "percent": 40,
+      "resets_at": "2026-11-04T09:00:00Z"
+    },
+    {
+      "scope": "b1801cf1105839b746f0ce18d6598d47a7b1c726ec8a9ee7d78b42e03b9f2aa8",
+      "limit_key": "5:codex:primary:10080",
+      "taken_at": "2026-11-02T09:10:00Z",
+      "percent": 99,
+      "resets_at": "2026-11-04T09:01:01Z"
+    },
+    {
+      "scope": "b1801cf1105839b746f0ce18d6598d47a7b1c726ec8a9ee7d78b42e03b9f2aa8",
+      "limit_key": "5:codex:primary:10080",
+      "taken_at": "2026-11-02T09:20:00Z",
+      "percent": 50,
+      "resets_at": "2026-11-04T09:00:00Z"
+    },
+    {
+      "scope": "b1801cf1105839b746f0ce18d6598d47a7b1c726ec8a9ee7d78b42e03b9f2aa8",
+      "limit_key": "5:codex:primary:10080",
+      "taken_at": "2026-11-02T09:21:00Z",
+      "percent": 90,
+      "resets_at": "2026-11-04T09:00:00Z"
+    },
+    {
+      "scope": "b1801cf1105839b746f0ce18d6598d47a7b1c726ec8a9ee7d78b42e03b9f2aa8",
+      "limit_key": "5:codex:secondary:300",
+      "taken_at": "2026-11-02T09:00:00Z",
+      "percent": 20,
+      "resets_at": "2026-11-02T11:00:00Z"
+    },
+    {
+      "scope": "b1801cf1105839b746f0ce18d6598d47a7b1c726ec8a9ee7d78b42e03b9f2aa8",
+      "limit_key": "5:codex:secondary:300",
+      "taken_at": "2026-11-02T09:20:00Z",
+      "percent": 30,
+      "resets_at": "2026-11-02T11:00:00Z"
+    },
+    {
+      "scope": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "limit_key": "5:codex:primary:10080",
+      "taken_at": "2026-11-02T09:10:00Z",
+      "percent": 99,
+      "resets_at": "2026-11-04T09:00:00Z"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "b1801cf1105839b746f0ce18d6598d47a7b1c726ec8a9ee7d78b42e03b9f2aa8",
+  "status": {
+    "fetched_at": "2026-11-02T09:20:00Z",
+    "identity_known": true,
+    "last_error": "",
+    "limits": [
+      {
+        "key": "5:codex:primary:10080",
+        "label": "Weekly",
+        "group": "weekly",
+        "percent": 50,
+        "window_duration_minutes": 10080,
+        "resets_at": "2026-11-04T09:00:00Z",
+        "projection": {
+          "state": "will_hit",
+          "hit_at": "2026-11-02T11:00:00Z",
+          "rate_per_hour": 29.999999999999975
+        }
+      },
+      {
+        "key": "5:codex:secondary:300",
+        "label": "5 hours",
+        "group": "session",
+        "percent": 30,
+        "window_duration_minutes": 300,
+        "resets_at": "2026-11-02T11:00:00Z",
+        "projection": {
+          "state": "safe",
+          "hit_at": "2026-11-02T11:39:59.999999999Z",
+          "rate_per_hour": 30.00000000000001
+        }
+      }
+    ],
+    "ordinary_usage_allowed": true,
+    "plan": "pro",
+    "plot_json": {
+      "schema_version": 1,
+      "fetched_at": "2026-11-02T09:20:00Z",
+      "limits": {
+        "5:codex:primary:10080": {
+          "start_at": "2026-11-02T09:20:00Z",
+          "start_percent": 50,
+          "end_at": "2026-11-02T11:00:00Z",
+          "end_percent": 100
+        },
+        "5:codex:secondary:300": {
+          "start_at": "2026-11-02T09:20:00Z",
+          "start_percent": 30,
+          "end_at": "2026-11-02T11:00:00Z",
+          "end_percent": 80.00000000000001
+        }
+      }
+    },
+    "reason": "",
+    "state": "ok",
+    "updated_at": "2026-11-02T09:20:00Z"
+  }
+}

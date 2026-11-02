@@ -57,7 +57,7 @@ since: 0.24.0
 action: nav:statistics
 -->
 
-- **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory, Next Step and Knowledge search (its images and links) are medium. Briefing and Day Plan are light, once a day. Attention detection and Claude plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
+- **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory, Next Step and Knowledge search (its images and links) are medium. Briefing and Day Plan are light, once a day. Attention detection and subscription plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
 - **Channels.** Digests are per channel, so a bot-heavy channel burns tokens. In **Statistics** you can **Mute for AI** a channel or a person; muted ones are skipped by digests, tracks and the briefing, but the chat, Catch Up and Memory can still read them.
 - **Chat and Workbench.** They cost nothing until you send a message or start a session. One exception: in [Branch review](../features/workbench/diff-review.md), **Deep** mode makes a strong-model AI overview when a round opens and after each **Refresh** that finds new changes; **Quick** mode makes one only when you press **Make overview**.
 - **A fresh connection.** The first month of history is processed by AI too. See [History backfill](history-backfill.md).
@@ -81,7 +81,7 @@ changed: Usage now shows every AI call by job, with cost, on the Watchtower tab.
 
 **Usage** has four tabs:
 
-- **Claude plan**: your Claude account's limits, below.
+- **Plans**: Claude and Codex subscription limits, history and forecasts ([Plans and subscription limits](../features/plans.md)).
 - **Watchtower**: what Watchtower itself spends on AI, for **Today**, **7 days** or **30 days**. A totals row shows calls, fresh input, cache, output and cost. Below it, a table lists each job (digests, briefing, ideas, memory, images, built-in automations and so on) with calls, tokens, output, cost and tokens per call. **Your automations** is a separate section with one row per automation of your own. **Chats and workbenches** shows one line each: your chats, and workbench sessions plus the helper calls Watchtower makes for workbenches. Workbench sessions count only for workbenches with analytics on; the tab names the ones left out.
 - **Progress**: history of the background runs and their steps, without tokens.
 - **Usage**: pick a day to see its run log, one entry per background run with status, duration, items and errors. It shows no tokens or money; **Open Watchtower tab** takes you there.
@@ -96,29 +96,13 @@ Reading the numbers:
 For a terminal, `watchtower usage llm` prints the same numbers ([Command-line reference](../reference/cli.md)).
 
 ## Claude plan limits
-<!-- learn
-id: ai-plan-limits
-title: Watch your Claude plan limits
-text: **Usage → Claude plan** shows your 5-hour and weekly limits and when you would hit them at this pace.
-area: setup
-level: next
-kind: feature
-since: 0.24.0
-action: nav:usage
-requires: feature:claude-plan-limits
--->
+<!-- learn: none -->
 
-This tab shows how much of your Claude plan is used: the 5-hour window, the weekly window and per-model weekly limits, each with a projection of when it would be hit at the current pace. The limits belong to the Claude account, so Claude chats and Claude Code count too.
+**Usage → Plans** shows Claude and Codex subscription limits separately, with history, forecasts and independent refresh. Claude's limits belong to the account, so chats and Claude Code draw from the same windows.
 
-Watchtower reads the numbers every 5 minutes with Claude Code's existing sign-in, read-only.
+Both readers use existing sign-ins without AI model calls. The common **Subscription plan limits** feature switches them off together. Claude's system-notification switch stays separate; Codex adds information to Plans and the menu.
 
-It never refreshes that sign-in, so if Claude Code's token has expired the tab shows the last numbers marked stale until you use Claude Code again. The source is an undocumented endpoint and can change. Codex and API-key accounts have no plan numbers.
-
-- The menu bar shows `5h N% · 7d M%`; a `⚠︎` prefix marks a warning. **Show in the menu bar** on this tab hides it.
-- Notifications fire once per limit per window, when the 5-hour or weekly limit is projected to be hit before it resets, and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notifications**.
-- **Refresh** polls once now.
-- The limits are information only: Watchtower never pauses or skips its own work because of them.
-- The feature is **Claude plan limits** in Settings → Features; off stops the polling.
+See [Plans and subscription limits](../features/plans.md) for window selection, menu counters, stale data and sign-in fixes.
 
 ## Related
 
