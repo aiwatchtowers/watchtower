@@ -316,6 +316,9 @@ final class HubSession {
     /// The mailbox on the hub's other transport (relay client Phase 3 Task 12), set by `AppRoot.wire` for a hub with
     /// both routes; stopped with the session.
     @ObservationIgnored private(set) var sideReader: SideMailboxReader?
+    /// On route `.relay`: since when this session's fetches find the relay unanswered (nil while it answers), on the
+    /// session's clock: the start of an outage for the side reader's 60 s rule (sim rule 12).
+    @ObservationIgnored private(set) var relayUnansweredSince: Date?
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored let uploader: RecordingUploader
@@ -1035,6 +1038,7 @@ final class HubSession {
         if owed {
             applyOwed = false
         }
+        await noteRelayAnswer()
         if let remoteError {
             lastFetchError = remoteError.localizedDescription
             let what = "\(trigger), \(Self.describe(depth))"
@@ -1133,6 +1137,8 @@ final class HubSession {
         setUploadRetries(active)
         guard active != isActive else { return }
         isActive = active
+        // The other transport's mailbox: looked at on the return, its CloudKit engine stopped on leaving.
+        sideReader?.activeChanged(active)
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
         guard active else {
@@ -1400,6 +1406,16 @@ final class HubSession {
         return await liveTransport.availability()
     }
 
+    /// After a fetch's reach on route `.relay`: when the relay stopped answering, kept until it answers again.
+    private func noteRelayAnswer() async {
+        guard let availability = await relayAvailability() else { return }
+        if availability == .available {
+            relayUnansweredSince = nil
+        } else if relayUnansweredSince == nil {
+            relayUnansweredSince = now()
+        }
+    }
+
     /// `inner`, the hub's other transport, sealed and opened with this session's keys and rollback guard.
     func sealing(_ inner: any CloudSyncTransport & Sendable) -> SecureTransport {
         SecureTransport(inner: inner, keys: sealKeys, rollback: store)
@@ -1411,9 +1427,10 @@ final class HubSession {
     }
 
     /// Rule 15: drains the mailbox `side` this phone left, through this session's feed.
-    func drainOtherMailbox(over side: SecureTransport, handler: @escaping RelayFeed.SideHandler) async throws
-        -> RelayFeed.DrainOutcome {
-        try await feed.drainMailbox(over: side, handler: handler)
+    func drainOtherMailbox(
+        over side: SecureTransport, keepingDeviceRecord: Bool, handler: @escaping RelayFeed.SideHandler
+    ) async throws -> RelayFeed.DrainOutcome {
+        try await feed.drainMailbox(over: side, keepingDeviceRecord: keepingDeviceRecord, handler: handler)
     }
 
     /// Opens the keybox a `transport_switched` carries (relay client Phase 3) with this phone's keys for the hub;

@@ -425,20 +425,31 @@ public actor RelayFeed {
     /// Rule 15: empties this phone's mailbox on a transport it left (`side`, already pulled by the caller). The hub's
     /// records this feed never read are handled first, as the feed handles them (echoes settle their rows, controls go
     /// through the read-once ledger, transport controls to `handler`); then everything that opened is deleted, the
-    /// phone's own leftovers included. Nothing is written there: a `resend_from` read there resends on this feed's own
-    /// outbox, never on `side`. A record that does not open (another phone's on a shared CloudKit zone, or one sealed
-    /// in an epoch whose keys are gone) is counted in the log and skipped. A throw (a locked keychain, the transport
-    /// unreachable) leaves the rest for a later pass.
-    public func drainMailbox(over side: SecureTransport, handler: @escaping SideHandler) async throws -> DrainOutcome {
+    /// phone's own leftovers included, except its `device` record when `keepingDeviceRecord` (CloudKit: both hubs'
+    /// cleanup keeps that lane). Nothing is written there: a `resend_from` read there resends on this feed's own
+    /// outbox, never on `side`. A record that does not open (another phone's on a shared CloudKit zone, a hello, or
+    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. A throw (a locked keychain, the
+    /// transport unreachable) leaves the rest for a later pass. An `applied` echo settled here fires
+    /// `onActionApplied` once, after the deletes, as a poll does.
+    public func drainMailbox(
+        over side: SecureTransport, keepingDeviceRecord: Bool = false, handler: @escaping SideHandler
+    ) async throws -> DrainOutcome {
         let scan = try await side.relayHygieneScan()
         if !scan.unopenable.isEmpty {
             logger.notice("left mailbox: \(scan.unopenable.count, privacy: .public) records do not open, skipped")
         }
         var deletes: [ConditionalDelete] = []
         var complete = true
+        var appliedEcho = false
         for record in scan.opened {
-            if record.sealed?.envelopeClass == .relayToPhone, !(try await handleLeft(record, handler: handler)) {
-                complete = false
+            if record.sealed?.envelopeClass == .relayToPhone {
+                let handled = try await handleLeft(record, handler: handler)
+                appliedEcho = appliedEcho || handled.appliedEcho
+                guard handled.done else {
+                    complete = false
+                    continue
+                }
+            } else if keepingDeviceRecord, record.kind == RelayRecordKind.device.rawValue {
                 continue
             }
             guard let wireName = record.sealed?.wireName else {
@@ -446,6 +457,9 @@ public actor RelayFeed {
                 continue
             }
             deletes.append(ConditionalDelete(recordName: wireName, zone: .relay, expect: record.recordSeq.map { .seq($0) } ?? .none))
+        }
+        defer {
+            if appliedEcho, let onActionApplied { Task { await onActionApplied() } }
         }
         guard !deletes.isEmpty else { return complete ? .drained : .incomplete }
         for outcome in try await side.deleteSealed(deletes) {
@@ -462,16 +476,18 @@ public actor RelayFeed {
         return complete ? .drained : .incomplete
     }
 
-    /// One hub record of a left mailbox, handled as `route` would; false only for a transport control `handler` left
-    /// undecided (it stays). Controls this build does not know are dropped with the mailbox.
-    private func handleLeft(_ record: CloudRecord, handler: @escaping SideHandler) async throws -> Bool {
+    /// One hub record of a left mailbox, handled as `route` would: `done` is false only for a transport control
+    /// `handler` left undecided (it stays); `appliedEcho` for an `applied` action echo. Controls this build does not
+    /// know are dropped with the mailbox.
+    private func handleLeft(
+        _ record: CloudRecord, handler: @escaping SideHandler
+    ) async throws -> (done: Bool, appliedEcho: Bool) {
         guard RelayRecordKind(rawValue: record.kind) == .control else {
-            _ = try await route(record)
-            return true
+            return (true, try await route(record).appliedEcho)
         }
-        guard let control = decode(ControlPayload.self, from: record) else { return true }
+        guard let control = decode(ControlPayload.self, from: record) else { return (true, false) }
         let delete = try await read(control, record: record, reading: .other(handler: handler))
-        return delete != nil || !(control.kind == .transportSwitched || control.kind == .hubOnRelay)
+        return (delete != nil || !(control.kind == .transportSwitched || control.kind == .hubOnRelay), false)
     }
 
     /// The control names `ours`: an absent id names nobody; while ours is unknown it cannot be told apart, so the

@@ -115,6 +115,14 @@ extension HostedRelayTransport {
         try store.beginRelayResync(zone)
     }
 
+    /// Pulls only `zones`, without flushing the plain send queue first (`pull()` flushes and pulls both): the drain
+    /// of a mailbox the phone left reads that mailbox alone, so a refusal of the data zone never stops it, and sends
+    /// nothing the store still has queued (relay client Phase 3 Task 12). Throws as `pull()` does.
+    public func pull(only zones: Set<CloudZoneID>) async throws {
+        try gate()
+        try await pullZones(zones)
+    }
+
     /// Holds the stalled resync of `zone` for `resyncStallHold`; returns the deadline.
     @discardableResult
     private func holdResync(_ zone: CloudZoneID) -> Date {

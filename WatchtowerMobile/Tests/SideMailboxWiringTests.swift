@@ -112,23 +112,178 @@ final class SideMailboxWiringTests: XCTestCase {
         XCTAssertNil(try bed.row()?.link.leftTransport)
     }
 
-    /// Sim rule 16: a lapsed account's relay refuses the deletes; the refusal is logged and the drain stops until the
-    /// next launch (the row keeps the transport to drain), nothing is tried again meanwhile.
+    /// The other direction: switched to the relay, the CloudKit mailbox left is read from the start (the store wiped
+    /// before its engine starts), the hub's unread echo settles its row, everything else of the phone's goes but its
+    /// `device` record (both hubs keep that lane), and the side stops once nothing needs it.
+    func testTheLeftCloudKitMailboxIsDrainedOnceReachable() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let first = try await bed.orderedSession()
+        let device = CloudRecord(
+            recordName: "device-\(TestE2E.deviceID.uuidString)", zone: .relay, kind: RelayRecordKind.device.rawValue,
+            modifiedAt: Date(), payload: Data("{}".utf8))
+        let sealedDevice = try await first.saveSealing(device)
+        try await bed.sendTwoActions(first)
+        try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+        let second = try await bed.fetchAndFollow(first)
+        XCTAssertEqual(try bed.row()?.link.leftTransport, .cloudKit)
+        try await bed.echoOnCloudKit(seq: 1, of: second)
+        let reader = try XCTUnwrap(second.sideReader)
+
+        await reader.tick()
+
+        let left = try await bed.cloudMailbox().map(\.recordName)
+        XCTAssertEqual(left, [sealedDevice.recordName], "only the device record stays")
+        XCTAssertEqual(try Bed.rows(second, .sent).map(\.actionSeq), [2], "the echo settled seq 1; seq 2 waits on the relay")
+        XCTAssertNil(try bed.row()?.link.leftTransport)
+        let side = try XCTUnwrap(bed.sides.cloud.first)
+        let leftover = await side.leftoverAtStart
+        XCTAssertEqual(leftover, [false], "the store was wiped before the engine started")
+        let stops = await side.stops
+        XCTAssertEqual(stops, 1, "stopped once drained: the relay answers, no outage")
+    }
+
+    /// Sim rule 16 on the deletes: a lapsed (`ENTITLEMENT_INACTIVE`) or forbidden (`FORBIDDEN`) account stops the drain
+    /// until the next launch, the row keeps the transport to drain; any other refusal is tried again on the next look.
     func testARefusedDrainStopsUntilTheNextLaunch() async throws {
+        let cases: [(code: Relay_V1_ErrorCode, stops: Bool)] = [(.entitlementInactive, true), (.forbidden, true), (.rateLimited, false)]
+        for (code, stops) in cases {
+            let bed = try await Bed.make(self, on: .relay)
+            let second = try await bed.switchedToCloudKit()
+            let reader = try XCTUnwrap(second.sideReader)
+            bed.fake.failNext("delete", with: code)
+
+            await reader.tick()
+            let deletes = bed.fake.log.filter { if case .delete = $0 { true } else { false } }.count
+            await reader.tick()
+
+            let deletesAfter = bed.fake.log.filter { if case .delete = $0 { true } else { false } }.count
+            let after = try await bed.relayMailbox()
+            if stops {
+                XCTAssertEqual(try bed.row()?.link.leftTransport, .relay, "\(code)")
+                XCTAssertFalse(after.isEmpty, "\(code)")
+                XCTAssertEqual(deletesAfter, deletes, "\(code): no second try in this launch")
+            } else {
+                XCTAssertNil(try bed.row()?.link.leftTransport, "\(code): drained on the next look")
+                XCTAssertTrue(after.isEmpty, "\(code)")
+            }
+        }
+    }
+
+    /// Rule 16 on the read: the relay refusing the mailbox read stops the drain until the next launch too; the drain
+    /// reads the mailbox zone alone, never the data zone.
+    func testARefusedMailboxReadStopsTheDrainUntilTheNextLaunch() async throws {
         let bed = try await Bed.make(self, on: .relay)
         let second = try await bed.switchedToCloudKit()
         let reader = try XCTUnwrap(second.sideReader)
-        bed.fake.failNext("delete", with: .entitlementInactive)
+        let reads = bed.fake.log.count
+        bed.fake.failNext("changes", with: .forbidden)
 
         await reader.tick()
-        let deletes = bed.fake.log.filter { if case .delete = $0 { true } else { false } }.count
+        let firstLook = Array(bed.fake.log.dropFirst(reads))
         await reader.tick()
 
+        XCTAssertEqual(bed.fake.log.count, reads + firstLook.count, "no read in the second look")
+        let zones = firstLook.compactMap { if case .changes(let changes) = $0 { changes.zone } else { nil } }
+        XCTAssertFalse(zones.isEmpty)
+        XCTAssertFalse(zones.contains { $0.hasPrefix("data/") }, "the mailbox alone: \(zones)")
         XCTAssertEqual(try bed.row()?.link.leftTransport, .relay)
+    }
+
+    // MARK: - Lifecycle
+
+    /// A stop while a look waits on the CloudKit mailbox waits for that look, which then decides nothing (the switch
+    /// read there stays for the next session), deletes nothing and builds nothing more; the side is stopped once.
+    func testAStopDuringALookWaitsForItAndBuildsNothingAfter() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let first = try await bed.orderedSession()
+        let reader = try XCTUnwrap(first.sideReader)
+        bed.fake.crash()
+        await bed.fetch(first)
+        await reader.tick()
+        bed.clock.advance(61)
+        await reader.tick() // the first poll builds the CloudKit side; nothing there yet
+        let side = try XCTUnwrap(bed.sides.cloud.first)
+        try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
+        await side.hold()
+        bed.clock.advance(30)
+
+        let looking = Task { await reader.tick() }
+        await side.readIsHeld()
+        let stopping = Task { await reader.stop() }
+        await side.release()
+        await stopping.value
+        await looking.value
+
+        XCTAssertFalse(try Bed.handled(first, bed.switchID), "read after the stop: left undecided")
+        XCTAssertEqual(try bed.row()?.link.transport, .relay)
+        XCTAssertEqual(bed.sides.routes.count, 1, "nothing built after the stop")
+        let stops = await side.stops
+        let late = await side.callsAfterStop
+        XCTAssertEqual(stops, 1)
+        XCTAssertEqual(late, 0, "nothing reaches the side after its stop")
+        await reader.tick()
+        XCTAssertEqual(bed.sides.routes.count, 1, "a stopped reader never looks again")
+    }
+
+    /// F4: the CloudKit side's engine stops when the outage ends, and when the app leaves the foreground.
+    func testTheCloudKitSideStopsWhenTheOutageEndsOrTheAppLeaves() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let first = try await bed.orderedSession()
+        let reader = try XCTUnwrap(first.sideReader)
+        bed.fake.crash()
+        await bed.fetch(first)
+        await reader.tick()
+        bed.clock.advance(61)
+        await reader.tick()
+        let polled = try XCTUnwrap(bed.sides.cloud.first)
+        let started = await polled.starts
+        XCTAssertEqual(started, 1)
+        let leftover = await polled.leftoverAtStart
+        XCTAssertEqual(leftover, [true], "a poll does not wipe the store")
+
+        bed.fake.restart()
+        await bed.fetch(first)
+        await reader.tick()
+        let stoppedAtTheEnd = await polled.stops
+        XCTAssertEqual(stoppedAtTheEnd, 1, "the relay answers again")
+
+        bed.fake.crash()
+        await bed.fetch(first)
+        await reader.tick()
+        bed.clock.advance(61)
+        await reader.tick()
+        let again = try XCTUnwrap(bed.sides.cloud.last)
+        XCTAssertFalse(again === polled)
+        first.setActive(false)
+        await reader.wake?.value
+        let stoppedOnLeaving = await again.stops
+        XCTAssertEqual(stoppedOnLeaving, 1, "the app left the foreground")
+    }
+
+    /// F5: a look right after the boot and on the return to the foreground, without waiting for the interval.
+    func testALookRunsAtBootAndOnReturnToTheForeground() async throws {
+        let bed = try await Bed.make(self, on: .relay, looksAtWake: true)
+        let first = try await bed.orderedSession()
+        try await bed.sendTwoActions(first)
+        try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay)
+        await bed.fetch(first)
+        bed.fake.crash() // before the next session's boot look
+        await bed.root.routeMoves[hubID]?.value
+        let second = try bed.session()
+        await second.waitForBoot()
+        let reader = try XCTUnwrap(second.sideReader)
+        await reader.wake?.value
+        XCTAssertEqual(try bed.row()?.link.leftTransport, .relay, "the boot look found the relay down")
+
+        bed.fake.restart()
+        second.setActive(false)
+        await reader.wake?.value
+        second.setActive(true)
+        await reader.wake?.value
+
+        XCTAssertNil(try bed.row()?.link.leftTransport, "drained by the look on the return")
         let after = try await bed.relayMailbox()
-        XCTAssertFalse(after.isEmpty)
-        let deletesAfter = bed.fake.log.filter { if case .delete = $0 { true } else { false } }.count
-        XCTAssertEqual(deletesAfter, deletes, "no second try in this launch")
+        XCTAssertTrue(after.isEmpty)
     }
 
     // MARK: - Which hubs, and how
@@ -145,6 +300,18 @@ final class SideMailboxWiringTests: XCTestCase {
         XCTAssertTrue(bed.sides.routes.isEmpty)
         let both = try await Bed.make(self, on: .relay)
         XCTAssertNotNil(try both.session().sideReader, "a hub with both routes gets one")
+    }
+
+    /// A route the factory does not serve (the relay off) is refused before its store is opened: no file is left.
+    func testAnUnservedSideRouteOpensNoStore() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("side-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        let paths = HubPaths(groupDirectory: base, localDirectory: base, recordingsBase: base)
+        let factory = HubSessionFactory.live(paths: paths, keys: try TestE2E.phoneStore())
+        let route = HubRoute.hostedRelay(macDeviceID: "mac-acme")
+
+        XCTAssertThrowsError(try factory.makeSide(hubID, route))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.transportStorePath(hubID, route: route)))
     }
 
     /// The relay transport the reader drains through is the factory's, on the process's one relay session: no socket
@@ -169,6 +336,15 @@ final class SideMailboxWiringTests: XCTestCase {
 }
 
 extension Bed {
+    /// The hub's `applied` echo of `session`'s ordered action `seq`, written over it in the CloudKit mailbox.
+    func echoOnCloudKit(seq: UInt64, of session: HubSession) async throws {
+        let row = try XCTUnwrap(try session.store.pendingActions().first { $0.actionSeq == seq })
+        var echo = row.action
+        echo.status = .applied
+        let plain = try CloudRecordFactory.orderedRecord(for: echo, actionSeq: seq, deviceID: TestE2E.deviceID, modifiedAt: Date())
+        try await TestPhone.hub(over: cloud.inner).save([plain])
+    }
+
     /// A hub on the relay with two actions sent there, switched to CloudKit by a control in the relay mailbox: the
     /// session on CloudKit, with the relay mailbox left to drain.
     func switchedToCloudKit() async throws -> HubSession {

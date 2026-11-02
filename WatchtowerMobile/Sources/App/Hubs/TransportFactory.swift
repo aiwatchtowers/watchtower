@@ -75,20 +75,44 @@ struct SideTransport {
     let transport: any CloudSyncTransport & Sendable
     let store: TransportStore?
     /// Makes the next pull read the whole mailbox again: the store is the route's own, which the session that left it
-    /// read and compacted, and a drain must see everything there. On the relay a resync of the mailbox zone; on
-    /// CloudKit the store is wiped before its engine starts (its leftover send queue with it: nothing more goes out
-    /// on a transport the hub left); nothing for a stand-in without a store.
+    /// read and compacted, and a drain must see everything there. On the relay a resync of the mailbox zone. On
+    /// CloudKit the store is wiped before its engine starts (its leftover send queue with it: nothing more goes out on
+    /// a transport the hub left): the engine's state is one blob for the whole database, so the relay zone cannot be
+    /// re-read alone. Nothing for a stand-in without a store.
     let readFromStart: @Sendable () async throws -> Void
+    /// Brings the mailbox up to date: on the relay the mailbox zone alone, with nothing flushed (a refusal of the data
+    /// zone never stops a drain); on CloudKit the engine's fetch (the whole database); nothing for a stand-in.
+    let pullMailbox: @Sendable () async throws -> Void
 
     init(transport: any CloudSyncTransport & Sendable, store: TransportStore?) {
         self.transport = transport
         self.store = store
         if let relay = transport as? HostedRelayTransport {
             readFromStart = { try await relay.readFromStart(.relay) }
-        } else if let store {
+            pullMailbox = { try await relay.pull(only: [.relay]) }
+            return
+        }
+        if let store {
             readFromStart = { try store.wipe() }
         } else {
             readFromStart = {}
         }
+        if let live = transport as? any LiveTransport {
+            pullMailbox = { try await live.pull() }
+        } else {
+            pullMailbox = {}
+        }
+    }
+
+    /// Sim rule 16: the relay refused the account (`FORBIDDEN`: the hub left its slots or the mailbox is out of
+    /// reach; `ENTITLEMENT_INACTIVE`: a lapsed account), on a read or a delete. Retrying cannot clear it this launch.
+    static func refusesTheAccount(_ error: any Error) -> Bool {
+        guard case let HostedRelayError.server(code, _) = error else { return false }
+        return code == .forbidden || code == .entitlementInactive
+    }
+
+    /// `refusesTheAccount` for a delete's refusal.
+    static func refusesTheAccount(_ refusal: TransportRefusal) -> Bool {
+        refusal == .entitlementInactive || refusal == .permanent(code: "forbidden")
     }
 }

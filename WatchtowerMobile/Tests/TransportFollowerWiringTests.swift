@@ -383,7 +383,7 @@ final class Bed {
     }
 
     static func make(
-        _ test: XCTestCase, on route: TransportKind, hubTransports: [String] = ["cloudkit", "relay"]
+        _ test: XCTestCase, on route: TransportKind, hubTransports: [String] = ["cloudkit", "relay"], looksAtWake: Bool = false
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
@@ -432,12 +432,7 @@ final class Bed {
         let cloud = RecordingCloud()
         let sides = SideBuilds()
         var factory = Self.factory(paths: paths, cloud: cloud, shared: shared, keys: keys, defaults: defaults)
-        factory.makeSide = { hubID, route in
-            sides.routes.append(route)
-            guard case .hostedRelay = route else { return SideTransport(transport: cloud, store: nil) }
-            let store = try TransportStore(path: paths.transportStorePath(hubID, route: route))
-            return SideTransport(transport: try TransportFactory.live(relay: shared).make(route, store, hubID, nil), store: store)
-        }
+        factory.makeSide = Self.sideFactory(paths: paths, cloud: cloud, shared: shared, sides: sides)
         let clock = SideClock()
         let relayOps = FakeRelayOps(clock: FakeLinkClock(now: Date()))
         let env = try AppEnvironment.live(
@@ -451,7 +446,8 @@ final class Bed {
             ),
             startWork: nil,
             farewellDelivery: AppRoot.FarewellDelivery { _, _ in false },
-            sideMailbox: SideMailboxTiming(now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) })
+            sideMailbox: SideMailboxTiming(
+                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }, looksAtWake: looksAtWake)
         )
         root.linking.refreshLinks()
         test.addTeardownBlock { @MainActor in
@@ -463,6 +459,27 @@ final class Bed {
         return Bed(
             fake: fake, sockets: sockets, phone: phone, mac: mac, cloud: cloud, keys: keys, relayOps: relayOps, root: root,
             registry: registry, clock: clock, sides: sides)
+    }
+
+    /// The side readers' transports on the other route's own store: CloudKit a `CloudSide` over `cloud` (its store's
+    /// stash holding a leftover, gone by the engine's start once a drain wiped the store), the relay the real
+    /// `TransportFactory.live` on `shared`'s session.
+    private static func sideFactory(
+        paths: HubPaths, cloud: RecordingCloud, shared: SharedRelaySession, sides: SideBuilds
+    ) -> @MainActor (String, HubRoute) throws -> SideTransport {
+        { hubID, route in
+            sides.routes.append(route)
+            let store = try TransportStore(path: paths.transportStorePath(hubID, route: route))
+            guard case .hostedRelay = route else {
+                let marker = try XCTUnwrap(store.stashDirectory).appendingPathComponent("leftover")
+                try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("x".utf8).write(to: marker)
+                let side = CloudSide(inner: cloud, marker: marker)
+                sides.cloud.append(side)
+                return SideTransport(transport: side, store: store)
+            }
+            return SideTransport(transport: try TransportFactory.live(relay: shared).make(route, store, hubID, nil), store: store)
+        }
     }
 
     /// Sessions on the hub's own files: CloudKit on `cloud`, the relay on `shared`'s session over the route's own store.
@@ -746,20 +763,120 @@ final class Bed {
     }
 }
 
-/// The side mailbox readers' clock.
+/// The side mailbox readers' clock, from the bed's start (a session times its unanswered fetches on the real clock).
 @MainActor
 final class SideClock {
-    var now = Date(timeIntervalSince1970: 1_800_000_000)
+    var now = Date()
 
     func advance(_ seconds: TimeInterval) {
         now = now.addingTimeInterval(seconds)
     }
 }
 
-/// The other routes the side mailbox readers built transports for, in order.
+/// The other routes the side mailbox readers built transports for, in order, and each CloudKit side built.
 @MainActor
 final class SideBuilds {
     var routes: [HubRoute] = []
+    var cloud: [CloudSide] = []
+}
+
+/// A CloudKit side transport: `inner`'s records behind a lifecycle that counts starts, stops and pulls, records
+/// whether the store's stash leftover was still there at each start, counts calls made after its stop, and can hold a
+/// relay-zone read until the test releases it.
+actor CloudSide: LiveTransport, ConditionalTransport {
+    private let inner: RecordingCloud
+    private let marker: URL
+    private(set) var starts = 0
+    private(set) var stops = 0
+    private(set) var pulls = 0
+    private(set) var leftoverAtStart: [Bool] = []
+    private(set) var callsAfterStop = 0
+    private var holding = false
+    private var heldReads: [CheckedContinuation<Void, Never>] = []
+    private var readHeldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var readsHeld = 0
+
+    init(inner: RecordingCloud, marker: URL) {
+        self.inner = inner
+        self.marker = marker
+    }
+
+    /// The next relay-zone reads wait for `release()`.
+    func hold() {
+        holding = true
+    }
+
+    func release() {
+        holding = false
+        for read in heldReads { read.resume() }
+        heldReads = []
+    }
+
+    /// Returns once a relay-zone read is waiting.
+    func readIsHeld() async {
+        guard readsHeld == 0 else { return }
+        await withCheckedContinuation { readHeldWaiters.append($0) }
+    }
+
+    private func note() {
+        if stops > 0 { callsAfterStop += 1 }
+    }
+
+    func save(_ records: [CloudRecord]) async throws {
+        note()
+        try await inner.save(records)
+    }
+
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+        note()
+        try await inner.delete(recordNames: recordNames, in: zone)
+    }
+
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        note()
+        if zone == .relay, holding {
+            readsHeld += 1
+            for waiter in readHeldWaiters { waiter.resume() }
+            readHeldWaiters = []
+            await withCheckedContinuation { heldReads.append($0) }
+        }
+        return try await inner.changes(in: zone, since: token)
+    }
+
+    func save(_ items: [ConditionalSave]) async throws -> [SaveOutcome] {
+        note()
+        return try await inner.save(items)
+    }
+
+    func delete(_ items: [ConditionalDelete]) async throws -> [DeleteOutcome] {
+        note()
+        return try await inner.delete(items)
+    }
+
+    func start() async {
+        starts += 1
+        leftoverAtStart.append(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func stop() async {
+        stops += 1
+    }
+
+    func sendNow() async {}
+
+    func pull() async throws {
+        note()
+        pulls += 1
+    }
+
+    func fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool) async throws {
+        try await pull()
+    }
+
+    func availability() async -> CloudAvailability { .available }
+    func setEventHandler(_ handler: (@Sendable (TransportEvent) -> Void)?) async {}
+    func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async {}
+    func setEngineFetchedHandler(_ handler: (@Sendable () -> Void)?) async {}
 }
 
 /// The in-memory CloudKit stand-in: records every conditional save and delete; refuses saves while `refusal` is set.

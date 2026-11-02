@@ -971,6 +971,22 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         XCTAssertFalse(try store.relayResyncPending(.relay))
     }
 
+    /// Relay client Phase 3 Task 12, review round 1: the drain pulls the mailbox alone and flushes nothing queued.
+    func testPullOnlyTheMailboxLeavesTheDataZoneAndTheQueue() async throws {
+        let (mac, phone) = try await hub()
+        try await macSave(mac, mailbox(mac, phone), "m")
+        try await macSave(mac, dataZone(mac), "d")
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.save([mailboxRecord("queued")])
+
+        try await transport.pull(only: [.relay])
+
+        XCTAssertEqual(try buffered(store, .relay).changed.map(\.recordName), ["m"])
+        XCTAssertTrue(try buffered(store, .data).changed.isEmpty)
+        XCTAssertTrue(try store.isPending(recordName: "queued", zone: .relay), "nothing flushed")
+    }
+
     /// A flagged resync page that still expires (README: a `since_seq` above the zone's seq, e.g. the
     /// zone was rebuilt mid-resync) is marked stalled and held until a backoff or `start()`.
     func testAResyncThatExpiresPartwayIsHeld() async throws {

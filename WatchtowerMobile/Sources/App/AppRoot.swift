@@ -110,8 +110,8 @@ final class AppRoot {
     @ObservationIgnored private(set) var routeMoves: [String: Task<Void, Never>] = [:]
     /// The side mailbox readers' clock and wait (relay client Phase 3 Task 12).
     @ObservationIgnored private let sideMailbox: SideMailboxTiming
-    /// The left mailboxes whose drain a relay account refused this launch (sim rule 16).
-    @ObservationIgnored private let drainRefusals = SideDrainRefusals()
+    /// What this launch's side mailbox readers share: refused drains (sim rule 16), mailboxes read from the start.
+    @ObservationIgnored private let sideLedger = SideDrainLedger()
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     init(
@@ -407,7 +407,7 @@ final class AppRoot {
         if session.sideReader == nil, followerLink(hubID: hubID)?.otherRoute != nil {
             let factory = factory
             session.attach(SideMailboxReader(
-                session: session, follower: follower, host: self, refusals: drainRefusals, timing: sideMailbox
+                session: session, follower: follower, host: self, ledger: sideLedger, timing: sideMailbox
             ) { route in try factory.makeSide(hubID, route) })
         }
     }
