@@ -104,3 +104,32 @@ func TestConfigFallbackWriteFailureKeepsOriginal(t *testing.T) {
 		t.Fatal("failed atomic save changed original")
 	}
 }
+
+func TestConfigFallbackLegacySetterPrecedence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("ai: {provider: claude, model: sonnet, models: {strong: opus}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setAIConfigKey(path, "ai.model", "haiku"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, strong := providers.ResolveModelsFor(cfg, "claude")
+	if strong != "opus" {
+		t.Fatalf("legacy setter overrode tier: %s", strong)
+	}
+	if err := setAIConfigKey(path, "ai.models.strong", ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, strong = providers.ResolveModelsFor(cfg, "claude")
+	if strong != "haiku" {
+		t.Fatalf("clearing tier hid retained legacy: %s", strong)
+	}
+}

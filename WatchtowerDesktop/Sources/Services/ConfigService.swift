@@ -25,6 +25,8 @@ final class ConfigService {
     var digestEnabled: Bool = false
     var digestMinMessages: Int?
     var digestLanguage: String?
+    private var providerBuckets: [String: [String: Any]] = [:]
+    private var editedProviderBuckets: [String: [String: Any]] = [:]
     var aiModel: String?
     var aiModelLight: String?
     var aiModelStrong: String?
@@ -155,6 +157,7 @@ final class ConfigService {
             }
 
             if let ai = yaml["ai"] as? [String: Any] {
+                prepareProviderModels(ai)
                 aiModel = ai["model"] as? String
                 aiWorkers = ai["workers"] as? Int
                 aiProvider = ai["provider"] as? String
@@ -165,6 +168,7 @@ final class ConfigService {
                 }
             }
 
+            loadProviderModels()
             claudePath = yaml["claude_path"] as? String
             codexPath = yaml["codex_path"] as? String
             workbenchDefaultAgent = Self.agent(fromYAML: yaml)
@@ -230,19 +234,112 @@ final class ConfigService {
         try save()
     }
 
-    /// Writes the ai: block (provider, legacy model, per-tier models, ollama
-    /// URL, workers), removing empty values so cleared overrides disappear
-    /// from the yaml instead of lingering as empty strings.
-    private func applyAISection(to yaml: inout [String: Any]) {
+    private func prepareProviderModels(_ ai: [String: Any]) {
+        providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
+        editedProviderBuckets = [:]
+        aiModelLight = nil
+        aiModelStrong = nil
+    }
+
+    private func loadProviderModels() {
+        if let bucket = providerBuckets[aiProvider ?? "claude"] {
+            let models = bucket["models"] as? [String: Any] ?? [:]
+            aiModelLight = models["light"] as? String
+            aiModelStrong = models["strong"] as? String
+            aiModel = nil
+        }
+    }
+
+    // Twin of providers.normalizePinnedModel; empty remains provider Default.
+    private static func migratedModel(_ model: String?, provider: String) -> String {
+        guard let model, !model.isEmpty else { return "" }
+        if provider == "claude", model.range(of: "^claude-(opus|sonnet|haiku)-[0-9]", options: .regularExpression) != nil {
+            return model.components(separatedBy: "-")[1]
+        }
+        if provider == "codex", model.range(of: "^gpt-5(\\.[0-5])?(-|$)", options: .regularExpression) != nil { return "" }
+        return model
+    }
+
+    func selectAIProvider(_ provider: String) {
+        let old = aiProvider ?? "claude"
+        guard old != provider else { return }
+        let legacy = aiModel == "claude-sonnet-4-6" ? nil : aiModel
+        let strong = aiModelStrong?.isEmpty == false ? aiModelStrong : legacy
+        editedProviderBuckets[old] = ["models": [
+            "light": Self.migratedModel(aiModelLight, provider: old),
+            "strong": Self.migratedModel(strong, provider: old)
+        ]]
+        providerBuckets[old] = editedProviderBuckets[old]
+        aiProvider = provider
+        let models = providerBuckets[provider]?["models"] as? [String: Any] ?? [:]
+        aiModelLight = models["light"] as? String
+        aiModelStrong = models["strong"] as? String
+        aiModel = nil
+    }
+
+    private func validateAISelection(_ selected: String, ai: [String: Any]) throws {
+        guard ["claude", "codex", "ollama"].contains(selected) else {
+            throw ConfigUnreadableError(reason: "Unknown AI provider")
+        }
+        guard let fallback = ai["fallback"] as? [String: Any] else { return }
+        let reserve = fallback["provider"] as? String ?? ""
+        if !reserve.isEmpty && (!["claude", "codex"].contains(reserve) || reserve == selected) {
+            throw ConfigUnreadableError(reason: "Reserve must be a different Claude or Codex provider")
+        }
+        if fallback["enabled"] as? Bool == true && (reserve.isEmpty || selected == "ollama") {
+            throw ConfigUnreadableError(reason: "Enabled fallback requires different Claude and Codex providers")
+        }
+    }
+
+    private func applyAISection(to yaml: inout [String: Any]) throws {
         var ai = (yaml["ai"] as? [String: Any]) ?? [:]
-        if let val = aiModel, !val.isEmpty { ai["model"] = val } else { ai.removeValue(forKey: "model") }
+        var buckets = ai["providers"] as? [String: [String: Any]] ?? [:]
+        for (id, edited) in editedProviderBuckets {
+            var bucket = buckets[id] ?? [:]
+            var models = bucket["models"] as? [String: Any] ?? [:]
+            for (tier, value) in edited["models"] as? [String: Any] ?? [:] { models[tier] = value }
+            bucket["models"] = models
+            buckets[id] = bucket
+        }
+        let selected = aiProvider ?? "claude"
+        try validateAISelection(selected, ai: ai)
+        let original = ai["provider"] as? String ?? "claude"
+        if original != selected && buckets[original] == nil {
+            let legacy = ai["models"] as? [String: Any] ?? [:]
+            let model = ai["model"] as? String
+            let fallback = model == "claude-sonnet-4-6" ? nil : model
+            let strong = legacy["strong"] as? String
+            buckets[original] = ["models": [
+                "light": Self.migratedModel(legacy["light"] as? String, provider: original),
+                "strong": Self.migratedModel(strong?.isEmpty == false ? strong : fallback, provider: original)
+            ]]
+        }
+        if buckets[selected] != nil || !editedProviderBuckets.isEmpty || original != selected {
+            var bucket = buckets[selected] ?? [:]
+            var models = bucket["models"] as? [String: Any] ?? [:]
+            if original == selected || !editedProviderBuckets.isEmpty {
+                models["light"] = aiModelLight ?? ""
+                models["strong"] = aiModelStrong ?? ""
+            } else {
+                models["light"] = models["light"] as? String ?? ""
+                models["strong"] = models["strong"] as? String ?? ""
+            }
+            bucket["models"] = models
+            buckets[selected] = bucket
+            ai["providers"] = buckets
+        }
+        if buckets[selected] == nil {
+            if let val = aiModel, !val.isEmpty { ai["model"] = val } else { ai.removeValue(forKey: "model") }
+        }
         if let val = aiWorkers { ai["workers"] = val } else { ai.removeValue(forKey: "workers") }
         if let val = aiProvider, !val.isEmpty { ai["provider"] = val } else { ai.removeValue(forKey: "provider") }
         if let val = aiOllamaURL, !val.isEmpty { ai["ollama_url"] = val } else { ai.removeValue(forKey: "ollama_url") }
-        var aiModels = (ai["models"] as? [String: Any]) ?? [:]
-        if let val = aiModelLight, !val.isEmpty { aiModels["light"] = val } else { aiModels.removeValue(forKey: "light") }
-        if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
-        if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
+        if buckets[selected] == nil {
+            var aiModels = (ai["models"] as? [String: Any]) ?? [:]
+            if let val = aiModelLight, !val.isEmpty { aiModels["light"] = val } else { aiModels.removeValue(forKey: "light") }
+            if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
+            if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
+        }
         if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
     }
 
@@ -388,7 +485,7 @@ final class ConfigService {
         // `ideasEnabled` property).
 
         // AI section
-        applyAISection(to: &yaml)
+        try applyAISection(to: &yaml)
 
         // Calendar section
         var calendarDict = (yaml["calendar"] as? [String: Any]) ?? [:]
@@ -432,11 +529,12 @@ final class ConfigService {
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)
+        editedProviderBuckets = [:]
         loadedFields = editableFields
     }
 
     /// An edit made here still waits for `save()`.
-    var hasUnsavedEdits: Bool { editableFields != loadedFields }
+    var hasUnsavedEdits: Bool { !editedProviderBuckets.isEmpty || editableFields != loadedFields }
 
     /// Re-reads config.yaml when nothing awaits `save()`: the one shared copy
     /// (`AppState.sharedConfig`) catches up with a CLI or editor change each
@@ -448,7 +546,7 @@ final class ConfigService {
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
         "configPath", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
-        "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields"
+        "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields", "_providerBuckets", "_editedProviderBuckets"
     ]
 
     /// Every settings field (the stored properties, by reflection, so a new

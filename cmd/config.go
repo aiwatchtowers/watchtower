@@ -499,7 +499,16 @@ func setAIConfigKey(path, key string, value any) error {
 	case "ai.models.light":
 		v.Set("ai.providers."+id+".models.light", value)
 	case "ai.models.strong", "ai.model":
-		v.Set("ai.providers."+id+".models.strong", value)
+		var legacy config.Config
+		if err := v.Unmarshal(&legacy); err != nil {
+			return err
+		}
+		legacy.AI.Providers = nil
+		_, strong := providers.ResolveModelsFor(&legacy, id)
+		if legacy.AI.Models.Strong == "" && (legacy.AI.Model == "" || legacy.AI.Model == config.DefaultAIModel) {
+			strong = ""
+		}
+		v.Set("ai.providers."+id+".models.strong", strong)
 	}
 	var cfg config.Config
 	if err := v.Unmarshal(&cfg); err != nil {
