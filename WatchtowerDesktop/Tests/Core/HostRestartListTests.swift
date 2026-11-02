@@ -34,12 +34,26 @@ final class HostRestartListTests: XCTestCase {
 
     func testNoFileIsNoList() throws {
         XCTAssertNil(try HostRestartList.load(from: url))
+        XCTAssertEqual(HostRestartList.stored(at: url), .absent)
     }
 
-    func testAnUnreadableFileThrows() throws {
+    func testAnUnreadableFileIsItsOwnState() throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: url)
         XCTAssertThrowsError(try HostRestartList.load(from: url))
+        XCTAssertEqual(HostRestartList.stored(at: url), .unreadable)
+
+        try HostRestartList.setAside(url)
+        XCTAssertEqual(HostRestartList.stored(at: url), .absent)
+        XCTAssertEqual(try Data(contentsOf: HostRestartList.setAsideURL(for: url)), Data("not json".utf8))
+    }
+
+    func testASaveLeavesNoTempFileBehind() throws {
+        let list = HostRestartList(rows: [.init(scope: "a", rowID: 1, agent: "claude", resumeID: "x")])
+        try list.save(to: url)
+        try list.save(to: url) // replaces the file in place
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [HostRestartList.fileName])
+        XCTAssertEqual(HostRestartList.stored(at: url), .list(list))
     }
 
     func testAnEmptyListRemovesTheFile() throws {

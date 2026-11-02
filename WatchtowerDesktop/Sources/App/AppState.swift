@@ -377,13 +377,10 @@ final class AppState {
     private(set) var hubCenter: HubCenter?
     /// The one-time restart of sessions from a v1 session host (go hub spec
     /// §8 p. 4b): its notice above every tab and the other workspaces' wait
-    /// lines. Made once per app run by `startHostRestart`.
+    /// lines. Made once per app run by `startHostRestart`. The hub's adoption
+    /// awaits its `waitUntilSettled()` (go hub plan 3 order: migrate →
+    /// compact → restart step → adoption → daemon's hub).
     private(set) var hostRestart: HostRestartStep?
-    /// The launch's restart step (`HostRestartStep.runIfNeeded`): returns
-    /// once its notice waits for Continue or it is done. The hub's adoption
-    /// comes after it (go hub plan 3 order: migrate → compact → restart step
-    /// → adoption → daemon's hub).
-    @ObservationIgnored private(set) var hostRestartCheck: Task<Void, Never>?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
     /// Every line the app types into a workbench session's prompt — an
@@ -1871,6 +1868,9 @@ final class AppState {
         ownerAwayCenter.start()
         chatQuestionEscalator?.start()
         replaceHubCenter(cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
+        }
         vm.startHostReattach()
         startHostRestart() // after the reattach: it stops what the reattach adopted
         // Old pasted Workchat files go once the reattach is done; the runs
@@ -1902,7 +1902,7 @@ final class AppState {
         guard hostRestart == nil, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         let step = HostRestartStep(center: terminalCenter) { [weak self] in self?.workbenchesViewModel }
         hostRestart = step
-        hostRestartCheck = Task { await step.runIfNeeded() }
+        Task { await step.runIfNeeded() }
     }
 
     /// The app quits: no more heartbeats, so the hub's view goes stale.

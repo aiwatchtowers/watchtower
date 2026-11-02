@@ -23,7 +23,7 @@ enum HostRestartShotFixtures {
         AnyView(HostRestartWaitLines(workspaces: [
             .init(name: "acme-labs", count: 3),
             .init(name: "example", count: 1)
-        ])
+        ], orphanedCount: 2)
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .detailBackground())

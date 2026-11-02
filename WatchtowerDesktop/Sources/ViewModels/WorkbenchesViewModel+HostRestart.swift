@@ -3,11 +3,61 @@ import GRDB
 import WatchtowerCore
 
 /// The workbench side of the one-time v1-host restart (`HostRestartStep`,
-/// go hub spec §8 p. 4b): the rows a restart list names, and their
-/// relaunch with resume.
+/// go hub spec §8 p. 4b): the launch's reattach and attachment sweep read
+/// the restart list, and a listed row relaunches with resume.
 extension WorkbenchesViewModel {
     static let hostRestartDidNotStart = "[Watchtower] This session did not restart after the update."
     static let hostRestartCodexUnchecked = "Could not check Codex's saved sessions: Codex's home folder is not known."
+
+    // MARK: Reattach and sweep
+
+    /// What the launch's reattach may touch of the host's runs. A row in
+    /// the restart list is the restart step's: its exited run (one killed
+    /// before an interruption, or its relaunch that ended) is forgotten
+    /// here and never adopted, so it is never reported as a natural exit
+    /// and no PROJ-18 cleanup runs on it; its run on a v1 host is left for
+    /// the step to stop; its run on a v2 host is the relaunched one and is
+    /// adopted. An unreadable list leaves every exited run of this
+    /// workspace alone (which rows it names is unknown).
+    func runsLeftForReattach(_ listed: [SessionHostSessionInfo], host: SessionHostClient) async -> [SessionHostSessionInfo] {
+        guard let url = hostRestartListURL, let center = terminalCenter else { return listed }
+        let scope = center.sessionHostScope
+        let isMine = { (info: SessionHostSessionInfo) in info.scope.isEmpty || info.scope == scope }
+        switch HostRestartList.stored(at: url) {
+        case .absent:
+            return listed
+        case .unreadable:
+            return listed.filter { !(isMine($0) && $0.exited) }
+        case let .list(list):
+            let rows = Set(list.rows(in: scope).map(\.rowID))
+            var kept: [SessionHostSessionInfo] = []
+            for info in listed {
+                guard isMine(info), rows.contains(info.row) else {
+                    kept.append(info)
+                    continue
+                }
+                if info.exited {
+                    await host.forget(row: info.row, run: info.run)
+                } else if host.speaksV2 {
+                    kept.append(info)
+                }
+            }
+            return kept
+        }
+    }
+
+    /// This workspace's rows the restart list still holds; nil when the list
+    /// cannot be read (the caller then keeps everything).
+    func hostRestartWaitingRows() -> Set<Int64>? {
+        guard let url = hostRestartListURL, let center = terminalCenter else { return [] }
+        switch HostRestartList.stored(at: url) {
+        case .absent: return []
+        case .unreadable: return nil
+        case let .list(list): return Set(list.rows(in: center.sessionHostScope).map(\.rowID))
+        }
+    }
+
+    // MARK: Relaunch
 
     /// The rows of these ids that still exist in this workspace, by id.
     func hostRestartRows(_ ids: [Int64]) async throws -> [Int64: TerminalSession] {
@@ -24,15 +74,16 @@ extension WorkbenchesViewModel {
     /// `resume`) in the background. A row with no conversation to resume is
     /// never started anew: it ends in the resume-failure state (Start fresh
     /// offered). A launch that does not run leaves the row stopped with its
-    /// reason in the pane; nothing here is an exit of the session's own, so
-    /// no PROJ-18 cleanup follows.
+    /// reason in the pane (`refuseLaunch`); nothing here is an exit of the
+    /// session's own, so no PROJ-18 cleanup follows. When the row could not
+    /// even be read, it is `notYet`: it stays in the list for a Retry.
     func relaunchAfterHostRestart(rowID: Int64) async -> HostRestartRelaunch {
-        guard let center = terminalCenter else { return .failed(Self.hostRestartDidNotStart) }
+        guard let center = terminalCenter else { return .notYet(Self.hostRestartDidNotStart) }
         let fetched: TerminalSession?
         do {
             fetched = try await dbPool.read { try TerminalSessionQueries.fetch($0, id: rowID) }
         } catch {
-            return .failed("Could not read the session: \(error.localizedDescription)")
+            return .notYet("Could not read the session: \(error.localizedDescription)")
         }
         guard let row = fetched else { return .rowGone }
         if center.liveIDs.contains(row.id) { return .launched }

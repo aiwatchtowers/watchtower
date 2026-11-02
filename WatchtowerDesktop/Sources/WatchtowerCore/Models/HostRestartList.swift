@@ -91,17 +91,67 @@ package struct HostRestartList: Codable, Equatable, Sendable {
         return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
     }
 
-    /// Writes the list atomically (0600); an empty list removes the file.
+    /// What is on disk: no file, a list, or a file that cannot be read or
+    /// decoded — never taken for "no list" and never overwritten.
+    package enum Stored: Equatable {
+        case absent
+        case list(HostRestartList)
+        case unreadable
+    }
+
+    package static func stored(at url: URL) -> Stored {
+        do {
+            return try load(from: url).map(Stored.list) ?? .absent
+        } catch {
+            return .unreadable
+        }
+    }
+
+    /// The name an unreadable list is set aside under, on the owner's word.
+    package static func setAsideURL(for url: URL) -> URL {
+        url.appendingPathExtension("corrupt")
+    }
+
+    /// Moves an unreadable list aside (`<name>.corrupt`, replacing an older
+    /// one), so the next look starts without a list.
+    package static func setAside(_ url: URL) throws {
+        let aside = setAsideURL(for: url)
+        let manager = FileManager.default
+        if manager.fileExists(atPath: aside.path) { try manager.removeItem(at: aside) }
+        try manager.moveItem(at: url, to: aside)
+    }
+
+    /// Writes the list into a 0600 temp file beside `url`, then renames it
+    /// over `url` (one atomic step; the file is never readable by others,
+    /// not even for a moment). An empty list removes the file.
     package func save(to url: URL) throws {
         let manager = FileManager.default
         guard !rows.isEmpty else {
             if manager.fileExists(atPath: url.path) { try manager.removeItem(at: url) }
             return
         }
-        try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let dir = url.deletingLastPathComponent()
+        try manager.createDirectory(at: dir, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(self).write(to: url, options: .atomic)
-        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let data = try encoder.encode(self)
+        let temp = dir.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        // Created 0600 from the start (O_EXCL: never someone else's file).
+        let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            try? manager.removeItem(at: temp)
+            throw error
+        }
+        guard rename(temp.path, url.path) == 0 else {
+            let code = errno
+            try? manager.removeItem(at: temp)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
     }
 }

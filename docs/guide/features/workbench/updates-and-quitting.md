@@ -45,6 +45,8 @@ Every Watchtower build on your Mac shares one helper. Two copies open on the sam
 
 - **[Watchtower] the session host is not running.** The helper is not running and starting it again failed, so the session did not start. Press **Restart**; if it still fails, quit and reopen Watchtower.
 - **Sessions could not be restarted.** The one-time restart stopped part-way (the reason is under the line). Press **Retry**; sessions already listed resume then, and a reason that says your sessions were not changed means they still run.
+- **The list of sessions to resume could not be read.** Nothing was stopped. **Retry** reads it again. **Set Aside** keeps the file as `session-host-restart.json.corrupt`, and Watchtower asks about the running sessions again.
+- **N sessions wait to resume in a workspace that is no longer here.** Their workspace was removed. **Clear** drops them from the list.
 - **Another Watchtower window took this session over.** Two copies of Watchtower on one workspace share the helper. Use the session in the copy that holds it: restarting it here starts a second agent.
 
 ## Related

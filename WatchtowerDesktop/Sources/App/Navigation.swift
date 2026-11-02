@@ -192,7 +192,8 @@ struct MainNavigationView: View {
                         VStack(spacing: 0) {
                             // The one-time v1-host restart (go hub spec §8 p. 4b): above the rest.
                             if let step = appState.hostRestart, let notice = step.notice {
-                                HostRestartNotice(notice: notice) { Task { await step.pressContinue() } }
+                                HostRestartNotice(notice: notice, onPress: { Task { await step.pressContinue() } },
+                                                  onSecondary: { Task { await step.pressSetAside() } })
                             }
                             if let banner = appState.daemonBanner {
                                 DaemonBannerView(

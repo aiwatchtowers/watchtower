@@ -380,10 +380,13 @@ enum DesignShotCatalog {
             DesignShot(name: "hostRestartNotice-narrow", size: NSSize(width: 360, height: 96)) {
                 HostRestartShotFixtures.notice(.waitingForContinue)
             },
-            DesignShot(name: "workspaceSwitcherWaitLine", size: NSSize(width: 420, height: 110)) {
+            DesignShot(name: "hostRestartListUnreadable", size: NSSize(width: 760, height: 88)) {
+                HostRestartShotFixtures.notice(.listUnreadable)
+            },
+            DesignShot(name: "workspaceSwitcherWaitLine", size: NSSize(width: 420, height: 150)) {
                 HostRestartShotFixtures.waitLines()
             },
-            DesignShot(name: "workspaceSwitcherWaitLine-narrow", size: NSSize(width: 220, height: 110)) {
+            DesignShot(name: "workspaceSwitcherWaitLine-narrow", size: NSSize(width: 220, height: 190)) {
                 HostRestartShotFixtures.waitLines()
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in

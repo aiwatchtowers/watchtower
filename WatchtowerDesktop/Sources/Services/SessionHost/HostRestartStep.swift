@@ -14,6 +14,8 @@ enum HostRestartRelaunch: Equatable {
     case failed(String)
     /// The row no longer exists.
     case rowGone
+    /// Could not be tried (its row was not readable): it stays in the list.
+    case notYet(String)
 
     /// The outcome's kind for the log: no reason text (FILES-01).
     var logKind: String {
@@ -22,6 +24,7 @@ enum HostRestartRelaunch: Equatable {
         case .noConversation: "no_conversation"
         case .failed: "failed"
         case .rowGone: "row_gone"
+        case .notYet: "not_yet"
         }
     }
 }
@@ -30,7 +33,8 @@ enum HostRestartRelaunch: Equatable {
 /// one (go hub spec §8 p. 4b, asks #813, #814 — a one-time PROJ-20
 /// exception). The app update leaves the old host running with the old
 /// app's sessions; the Go hub never talks to it. At launch, after the
-/// reattach, `runIfNeeded` looks at the host:
+/// reattach (which leaves the list's rows to this step), `runIfNeeded`
+/// looks at the host:
 ///
 /// 0. a v1 host with live runs and no restart list: the notice waits for
 ///    **Continue** (`waitingForContinue`). Nothing else happens until it is
@@ -38,30 +42,38 @@ enum HostRestartRelaunch: Equatable {
 ///    comes back next launch.
 /// 1. Continue: the runs of every scope are listed as a v1 client and
 ///    written to the restart list (`HostRestartList`) before anything is
-///    touched;
-/// 2. each run is stopped as Stop Sessions stops it — dropped from the
+///    touched; from here until a v2 host answers no session launches
+///    (`TerminalCenter.launchesHeldForHostRestart`);
+/// 2. each live run is stopped as Stop Sessions stops it — dropped from the
 ///    terminal center first, then signalled (`TerminalCenter
-///    .stopForHostRestart`), so no PROJ-18 cleanup runs — and forgotten;
-///    the idle old host gets SIGTERM (pid from its HelloOK) and a v2 host is
-///    started through the usual ensure path;
+///    .stopForHostRestart`), so no PROJ-18 cleanup runs — and forgotten. The
+///    host is listed again: a run that appeared meanwhile is listed and
+///    stopped too. The old host gets SIGTERM once a fresh Hello confirms its
+///    pid, and a v2 host is started through the usual ensure path;
 /// 3. this workspace's listed rows relaunch with resume, each removed from
-///    the list once launched. Other workspaces' rows wait in the list for
-///    that workspace's launch, which runs step 3 for them
+///    the list once its relaunch ended. Other workspaces' rows wait in the
+///    list for that workspace's launch, which runs step 3 for them
 ///    (`waitingWorkspaces` feeds the "N sessions wait to resume" line).
 ///
 /// A list left by an interrupted run is picked up at the next launch with
 /// no notice (Continue was pressed): a v1 host still up is handled from
-/// step 1, rows already relaunched are not in the list any more. Main actor.
+/// step 1, rows already relaunched are not in the list any more. A list
+/// that cannot be read stops everything until the owner retries or sets it
+/// aside. Main actor.
 @MainActor
 @Observable
 final class HostRestartStep {
     enum Phase: Equatable {
+        /// Before the launch's look (nothing drawn, not settled).
+        case checking
         case notNeeded
         case waitingForContinue
         case stopping(done: Int, total: Int)
         case relaunching(done: Int, total: Int)
         case finished
         case failed(String)
+        /// The list on disk cannot be read: kept as it is, Retry or Set Aside.
+        case listUnreadable
     }
 
     /// Another workspace whose sessions wait in the list.
@@ -81,6 +93,8 @@ final class HostRestartStep {
         let progress: Double?
         let buttonTitle: String
         let buttonEnabled: Bool
+        /// A second, quiet action (Set Aside for an unreadable list).
+        var secondaryTitle: String?
     }
 
     // MARK: Copy (pinned by `HostRestartStepTests.testCopyIsInTheModel`)
@@ -88,15 +102,32 @@ final class HostRestartStep {
     nonisolated static let noticeText = "Running sessions restart once with this update; their conversations continue"
     nonisolated static let continueTitle = "Continue"
     nonisolated static let retryTitle = "Retry"
+    nonisolated static let setAsideTitle = "Set Aside"
+    nonisolated static let clearTitle = "Clear"
     nonisolated static let failedTitle = "Sessions could not be restarted"
     nonisolated static let readFailed = "Watchtower could not read the running sessions. Your sessions were not changed."
     nonisolated static let saveFailed = "Watchtower could not save the list of running sessions. Your sessions were not changed."
+    nonisolated static let rereadFailed = "Watchtower could not read the old session host again. Your sessions resume on Retry."
+    nonisolated static let newRunDuringRestart = "A session started during the restart. Your sessions resume on Retry."
+    nonisolated static let oldHostUnconfirmed = "Watchtower could not confirm the old session host. Your sessions resume on Retry."
     nonisolated static let oldHostKept = "The old session host did not stop. Your sessions resume on Retry."
     nonisolated static let hostDidNotStart = "The session host did not start. Your sessions resume on Retry."
     nonisolated static let workbenchesNotReady = "The workbenches are not loaded. Your sessions resume on Retry."
+    nonisolated static let relaunchIncomplete = "Some sessions did not resume yet. They resume on Retry."
+    nonisolated static let listUnreadableTitle = "The list of sessions to resume could not be read"
+    nonisolated static let listUnreadableDetail = "Your sessions were not changed. Retry reads the list again; "
+        + "Set Aside keeps it as session-host-restart.json.corrupt and goes on without it."
+    nonisolated static let setAsideFailed = "Watchtower could not set the list aside. Your sessions were not changed."
 
     nonisolated static func waitLine(_ count: Int) -> String {
         count == 1 ? "1 session waits to resume" : "\(count) sessions wait to resume"
+    }
+
+    /// Rows of a workspace whose database is no longer on this Mac.
+    nonisolated static func orphanLine(_ count: Int) -> String {
+        count == 1
+            ? "1 session waits to resume in a workspace that is no longer here"
+            : "\(count) sessions wait to resume in a workspace that is no longer here"
     }
 
     nonisolated static func stoppingLine(done: Int, total: Int) -> String {
@@ -109,7 +140,7 @@ final class HostRestartStep {
 
     nonisolated static func notice(for phase: Phase) -> Notice? {
         switch phase {
-        case .notNeeded, .finished:
+        case .checking, .notNeeded, .finished:
             return nil
         case .waitingForContinue:
             return Notice(text: noticeText, detail: nil, isError: false, progress: nil,
@@ -123,6 +154,9 @@ final class HostRestartStep {
         case let .failed(reason):
             return Notice(text: failedTitle, detail: reason, isError: true, progress: nil,
                           buttonTitle: retryTitle, buttonEnabled: true)
+        case .listUnreadable:
+            return Notice(text: listUnreadableTitle, detail: listUnreadableDetail, isError: true, progress: nil,
+                          buttonTitle: retryTitle, buttonEnabled: true, secondaryTitle: setAsideTitle)
         }
     }
 
@@ -132,14 +166,51 @@ final class HostRestartStep {
 
     // MARK: State
 
-    private(set) var phase: Phase = .notNeeded
+    private(set) var phase: Phase = .checking {
+        didSet { if isSettled { releaseSettleWaiters() } }
+    }
+
     private(set) var waitingWorkspaces: [WaitingWorkspace] = []
+    /// Listed rows of workspaces that are no longer here (`orphanLine`).
+    private(set) var orphanedCount = 0
     var notice: Notice? { Self.notice(for: phase) }
+
+    /// Whether a v2 host serves the socket (the old one replaced, or never
+    /// there): what the hub's adoption needs.
+    private var hostReplaced = false
+
+    /// Done for the hub's purposes: nothing to do, all done, or a failure
+    /// left once a v2 host answers (only relaunches are left to Retry).
+    /// Never while the notice waits for Continue or a v1 host still answers.
+    var isSettled: Bool {
+        switch phase {
+        case .finished, .notNeeded: true
+        case .failed: hostReplaced
+        default: false
+        }
+    }
+
+    private var settleWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Returns once `isSettled` (go hub plan 3 Task 22: the adoption awaits
+    /// it). Never at `waitingForContinue`.
+    func waitUntilSettled() async {
+        if isSettled { return }
+        await withCheckedContinuation { settleWaiters.append($0) }
+    }
+
+    private func releaseSettleWaiters() {
+        let waiters = settleWaiters
+        settleWaiters = []
+        for waiter in waiters { waiter.resume() }
+    }
 
     private static let logger = Logger(subsystem: Constants.bundleID, category: "HostRestart")
     /// How long the old host gets to exit after SIGTERM, and the poll step.
     static let hostExitWait: Duration = .seconds(5)
     static let hostExitPoll: Duration = .milliseconds(100)
+    /// How often step 2 lists the old host again for runs that appeared.
+    static let relistRounds = 3
 
     private let center: TerminalCenter
     private let listURL: URL
@@ -164,26 +235,87 @@ final class HostRestartStep {
         self.workbenches = workbenches
     }
 
+    // MARK: Entry points
+
     /// The launch's look at the session host, once the reattach is done
     /// (see the type). Returns once the notice waits, or the work it could
     /// do without the owner is done.
     func runIfNeeded() async {
+        await workbenches()?.hostReattach?.value
+        await work { await self.decide(continuePressed: false) }
+    }
+
+    /// The notice's Continue, and Retry after a failure or an unreadable list.
+    func pressContinue() async {
+        switch phase {
+        case .waitingForContinue, .failed, .listUnreadable: break
+        default: return
+        }
+        await work { await self.decide(continuePressed: true) }
+    }
+
+    /// Set Aside on an unreadable list: the file becomes `<name>.corrupt`
+    /// (never deleted), then the step looks again as at launch.
+    func pressSetAside() async {
+        guard phase == .listUnreadable else { return }
+        await work {
+            do {
+                try HostRestartList.setAside(self.listURL)
+            } catch {
+                Self.logger.error("restart list set aside: \(error.localizedDescription, privacy: .private)")
+                self.phase = .failed(Self.setAsideFailed)
+                return
+            }
+            await self.decide(continuePressed: false)
+        }
+    }
+
+    /// Clear on the "no longer here" line: drops the rows of workspaces
+    /// whose database is gone.
+    func clearOrphans() {
+        guard case var .list(list) = HostRestartList.stored(at: listURL) else { return }
+        let names = workspaceNames()
+        let scope = center.sessionHostScope
+        list.rows.removeAll { !HostRestartList.row($0, isIn: scope) && names[$0.scope] == nil }
+        do {
+            try list.save(to: listURL)
+        } catch {
+            Self.logger.error("restart list clear: \(error.localizedDescription, privacy: .private)")
+        }
+        refreshWaiting()
+    }
+
+    private func work(_ body: () async -> Void) async {
         guard !working else { return }
         working = true
-        defer { working = false; refreshWaiting() }
-        await workbenches()?.hostReattach?.value
-        let list = loadList()
+        await body()
+        working = false
+        refreshWaiting()
+    }
+
+    /// Reads the list and the host and does what is due.
+    private func decide(continuePressed: Bool) async {
+        let list: HostRestartList?
+        switch HostRestartList.stored(at: listURL) {
+        case .unreadable:
+            phase = .listUnreadable
+            return
+        case .absent: list = nil
+        case let .list(stored): list = stored
+        }
         let mine = list?.rows(in: center.sessionHostScope) ?? []
         guard let client = await center.connectedSessionHost() else {
             phase = mine.isEmpty ? .notNeeded : .failed(Self.hostDidNotStart)
             return
         }
         if client.speaksV2 {
+            hostReplaced = true
             if mine.isEmpty { phase = .notNeeded } else { await relaunch(list ?? HostRestartList()) }
             return
         }
+        hostReplaced = false
         // A v1 host. A list on disk means Continue was pressed already.
-        if list != nil {
+        if list != nil || continuePressed {
             await restart(client)
             return
         }
@@ -202,71 +334,70 @@ final class HostRestartStep {
         }
     }
 
-    /// The notice's Continue, and Retry after a failure.
-    func pressContinue() async {
-        switch phase {
-        case .waitingForContinue, .failed: break
-        default: return
-        }
-        guard !working else { return }
-        working = true
-        defer { working = false; refreshWaiting() }
-        guard let client = await center.connectedSessionHost() else {
-            phase = .failed(Self.hostDidNotStart)
-            return
-        }
-        if client.speaksV2 {
-            await relaunch(loadList() ?? HostRestartList())
-        } else {
-            await restart(client)
+    // MARK: Steps
+
+    private struct RunKey: Hashable {
+        let scope: String
+        let row: Int64
+        let run: String
+        init(_ info: SessionHostSessionInfo) {
+            scope = info.scope
+            row = info.row
+            run = info.run
         }
     }
-
-    // MARK: Steps
 
     /// Steps 1–3 against a v1 host.
     private func restart(_ client: SessionHostClient) async {
         // Step 1: list every scope's runs and write them down first.
-        let runs: [SessionHostSessionInfo]
-        var list: HostRestartList
-        do {
-            runs = try await client.list()
-            let mine = try await thisScopesRows(runs)
-            list = listRows(of: runs, into: loadList() ?? HostRestartList(), rows: mine)
-        } catch {
-            Self.logger.error("v1 host restart, list: \(String(describing: error), privacy: .private)")
-            phase = .failed(Self.readFailed)
-            return
-        }
-        do {
-            try list.save(to: listURL)
-        } catch {
-            Self.logger.error("v1 host restart, save: \(error.localizedDescription, privacy: .private)")
-            phase = .failed(Self.saveFailed)
-            return
-        }
+        guard var list = await listAndSave(client: client, into: nil) else { return }
         let hostPID = client.hostPID
-        // Step 2: stop every run at once (one grace, not N), then the host.
-        let total = runs.count
-        phase = .stopping(done: 0, total: total)
-        await withTaskGroup(of: Void.self) { group in
-            for info in runs {
-                group.addTask { @MainActor in await self.center.stopForHostRestart(info) }
+        center.launchesHeldForHostRestart = true
+        defer { center.launchesHeldForHostRestart = false }
+        // Step 2: stop every live run at once (one grace, not N).
+        var seen = Set(list.runs.map(RunKey.init))
+        var total = list.runs.filter { !$0.exited }.count
+        var done = 0
+        phase = .stopping(done: done, total: total)
+        done = await stop(list.runs, done: done, total: total)
+        // Runs started meanwhile join the list; stopped ones linger only to be forgotten.
+        for round in 1...Self.relistRounds {
+            let again: [SessionHostSessionInfo]
+            do {
+                again = try await client.list()
+            } catch {
+                phase = .failed(Self.rereadFailed)
+                return
             }
-            var done = 0
-            for await _ in group {
-                done += 1
-                phase = .stopping(done: done, total: total)
+            let fresh = again.filter { !seen.contains(RunKey($0)) }
+            for info in again where seen.contains(RunKey(info)) {
+                await client.forget(row: info.row, run: info.run)
             }
+            guard !fresh.isEmpty else { break }
+            guard round < Self.relistRounds else {
+                phase = .failed(Self.newRunDuringRestart)
+                return
+            }
+            guard let merged = await listAndSave(client: client, into: list.saved, runs: fresh) else { return }
+            list = merged
+            seen.formUnion(fresh.map(RunKey.init))
+            total += fresh.filter { !$0.exited }.count
+            done = await stop(fresh, done: done, total: total)
         }
-        if let pid = hostPID.map(pid_t.init), pid > 0 {
-            signalHost(pid, SIGTERM)
+        // The old host: SIGTERM only to the pid a fresh Hello confirms.
+        if let pid = hostPID {
+            guard await client.helloPID() == pid, pid > 0 else {
+                phase = .failed(Self.oldHostUnconfirmed)
+                return
+            }
+            let target = pid_t(pid)
+            signalHost(target, SIGTERM)
             var waited: Duration = .zero
-            while hostIsAlive(pid), waited < Self.hostExitWait {
+            while hostIsAlive(target), waited < Self.hostExitWait {
                 await sleep(Self.hostExitPoll)
                 waited += Self.hostExitPoll
             }
-            if hostIsAlive(pid) {
+            if hostIsAlive(target) {
                 phase = .failed(Self.oldHostKept)
                 return
             }
@@ -281,8 +412,74 @@ final class HostRestartStep {
             phase = .failed(Self.oldHostKept)
             return
         }
+        hostReplaced = true
+        center.launchesHeldForHostRestart = false
         // Step 3.
-        await relaunch(list)
+        await relaunch(list.saved)
+    }
+
+    /// Stops `runs` concurrently; returns the live runs stopped so far.
+    private func stop(_ runs: [SessionHostSessionInfo], done start: Int, total: Int) async -> Int {
+        var done = start
+        await withTaskGroup(of: Bool.self) { group in
+            for info in runs {
+                group.addTask { @MainActor in
+                    await self.center.stopForHostRestart(info)
+                    return !info.exited
+                }
+            }
+            for await wasLive in group where wasLive {
+                done += 1
+                phase = .stopping(done: done, total: total)
+            }
+        }
+        return done
+    }
+
+    /// The list step 1 wrote, with the runs it came from.
+    private struct Listed {
+        let saved: HostRestartList
+        let runs: [SessionHostSessionInfo]
+    }
+
+    /// Lists the host (or takes `runs`), merges the runs' rows into the list
+    /// on disk (or `into`) and saves it. nil — the phase says why — when
+    /// the host or the rows cannot be read, the list on disk cannot be read,
+    /// or the save failed; nothing was stopped then.
+    private func listAndSave(
+        client: SessionHostClient, into known: HostRestartList?, runs given: [SessionHostSessionInfo]? = nil
+    ) async -> Listed? {
+        let runs: [SessionHostSessionInfo]
+        let mine: [Int64: TerminalSession]
+        do {
+            if let given { runs = given } else { runs = try await client.list() }
+            mine = try await thisScopesRows(runs)
+        } catch {
+            Self.logger.error("v1 host restart, list: \(String(describing: error), privacy: .private)")
+            phase = .failed(given == nil ? Self.readFailed : Self.rereadFailed)
+            return nil
+        }
+        var base: HostRestartList
+        if let known {
+            base = known
+        } else {
+            switch HostRestartList.stored(at: listURL) {
+            case .unreadable:
+                phase = .listUnreadable
+                return nil
+            case .absent: base = HostRestartList()
+            case let .list(stored): base = stored
+            }
+        }
+        base = listRows(of: runs, into: base, rows: mine)
+        do {
+            try base.save(to: listURL)
+        } catch {
+            Self.logger.error("v1 host restart, save: \(error.localizedDescription, privacy: .private)")
+            phase = .failed(given == nil ? Self.saveFailed : Self.rereadFailed)
+            return nil
+        }
+        return Listed(saved: base, runs: runs)
     }
 
     /// The rows step 1 lists: the newest live run of each scope and row. A
@@ -318,8 +515,9 @@ final class HostRestartStep {
         return try await vm.hostRestartRows(ids)
     }
 
-    /// Step 3: this workspace's listed rows, one at a time, each removed
-    /// from the list once its launch ran — whatever it ended in.
+    /// Step 3: this workspace's listed rows, one at a time. A row leaves the
+    /// list once its relaunch ended (running, resume failure, a reason in
+    /// its pane, or gone); one that could not be tried stays for Retry.
     private func relaunch(_ start: HostRestartList) async {
         guard let vm = workbenches() else {
             phase = .failed(Self.workbenchesNotReady)
@@ -327,47 +525,51 @@ final class HostRestartStep {
         }
         var list = start
         let mine = list.rows(in: center.sessionHostScope)
+        var pending = false
         phase = .relaunching(done: 0, total: mine.count)
         for (index, row) in mine.enumerated() {
             let outcome = await vm.relaunchAfterHostRestart(rowID: row.rowID)
             if outcome != .launched {
                 Self.logger.info("v1 host restart: row \(row.rowID) \(outcome.logKind, privacy: .public)")
             }
-            list.remove(scope: row.scope, rowID: row.rowID)
-            do {
-                try list.save(to: listURL)
-            } catch {
-                // The next launch finds the row running and skips it.
-                Self.logger.error("v1 host restart, save: \(error.localizedDescription, privacy: .private)")
+            if case .notYet = outcome {
+                pending = true
+            } else {
+                list.remove(scope: row.scope, rowID: row.rowID)
+                do {
+                    try list.save(to: listURL)
+                } catch {
+                    // The next launch finds the row running and skips it.
+                    Self.logger.error("v1 host restart, save: \(error.localizedDescription, privacy: .private)")
+                }
             }
             phase = .relaunching(done: index + 1, total: mine.count)
         }
-        phase = .finished
+        phase = pending ? .failed(Self.relaunchIncomplete) : .finished
     }
 
-    // MARK: The list
-
-    private func loadList() -> HostRestartList? {
-        do {
-            return try HostRestartList.load(from: listURL)
-        } catch {
-            Self.logger.error("restart list unreadable: \(error.localizedDescription, privacy: .private)")
-            return nil
-        }
-    }
+    // MARK: Wait lines
 
     /// Recomputes the other workspaces' wait lines from the list on disk.
     func refreshWaiting() {
-        let counts = loadList()?.waiting(besides: center.sessionHostScope) ?? [:]
-        guard !counts.isEmpty else {
+        guard case let .list(list) = HostRestartList.stored(at: listURL) else {
             waitingWorkspaces = []
+            orphanedCount = 0
             return
         }
-        let names = workspaceNames()
-        let found = counts.compactMap { scope, count in
-            names[scope].map { WaitingWorkspace(name: $0, count: count) }
+        let counts = list.waiting(besides: center.sessionHostScope)
+        let names = counts.isEmpty ? [:] : workspaceNames()
+        var found: [WaitingWorkspace] = []
+        var orphaned = 0
+        for (scope, count) in counts {
+            if let name = names[scope] {
+                found.append(WaitingWorkspace(name: name, count: count))
+            } else {
+                orphaned += count
+            }
         }
         waitingWorkspaces = found.sorted { $0.name < $1.name }
+        orphanedCount = orphaned
     }
 
     /// Every workspace holding a database, by its session host scope.

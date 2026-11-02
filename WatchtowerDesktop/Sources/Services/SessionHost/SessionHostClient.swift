@@ -254,7 +254,8 @@ final class SessionHostClient {
 
     /// The connected host's pid, from its HelloOK (nil from a host that
     /// does not send it). The one-time v1-host restart (`HostRestartStep`)
-    /// sends it SIGTERM once its runs are gone.
+    /// sends it SIGTERM once its runs are gone. Cleared whenever the control
+    /// connection drops: a pid is only trusted while its connection lives.
     private(set) var hostPID: Int?
 
     /// Ends the control connection — the host it reached was replaced (the
@@ -262,7 +263,32 @@ final class SessionHostClient {
     /// afresh, or starts a host, and settles `hostVersion` again.
     func dropConnection() {
         dropControl()
-        hostPID = nil
+    }
+
+    /// The pid of whatever host answers on the socket now: a fresh
+    /// connection, Hello v1 (every host answers it), its HelloOK's pid, then
+    /// closed. nil when nothing answers or the host sends no pid. The v1-host
+    /// restart checks it against `hostPID` before its SIGTERM, so the signal
+    /// never reaches a process that took the pid over.
+    func helloPID() async -> Int? {
+        let transport = makeTransport(socketPath)
+        let call = HelloProbe()
+        defer { transport.close() }
+        do {
+            try await transport.open(
+                onFrame: { [weak call] frame in call?.received(frame) },
+                onClose: { [weak call] in call?.finish(nil) }
+            )
+        } catch {
+            return nil
+        }
+        let watchdog = Task { [weak call] in
+            try? await Task.sleep(for: Self.replyTimeout)
+            guard !Task.isCancelled else { return }
+            call?.finish(nil)
+        }
+        defer { watchdog.cancel() }
+        return await call.run { transport.send(.json(.hello, SessionHostHello(version: SessionHostHello.v1))) }
     }
 
     /// Whether the connected host has v2's `Deliver`, `Stop` and
@@ -364,6 +390,7 @@ final class SessionHostClient {
     private func dropControl() {
         control?.close()
         control = nil
+        hostPID = nil
         let failed = waiters
         waiters = []
         for waiter in failed { waiter.continuation.resume(throwing: SessionHostError.disconnected) }
@@ -468,6 +495,40 @@ private final class DeliverCall {
         guard self.result == nil else { return }
         self.result = result
         continuation?.resume(with: result)
+        continuation = nil
+    }
+}
+
+/// One `SessionHostClient.helloPID`: Hello, then the HelloOK's pid; an
+/// Error frame or a closed connection ends it with nil.
+@MainActor
+private final class HelloProbe {
+    private var continuation: CheckedContinuation<Int?, Never>?
+    private var result: Int??
+
+    func run(send: () -> Void) async -> Int? {
+        await withCheckedContinuation { continuation in
+            if let result {
+                continuation.resume(returning: result)
+                return
+            }
+            self.continuation = continuation
+            send()
+        }
+    }
+
+    func received(_ frame: SessionHostFrame) {
+        switch frame.type {
+        case .helloOK: finish((try? frame.decoded(SessionHostHello.self))?.pid)
+        case .error: finish(nil)
+        default: break
+        }
+    }
+
+    func finish(_ pid: Int?) {
+        guard result == nil else { return }
+        result = .some(pid)
+        continuation?.resume(returning: pid)
         continuation = nil
     }
 }

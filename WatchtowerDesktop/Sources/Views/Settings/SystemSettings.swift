@@ -19,8 +19,10 @@ struct SystemSettings: View {
                         .foregroundStyle(.secondary)
                 }
                 // Other workspaces' sessions the v1-host restart left for their launch (go hub spec §8 p. 4b).
-                if let waiting = appState.hostRestart?.waitingWorkspaces, !waiting.isEmpty {
-                    HostRestartWaitLines(workspaces: waiting)
+                if let step = appState.hostRestart, !step.waitingWorkspaces.isEmpty || step.orphanedCount > 0 {
+                    HostRestartWaitLines(workspaces: step.waitingWorkspaces, orphanedCount: step.orphanedCount) {
+                        step.clearOrphans()
+                    }
                 }
             }
             aiSection

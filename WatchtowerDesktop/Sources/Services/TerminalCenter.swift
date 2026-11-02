@@ -1124,6 +1124,10 @@ final class TerminalCenter {
         // Recorded before the guards, so an unavailable session is still
         // found — and cleaned up — by its project.
         rows[id] = session
+        if launchesHeldForHostRestart {
+            states[id] = .unavailable(Self.launchHeldReason)
+            return nil
+        }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: session.folderPath, isDirectory: &isDirectory),
               isDirectory.boolValue else {
@@ -1361,20 +1365,48 @@ final class TerminalCenter {
     /// before the resume. A run nothing here holds (another workspace's, or
     /// one the reattach left) is hung up and killed by pid the same way; an
     /// exited one is only forgotten.
-    func stopForHostRestart(_ info: SessionHostSessionInfo) async {
-        guard let host = sessionHost else { return }
+    /// Whether the host forgot the run: a refused forget (the child not
+    /// reaped yet) is asked again, up to `reapPolls` times.
+    @discardableResult
+    func stopForHostRestart(_ info: SessionHostSessionInfo) async -> Bool {
+        guard let host = sessionHost else { return false }
         let key = SessionHostAttachRequest(row: info.row, run: info.run)
         let held = (info.scope.isEmpty || info.scope == sessionHostScope)
             && (processes[info.row] as? HostedTerminalSession)?.key == key
         if held {
             await close(sessionID: info.row)
-            await forgetReaped(info, host: host)
-        } else if info.exited {
-            await host.forget(row: info.row, run: info.run)
-        } else {
-            await stopStray(info, host: host)
+        } else if !info.exited {
+            await hangUpUntilGone(pid_t(info.pid))
+        }
+        for attempt in 0...Self.reapPolls {
+            if attempt > 0 { await signaller.sleep(Self.pollStep) }
+            if await host.forget(row: info.row, run: info.run) { return true }
+        }
+        return false
+    }
+
+    /// A hang-up, `killGrace`, then SIGKILL and a short wait for the reap.
+    private func hangUpUntilGone(_ pid: pid_t) async {
+        guard pid > 0 else { return }
+        signaller.signal(pid, SIGHUP)
+        var waited: Duration = .zero
+        while waited < Self.killGrace, signaller.isAlive(pid) {
+            await signaller.sleep(Self.pollStep)
+            waited += Self.pollStep
+        }
+        guard signaller.isAlive(pid) else { return }
+        signaller.signal(pid, SIGKILL)
+        for _ in 0..<Self.reapPolls where signaller.isAlive(pid) {
+            await signaller.sleep(Self.pollStep)
         }
     }
+
+    /// While the v1-host restart stops the old host's runs (go hub spec §8
+    /// p. 4b step 2), no session launches: a run started then would land on
+    /// the host about to go. A launch meanwhile says why in its pane.
+    @ObservationIgnored var launchesHeldForHostRestart = false
+
+    static let launchHeldReason = "[Watchtower] Sessions are restarting after the update. Try again in a moment."
 
     /// A row the v1-host restart found no conversation for (no transcript,
     /// no rollout): shown as a stopped session whose resume failed, the

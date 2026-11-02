@@ -31,6 +31,7 @@ final class HostRestartStepTests: XCTestCase {
     private var hostSignals: [(pid_t, Int32)] = []
     /// Called on each SIGHUP to a session's group (an order probe).
     private var onHangup: ((pid_t) -> Void)?
+    private var settledSeen = false
     private var center: TerminalCenter!
     private var client: SessionHostClient!
     private var vm: WorkbenchesViewModel!
@@ -95,6 +96,7 @@ final class HostRestartStepTests: XCTestCase {
         center.sessionHost = client
         vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
                                   terminalCenter: center)
+        vm.hostRestartListURL = listURL
         let exitHandler = center.onSessionExit
         center.onSessionExit = { [weak self] id, code, closedByApp in
             self?.exits.append((id, code, closedByApp))
@@ -422,6 +424,260 @@ final class HostRestartStepTests: XCTestCase {
         XCTAssertTrue(hostSignals.isEmpty)
     }
 
+    // MARK: Review round 1
+
+    /// F1: a crash after step 2 killed a run and before its forget. The next
+    /// launch's reattach must not adopt the exited run (its exit would read
+    /// as natural, and PROJ-18 cleanup would run); the step resumes the row.
+    func testACrashAfterAKillBeforeTheForgetNeverCleansUp() async throws {
+        let row = try await sessionRow()
+        try HostRestartList(rows: [.init(scope: scope, rowID: row.id, agent: "claude", resumeID: "")]).save(to: listURL)
+        let killed = SessionHostSessionInfo(row: row.id, run: "run-killed", pid: 5150, startedAtMs: 1_760_000_000_000,
+                                            exited: true, code: nil, scope: scope)
+        await launch(listing: [killed])
+
+        XCTAssertNil(center.process(for: row.id), "the killed run is not adopted")
+        XCTAssertTrue(exits.isEmpty, "no exit is reported for it")
+        let step = makeStep()
+        await step.runIfNeeded()
+
+        XCTAssertEqual(step.phase, .finished)
+        XCTAssertFalse(exits.contains { $0.0 == row.id && !$0.2 }, "never a natural exit: no cleanup")
+        XCTAssertTrue(vm.cleaningUpSessions.isEmpty)
+        XCTAssertEqual(center.states[row.id], .running, "the session resumes")
+        let forgot = try transports.flatMap { try $0.sent(.forget).map { try $0.decoded(SessionHostAttachRequest.self) } }
+        XCTAssertTrue(forgot.contains(SessionHostAttachRequest(row: row.id, run: "run-killed")))
+        XCTAssertNil(try list())
+    }
+
+    /// F1: a refused forget (the child not reaped yet) is asked again.
+    func testARefusedForgetIsRetried() async throws {
+        let row = try await sessionRow()
+        let oldControl = control // before the reattach opens a session connection
+        await launch(listing: [run(row.id, pid: 5150)])
+        oldControl.refusedForgets = 2
+        let step = makeStep()
+        await step.runIfNeeded()
+        await step.pressContinue()
+
+        XCTAssertEqual(step.phase, .finished)
+        XCTAssertEqual(oldControl.refusedForgets, 0, "every refused forget was asked again")
+        let forgot = try oldControl.sent(.forget).map { try $0.decoded(SessionHostAttachRequest.self) }
+        XCTAssertGreaterThanOrEqual(forgot.filter { $0.row == row.id }.count, 3)
+    }
+
+    /// F2: a run started on the old host after step 1 is listed and stopped
+    /// too, and a launch from the app while the runs stop is refused.
+    func testARunStartedAfterStepOneIsListedAndStopped() async throws {
+        let rowA = try await sessionRow()
+        let rowB = try await sessionRow()
+        let rowC = try await sessionRow()
+        let oldControl = control
+        await launch(listing: [run(rowA.id, pid: 5150)])
+        let late = run(rowB.id, pid: 5152, startedAtMs: 1_760_000_100_000)
+        var launchedDuringStop: [Bool] = []
+        onHangup = { [weak self] pid in
+            guard let self, pid == 5150 else { return }
+            oldControl.listed.append(late) // the owner (or the phone) started B meanwhile
+            launchedDuringStop.append(center.start(rowC, fresh: false) != nil)
+        }
+        let step = makeStep()
+        await step.runIfNeeded()
+        await step.pressContinue()
+
+        XCTAssertEqual(launchedDuringStop, [false], "no launch while the old host's runs stop")
+        XCTAssertEqual(center.states[rowC.id], .unavailable(TerminalCenter.launchHeldReason))
+        XCTAssertTrue(signals.contains { $0.0 == 5152 && $0.1 == SIGHUP }, "the late run is stopped")
+        XCTAssertEqual(step.phase, .finished)
+        XCTAssertEqual(center.states[rowA.id], .running)
+        XCTAssertEqual(center.states[rowB.id], .running, "the late run's row resumes too")
+        XCTAssertFalse(center.launchesHeldForHostRestart)
+    }
+
+    /// F3: the adoption's signal never fires while the notice waits.
+    func testWaitUntilSettledWaitsForTheRestart() async throws {
+        let row = try await sessionRow()
+        await launch(listing: [run(row.id, pid: 5150)])
+        let step = makeStep()
+        XCTAssertFalse(step.isSettled, "not settled before the launch's look")
+        await step.runIfNeeded()
+        XCTAssertEqual(step.phase, .waitingForContinue)
+        XCTAssertFalse(step.isSettled)
+
+        let waiter = Task { @MainActor [weak self] in
+            await step.waitUntilSettled()
+            self?.settledSeen = true
+        }
+        await Task.yield()
+        XCTAssertFalse(settledSeen)
+        await step.pressContinue()
+        await waiter.value
+        XCTAssertTrue(settledSeen)
+        XCTAssertEqual(step.phase, .finished)
+    }
+
+    func testAFailureWithTheOldHostStillUpIsNotSettled() async throws {
+        hostExitsOnTerm = false
+        let row = try await sessionRow()
+        await launch(listing: [run(row.id, pid: 5150)])
+        let step = makeStep()
+        await step.runIfNeeded()
+        await step.pressContinue()
+        XCTAssertEqual(step.phase, .failed(HostRestartStep.oldHostKept))
+        XCTAssertFalse(step.isSettled, "the hub must not adopt beside a v1 host")
+    }
+
+    /// F4: an unreadable list is neither "no list" nor overwritten.
+    func testAnUnreadableListIsKeptUntilSetAside() async throws {
+        let row = try await sessionRow()
+        try FileManager.default.createDirectory(at: listDir, withIntermediateDirectories: true)
+        let garbage = Data("{not json".utf8)
+        try garbage.write(to: listURL)
+        await launch(listing: [run(row.id, pid: 5150)])
+        let step = makeStep()
+        await step.runIfNeeded()
+
+        XCTAssertEqual(step.phase, .listUnreadable)
+        XCTAssertEqual(step.notice?.buttonTitle, HostRestartStep.retryTitle)
+        XCTAssertEqual(step.notice?.secondaryTitle, HostRestartStep.setAsideTitle)
+        XCTAssertTrue(signals.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: listURL), garbage, "kept as it is")
+
+        await step.pressContinue() // Retry reads it again: still unreadable, still kept
+        XCTAssertEqual(step.phase, .listUnreadable)
+        XCTAssertEqual(try Data(contentsOf: listURL), garbage)
+        XCTAssertTrue(signals.isEmpty)
+
+        await step.pressSetAside()
+        XCTAssertEqual(try Data(contentsOf: HostRestartList.setAsideURL(for: listURL)), garbage)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: listURL.path))
+        XCTAssertEqual(step.phase, .waitingForContinue, "without a list the owner is asked again")
+        XCTAssertTrue(signals.isEmpty)
+    }
+
+    /// F5: a relaunch whose check fails says why in the pane and leaves the list.
+    func testACodexRowWhoseCheckFailsShowsItsReason() async throws {
+        center.codexRolloutExists = { _, _, _ in false }
+        vm.resolveCodexHome = { nil }
+        let row = try await sessionRow(kind: .codex)
+        await launch(listing: [run(row.id, pid: 5150)])
+        let step = makeStep()
+        await step.runIfNeeded()
+        await step.pressContinue()
+
+        XCTAssertEqual(step.phase, .finished)
+        XCTAssertEqual(center.states[row.id], .unavailable(WorkbenchesViewModel.hostRestartCodexUnchecked))
+        XCTAssertEqual(factoryCalls, 0)
+        XCTAssertNil(try list())
+    }
+
+    /// F5: a row that could not even be read stays in the list for Retry.
+    func testARowThatCannotBeReadStaysInTheList() async throws {
+        let row = try await sessionRow()
+        await launch(listing: [run(row.id, pid: 5150)])
+        onHangup = { [weak self] _ in try? self?.pool.close() } // the database goes away mid-step
+        let step = makeStep()
+        await step.runIfNeeded()
+        await step.pressContinue()
+
+        XCTAssertEqual(step.phase, .failed(HostRestartStep.relaunchIncomplete))
+        XCTAssertTrue(step.isSettled, "a v2 host answers: the hub need not wait for a Retry")
+        XCTAssertEqual(try list()?.rows.map(\.rowID), [row.id])
+    }
+
+    /// F6: the launch's sweep keeps the pasted files of a row still listed.
+    func testTheAttachmentSweepKeepsListedRows() async throws {
+        let store = WorkchatAttachmentStore(root: listDir.appendingPathComponent("attachments", isDirectory: true))
+        vm.attachmentStore = store
+        let pasted = try store.save(Data("x".utf8), name: "a.png", sessionID: 41)
+        try HostRestartList(rows: [.init(scope: scope, rowID: 41, agent: "claude", resumeID: "")]).save(to: listURL)
+
+        await vm.sweepAttachmentsAfterReattach()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pasted.path))
+
+        try HostRestartList().save(to: listURL)
+        await vm.sweepAttachmentsAfterReattach()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pasted.path), "once out of the list, swept as before")
+    }
+
+    /// F8: rows of a workspace that is no longer here keep a line, and Clear drops them.
+    func testRowsOfAMissingWorkspaceShowALineAndClear() throws {
+        try HostRestartList(rows: [
+            .init(scope: otherScope, rowID: 1, agent: "", resumeID: ""),
+            .init(scope: "cccc3333cccc3333", rowID: 2, agent: "", resumeID: ""),
+            .init(scope: "cccc3333cccc3333", rowID: 3, agent: "", resumeID: "")
+        ]).save(to: listURL)
+        let step = makeStep()
+        step.refreshWaiting()
+        XCTAssertEqual(step.waitingWorkspaces, [.init(name: "acme-labs", count: 1)])
+        XCTAssertEqual(step.orphanedCount, 2)
+
+        step.clearOrphans()
+        XCTAssertEqual(step.orphanedCount, 0)
+        XCTAssertEqual(try list()?.rows.map(\.scope), [otherScope], "only the missing workspace's rows go")
+    }
+
+    /// F9: a second workspace (its own scope and database) resumes its rows
+    /// at its launch, from a list row with no agent or resume id.
+    func testAnotherWorkspaceResumesItsRowsAtItsLaunch() async throws {
+        let row = try await sessionRow()
+        let (otherPool, otherPath) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: otherPath) }
+        let path = folder.path
+        let otherRow = try await otherPool.write { db in
+            let projectID = try TestDatabase.insertWorkbench(db, name: "acme-labs", folder: path)
+            return try TerminalSessionQueries.create(db, .init(
+                projectID: projectID, kind: .claude, title: "o", folderPath: path,
+                claudeSessionID: UUID().uuidString.lowercased()
+            ))
+        }
+        await launch(listing: [run(row.id, pid: 5150), run(otherRow.id, pid: 6000, scope: otherScope)])
+        let step = makeStep()
+        await step.runIfNeeded()
+        await step.pressContinue()
+        XCTAssertEqual(try list()?.rows, [.init(scope: otherScope, rowID: otherRow.id, agent: "", resumeID: "")])
+
+        // The other workspace opens: its own center, database and scope, the v2 host.
+        var otherLaunched: [FakeTerminalSession] = []
+        let otherCenter = TerminalCenter {
+            let process = FakeTerminalSession()
+            otherLaunched.append(process)
+            return process
+        }
+        otherCenter.shell = { "/bin/zsh" }
+        otherCenter.transcriptExists = { _ in true }
+        otherCenter.sessionHostScope = otherScope
+        otherCenter.sessionHost = client
+        let otherVM = WorkbenchesViewModel(dbPool: otherPool, cli: WorkbenchCLI(runner: FakeCLIRunner()),
+                                           defaults: defaults, terminalCenter: otherCenter)
+        otherVM.hostRestartListURL = listURL
+        await otherVM.reattachHostedSessions()
+        let otherStep = HostRestartStep(center: otherCenter, listURL: listURL) { otherVM }
+        otherStep.workspaceNames = { [scope] in [scope: "acme"] }
+        await otherStep.runIfNeeded()
+
+        XCTAssertEqual(otherStep.phase, .finished)
+        XCTAssertEqual(otherCenter.states[otherRow.id], .running)
+        let uuid = try XCTUnwrap(otherRow.claudeSessionID)
+        let args = try XCTUnwrap(otherLaunched.first?.launches.first?.args.last)
+        XCTAssertTrue(args.contains("claude --resume \(uuid)"), "the id comes from that workspace's row: \(args)")
+        XCTAssertNil(try list())
+    }
+
+    /// F11: SIGTERM goes only to the pid a fresh Hello confirms.
+    func testAnUnconfirmedOldHostPidIsNotSignalled() async throws {
+        let row = try await sessionRow()
+        await launch(listing: [run(row.id, pid: 5150)])
+        onHangup = { [weak self] _ in self?.hostUp = false } // the fresh Hello reaches nothing
+        let step = makeStep()
+        await step.runIfNeeded()
+        await step.pressContinue()
+
+        XCTAssertEqual(step.phase, .failed(HostRestartStep.oldHostUnconfirmed))
+        XCTAssertTrue(hostSignals.isEmpty, "no SIGTERM to an unconfirmed pid")
+        XCTAssertEqual(try list()?.rows.map(\.rowID), [row.id])
+    }
+
     func testBusyStatesKeepContinueOff() {
         let stopping = HostRestartStep.notice(for: .stopping(done: 2, total: 5))
         XCTAssertEqual(stopping?.text, "Stopping sessions… 2 of 5")
@@ -444,5 +700,12 @@ final class HostRestartStepTests: XCTestCase {
         XCTAssertEqual(HostRestartStep.failedTitle, "Sessions could not be restarted")
         XCTAssertEqual(HostRestartStep.hostDidNotStart, "The session host did not start. Your sessions resume on Retry.")
         XCTAssertEqual(TerminalCenter.noSessionHostReason, "[Watchtower] the session host is not running")
+        XCTAssertEqual(HostRestartStep.orphanLine(1), "1 session waits to resume in a workspace that is no longer here")
+        XCTAssertEqual(HostRestartStep.orphanLine(2), "2 sessions wait to resume in a workspace that is no longer here")
+        XCTAssertEqual(HostRestartStep.setAsideTitle, "Set Aside")
+        XCTAssertEqual(HostRestartStep.clearTitle, "Clear")
+        XCTAssertEqual(HostRestartStep.listUnreadableTitle, "The list of sessions to resume could not be read")
+        XCTAssertEqual(TerminalCenter.launchHeldReason,
+                       "[Watchtower] Sessions are restarting after the update. Try again in a moment.")
     }
 }
