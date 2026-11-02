@@ -32,6 +32,8 @@ final class HostRestartStepTests: XCTestCase {
     /// Called on each SIGHUP to a session's group (an order probe).
     private var onHangup: ((pid_t) -> Void)?
     private var settledSeen = false
+    /// Called for every new connection (the pid confirm's Hello is one).
+    private var onNewTransport: (() -> Void)?
     private var center: TerminalCenter!
     private var client: SessionHostClient!
     private var vm: WorkbenchesViewModel!
@@ -86,6 +88,7 @@ final class HostRestartStepTests: XCTestCase {
                 transport.v1Host = hostV1
                 if !hostUp { transport.openError = SessionHostError.disconnected }
                 transports.append(transport)
+                onNewTransport?()
             }
             return transport
         })
@@ -492,6 +495,38 @@ final class HostRestartStepTests: XCTestCase {
         XCTAssertEqual(center.states[rowA.id], .running)
         XCTAssertEqual(center.states[rowB.id], .running, "the late run's row resumes too")
         XCTAssertFalse(center.launchesHeldForHostRestart)
+    }
+
+    /// A run that appears while the pid is confirmed is listed and stopped
+    /// before the SIGTERM.
+    func testARunStartedDuringThePidConfirmIsStoppedBeforeTheSignal() async throws {
+        let rowA = try await sessionRow()
+        let rowB = try await sessionRow()
+        let oldControl = control
+        await launch(listing: [run(rowA.id, pid: 5150)])
+        let late = run(rowB.id, pid: 5153, startedAtMs: 1_760_000_200_000)
+        var stoppedBeforeTerm: [Bool] = []
+        onHangup = { [weak self] _ in
+            // Armed once A is stopping: the next new connection is the pid confirm.
+            self?.onNewTransport = { [weak self] in
+                guard let self, oldControl.listed.count == 1 else { return }
+                oldControl.listed.append(late)
+            }
+        }
+        let step = makeStep()
+        let term = step.signalHost
+        step.signalHost = { [weak self] pid, sig in
+            guard let self else { return }
+            stoppedBeforeTerm.append(signals.contains { $0.0 == 5153 && $0.1 == SIGHUP })
+            term(pid, sig)
+        }
+        await step.runIfNeeded()
+        await step.pressContinue()
+
+        XCTAssertEqual(oldControl.listed.count, 2, "the late run appeared during the confirm")
+        XCTAssertEqual(stoppedBeforeTerm, [true], "the late run was stopped before the SIGTERM")
+        XCTAssertEqual(step.phase, .finished)
+        XCTAssertEqual(center.states[rowB.id], .running, "and resumes")
     }
 
     /// F3: the adoption's signal never fires while the notice waits.

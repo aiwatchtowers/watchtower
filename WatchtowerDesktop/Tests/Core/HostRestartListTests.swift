@@ -54,6 +54,8 @@ final class HostRestartListTests: XCTestCase {
         try list.save(to: url) // replaces the file in place
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [HostRestartList.fileName])
         XCTAssertEqual(HostRestartList.stored(at: url), .list(list))
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o600, "the renamed file keeps the temp file's 0600")
     }
 
     func testAnEmptyListRemovesTheFile() throws {

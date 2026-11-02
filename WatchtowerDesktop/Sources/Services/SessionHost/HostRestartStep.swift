@@ -350,57 +350,25 @@ final class HostRestartStep {
     /// Steps 1–3 against a v1 host.
     private func restart(_ client: SessionHostClient) async {
         // Step 1: list every scope's runs and write them down first.
-        guard var list = await listAndSave(client: client, into: nil) else { return }
+        guard let listed = await listAndSave(client: client, into: nil) else { return }
         let hostPID = client.hostPID
         center.launchesHeldForHostRestart = true
         defer { center.launchesHeldForHostRestart = false }
         // Step 2: stop every live run at once (one grace, not N).
-        var seen = Set(list.runs.map(RunKey.init))
-        var total = list.runs.filter { !$0.exited }.count
-        var done = 0
-        phase = .stopping(done: done, total: total)
-        done = await stop(list.runs, done: done, total: total)
+        var state = Stopping(list: listed, seen: Set(listed.runs.map(RunKey.init)),
+                             total: listed.runs.filter { !$0.exited }.count)
+        phase = .stopping(done: 0, total: state.total)
+        state.done = await stop(listed.runs, done: 0, total: state.total)
         // Runs started meanwhile join the list; stopped ones linger only to be forgotten.
-        for round in 1...Self.relistRounds {
-            let again: [SessionHostSessionInfo]
-            do {
-                again = try await client.list()
-            } catch {
-                phase = .failed(Self.rereadFailed)
-                return
-            }
-            let fresh = again.filter { !seen.contains(RunKey($0)) }
-            for info in again where seen.contains(RunKey(info)) {
-                await client.forget(row: info.row, run: info.run)
-            }
-            guard !fresh.isEmpty else { break }
-            guard round < Self.relistRounds else {
-                phase = .failed(Self.newRunDuringRestart)
-                return
-            }
-            guard let merged = await listAndSave(client: client, into: list.saved, runs: fresh) else { return }
-            list = merged
-            seen.formUnion(fresh.map(RunKey.init))
-            total += fresh.filter { !$0.exited }.count
-            done = await stop(fresh, done: done, total: total)
-        }
-        // The old host: SIGTERM only to the pid a fresh Hello confirms.
+        guard await joinNewRuns(client, &state, rounds: Self.relistRounds) else { return }
+        // The old host: SIGTERM only to the pid a fresh Hello confirms, after
+        // one more look, so no run started during the confirm dies unlisted.
         if let pid = hostPID {
             guard await client.helloPID() == pid, pid > 0 else {
                 phase = .failed(Self.oldHostUnconfirmed)
                 return
             }
-            let target = pid_t(pid)
-            signalHost(target, SIGTERM)
-            var waited: Duration = .zero
-            while hostIsAlive(target), waited < Self.hostExitWait {
-                await sleep(Self.hostExitPoll)
-                waited += Self.hostExitPoll
-            }
-            if hostIsAlive(target) {
-                phase = .failed(Self.oldHostKept)
-                return
-            }
+            guard await joinNewRuns(client, &state, rounds: 2), await terminateOldHost(pid_t(pid)) else { return }
         }
         client.dropConnection()
         guard await client.ensureRunning() else {
@@ -415,7 +383,64 @@ final class HostRestartStep {
         hostReplaced = true
         center.launchesHeldForHostRestart = false
         // Step 3.
-        await relaunch(list.saved)
+        await relaunch(state.list.saved)
+    }
+
+    /// Step 2's running state: the list on disk with the runs it came from,
+    /// every run met since, and the live-run progress.
+    private struct Stopping {
+        var list: Listed
+        var seen: Set<RunKey>
+        var total: Int
+        var done = 0
+    }
+
+    /// Lists the old host up to `rounds` times: runs already met are
+    /// forgotten again, new ones are listed and stopped. True once a list
+    /// shows nothing new; false (the phase says why) when a run still
+    /// appears in the last round or a read or save fails.
+    private func joinNewRuns(_ client: SessionHostClient, _ state: inout Stopping, rounds: Int) async -> Bool {
+        for round in 1...rounds {
+            let again: [SessionHostSessionInfo]
+            do {
+                again = try await client.list()
+            } catch {
+                phase = .failed(Self.rereadFailed)
+                return false
+            }
+            let seen = state.seen
+            let fresh = again.filter { !seen.contains(RunKey($0)) }
+            for info in again where seen.contains(RunKey(info)) {
+                await client.forget(row: info.row, run: info.run)
+            }
+            guard !fresh.isEmpty else { return true }
+            guard round < rounds else {
+                phase = .failed(Self.newRunDuringRestart)
+                return false
+            }
+            guard let merged = await listAndSave(client: client, into: state.list.saved, runs: fresh) else { return false }
+            state.list = merged
+            state.seen.formUnion(fresh.map(RunKey.init))
+            state.total += fresh.filter { !$0.exited }.count
+            state.done = await stop(fresh, done: state.done, total: state.total)
+        }
+        return true
+    }
+
+    /// SIGTERM to the confirmed old host, then up to `hostExitWait` for it
+    /// to go; false (`oldHostKept`) when it stays.
+    private func terminateOldHost(_ pid: pid_t) async -> Bool {
+        signalHost(pid, SIGTERM)
+        var waited: Duration = .zero
+        while hostIsAlive(pid), waited < Self.hostExitWait {
+            await sleep(Self.hostExitPoll)
+            waited += Self.hostExitPoll
+        }
+        guard !hostIsAlive(pid) else {
+            phase = .failed(Self.oldHostKept)
+            return false
+        }
+        return true
     }
 
     /// Stops `runs` concurrently; returns the live runs stopped so far.
