@@ -61,13 +61,14 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
 
     /// Run a quick connectivity check via `watchtower ai test`.
     /// Returns (ok, provider, model, error).
-    package static func testConnection() async throws -> (ok: Bool, provider: String, model: String) {
+    /// `provider` (nil: the configured one) is passed as `--provider`.
+    package static func testConnection(provider override: String? = nil) async throws -> (ok: Bool, provider: String, model: String) {
         let cliPath = try findCLI()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
-        process.arguments = ["ai", "test"]
+        process.arguments = ["ai", "test"] + (override.map { ["--provider", $0] } ?? [])
 
         let output = await ProcessPipes.run(process)
         if output.exitCode == -1 {

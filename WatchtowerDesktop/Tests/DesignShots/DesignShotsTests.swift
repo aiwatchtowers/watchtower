@@ -25,14 +25,20 @@ final class DesignShotsTests: XCTestCase {
     /// `make desktop-shots` (which sets `DESKTOP_SHOTS_DIR`), never in the
     /// unfiltered suite (style guide spec §6).
     func testEveryShotRenders() throws {
+        try renderShots(DesignShotCatalog.all)
+    }
+
+    func testWorkchatActivityShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
+    }
+
+    private func renderShots(_ shots: [DesignShot]) throws {
         guard let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
             .flatMap({ $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) })
         else {
             throw XCTSkip("DESKTOP_SHOTS_DIR is not set; run `make desktop-shots`")
         }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        let shots = DesignShotCatalog.all
-
         for shot in shots {
             // A zero height means "as tall as the content".
             var size = shot.size

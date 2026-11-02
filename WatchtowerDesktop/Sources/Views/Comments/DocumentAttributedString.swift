@@ -24,9 +24,11 @@ enum DocumentAttributedString {
         highlights: [Int64: NSRange],
         activeThreadID: Int64?,
         drafts: [NSRange] = [],
-        typography: DocumentTypography = .standard
+        typography: DocumentTypography = .standard,
+        clickableLinks: Bool = false
     ) -> NSAttributedString {
-        let key = Key(doc: doc, highlights: highlights, activeThreadID: activeThreadID, drafts: drafts, typography: typography)
+        let key = Key(doc: doc, highlights: highlights, activeThreadID: activeThreadID, drafts: drafts,
+                      typography: typography, clickableLinks: clickableLinks)
         if let hit = recent.first(where: { $0.key == key }) { return hit.text }
         let text = build(key)
         recent = [(key, text)] + recent.prefix(recentLimit - 1)
@@ -39,6 +41,7 @@ enum DocumentAttributedString {
         let activeThreadID: Int64?
         let drafts: [NSRange]
         let typography: DocumentTypography
+        let clickableLinks: Bool
     }
 
     /// A few documents may be on screen at once (a project document, an
@@ -62,7 +65,7 @@ enum DocumentAttributedString {
             .sorted { $0.element.length != $1.element.length ? $0.element.length > $1.element.length : $0.offset < $1.offset }
             .map(\.element)
         for run in runs {
-            apply(run, to: out, layout: &layout, typography: type)
+            apply(run, to: out, layout: &layout, typography: type, clickableLinks: key.clickableLinks)
         }
         layout.commit(to: out, typography: type)
         for (id, range) in key.highlights where NSMaxRange(range) <= length {
@@ -78,7 +81,8 @@ enum DocumentAttributedString {
         _ run: DocumentStyleRun,
         to out: NSMutableAttributedString,
         layout: inout ParagraphLayout,
-        typography type: DocumentTypography
+        typography type: DocumentTypography,
+        clickableLinks: Bool
     ) {
         let range = NSRange(location: run.location, length: run.length)
         switch run.style {
@@ -94,8 +98,11 @@ enum DocumentAttributedString {
         case .code:
             out.addAttributes([.font: type.codeFont, .backgroundColor: NSColor.quaternaryLabelColor], range: range)
         case let .link(destination):
-            // Styled, with the destination on hover: a click selects text for
-            // commenting, it never opens a URL from a document the agent wrote.
+            // Review asks opt into links; other commenting documents stay selectable.
+            // The text view consumes clicks through the host, never AppKit defaults.
+            if clickableLinks, let url = URL(string: destination) {
+                out.addAttribute(.link, value: url, range: range)
+            }
             out.addAttributes([.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue,
                                .toolTip: destination], range: range)
         case let .codeToken(kind):

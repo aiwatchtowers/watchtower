@@ -84,7 +84,7 @@ The composer, the permission card and Stop make the pane a way to drive the sess
 ## v1 limits
 
 - Polish (2026-10-21): Codex keeps the busy hold (queue-on-Return during a Codex turn is not verified). Codex `activity` shapes come from real transcripts but are tested with synthetic fixtures only. A line sent while busy that the agent never reads stays a plain sent bubble. The launch sweep protects only sessions running once the reattach is done: a session not running loses its pasted files older than 7 days, even if it is resumed later. The phone gets no `activity`.
-- Codex sessions (2026-10-17): `sessionfeed.ParseCodex`/`LocateCodex` read the rollout (`$CODEX_HOME/sessions/*/*/*/rollout-*-<id>.jsonl`, the stored `transcript_path` first) in both owner dialects (paginated `item_completed` `UserMessage`/`AgentMessage`, legacy `user_message`/`agent_message`); user text is classified like Claude's (brief, ask answer, Watchtower line). Legacy lines carry no id, so their entry id is `L<line byte offset>`. No subagent markers for Codex; a zstd-compressed rollout yields no entries (`unknown_records["<zstd>"]`).
+- Codex sessions (2026-10-17; live agents added 2026-11-02): `sessionfeed.ParseCodex`/`LocateCodex` read the rollout (`$CODEX_HOME/sessions/*/*/*/rollout-*-<id>.jsonl`, the stored `transcript_path` first) in both owner dialects (paginated `item_completed` `UserMessage`/`AgentMessage`, legacy `user_message`/`agent_message`); user text is classified like Claude's (brief, ask answer, Watchtower line). Legacy lines carry no id, so their entry id is `L<line byte offset>`. Codex live agents open from the activity picker; historical dialog parsing remains unchanged. A zstd-compressed rollout yields no entries (`unknown_records["<zstd>"]`).
 - No search, export or sharing. The iPhone shows the tail of a feed only (phase 3 below), no paging into older entries.
 - Zero time means no time: the separator, a report entry and a meta-only subagent marker may carry `0001-01-01T00:00:00Z`; the Desktop treats it as unknown and shows no timestamp.
 - `--after` and `--subagent` are mutually exclusive (the command refuses both). `skipped` and `unknown_records` count only what that call read.
@@ -117,3 +117,47 @@ Spec: `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`. Contrac
 | Phone | `WatchtowerMobile/Sources/Features/Workbench/{WorkchatView,WorkchatModel,SessionChatView,SessionChatViewModel}.swift` |
 
 Limits: no search, no paging, no chat of a session the owner did not open, no copy beyond the replica record.
+
+## Live activity and agents (2026-11-02, #1481)
+
+The existing Desktop caption slot above the composer now uses `WorkchatLiveLine` and the pure
+`WorkchatLivePresentation`. It shows the current tool or `Last · …` (last completed tool in the
+current turn), never both as separate rows. With no recorded action it says `Working…` for both
+providers. The compact `person.2` count opens a click-only popover of flat agent rows; selecting one
+opens its existing read-only chat in place. No extra panel, tool entries, database copies or mobile
+activity publishing. Permission prompts keep hiding the whole line. The existing serialized 3 s
+poll and off-screen gates are unchanged.
+
+`session-feed --json` adds `live`, `live_ok` and optional `live_error`; `activity` retains its exact
+old keys and open-call semantics (owner approval ask #932; design ask #933). The cursor-independent
+snapshot contains `observed_at`, `conversation`, `turn_at`, `turn_active`, `current`, `latest`,
+`agents`, `agents_state` and `agents_more`. Each action has `id`, `tool`, `summary`, `started_at`,
+`completed_at`, `more`; each agent has `ref` (the unchanged subagent-ref wire shape), `started_at`,
+`action`, `can_open`. Arrays are always arrays. Unknown/truncated lifecycle is explicitly `unknown`,
+never a zero count. A failed hint has `live_ok:false` and a short generic `live_error`; a successful
+feed must not silently preserve a previous action as current. Older CLI payloads decode and display
+`Activity unavailable` with Retry.
+
+The reader bounds the main tail to 4 MiB and returns at most 32 agent records, active first; omitted
+active records are counted in `agents_more`. Each child hint reads at most 256 KiB, without nested
+snapshot recursion. Claude tools pair by tool-use id, with subagent status from sidecar metadata;
+launch tool completion does not finish a background agent. Codex supports response-item function
+and custom calls, legacy `collab_agent_spawn_end`/resume/close/waiting/interaction events, and
+paginated `CollabAgentToolCall` items (camel/snake field dialects). Tool-result spawn acknowledgments
+are also normalized. A child's own later turn-completion event updates its status even before the
+parent waits. Main-turn completion clears current/latest but retains live background agents.
+
+Codex drill-in selectors are `codex:<UUID>` and must be discovered in the parent's lifecycle. The
+reader locates the UUID only beneath the parent's sessions root and verifies the child's first
+`session_meta` declares that exact parent; direct symlink files, escaped paths and unrelated child
+threads are refused. Nested drill-in is limited to eight levels. The source schema was checked
+against local `codex app-server generate-json-schema --experimental`; all committed tests use
+synthetic events.
+
+The store tracks live failures separately from feed failures and invalidates pending live reads on
+idle/Stop, so an old read cannot reappear in the next turn. At 10 s without a successful snapshot,
+the line becomes `Activity out of date · Ns ago`; a failure becomes `Activity unavailable`. Retry
+uses the same poller. Both warnings remove elapsed clocks, disable the count and close an open
+picker; the picker projection also returns no running rows for stale/failed data. Current calls
+may pulse, Last and warnings never do, and Reduce Motion disables the pulse. The old complete
+snapshot is kept only to compute its age; it never masquerades as fresh work.

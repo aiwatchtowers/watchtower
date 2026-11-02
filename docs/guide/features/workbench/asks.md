@@ -1,6 +1,6 @@
 # Asks
 
-An ask is how the agent in a workbench session gets something from you: a review, a check to try by hand, or a decision. It is for anyone who lets an agent run unattended and wants to be pulled in only when needed.
+An ask brings you a review, a manual check or a decision from a workbench agent. You can let it work unattended and answer when needed.
 
 ## Why use it
 
@@ -17,6 +17,8 @@ The agent files an ask through a Watchtower tool. There are three kinds, and two
 | **Question** | Pick an option per question, or write your own. |
 
 **Full** asks open in a drawer next to the session's terminal. A **Quick** ask is one question with two or three short options; it never opens the drawer by itself. It shows as buttons on a banner over the terminal. Reviews and checks are always Full.
+
+Review links open text in **Files**, PNG/JPEG/GIF/WebP in your image app, and web pages in your browser. Local links must name an existing file inside the ask session’s folder.
 
 ### How the answer reaches the agent
 

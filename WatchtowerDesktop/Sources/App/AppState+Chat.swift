@@ -33,6 +33,16 @@ extension AppState {
             refreshActionStrip: { [weak self] in await self?.actionStripViewModel?.refresh() }
         )
         wireRemember(cvm)
+        followSetupProviderSwitch(cvm)
+    }
+
+    /// Setup's Codex fallback (`OnboardingCLIProbe`) rewrote `ai.provider`
+    /// after this chat snapshotted it: the chat follows, or its next turn
+    /// would start the CLI that is not installed.
+    func followSetupProviderSwitch(_ cvm: ChatViewModel) {
+        onboardingGoals.onProviderSwitched = { [weak cvm] provider in
+            cvm?.switchProvider(AIProvider.fromConfig(provider))
+        }
     }
 
     /// Beside the strip, the Chats panel re-reads its rows on both signals:

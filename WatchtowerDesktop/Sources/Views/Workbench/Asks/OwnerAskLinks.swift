@@ -3,10 +3,11 @@ import SwiftUI
 import WatchtowerCore
 
 /// Links in an ask's text (#394): a workbench path (`path:line`, or a
-/// link to a path) opens the file in Files — a beep when it is not a file
+/// link to a path) opens text in Files and decoded raster mockups in the
+/// image app — a beep when it is not a file
 /// of the folder — and any scheme of the app-wide allowlist (http(s),
 /// mailto, slack…) goes to the system. A link of any other scheme is
-/// never clickable: `MarkdownView` strips it before it renders. A
+/// stripped by MarkdownView; review documents consume and refuse it. A
 /// modifier of its own: it is rebuilt only when the workbench changes,
 /// not on every keystroke into the draft (an `OpenURLAction` cannot be
 /// compared — `MarkdownView`).
@@ -27,15 +28,20 @@ struct OwnerAskLinks: ViewModifier {
         case refused
     }
 
-    static func askLinkRoute(_ url: URL) -> Route {
+    static func askLinkRoute(_ url: URL, documentLinks: Bool = false) -> Route {
         if let target = CodeLineLinks.target(from: url) { return .file(target) }
+        if documentLinks, let path = OwnerAskDocumentLink.path(url) {
+            return .file(OpenQuicklyTarget(path: path, line: 1, col: nil))
+        }
         return AllowedURLSchemes.permits(url) ? .system : .refused
     }
 
     /// What a click on `url` does: a file opens through `openFile`, an
     /// allowlisted scheme goes to the system, anything else beeps.
-    static func handleAskLink(_ url: URL, openFile: (OpenQuicklyTarget) -> Void, beep: () -> Void) -> OpenURLAction.Result {
-        switch askLinkRoute(url) {
+    static func handleAskLink(
+        _ url: URL, documentLinks: Bool = false, openFile: (OpenQuicklyTarget) -> Void, beep: () -> Void
+    ) -> OpenURLAction.Result {
+        switch askLinkRoute(url, documentLinks: documentLinks) {
         case let .file(target):
             openFile(target)
             return .handled
@@ -51,7 +57,7 @@ struct OwnerAskLinks: ViewModifier {
         content
             .environment(\.markdownCodeLinks, true)
             .environment(\.openURL, OpenURLAction { [vm, projectID, sessionID, owner] url in
-                Self.handleAskLink(url, openFile: { target in
+                Self.handleAskLink(url, documentLinks: true, openFile: { target in
                     // A beep when it names no file of the folder; one link
                     // in flight, a newer click cancels it.
                     vm.clickAskLink(target, projectID: projectID, sessionID: sessionID, owner: owner) { NSSound.beep() }

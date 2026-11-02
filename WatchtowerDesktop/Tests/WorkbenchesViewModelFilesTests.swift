@@ -1,3 +1,4 @@
+import AppKit
 import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -52,6 +53,37 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
     /// A workbench path clicked in an ask (#394) opens in Files beside the
     /// terminal, an expanded drawer stepping back so it shows; a path that
     /// is not a file of the folder opens nothing.
+    func testAskMockupOpensAValidatedImageWithoutMakingATextTab() async throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+                                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                                    isPlanar: false, colorSpaceName: .deviceRGB,
+                                                    bytesPerRow: 4, bitsPerPixel: 32))
+        bitmap.setColor(.white, atX: 0, y: 0)
+        let imageURL = folder.appendingPathComponent("mockup.png")
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: imageURL)
+        try "not an image".write(to: folder.appendingPathComponent("broken.png"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("outside.png"),
+                                                   withDestinationURL: folder.deletingLastPathComponent().appendingPathComponent("outside.png"))
+        let folderPath = folder.path
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0, folder: folderPath) }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        await vm.reload()
+        var opened: [URL] = []
+        vm.openAskImage = { opened.append($0); return true }
+        vm.asks.drawerExpanded = true
+        let valid = await vm.openAskLink(OpenQuicklyTarget(path: imageURL.path, line: 1, col: nil), projectID: id)
+        XCTAssertTrue(valid)
+        XCTAssertEqual(opened, [imageURL])
+        XCTAssertFalse(vm.asks.drawerExpanded)
+        let root = try XCTUnwrap(vm.summaries.first?.project).mainCodeRoot
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, [], "a mockup never becomes a binary text tab")
+        for name in ["broken.png", "outside.png", "missing.png"] {
+            let rejected = await vm.openAskLink(OpenQuicklyTarget(path: name, line: 1, col: nil), projectID: id)
+            XCTAssertFalse(rejected, name)
+        }
+        XCTAssertEqual(opened, [imageURL], "only a decoded image inside the folder reaches the image app")
+    }
+
     func testAnAskLinkOpensTheFileInFiles() async throws {
         let folderPath = folder.path
         let id = try await pool.write { try TestDatabase.insertWorkbench($0, folder: folderPath) }
@@ -69,6 +101,12 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         XCTAssertTrue(vm.layout(projectID: id).isShowing(.files))
         XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project).mainCodeRoot).paths, ["b.go"])
         XCTAssertFalse(vm.asks.drawerExpanded)
+
+        let absolute = await vm.openAskLink(OpenQuicklyTarget(path: folder.appendingPathComponent("b.go").path,
+                                                              line: 1, col: nil), projectID: id)
+        XCTAssertTrue(absolute, "local document URLs resolve inside the workbench")
+        let outside = await vm.openAskLink(OpenQuicklyTarget(path: folder.path + "-outside/b.go", line: 1, col: nil), projectID: id)
+        XCTAssertFalse(outside, "a matching prefix without a folder boundary is outside")
 
         let dotted = await vm.openAskLink(OpenQuicklyTarget(path: "./b.go", line: 2, col: nil), projectID: id)
         XCTAssertTrue(dotted)

@@ -86,7 +86,17 @@ private struct OwnerConfirmView: View {
     let request: OwnerConfirmRequest
     let shownAt: Date
     let decide: (Bool) -> Void
+    /// The detail as shown, built once: it can be a whole page (up to
+    /// `OwnerConfirmServer.maxRequestBytes`).
+    private let detail: String?
     @State private var armed = false
+
+    init(request: OwnerConfirmRequest, shownAt: Date, decide: @escaping (Bool) -> Void) {
+        self.request = request
+        self.shownAt = shownAt
+        self.decide = decide
+        detail = request.displayDetail
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -96,22 +106,9 @@ private struct OwnerConfirmView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(request.commandLine)
-                        .font(.system(.callout, design: .monospaced))
-                    if let detail = request.displayDetail {
-                        Divider()
-                        Text(detail)
-                            .font(.system(.callout, design: .monospaced))
-                    }
-                }
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-            }
-            .frame(minHeight: 120, maxHeight: .infinity)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            OwnerConfirmTextView(command: request.commandLine, detail: detail) { decide(false) }
+                .frame(minHeight: 120, maxHeight: .infinity)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: Radius.control))
             HStack {
                 Spacer()
                 Button("Deny", role: .cancel) { decide(false) }
@@ -129,6 +126,63 @@ private struct OwnerConfirmView: View {
             try? await Task.sleep(for: .seconds(OwnerConfirmArming.delay))
             armed = true
         }
+    }
+}
+
+/// The whole command and detail, read-only and selectable, in an AppKit
+/// text view: it lays out only what is on screen, so a page-sized detail
+/// keeps the window responsive (one SwiftUI `Text` lays it all out at once).
+/// The command is bold and the detail regular and secondary, so no detail
+/// text reads as the command. Return and Enter deny there too: the text
+/// view, once clicked, would otherwise take them from the Deny button.
+private struct OwnerConfirmTextView: NSViewRepresentable {
+    let command: String
+    let detail: String?
+    let onReturn: () -> Void
+
+    func makeCoordinator() -> OwnerConfirmReturnDenies { OwnerConfirmReturnDenies(onReturn: onReturn) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        guard let textView = scroll.documentView as? NSTextView else { return scroll }
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.delegate = context.coordinator
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.layoutManager?.allowsNonContiguousLayout = true
+        let size = NSFont.preferredFont(forTextStyle: .callout).pointSize
+        let text = NSMutableAttributedString(string: command, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: size, weight: .bold), .foregroundColor: NSColor.labelColor
+        ])
+        if let detail {
+            text.append(NSAttributedString(string: "\n\n" + detail, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: size, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor
+            ]))
+        }
+        textView.textStorage?.setAttributedString(text)
+        return scroll
+    }
+
+    /// The text is one request's and never changes.
+    func updateNSView(_ scroll: NSScrollView, context: Context) {}
+}
+
+/// The confirm window's text view delegate: Return and Enter (`insertNewline`)
+/// deny, as they do on the Deny button; every other command is the text
+/// view's.
+final class OwnerConfirmReturnDenies: NSObject, NSTextViewDelegate {
+    private let onReturn: () -> Void
+
+    init(onReturn: @escaping () -> Void) {
+        self.onReturn = onReturn
+    }
+
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        onReturn()
+        return true
     }
 }
 

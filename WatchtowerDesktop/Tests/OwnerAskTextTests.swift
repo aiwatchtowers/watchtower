@@ -78,6 +78,17 @@ final class OwnerAskTextTests: XCTestCase {
     /// Every link the text renders opens something: a file, or the
     /// system for an allowlisted scheme; any other scheme is stripped
     /// before it renders, so none looks clickable and does nothing.
+    func testDocumentFileLinksUseFilesInsteadOfTheSystem() throws {
+        for (url, path) in [("file:///work/demo/shot%20dark.png", "/work/demo/shot dark.png"),
+                            ("docs/shot.png", "docs/shot.png")] {
+            XCTAssertEqual(OwnerAskLinks.askLinkRoute(try XCTUnwrap(URL(string: url)), documentLinks: true),
+                           .file(OpenQuicklyTarget(path: path, line: 1, col: nil)))
+        }
+        for url in ["file://remote/share/shot.png", "file:///work/demo/../secret.png", "smb://host/x"] {
+            XCTAssertEqual(OwnerAskLinks.askLinkRoute(try XCTUnwrap(URL(string: url)), documentLinks: true), .refused)
+        }
+    }
+
     func testLinkRoutes() throws {
         let file = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "a.go", line: 3, col: nil)))
         XCTAssertEqual(OwnerAskLinks.askLinkRoute(file), .file(OpenQuicklyTarget(path: "a.go", line: 3, col: nil)))
