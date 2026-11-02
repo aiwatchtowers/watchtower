@@ -127,6 +127,26 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertTrue(model.canContinue)
     }
 
+    func testSwitchedProviderCountsAsAChangeAndIsReported() async {
+        spy.cliResult = .ready(provider: "codex", switched: true)
+        let model = makeModel()
+        var reported: [String] = []
+        model.onProviderSwitched = { reported.append($0) }
+        await model.prepareGoalsStep(configuredLanguage: nil)
+        XCTAssertTrue(model.canContinue)
+        XCTAssertTrue(model.wroteChanges, "a re-run must restart the daemon for the new provider")
+        XCTAssertEqual(reported, ["codex"])
+    }
+
+    func testPlainReadyIsNoChange() async {
+        let model = makeModel()
+        var reported: [String] = []
+        model.onProviderSwitched = { reported.append($0) }
+        await model.prepareGoalsStep(configuredLanguage: nil)
+        XCTAssertFalse(model.wroteChanges)
+        XCTAssertEqual(reported, [])
+    }
+
     func testPassedCheckIsNotRerunOnReappear() async {
         let model = await readyModel()
         spy.cliResult = .failed("would fail now")

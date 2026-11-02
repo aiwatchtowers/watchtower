@@ -5,8 +5,9 @@ import Observation
 /// until it is `.ready` (owner decision — every AI feature runs on the CLI).
 package enum OnboardingCLICheck: Equatable, Sendable {
     case checking
-    /// `provider` is the configured `ai.provider` the test answered for.
-    case ready(provider: String)
+    /// `provider` is the `ai.provider` the test answered for; `switched`:
+    /// the check itself wrote it (the Codex fallback, `OnboardingCLIProbe`).
+    case ready(provider: String, switched: Bool = false)
     case failed(String)
 }
 
@@ -83,6 +84,9 @@ package final class OnboardingGoalsModel {
     /// A check ran (or runs) since the last setup start: the step
     /// re-appearing (Goals ↔ Customize) does not run another.
     @ObservationIgnored private var cliCheckStarted = false
+    /// Called on the main actor when a check switched the AI provider, so
+    /// the owner of state that snapshotted the old one can follow.
+    @ObservationIgnored package var onProviderSwitched: ((String) -> Void)?
     @ObservationIgnored private var languagePrepared = false
     /// The language the config already holds on a re-run; Continue writes
     /// the language only when it differs.
@@ -152,6 +156,11 @@ package final class OnboardingGoalsModel {
             guard generation == cliCheckGeneration else { return }
             cliCheck = result
             cliCheckTask = nil
+            if case .ready(let provider, switched: true) = result {
+                // The config changed: a re-run restarts the daemon for it.
+                wroteChanges = true
+                onProviderSwitched?(provider)
+            }
         }
         cliCheckTask = task
         await task.value
