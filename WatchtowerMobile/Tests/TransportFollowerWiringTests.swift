@@ -272,6 +272,47 @@ final class TransportFollowerWiringTests: XCTestCase {
         }
     }
 
+    /// Final review M6: a move whose route write fails leaves the session on its route with its outbox writing there
+    /// again (the hold released), not held until the next pass.
+    func testAFailedRouteWriteReleasesTheOutbox() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let first = try await bed.orderedSession()
+        try await bed.sendTwoActions(first)
+        let host = FlakyMergeHost(root: bed.root)
+        host.persistFails = true
+        let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: host)
+        let control = try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+
+        let decided = await follower.handle(control: control, on: .cloudKit)
+
+        XCTAssertFalse(decided)
+        XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+        XCTAssertTrue(bed.root.env.session(hubID) === first)
+        let before = await bed.cloud.conditionalSaves.count
+        _ = try await first.outbox.flush()
+        let after = await bed.cloud.conditionalSaves.count
+        XCTAssertGreaterThan(after, before, "the outbox writes on its route again")
+    }
+
+    /// Final review M5: decisions of one hub run one at a time, so the same control read twice (two transports, or the
+    /// feed and the side reader) is decided once from the moved row, never twice from a stale one.
+    func testTwoDecisionsOfOneHubNeverInterleave() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let first = try await bed.orderedSession()
+        try await bed.sendTwoActions(first)
+        let host = FlakyMergeHost(root: bed.root, failsFirstMerge: false)
+        let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: host)
+        let control = try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+
+        async let one = follower.handle(control: control, on: .cloudKit)
+        async let two = follower.handle(control: control, on: .relay)
+        let decided = await [one, two]
+
+        XCTAssertEqual(decided, [true, true])
+        XCTAssertEqual(host.mostRelayCallsAtOnce, 1, "one decision at a time")
+        XCTAssertEqual(try bed.row()?.link.transport, .relay)
+    }
+
     /// Review round 1: a relay-only hub (its transports exclude CloudKit) is never moved to CloudKit, whose zones it
     /// does not have; the outbox is neither held nor emptied and the control stays.
     func testARelayOnlyHubIsNeverMovedToCloudKit() async throws {
@@ -948,25 +989,39 @@ actor RecordingCloud: ConditionalTransport {
     }
 }
 
-/// `AppRoot` as the follower's host, except that the first keybox merge fails (a Keychain error, say).
+/// `AppRoot` as the follower's host, except that the first keybox merge fails (a Keychain error, say), the route
+/// write fails while `persistFails`, and the relay calls in flight at once are counted.
 @MainActor
 private final class FlakyMergeHost: TransportFollowerHost {
     private let root: AppRoot
+    private let failsFirstMerge: Bool
     private(set) var merges = 0
+    var persistFails = false
+    private var relayCalls = 0
+    /// The most `relayUse` calls that were in flight at once.
+    private(set) var mostRelayCallsAtOnce = 0
 
-    init(root: AppRoot) {
+    init(root: AppRoot, failsFirstMerge: Bool = true) {
         self.root = root
+        self.failsFirstMerge = failsFirstMerge
     }
 
     func followerLink(hubID: String) -> LinkRecord? { root.followerLink(hubID: hubID) }
     func newestEpoch(hubID: String) -> UInt32? { root.newestEpoch(hubID: hubID) }
-    func relayUse(for link: LinkRecord) async -> RelayUse { await root.relayUse(for: link) }
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? { await root.openSwitchKeybox(sealed, hubID: hubID) }
-    func persistRoute(_ link: LinkRecord) -> Bool { root.persistRoute(link) }
+    func persistRoute(_ link: LinkRecord) -> Bool { persistFails ? false : root.persistRoute(link) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
+
+    func relayUse(for link: LinkRecord) async -> RelayUse {
+        relayCalls += 1
+        mostRelayCallsAtOnce = max(mostRelayCallsAtOnce, relayCalls)
+        defer { relayCalls -= 1 }
+        try? await Task.sleep(for: .milliseconds(20)) // a network call: another decision could run meanwhile
+        return await root.relayUse(for: link)
+    }
 
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
         merges += 1
-        return merges > 1 ? await root.mergeSwitchKeys(keybox, hubID: hubID) : false
+        return merges > 1 || !failsFirstMerge ? await root.mergeSwitchKeys(keybox, hubID: hubID) : false
     }
 }

@@ -233,6 +233,16 @@ extension ActionOutbox {
         flushesHeld = true
     }
 
+    /// Undoes `holdFlushes()` when the move it was for did not happen (its route could not be written): the session
+    /// goes on on its route, and this outbox writes there again, after the operation in flight on the chain.
+    public func releaseFlushes() async {
+        _ = try? await onChain { await self.clearFlushesHeld() }.value
+    }
+
+    private func clearFlushesHeld() {
+        flushesHeld = false
+    }
+
     /// Rule 13: every ordered action without a final echo (`queued` or `sent`) is `queued` again with no known
     /// version, on the chain after any flush in flight: the next flush, on the session of `onNewTransport`, writes
     /// the same envelope bytes, in order, with `.absent` (a resend: never resealed). Legacy rows are not touched.
