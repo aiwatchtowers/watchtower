@@ -64,7 +64,7 @@ struct SessionChatSubagentView: View {
                         liveError = $1; liveLoaded = true
                     },
                     onStatus: { next in
-                        if next == "running", observedStatus == "finished" {
+                        if next == "resuming" || (next == "running" && observedStatus == "finished") {
                             live = nil; liveLoaded = false; liveError = nil
                         }
                         observedStatus = next

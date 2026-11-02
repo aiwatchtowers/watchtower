@@ -16,6 +16,10 @@ package final class SessionFeedStore: ObservableObject {
     @Published package private(set) var liveError: String?
     @Published package private(set) var liveLoaded = false
     private var liveGeneration = 0
+    /// Only the selected child: preserve expected resume across Retry or a
+    /// foreground task restart without starting any additional observer.
+    private var subagentObservation: (key: SubagentObservationKey, value: SessionSubagentObservation)?
+    private var subagentObservationGeneration = 0
 
     /// No CLI binary was found: the pane shows the error and never polls.
     package let runnerMissing: Bool
@@ -103,6 +107,8 @@ package final class SessionFeedStore: ObservableObject {
     /// The session left working: the old step must not flash on the next turn.
     package func clearActivity() {
         liveGeneration += 1
+        subagentObservation = nil
+        subagentObservationGeneration += 1
         activity = nil; live = nil; liveError = nil; liveLoaded = false
     }
 
@@ -124,56 +130,82 @@ package final class SessionFeedStore: ObservableObject {
         onError: (String?) -> Void = { _ in }
     ) async {
         guard !runnerMissing else { return }
-        var observation = SessionSubagentObservation()
+        if isSessionActive != nil { subagentObservationGeneration += 1 }
+        let generation = subagentObservationGeneration
+        func isCurrentObservation() -> Bool { isSessionActive == nil || generation == subagentObservationGeneration }
+        let observationKey = SubagentObservationKey(child: toolUseID, parent: parentToolUseID)
+        if isSessionActive != nil, subagentObservation?.key != observationKey {
+            subagentObservation = (observationKey, SessionSubagentObservation())
+        }
+        var observation = isSessionActive != nil ? (subagentObservation?.value ?? SessionSubagentObservation()) : SessionSubagentObservation()
+        func rememberObservation() {
+            if isSessionActive != nil, isCurrentObservation(), subagentObservation?.key == observationKey {
+                subagentObservation = (observationKey, observation)
+            }
+        }
         func readChild() async {
             do {
                 let result = try await subagentFeed(toolUseID)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, isCurrentObservation() else { return }
                 if isSessionActive != nil {
-                    onStatus(observation.receiveOwn(snapshot: result.live, entries: result.entries,
-                                                    error: result.liveError, now: .now))
+                    let status = observation.receiveOwn(snapshot: result.live, entries: result.entries,
+                                                        error: result.liveError, now: .now)
+                    rememberObservation()
+                    onStatus(status)
+                    // A fresh read clock does not make the previous run's
+                    // completed transcript an acknowledgement of resume.
+                    if observation.awaitingResume, result.liveError == nil { onError(nil); return }
                 }
                 onEntries(result.entries); onActivity(result.activity)
                 onLive(result.live, result.liveError); onError(nil)
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, isCurrentObservation() else { return }
                 if isSessionActive != nil {
-                    onStatus(observation.receiveOwn(snapshot: nil, entries: [], error: error.localizedDescription, now: .now))
+                    let status = observation.receiveOwn(snapshot: nil, entries: [], error: error.localizedDescription, now: .now)
+                    rememberObservation()
+                    onStatus(status)
                 }
                 onError(error.localizedDescription); onLive(nil, WorkchatLivePresentation.unavailable)
             }
         }
-        func tick() async {
-            guard isOnScreen(), !Task.isCancelled else { return }
-            let readOwn = isSessionActive == nil || !observation.finished
-            if readOwn { await readChild() }
-            guard !Task.isCancelled, isOnScreen() else { return }
-            // An inactive session still gets its one opening history read.
-            if let isSessionActive, !isSessionActive() { return }
-            var parent: SessionFeedLive?
-            if isSessionActive != nil, observation.finished, !readOwn, let parentToolUseID {
+        func readParent() async -> SessionFeedLive? {
+            if isSessionActive != nil, let parentToolUseID {
+                // Only the immediate parent, never a tree-wide fan-out.
                 do {
                     let result = try await subagentFeed(parentToolUseID)
-                    if result.liveError == nil { parent = result.live; onError(nil) } else { onError(result.liveError) }
+                    guard !Task.isCancelled, isCurrentObservation() else { return nil }
+                    onError(result.liveError)
+                    return result.liveError == nil ? result.live : nil
                 } catch {
-                    // Surface the failed parent read without discarding the
-                    // completed interval; retry its parent next tick.
-                    parent = nil; onError(error.localizedDescription)
+                    guard !Task.isCancelled, isCurrentObservation() else { return nil }
+                    onError(error.localizedDescription)
                 }
+            } else if readsMainFeed || isSessionActive != nil {
+                await poller.refresh()
+                return liveError == nil ? live : nil
             }
-            guard !Task.isCancelled, isOnScreen() else { return }
-            if readsMainFeed || isSessionActive != nil { await poller.refresh() }
-            guard !Task.isCancelled, isOnScreen() else { return }
+            return nil
+        }
+        var opening = true
+        func tick() async {
+            guard isOnScreen(), !Task.isCancelled, isCurrentObservation() else { return }
+            let readOwn = opening || isSessionActive == nil || observation.shouldReadOwn
+            opening = false
+            if readOwn { await readChild() }
+            guard !Task.isCancelled, isOnScreen(), isCurrentObservation() else { return }
             if let isSessionActive, !isSessionActive() { return }
-            if isSessionActive != nil, parentToolUseID == nil, liveError == nil { parent = live }
-            if isSessionActive != nil,
-               observation.receiveParent(parent, childID: toolUseID, now: .now) {
-                onStatus("running")
-                await readChild()
+            let parent = await readParent()
+            guard !Task.isCancelled, isOnScreen(), isCurrentObservation() else { return }
+            if let isSessionActive, !isSessionActive() { return }
+            if isSessionActive != nil {
+                let resumed = observation.receiveParent(parent, childID: toolUseID, now: .now)
+                rememberObservation()
+                if let status = observation.parentTransition { onStatus(status) }
+                if resumed { await readChild() }
             }
         }
         await tick()
-        while isSessionActive?() ?? isRunning() {
+        while isCurrentObservation() && (isSessionActive?() ?? isRunning()) {
             try? await Task.sleep(for: interval)
             if Task.isCancelled { return }
             await tick()
@@ -229,4 +261,9 @@ package final class SessionFeedStore: ObservableObject {
 /// this is never called.
 private struct UnavailableRunner: CLIRunnerProtocol {
     func run(args: [String]) async throws -> Data { Data() }
+}
+
+private struct SubagentObservationKey: Equatable {
+    let child: String
+    let parent: String?
 }

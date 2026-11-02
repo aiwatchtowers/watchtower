@@ -11,6 +11,10 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
         let nested: Bool
         let uncertainFirst: Bool
         let resume: Bool
+        let laggedResume: Bool
+        let completedResume: Bool
+        let lateOldEntry: Bool
+        let resumeReadError: Bool
         private let lock = NSLock()
         private var calls: [[String]] = []
         private var children = 0
@@ -19,14 +23,29 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
         private var running = 0
         private var maximum = 0
         private var parentObserver: (() -> Void)?
+        private var lifecycleObserver: (() -> Void)?
         private let now = Date()
 
-        init(nested: Bool, uncertainFirst: Bool = false, resume: Bool = true) {
+        init(
+            nested: Bool,
+            uncertainFirst: Bool = false,
+            resume: Bool = true,
+            laggedResume: Bool = false,
+            completedResume: Bool = false,
+            lateOldEntry: Bool = false,
+            resumeReadError: Bool = false
+        ) {
             self.nested = nested; self.uncertainFirst = uncertainFirst; self.resume = resume
+            self.laggedResume = laggedResume; self.completedResume = completedResume; self.lateOldEntry = lateOldEntry
+            self.resumeReadError = resumeReadError
         }
         var recorded: [[String]] { lock.withLock { calls } }
         var maxConcurrent: Int { lock.withLock { maximum } }
         func observeFirstParent(_ action: @escaping () -> Void) { lock.withLock { parentObserver = action } }
+        func observeNextLifecycleRead(_ action: @escaping () -> Void) { lock.withLock { lifecycleObserver = action } }
+        private func signalLifecycleRead() {
+            let action = lifecycleObserver; lifecycleObserver = nil; action?()
+        }
 
         func run(args: [String]) async throws -> Data {
             let payload: [String: Any] = lock.withLock {
@@ -37,16 +56,27 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
                     if uncertainFirst && children == 1 {
                         return ["entries": [], "live_ok": false, "live_error": "Activity unavailable"]
                     }
-                    let resumed = children > (uncertainFirst ? 2 : 1)
-                    return child(active: resumed)
+                    let initialCount = uncertainFirst ? 2 : 1
+                    let resumed = children > initialCount
+                    if resumeReadError && children == initialCount + 1 {
+                        return ["entries": [], "live_ok": false, "live_error": "Activity unavailable"]
+                    }
+                    if laggedResume && children == initialCount + (resumeReadError ? 2 : 1) {
+                        return child(active: false, newInterval: false, delayed: true)
+                    }
+                    return child(active: resumed && !completedResume, newInterval: resumed)
                 }
                 if selector == parentID {
                     parents += 1
+                    signalLifecycleRead()
                     if parents == 1 { parentObserver?() }
-                    return parent(child: childID, resumed: resume && parents >= 3)
+                    return parent(child: childID, resumed: resume && parents >= 3,
+                                  unknown: uncertainFirst && children == 1)
                 }
                 roots += 1
-                return parent(child: nested ? parentID : childID, resumed: resume && !nested && roots >= 3)
+                signalLifecycleRead()
+                return parent(child: nested ? parentID : childID, resumed: resume && !nested && roots >= 3,
+                              unknown: uncertainFirst && children == 1)
             }
             try? await Task.sleep(for: .milliseconds(1))
             lock.withLock { running -= 1 }
@@ -54,20 +84,25 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
         }
 
         private func stamp(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
-        private func child(active: Bool) -> [String: Any] {
-            let entry: [String: Any] = ["id": active ? "resumed" : "report", "kind": "agent",
-                                        "text": active ? "working again" : "complete", "at": stamp(now - 10)]
+        private func child(active: Bool, newInterval: Bool, delayed: Bool = false) -> [String: Any] {
+            let id = newInterval ? (active ? "resumed" : "resumed-report") : (delayed && lateOldEntry ? "late-old-report" : "report")
+            let entry: [String: Any] = ["id": id, "kind": "agent", "text": newInterval ? "new run" : "old complete",
+                                        "at": stamp(newInterval ? now - 1 : (delayed && lateOldEntry ? now - 3 : now - 10))]
+            let observed = laggedResume ? now + Double(min(children, 3) - 3) : now
             return [
                 "session_id": 7, "cursor": "", "entries": [entry], "live_ok": true,
-                "live": ["observed_at": stamp(now), "turn_at": stamp(active ? now : now - 60), "turn_active": active,
-                         "agents": [], "agents_state": "known"]
+                "live": ["observed_at": stamp(observed), "turn_at": stamp(newInterval ? now - 5 : now - 60),
+                         "turn_active": active, "agents": [], "agents_state": "known"]
             ]
         }
-        private func parent(child: String, resumed: Bool) -> [String: Any] {
-            ["session_id": 7, "cursor": "c\(roots)", "entries": [], "live_ok": true,
-             "live": ["observed_at": stamp(now), "turn_active": true, "agents_state": "known",
-                      "agents": [["ref": ["tool_use_id": child, "agent_id": child, "status": resumed ? "running" : "finished"],
-                                  "started_at": stamp(resumed ? now : now - 60)]]]]
+        private func parent(child: String, resumed: Bool, unknown: Bool = false) -> [String: Any] {
+            let status = unknown ? "unknown" : (resumed ? "running" : "finished")
+            return [
+                "session_id": 7, "cursor": "c\(roots)", "entries": [], "live_ok": true,
+                "live": ["observed_at": stamp(now), "turn_active": true, "agents_state": "known",
+                         "agents": [["ref": ["tool_use_id": child, "agent_id": child, "status": status],
+                                     "started_at": stamp(resumed ? now - 4 : now - 60)]]]
+            ]
         }
     }
 
@@ -116,12 +151,112 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
         let waiting = recordsAtResume[(completedRead + 1)..<last]
         XCTAssertFalse(waiting.contains { $0.contains(runner.childID) }, "completed history stays paused")
         if nested {
-            XCTAssertGreaterThanOrEqual(waiting.filter { $0.contains(runner.parentID) }.count, 3)
-            XCTAssertTrue(waiting.contains { !$0.contains("--subagent") }, "root global state still refreshes")
+            XCTAssertGreaterThanOrEqual(waiting.filter { $0.contains(runner.parentID) }.count, uncertainFirst ? 2 : 3)
+            if concurrentMain {
+                XCTAssertLessThanOrEqual(waiting.filter { !$0.contains("--subagent") }.count, 1)
+            } else {
+                XCTAssertTrue(waiting.allSatisfy { $0.contains(runner.parentID) }, "only the immediate parent is observed")
+            }
         } else {
             XCTAssertGreaterThanOrEqual(waiting.count, 2)
             XCTAssertTrue(waiting.allSatisfy { !$0.contains("--subagent") })
         }
+    }
+
+    func testDirectResumeSurvivesAnOldCompletedTranscriptWithARefreshedClock() async {
+        await checkLaggedResume(nested: false, completed: false)
+    }
+    func testNestedResumeSurvivesAnOldCompletedTranscriptWithARefreshedClock() async {
+        await checkLaggedResume(nested: true, completed: false)
+    }
+    func testDirectFastCompletedNewRunSettlesWithoutRepeatingHistoryReads() async {
+        await checkLaggedResume(nested: false, completed: true)
+    }
+    func testNestedFastCompletedNewRunSettlesWithoutRepeatingHistoryReads() async {
+        await checkLaggedResume(nested: true, completed: true)
+    }
+
+    private func checkLaggedResume(nested: Bool, completed: Bool) async {
+        let runner = Runner(nested: nested, laggedResume: true, completedResume: completed, lateOldEntry: true)
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        let acknowledged = expectation(description: "new own interval acknowledged despite delayed transcript")
+        var baseline: Date?
+        var liveTurns: [Date] = []
+        var publishedIDs: [String] = []
+        var sawPending = false
+        var didAcknowledge = false
+        let task = Task {
+            await store.followSubagent(
+                runner.childID, interval: .milliseconds(1), readsMainFeed: true,
+                parentToolUseID: nested ? runner.parentID : nil, isSessionActive: { true },
+                isRunning: { false }, isOnScreen: { true },
+                onEntries: { publishedIDs += $0.map(\.id) },
+                onLive: { snapshot, _ in
+                    guard let turn = snapshot?.turnAt else { return }
+                    liveTurns.append(turn)
+                    if baseline == nil { baseline = turn }
+                    if let baseline, turn > baseline, !didAcknowledge {
+                        didAcknowledge = true
+                        XCTAssertEqual(snapshot?.turnActive, !completed)
+                        acknowledged.fulfill()
+                    }
+                }, onStatus: { if $0 == "resuming" { sawPending = true } }
+            )
+        }
+        await fulfillment(of: [acknowledged], timeout: 3)
+        if completed, didAcknowledge {
+            let parentWatch = expectation(description: "settled new completion returns to parent-only watch")
+            runner.observeNextLifecycleRead { parentWatch.fulfill() }
+            await fulfillment(of: [parentWatch], timeout: 3)
+        }
+        task.cancel(); await task.value
+        XCTAssertTrue(didAcknowledge); XCTAssertTrue(sawPending)
+        XCTAssertEqual(runner.maxConcurrent, 1)
+        XCTAssertFalse(publishedIDs.contains("late-old-report"), "the previous interval cannot become the current UI snapshot")
+        XCTAssertEqual(liveTurns.prefix(2).count, 2)
+        if liveTurns.count >= 2 { XCTAssertGreaterThan(liveTurns[1], liveTurns[0]) }
+        let childCalls = runner.recorded.filter { $0.contains(runner.childID) }
+        if completed {
+            XCTAssertEqual(childCalls.count, 3, "initial completion, lagged old completion, then the new completed interval")
+            XCTAssertEqual(liveTurns.count, 2, "the lagged old completion was never published")
+        } else {
+            XCTAssertGreaterThanOrEqual(childCalls.count, 3)
+        }
+        if nested { XCTAssertTrue(runner.recorded.contains { $0.contains(runner.parentID) }) }
+    }
+
+    func testPendingResumeSurvivesRetryAfterAnErrorBeforeTranscriptAcknowledgement() async {
+        let runner = Runner(nested: true, laggedResume: true, lateOldEntry: true, resumeReadError: true)
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        let failed = expectation(description: "forced resume read fails")
+        var reportedFailure = false
+        let first = Task {
+            await store.followSubagent(
+                runner.childID, interval: .milliseconds(1), parentToolUseID: runner.parentID, isSessionActive: { true },
+                isRunning: { false }, isOnScreen: { true }, onEntries: { _ in }, onLive: { _, error in
+                    if error != nil, !reportedFailure { reportedFailure = true; failed.fulfill() }
+                }
+            )
+        }
+        await fulfillment(of: [failed], timeout: 3)
+        first.cancel(); await first.value
+        let resumed = expectation(description: "retry observes a genuinely new own interval")
+        var didResume = false
+        var published: [String] = []
+        let retry = Task {
+            await store.followSubagent(
+                runner.childID, interval: .milliseconds(1), parentToolUseID: runner.parentID, isSessionActive: { true },
+                isRunning: { false }, isOnScreen: { true }, onEntries: { published += $0.map(\.id) },
+                onLive: { snapshot, _ in
+                    if snapshot?.turnActive == true, !didResume { didResume = true; resumed.fulfill() }
+                }
+            )
+        }
+        await fulfillment(of: [resumed], timeout: 3)
+        retry.cancel(); await retry.value
+        XCTAssertTrue(didResume)
+        XCTAssertFalse(published.contains("late-old-report"))
+        XCTAssertEqual(runner.maxConcurrent, 1)
     }
 
     func testInactiveSessionReadsHistoryOnceButDoesNotStartParentWatch() async {
