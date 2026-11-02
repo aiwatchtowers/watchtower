@@ -8,6 +8,9 @@ struct SideMailboxTiming {
     var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// Look at once after the boot and on each return to the foreground (tests that step every look turn it off).
     var looksAtWake = true
+    /// How long `stop()` waits for the running look (a hung engine fetch or relay call) before it cancels it and
+    /// closes the transport anyway, as `HubSession.outboxDrainCap` bounds the outbox.
+    var stopLookCap: Duration = .seconds(10)
 
     static let live = Self()
 }
@@ -62,8 +65,10 @@ final class SideDrainLedger {
 /// It never writes on that transport: the outbox stays the session's (a held one stays held).
 ///
 /// One look at a time (`tick` joins a running one). `stop()` fences it: every step returns once stopped, a control
-/// read after it is left undecided, and `stop()` waits for the running look before it closes the transport, so a look
-/// that resumes after a route move never builds on, or deletes through, a store the next session owns.
+/// read after it is left undecided, and `stop()` waits for the running look (`stopLookCap` at most, then it cancels
+/// it) before it closes the transport, so a look that resumes after a route move never builds on, or deletes
+/// through, a store the next session owns. A close is one task (`closing`) that `stop()` and a new build wait for, so
+/// the next session never opens the same store while a stand-down is still closing it.
 @MainActor
 final class SideMailboxReader {
     let hubID: String
@@ -80,6 +85,8 @@ final class SideMailboxReader {
     private var loopTask: Task<Void, Never>?
     /// The look running now (`tick`).
     private var running: Task<Void, Never>?
+    /// The close of the other transport running now (`closeSide`).
+    private var closing: Task<Void, Never>?
     /// The latest look or stand-down the boot or a scene change started; tests await it.
     private(set) var wake: Task<Void, Never>?
     private var stopped = false
@@ -136,14 +143,42 @@ final class SideMailboxReader {
         }
     }
 
-    /// Fences and waits for the running look, then stops the other transport and closes its store.
+    /// Fences and waits for the running look (`stopLookCap` at most: then it is cancelled), then stops the other
+    /// transport and closes its store, or waits for a close already running.
     func stop() async {
         stopped = true
         loopTask?.cancel()
         loopTask = nil
         wake?.cancel()
-        await running?.value
+        if let running, !(await Self.wait(for: running, cap: timing.stopLookCap)) {
+            Self.logger.notice("side mailbox look cut off at stop")
+            running.cancel()
+        }
         await closeSide()
+    }
+
+    /// Waits for `task` up to `cap`; false when the cap passed first.
+    private static func wait(for task: Task<Void, Never>, cap: Duration) async -> Bool {
+        // `decided`: the first watcher has answered; `ended`: it was the task, not the cap.
+        let outcome = OSAllocatedUnfairLock(initialState: (decided: false, ended: false))
+        var watchers: [Task<Void, Never>] = []
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let finish: @Sendable (Bool) -> Void = { ended in
+                let first = outcome.withLock { state in
+                    guard !state.decided else { return false }
+                    state = (true, ended)
+                    return true
+                }
+                if first { continuation.resume() }
+            }
+            watchers.append(Task { await task.value; finish(true) })
+            watchers.append(Task {
+                try? await Task.sleep(for: cap)
+                finish(false)
+            })
+        }
+        for watcher in watchers { watcher.cancel() }
+        return outcome.withLock { $0.ended }
     }
 
     /// One look at the other transport: the drain owed there, then the outage poll. Only while the app is active.
@@ -297,6 +332,8 @@ final class SideMailboxReader {
         let kind = HubSession.transportKind(of: route)
         let fromStart = whole && !ledger.wasReadFromStart(hubID, kind)
         if let side, side.route != route || fromStart { await closeSide() }
+        // A stand-down's close still running: the build opens the same store only after it.
+        await closing?.value
         guard !stopped, let session else { return nil }
         if side == nil {
             let built: SideTransport
@@ -319,15 +356,25 @@ final class SideMailboxReader {
         return stopped ? nil : side.secure
     }
 
+    /// Stops the other transport and closes its store as one task (`closing`), after any close before it; with no
+    /// transport open, waits for a close still running.
     private func closeSide() async {
-        guard let closing = side else { return }
-        side = nil
-        await (closing.built.transport as? any LiveTransport)?.stop()
-        do {
-            try closing.built.store?.close()
-        } catch {
-            Self.logger.error("the other transport's store not closed: \(Self.describe(error), privacy: .public)")
+        if let open = side {
+            side = nil
+            let previous = closing
+            closing = Task {
+                await previous?.value
+                await (open.built.transport as? any LiveTransport)?.stop()
+                do {
+                    try open.built.store?.close()
+                } catch {
+                    Self.logger.error("the other transport's store not closed: \(Self.describe(error), privacy: .public)")
+                }
+            }
         }
+        guard let task = closing else { return }
+        await task.value
+        if closing == task { closing = nil }
     }
 
     /// An error's type or a refusal's case only: no payload, no record name.

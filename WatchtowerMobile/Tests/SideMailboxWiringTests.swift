@@ -208,7 +208,8 @@ final class SideMailboxWiringTests: XCTestCase {
         bed.clock.advance(30)
 
         let looking = Task { await reader.tick() }
-        await side.readIsHeld()
+        let held = await side.readIsHeld()
+        XCTAssertTrue(held, "the look never reached the relay-zone read")
         let stopping = Task { await reader.stop() }
         await side.release()
         await stopping.value
@@ -223,6 +224,70 @@ final class SideMailboxWiringTests: XCTestCase {
         XCTAssertEqual(late, 0, "nothing reaches the side after its stop")
         await reader.tick()
         XCTAssertEqual(bed.sides.routes.count, 1, "a stopped reader never looks again")
+    }
+
+    /// Final review M2: a look hung on the other transport holds `stop()` for `stopLookCap` at most; then the look is
+    /// cancelled and the transport stopped anyway, and the late look reaches nothing.
+    func testAStopCutsOffAHungLookAtTheCap() async throws {
+        let bed = try await Bed.make(self, on: .relay, stopLookCap: .milliseconds(100))
+        let first = try await bed.orderedSession()
+        let reader = try XCTUnwrap(first.sideReader)
+        bed.fake.crash()
+        await bed.fetch(first)
+        await reader.tick()
+        bed.clock.advance(61)
+        await reader.tick() // the first poll builds the CloudKit side
+        let side = try XCTUnwrap(bed.sides.cloud.first)
+        await side.hold()
+        bed.clock.advance(30)
+        let looking = Task { await reader.tick() }
+        let held = await side.readIsHeld()
+        XCTAssertTrue(held, "the look never reached the relay-zone read")
+
+        var stopped = false
+        let stopping = Task {
+            await reader.stop()
+            stopped = true
+        }
+        try await poll(timeout: 5, { stopped }, "stop() waited past its cap for a look that never answers")
+
+        let stops = await side.stops
+        XCTAssertEqual(stops, 1, "stopped at the cap")
+        await side.release()
+        await stopping.value
+        await looking.value
+        let late = await side.callsAfterStop
+        XCTAssertEqual(late, 0, "the late look reaches nothing")
+    }
+
+    /// Final review M1: a `stop()` that comes while a stand-down is still closing the other transport returns only once
+    /// that close ended, so the next session never opens the same store while it is still closing.
+    func testAStopWaitsForAStandDownStillClosingTheSide() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let first = try await bed.orderedSession()
+        let reader = try XCTUnwrap(first.sideReader)
+        bed.fake.crash()
+        await bed.fetch(first)
+        await reader.tick()
+        bed.clock.advance(61)
+        await reader.tick() // the first poll builds the CloudKit side
+        let side = try XCTUnwrap(bed.sides.cloud.first)
+        await side.holdStop()
+        first.setActive(false)
+        let holding = await side.stopIsHeld()
+        XCTAssertTrue(holding, "the stand-down never stopped the side")
+
+        let stopping = Task {
+            await reader.stop()
+            return await side.stopEnded
+        }
+        try await Task.sleep(for: .milliseconds(50)) // an early return of stop() would happen here
+        await side.releaseStop()
+        let closedFirst = await stopping.value
+
+        let stops = await side.stops
+        XCTAssertTrue(closedFirst, "stop() returned only after the close")
+        XCTAssertEqual(stops, 1, "one close")
     }
 
     /// F4: the CloudKit side's engine stops when the outage ends, and when the app leaves the foreground.

@@ -383,7 +383,11 @@ final class Bed {
     }
 
     static func make(
-        _ test: XCTestCase, on route: TransportKind, hubTransports: [String] = ["cloudkit", "relay"], looksAtWake: Bool = false
+        _ test: XCTestCase,
+        on route: TransportKind,
+        hubTransports: [String] = ["cloudkit", "relay"],
+        looksAtWake: Bool = false,
+        stopLookCap: Duration = .seconds(10)
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
@@ -447,7 +451,8 @@ final class Bed {
             startWork: nil,
             farewellDelivery: AppRoot.FarewellDelivery { _, _ in false },
             sideMailbox: SideMailboxTiming(
-                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }, looksAtWake: looksAtWake)
+                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }, looksAtWake: looksAtWake,
+                stopLookCap: stopLookCap)
         )
         root.linking.refreshLinks()
         test.addTeardownBlock { @MainActor in
@@ -782,7 +787,7 @@ final class SideBuilds {
 
 /// A CloudKit side transport: `inner`'s records behind a lifecycle that counts starts, stops and pulls, records
 /// whether the store's stash leftover was still there at each start, counts calls made after its stop, and can hold a
-/// relay-zone read until the test releases it.
+/// relay-zone read or its stop until the test releases it.
 actor CloudSide: LiveTransport, ConditionalTransport {
     private let inner: RecordingCloud
     private let marker: URL
@@ -793,8 +798,11 @@ actor CloudSide: LiveTransport, ConditionalTransport {
     private(set) var callsAfterStop = 0
     private var holding = false
     private var heldReads: [CheckedContinuation<Void, Never>] = []
-    private var readHeldWaiters: [CheckedContinuation<Void, Never>] = []
     private var readsHeld = 0
+    private var holdingStop = false
+    private var heldStop: CheckedContinuation<Void, Never>?
+    /// A `stop()` has returned (its hold, if any, released).
+    private(set) var stopEnded = false
 
     init(inner: RecordingCloud, marker: URL) {
         self.inner = inner
@@ -812,10 +820,34 @@ actor CloudSide: LiveTransport, ConditionalTransport {
         heldReads = []
     }
 
-    /// Returns once a relay-zone read is waiting.
-    func readIsHeld() async {
-        guard readsHeld == 0 else { return }
-        await withCheckedContinuation { readHeldWaiters.append($0) }
+    /// True once a relay-zone read is waiting; false when none did within `timeout`, so the test fails instead of
+    /// hanging.
+    func readIsHeld(timeout: TimeInterval = 5) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while readsHeld == 0, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return readsHeld > 0
+    }
+
+    /// The next `stop()` waits for `releaseStop()` (a close still running).
+    func holdStop() {
+        holdingStop = true
+    }
+
+    func releaseStop() {
+        holdingStop = false
+        heldStop?.resume()
+        heldStop = nil
+    }
+
+    /// True once a `stop()` is waiting; false when none did within `timeout`.
+    func stopIsHeld(timeout: TimeInterval = 5) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while heldStop == nil, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return heldStop != nil
     }
 
     private func note() {
@@ -836,8 +868,6 @@ actor CloudSide: LiveTransport, ConditionalTransport {
         note()
         if zone == .relay, holding {
             readsHeld += 1
-            for waiter in readHeldWaiters { waiter.resume() }
-            readHeldWaiters = []
             await withCheckedContinuation { heldReads.append($0) }
         }
         return try await inner.changes(in: zone, since: token)
@@ -860,6 +890,10 @@ actor CloudSide: LiveTransport, ConditionalTransport {
 
     func stop() async {
         stops += 1
+        if holdingStop {
+            await withCheckedContinuation { heldStop = $0 }
+        }
+        stopEnded = true
     }
 
     func sendNow() async {}
