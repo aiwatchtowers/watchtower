@@ -253,7 +253,7 @@ final class AppRoot {
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live(transports: transports)
         )
-        root.launch { Set([store.pending?.link.hubID].compactMap { $0 } + store.promoted.keys) }
+        root.launch { Set([store.pending?.link.hubID].compactMap { $0 } + store.promoted.keys + store.unreadablePromotedHubIDs) }
         return root
     }
 
@@ -1018,20 +1018,19 @@ extension AppRoot: LinkHost {
                 return nil
             }
         }
-        defer {
-            if let built {
-                Task { @MainActor in
-                    await built.shutDown()
-                    built.closeDatabases()
-                }
-            }
-        }
+        let sealed: CloudRecord?
         do {
-            return try await session.seal(record)
+            sealed = try await session.seal(record)
         } catch {
             Self.logger.warning("farewell not sealed: \(error.localizedDescription, privacy: .public)")
-            return nil
+            sealed = nil
         }
+        // Closed before returning: the caller removes the hub's files next (a cancel), or a resume opens them.
+        if let built {
+            await built.shutDown()
+            built.closeDatabases()
+        }
+        return sealed
     }
 
     func pendingSlotRemovals() -> [String] {

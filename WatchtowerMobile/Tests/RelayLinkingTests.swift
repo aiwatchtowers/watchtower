@@ -434,6 +434,32 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(host.linkedCalls.last?.record.linkedAt, issued)
     }
 
+    /// Final review M8: one promoted entry this build cannot read (a newer build's case, after a downgrade) is
+    /// skipped; the other confirmed links still read, and every write keeps the unreadable entry as stored.
+    func testAnUnreadablePromotedEntrySkipsOnlyItself() throws {
+        let readable = try seedPromoted(relayCode(), state: .confirmed)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let key = "link.promoted"
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        var entry = try XCTUnwrap(json[otherHub] as? [String: Any])
+        entry["state"] = ["fromANewerBuild": [String: Any]()]
+        json[otherHub] = entry
+        defaults.set(try JSONSerialization.data(withJSONObject: json), forKey: key)
+
+        XCTAssertEqual(store.promoted, [hub: readable], "the readable link is not dropped")
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub])
+
+        var moved = readable
+        moved.state = .promoteSent
+        store.update(moved)
+        XCTAssertEqual(store.promoted[hub]?.state, .promoteSent)
+        store.removePromoted(hub)
+        XCTAssertTrue(store.promoted.isEmpty)
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub], "kept as stored through every write")
+        let kept = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        XCTAssertEqual((kept[otherHub] as? [String: Any])?["state"] as? [String: [String: String]], ["fromANewerBuild": [:]])
+    }
+
     func testRemovingStateDisablesTheOtherRows() {
         let state = RelaySlotsState(macs: ["m1", "m2"], removing: "m1")
         let screen = RelaySlotsModel(state: state, links: [], promoted: [])
