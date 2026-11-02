@@ -99,13 +99,13 @@ func TestKeychainRoundTripThisDeviceOnly(t *testing.T) {
 
 func TestKeychainMalformedItems(t *testing.T) {
 	s := testKeychain(t)
-	if err := (systemKeychain{}).put(s.Service, keychainAccount, []byte("short")); err != nil {
+	if err := (systemKeychain{}).Put(s.Service, keychainAccount, []byte("short")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Load(); !errors.Is(err, errMalformedKeychain) {
 		t.Fatalf("Load with a short item = %v, want errMalformedKeychain", err)
 	}
-	if err := (systemKeychain{}).put(s.Service, keychainStagedAccount, make([]byte, 4*fileLen)); err != nil {
+	if err := (systemKeychain{}).Put(s.Service, keychainStagedAccount, make([]byte, 4*fileLen)); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := s.Staged(); ok || err != nil {
@@ -190,7 +190,7 @@ func TestKeychainNeverLogsKeys(t *testing.T) {
 	errs = append(errs, s.Save(id), s.SaveStaged(id), s.PromoteStaged())
 	_, err = s.Load()
 	errs = append(errs, err)
-	errs = append(errs, (systemKeychain{}).put(s.Service, keychainAccount, []byte("short")))
+	errs = append(errs, (systemKeychain{}).Put(s.Service, keychainAccount, []byte("short")))
 	_, err = s.Load()
 	errs = append(errs, err, s.Delete())
 	for _, err := range errs {

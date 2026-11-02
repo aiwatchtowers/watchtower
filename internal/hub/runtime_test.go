@@ -666,9 +666,13 @@ func TestCloudKitRemoveTakesThePhonesParticipant(t *testing.T) {
 
 // The sweep fallback: the removal fails, the Remove still answers OK, the
 // mark stays pending, and a later pass's sweep removes the participant and
-// clears the mark.
+// clears the mark. Which call meets the failure is a race — the background
+// removal, or the sweep of the link check's pass, which then retries after
+// 60 s of the hub's clock — so the passes run on the fake clock: each probe
+// moves it past any retry and ticks a pass.
 func TestCloudKitAFailedRemovalIsLeftToTheSweep(t *testing.T) {
-	h := startCloudKitHub(t, func(dir string, _ *ckShares) { linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a") }, nil)
+	f := newFakeCadence()
+	h := startCloudKitHub(t, func(dir string, _ *ckShares) { linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a") }, f.configure)
 	h.ck.join("_colleague-a", h.zones()...)
 	removal := "remove_participants:" + h.zones()[0] + ":_colleague-a"
 	h.ck.failNext(removal, 1)
@@ -679,7 +683,11 @@ func TestCloudKitAFailedRemovalIsLeftToTheSweep(t *testing.T) {
 		t.Fatalf("a second unlink: %+v, %v", a, err)
 	}
 	eventually(t, 10*time.Second, "the sweep's removal", func() bool {
-		return h.ck.count(removal) >= 2 && h.sweepMark() == "0"
+		if h.ck.count(removal) >= 2 && h.sweepMark() == "0" {
+			return true
+		}
+		h.tickPasses(f, 2*time.Minute) // past the 60 s sweep retry, and an idle pass due
+		return false
 	})
 	for _, z := range h.zones() {
 		if got := h.ck.members(z); len(got) != 0 {

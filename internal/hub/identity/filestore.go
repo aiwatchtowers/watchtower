@@ -208,6 +208,14 @@ func (s FileStore) DeleteStaged() error {
 	return nil
 }
 
+// Delete removes the live identity file; a missing file is not an error.
+func (s FileStore) Delete() error {
+	if err := os.Remove(s.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("identity: removing the identity: %w", err)
+	}
+	return nil
+}
+
 // privateDir creates dir 0700, or tightens an existing one to 0700.
 func privateDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// fakeKeychain is keychainOps over a map. crashAfter counts the calls that
+// fakeKeychain is KeychainOps over a map. crashAfter counts the calls that
 // still succeed; the call after them fails as if the process died there
 // (nothing written), and so does every later call of that "process" until
 // the test calls restart.
@@ -34,7 +34,7 @@ func (f *fakeKeychain) step() error {
 
 func (f *fakeKeychain) restart() { f.crashAfter, f.calls = -1, 0 }
 
-func (f *fakeKeychain) put(service, account string, data []byte) error {
+func (f *fakeKeychain) Put(service, account string, data []byte) error {
 	if err := f.step(); err != nil {
 		return err
 	}
@@ -43,7 +43,7 @@ func (f *fakeKeychain) put(service, account string, data []byte) error {
 	return nil
 }
 
-func (f *fakeKeychain) get(service, account string, buf []byte) (int, bool, error) {
+func (f *fakeKeychain) Get(service, account string, buf []byte) (int, bool, error) {
 	if f.getErr != nil {
 		return 0, false, f.getErr
 	}
@@ -60,7 +60,7 @@ func (f *fakeKeychain) get(service, account string, buf []byte) (int, bool, erro
 	return len(data), true, nil
 }
 
-func (f *fakeKeychain) del(service, account string) error {
+func (f *fakeKeychain) Del(service, account string) error {
 	if err := f.step(); err != nil {
 		return err
 	}
