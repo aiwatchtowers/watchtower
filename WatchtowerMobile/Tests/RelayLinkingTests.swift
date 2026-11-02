@@ -1154,6 +1154,59 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
     }
 
+    /// Final review I1: a Cancel confirmed while a resume's `promote_pairing` is on the wire waits for that attempt;
+    /// the promote lands first, the slot removal after it, and nothing of the link is left.
+    func testCancelWhileAPromoteIsOnTheWireLeavesNoRowAndNoSlot() async throws {
+        // The account's slot for this Mac, so the promote puts the Mac in slots.
+        let slot = try await relay.open(mac: mac.deviceID).slot
+        try seedPromoted(relayCode(), state: .confirmed, slot: slot)
+        relay.park("promote")
+        let model = makeModel()
+        let resume = Task { await model.resumePromotedLinks() }
+        try await poll({ self.relay.isParked("promote") }, "the promote never went out")
+
+        let cancel = Task { await model.cancelPromoted(hub) }
+        try await poll({ !model.resumer.isLive(hub) }, "the cancel never fenced the attempt")
+        XCTAssertFalse(relay.ops.contains { $0.hasPrefix("removeSlot") }, "the cancel waits for the running attempt")
+        relay.release("promote")
+        let freed = await cancel.value
+        await resume.value
+
+        XCTAssertTrue(freed)
+        XCTAssertEqual(relay.ops.filter { $0.hasPrefix("promote") || $0.hasPrefix("removeSlot") },
+                       ["promote \(slot)", "removeSlot \(mac.deviceID)"])
+        XCTAssertFalse(relay.slots.contains(mac.deviceID), "no slot leaks")
+        XCTAssertTrue(host.linkedCalls.isEmpty, "never finished")
+        XCTAssertNil(host.row(hub))
+        XCTAssertTrue(store.promoted.isEmpty)
+        XCTAssertFalse(try keysHeld())
+        XCTAssertFalse(model.resumer.running.contains(hub))
+    }
+
+    /// Final review I1: the slots screen's Remove of a Mac whose link a background resume is finishing (`prepare`
+    /// parked) stops it before `linked`: no registry row, no slot, no keys.
+    func testRemovingAFinishingMacFromSlotsDuringABackgroundFinishLeavesNoRowAndNoSlot() async throws {
+        try seedPromoted(relayCode(), state: .promoted)
+        relay.slots = [mac.deviceID, "m2", "m3"]
+        host.parksPrepare = true
+        let model = makeModel()
+        let resume = Task { await model.resumePromotedLinks() }
+        try await poll({ self.host.preparedHubIDs.contains(hub) }, "the finish never reached prepare")
+
+        let removal = Task { await model.removeFromSlots(self.mac.deviceID) }
+        try await poll({ !model.resumer.isLive(hub) }, "the removal never fenced the attempt")
+        host.parksPrepare = false
+        await removal.value
+        await resume.value
+
+        XCTAssertTrue(host.linkedCalls.isEmpty, "linked never ran after the cancel")
+        XCTAssertNil(host.row(hub))
+        XCTAssertEqual(relay.slots, ["m2", "m3"])
+        XCTAssertTrue(store.promoted.isEmpty)
+        XCTAssertFalse(try keysHeld())
+        XCTAssertNil(model.relaySlots.failed)
+    }
+
     func testManageMacsAfterConfirmationContinuesTheLinkAfterARemoval() async throws {
         try seedPromoted(relayCode(), state: .needsOwner(.slotsFull), vouchedAgo: 10)
         relay.slots = ["m1", "m2", "m3"]
