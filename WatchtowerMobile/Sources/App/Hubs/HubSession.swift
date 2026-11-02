@@ -311,6 +311,14 @@ final class HubSession {
     /// `transport` sealing and opening with the phone's keys: every write of
     /// the outbox, the uploader and the link flow goes through it.
     @ObservationIgnored private let secure: SecureTransport
+    /// `secure`'s keys: the hub's other transport is sealed and opened with them (`sealing(_:)`).
+    @ObservationIgnored private let sealKeys: any SecureKeyProvider
+    /// The mailbox on the hub's other transport (relay client Phase 3 Task 12), set by `AppRoot.wire` for a hub with
+    /// both routes; stopped with the session.
+    @ObservationIgnored private(set) var sideReader: SideMailboxReader?
+    /// On route `.relay`: since when this session's fetches find the relay unanswered (nil while it answers), on the
+    /// session's clock: the start of an outage for the side reader's 60 s rule (sim rule 12).
+    @ObservationIgnored private(set) var relayUnansweredSince: Date?
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored let uploader: RecordingUploader
@@ -464,6 +472,7 @@ final class HubSession {
         let (store, secure) = (sealed.store, sealed.secure)
         self.store = store
         self.secure = secure
+        sealKeys = sealed.keys
         hasDeviceKeys = sealed.hasDeviceKeys
         self.hubLink = hubLink
 
@@ -1029,6 +1038,7 @@ final class HubSession {
         if owed {
             applyOwed = false
         }
+        await noteRelayAnswer()
         if let remoteError {
             lastFetchError = remoteError.localizedDescription
             let what = "\(trigger), \(Self.describe(depth))"
@@ -1127,6 +1137,8 @@ final class HubSession {
         setUploadRetries(active)
         guard active != isActive else { return }
         isActive = active
+        // The other transport's mailbox: looked at on the return, its CloudKit engine stopped on leaving.
+        sideReader?.activeChanged(active)
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
         guard active else {
@@ -1379,6 +1391,48 @@ final class HubSession {
         route.cloudKitScope != nil ? .cloudKit : .relay
     }
 
+    // MARK: - The other transport's mailbox (relay client Phase 3 Task 12)
+
+    /// Takes `reader` as this hub's side mailbox reader and starts it (`AppRoot.wire`).
+    func attach(_ reader: SideMailboxReader) {
+        sideReader = reader
+        reader.start()
+    }
+
+    /// On route `.relay`: `.available` while the relay answered this session's last op (a refusal is an answer);
+    /// nil on any other route or for a transport without a lifecycle.
+    func relayAvailability() async -> CloudAvailability? {
+        guard case .hostedRelay? = route, let liveTransport else { return nil }
+        return await liveTransport.availability()
+    }
+
+    /// After a fetch's reach on route `.relay`: when the relay stopped answering, kept until it answers again.
+    private func noteRelayAnswer() async {
+        guard let availability = await relayAvailability() else { return }
+        if availability == .available {
+            relayUnansweredSince = nil
+        } else if relayUnansweredSince == nil {
+            relayUnansweredSince = now()
+        }
+    }
+
+    /// `inner`, the hub's other transport, sealed and opened with this session's keys and rollback guard.
+    func sealing(_ inner: any CloudSyncTransport & Sendable) -> SecureTransport {
+        SecureTransport(inner: inner, keys: sealKeys, rollback: store)
+    }
+
+    /// Rule 12: the controls in the other transport's mailbox `side`, through this session's feed (`RelayFeed`).
+    func readOtherControls(over side: SecureTransport, handler: @escaping RelayFeed.SideHandler) async throws -> Int {
+        try await feed.readControls(over: side, handler: handler)
+    }
+
+    /// Rule 15: drains the mailbox `side` this phone left, through this session's feed.
+    func drainOtherMailbox(
+        over side: SecureTransport, keepingDeviceRecord: Bool, handler: @escaping RelayFeed.SideHandler
+    ) async throws -> RelayFeed.DrainOutcome {
+        try await feed.drainMailbox(over: side, keepingDeviceRecord: keepingDeviceRecord, handler: handler)
+    }
+
     /// Opens the keybox a `transport_switched` carries (relay client Phase 3) with this phone's keys for the hub;
     /// nil when it does not open (logged by error type only: the envelope is a secret).
     func openSwitchKeybox(_ sealed: Data) async -> Keybox? {
@@ -1436,7 +1490,7 @@ final class HubSession {
         seqFloor: UInt64,
         observesSuspension: Bool,
         route: HubRoute?
-    ) throws -> (store: ReplicaStore, secure: SecureTransport, hasDeviceKeys: Bool) {
+    ) throws -> (store: ReplicaStore, secure: SecureTransport, keys: any SecureKeyProvider, hasDeviceKeys: Bool) {
         let wired = try deviceKeys(keys)
         let phoneKeys = wired?.keys ?? PhoneKeys.unlinked()
         // The key-less store is in memory: creating its throwaway identity touches no Keychain.
@@ -1456,12 +1510,9 @@ final class HubSession {
             load: { max(try store.envelopeSeqCeiling(), seqFloor) },
             store: { try store.setEnvelopeSeqCeiling($0) }
         )
-        let secure = SecureTransport(
-            inner: transport,
-            keys: try PhoneKeyProvider(store: phoneKeys.store, hubID: phoneKeys.hubID, seq: seq),
-            rollback: store
-        )
-        return (store, secure, wired != nil)
+        let keys = try PhoneKeyProvider(store: phoneKeys.store, hubID: phoneKeys.hubID, seq: seq)
+        let secure = SecureTransport(inner: transport, keys: keys, rollback: store)
+        return (store, secure, keys, wired != nil)
     }
 
     /// Final review (Phone I-2, Desktop I-1): the floor a wipe carried over is stored in the new replica at
@@ -1550,6 +1601,8 @@ final class HubSession {
     /// files.
     func shutDown() async {
         stop()
+        // Its transport stops and its store closes before this session's files are closed or handed on.
+        await sideReader?.stop()
         await bootstrapTask?.value
         // The last outbox pass ends before the transport stops and the caller closes the replica: the session's
         // own pass, then whatever else sits on the outbox's chain (an enqueue's flush, a resend, a withdrawal).

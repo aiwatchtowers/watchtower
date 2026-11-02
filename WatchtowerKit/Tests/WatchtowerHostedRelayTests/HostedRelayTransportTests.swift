@@ -951,6 +951,42 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         XCTAssertEqual(try changesFlags(zone).dropFirst(before).map(\.description), ["3", "3", "0r", "1r"])
     }
 
+    /// Relay client Phase 3 Task 12: a reader of a store another consumer read and compacted (the drain of a mailbox
+    /// the phone left) has every record the server holds buffered again by the next pull.
+    func testReadFromStartBuffersTheWholeZoneAgain() async throws {
+        let (mac, phone) = try await hub()
+        let zone = mailbox(mac, phone)
+        for name in ["a", "b"] { try await macSave(mac, zone, name) }
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.pull()
+        try await transport.compact(in: .relay, keepSince: try buffered(store, .relay).newToken)
+        try await transport.pull()
+        XCTAssertTrue(try buffered(store, .relay).changed.isEmpty, "consumed and compacted")
+
+        try await transport.readFromStart(.relay)
+        try await transport.pull()
+
+        XCTAssertEqual(try buffered(store, .relay).changed.map(\.recordName).sorted(), ["a", "b"])
+        XCTAssertFalse(try store.relayResyncPending(.relay))
+    }
+
+    /// Relay client Phase 3 Task 12, review round 1: the drain pulls the mailbox alone and flushes nothing queued.
+    func testPullOnlyTheMailboxLeavesTheDataZoneAndTheQueue() async throws {
+        let (mac, phone) = try await hub()
+        try await macSave(mac, mailbox(mac, phone), "m")
+        try await macSave(mac, dataZone(mac), "d")
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.save([mailboxRecord("queued")])
+
+        try await transport.pull(only: [.relay])
+
+        XCTAssertEqual(try buffered(store, .relay).changed.map(\.recordName), ["m"])
+        XCTAssertTrue(try buffered(store, .data).changed.isEmpty)
+        XCTAssertTrue(try store.isPending(recordName: "queued", zone: .relay), "nothing flushed")
+    }
+
     /// A flagged resync page that still expires (README: a `since_seq` above the zone's seq, e.g. the
     /// zone was rebuilt mid-resync) is marked stalled and held until a backoff or `start()`.
     func testAResyncThatExpiresPartwayIsHeld() async throws {

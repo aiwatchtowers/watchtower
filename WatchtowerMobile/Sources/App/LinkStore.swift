@@ -163,14 +163,30 @@ struct LinkRecord: Codable, Equatable, Sendable {
         leftTransport = left
     }
 
+    /// The mailbox on `kind`, which this link left, is drained (rule 15): nothing is left to drain there.
+    mutating func leftMailboxDrained(_ kind: TransportKind) {
+        if leftTransport == kind { leftTransport = nil }
+    }
+
     /// Where the phone's transport syncs this link: the relay Mac of a
     /// `.relay` link, else a CloudKit database.
     var route: HubRoute {
-        guard transport == .relay else {
-            return scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
-        }
+        guard transport == .relay else { return cloudKitRoute }
         guard let relayMacDeviceID else { preconditionFailure(Self.relayWithoutMac) }
         return .hostedRelay(macDeviceID: relayMacDeviceID)
+    }
+
+    /// The link's CloudKit database, whatever its transport.
+    var cloudKitRoute: HubRoute {
+        scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
+    }
+
+    /// The hub's route on the transport this link is not on, when the hub has both (relay client Phase 3 Task 12):
+    /// the relay needs the Mac's relay id, CloudKit a hub that offers it (an absent list offers it, as in
+    /// `TransportFollower`'s refusal). nil for a link with one route.
+    var otherRoute: HubRoute? {
+        guard let relayMacDeviceID, hubTransports?.contains(TransportKind.cloudKit.rawValue) ?? true else { return nil }
+        return transport == .relay ? cloudKitRoute : .hostedRelay(macDeviceID: relayMacDeviceID)
     }
 }
 

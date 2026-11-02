@@ -314,6 +314,94 @@ extension RelayFeedTests {
         let deletes = await rig.recorder.conditionalDeletes
         XCTAssertEqual(deletes.count, 1, "one try per read")
     }
+
+    // MARK: - A left transport's mailbox (sim rule 15)
+
+    /// The mailbox on a transport the phone left: the hub's records the feed never read are handled first (the echo
+    /// settles its row, the controls are marked), then everything left is deleted, the phone's own unechoed action
+    /// included. An undecided transport control keeps the drain incomplete and stays; nothing is written there.
+    func testDrainDeletesOwnLeftoversAfterHandlingHubRecords() async throws {
+        let rig = try await OrderedRig.make()
+        _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-41")
+        _ = try await rig.outbox.flush()
+        try await rig.hub.sync() // seq 1 applied: its echo waits unread
+        _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        _ = try await rig.outbox.flush() // seq 2: the phone's own leftover
+        let rejected = await rig.hub.control(.transportSwitchRejected)
+        let switched = await rig.hub.control(.transportSwitched)
+        try await rig.hub.writeControl(rejected)
+        try await rig.hub.writeControl(switched)
+        let saves = await rig.recorder.conditionalSaves.count
+        let log = ControlLog()
+
+        let first = try await rig.feed.drainMailbox(over: rig.phone) { control in
+            await log.add(control)
+            return false
+        }
+
+        XCTAssertEqual(first, .incomplete, "the undecided transport control keeps the mailbox")
+        let left = try await rig.mailboxNames()
+        XCTAssertEqual(left, [try rig.wire(switched)])
+        XCTAssertEqual(try rig.rows().map(\.actionSeq), [2], "seq 1 settled by its echo; seq 2 left to the new route")
+        XCTAssertTrue(try rig.store.isControlHandled(id: rejected.id))
+        XCTAssertFalse(try rig.store.isControlHandled(id: switched.id))
+
+        let second = try await rig.feed.drainMailbox(over: rig.phone) { control in
+            await log.add(control)
+            return true
+        }
+
+        XCTAssertEqual(second, .drained)
+        let drained = try await rig.mailboxNames()
+        XCTAssertTrue(drained.isEmpty)
+        XCTAssertTrue(try rig.store.isControlHandled(id: switched.id))
+        let told = await log.all.map(\.id)
+        XCTAssertEqual(told, [switched.id, switched.id], "only the transport control reaches the follower")
+        let savesAfter = await rig.recorder.conditionalSaves.count
+        XCTAssertEqual(savesAfter, saves, "a drain never writes")
+        XCTAssertEqual(try rig.rows().map(\.actionSeq), [2])
+    }
+
+    /// The owner's ruling on review round 1: on CloudKit the drain keeps the phone's own `device` record (both hubs'
+    /// cleanup keeps that lane); on the relay it goes with the rest (rule 15).
+    func testADrainOnCloudKitKeepsTheDeviceRecord() async throws {
+        for keeping in [true, false] {
+            let rig = try await OrderedRig.make()
+            let device = CloudRecord(
+                recordName: "device-\(TestE2E.deviceID.uuidString)", zone: .relay, kind: RelayRecordKind.device.rawValue,
+                modifiedAt: OrderedRig.base, payload: Data("{}".utf8))
+            try await rig.phone.save([device])
+            _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+            _ = try await rig.outbox.flush()
+            let deviceWire = try rig.phone.wireName(plain: device.recordName, zone: .relay)
+
+            let outcome = try await rig.feed.drainMailbox(over: rig.phone, keepingDeviceRecord: keeping) { _ in true }
+
+            XCTAssertEqual(outcome, .drained, "keeping \(keeping)")
+            let left = try await rig.mailboxNames()
+            XCTAssertEqual(left, keeping ? [deviceWire] : [], "keeping \(keeping)")
+        }
+    }
+
+    /// An `applied` echo the drain settles fires `onActionApplied` once, as a poll does (review round 1, F9).
+    func testADrainFiresOnActionAppliedForASettledEcho() async throws {
+        let fired = expectation(description: "onActionApplied")
+        let count = Counter()
+        let rig = try await OrderedRig.make(onActionApplied: { // swiftlint:disable:this trailing_closure
+            await count.bump()
+            fired.fulfill()
+        })
+        _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-41")
+        _ = try await rig.outbox.flush()
+        try await rig.hub.sync()
+
+        let outcome = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+
+        XCTAssertEqual(outcome, .drained)
+        await fulfillment(of: [fired], timeout: 5)
+        let fires = await count.value
+        XCTAssertEqual(fires, 1)
+    }
 }
 
 private actor Counter {
