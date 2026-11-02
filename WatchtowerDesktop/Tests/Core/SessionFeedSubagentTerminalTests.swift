@@ -3,7 +3,13 @@ import XCTest
 
 @MainActor
 final class SessionFeedSubagentTerminalTests: XCTestCase {
-    private let now = Date()
+    private var now = Date.distantPast
+
+    override func setUp() async throws {
+        try await super.setUp()
+        now = Date()
+    }
+
     private final class Runner: CLIRunnerProtocol, @unchecked Sendable {
         let childID = "child"
         let parentID = "parent"
