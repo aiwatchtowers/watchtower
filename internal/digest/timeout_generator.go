@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // DaemonAICallTimeout bounds a single AI subprocess call made from the
@@ -112,7 +113,7 @@ func (g *timeoutGenerator) timedOut(parent, ctx context.Context, err error) bool
 }
 
 func (g *timeoutGenerator) deadlineError(err error) error {
-	return WithCause(fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded), ErrAICall)
+	return providers.WithFailure("", providers.Timeout, WithCause(fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded), errors.Join(err, ErrAICall)))
 }
 
 // ErrAICall marks a failure of an AI call that says nothing about the
@@ -127,6 +128,16 @@ var ErrAICall = errors.New("ai call failed")
 
 // aiTransportFailure reports the failures ErrAICall stands for.
 func aiTransportFailure(err error) bool {
+	var failure *providers.Failure
+	if errors.As(err, &failure) {
+		switch failure.Category {
+		case providers.Transport, providers.Timeout, providers.Auth, providers.Overload, providers.RateLimit:
+			return true
+		case providers.Unknown: // preserve historical transport handling below
+		default:
+			return false
+		}
+	}
 	var execErr *exec.Error
 	var pathErr *fs.PathError
 	var exitErr *exec.ExitError

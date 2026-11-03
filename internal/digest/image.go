@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"watchtower/internal/fsutil"
+	"watchtower/internal/providers"
 )
 
 // ImageGenerator is a Generator backend that can also take one image with
@@ -23,7 +24,7 @@ type ImageGenerator interface {
 
 // errNotImageCapable is what a wrapper's GenerateWithImage returns when the
 // generator it wraps takes no images; ImageCapable says so before a call.
-var errNotImageCapable = errors.New("the AI provider does not take images")
+var errNotImageCapable = providers.CapabilityError("", providers.Image, errors.New("the AI provider does not take images"))
 
 // maxImageInput bounds the image file one call sends (the pass downscales
 // anything larger before it gets here).
@@ -80,13 +81,12 @@ func imageArgs(model, systemPromptFile string) []string {
 		"--model", model,
 		"--no-session-persistence",
 		"--tools", "",
-		"--strict-mcp-config",
 		"--setting-sources", "project,local",
 	}
 	if systemPromptFile != "" {
 		args = append(args, "--system-prompt-file", systemPromptFile)
 	}
-	return args
+	return append(args, providers.ClaudeNoToolsArgs()...)
 }
 
 // The stream-json user line, the shape internal/chat/attachments.go sends
@@ -141,6 +141,7 @@ func parseStreamResult(output []byte) (*cliResponse, error) {
 		}
 		var ev cliResponse
 		if err := json.Unmarshal(line, &ev); err == nil && ev.Type == "result" {
+			ev.limit = providers.ClaudeResultLimit(output)
 			return &ev, nil
 		}
 	}
@@ -217,7 +218,7 @@ func (g *ClaudeGenerator) GenerateWithImage(ctx context.Context, systemPrompt, u
 
 	model := g.modelForContext(ctx)
 	// The usage estimate (no envelope) covers the text only, not the image.
-	resp, err := g.runClaude(ctx, model, systemPrompt+userMessage, imageArgs(model, systemPromptFile),
+	resp, err := g.runClaude(ctx, providers.Image, model, systemPrompt+userMessage, imageArgs(model, systemPromptFile),
 		bytes.NewReader(line), dir, parseStreamResult, payloads...)
 	if err != nil {
 		return "", nil, err

@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // Usage holds token metrics from an AI call.
@@ -58,6 +59,8 @@ type resultUsage struct {
 
 // cliResponse is the JSON structure returned by `claude --output-format json`.
 type cliResponse struct {
+	Error      json.RawMessage `json:"error"`
+	limit      *providers.ClaudeRateLimitInfo
 	Type       string `json:"type"`
 	Subtype    string `json:"subtype"`
 	Result     string `json:"result"`
@@ -78,6 +81,7 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 	if len(trimmed) > 0 && trimmed[0] == '{' {
 		var resp cliResponse
 		if err := json.Unmarshal(trimmed, &resp); err == nil {
+			resp.limit = providers.ClaudeResultLimit(output)
 			return &resp, nil
 		}
 	}
@@ -90,6 +94,7 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 		}
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].Type == "result" {
+				events[i].limit = providers.ClaudeResultLimit(output)
 				return &events[i], nil
 			}
 		}
@@ -719,6 +724,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			recordClaude(ctx, c.model, u, cmd.Process != nil, start, runErr, systemPrompt+userMessage, streamed.String())
 		}()
 		fail := func(err error) {
+			err = providers.ContextFailure("claude", ctx, providers.ProcessFailure("claude", err))
 			runErr = err
 			errCh <- err
 		}
@@ -760,6 +766,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// is empty in this case; see internal/digest/generator.go's
 		// errorEnvelopeMessage for the same pattern on the batch path).
 
+		var limits providers.ClaudeLimitTracker
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -771,7 +778,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				continue
 			}
 
+			hint := limits.Observe([]byte(line))
 			if event.Type == "result" {
+				event.limit = hint
 				captured := event
 				lastResult = &captured
 				if event.SessionID != "" {
@@ -822,7 +831,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// its own message is always more actionable than a bare exit code or
 		// empty stderr, so it takes priority over classifyError below.
 		if lastResult != nil && lastResult.IsError {
-			fail(logredact.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result)))
+			fail(providers.ContextFailure("claude", ctx, providers.ClaudeResultFailure(lastResult.Type, lastResult.Subtype, lastResult.IsError, lastResult.Error, lastResult.Result, lastResult.limit, withCause(logredact.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result)), waitErr))))
 			return
 		}
 
@@ -838,6 +847,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // the full response text and token usage. The sessionID argument is ignored
 // (see Query).
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (text string, _ *Usage, err error) {
+	defer func() { err = providers.ContextFailure("claude", ctx, providers.ProcessFailure("claude", err)) }()
 	args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "json")
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	// cmd.Output starts the child before it blocks; the parent's read ends
@@ -877,8 +887,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		if errors.As(err, &exitErr) {
 			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
 				envelope = &resp.resultUsage
-				return "", nil, logredact.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
-					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result))
+				return "", nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, withCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
+					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result)), exitErr))
 			}
 		}
 		return "", nil, classifyError(err, stderrBuf.String())
@@ -892,7 +902,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	envelope = &resp.resultUsage
 
 	if resp.IsError {
-		return "", nil, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result))
+		return "", nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result)))
 	}
 
 	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
@@ -908,6 +918,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 // streamEvent represents a JSON event from Claude Code CLI stream-json output.
 type streamEvent struct {
+	Error     json.RawMessage `json:"error"`
+	limit     *providers.ClaudeRateLimitInfo
 	Type      string         `json:"type"`
 	Subtype   string         `json:"subtype"`
 	SessionID string         `json:"session_id"`
@@ -989,7 +1001,7 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 func classifyError(err error, stderr string) error {
 	// Check if claude binary is not found
 	if errors.Is(err, exec.ErrNotFound) {
-		return fmt.Errorf("claude CLI not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code")
+		return withCause(fmt.Errorf("claude CLI not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code"), err)
 	}
 
 	// Check exit error for details
@@ -1002,10 +1014,31 @@ func classifyError(err error, stderr string) error {
 		}
 
 		if stderrMsg != "" {
-			return logredact.Errorf("claude CLI failed (exit %d): %s", code, logredact.Text(stderrMsg))
+			return withCause(logredact.Errorf("claude CLI failed (exit %d): %s", code, logredact.Text(stderrMsg)), exitErr)
 		}
-		return fmt.Errorf("claude CLI failed with exit code %d", code)
+		return withCause(fmt.Errorf("claude CLI failed with exit code %d", code), exitErr)
 	}
 
 	return fmt.Errorf("claude CLI error: %w", err)
+}
+
+// withCause preserves CLI exit errors behind an owner-readable diagnostic.
+func withCause(message, cause error) error {
+	if cause == nil {
+		return message
+	}
+	return cliCause{message, cause}
+}
+
+type cliCause struct{ message, cause error }
+
+func (e cliCause) Error() string   { return e.message.Error() }
+func (e cliCause) Unwrap() []error { return []error{e.message, e.cause} }
+
+// InvocationProfile keeps readonly review separate from tool-bearing clients.
+func (c *Client) InvocationProfile() providers.InvocationProfile {
+	if c.dbPath == "" && c.readFolder != "" {
+		return providers.ReviewReadonly
+	}
+	return providers.ToolPreflight
 }

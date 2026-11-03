@@ -55,7 +55,7 @@ type codexLayer struct {
 // hides must not slip through.
 func ownerServerNames(home, cwd string) ([]string, error) {
 	var names []string
-	markers := []string{".git"}
+	markerSets := [][]string{{".git"}}
 	for _, p := range []string{
 		filepath.Join(home, "config.toml"),
 		filepath.Join(systemConfigDir, "config.toml"),
@@ -67,10 +67,18 @@ func ownerServerNames(home, cwd string) ([]string, error) {
 		}
 		names = append(names, sortedKeys(layer.MCPServers)...)
 		if layer.ProjectRootMarkers != nil {
-			markers = layer.ProjectRootMarkers
+			markerSets = append(markerSets, layer.ProjectRootMarkers)
 		}
 	}
-	for _, dir := range projectDirs(cwd, markers) {
+	// Enumerate a conservative superset across marker choices. User markers
+	// outrank system defaults, while legacy managed layers differ by CLI
+	// version; taking every candidate root cannot hide a merged MCP server.
+	var dirs []string
+	for _, markers := range markerSets {
+		dirs = append(dirs, projectDirs(cwd, markers)...)
+	}
+	slices.Sort(dirs)
+	for _, dir := range slices.Compact(dirs) {
 		layer, err := readLayer(filepath.Join(dir, ".codex", "config.toml"))
 		if err != nil {
 			return nil, err
@@ -108,12 +116,12 @@ func hasMarker(dir string, markers []string) bool {
 	return false
 }
 
-// readLayer is one config layer; empty when the file is missing or
-// unreadable for permissions.
+// readLayer is one config layer; a missing file is empty. Unreadable
+// files are errors: isolation must fail closed.
 func readLayer(path string) (codexLayer, error) {
 	var layer codexLayer
 	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+	if errors.Is(err, os.ErrNotExist) {
 		return layer, nil
 	}
 	if err != nil {
