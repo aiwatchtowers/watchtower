@@ -251,3 +251,61 @@ func TestAutomationsCLI_ReplyConfirmDetailQuotesRecipeText(t *testing.T) {
 	assert.Equal(t, `Card: "x\nButton: Approve"`, lines[1])
 	assert.Equal(t, `Button: "Ok\r\nCard: y" (sends "ok")`, lines[2])
 }
+
+// replyBlocksDoc is a stored block document whose list row carries a Reply:
+// with replyCardActions (2) the row's Reply is flattened index 2.
+const replyBlocksDoc = `{"v":1,"blocks":[{"type":"list","rows":[{"title":"A-2","actions":[` +
+	`{"label":"Later","kind":"reply","reply":"later","data":{"row":2}}]}],"empty":""}]}`
+
+// seedBlocksReplyCard is seedReplyCard with a block document and a hash.
+func seedBlocksReplyCard(t *testing.T, d *db.DB, a int64, hash string) int64 {
+	t.Helper()
+	out := seedReplyCard(t, d, a, replyCardActions)
+	_, err := d.Exec(`UPDATE automation_outputs SET blocks_json = ?, content_hash = ? WHERE id = ?`, replyBlocksDoc, hash, out)
+	require.NoError(t, err)
+	return out
+}
+
+func TestAutomationsCLI_ReplyPressesABlockActionByFlattenedIndex(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "triage", replyRecipeText)
+	out := seedBlocksReplyCard(t, c.d, a.ID, "h1")
+	asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+	withReplyWake(t)
+
+	got := runAutomationsJSON(t, "reply", "--output", idArg(out), "--action", "2", "--content-hash", "h1")
+	run, err := c.d.GetAutomationRun(int64(got["run_id"].(float64)))
+	require.NoError(t, err)
+	var p db.ReplyPayload
+	require.NoError(t, json.Unmarshal([]byte(run.EventJSON), &p))
+	assert.Equal(t, 2, p.Reply.Action)
+	assert.Equal(t, "later", p.Reply.Value)
+	assert.JSONEq(t, `{"row":2}`, string(p.Reply.Data))
+	assert.Equal(t, "h1", p.Reply.ContentHash)
+	require.Len(t, *asked, 1)
+	assert.Contains(t, (*asked)[0].Detail, `Button: "Later" (sends "later")`)
+
+	_, err = runAutomations(t, "reply", "--output", idArg(out), "--action", "3")
+	require.ErrorIs(t, err, db.ErrNotAReplyAction, "an index past the flattened list")
+}
+
+// AUTO-06: a press on a card that changed since it was drawn queues nothing.
+func TestAutomationsCLI_ReplyRefusedWhenCardChanged(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "triage", replyRecipeText)
+	out := seedBlocksReplyCard(t, c.d, a.ID, "h2")
+	asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+	wakes := withReplyWake(t)
+
+	_, err := runAutomations(t, "reply", "--output", idArg(out), "--action", "2", "--content-hash", "h1")
+	require.ErrorIs(t, err, db.ErrOutputChanged)
+	assert.Contains(t, err.Error(), "This card changed — look again")
+	assert.Zero(t, replyRunCount(t, c.d))
+	assertNotPressed(t, c.d, out)
+	assert.Empty(t, *asked, "the owner is never asked about a stale card")
+	assert.Zero(t, *wakes)
+
+	// Without the flag the press works as before the content hash.
+	got := runAutomationsJSON(t, "reply", "--output", idArg(out), "--action", "0")
+	assert.NotZero(t, got["run_id"])
+}

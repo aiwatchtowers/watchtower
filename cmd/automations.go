@@ -46,6 +46,7 @@ type automationsFlags struct {
 	Render            bool     // install-template --render
 	Output            int64    // reply --output
 	Action            int      // reply --action
+	ContentHash       string   // reply --content-hash ("" = not checked)
 	Slug              string   // validate --slug, with "-" (stdin)
 }
 
@@ -126,7 +127,10 @@ func init() {
 	outputs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many outputs (default 20)")
 	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, briefing, report)")
 	reply.Flags().Int64Var(&autoFlags.Output, "output", 0, "the Inbox card's output id (required)")
-	reply.Flags().IntVar(&autoFlags.Action, "action", 0, "the 0-based index of the card's Reply button (required)")
+	reply.Flags().IntVar(&autoFlags.Action, "action", 0,
+		"the 0-based index of the Reply button in the card's flattened action list: the card's own actions, then each block action in document order (required)")
+	reply.Flags().StringVar(&autoFlags.ContentHash, "content-hash", "",
+		"the content hash of the card as drawn: the press is refused when the card changed since")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
 		confirm, save, del, outputs, wake, auto, reply, reset, upgrade)
 }

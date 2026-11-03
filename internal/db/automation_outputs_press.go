@@ -19,6 +19,10 @@ var (
 	// ErrOutputAutomationNotRunnable refuses a press while the card's
 	// automation cannot run (off, unconfirmed, unreadable or removed).
 	ErrOutputAutomationNotRunnable = errors.New("the card's automation cannot run")
+	// ErrOutputChanged refuses a press made on a drawn version of the card
+	// whose content_hash is no longer the row's: a living card was rewritten
+	// between drawing and pressing.
+	ErrOutputChanged = errors.New("This card changed — look again") //nolint:staticcheck // ST1005: shown to the owner as is
 )
 
 // AlreadyPressedError refuses a second press of a card: it carries the run
@@ -40,12 +44,16 @@ type ReplyPayload struct {
 
 // ReplyTrigger is what the script sees as trigger.reply. Data is the pressed
 // action's stored data (JSON null when it has none), never the caller's.
+// ContentHash is the card's content_hash the press resolved against (empty on
+// a card from before content hashes, and in a payload from before this
+// field): the executor cancels the run when the card no longer has it.
 type ReplyTrigger struct {
-	OutputID int64           `json:"output_id"`
-	Action   int             `json:"action"`
-	Value    string          `json:"value"`
-	Data     json.RawMessage `json:"data"`
-	Card     ReplyCard       `json:"card"`
+	OutputID    int64           `json:"output_id"`
+	Action      int             `json:"action"`
+	Value       string          `json:"value"`
+	Data        json.RawMessage `json:"data"`
+	Card        ReplyCard       `json:"card"`
+	ContentHash string          `json:"content_hash,omitempty"`
 }
 
 // ReplyCard is the pressed card's title and link.
@@ -67,11 +75,63 @@ func decodeInboxActions(s string) ([]InboxAction, error) {
 	return actions, nil
 }
 
+// FlattenStoredInboxActions is the card's flattened action list — the press
+// address of the Inbox builder A spec — read from a stored row: the card's
+// own actions, then each block action of blocksJSON in document order (a
+// list's row actions in row order, an actions block's actions in order).
+// It mirrors blocks.FlattenActions over the stored document (blocks imports
+// db, so db cannot call it); the blocks fixture test pins the two to the same
+// list. A document that does not decode, or of a version other than 1, is an
+// error, never a shorter list.
+func FlattenStoredInboxActions(card []InboxAction, blocksJSON string) ([]InboxAction, error) {
+	out := append([]InboxAction{}, card...)
+	if blocksJSON == "" {
+		return out, nil
+	}
+	var doc struct {
+		V      *int `json:"v"`
+		Blocks []struct {
+			Type    string          `json:"type"`
+			Rows    json.RawMessage `json:"rows"`
+			Actions json.RawMessage `json:"actions"`
+		} `json:"blocks"`
+	}
+	if err := json.Unmarshal([]byte(blocksJSON), &doc); err != nil {
+		return nil, fmt.Errorf("decoding blocks_json: %w", err)
+	}
+	if doc.V == nil || *doc.V != 1 {
+		return nil, errors.New("decoding blocks_json: not a version 1 document")
+	}
+	for i, b := range doc.Blocks {
+		switch b.Type {
+		case "list":
+			var rows []struct {
+				Actions []InboxAction `json:"actions"`
+			}
+			if err := json.Unmarshal(b.Rows, &rows); err != nil {
+				return nil, fmt.Errorf("decoding blocks_json: block %d rows: %w", i, err)
+			}
+			for _, r := range rows {
+				out = append(out, r.Actions...)
+			}
+		case "actions":
+			var actions []InboxAction
+			if err := json.Unmarshal(b.Actions, &actions); err != nil {
+				return nil, fmt.Errorf("decoding blocks_json: block %d actions: %w", i, err)
+			}
+			out = append(out, actions...)
+		}
+	}
+	return out, nil
+}
+
 // pressTarget is what a press reads of the card and its automation.
 type pressTarget struct {
 	automationID     int64
 	title, link      string
 	actions          string
+	blocks           string
+	contentHash      string
 	closed, runnable bool
 	pressedRunID     sql.NullInt64
 	pressed          bool
@@ -81,13 +141,13 @@ func readPressTargetTx(tx *sql.Tx, outputID int64) (pressTarget, error) {
 	var p pressTarget
 	// runnableAutomationSQL's columns are unqualified; none of them is an
 	// automation_outputs column, so they resolve to a.
-	err := tx.QueryRow(`SELECT o.automation_id, o.title, o.link, o.actions_json,
+	err := tx.QueryRow(`SELECT o.automation_id, o.title, o.link, o.actions_json, o.blocks_json, o.content_hash,
 			o.done_at IS NOT NULL OR o.dismissed_at IS NOT NULL,
 			`+runnableAutomationSQL+`,
 			o.pressed_at IS NOT NULL, o.pressed_run_id
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
 		WHERE o.id = ? AND o.kind = 'inbox'`, outputID).Scan(&p.automationID, &p.title, &p.link, &p.actions,
-		&p.closed, &p.runnable, &p.pressed, &p.pressedRunID)
+		&p.blocks, &p.contentHash, &p.closed, &p.runnable, &p.pressed, &p.pressedRunID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, fmt.Errorf("inbox card %d: %w", outputID, ErrOutputNotFound)
 	}
@@ -97,9 +157,14 @@ func readPressTargetTx(tx *sql.Tx, outputID int64) (pressTarget, error) {
 	return p, nil
 }
 
-// replyActionAt returns the Reply action at index of the stored actions.
+// replyActionAt returns the Reply action at index of the card's flattened
+// action list (FlattenStoredInboxActions).
 func replyActionAt(p pressTarget, outputID int64, index int) (InboxAction, error) {
-	actions, err := decodeInboxActions(p.actions)
+	card, err := decodeInboxActions(p.actions)
+	if err != nil {
+		return InboxAction{}, fmt.Errorf("inbox card %d: %w", outputID, err)
+	}
+	actions, err := FlattenStoredInboxActions(card, p.blocks)
 	if err != nil {
 		return InboxAction{}, fmt.Errorf("inbox card %d: %w", outputID, err)
 	}
@@ -110,12 +175,16 @@ func replyActionAt(p pressTarget, outputID int64, index int) (InboxAction, error
 }
 
 // PressInboxOutputAction records the owner's one press of the Reply action
-// at actionIndex of inbox card outputID and queues its trigger='reply' run,
-// in one transaction. Refusals, checked in this order, write nothing:
-// ErrOutputNotFound, ErrOutputClosed (done or dismissed), ErrNotAReplyAction,
+// at actionIndex of inbox card outputID's flattened action list and queues
+// its trigger='reply' run, in one transaction. contentHash is the hash of
+// the card the owner pressed on (empty skips the check: the CLI by hand, an
+// older Desktop). Refusals, checked in this order, write nothing:
+// ErrOutputNotFound, ErrOutputChanged (contentHash is not the row's),
+// ErrOutputClosed (done or dismissed), ErrNotAReplyAction,
 // *AlreadyPressedError for a card already pressed, and
-// ErrOutputAutomationNotRunnable. The run's ReplyPayload is built from the stored row.
-func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, now time.Time) (runID int64, err error) {
+// ErrOutputAutomationNotRunnable. The run's ReplyPayload is built from the
+// stored row and carries the row's content_hash.
+func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, contentHash string, now time.Time) (runID int64, err error) {
 	if err := requireRunTime(now, fmt.Sprintf("pressing inbox card %d", outputID)); err != nil {
 		return 0, err
 	}
@@ -128,6 +197,9 @@ func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, now time.T
 	p, err := readPressTargetTx(tx, outputID)
 	if err != nil {
 		return 0, err
+	}
+	if contentHash != "" && contentHash != p.contentHash {
+		return 0, fmt.Errorf("inbox card %d: %w", outputID, ErrOutputChanged)
 	}
 	if err := pressRefusal(p, outputID); err != nil {
 		return 0, err
@@ -150,7 +222,7 @@ func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, now time.T
 		data = json.RawMessage(`null`)
 	}
 	payload, err := json.Marshal(ReplyPayload{Reply: ReplyTrigger{OutputID: outputID, Action: actionIndex,
-		Value: action.Reply, Data: data, Card: ReplyCard{Title: p.title, Link: p.link}}})
+		Value: action.Reply, Data: data, Card: ReplyCard{Title: p.title, Link: p.link}, ContentHash: p.contentHash}})
 	if err != nil {
 		return 0, fmt.Errorf("pressing inbox card %d: encoding the reply: %w", outputID, err)
 	}
