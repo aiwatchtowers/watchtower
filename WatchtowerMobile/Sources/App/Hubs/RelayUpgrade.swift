@@ -63,6 +63,8 @@ enum RelayUpgradeRefusal: Equatable, Sendable {
         switch self {
         case .noRelayIdentity, .relayOff:
             nil
+        case .vouch(.updateRequired):
+            "Update Watchtower on this iPhone to move \(macName) to Relay."
         case .vouch(let refusal):
             Self.linkReason(refusal).message(macName: macName)
         case .tooSoon(let retryAt):
@@ -76,7 +78,7 @@ enum RelayUpgradeRefusal: Equatable, Sendable {
         case .readerNotConfirmed:
             "\(macName) didn't confirm Relay. Update Watchtower on the Mac and try again."
         case .replacementLimit:
-            PromotedLink.Reason.replacementLimit.message(macName: macName)
+            "\(macName) stays on iCloud: too many Mac changes on Relay this month. Try again later."
         }
     }
 
@@ -86,8 +88,8 @@ enum RelayUpgradeRefusal: Equatable, Sendable {
         return nil
     }
 
-    /// The Task 10 row's reason for the same refusal (Owner approval 3). A transient answer is never kept as a
-    /// refusal; it reads as "not confirmed".
+    /// The Task 10 row's reason for the same refusal (Owner approval 3); `updateRequired` has its own upgrade text
+    /// (ask #997). A transient answer is never kept as a refusal; it reads as "not confirmed".
     static func linkReason(_ refusal: HostedRelayPairing.VouchRefusal) -> PromotedLink.Reason {
         switch refusal {
         case .notPaying: .notPaying
@@ -189,11 +191,37 @@ struct RelayUpgradeRecord: Codable, Equatable, Sendable {
     /// When `add_slot` succeeded (or found the Mac in the slots): the reader wait's start. Set, the phone holds the
     /// Mac's relay slot until the link is unlinked (a refusal keeps it, Open decision 5).
     var slotSince: Date?
+    /// The Mac's relay id from the grant, kept from `addingSlot` on: an unlink there frees whatever slot the relay may
+    /// hold for it (an `add_slot` whose success was not saved yet).
+    var macDeviceID: String?
+    /// The request `requestID` is in the outbox's queue (the row named it first, so its answer always finds the row
+    /// waiting).
+    var askQueued = false
 
     /// An unlink frees the Mac's slot (R14).
     var holdsSlot: Bool { slotSince != nil }
+    /// The relay may hold the Mac's slot for this phone: `add_slot` succeeded, or may have (`addingSlot`).
+    var mayHoldSlot: Bool { holdsSlot || step == .addingSlot }
     /// A pass has something left to do.
     var isPending: Bool { refusal == nil && step != .switched }
+}
+
+/// Where an upgrade stands after a call (`HubSession.upgradeToRelay()`).
+enum RelayUpgradeOutcome: Equatable, Sendable {
+    /// Nothing was decided or written (the relay did not answer, the keychain is locked): the upgrade is asked again
+    /// at the next launch pass, return to the foreground or fetch while this process runs.
+    case waiting
+    /// Under way at this step: the next passes go on with it.
+    case underWay(RelayUpgradeStep)
+    /// The hub runs on the relay with this phone.
+    case switched
+    /// Ended; kept on the row unless a first check refused.
+    case refused(RelayUpgradeRefusal)
+
+    var refusal: RelayUpgradeRefusal? {
+        if case .refused(let refusal) = self { return refusal }
+        return nil
+    }
 }
 
 /// What the upgrade needs from the app (`AppRoot`): the hub's row, the relay, the device record and the relay
@@ -230,8 +258,11 @@ final class RelayUpgrader {
     private weak var host: (any RelayUpgradeHost)?
     private let follower: TransportFollower
     private let now: @MainActor () -> Date
-    private var last: Task<RelayUpgradeRefusal?, Never>?
+    private var last: Task<RelayUpgradeOutcome, Never>?
     private var lastResumeAt: Date?
+    /// The owner asked for the upgrade and no pass has decided anything yet (no record written, no refusal): the
+    /// resumer starts it. In memory only: a kill before the first decision forgets it, and the owner asks again.
+    private var wanted = false
     private var stopped = false
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RelayUpgrade")
 
@@ -243,25 +274,27 @@ final class RelayUpgrader {
         self.now = now
     }
 
-    /// Starts the upgrade, or goes on with the one under way; after a refusal, starts it again from the device
-    /// record (a slot already held is reused). Returns the refusal that ended it, else nil.
-    func upgrade() async -> RelayUpgradeRefusal? {
+    /// Starts the upgrade, or goes on with the one under way; after a refusal, or once switched while the hub is back
+    /// on iCloud, starts it again from the device record (a slot already held is reused).
+    func upgrade() async -> RelayUpgradeOutcome {
         lastResumeAt = now()
-        return await serialized(start: true)
+        wanted = true
+        return await startPass(start: true).value
     }
 
-    /// Goes on with a pending upgrade (none: nothing, no relay call), at launch and on the return to the foreground.
+    /// Goes on with a pending upgrade, or one asked for that decided nothing yet (`wanted`); none: nothing, no relay
+    /// call. At launch and on the return to the foreground.
     @discardableResult
-    func resume() async -> RelayUpgradeRefusal? {
+    func resume() async -> RelayUpgradeOutcome? {
         guard resumes(throttled: false) else { return nil }
-        return await serialized(start: false)
+        return await startPass(start: wanted).value
     }
 
-    /// After a fetch: a pass for a pending upgrade, at most every `RelayUpgrade.resumeInterval`, started now and not
-    /// awaited (`idle()` waits for it).
+    /// After a fetch: as `resume()`, at most every `RelayUpgrade.resumeInterval`, started now and not awaited
+    /// (`idle()` waits for it).
     func resumeAfterFetch() {
         guard resumes(throttled: true) else { return }
-        _ = startPass(start: false)
+        _ = startPass(start: wanted)
     }
 
     /// Returns once the passes started so far ended.
@@ -270,7 +303,7 @@ final class RelayUpgrader {
     }
 
     private func resumes(throttled: Bool) -> Bool {
-        guard !stopped, host?.followerLink(hubID: hubID)?.relayUpgrade?.isPending == true else { return false }
+        guard !stopped, wanted || host?.followerLink(hubID: hubID)?.relayUpgrade?.isPending == true else { return false }
         if throttled, let lastResumeAt, now().timeIntervalSince(lastResumeAt) < RelayUpgrade.resumeInterval { return false }
         lastResumeAt = now()
         return true
@@ -281,19 +314,24 @@ final class RelayUpgrader {
         stopped = true
     }
 
-    private func serialized(start: Bool) async -> RelayUpgradeRefusal? {
-        await startPass(start: start).value
-    }
-
-    /// A pass after the ones started before it, registered at once.
-    private func startPass(start: Bool) -> Task<RelayUpgradeRefusal?, Never> {
+    /// A pass after the ones started before it, registered at once; its outcome read from the row it left.
+    private func startPass(start: Bool) -> Task<RelayUpgradeOutcome, Never> {
         let previous = last
         let pass = Task {
             _ = await previous?.value
-            return await self.pass(start: start)
+            let outcome = self.outcome(await self.pass(start: start))
+            if outcome != .waiting { self.wanted = false }
+            return outcome
         }
         last = pass
         return pass
+    }
+
+    private func outcome(_ refusal: RelayUpgradeRefusal?) -> RelayUpgradeOutcome {
+        if let refusal { return .refused(refusal) }
+        guard let upgrade = host?.followerLink(hubID: hubID)?.relayUpgrade else { return .waiting }
+        if let refusal = upgrade.refusal { return .refused(refusal) }
+        return upgrade.step == .switched ? .switched : .underWay(upgrade.step)
     }
 
     // MARK: - The hub's rejection
@@ -309,6 +347,8 @@ final class RelayUpgrader {
             return true
         }
         let after = TimeInterval(control.retryAfterS ?? 0)
+        // An answer proves the request left the phone.
+        upgrade.askQueued = true
         switch control.reason {
         case RelayUpgrade.tooSoon: upgrade.refusal = .tooSoon(retryAt: now().addingTimeInterval(after))
         case RelayUpgrade.notPaying: upgrade.refusal = .notPaying
@@ -339,14 +379,14 @@ final class RelayUpgrader {
         guard !stopped, let host, let session, let link = host.followerLink(hubID: hubID) else { return nil }
         let stored = link.relayUpgrade
         let upgrade: RelayUpgradeRecord
-        if let stored, stored.refusal == nil {
-            guard stored.step != .switched else { return nil }
+        if let stored, stored.isPending {
             upgrade = stored
         } else {
             guard start else { return stored?.refusal }
             guard link.transport != .relay else { return nil }
-            // A first start, or a start again after a refusal: from the device record, a slot already held kept.
-            upgrade = RelayUpgradeRecord(step: .namingRelayID, slotSince: stored?.slotSince)
+            // A first start, a start again after a refusal, or after a switch the hub has gone back from: from the
+            // device record, a slot already held kept.
+            upgrade = RelayUpgradeRecord(step: .namingRelayID, slotSince: stored?.slotSince, macDeviceID: stored?.macDeviceID)
         }
         var run = Run(link: link, stored: stored, upgrade: upgrade)
 
@@ -393,6 +433,7 @@ final class RelayUpgrader {
                 vouched = true
             }
             run.upgrade.step = .addingSlot
+            run.upgrade.macDeviceID = mac.deviceID
             guard commit(&run) else { return nil }
         }
         if run.upgrade.step == .addingSlot {
@@ -400,6 +441,7 @@ final class RelayUpgrader {
                 if let outcome = await addSlot(mac, host.upgradeRelay, vouched: vouched) { return finish(outcome, &run) }
             }
             run.link.setRelayIdentity(mac: mac.deviceID, authPub: mac.authPubText, transports: mac.transports)
+            run.upgrade.macDeviceID = mac.deviceID
             run.upgrade.step = .awaitingReader
             run.upgrade.slotSince = now()
             guard commit(&run) else { return nil }
@@ -408,7 +450,7 @@ final class RelayUpgrader {
             return await awaitReader(&run, mac: mac.deviceID, host: host, session: session)
         }
         if run.upgrade.step == .requested {
-            await wait(&run, mac: mac.deviceID, host: host, session: session)
+            return await wait(&run, mac: mac.deviceID, host: host, session: session)
         }
         return nil
     }
@@ -429,42 +471,51 @@ final class RelayUpgrader {
         return await request(&run, mac: mac, host: host, session: session)
     }
 
-    /// Step 4: `transport_switch{relay}` in the iCloud mailbox, then the same control id in the relay mailbox.
+    /// Step 4: the row names the request and waits for its answer first, then `transport_switch{relay}` goes into
+    /// the iCloud mailbox and the same control id into the relay mailbox: an answer read at once finds the row ready.
     private func request(
         _ run: inout Run, mac: String, host: any RelayUpgradeHost, session: HubSession
     ) async -> RelayUpgradeRefusal? {
-        let id: String
+        run.upgrade.step = .requested
+        run.upgrade.requestID = UUID().uuidString
+        run.upgrade.askQueued = false
+        guard commit(&run) else { return nil }
+        return await queueRequest(&run, mac: mac, host: host, session: session)
+    }
+
+    /// Queues the request the row names (once: `askQueued`), then writes its relay copy.
+    private func queueRequest(
+        _ run: inout Run, mac: String, host: any RelayUpgradeHost, session: HubSession
+    ) async -> RelayUpgradeRefusal? {
+        guard let id = run.upgrade.requestID else { return nil }
         do {
-            id = try await session.outbox.enqueueSwitchRequest(target: .relay)
+            _ = try await session.outbox.enqueueSwitchRequest(target: .relay, id: id)
         } catch ActionOutboxError.legacyPath {
             return end(.notSupported, &run)
         } catch {
             Self.logger.warning("relay upgrade: the request was not queued: \(String(describing: type(of: error)), privacy: .public)")
             return nil
         }
-        run.upgrade.step = .requested
-        run.upgrade.requestID = id
-        guard commit(&run) else { return nil }
+        run.upgrade.askQueued = true
+        // A rejection read meanwhile wins the row; the request is queued either way.
+        _ = commit(&run)
         await withSide(mac, host: host, session: session) { _, secure in await Self.writeRelayCopy(id, secure, session) }
         return nil
     }
 
     /// Step 5: the one automatic new request after `unavailable` once its time came, then the relay mailbox read for
     /// the hub's answer (a `transport_switched` to the follower, a rejection to `rejected(_:)`).
-    private func wait(_ run: inout Run, mac: String, host: any RelayUpgradeHost, session: HubSession) async {
+    private func wait(_ run: inout Run, mac: String, host: any RelayUpgradeHost, session: HubSession) async -> RelayUpgradeRefusal? {
         if let retryAt = run.upgrade.retryAt, now() >= retryAt {
-            let id: String
-            do {
-                id = try await session.outbox.enqueueSwitchRequest(target: .relay)
-            } catch {
-                Self.logger.warning("relay upgrade: the new request was not queued")
-                return
-            }
             run.upgrade.retryAt = nil
             run.upgrade.askedAgain = true
-            run.upgrade.requestID = id
-            guard commit(&run) else { return }
-            await withSide(mac, host: host, session: session) { _, secure in await Self.writeRelayCopy(id, secure, session) }
+            run.upgrade.requestID = UUID().uuidString
+            run.upgrade.askQueued = false
+            guard commit(&run) else { return nil }
+        }
+        if !run.upgrade.askQueued {
+            if let refusal = await queueRequest(&run, mac: mac, host: host, session: session) { return refusal }
+            guard run.upgrade.askQueued else { return nil }
         }
         let follower = follower
         await withSide(mac, host: host, session: session) { side, secure in
@@ -477,6 +528,7 @@ final class RelayUpgrader {
                 Self.logger.notice("relay upgrade: the relay mailbox was not read: \(String(describing: type(of: error)), privacy: .public)")
             }
         }
+        return nil
     }
 
     // MARK: - Relay calls

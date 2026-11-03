@@ -27,10 +27,10 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(named?.relayDeviceID, try proofID(), "the relay id is named before the vouch")
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .vouching)
         bed.relayOps.release("vouch")
-        let refusal = await upgrade.value
+        let outcome = await upgrade.value
         await session.outbox.drain()
 
-        XCTAssertNil(refusal)
+        XCTAssertEqual(outcome, .underWay(.requested))
         XCTAssertEqual(bed.relayOps.ops, ["accountState", "vouch \(bed.mac.deviceID)", "addSlot \(bed.mac.deviceID)"])
         let asked = try await bed.cloudControls(.transportSwitch)
         XCTAssertEqual(asked.map(\.target), ["relay"])
@@ -77,8 +77,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
     func testTheSwitchIsAskedOnlyAfterTheFirstDataZoneRead() async throws {
         let (bed, session) = try await upgradeBed()
 
-        let refused1 = await session.upgradeToRelay()
-        XCTAssertNil(refused1)
+        let outcome1 = await session.upgradeToRelay()
+        XCTAssertNil(outcome1.refusal)
         bed.clock.advance(31)
         await bed.root.resumeRelayUpgrades()
 
@@ -105,8 +105,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
 
     func testAwaitingReaderGivesUpAfterTheLimit() async throws {
         let (bed, session) = try await upgradeBed()
-        let refused2 = await session.upgradeToRelay()
-        XCTAssertNil(refused2)
+        let outcome2 = await session.upgradeToRelay()
+        XCTAssertNil(outcome2.refusal)
         let since = try XCTUnwrap(try bed.row()?.link.relayUpgrade?.slotSince)
 
         bed.clock.advance(23 * 3600)
@@ -133,8 +133,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
         // Asked again: the slot is reused, no vouch, no add_slot, a new 24 h wait.
         let session2 = try bed.session()
         let opsBefore = bed.relayOps.ops.count
-        let refused3 = await session2.upgradeToRelay()
-        XCTAssertNil(refused3)
+        let outcome3 = await session2.upgradeToRelay()
+        XCTAssertNil(outcome3.refusal)
         XCTAssertEqual(Array(bed.relayOps.ops.dropFirst(opsBefore)), ["accountState"])
         let again = try XCTUnwrap(try bed.row()?.link.relayUpgrade)
         XCTAssertEqual(again.step, .awaitingReader)
@@ -148,8 +148,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await upgradeBed()
         bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
 
-        let refused4 = await session.upgradeToRelay()
-        XCTAssertNil(refused4)
+        let outcome4 = await session.upgradeToRelay()
+        XCTAssertEqual(outcome4, .waiting)
 
         XCTAssertNil(try bed.row()?.link.relayUpgrade, "nothing written")
         let unnamed = try await deviceRecord(bed)
@@ -159,28 +159,42 @@ final class RelayUpgradeWiringTests: XCTestCase {
         // A resume at a later step: the read fails again, the step stays.
         try seed(bed, .vouching)
         bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.attestationBackoff(until: Date()))
-        let refused5 = await session.upgradeToRelay()
-        XCTAssertNil(refused5)
+        let outcome5 = await session.upgradeToRelay()
+        XCTAssertNil(outcome5.refusal)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .vouching)
         XCTAssertNil(try bed.row()?.link.relayUpgrade?.refusal)
 
         // The next pass reads `.yes` and goes on.
-        let refused6 = await session.upgradeToRelay()
-        XCTAssertNil(refused6)
+        let outcome6 = await session.upgradeToRelay()
+        XCTAssertNil(outcome6.refusal)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .awaitingReader)
+    }
+
+    /// The retry of a first start that decided nothing comes from the resumer, not from a second call.
+    func testAnUnknownFirstStartIsRetriedByTheResumer() async throws {
+        let (bed, session) = try await upgradeBed()
+        bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
+
+        let outcome = await session.upgradeToRelay()
+
+        XCTAssertEqual(outcome, .waiting)
+        XCTAssertNil(try bed.row()?.link.relayUpgrade)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .awaitingReader)
+        XCTAssertEqual(bed.relayOps.count("accountState"), 2)
     }
 
     func testAGrantWithoutACoherentRelayIdentityCannotUpgrade() async throws {
         let (bed, session) = try await upgradeBed(macRelay: false)
-        let refused7 = await session.upgradeToRelay()
-        XCTAssertEqual(refused7, .noRelayIdentity)
+        let outcome7 = await session.upgradeToRelay()
+        XCTAssertEqual(outcome7.refusal, .noRelayIdentity)
 
         // The Mac's id with another key: not coherent.
         let other = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
         try await publishGrant(bed, relayDeviceID: bed.mac.deviceID, relayAuthPub: WireBytes.base64URL(other))
         await bed.fetch(session)
-        let refused8 = await session.upgradeToRelay()
-        XCTAssertEqual(refused8, .noRelayIdentity)
+        let outcome8 = await session.upgradeToRelay()
+        XCTAssertEqual(outcome8.refusal, .noRelayIdentity)
 
         XCTAssertTrue(bed.relayOps.ops.isEmpty)
         XCTAssertNil(try bed.row()?.link.relayUpgrade)
@@ -191,8 +205,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
     func testAnEmptyOriginCannotUpgrade() async throws {
         let (bed, session) = try await upgradeBed(relayOff: true)
 
-        let refused9 = await session.upgradeToRelay()
-        XCTAssertEqual(refused9, .relayOff)
+        let outcome9 = await session.upgradeToRelay()
+        XCTAssertEqual(outcome9.refusal, .relayOff)
 
         XCTAssertFalse(bed.rootRelay.isBuilt, "no relay session, so no Keychain item and no register")
         XCTAssertTrue(bed.relayOps.ops.isEmpty)
@@ -205,8 +219,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
     func testALegacyPathHubIsNeverAsked() async throws {
         let (bed, session) = try await upgradeBed(ordered: false)
 
-        let refused10 = await session.upgradeToRelay()
-        XCTAssertEqual(refused10, .notSupported)
+        let outcome10 = await session.upgradeToRelay()
+        XCTAssertEqual(outcome10.refusal, .notSupported)
 
         XCTAssertTrue(bed.relayOps.ops.isEmpty)
         XCTAssertNil(try bed.row()?.link.relayUpgrade)
@@ -222,8 +236,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await upgradeBed()
         for refusal: HostedRelayPairing.VouchRefusal in [.notPaying, .updateRequired, .hubNotOnRelay, .slotsFull, .notConfirmed] {
             bed.relayOps.fail("vouch", with: refusal)
-            let refused11 = await session.upgradeToRelay()
-            XCTAssertEqual(refused11, .vouch(refusal))
+            let outcome11 = await session.upgradeToRelay()
+            XCTAssertEqual(outcome11.refusal, .vouch(refusal))
             let upgrade = try XCTUnwrap(try bed.row()?.link.relayUpgrade)
             XCTAssertEqual(upgrade.refusal, .vouch(refusal))
             XCTAssertFalse(upgrade.holdsSlot)
@@ -232,8 +246,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
 
         // A transient answer is no refusal: the step waits for the next pass.
         bed.relayOps.fail("vouch", with: HostedRelayPairing.VouchRefusal.unreachable)
-        let refused12 = await session.upgradeToRelay()
-        XCTAssertNil(refused12)
+        let outcome12 = await session.upgradeToRelay()
+        XCTAssertNil(outcome12.refusal)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .vouching)
         XCTAssertNil(try bed.row()?.link.relayUpgrade?.refusal)
     }
@@ -244,14 +258,14 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let mac = bed.mac.deviceID
         bed.relayOps.fail("addSlot", with: notVouched, notVouched)
 
-        let refused13 = await session.upgradeToRelay()
-        XCTAssertEqual(refused13, .vouch(.notConfirmed), "a second HUB_NOT_VOUCHED ends it")
+        let outcome13 = await session.upgradeToRelay()
+        XCTAssertEqual(outcome13.refusal, .vouch(.notConfirmed), "a second HUB_NOT_VOUCHED ends it")
         XCTAssertEqual(bed.relayOps.ops, ["accountState", "vouch \(mac)", "addSlot \(mac)", "vouch \(mac)", "addSlot \(mac)"])
 
         bed.relayOps.fail("addSlot", with: notVouched)
         let before = bed.relayOps.ops.count
-        let refused14 = await session.upgradeToRelay()
-        XCTAssertNil(refused14)
+        let outcome14 = await session.upgradeToRelay()
+        XCTAssertNil(outcome14.refusal)
         XCTAssertEqual(
             Array(bed.relayOps.ops.dropFirst(before)),
             ["accountState", "vouch \(mac)", "addSlot \(mac)", "vouch \(mac)", "addSlot \(mac)"])
@@ -291,8 +305,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
 
     func testARelaunchResumesAtAwaitingReader() async throws {
         let (bed, session) = try await upgradeBed()
-        let refused15 = await session.upgradeToRelay()
-        XCTAssertNil(refused15)
+        let outcome15 = await session.upgradeToRelay()
+        XCTAssertNil(outcome15.refusal)
         let ops = bed.relayOps.ops
         try await bed.relaunch(self)
         let relaunched = try await booted(bed)
@@ -379,15 +393,71 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(bed.relayOps.ops, opsBefore)
     }
 
+    /// The hub already runs on the relay (a lapse moved this phone back to iCloud in the same epoch): its answer names
+    /// the relay in the epoch the phone has, and the waiting upgrade follows it.
     func testAnAnswerForTheTransportItIsOnEndsTheUpgrade() async throws {
+        let (bed, session) = try await requestedBed()
+
+        try await bed.writeSwitch(target: .relay, epoch: 1, on: .cloudKit)
+        let moved = try await bed.fetchAndFollow(session)
+
+        XCTAssertEqual(moved.route, .hostedRelay(macDeviceID: bed.mac.deviceID))
+        let link = try XCTUnwrap(bed.row()?.link)
+        XCTAssertEqual(link.transport, .relay)
+        XCTAssertEqual(link.relayUpgrade?.step, .switched)
+        XCTAssertTrue(try Bed.handled(moved, bed.switchID))
+    }
+
+    /// A same-epoch answer naming iCloud is no switch: it is read, and the upgrade keeps waiting.
+    func testASameEpochCloudKitAnswerIsNotASwitch() async throws {
         let (bed, session) = try await requestedBed()
 
         try await bed.writeSwitch(target: .cloudKit, epoch: 1, on: .cloudKit)
         await fetch(bed, session)
 
-        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .switched)
         XCTAssertTrue(try Bed.handled(session, bed.switchID))
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
+        XCTAssertNil(try bed.row()?.link.relayUpgrade?.refusal)
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+    }
+
+    /// A finished upgrade whose hub went back to iCloud runs again from the device record; the slot is reused.
+    func testAFinishedUpgradeRunsAgainAfterAMoveBack() async throws {
+        let (bed, session) = try await requestedBed()
+        let firstRequest = try XCTUnwrap(try bed.row()?.link.relayUpgrade?.requestID)
+        try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+        let onRelay = try await bed.fetchAndFollow(session)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .switched)
+        try await bed.writeSwitch(target: .cloudKit, epoch: 3, on: .relay)
+        let back = try await bed.fetchAndFollow(onRelay)
+        XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+
+        let outcome = await back.upgradeToRelay()
+
+        XCTAssertEqual(outcome, .underWay(.requested))
+        let upgrade = try XCTUnwrap(try bed.row()?.link.relayUpgrade)
+        XCTAssertNotEqual(upgrade.requestID, firstRequest)
+        XCTAssertEqual(bed.relayOps.count("vouch"), 1, "the slot is reused")
+        XCTAssertEqual(bed.relayOps.count("addSlot"), 1)
+    }
+
+    /// The request can leave the phone only once the row waits for its answer: a rejection read at once still ends it.
+    func testTheRowAwaitsTheAnswerBeforeTheRequestCanLeave() async throws {
+        let (bed, session) = try await upgradeBed()
+        try await allowReader(bed)
+        await session.outbox.holdFlushes()
+
+        let outcome = await session.upgradeToRelay()
+
+        XCTAssertEqual(outcome, .underWay(.requested))
+        let queued = try await session.store.reader.read { db in
+            try String.fetchAll(db, sql: "SELECT control_id FROM outbound_controls WHERE kind = 'transport_switch'")
+        }
+        XCTAssertEqual(queued, [try XCTUnwrap(try bed.row()?.link.relayUpgrade?.requestID)])
+        try await bed.writeRejection(RelayUpgrade.notPaying, on: .cloudKit)
+        await fetch(bed, session)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notPaying)
+        await session.outbox.releaseFlushes()
     }
 
     func testTooSoonKeepsRetryAt() async throws {
@@ -480,8 +550,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
 
     func testUnlinkingAnUpgradingICloudLinkFreesItsSlot() async throws {
         let (bed, session) = try await upgradeBed()
-        let refused16 = await session.upgradeToRelay()
-        XCTAssertNil(refused16)
+        let outcome16 = await session.upgradeToRelay()
+        XCTAssertNil(outcome16.refusal)
         let mac = bed.mac.deviceID
         XCTAssertTrue(bed.relayOps.slots.contains(mac))
         bed.relayOps.fail("removeSlot", with: HostedRelayPairing.Refusal.unreachable)
@@ -503,12 +573,28 @@ final class RelayUpgradeWiringTests: XCTestCase {
         // An unlink before `add_slot` calls no relay op.
         let (early, earlySession) = try await upgradeBed()
         early.relayOps.fail("vouch", with: HostedRelayPairing.VouchRefusal.hubNotOnRelay)
-        let refused17 = await earlySession.upgradeToRelay()
-        XCTAssertEqual(refused17, .vouch(.hubNotOnRelay))
+        let outcome17 = await earlySession.upgradeToRelay()
+        XCTAssertEqual(outcome17.refusal, .vouch(.hubNotOnRelay))
         let ops = early.relayOps.ops
         await early.root.linking.unlink(hubID)
         XCTAssertNil(try early.row())
         XCTAssertEqual(early.relayOps.ops, ops)
+    }
+
+    /// A kill after `add_slot` and before its step was saved leaves `.addingSlot` with no `slotSince`: an unlink still
+    /// frees whatever slot the relay may hold for the Mac (`NOT_FOUND` counts as freed).
+    func testUnlinkingAtAddingTheSlotFreesItsSlot() async throws {
+        let (bed, _) = try await upgradeBed()
+        let mac = bed.mac.deviceID
+        try seed(bed, .addingSlot, mac: mac)
+        bed.relayOps.slots = [mac]
+
+        await bed.root.linking.unlink(hubID)
+
+        XCTAssertNil(try bed.row())
+        XCTAssertEqual(bed.relayOps.ops, ["removeSlot \(mac)"])
+        XCTAssertTrue(bed.relayOps.slots.isEmpty)
+        XCTAssertEqual(try bed.registry.pendingSlotRemovals(), [])
     }
 
     // MARK: - Helpers
@@ -535,8 +621,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
     private func requestedBed() async throws -> (Bed, HubSession) {
         let (bed, session) = try await upgradeBed()
         try await allowReader(bed)
-        let refused19 = await session.upgradeToRelay()
-        XCTAssertNil(refused19)
+        let outcome19 = await session.upgradeToRelay()
+        XCTAssertNil(outcome19.refusal)
         await session.outbox.drain()
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
         return (bed, session)
@@ -551,9 +637,9 @@ final class RelayUpgradeWiringTests: XCTestCase {
         return bed
     }
 
-    private func seed(_ bed: Bed, _ step: RelayUpgradeStep) throws {
+    private func seed(_ bed: Bed, _ step: RelayUpgradeStep, mac: String? = nil) throws {
         var link = try XCTUnwrap(bed.row()?.link)
-        link.relayUpgrade = RelayUpgradeRecord(step: step)
+        link.relayUpgrade = RelayUpgradeRecord(step: step, macDeviceID: mac)
         XCTAssertTrue(try bed.registry.updateLink(link))
     }
 

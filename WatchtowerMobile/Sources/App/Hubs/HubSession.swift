@@ -1416,10 +1416,10 @@ final class HubSession {
     }
 
     /// Upgrades this iCloud link to the relay (steps 0–5 of Task 19): resumable, each step persisted on the hub's
-    /// `LinkRecord` before the next. A definite refusal ends it and is kept there for Phase 4's screen; nil while it
-    /// goes on or once switched. A session with no upgrade wired (the demo) cannot upgrade.
-    func upgradeToRelay() async -> RelayUpgradeRefusal? {
-        guard let relayUpgrader else { return .relayOff }
+    /// `LinkRecord` before the next. A definite refusal ends it and is kept there for Phase 4's screen. A session with
+    /// no upgrade wired (the demo) cannot upgrade.
+    func upgradeToRelay() async -> RelayUpgradeOutcome {
+        guard let relayUpgrader else { return .refused(.relayOff) }
         return await relayUpgrader.upgrade()
     }
 

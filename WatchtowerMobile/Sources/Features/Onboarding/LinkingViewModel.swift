@@ -876,12 +876,12 @@ final class LinkingViewModel {
         return await removeRelaySlot(mac, keepOnFailure: true)
     }
 
-    /// The relay Mac whose slot an unlink of `link` frees: a Relay link's, or an upgraded iCloud link's once its
-    /// `add_slot` succeeded; nil for any other link.
+    /// The relay Mac whose slot an unlink of `link` frees: a Relay link's, or an upgrading iCloud link's once its
+    /// `add_slot` succeeded or may have (`NOT_FOUND` then counts as freed); nil for any other link.
     private static func slotToFree(_ link: LinkRecord) -> String? {
         if case let .hostedRelay(mac) = link.route { return mac }
-        guard link.relayUpgrade?.holdsSlot == true else { return nil }
-        return link.relayMacDeviceID
+        guard let upgrade = link.relayUpgrade, upgrade.mayHoldSlot else { return nil }
+        return upgrade.macDeviceID ?? link.relayMacDeviceID
     }
 
     /// Settings → Macs → Forget: a hub the Mac removed goes with no farewell

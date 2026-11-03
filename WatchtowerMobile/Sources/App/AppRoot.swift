@@ -1166,7 +1166,7 @@ extension AppRoot: RelayUpgradeHost {
 
     func rewriteDeviceRecord(hubID: String) async -> Bool {
         guard let session = env.session(hubID), let device = session.linkedDevice else { return false }
-        let payload = devicePayload(hubID: hubID, for: device, linkNonce: nil, unlinked: false, now: Date())
+        let payload = devicePayload(hubID: hubID, for: device, linkNonce: nil, unlinked: false, now: upgradeClock())
         do {
             try await session.writeDeviceRecord(payload)
             return true

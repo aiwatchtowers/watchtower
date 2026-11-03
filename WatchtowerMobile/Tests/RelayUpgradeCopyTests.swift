@@ -40,14 +40,24 @@ final class RelayUpgradeCopyTests: XCTestCase {
     /// `.vouch(_)` shows the Task 10 row's text for the same refusal.
     func testVouchRefusalsUseTheLinkRowTexts() {
         let rows: [(HostedRelayPairing.VouchRefusal, PromotedLink.Reason)] = [
-            (.notPaying, .notPaying), (.updateRequired, .updateApp), (.hubNotOnRelay, .hubNotOnRelay),
+            (.notPaying, .notPaying), (.hubNotOnRelay, .hubNotOnRelay),
             (.slotsFull, .slotsFull), (.notConfirmed, .notConfirmed)
         ]
         for (refusal, reason) in rows {
             XCTAssertEqual(message(.vouch(refusal)), reason.message(macName: "Work Mac"), "\(refusal)")
         }
         XCTAssertEqual(message(.vouch(.slotsFull)), "Relay already has 3 Macs. Remove one, then try again, or cancel this link.")
-        XCTAssertEqual(message(.replacementLimit), "Too many Mac changes on Relay. Try again later, or cancel this link.")
+    }
+
+    /// The upgrade's own texts for its two extra refusals (ask #997); Task 10's link-time texts are unchanged.
+    func testUpgradeOnlyTexts() {
+        XCTAssertEqual(
+            message(.replacementLimit), "Work Mac stays on iCloud: too many Mac changes on Relay this month. Try again later.")
+        XCTAssertEqual(message(.vouch(.updateRequired)), "Update Watchtower on this iPhone to move Work Mac to Relay.")
+        XCTAssertEqual(PromotedLink.Reason.updateApp.message(macName: "Work Mac"), "Update Watchtower to finish this link, or cancel it.")
+        XCTAssertEqual(
+            PromotedLink.Reason.replacementLimit.message(macName: "Work Mac"),
+            "Too many Mac changes on Relay. Try again later, or cancel this link.")
     }
 
     /// No relay on this phone, or a hub that names no relay identity: the choice is not offered, so there is no text.

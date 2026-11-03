@@ -1535,6 +1535,7 @@ Today's interop runs the hub as a headless host, relay only (`interop_test.go` `
    - `unavailable`: "<Mac> couldn't switch right now. Try again in a minute."
    - `not supported yet`: "<Mac> can't switch to Relay. Update Watchtower on the Mac."
    - `.readerNotConfirmed` (the 24 h reader wait ran out): "<Mac> didn't confirm Relay. Update Watchtower on the Mac and try again."
+   - The upgrade's two extra refusals, upgrade context only (Task 10's link-time texts unchanged): `.replacementLimit` "<Mac> stays on iCloud: too many Mac changes on Relay this month. Try again later." and `.vouch(.updateRequired)` "Update Watchtower on this iPhone to move <Mac> to Relay." (ask #997)
 
    The `too_soon` text comes from the approved mockup (section 3) and needs no new approval.
 4. **`unavailable` retries once by itself** after `retry_after_s` before its text shows (the hub's own comment asks the phone to ask again). Refused → the text shows at once and the person asks again.
