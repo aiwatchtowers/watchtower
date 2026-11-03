@@ -107,7 +107,9 @@ type Transport struct {
 	account    *relayv1.AccountState
 	refreshing bool
 	refreshDue bool
-	wg         sync.WaitGroup
+	// observe sees every save's result per zone (ObserveSaves; nil = none).
+	observe func(zone string, err error)
+	wg      sync.WaitGroup
 }
 
 var (
@@ -406,6 +408,33 @@ func (t *Transport) LastAccountState() *relayv1.AccountState {
 	return proto.Clone(t.account).(*relayv1.AccountState)
 }
 
+// Connected reports whether the live connection is up now: false before
+// Connect, while the client reconnects and after Close.
+func (t *Transport) Connected() bool {
+	t.mu.Lock()
+	conn, closed := t.conn, t.closed
+	t.mu.Unlock()
+	return conn != nil && !closed && conn.Connected()
+}
+
+// ObserveSaves hands f every Save's result per zone, after the request: nil
+// for each item the relay saved, the item's refusal for a refused one, and
+// the call's error for each zone of a save the relay refused whole (a
+// quota). A failed precondition and a save refused before any request are
+// not reported. f must not call back into the transport.
+func (t *Transport) ObserveSaves(f func(zone string, err error)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.observe = f
+}
+
+// observed is the save observer (nil = none).
+func (t *Transport) observed() func(zone string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.observe
+}
+
 // do runs one op over HTTPS and maps its error with MapError.
 func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
 	return t.doMapped(ctx, req, MapError)
@@ -537,10 +566,25 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 			zones[k] = w.GetRecord().GetZone()
 		}
 		t.rereadZones(zones)
+		if f := t.observed(); f != nil {
+			for _, z := range zones {
+				f(z, err)
+			}
+		}
 		return nil, fmt.Errorf("relay: save: %w", err)
 	}
 	if err := saveOutcomes(resp.GetSave(), index, out); err != nil {
 		return nil, fmt.Errorf("relay: save: %w", err)
+	}
+	if f := t.observed(); f != nil {
+		for i, it := range items {
+			switch o := out[i]; {
+			case o.Saved:
+				f(it.Record.Zone(), nil)
+			case o.Refused != nil:
+				f(it.Record.Zone(), o.Refused)
+			}
+		}
 	}
 	return out, nil
 }

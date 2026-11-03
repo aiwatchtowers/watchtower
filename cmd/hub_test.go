@@ -152,8 +152,12 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	out, err := runHub(t, "status", "--json")
 	require.NoError(t, err)
 	m := decodeKeys(t, out)
+	// Off, relay is absent (no runtime facts) and the lists are empty.
 	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings", "host", "mode",
-		"adoption", "bridge", "identity", "switched_at", "switched_by", "name", "cloudkit", "off_delete", "transcriber"}, hubKeysOf(m))
+		"adoption", "bridge", "identity", "switched_at", "switched_by", "name", "cloudkit", "off_delete", "transcriber",
+		"paying_phones", "mailbox_full_phones"}, hubKeysOf(m))
+	assert.Equal(t, []any{}, m["paying_phones"])
+	assert.Equal(t, []any{}, m["mailbox_full_phones"])
 	od, ok := m["off_delete"].(map[string]any)
 	require.True(t, ok, "off_delete is an object")
 	assert.ElementsMatch(t, []string{"state", "at"}, hubKeysOf(od))
@@ -177,6 +181,26 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	out, err = runHub(t, "status", "--json")
 	require.NoError(t, err)
 	assert.Equal(t, hub.ReasonNotTestWorkspace, decodeKeys(t, out)["reason"])
+
+	// A running hub on the relay: relay with every key of its own.
+	running := hubShortDir(t)
+	setHubMeta(t, running, state.MetaEnabled, "1")
+	startTestHub(t, running)
+	waitHubState(t, running, hub.StateRunning)
+	waitFor(t, "the relay indicators", func() bool {
+		s, err := hub.ReadStatus(running)
+		return err == nil && s.Relay != nil
+	})
+	out, err = runHub(t, "status", "--json")
+	require.NoError(t, err)
+	m = decodeKeys(t, out)
+	assert.Contains(t, hubKeysOf(m), "relay")
+	assert.Contains(t, hubKeysOf(m), "paying_phones")
+	assert.Contains(t, hubKeysOf(m), "mailbox_full_phones")
+	relay, ok := m["relay"].(map[string]any)
+	require.True(t, ok, "relay is an object")
+	assert.ElementsMatch(t, []string{"state", "since", "quota_hub", "push_off", "last_saved_at"}, hubKeysOf(relay))
+	assert.Contains(t, []any{hub.RelayConnected, hub.RelayConnecting, hub.RelayUnavailable}, relay["state"])
 }
 
 // hubLiveCLI is a CLI run with no WATCHTOWER_HUB_DIR on a host p: a short
@@ -363,8 +387,13 @@ func TestHubPhonesJSONKeys(t *testing.T) {
 	require.Len(t, list, 1)
 	assert.ElementsMatch(t, []string{"device_id", "name", "scope", "linked_at", "typing_allowed", "typing_requested",
 		"permissions_allowed", "permissions_requested", "start_sessions_allowed", "start_sessions_granted", "ordered",
-		"last_applied_action_seq", "transport"}, hubKeysOf(list[0]))
+		"last_applied_action_seq", "transport", "paying", "undelivered", "mailbox_full", "alerts"}, hubKeysOf(list[0]))
 	assert.Equal(t, id, list[0]["device_id"])
+	// No hub runs: paying is null; nothing held, no flag, no alert yet.
+	assert.Nil(t, list[0]["paying"])
+	assert.Equal(t, float64(0), list[0]["undelivered"])
+	assert.Equal(t, false, list[0]["mailbox_full"])
+	assert.Equal(t, "", list[0]["alerts"])
 
 	// transport takes each of cloudkit|relay|pending: a relay link not yet
 	// admitted is pending; an admitted one is on the relay, or on CloudKit
@@ -426,6 +455,155 @@ func TestHubPhonesTransportPendingUntilAdmitted(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.Close())
 	assert.Equal(t, "relay", transportOf())
+}
+
+// hubPhonesByID is `hub phones --json` keyed by device id.
+func hubPhonesByID(t *testing.T) map[string]map[string]any {
+	t.Helper()
+	out, err := runHub(t, "phones", "--json")
+	require.NoError(t, err)
+	var list []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &list), out)
+	got := map[string]map[string]any{}
+	for _, p := range list {
+		got[p["device_id"].(string)] = p
+	}
+	return got
+}
+
+// TestUndeliveredCountsHeldAndGap: undelivered is this Mac's side — the
+// phone's held actions plus one for an open gap.
+func TestUndeliveredCountsHeldAndGap(t *testing.T) {
+	dir := hubTestDir(t)
+	id := linkTestPhone(t, dir)
+	other := linkTestPhone(t, dir)
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	devices, err := st.Devices()
+	require.NoError(t, err)
+	var dev string
+	for _, d := range devices {
+		if strings.EqualFold(d.ID, id) {
+			dev = d.ID
+		}
+	}
+	require.NoError(t, st.HoldAction(dev, 5, "act-5", []byte("sealed")))
+	require.NoError(t, st.HoldAction(dev, 6, "act-6", []byte("sealed")))
+	require.NoError(t, st.Close())
+	got := hubPhonesByID(t)
+	assert.Equal(t, float64(2), got[id]["undelivered"])
+	assert.Equal(t, float64(0), got[other]["undelivered"])
+
+	st, err = state.Open(dir)
+	require.NoError(t, err)
+	require.NoError(t, st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.SetResendRequested(tx, dev, 3) }))
+	require.NoError(t, st.Close())
+	assert.Equal(t, float64(3), hubPhonesByID(t)[id]["undelivered"], "held + 1 for the open gap")
+}
+
+// TestHubPhonesPayingMailboxAndAlerts: on a hub running on the relay paying
+// is a bool; mailbox_full follows the status file (restored from hub_meta);
+// alerts is the last settled push outcome of the phone.
+func TestHubPhonesPayingMailboxAndAlerts(t *testing.T) {
+	dir := hubShortDir(t)
+	setHubMeta(t, dir, state.MetaEnabled, "1")
+	id := linkTestPhone(t, dir)
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	devices, err := st.Devices()
+	require.NoError(t, err)
+	dev := devices[0].ID
+	full, err := json.Marshal([]string{dev})
+	require.NoError(t, err)
+	require.NoError(t, st.SetMeta(state.MetaMailboxFullPhones, string(full)))
+	now := time.Now()
+	_, err = st.BeginAlertPushes("ask-1", []string{dev}, now.Add(-time.Minute))
+	require.NoError(t, err)
+	_, err = st.SettleAlertPush("ask-1", dev, state.AlertNoToken, "", 1, now.Add(-time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+	assert.Equal(t, state.AlertNoToken, hubPhonesByID(t)[id]["alerts"])
+
+	startTestHub(t, dir)
+	waitHubState(t, dir, hub.StateRunning)
+	waitFor(t, "the mailbox flag in the status", func() bool {
+		s, err := hub.ReadStatus(dir)
+		return err == nil && len(s.MailboxFullPhones) == 1
+	})
+	p := hubPhonesByID(t)[id]
+	assert.Equal(t, false, p["paying"], "running on the relay: a bool, not null")
+	assert.Equal(t, true, p["mailbox_full"])
+	assert.Equal(t, state.AlertNoToken, p["alerts"])
+}
+
+func TestHubDiagnosticsJSONKeys(t *testing.T) {
+	dir := hubTestDir(t)
+	linkTestPhone(t, dir) // creates the sidecar
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	now := time.Now()
+	var xs []state.LatencySample
+	for i, ms := range []int64{100, 200, 300, 400} {
+		at := now.Add(-time.Duration(i) * time.Minute)
+		xs = append(xs,
+			state.LatencySample{At: at, Transport: "relay", Step: "read_applied", MS: ms},
+			state.LatencySample{At: at, Transport: "relay", Step: "read_saved", MS: ms * 2})
+	}
+	xs = append(xs, state.LatencySample{At: now.Add(-3 * 24 * time.Hour), Transport: "cloudkit", Step: "read_saved", MS: 900})
+	require.NoError(t, st.AddLatencySamples(xs))
+	_, err = st.BeginAlertPushes("ask-1", []string{"phone-a", "phone-b"}, now)
+	require.NoError(t, err)
+	_, err = st.SettleAlertPushes([]state.AlertPushSettle{
+		{Key: "ask-1", Device: "phone-a", Outcome: state.AlertExpired, Reason: state.ReasonOverflow},
+		{Key: "ask-1", Device: "phone-b", Outcome: state.AlertExpired, Reason: state.ReasonOverflow},
+	}, now)
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+
+	out, err := runHub(t, "diagnostics", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.ElementsMatch(t, []string{"window_days", "rows", "push_overflow_expired"}, hubKeysOf(m))
+	assert.Equal(t, float64(7), m["window_days"])
+	assert.Equal(t, float64(2), m["push_overflow_expired"])
+	rows, ok := m["rows"].([]any)
+	require.True(t, ok, "rows is a list")
+	require.Len(t, rows, 3)
+	var readSaved map[string]any
+	for _, r := range rows {
+		row := r.(map[string]any)
+		assert.ElementsMatch(t, []string{"step", "transport", "p50_ms", "p90_ms", "samples"}, hubKeysOf(row))
+		if row["step"] == "read_saved" && row["transport"] == "relay" {
+			readSaved = row
+		}
+	}
+	require.NotNil(t, readSaved, "a read_saved row on the relay")
+	assert.Equal(t, float64(4), readSaved["samples"])
+	assert.Equal(t, float64(400), readSaved["p50_ms"])
+	assert.Equal(t, float64(800), readSaved["p90_ms"])
+
+	// One day leaves the 3-day-old sample out.
+	out, err = runHub(t, "diagnostics", "--days", "1", "--json")
+	require.NoError(t, err)
+	m = decodeKeys(t, out)
+	assert.Equal(t, float64(1), m["window_days"])
+	assert.Len(t, m["rows"], 2)
+	for _, bad := range []string{"0", "8"} {
+		_, err := runHub(t, "diagnostics", "--days", bad, "--json")
+		assert.Error(t, err, "--days %s", bad)
+	}
+}
+
+func TestHubDiagnosticsWithoutSidecarIsEmpty(t *testing.T) {
+	dir := hubTestDir(t)
+	out, err := runHub(t, "diagnostics", "--json")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"window_days":7,"rows":[],"push_overflow_expired":0}`, out)
+	_, statErr := os.Stat(dir)
+	assert.True(t, os.IsNotExist(statErr), "a read creates nothing")
+	out, err = runHub(t, "diagnostics")
+	require.NoError(t, err)
+	assert.Contains(t, out, "no timings yet")
 }
 
 func TestHubAllowJSONKeys(t *testing.T) {

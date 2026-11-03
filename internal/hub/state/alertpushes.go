@@ -3,6 +3,7 @@ package state
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -209,6 +210,26 @@ func (s *Store) LastAlertOutcomes(since time.Time) (map[string]string, error) {
 		return nil, fmt.Errorf("reading alert push outcomes: %w", err)
 	}
 	return out, nil
+}
+
+// PushOff reports whether the relay's pushes read as off (Go hub plan 4,
+// the push-off line, case B): the newest answer settled at or after since
+// among those the relay gives at or after its APNs check — push_off sets the
+// line; accepted, not_paying, too_large and no_token clear it. Every other
+// outcome (forbidden, failed, expired for any reason, pending) neither sets
+// nor clears it. No such answer reads as not off.
+func (s *Store) PushOff(since time.Time) (bool, error) {
+	var o string
+	err := s.db.QueryRow(`SELECT outcome FROM alert_pushes
+		WHERE outcome IN ('push_off', 'accepted', 'not_paying', 'too_large', 'no_token') AND settled_at >= ?
+		ORDER BY settled_at DESC, rowid DESC LIMIT 1`, toReal(since)).Scan(&o)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading the push-off line: %w", err)
+	}
+	return o == AlertPushOff, nil
 }
 
 // PruneAlertPushes deletes the rows of pushes first queued earlier than

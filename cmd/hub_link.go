@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,18 @@ type hubPhoneJSON struct {
 	Ordered              bool   `json:"ordered"`
 	LastAppliedActionSeq uint64 `json:"last_applied_action_seq"`
 	Transport            string `json:"transport"`
+	// Paying is whether the relay lists the phone as paying; null unless
+	// the hub runs on the relay.
+	Paying *bool `json:"paying"`
+	// Undelivered is what this Mac's side holds of the phone's actions: the
+	// held ones, plus one for an open gap (a resend asked for).
+	Undelivered int `json:"undelivered"`
+	// MailboxFull: the phone's relay mailbox refused the hub's write as over
+	// quota (the status file's mailbox_full_phones).
+	MailboxFull bool `json:"mailbox_full"`
+	// Alerts is the outcome class of the phone's last settled alert push in
+	// the last 7 days, "" for none.
+	Alerts string `json:"alerts"`
 }
 
 // hubUnlinkJSON is `hub unlink --json` (pinned keys).
@@ -223,13 +236,32 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 	default:
 		devices, err := st.Devices()
 		active, _, aerr := st.Meta(switcher.MetaTransport)
-		_ = st.Close()
-		if err := errors.Join(err, aerr); err != nil {
+		alerts, lerr := st.LastAlertOutcomes(time.Now().Add(-hub.AlertOutcomeWindow))
+		if err := errors.Join(err, aerr, lerr); err != nil {
+			_ = st.Close()
 			return err
 		}
-		for _, d := range devices {
-			out = append(out, hubPhone(d, active))
+		status, err := hub.ReadStatus(dir)
+		if err != nil {
+			_ = st.Close()
+			return err
 		}
+		onRelay := (status.State == hub.StateRunning || status.State == hub.StatePaused) && status.Transport == wire.TransportRelay
+		for _, d := range devices {
+			p := hubPhone(d, active)
+			if p.Undelivered, err = hubUndelivered(st, d); err != nil {
+				_ = st.Close()
+				return err
+			}
+			if onRelay {
+				paying := slices.Contains(status.PayingPhones, d.ID)
+				p.Paying = &paying
+			}
+			p.MailboxFull = slices.Contains(status.MailboxFullPhones, d.ID)
+			p.Alerts = alerts[d.ID]
+			out = append(out, p)
+		}
+		_ = st.Close()
 	}
 	if asJSON {
 		return hubPrint(cmd, true, out, "")
@@ -244,6 +276,20 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	return nil
+}
+
+// hubUndelivered is what this Mac's side holds of d's actions: its held
+// actions, plus one for an open gap (resend_requested_from set).
+func hubUndelivered(st *state.Store, d state.Device) (int, error) {
+	held, err := st.HeldActions(d.ID)
+	if err != nil {
+		return 0, err
+	}
+	n := len(held)
+	if d.ResendRequestedFrom > 0 {
+		n++
+	}
+	return n, nil
 }
 
 // hubPhoneTransportPending is `hub phones`' transport for a phone linked over

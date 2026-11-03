@@ -39,6 +39,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -718,6 +719,7 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())
 		st.Bridge = h.bridgeState()
 		st.CloudKit = h.cloudKitStatus()
+		st.Relay, st.PayingPhones, st.MailboxFullPhones = h.relayFacts(devices)
 	}
 	s.setStatus(st)
 }
@@ -731,9 +733,10 @@ func (s *supervisor) setStatus(st Status) {
 		st.Bridge = BridgeUnavailable // also while the hub is off
 	}
 	st.CloudKit.Signed = s.o.Desktop != nil && signedBuild(st)
+	st = st.withLists()
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
-	if st == s.status {
+	if reflect.DeepEqual(st, s.status) {
 		return
 	}
 	s.status = st
