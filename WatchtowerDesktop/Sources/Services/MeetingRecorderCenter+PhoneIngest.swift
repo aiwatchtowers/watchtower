@@ -66,9 +66,11 @@ extension MeetingRecorderCenter {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var lost: Set<String> = []
         while true {
-            let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a") {
+            let audioURL = claimRecordingURL(in: directory, date: date, fileExtension: "m4a") {
                 lost.contains($0) || isReserved($0, in: store)
             }
+            // The row (or the loss) settles the name; the claim only bridges the pick.
+            defer { releaseRecordingClaim(audioURL) }
             if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title,
                                        isPrivate: isPrivate, uploadID: uploadID, at: date) {
                 return audioURL

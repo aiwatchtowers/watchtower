@@ -64,6 +64,18 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     /// `rec_X.caf` and `rec_X.m4a` would share every sidecar (`.meta`,
     /// `.txt`, `.json`, `.activity`), so a name is taken while either audio
     /// extension exists.
+    func testClaimedStemsAreDistinctUntilReleased() {
+        let date = Date(timeIntervalSince1970: 1_790_000_000)
+        let first = MeetingRecorderCenter.claimRecordingURL(in: recordingsDir, date: date)
+        let second = MeetingRecorderCenter.claimRecordingURL(in: recordingsDir, date: date, fileExtension: "m4a")
+        XCTAssertNotEqual(first.deletingPathExtension(), second.deletingPathExtension())
+        MeetingRecorderCenter.releaseRecordingClaim(first)
+        let third = MeetingRecorderCenter.claimRecordingURL(in: recordingsDir, date: date)
+        XCTAssertEqual(third.deletingPathExtension(), first.deletingPathExtension(), "a released stem is free again")
+        MeetingRecorderCenter.releaseRecordingClaim(second)
+        MeetingRecorderCenter.releaseRecordingClaim(third)
+    }
+
     func testUniqueRecordingURLSkipsANameTakenByEitherExtension() throws {
         let date = Date()
         let base = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date, fileExtension: "m4a")
