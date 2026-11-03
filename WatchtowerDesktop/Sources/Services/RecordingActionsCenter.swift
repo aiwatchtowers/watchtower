@@ -18,16 +18,19 @@ final class RecordingActionsCenter {
 
     private let copyToPasteboard: @MainActor (String) -> Void
     private let noticeLifetime: Duration
+    private let sleep: @Sendable (Duration) async -> Void
     private var noticeGeneration: [Int64: Int] = [:]
 
     init(
         noticeLifetime: Duration = .seconds(4),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         copyToPasteboard: @escaping @MainActor (String) -> Void = { text in
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         }
     ) {
         self.noticeLifetime = noticeLifetime
+        self.sleep = sleep
         self.copyToPasteboard = copyToPasteboard
     }
 
@@ -180,8 +183,9 @@ final class RecordingActionsCenter {
         noticeGeneration[transcriptID] = generation
         notice[transcriptID] = text
         let lifetime = noticeLifetime
+        let sleep = sleep
         Task {
-            try? await Task.sleep(for: lifetime)
+            await sleep(lifetime)
             guard noticeGeneration[transcriptID] == generation else { return }
             notice[transcriptID] = nil
         }
