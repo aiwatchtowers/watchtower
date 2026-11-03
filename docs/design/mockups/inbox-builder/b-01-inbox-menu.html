@@ -1,0 +1,65 @@
+<h2>B1. The Inbox: folder menu, artifact list, reading pane</h2>
+<p class="subtitle">Sample data only. Folders hold the artifacts of many automations (ask #947). The root is the Inbox itself; Needs approval is pinned under it.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Inbox <span style="float:right">? (reaction commands)</span></div>
+  <div class="mockup-body">
+    <div style="display:flex; gap:0;">
+      <div style="width:220px; border-right:1px solid #8884; padding-right:10px; line-height:1.9">
+        <div style="background:#5b8def33; border-radius:6px; padding:0 6px">📥 <b>Inbox</b> <small style="float:right">9</small></div>
+        <div style="padding-left:14px">✅ Needs approval <small style="float:right">3</small></div>
+        <div style="padding-left:14px">▾ 🚩 Release acme 2.0 <small style="float:right">2</small></div>
+        <div style="padding-left:28px">📦 Blockers <small style="float:right">1</small></div>
+        <div style="padding-left:14px">👥 Team <small style="float:right"></small></div>
+        <div style="margin-top:12px; color:#5b8def">＋ New Folder</div>
+        <div style="color:#5b8def">＋ New Artifact…</div>
+      </div>
+      <div style="width:260px; border-right:1px solid #8884; padding:0 10px; line-height:1.6">
+        <div class="label">Inbox</div>
+        <div style="padding:6px 0"><b>● Waiting for me</b> · 4 waiting<br><small>updated 6 min ago · after every sync</small></div>
+        <div style="padding:6px 0"><b>● Morning brief</b> · today<br><small>legacy entry until sub-project C</small></div>
+        <div style="padding:6px 0">Track my threads · 2 unread<br><small>legacy entry</small></div>
+        <div style="padding:6px 0">Idea finder · 1 to judge<br><small>legacy entry</small></div>
+        <div style="padding:6px 0">● Weekly mail roundup<br><small>run #12 · 2 h ago</small></div>
+      </div>
+      <div style="flex:1; padding-left:14px; position:relative">
+        <h3 style="margin:0">Weekly mail roundup <span style="float:right"><button class="mock-button">Done</button> <button class="mock-button">⋯</button></span></h3>
+        <small>run #12 · 2 h ago</small>
+        <p>Three threads from example.com need an answer this week…</p>
+        <div style="position:absolute; right:0; top:34px; width:230px; border:1px solid #8886; border-radius:8px; padding:8px; background:var(--bg-secondary, #2224); line-height:1.8">
+          <div class="label">Artifact ⋯</div>
+          <div>Run Now</div>
+          <div>Edit What It Collects…</div>
+          <div>Edit the Look…</div>
+          <div>Schedule…</div>
+          <div>Move to Folder ▸</div>
+          <div>Turn Off</div>
+          <div>Run History</div>
+          <div style="color:#d33">Delete…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; margin-top:16px">
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Root ⋯</div>
+    <div class="mockup-body" style="line-height:1.8">
+      <div>Learned Rules</div><div>Assistant Profile</div><div>Show Hidden Folders</div><div>New Folder</div>
+    </div>
+  </div>
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Owner folder ⋯ (Release acme 2.0)</div>
+    <div class="mockup-body" style="line-height:1.8">
+      <div>Rename…</div><div>Icon ▸</div><div>New Folder Inside</div><div>Hide</div><div style="color:#d33">Delete…</div>
+    </div>
+  </div>
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Needs approval ⋯</div>
+    <div class="mockup-body" style="line-height:1.8">
+      <div>Edit the Look…</div><div>Turn Off</div><div>Run History</div>
+    </div>
+  </div>
+</div>
+<p><small>A built-in's ⋯ has no Delete…; Needs approval's automation has no Move to Folder. Counts: an artifact counts 1 when unread; an artifact listing rows with a ref counts its rows that wait on you. The sidebar badge is the sum over visible folders.</small></p>

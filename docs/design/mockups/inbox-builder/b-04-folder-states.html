@@ -1,0 +1,52 @@
+<h2>B4. Folder states</h2>
+<p class="subtitle">Sample data only. Every menu write goes through <code>watchtower inbox folders … --expect-revision</code>; the loser of a race reloads.</p>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap">
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Root, empty</div>
+    <div class="mockup-body" style="text-align:center"><b>Your Inbox is empty</b><br><small>Automations put what they make here.</small><br><button class="mock-button">New Artifact…</button></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Owner folder, empty</div>
+    <div class="mockup-body" style="text-align:center"><b>Nothing in Release acme 2.0 yet</b><br><small>Move an automation here from its ⋯ menu, or make a new one.</small><br><button class="mock-button">New Artifact…</button></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">New folder (inline)</div>
+    <div class="mockup-body" style="line-height:1.9">
+      <div>📥 Inbox</div><div style="padding-left:14px">✅ Needs approval</div>
+      <div style="padding-left:14px">📁 <input class="mock-input" value="Release acme 2.0" style="width:150px"></div>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Drag</div>
+    <div class="mockup-body" style="line-height:1.9">
+      <div>📥 Inbox</div><div style="padding-left:14px">✅ Needs approval</div>
+      <div style="padding-left:14px">👥 Team</div>
+      <div style="padding-left:14px; border-top:2px solid #5b8def">🚩 Release acme 2.0 <small>(dropping here)</small></div>
+      <small>No drop indicator above Needs approval, into it, or past three levels.</small>
+    </div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">The menu changed</div>
+    <div class="mockup-body" style="line-height:1.9">
+      <div>📥 Inbox</div><div style="padding-left:14px">✅ Needs approval</div><div style="padding-left:14px">🚩 Release acme 2.0</div>
+      <small style="color:#d93">The menu changed — reloaded. Drag again if needed.</small>
+    </div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Delete confirmation (inline)</div>
+    <div class="mockup-body"><small>Delete “Release acme 2.0”? Its 1 folder, 3 automations and 5 artifacts move to Inbox.</small><br><button class="mock-button">Cancel</button> <button class="mock-button" style="color:#d33">Delete</button></div>
+  </div>
+</div>
+
+<div class="mockup" style="margin-top:16px">
+  <div class="mockup-header">Move to Folder ▸ (artifact ⋯)</div>
+  <div class="mockup-body" style="line-height:1.8">
+    <div>✓ Inbox</div><div style="padding-left:14px">Release acme 2.0</div><div style="padding-left:28px">Blockers</div><div style="padding-left:14px">Team</div>
+    <div>New Folder…</div>
+    <small>Moves the automation: every artifact that follows it moves at once. Needs approval is not a target.</small>
+  </div>
+</div>

@@ -1,0 +1,29 @@
+<h2>B3. Waiting for me</h2>
+<p class="subtitle">Sample data only. One living artifact; each row carries a ref to its attention item, and the Desktop adds today's message-card actions to it (ask #959). The look is the recipe's; the actions are not.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Waiting for me · 3 <span style="float:right"><button class="mock-button">⋯</button></span></div>
+  <div class="mockup-body" style="line-height:1.6">
+    <small>updated 6 min ago · after every sync</small>
+    <div style="padding:6px 0"><span style="color:#d93">● 2 days</span> · Colleague A in #acme-release — “Can you check the checklist?”
+      <span style="float:right"><button class="mock-button">Open in Slack</button> <button class="mock-button">Done</button> <button class="mock-button">Hide</button> <button class="mock-button">Snooze ▾</button> <button class="mock-button">⋯</button></span></div>
+    <div style="padding:6px 0; opacity:.6"><span style="color:#d93">● 26 h</span> · Colleague B in a DM — “Will you approve the budget?”
+      <span style="float:right"><button class="mock-button" disabled>Open in Slack</button> <button class="mock-button" disabled>Done</button> <button class="mock-button" disabled>Hide</button> <button class="mock-button" disabled>Snooze ▾</button> ⟳</span>
+      <br><small>row busy: Done is being written</small></div>
+    <div style="padding:6px 0">● 3 h · Colleague C in #acme-infra — “Who reviews the migration?”
+      <span style="float:right"><button class="mock-button">Open in Slack</button> <button class="mock-button">Done</button> <button class="mock-button">Hide</button> <button class="mock-button">Snooze ▾</button> <button class="mock-button">⋯</button></span>
+      <br><small style="color:#d33">Couldn't mark it done: the watchtower CLI timed out.</small> <button class="mock-button">Retry</button></div>
+    <p><small>⋯ on a row: Discuss in Chat, Hand to Agent…. On success the row leaves at once (render-time check); the artifact is rewritten at the next sync.</small></p>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; margin-top:16px">
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Not yet run / last run failed</div>
+    <div class="mockup-body"><small>The root shows the Messages entry (today's open-message list) in its place until Waiting for me has run.</small></div>
+  </div>
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Empty</div>
+    <div class="mockup-body" style="text-align:center"><b>Nobody is waiting on you</b></div>
+  </div>
+</div>

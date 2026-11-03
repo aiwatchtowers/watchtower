@@ -1,0 +1,45 @@
+<h2>B2. Needs approval</h2>
+<p class="subtitle">Sample data only. The recipe draws the look; the Desktop always adds the actions and falls back to the native card whenever the recipe's card is missing, behind, off or failed.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Needs approval · 4</div>
+  <div class="mockup-body" style="line-height:1.6">
+    <div class="label">Native card (new action, the run has not drawn it yet)</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px; margin-bottom:10px">
+      <b>Send a Slack message</b> · to #acme-release · proposed by ⚙ Release notes · run #4<br>
+      <small>“Release 2.0 is tagged; checklist in the thread.”</small><br>
+      <button class="mock-button">Approve</button> <button class="mock-button">Reject</button> <button class="mock-button">Edit…</button>
+    </div>
+    <div class="label">Recipe card (current: written after the action's last change)</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px; margin-bottom:10px">
+      <b>Create a Jira issue</b><br>
+      <small>ACME · “Checklist link broken on the release page” · from your :ticket: reaction</small>
+      <span style="float:right"><button class="mock-button">Approve</button> <button class="mock-button">Reject</button> <button class="mock-button">Edit…</button></span>
+    </div>
+    <div class="label">Failed after approval</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px; margin-bottom:10px">
+      <b>Create a Linear issue</b> · <span style="color:#d33">failed: the team was archived</span>
+      <span style="float:right"><button class="mock-button">Retry</button> <button class="mock-button">Dismiss</button></span>
+    </div>
+    <div class="label">Due reminder</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px">
+      <b>Reminder · 14:00</b> · “Answer colleague A about the budget” · <u>Slack message ↗</u>
+      <span style="float:right"><button class="mock-button">Done</button> <button class="mock-button">Snooze 1h</button></span>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; margin-top:16px">
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Recipe off</div>
+    <div class="mockup-body"><small>Showing approvals in the standard card — Needs approval is off. <u>Turn On</u></small><br>…native cards…</div>
+  </div>
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Last run failed</div>
+    <div class="mockup-body"><small>Showing approvals in the standard card — the last run failed. <u>Run History</u></small><br>…native cards…</div>
+  </div>
+  <div class="mockup" style="flex:1">
+    <div class="mockup-header">Empty</div>
+    <div class="mockup-body" style="text-align:center"><b>Nothing waits for your approval</b></div>
+  </div>
+</div>
