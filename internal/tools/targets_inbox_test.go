@@ -24,6 +24,24 @@ func inboxReg(t *testing.T, d *db.DB) *Registry {
 	return reg
 }
 
+// twoHandles opens one file database through two handles, each with its own
+// connection pool, as two processes would: SetMaxOpenConns(1) on one handle
+// would otherwise serialise the goroutines and exercise neither BEGIN
+// IMMEDIATE nor the unique indexes.
+func twoHandles(t *testing.T) [2]*db.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	var out [2]*db.DB
+	for i := range out {
+		d, err := db.Open(path)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = d.Close() })
+		require.NoError(t, d.SetBusyTimeout(30*time.Second))
+		out[i] = d
+	}
+	return out
+}
+
 func seedParent(t *testing.T, d *db.DB, status string) int64 {
 	t.Helper()
 	id, err := d.CreateTarget(db.Target{Text: "Quarter goal", Level: "week", PeriodStart: "2026-11-02",
@@ -191,10 +209,8 @@ func TestCreateTarget_ActionIDZeroPlainInsert(t *testing.T) {
 // AGENT-05: two Executes of one action id at once (a slow apply overlapping
 // the owner's --force reclaim) make one task; both return its id.
 func TestAgent05_CreateTargetConcurrentApplyOneTarget(t *testing.T) {
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-	require.NoError(t, d.SetBusyTimeout(30*time.Second))
+	handles := twoHandles(t)
+	d := handles[0]
 	reg := inboxReg(t, d)
 	rc, err := reg.Propose(context.Background(), "create_target",
 		json.RawMessage(`{"text":"Once","reason":"r"}`), buttonBinding("7:0:abc"))
@@ -219,7 +235,7 @@ func TestAgent05_CreateTargetConcurrentApplyOneTarget(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			out, err := tool.Execute(context.Background(), d, call)
+			out, err := tool.Execute(context.Background(), handles[i], call)
 			errs[i] = err
 			if err == nil {
 				ids[i] = out.(map[string]any)["target_id"].(int64)
@@ -247,11 +263,10 @@ func TestAgent05_CreateTargetConcurrentApplyOneTarget(t *testing.T) {
 // error. After a rejection a new propose is accepted; another context is
 // unaffected.
 func TestAgent05_InboxButtonOneOpenProposal(t *testing.T) {
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-	require.NoError(t, d.SetBusyTimeout(30*time.Second))
-	reg := inboxReg(t, d)
+	handles := twoHandles(t)
+	d := handles[0]
+	regs := [2]*Registry{inboxReg(t, handles[0]), inboxReg(t, handles[1])}
+	reg := regs[0]
 	args := json.RawMessage(`{"text":"From a card","reason":"r"}`)
 
 	errs := make([]error, 2)
@@ -263,7 +278,7 @@ func TestAgent05_InboxButtonOneOpenProposal(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			rc, err := reg.Propose(context.Background(), "create_target", args, buttonBinding("7:0:abc"))
+			rc, err := regs[i].Propose(context.Background(), "create_target", args, buttonBinding("7:0:abc"))
 			errs[i], ids[i] = err, rc.ActionID
 		}()
 	}
@@ -284,7 +299,7 @@ func TestAgent05_InboxButtonOneOpenProposal(t *testing.T) {
 	assert.Equal(t, 1, refused)
 	assert.Equal(t, 1, tableRows(t, d, "agent_actions"))
 
-	_, err = reg.Propose(context.Background(), "create_target", args, buttonBinding("7:1:abc"))
+	_, err := reg.Propose(context.Background(), "create_target", args, buttonBinding("7:1:abc"))
 	require.NoError(t, err, "another context is unaffected")
 
 	ok, err := d.TransitionAgentAction(won, []string{"pending"}, "rejected", "", "")
