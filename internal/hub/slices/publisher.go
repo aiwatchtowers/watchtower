@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay"
 )
 
 // Publishing cadence (spec §9, ask #735).
@@ -41,6 +42,9 @@ const (
 	// transient relay failure delays an ask by seconds, never a full diff.
 	RetryFirst = time.Second
 	RetryMax   = 10 * time.Second
+	// RetryRateLimitedMax caps the relay's retry_after_s after RATE_LIMITED,
+	// which replaces the backoff for that failure (the alert pusher's cap).
+	RetryRateLimitedMax = 60 * time.Second
 )
 
 // ErrNoKeys is returned while the hub has no epoch keys yet, so nothing is read or published
@@ -167,10 +171,10 @@ type Publisher struct {
 	paused      bool            // a hold: no cycle runs, the dirty set waits
 	holds       map[string]bool // the PauseFor reasons held
 	resumed     bool            // Resume: Run's next step is one full diff
-	dirty       map[Kind]bool
-	firstDirty  time.Time // monotonic, first PublishSoon of the dirty set
-	lastDirty   time.Time // monotonic, latest PublishSoon
-	nowDirty    time.Time // monotonic, first PublishNow of the dirty set (zero: none)
+	dirty       map[Kind]bool   // PublishSoon's kinds, due after the debounce
+	firstDirty  time.Time       // monotonic, first PublishSoon of the dirty set
+	lastDirty   time.Time       // monotonic, latest PublishSoon
+	nowDirty    map[Kind]bool   // PublishNow's kinds, due at once
 	lastPublish time.Time
 	// resignal holds the alert keys Resignal asked to signal on CloudKit,
 	// kept until a cycle saved the alert with its signal or found it gone.
@@ -196,7 +200,7 @@ func NewPublisher(c Config) *Publisher {
 	}
 	return &Publisher{
 		c: c, spacing: spacing, clock: c.Clock, wake: make(chan struct{}, 1), mono: time.Now, timer: realTimer,
-		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{}, resignal: map[string]bool{},
+		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{}, nowDirty: map[Kind]bool{}, resignal: map[string]bool{},
 	}
 }
 
@@ -207,32 +211,46 @@ func realTimer(d time.Duration) (<-chan time.Time, func()) {
 
 // PublishSoon marks kinds dirty: Run diffs them Debounce after the last call,
 // and never later than MaxDebounceWait after the first one of the burst.
-func (p *Publisher) PublishSoon(kinds ...Kind) { p.markDirty(false, kinds) }
-
-// PublishNow marks kinds dirty for an applied phone action: the dirty set is
-// due at once instead of after the debounce, so a steady stream of actions
-// is not held to MaxDebounceWait. Bursts still coalesce: a kind written less
-// than the spacing ago is not read again before the spacing allows (Cycle's
-// Deferred), so each kind is saved at most once per spacing.
-func (p *Publisher) PublishNow(kinds ...Kind) { p.markDirty(true, kinds) }
-
-func (p *Publisher) markDirty(now bool, kinds []Kind) {
+func (p *Publisher) PublishSoon(kinds ...Kind) {
 	if len(kinds) == 0 {
 		return
 	}
-	at := p.mono()
+	now := p.mono()
 	p.mu.Lock()
 	if len(p.dirty) == 0 {
-		p.firstDirty = at
+		p.firstDirty = now
 	}
 	for _, k := range kinds {
-		p.dirty[k] = true
+		if !p.nowDirty[k] {
+			p.dirty[k] = true
+		}
 	}
-	p.lastDirty = at
-	if now && p.nowDirty.IsZero() {
-		p.nowDirty = at
+	p.lastDirty = now
+	p.mu.Unlock()
+	p.poke()
+}
+
+// PublishNow marks kinds dirty for an applied phone action: they are due at
+// once instead of after the debounce, so a steady stream of actions is not
+// held to MaxDebounceWait; kinds PublishSoon marked keep their debounce.
+// Bursts still coalesce: a kind written less than the spacing ago, or
+// waiting out a failed save's retry, goes only when that time comes, so each
+// kind is saved at most once per spacing.
+func (p *Publisher) PublishNow(kinds ...Kind) {
+	if len(kinds) == 0 {
+		return
+	}
+	p.mu.Lock()
+	for _, k := range kinds {
+		p.nowDirty[k] = true
+		delete(p.dirty, k)
 	}
 	p.mu.Unlock()
+	p.poke()
+}
+
+// poke wakes Run.
+func (p *Publisher) poke() {
 	select {
 	case p.wake <- struct{}{}:
 	default:
@@ -304,10 +322,18 @@ func (p *Publisher) LastPublishAt() (time.Time, bool) {
 	return p.lastPublish, !p.lastPublish.IsZero()
 }
 
-// debounceDue is when the dirty set is due; ok is false when it is empty.
-func (p *Publisher) debounceDue() (time.Time, bool) {
+// dirtyDue is when the next dirty kinds are due: at once with a PublishNow
+// kind, else the debounce's; ok is false when nothing is dirty.
+func (p *Publisher) dirtyDue(now time.Time) (time.Time, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if len(p.nowDirty) > 0 {
+		return now, true
+	}
+	return p.debounceDueLocked()
+}
+
+func (p *Publisher) debounceDueLocked() (time.Time, bool) {
 	if len(p.dirty) == 0 {
 		return time.Time{}, false
 	}
@@ -315,29 +341,57 @@ func (p *Publisher) debounceDue() (time.Time, bool) {
 	if limit := p.firstDirty.Add(MaxDebounceWait); limit.Before(due) {
 		due = limit
 	}
-	if !p.nowDirty.IsZero() {
-		due = p.nowDirty // an applied action's nudge: due at once
-	}
 	return due, true
 }
 
-// takeDirty empties the dirty set and returns it.
-func (p *Publisher) takeDirty() []Kind {
+// takeDue empties and returns the dirty kinds due at now: PublishNow's, and
+// PublishSoon's once their debounce is over.
+func (p *Publisher) takeDue(now time.Time) []Kind {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]Kind, 0, len(p.dirty))
-	for k := range p.dirty {
+	out := make([]Kind, 0, len(p.nowDirty)+len(p.dirty))
+	for k := range p.nowDirty {
 		out = append(out, k)
 	}
-	clear(p.dirty)
-	p.nowDirty = time.Time{}
+	clear(p.nowDirty)
+	if due, ok := p.debounceDueLocked(); ok && !now.Before(due) {
+		for k := range p.dirty {
+			out = append(out, k)
+		}
+		clear(p.dirty)
+	}
 	return out
+}
+
+// takeDirty empties both dirty sets (a full diff covers them).
+func (p *Publisher) takeDirty() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clear(p.dirty)
+	clear(p.nowDirty)
+}
+
+// retryWait is how long the kinds a failed cycle left wait: the relay's
+// retry_after_s after RATE_LIMITED (RetryFirst without one, at most
+// RetryRateLimitedMax), else the backoff, doubled from RetryFirst to RetryMax.
+func retryWait(err error, backoff *time.Duration) time.Duration {
+	if errors.Is(err, transport.ErrRateLimited) {
+		d := relay.RetryAfter(err)
+		if d <= 0 {
+			d = RetryFirst
+		}
+		return min(d, RetryRateLimitedMax)
+	}
+	*backoff = min(max(*backoff*2, RetryFirst), RetryMax)
+	return *backoff
 }
 
 // Run publishes until ctx ends (it returns ctx.Err()): a full cycle at once
 // and every FullDiffEvery, the dirty kinds after their debounce, the kinds
 // the spacing rule deferred once it allows them, and the kinds a cycle did
-// not finish after a bounded backoff (RetryFirst doubling to RetryMax).
+// not finish after a bounded backoff (RetryFirst doubling to RetryMax; the
+// relay's retry_after_s after RATE_LIMITED). A dirty kind held for its
+// spacing or a retry waits for that time.
 func (p *Publisher) Run(ctx context.Context) error {
 	held := map[Kind]time.Time{} // monotonic time each deferred or retried kind may go
 	nextFull := p.mono()
@@ -371,12 +425,18 @@ func (p *Publisher) Run(ctx context.Context) error {
 			clear(held)
 			nextFull = now.Add(FullDiffEvery)
 		} else {
-			if due, ok := p.debounceDue(); ok && !now.Before(due) {
-				kinds = p.takeDirty()
+			for _, k := range p.takeDue(now) {
+				// A kind held for its spacing or a retry goes at that time
+				// (it reads the latest state then), never earlier.
+				if at, ok := held[k]; !ok || !now.Before(at) {
+					kinds = append(kinds, k)
+				}
 			}
 			for k, at := range held {
 				if !now.Before(at) {
-					kinds = append(kinds, k)
+					if !slices.Contains(kinds, k) {
+						kinds = append(kinds, k)
+					}
 					delete(held, k)
 				}
 			}
@@ -404,16 +464,16 @@ func (p *Publisher) Run(ctx context.Context) error {
 				backoff = 0
 				continue
 			}
-			backoff = min(max(backoff*2, RetryFirst), RetryMax)
+			wait := retryWait(err, &backoff)
 			for _, k := range rep.Unfinished {
-				if at, ok := held[k]; !ok || at.Before(after.Add(backoff)) {
-					held[k] = after.Add(backoff)
+				if at, ok := held[k]; !ok || at.Before(after.Add(wait)) {
+					held[k] = after.Add(wait)
 				}
 			}
 			continue
 		}
 		deadline := nextFull
-		if due, ok := p.debounceDue(); ok && due.Before(deadline) {
+		if due, ok := p.dirtyDue(now); ok && due.Before(deadline) {
 			deadline = due
 		}
 		for _, at := range held {
