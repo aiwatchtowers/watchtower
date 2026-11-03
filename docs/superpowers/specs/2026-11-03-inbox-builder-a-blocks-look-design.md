@@ -15,6 +15,7 @@
 | Look step — save with the AI-step warning | [`a-07-look-save-llm.html`](../../design/mockups/inbox-builder/a-07-look-save-llm.html) |
 | Look step — no Inbox output / dry run made no card | [`a-08-look-no-card.html`](../../design/mockups/inbox-builder/a-08-look-no-card.html) |
 | Look step — dry run stopped at a Quick Connection | [`a-10-look-stopped.html`](../../design/mockups/inbox-builder/a-10-look-stopped.html) |
+| Target button — idle, waiting for approval, creating, task created, failed, propose error | [`a-11-target-button.html`](../../design/mockups/inbox-builder/a-11-target-button.html) |
 | Inbox card — living, markdown fallback, unsupported version | [`a-09-inbox-card.html`](../../design/mockups/inbox-builder/a-09-inbox-card.html) |
 
 ## Intent
@@ -140,29 +141,34 @@ A button that turns a card or a row into a task, through the same approval path 
 
 ```
 watchtower actions propose --tool create_target --surface inbox \
-  --context-type automation_output --context-id <output id>:<flattened index> \
+  --context-type automation_output --context-id <output id>:<flattened index>:<action hash> \
   --args '{"text": <title>, "intent": <intent>, "parent_id": <parent>, "reason": "From the Inbox card “<card title>” of <automation name>"}' --json
 ```
 
-with no `--approve`: one pending `agent_actions` row, which the owner approves or rejects in the approval card like any other proposal (today in the Inbox; after sub-project B in **Needs approval**). The args are built from the action the Desktop drew, read from the stored row, so the proposal is exactly what the owner saw; the approval card shows the title, the intent and the parent's own title again before anything is written. `actions propose` already refuses under every agent marker (AGENT-07) and accepts only tools on the `inbox` surface.
+with no `--approve`: one pending `agent_actions` row, which the owner approves or rejects in the approval card like any other proposal (today in the Inbox; after sub-project B in **Needs approval**). `<action hash>` is `blocks.ActionHash(action)`: the first 16 hex characters of SHA-256 over the action's canonical JSON (Go and Swift, pinned by the shared fixture).
+
+**Depends on STRIP-01 (pending owner ask #451).** The row has `surface = 'inbox'`, and today the action strip and the badge leave out every inbox-surface row (STRIP-01: an inbox proposal is approved by the same press, so it never needs a card). Sub-project B narrows that exclusion to `apply_track_action`, so other inbox proposals, this one included, show up as approval cards; that change waits on the owner's ask #451 (which replaces #446). **If #451 is refused, the `target` kind drops out of v1** *(agent's call)*: the grammar refuses it (`output.inbox(): actions[1]: target actions are not available yet`), plan Tasks 14–15 do not run, and the kind moves to a follow-up target. Why not keep it with the proposal visible only through its button: a pending approval that no strip, badge or Needs approval shows would go against the umbrella's "an approval never waits silently", and an Approve control on the button would be a second approval surface to keep in step with AGENT-07. The kind is self-contained (one grammar entry, Tasks 14–15), so dropping it touches nothing else. The args are built from the action the Desktop drew, read from the stored row, so the proposal is exactly what the owner saw; the approval card shows the title, the intent and the parent's own title again before anything is written. `actions propose` already refuses under every agent marker (AGENT-07) and accepts only tools on the `inbox` surface.
 
 **Registry changes** (`internal/tools/targets.go`, `cmd/actions_registry.go`):
 
 - `create_target` gains the `inbox` surface. The inbox surface stays no trust place (`trustSurfaceErr`, `TrustSurfaces`): an inbox `create_target` is never auto-executed, it always waits for Approve.
 - `create_target` gains an optional `parent_id` (integer > 0). It is accepted **only on the `inbox` surface**, through a new binding-aware check on the tool (`Tool.ValidateBinding func(b Binding, raw json.RawMessage) error`, called by `Registry.Propose` after `Validate`): on `main`, `reaction` and `automation` a `parent_id` is refused with `parent_id is only for an Inbox card's button`, so the main chat's "top-level task only" contract (TGT-BRIEF-01 note in `docs/inventory/targets.md`) does not widen. At propose and again in `Execute`, the parent must exist, be a personal target (`project_id IS NULL`) and not be `done` or `dismissed` (`parent_id: task #N is closed` / `… does not exist`); the new task is created as its child with the parent's level and period, `source_type = 'chat'`, `source_id = 'action:<id>'` as today.
-- The proposal's context (`automation_output`, `<output id>:<index>`) is stored on the row; it is how the Desktop finds the button's state.
+- The proposal's context (`automation_output`, `<output id>:<index>:<action hash>`) is stored on the row; it is how the Desktop finds the button's state.
 
-**The Desktop button** (`InboxCardAction`, the renderer's `onAction`): a target button draws `.kitSecondary` with an SF Symbol `checklist` and its label. Its state is read from `agent_actions` by context at render time:
+**The Desktop button** (`InboxCardAction`, the renderer's `onAction`): a target button draws `.kitSecondary` with an SF Symbol `checklist` and its label. Its state is read at render time from the newest `agent_actions` row whose `context_type = 'automation_output'` and `context_id` equals `<output id>:<index>:<hash of the drawn action>`. The `agent_actions.status` CHECK is `pending, approved, rejected, applied, failed, executing`, plus `dismissed_at` on a failed row; every one is mapped ([a-11](../../design/mockups/inbox-builder/a-11-target-button.html)):
 
-| Proposal for this button | Button |
+| Newest proposal for this button | Button |
 |---|---|
-| none, or the last one rejected / expired / dismissed | pressable |
-| pending | disabled, "Waiting for approval" (opens the approval card) |
-| applied | "Task created" — opens the new target |
-| failed | pressable again, with the error line the approval card shows |
-| the propose call itself failed (non-zero exit) | stays pressable, `WriteErrorBanner` with the stderr reason, nothing cleared before success |
+| none | **idle** — pressable |
+| `pending` | **waiting** — disabled, "Waiting for approval"; a click opens the approval card |
+| `approved` or `executing` | **creating** — disabled, "Creating task…" with a small progress mark (the approve-and-apply is in flight) |
+| `applied` | **created** — "Task created"; a click opens the target named in `result_json` |
+| `rejected` | **idle** — pressable (the owner said no to that proposal, not to the button) |
+| `failed`, `dismissed_at = ''` | **failed** — pressable again, with the apply error line the approval card shows |
+| `failed`, `dismissed_at` set | **idle** — pressable |
+| the propose call itself failed (non-zero exit, no row) | **idle** plus a `WriteErrorBanner` with the stderr reason; nothing is cleared before a write succeeded |
 
-A press while a proposal for the same button is pending is not offered. In `.preview` mode the button is drawn disabled like every other one. A living card whose content changed starts with a fresh button only if the action itself changed (the context names the output and the index; the Desktop shows a stale pending proposal's state only when its stored args equal the drawn action's).
+**The action hash in the context, for every state.** A living card keeps its output id across rewrites, so `<output id>:<index>` alone could point at a proposal made from another button: the action at that index may now be a different task, or a reply button. Because the context also names the action's hash, every state above — `applied` as much as `pending` — is looked up for exactly the action drawn: a rewrite that changes the button's title, intent or parent, or moves another action to that index, finds no row and draws **idle**; "Task created" never shows on a different button. A rewrite that leaves the button's action identical keeps its state *(agent's call)*: it is the same task, and drawing it pressable again would invite a duplicate; whether the rest of the card changed does not matter to the task. A press while a proposal for the same button is `pending`, `approved` or `executing` is not offered. In `.preview` mode the button is drawn disabled like every other one.
 
 ## Storage
 
@@ -283,6 +289,7 @@ The phone does not show automation cards today (no reader in `WatchtowerMobile` 
 
 The AUTO-* changes for `blocks`/`folder`/`key`, removal by key, the row `ref` and `concurrency: 1` for living outputs are approved (ask #961); the owner preview path (AUTO-06/AUTO-12) and the `target` action kind (AUTO-02) are approved in ask #445. Exactly these entries change, each in the same commit as its code:
 
+- **STRIP-01** (`docs/inventory/reaction-commands.md`) — **pending owner ask #451**: B narrows the strip's and the badge's exclusion of inbox-surface rows to `apply_track_action`, so a target proposal shows as an approval card. A depends on it and does not change STRIP-01 itself; if #451 is refused, the `target` kind drops out of v1 (see **The `target` action**) and the AUTO-02 line below does not land.
 - **AUTO-02** — an Inbox card may carry a `target` button; its press proposes `create_target` through `Registry.Propose` on the `inbox` surface and nothing is written until the owner's Approve; a target action needs `outputs: [target]`. New guards: `TestOutput_TargetActionNeedsTargetOutput`, `TestAuto02_TargetButtonOnlyProposes` (`cmd`: a press records one pending row, no target), `TestCreateTarget_ParentIDOnlyOnInbox`.
 
 - **AUTO-04** — the commit also upserts living outputs by `(automation_id, output_key)` and applies `output.remove`; every other terminal status leaves living rows byte-identical too. New guards: `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess`.
@@ -301,7 +308,7 @@ Outside `automations.md`: `docs/inventory/agent-actions.md` and `docs/inventory/
 - **Go** `target` kind: every field rule and message; `outputs: [target]` missing → `PermissionDenied`; `data` on a target refused; `create_target` with `parent_id` on `main`/`reaction`/`automation` refused, on `inbox` accepted; parent missing, done, dismissed or on a workbench board refused at propose and, when it closed meanwhile, at apply (the row lands `failed`, no target); applied child has the parent's level and period; an inbox `create_target` is never auto-executed whatever trust `main` has.
 - **Go** executor: a reply run whose card was rewritten (changed hash) or removed after the press ends `cancelled` with the reason and runs no step; a same-hash rewrite does not stop it; a payload without `content_hash` runs as before.
 - **Go** `cmd`: `actions propose --tool create_target --surface inbox` without `--approve` records one pending row with the context and creates no target; `preview --stdin --json` pinned keys, refusal under every marker, no rows written; `reply --content-hash` match / mismatch / absent; `validate --json` `adds_llm` and `fields.artifacts`.
-- **Swift**: Kit decoder over the fixture (four decode states); `AutomationLookPreviewModel` every state and transitions (empty → running → preview; preview → stale after an edit; stale → preview after the chat's next draft; running → navigate away → back keeps the run — review rules lifecycle); `AutomationEditorCenter` step memory and preview result per key; the reading pane's choice of blocks / markdown / unsupported / unreadable; `InboxCardAction` passes the flattened index and the content hash; `markOutputOpened`/`markOutputDone`/`dismissOutput` with a stale hash change nothing and return false, and the view model re-reads instead of clearing; a same-hash rewrite does not change `inboxOutputCount` or Home's feed, a changed one adds one unread; the target button's five states from `agent_actions` rows, its args built from the drawn action, a failed propose keeping the button pressable with the error.
+- **Swift**: Kit decoder over the fixture (four decode states); `AutomationLookPreviewModel` every state and transitions (empty → running → preview; preview → stale after an edit; stale → preview after the chat's next draft; running → navigate away → back keeps the run — review rules lifecycle); `AutomationEditorCenter` step memory and preview result per key; the reading pane's choice of blocks / markdown / unsupported / unreadable; `InboxCardAction` passes the flattened index and the content hash; `markOutputOpened`/`markOutputDone`/`dismissOutput` with a stale hash change nothing and return false, and the view model re-reads instead of clearing; a same-hash rewrite does not change `inboxOutputCount` or Home's feed, a changed one adds one unread; the target button's states from `agent_actions` rows (every CHECK status plus `dismissed_at`); a living rewrite that changes the button's action, or puts another action at its index, draws idle whatever the old proposal's status, `applied` included; an identical action keeps its state; its args built from the drawn action, a failed propose keeping the button pressable with the error.
 - **Shots**: every state in the table above plus the blocks gallery and the Inbox card states, in light and dark, registered in `DesignShotCatalog` (plan Task 1).
 
 ## Decisions
@@ -319,7 +326,7 @@ Outside `automations.md`: `docs/inventory/agent-actions.md` and `docs/inventory/
 - Reply press carries the drawn content hash; a changed card refuses the press — agent's call.
 - A press without `--content-hash` still works — agent's call. Reason: this release's Desktop always sends it; the flag is optional only for the CLI by hand, which is the owner's own action on a card they name by id.
 - The read-state writers mark only the drawn version (`content_hash` in their `WHERE`); a mismatch is a no-op and a re-read — agent's call (review ask #447).
-- A queued reply run whose card changed before it started ends `cancelled` with a reason, the script never runs; no new run status — agent's call (review ask #447).
+- A queued reply run whose card changed before it started ends `cancelled` with a reason, the script never runs; no new run status — agent's call (review ask #447). Reason: the button it was pressed for no longer exists, and `automation_runs.status` has a CHECK, so a `skipped` status would mean rebuilding a hot table for a label that `cancelled` plus a reason already gives.
 - A card is announced (notice, badge, Home) only when new or its hash changed — agent's call (review ask #447).
 - `folder` is a hook-registered field; A adds no folder column — agent's call (with sub-project B).
 - The block model in the Kit's `WatchtowerDesign`, the renderer in DesignKit with app-injected markdown, avatars, actions and ref hooks — agent's call.
@@ -328,8 +335,11 @@ Outside `automations.md`: `docs/inventory/agent-actions.md` and `docs/inventory/
 - The AI-step warning is a footer line driven by a Go `adds_llm` flag, lexical call-site count — agent's call.
 - HTML mockups now, native DesignShotCatalog shots as plan Task 1 for the owner to check before the rest is built — agent's call.
 - The Look step has an owner **Dry run** button over `watchtower automations preview --stdin` (owner-only in-memory dry run, refused under every agent marker); AUTO-06/AUTO-12 amended — ask #445.
-- A `target` action kind `{title, intent?, parent?}`: the press proposes `create_target` on the `inbox` surface and waits for Approve like any proposal; `parent_id` only on the inbox surface; AUTO-02 amended — ask #445.
-- A target button's state comes from its proposal (`context_type = 'automation_output'`, `context_id = '<output>:<index>'`), nothing is stored on the output row — agent's call.
+- A `target` action kind `{title, intent?, parent?}`: the press proposes `create_target` on the `inbox` surface and waits for Approve like any proposal; AUTO-02 amended — ask #445. Visible as an approval card only once STRIP-01 is narrowed (pending ask #451).
+- If ask #451 is refused, the `target` kind drops out of v1 rather than living as a proposal seen only through its button — agent's call. Reason: an approval no strip or badge shows would wait silently, against the umbrella's anti-goal.
+- `parent_id` on `create_target` is accepted only on the `inbox` surface, through a new `Tool.ValidateBinding` — agent's call. Reason: the main, reaction and automation surfaces keep their top-level-only contract (TGT-BRIEF-01), and `Validate` sees no binding, so a binding-aware check is the narrowest way to allow it in one place only.
+- The button's context names the action's hash (`<output>:<index>:<action hash>`) and every state is looked up through it — agent's call (review ask #450). Reason: a living card keeps its output id across rewrites, so the index alone would put "Task created" on another button.
+- A target button's state comes from its proposal (`context_type = 'automation_output'`), nothing is stored on the output row — agent's call.
 - The v1 block set, script emits blocks directly, living upsert and read-state rule, `concurrency: 1` for living — umbrella (agent's calls approved with it); AUTO-* changes — ask #961.
 
 ## Contract with sub-project B

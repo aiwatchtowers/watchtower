@@ -2,7 +2,7 @@
 
 **Spec:** [2026-11-03-inbox-builder-a-blocks-look-design.md](../specs/2026-11-03-inbox-builder-a-blocks-look-design.md)
 **Umbrella:** [2026-11-02-inbox-builder-design.md](../specs/2026-11-02-inbox-builder-design.md) (board #1400).
-**Status:** for owner review together with the spec. The spec's Q1 and Q2 are answered in ask #445: the owner preview CLI and Dry run button are in (Tasks 6, 11, 12), and the `target` action kind is in (Tasks 2, 14, 15).
+**Status:** for owner review together with the spec. The spec's Q1 and Q2 are answered in ask #445: the owner preview CLI and Dry run button are in (Tasks 6, 11, 12), and the `target` action kind is in (Tasks 2, 14, 15), visible as an approval card only once STRIP-01 is narrowed by B (pending owner ask #451). If #451 is refused, Tasks 14–15 do not run, and Task 2's grammar refuses `target` with "target actions are not available yet".
 
 ## Execution rules
 
@@ -25,7 +25,7 @@ Files:
 - new `WatchtowerDesktop/Sources/DesignKit/Artifacts/` — `ArtifactView`, one view per block (`ArtifactHeadingView`, `ArtifactTextView`, `ArtifactListView`, `ArtifactTableView`, `ArtifactPersonView`, `ArtifactMetricsView`, `ArtifactLinkView`, `ArtifactActionsView`), `ArtifactEnvironment` (`markdown`, `avatar`, `onAction`, `refHooks`) as an `EnvironmentValues` entry, `ArtifactRefHooks`, `enum ArtifactRenderMode { case inbox, preview }`.
 - new `WatchtowerDesktop/Sources/Views/Automations/AutomationLookPane.swift` — the Look pane as a view over a plain value `AutomationLookPaneContent` (state enum mirroring the spec's table: `noInboxOutput`, `empty`, `running(previous:)`, `failed(message:steps:)`, `noCard(tokens:)`, `preview(cards:selected:tokens:at:)`, `stale(cards:selected:)`, `stopped(cards:)`), plus the footer line view `AutomationLLMStepWarning`. No model, no CLI yet: Task 12 feeds it.
 - a catalog page in `WatchtowerDesktop/Sources/DesignKitCatalog/` for the artifact components.
-- new `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+InboxBuilderA.swift`; register shots in `DesignShotCatalog.swift`: `artifact-blocks` (every block, from fixture JSON), `artifact-inbox-living`, `artifact-inbox-markdown`, `artifact-inbox-unsupported`, `artifact-inbox-unreadable`, `look-empty`, `look-running`, `look-failed`, `look-preview`, `look-preview-picker`, `look-stale`, `look-stopped` (mockup a-10), `look-no-inbox-output`, `look-no-card`, `look-save-llm-warning`.
+- new `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+InboxBuilderA.swift`; register shots in `DesignShotCatalog.swift`: `artifact-blocks` (every block, from fixture JSON), `artifact-inbox-living`, `artifact-inbox-markdown`, `artifact-inbox-unsupported`, `artifact-inbox-unreadable`, `look-empty`, `look-running`, `look-failed`, `look-preview`, `look-preview-picker`, `look-stale`, `look-stopped` (mockup a-10), `look-no-inbox-output`, `look-no-card`, `look-save-llm-warning`, `artifact-target-button-idle`, `artifact-target-button-waiting`, `artifact-target-button-creating`, `artifact-target-button-created`, `artifact-target-button-failed`, `artifact-target-button-propose-error` (mockup a-11).
 - new `WatchtowerKit/Tests/WatchtowerDesignTests/ArtifactBlocksTests.swift`.
 
 Steps: write the fixture from the spec; decoder over it; renderer from kit parts only (no hex, no `Divider()` between rows, colours through `Tone.artifact`); Look pane on fixture content; shots; `make desktop-shots DESKTOP_SHOTS=<dir>` and attach the PNGs to the hand-back.
@@ -43,6 +43,7 @@ Files: new `internal/automations/blocks/blocks.go`, `validate.go`, `actions.go`,
 Interfaces:
 - `type Document struct { V int; Blocks []Block }` with canonical JSON marshalling (fixed key order, defaults written).
 - `func Validate(fn string, v any, opts Options) (Document, error)` — `v` is the goja-exported value; `type Options struct { BuiltIn bool; AllowKind func(kind string) error }` (`BuiltIn` gates `action`/`reminder` refs; `AllowKind` is the SDK's permission check for `reply` → `inbox:reply` and `target` → `outputs: [target]`).
+- `func ActionHash(a db.InboxAction) string` — first 16 hex characters of SHA-256 over the action's canonical JSON; the fixture pins it per valid action, and Swift `ArtifactAction.hash` matches (Task 13).
 - `func ValidateAction(fn, field string, i int, v any, opts Options) (db.InboxAction, error)` — the one action grammar (moved from `sdk_output_card.go`'s `inboxAction`, plus the `target` kind with the spec's fields and messages); used for card actions and block actions alike. Errors are `automations` `ValidationError`-shaped through a small `ErrorFunc` the caller passes, or a typed `*blocks.Error{Path, Msg}` the SDK maps — implementer's choice, messages exactly as the fixture.
 - `func (Document) Canonical() ([]byte, error)`; `func PlainText(Document, maxBytes int) string`; `func ContentHash(title, body string, doc *Document, priority, link string, actions []db.InboxAction) string`; `func FlattenActions(card []db.InboxAction, doc *Document) []db.InboxAction`; `func Decode(stored string) (*Document, error)` (for the press path).
 - Limits as named constants: `MaxBlocks = 40`, `MaxRows = 500`, `MaxActions = 50`, `MaxBlocksBytes = 128 * 1024`, `MaxTextBytes = 16 * 1024`, and the per-field limits of the spec.
@@ -186,13 +187,13 @@ Checks: `make test-swift FILTER='AutomationDraftFooterTests|AutomationEditorMode
 
 Files: `WatchtowerKit/Tests/WatchtowerDesignTests/ArtifactBlocksTests.swift` (extend), new `WatchtowerDesktop/Tests/Core/ArtifactFixtureParityTests.swift`.
 
-Tests: the Kit decoder accepts every Go-canonical document of the final fixture; `flattenedActions` order equals Go's per case (the fixture's `actions` list of labels); every `refs` list matches; a document Go would refuse but that decodes structurally (e.g. a 7-column table) still renders (Swift does not re-validate) — documented as intended; the fixture coverage test from Task 2 has a Swift twin listing every `ArtifactBlock` case.
+Tests: the Kit decoder accepts every Go-canonical document of the final fixture; `ArtifactAction.hash` equals the fixture's Go `ActionHash` for every action; `flattenedActions` order equals Go's per case (the fixture's `actions` list of labels); every `refs` list matches; a document Go would refuse but that decodes structurally (e.g. a 7-column table) still renders (Swift does not re-validate) — documented as intended; the fixture coverage test from Task 2 has a Swift twin listing every `ArtifactBlock` case.
 
 Checks: `make kit-test FILTER=ArtifactBlocksTests`, `make test-swift FILTER=ArtifactFixtureParityTests`, `make lint-diff`.
 
 ## Task 14 — `create_target` from an Inbox button: inbox surface and `parent_id`
 
-**Depends on:** Task 2. **Lane:** Go.
+**Depends on:** Task 2; ask #451 (STRIP-01 narrowed by B). **Lane:** Go. Not started while #451 is open; dropped if it is refused.
 
 Files: `internal/tools/targets.go` (+ test), `internal/tools/registry.go` (`Tool.ValidateBinding`, called by `Propose` after `Validate`), `cmd/actions_registry.go` and its pin test, `cmd/actions_propose_test.go`; `docs/inventory/automations.md` (AUTO-02), `docs/inventory/agent-actions.md` and `docs/inventory/targets.md` (Changelog lines, TGT-BRIEF-01's surface sentence).
 
@@ -204,13 +205,13 @@ Checks: `go test ./internal/tools`, `go test ./cmd -run 'TestActionsPropose|Test
 
 ## Task 15 — The target button on the Desktop
 
-**Depends on:** Tasks 10, 14. **Lane:** Swift.
+**Depends on:** Tasks 10, 14; ask #451 (STRIP-01 narrowed by B). **Lane:** Swift. Not started while #451 is open; dropped if it is refused.
 
-Files: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxCardAction.swift` (target kind: build `actions propose` args from the drawn action — `text`, `intent`, `parent_id`, `reason` naming the card and automation —, context `automation_output` / `<output id>:<index>`), new `WatchtowerCore/Services/Inbox/InboxTargetButtonState.swift` (pure: proposals for this context → `pressable | waiting(actionID) | created(targetID) | failed(message)`), a query over `agent_actions` by context in `Database/Queries/` (the existing agent-action queries file), `Sources/Views/Inbox/InboxReadingPane.swift` (the state per target action through `ArtifactEnvironment`), `DesignKit/Artifacts/` (a target button's label, symbol and state rendering — states come in as values; DesignKit reads no database); tests `Tests/Core/InboxTargetButtonStateTests.swift`, `Tests/Core/InboxCardActionTests.swift` (or the existing action-strip tests), a shot `artifact-target-button-states` in `DesignShotCatalog`.
+Files: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxCardAction.swift` (target kind: build `actions propose` args from the drawn action — `text`, `intent`, `parent_id`, `reason` naming the card and automation —, context `automation_output` / `<output id>:<index>:<action hash>`), new `WatchtowerCore/Services/Inbox/InboxTargetButtonState.swift` (pure: the newest proposal for `<output>:<index>:<action hash>` → `idle | waiting(actionID) | creating | created(targetID) | failed(message)`, mapping all six `agent_actions` statuses and `dismissed_at` as the spec's table), a query over `agent_actions` by context in `Database/Queries/` (the existing agent-action queries file), `Sources/Views/Inbox/InboxReadingPane.swift` (the state per target action through `ArtifactEnvironment`), `DesignKit/Artifacts/` (a target button's label, symbol and state rendering — states come in as values; DesignKit reads no database); tests `Tests/Core/InboxTargetButtonStateTests.swift`, `Tests/Core/InboxCardActionTests.swift` (or the existing action-strip tests), a shot `artifact-target-button-states` in `DesignShotCatalog`.
 
-Tests: each of the five states of the spec's table from `agent_actions` rows (none, pending, applied, failed, rejected/expired/dismissed → pressable); a pending row whose stored args differ from the drawn action (a living card rewritten) does not lock the new button; the args JSON equals the drawn action (title, intent, parent) and the reason names the card; a non-zero propose exit keeps the button pressable and shows the stderr reason (no state cleared before success, review rules error handling); a press in `.preview` mode does nothing; navigating away while a propose runs and coming back shows its result (the press lives in the Inbox center, not the view).
+Tests: every row of the spec's table from `agent_actions` rows (none, `pending`, `approved`, `executing`, `applied`, `rejected`, `failed`, `failed` with `dismissed_at`); `TestTargetButton_RewriteNeverInheritsState` — for each status, `applied` included, a living rewrite that changes the button's title/intent/parent, or puts a different action at the same index, draws idle; an identical action after a rewrite keeps its state; the args JSON equals the drawn action (title, intent, parent) and the reason names the card; a non-zero propose exit keeps the button pressable and shows the stderr reason (no state cleared before success, review rules error handling); a press in `.preview` mode does nothing; navigating away while a propose runs and coming back shows its result (the press lives in the Inbox center, not the view).
 
-Checks: `make test-swift FILTER='InboxTargetButtonStateTests|InboxCardActionTests|DesignShotsTests'`, `make lint-diff`.
+Checks: `make test-swift FILTER='InboxTargetButtonStateTests|InboxCardActionTests|DesignShotsTests|ArtifactFixtureParityTests'`, `make lint-diff`.
 
 ## Task 16 — Guide, feature note, CLAUDE.md
 

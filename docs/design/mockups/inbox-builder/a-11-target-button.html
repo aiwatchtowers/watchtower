@@ -1,0 +1,28 @@
+<h2>A-11. The target button — every state</h2>
+<p class="subtitle">A recipe's <code>target</code> action, pressed in the Inbox. The press proposes a task; the owner approves it in the approval card. The state is read from the newest proposal for this exact button (output, index and action hash), so a rewritten living card never inherits another button's state.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Inbox card · “Release 4.2 — where we are” · row “Sign off the checklist”</div>
+  <div class="mockup-body">
+    <div style="max-width:620px">
+      <div class="label">idle — no proposal, or the last one rejected, or failed and dismissed</div>
+      <div style="padding:6px 8px; margin-bottom:10px"><b>Sign off the checklist</b><br><small>Colleague A in #acme-release</small> <span style="float:right"><button class="mock-button">☑ Make a task</button></span></div>
+
+      <div class="label">waiting — pending; disabled, a click opens the approval card</div>
+      <div style="padding:6px 8px; margin-bottom:10px"><b>Sign off the checklist</b><br><small>Colleague A in #acme-release</small> <span style="float:right"><button class="mock-button" disabled>☑ Waiting for approval</button></span></div>
+
+      <div class="label">creating — approved or executing; disabled, in flight</div>
+      <div style="padding:6px 8px; margin-bottom:10px"><b>Sign off the checklist</b><br><small>Colleague A in #acme-release</small> <span style="float:right"><button class="mock-button" disabled>⏳ Creating task…</button></span></div>
+
+      <div class="label">created — applied; a click opens the new task</div>
+      <div style="padding:6px 8px; margin-bottom:10px"><b>Sign off the checklist</b><br><small>Colleague A in #acme-release</small> <span style="float:right"><button class="mock-button">✓ Task created</button></span></div>
+
+      <div class="label">failed — the apply failed; pressable again, with the error line</div>
+      <div style="padding:6px 8px; margin-bottom:10px"><b>Sign off the checklist</b><br><small>Colleague A in #acme-release</small> <span style="float:right"><button class="mock-button">☑ Make a task</button></span><br><small style="color:#d33">Couldn't create the task: parent_id: task #12 is closed</small></div>
+
+      <div class="label">propose error — the press itself failed, no proposal written; banner, button stays idle</div>
+      <div style="border:1px solid #d336; border-radius:6px; padding:6px 8px; color:#d33; margin-bottom:6px"><small>Couldn't propose the task: the database is busy — try again.</small></div>
+      <div style="padding:6px 8px;"><b>Sign off the checklist</b><br><small>Colleague A in #acme-release</small> <span style="float:right"><button class="mock-button">☑ Make a task</button></span></div>
+    </div>
+  </div>
+</div>
