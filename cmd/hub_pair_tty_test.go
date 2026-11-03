@@ -137,8 +137,11 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
 		rootCmd.SetArgs(nil)
+		// Local flags only: Flags() holds the inherited --config too, and its
+		// default is the real home's config.yaml (computed at package init),
+		// which a later DB open would follow into the owner's workspace.
 		for _, c := range hubCmd.Commands() {
-			c.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+			c.LocalFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 		}
 	})
 	return r
