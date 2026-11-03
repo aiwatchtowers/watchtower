@@ -537,6 +537,7 @@ enum DesignShotCatalog {
                     .detailBackground())
             }
         } + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+            + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
     }
 }
 
@@ -576,6 +577,7 @@ enum DesignShotFixtures {
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
+        TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
