@@ -287,3 +287,74 @@ func TestAISessionRoutingExhaustedReserveReturnsToRecoveredPreferredBeforeNewTur
 		})
 	}
 }
+
+// Reopening after a preference change does not turn the historical actual
+// provider into evidence of quota. A genuine sticky quota cause stays intact.
+func TestAISessionStickyReasonSurvivesReopenWithoutInventingQuota(t *testing.T) {
+	for _, preferred := range []string{"claude", "codex"} {
+		for _, reason := range []string{"", "preferred", "fallback_disabled", "quota_exhausted"} {
+			t.Run(preferred+"/"+reason, func(t *testing.T) {
+				cleanup := setupWatchTestEnv(t)
+				t.Cleanup(cleanup)
+				resetAISessionFlags(t)
+				policytest.Set(t, nil)
+				t.Setenv("ANTHROPIC_API_KEY", "test-key")
+				reserve := "claude"
+				if preferred == "claude" {
+					reserve = "codex"
+				}
+				cfg, err := config.Load(flagConfig)
+				require.NoError(t, err)
+				cfg.AI.Provider, cfg.AI.ConfiguredProvider = preferred, preferred
+				cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+				cfg.AI.Providers = map[string]config.AIProviderConfig{
+					preferred: {Models: config.AIModels{Strong: "preferred-model"}},
+					reserve:   {Models: config.AIModels{Strong: "reserve-model"}},
+				}
+				cfg.ClaudePath = filepath.Join(t.TempDir(), "claude")
+				require.NoError(t, os.WriteFile(cfg.ClaudePath, []byte(fakeSessionClaude), 0o755))
+				cfg.CodexPath = routingCLI(t, "codex", false)
+				path := filepath.Join(t.TempDir(), "chat.db")
+				database, err := db.Open(path)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = database.Close() })
+				_, err = database.Exec(`INSERT INTO chat_conversations(id,created_at,updated_at,actual_provider,actual_model,routing_reason) VALUES(1,1,1,?,'old-model',?)`, reserve, reason)
+				require.NoError(t, err)
+				for reopen := 0; reopen < 2; reopen++ {
+					conv, err := database.GetChatConversation(1)
+					require.NoError(t, err)
+					command := &cobra.Command{}
+					command.SetErr(io.Discard)
+					command.Flags().String("model", "", "")
+					backend, err := routedSessionBackend(command, cfg, database, path, conv, "", nil, 0, nil, func() {})
+					require.NoError(t, err)
+					t.Cleanup(func() { _ = backend.Close() })
+					_, err = backend.Start(context.Background())
+					require.NoError(t, err)
+					for _, turn := range []string{"first", "next"} {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						var reasons []string
+						err := backend.Turn(ctx, chat.Command{TurnID: turn, Text: "new owner message"}, func(event chat.Event) {
+							if event.Type == chat.EventSessionReady {
+								reasons = append(reasons, event.Reason)
+								require.Equal(t, reserve, event.Provider)
+								require.Equal(t, "reserve-model", event.Model)
+							}
+						})
+						cancel()
+						require.NoError(t, err)
+						require.Equal(t, []string{reason}, reasons)
+						actual, err := database.GetChatConversation(1)
+						require.NoError(t, err)
+						require.Equal(t, reserve, actual.ActualProvider)
+						require.Equal(t, reason, actual.RoutingReason)
+						require.Equal(t, "preferred_reserve", actual.RoutingMode)
+						require.Empty(t, actual.Provider)
+						require.Empty(t, actual.Model)
+					}
+					require.NoError(t, backend.Close())
+				}
+			})
+		}
+	}
+}

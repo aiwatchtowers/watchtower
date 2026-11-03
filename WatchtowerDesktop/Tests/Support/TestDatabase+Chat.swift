@@ -16,9 +16,12 @@ extension TestDatabase {
         pinned: Bool = false
     ) throws -> Int64 {
         try db.execute(sql: """
-            INSERT INTO chat_conversations (title, session_id, context_type, provider, created_at, updated_at, pinned)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [title, sessionID, contextType, provider, updatedAt, updatedAt, pinned ? 1 : 0])
+            INSERT INTO chat_conversations (title, session_id, context_type, provider, created_at, updated_at, pinned, routing_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+            title, sessionID, contextType, provider, updatedAt, updatedAt, pinned ? 1 : 0,
+            provider == nil ? "preferred_reserve" : "pinned"
+            ])
         return db.lastInsertedRowID
     }
 

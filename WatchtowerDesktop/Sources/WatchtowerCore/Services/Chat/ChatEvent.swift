@@ -4,6 +4,8 @@ import Foundation
 package enum ChatErrorCode: String, Equatable, Sendable {
     case auth
     case rateLimit = "rate_limit"
+    /// Durable semantic code: a started tool turn must never be replayed.
+    case quotaExhausted = "quota_exhausted"
     case providerUnavailable = "provider_unavailable"
     case sessionLost = "session_lost"
     case attachmentUnsupported = "attachment_unsupported"
@@ -87,19 +89,47 @@ package struct ChatSessionError: Error, Equatable, Sendable {
     package let code: ChatErrorCode
     package let message: String
     package let retryable: Bool
+    package let reason: String?
+    package var persistenceCode: String {
+        switch reason {
+        case "quota_exhausted": ChatErrorCode.quotaExhausted.rawValue
+        case "required_capability_missing": ChatErrorCode.attachmentUnsupported.rawValue
+        default: code.rawValue
+        }
+    }
 
-    package init(turnID: String?, code: ChatErrorCode, message: String, retryable: Bool) {
+    package init(turnID: String?, code: ChatErrorCode, message: String, retryable: Bool, reason: String? = nil) {
         self.turnID = turnID
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.reason = reason
+    }
+}
+
+/// Content-free routing metadata; actual selection can be empty before the first automatic turn.
+package struct ChatRoutingMetadata: Equatable, Sendable {
+    package let preferredProvider: String
+    package let mode: String
+    package let reason: String?
+
+    package init(preferredProvider: String, mode: String, reason: String?) {
+        self.preferredProvider = preferredProvider
+        self.mode = mode
+        self.reason = reason
+    }
+
+    package static func parse(_ json: [String: Any]) -> Self? {
+        guard let mode = json["routing_mode"] as? String else { return nil }
+        return Self(preferredProvider: json["preferred_provider"] as? String ?? "", mode: mode,
+                    reason: json["reason"] as? String)
     }
 }
 
 /// One `watchtower ai session` protocol-v2 event (spec §1.1). There is no
 /// `reset` in v2: text already shown is never wiped (CHAT-02).
 package enum ChatEvent: Equatable, Sendable {
-    case sessionReady(sessionID: String?, provider: String, model: String)
+    case sessionReady(sessionID: String?, provider: String, model: String, routing: ChatRoutingMetadata? = nil)
     case turnStart(turnID: String)
     case textDelta(turnID: String, text: String)
     case toolStart(ChatToolStart)
@@ -121,7 +151,7 @@ package enum ChatEvent: Equatable, Sendable {
         switch type {
         case "session_ready":
             return .sessionReady(sessionID: fields.optional("session_id"), provider: fields.string("provider"),
-                                 model: fields.string("model"))
+                                 model: fields.string("model"), routing: ChatRoutingMetadata.parse(json))
         case "turn_start":
             return .turnStart(turnID: fields.string("turn_id"))
         case "text_delta":
@@ -151,7 +181,8 @@ package enum ChatEvent: Equatable, Sendable {
         case "error":
             return .error(ChatSessionError(turnID: fields.optional("turn_id"),
                                            code: ChatErrorCode(rawValue: fields.string("code")) ?? .internalError,
-                                           message: fields.string("message"), retryable: fields.bool("retryable")))
+                                           message: fields.string("message"), retryable: fields.bool("retryable"),
+                                           reason: fields.optional("reason")))
         default:
             return nil
         }

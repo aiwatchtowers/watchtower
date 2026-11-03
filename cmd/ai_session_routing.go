@@ -75,7 +75,7 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 	// This is a requirement, not a prompt decision for the reserve. It must
 	// never silently disappear merely because a different backend is selected.
 	requiredClaudeAI := resolveClaudeAI(cfg, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
-	sticky := conv.ActualProvider
+	sticky, stickyReason := conv.ActualProvider, conv.RoutingReason
 	return chat.NewRoutingBackend(chat.RoutingOptions{
 		Router: router, Mode: mode, Preferred: configuredPreferred,
 		Select: func(ctx context.Context, c chat.Command) (providerrouting.Request, string, error) {
@@ -94,7 +94,9 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				reason = ""
 				if sticky == cfg.AI.Fallback.Provider {
 					req.Preferred, req.Reserve = sticky, cfg.AI.Provider
-					reason = "quota_exhausted"
+					// A different historical actual may predate a preference change;
+					// retaining it does not establish that quota caused the route.
+					reason = stickyReason
 				}
 			}
 			req.Model = func(p string, _ digest.Tier) string {
@@ -124,10 +126,13 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 			return req, reason, nil
 		},
 		Selected: func(p, m, reason string) error {
-			if mode != "pinned" {
-				sticky = p
+			if err := database.SetChatActual(conv.ID, p, m, reason); err != nil {
+				return err
 			}
-			return database.SetChatActual(conv.ID, p, m, reason)
+			if mode != "pinned" {
+				sticky, stickyReason = p, reason
+			}
+			return nil
 		},
 		Build: func(ctx context.Context, p, m string) (chat.Backend, error) {
 			return buildSessionActual(ctx, cmd, cfg, database, dbPath, conv, turnFile, project, projectID, mcpArgs, cancel, p, m)
