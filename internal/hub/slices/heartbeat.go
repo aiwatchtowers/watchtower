@@ -17,7 +17,8 @@ import (
 const (
 	// MaxHeartbeatAccounts is HeartbeatPayload.maxAccounts.
 	MaxHeartbeatAccounts = 20
-	// MaxAccountLabel is HeartbeatAccount.maxLabelLength, in runes.
+	// MaxAccountLabel is HeartbeatAccount.maxLabelLength, in grapheme
+	// clusters (the Swift String.prefix).
 	MaxAccountLabel = 80
 	// HeartbeatInterval: the heartbeat is restamped at least this often
 	// (the phone calls a hub stale after 35 min); a change in its accounts
@@ -115,7 +116,7 @@ func (h *heartbeatSource) readAccounts(ctx context.Context) ([]wire.HeartbeatAcc
 	}
 	out := make([]wire.HeartbeatAccount, 0, min(len(got), MaxHeartbeatAccounts))
 	for _, a := range got[:min(len(got), MaxHeartbeatAccounts)] {
-		a.Label = clipRunes(a.Label, MaxAccountLabel)
+		a.Label = wire.ClipGraphemes(a.Label, MaxAccountLabel)
 		out = append(out, a)
 	}
 	return out, nil
@@ -186,11 +187,4 @@ func DBAccounts(db *sql.DB) func(ctx context.Context) ([]wire.HeartbeatAccount, 
 		}
 		return out, nil
 	}
-}
-
-func clipRunes(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n])
-	}
-	return s
 }
