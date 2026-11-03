@@ -951,7 +951,9 @@ final class MeetingRecorderCenter {
         let recorder = recorderFactory()
         self.recorder = recorder
         let store = pendingStore
-        let url = Self.uniqueRecordingURL(in: recordingsDirectory) { Self.isReserved($0, in: store) }
+        let url = Self.claimRecordingURL(in: recordingsDirectory) { Self.isReserved($0, in: store) }
+        // Held until the file and the pending row exist (or the start failed).
+        defer { Self.releaseRecordingClaim(url) }
 
         do {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)

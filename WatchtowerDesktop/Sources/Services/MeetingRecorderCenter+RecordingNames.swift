@@ -72,4 +72,47 @@ extension MeetingRecorderCenter {
         }
         return directory.appendingPathComponent("\(stem).\(fileExtension)")
     }
+
+    /// Stems picked but not yet visible on disk or in a pending row (the Mac
+    /// capture before `recorder.start` creates its file, a phone ingest
+    /// before its row lands). Without it a Desktop start and a phone ingest
+    /// in the same second both see the name free and share it.
+    nonisolated private static let claimedStems = NSLock.Guarded<Set<String>>([])
+
+    /// `uniqueRecordingURL` that also holds the picked stem until
+    /// `releaseRecordingClaim`, atomically with the pick.
+    nonisolated static func claimRecordingURL(
+        in directory: URL,
+        date: Date = Date(),
+        fileExtension: String = "caf",
+        taken: (String) -> Bool = { _ in false }
+    ) -> URL {
+        claimedStems.withLock { claimed in
+            let url = uniqueRecordingURL(in: directory, date: date, fileExtension: fileExtension) {
+                claimed.contains(directory.appendingPathComponent($0).path) || taken($0)
+            }
+            claimed.insert(directory.appendingPathComponent(url.deletingPathExtension().lastPathComponent).path)
+            return url
+        }
+    }
+
+    nonisolated static func releaseRecordingClaim(_ url: URL) {
+        let key = url.deletingLastPathComponent()
+            .appendingPathComponent(url.deletingPathExtension().lastPathComponent).path
+        claimedStems.withLock { _ = $0.remove(key) }
+    }
+}
+
+private extension NSLock {
+    /// A value behind a lock.
+    final class Guarded<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Value
+        init(_ value: Value) { self.value = value }
+        func withLock<R>(_ body: (inout Value) -> R) -> R {
+            lock.lock()
+            defer { lock.unlock() }
+            return body(&value)
+        }
+    }
 }
