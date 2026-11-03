@@ -294,11 +294,13 @@ func TestHellosCountTowardTheBatchLimit(t *testing.T) {
 }
 
 // blockingKind registers kind with a handler that logs its call and, on its
-// first call, signals entered and waits for release.
+// first call, signals entered and waits for release. It honours its context
+// as a real handler does (a ctx-aware query, Sessions.Start): a cancelled
+// one ends the wait and answers failed write_failed.
 func (w *world) blockingKind(kind string, opts KindOptions) (entered, release chan struct{}) {
 	entered, release = make(chan struct{}), make(chan struct{})
 	first := true
-	w.disp.Register(kind, func(_ context.Context, r Request) Outcome {
+	w.disp.Register(kind, func(ctx context.Context, r Request) Outcome {
 		w.mu.Lock()
 		w.calls = append(w.calls, r.RecordName)
 		block := first
@@ -306,7 +308,13 @@ func (w *world) blockingKind(kind string, opts KindOptions) (entered, release ch
 		w.mu.Unlock()
 		if block {
 			close(entered)
-			<-release
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		if ctx.Err() != nil {
+			return failed(reasonWriteFailed, "the handler saw the pass stop")
 		}
 		return Outcome{Status: wire.StatusApplied}
 	}, opts)
@@ -345,7 +353,8 @@ func TestConcurrentPassesApplyEachNonIdempotentRecordOnce(t *testing.T) {
 // A pass stopped while a record is being applied finishes that record (its
 // outcome commits and is echoed) and leaves the next one untouched; the next
 // pass applies the one left, once. Both for a non-idempotent kind (claimed
-// begun first) and an idempotent one (no claim).
+// begun first) and an idempotent one (no claim). The handler honours its
+// context: it must never see the pass stop (it is answered applied).
 // twin of RelayProcessorTests.testCancellationStopsThePassBetweenRecordsNeverMidApply
 func TestCancellationStopsThePassBetweenRecordsNeverMidApply(t *testing.T) {
 	for _, nonIdempotent := range []bool{true, false} {
