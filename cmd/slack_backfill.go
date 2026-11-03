@@ -22,13 +22,14 @@ var slackBackfillCmd = &cobra.Command{
 	Short: "Fetch a past date range of one Slack account again, with its digests",
 	Long: "Searches Slack for every message of the account between --from and --to\n" +
 		"(local dates, both included) and saves them, newest days first, in the\n" +
-		"history backfill's 2-day chunks. With digests on, it digests only the\n" +
-		"messages no digest covered yet, never past where a channel's regular\n" +
-		"digests start (its newest digest, or the first-run lookback for a\n" +
-		"channel never digested), and rebuilds the daily rollup of\n" +
-		"each day that got a new digest; nothing is digested twice. It moves no\n" +
-		"sync watermark and runs no inbox detection. Run it again after a rate\n" +
-		"limit: fetched messages are kept.",
+		"history backfill's 2-day chunks. With digests on, it digests each\n" +
+		"channel's days that had no digest yet, never past where a channel's\n" +
+		"regular digests start (its newest digest, or the first-run lookback for\n" +
+		"a channel never digested), and rebuilds the daily rollup of each day\n" +
+		"that got a new digest; nothing is digested twice. On a day that already\n" +
+		"has a digest for a channel, refetched messages are stored and searchable\n" +
+		"but not digested. It moves no sync watermark and runs no inbox\n" +
+		"detection. Run it again after a rate limit: fetched messages are kept.",
 	Args: cobra.NoArgs,
 	RunE: runSlackBackfill,
 }

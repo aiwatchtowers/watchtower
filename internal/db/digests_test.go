@@ -590,6 +590,24 @@ func TestChannelDigestsOverlapping_Boundaries(t *testing.T) {
 	assert.NotZero(t, got[0].ID)
 }
 
+func TestMaxDigestID(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	got, err := db.MaxDigestID()
+	require.NoError(t, err)
+	assert.Zero(t, got, "an empty table")
+	var last int64
+	for _, typ := range []string{"channel", "daily"} {
+		last, err = db.UpsertDigest(Digest{ChannelID: "1:C1", Type: typ, PeriodFrom: 1, PeriodTo: 2, Summary: "s", Model: "m"})
+		require.NoError(t, err)
+	}
+	got, err = db.MaxDigestID()
+	require.NoError(t, err)
+	assert.Equal(t, last, got)
+}
+
 func TestChannelMessageTimesInRange(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

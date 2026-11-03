@@ -585,6 +585,16 @@ func (db *DB) ChannelDigestsOverlapping(slackAccountID int64, from, to float64) 
 	return out, nil
 }
 
+// MaxDigestID returns the highest digests.id, 0 for an empty table. Ids are
+// AUTOINCREMENT, so a digest written later always has a higher one.
+func (db *DB) MaxDigestID() (int64, error) {
+	var id int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM digests`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("reading the highest digest id: %w", err)
+	}
+	return id, nil
+}
+
 // ChannelMessageTimesInRange returns, per channel of the Slack account, the
 // ts_unix of each of its messages in (from, to], ascending.
 func (db *DB) ChannelMessageTimesInRange(slackAccountID int64, from, to float64) (map[string][]float64, error) {

@@ -12,30 +12,49 @@ import (
 	"watchtower/internal/db"
 )
 
+// An uncovered channel day is digested whole, cut at the channel's forward
+// mark, and only when a message lies inside ((from, to] spans).
 func TestUncovered(t *testing.T) {
 	day := span{0, 100}
 	cases := []struct {
-		name     string
-		limit    float64
-		covering []span
-		times    []float64
-		want     []span
+		name  string
+		limit float64
+		times []float64
+		want  span
+		ok    bool
 	}{
-		{"no digest: the whole day", 1000, nil, []float64{50}, []span{{0, 100}}},
-		{"no message: nothing", 1000, nil, nil, nil},
-		{"a message on period_to is covered", 1000, []span{{10, 50}}, []float64{50}, nil},
-		{"a message on period_from is not", 1000, []span{{10, 50}}, []float64{10}, []span{{0, 10}}},
-		{"partly covered day", 1000, []span{{0, 40}, {60, 70}}, []float64{20, 45, 65, 90},
-			[]span{{40, 60}, {70, 100}}},
-		{"overlapping digests merge", 1000, []span{{30, 60}, {10, 40}}, []float64{35, 61}, []span{{60, 100}}},
-		{"a digest past the day covers its tail", 1000, []span{{80, 500}}, []float64{90, 70}[1:], []span{{0, 80}}},
-		{"cut at the forward mark", 55, nil, []float64{50, 60}, []span{{0, 55}}},
-		{"a mark below the day: nothing", -1, nil, []float64{50}, nil},
-		{"a message on the mark is kept", 50, nil, []float64{50}, []span{{0, 50}}},
+		{"the whole day", 1000, []float64{50}, span{0, 100}, true},
+		{"no message: nothing", 1000, nil, span{0, 100}, false},
+		{"a message on the day start is the previous day's", 1000, []float64{0}, span{0, 100}, false},
+		{"a message on the day end is kept", 1000, []float64{100}, span{0, 100}, true},
+		{"cut at the forward mark", 55, []float64{50, 60}, span{0, 55}, true},
+		{"only messages above the mark: nothing", 55, []float64{60}, span{0, 55}, false},
+		{"a message on the mark is kept", 50, []float64{50}, span{0, 50}, true},
+		{"a mark below the day: nothing", -1, []float64{50}, span{0, -1}, false},
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, uncovered(day, c.limit, c.covering, c.times), c.name)
+		got, ok := uncovered(day, c.limit, c.times)
+		assert.Equal(t, c.ok, ok, c.name)
+		if c.ok {
+			assert.Equal(t, c.want, got, c.name)
+		}
 	}
+}
+
+// A channel's day is covered by a digest that existed at the decision and
+// that the ledger did not exclude; a later digest (id above digest_id_max)
+// never covers it.
+func TestCoveredChannels(t *testing.T) {
+	day := &ledgerDay{Excluded: []int64{2}, DigestIDMax: 3}
+	digests := []db.ChannelDigestPeriod{
+		{ID: 1, ChannelID: "1:C1"}, // covers C1
+		{ID: 2, ChannelID: "1:C2"}, // excluded: a gap digest
+		{ID: 3, ChannelID: "1:C2"}, // ...but this one, on the max, covers C2
+		{ID: 4, ChannelID: "1:C3"}, // written after the decision
+		{ID: 2, ChannelID: "1:C4"}, // excluded
+	}
+	assert.Equal(t, map[string]bool{"1:C1": true, "1:C2": true}, coveredChannels(digests, day))
+	assert.Empty(t, coveredChannels(nil, day))
 }
 
 func TestExcludedDigests(t *testing.T) {
@@ -81,7 +100,7 @@ func TestLoadLedger(t *testing.T) {
 	l, err = LoadLedger(dir)
 	require.NoError(t, err)
 	require.NotNil(t, l.Days)
-	l.Days["1:2026-03-10"] = &ledgerDay{Excluded: []int64{7}, RollupPending: true, DecidedAt: "2026-03-11T00:00:00Z"}
+	l.Days["1:2026-03-10"] = &ledgerDay{Excluded: []int64{7}, DigestIDMax: 9, RollupPending: true, DecidedAt: "2026-03-11T00:00:00Z"}
 	require.NoError(t, l.save())
 	again, err := LoadLedger(dir)
 	require.NoError(t, err)

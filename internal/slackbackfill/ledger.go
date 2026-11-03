@@ -15,8 +15,8 @@ import (
 // LedgerFile keeps, per Slack account and UTC day, what `slack backfill`
 // decided before its first fetch over that day: which channel digests
 // overlapping the day had seen none of its messages (a forward digest that
-// spans a sync gap), and whether the day's daily rollup still has to be
-// rebuilt. A rerun (after a rate limit, a held digest lock, a failed AI call)
+// spans a sync gap), the highest digest id then, and whether the day's
+// daily rollup still has to be rebuilt. A rerun (after a rate limit, a held digest lock, a failed AI call)
 // must decide the same way, and by then an earlier run's fetch — with digests
 // on or off — has stored the messages the decision looked for, so it cannot
 // be recomputed. Ids and dates only, no content.
@@ -32,9 +32,15 @@ type ledgerDay struct {
 	// Excluded are the channel digests overlapping the day that held none of
 	// its messages before the first fetch: their periods do not count as
 	// covering the day.
-	Excluded      []int64 `json:"excluded"`
-	RollupPending bool    `json:"rollup_pending"` // digests may have been written, the rollup not rebuilt yet
-	DecidedAt     string  `json:"decided_at"`     // RFC 3339 UTC
+	Excluded []int64 `json:"excluded"`
+	// DigestIDMax is the highest digest id when the day was decided: a
+	// digest above it was written later — by the daemon, or by an earlier
+	// run of this command — so it never covers the day (it may not have
+	// seen the refetched messages), but RunBackfillWindowChannels still
+	// starts after it, so nothing it digested is digested again.
+	DigestIDMax   int64  `json:"digest_id_max"`
+	RollupPending bool   `json:"rollup_pending"` // digests may have been written, the rollup not rebuilt yet
+	DecidedAt     string `json:"decided_at"`     // RFC 3339 UTC
 }
 
 // Ledger is the loaded LedgerFile. A command holds LockLedger from Load to

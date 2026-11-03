@@ -248,40 +248,100 @@ func TestRange_NeverDigestsAboveTheForwardMark(t *testing.T) {
 	assert.Less(t, since, float64(between.Unix()), "the next forward window includes the undigested message")
 }
 
-// m1: a day partly covered by digests gets its uncovered messages digested.
-// A message on a digest's period_to is covered, one on its period_from is
-// not ((from, to] periods); nothing already covered reaches a prompt.
-func TestRange_PartlyCoveredDayDigestsOnlyTheUncoveredMessages(t *testing.T) {
+// The per-(channel, UTC day) rule (owner decision in ask #454): a day a
+// digest already covers — it saw a message of the day stored before the
+// fetch — is skipped whole. Its refetched messages are stored, also the ones
+// outside every digest period, but none is digested and the day gets no new
+// rollup. A rerun decides the same.
+func TestRange_PartlyCoveredDayIsStoredNotDigested(t *testing.T) {
 	f := newFixture(t)
 	day := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
 	at := func(h int) time.Time { return day.Add(time.Duration(h) * time.Hour) }
 	seedMessage(t, f.db, "1:C1", at(8), "seen-8")
 	seedDigest(t, f.db, "1:C1", at(0), at(9))
-	seedMessage(t, f.db, "1:C1", at(13), "seen-13")
-	seedDigest(t, f.db, "1:C1", at(12), at(14))
 	seedDigest(t, f.db, "1:C1", day.AddDate(0, 0, 5), day.AddDate(0, 0, 5).Add(time.Hour)) // the forward mark
 	f.fetch.onFetch = func(_, _ time.Time) error {
 		seedMessage(t, f.db, "1:C1", at(7), "inside-7")
-		seedMessage(t, f.db, "1:C1", at(9), "on-period-to-9")
-		seedMessage(t, f.db, "1:C1", at(12), "on-period-from-12")
 		seedMessage(t, f.db, "1:C1", at(16), "after-16")
 		return nil
 	}
 
 	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
-	joined := fmt.Sprint(f.gen.prompts)
-	assert.Contains(t, joined, "on-period-from-12")
-	assert.Contains(t, joined, "after-16")
-	assert.NotContains(t, joined, "inside-7")
-	assert.NotContains(t, joined, "on-period-to-9")
-	assert.NotContains(t, joined, "seen-8")
-	assert.NotContains(t, joined, "seen-13")
-	assert.Equal(t, 3+2, countDigests(t, f.db, `channel_id = '1:C1'`), "one digest per uncovered part")
-	assert.Equal(t, 1, dailyOn(t, f.db, day))
+	assert.Zero(t, f.gen.calls(), "a covered day is not digested")
+	assert.Equal(t, 2, countDigests(t, f.db, `channel_id = '1:C1'`))
+	assert.Zero(t, dailyOn(t, f.db, day))
+	var stored int
+	require.NoError(t, f.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE channel_id = '1:C1'`).Scan(&stored))
+	assert.Equal(t, 3, stored, "the refetched messages are stored")
 
-	calls := f.gen.calls()
 	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
-	assert.Equal(t, calls, f.gen.calls(), "the backfill's own digests cover what they digested")
+	assert.Zero(t, f.gen.calls(), "a rerun decides the same")
+}
+
+// codex verify #1: a digest written after the day was decided (here the
+// daemon's, between a rate-limited run and its retry) never covers the day:
+// it may not have seen the refetched messages. The retry still starts after
+// it, so what it digested is not digested again.
+func TestRange_DigestWrittenAfterTheDecisionDoesNotCover(t *testing.T) {
+	f := newFixture(t)
+	day := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	at := func(h int) time.Time { return day.Add(time.Duration(h) * time.Hour) }
+	seedDigest(t, f.db, "1:C1", day.AddDate(0, 0, 5), day.AddDate(0, 0, 5).Add(time.Hour)) // the forward mark
+	f.fetch.onFetch = func(_, _ time.Time) error {
+		seedMessage(t, f.db, "1:C1", at(5), "first-5")
+		return sync.ErrBackfillIncomplete
+	}
+	err := f.runRange(t, day, day.Add(24*time.Hour))
+	require.ErrorIs(t, err, sync.ErrBackfillIncomplete)
+	require.NotNil(t, f.ledgerDay(t, 1, day), "the day was decided before the fetch")
+
+	seedDigest(t, f.db, "1:C1", at(0), at(10)) // the daemon's, after the decision
+	f.fetch.onFetch = func(_, _ time.Time) error {
+		seedMessage(t, f.db, "1:C1", at(15), "retry-15")
+		return nil
+	}
+	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
+	joined := fmt.Sprint(f.gen.prompts)
+	assert.Contains(t, joined, "retry-15", "the later digest does not cover the day")
+	assert.NotContains(t, joined, "first-5", "nothing the later digest holds is digested again")
+	assert.Equal(t, 3, countDigests(t, f.db, `channel_id = '1:C1'`))
+}
+
+// racingDigester commits a digest (the daemon's) after the run decided what
+// to digest and before the pipeline takes the digest lock.
+type racingDigester struct {
+	*digest.Pipeline
+	before func()
+}
+
+func (d *racingDigester) RunBackfillWindowChannels(ctx context.Context, id int64, from, to float64, channels []string, ignore []int64) (digest.BackfillWindowResult, *digest.Usage, error) {
+	if d.before != nil {
+		d.before()
+		d.before = nil
+	}
+	return d.Pipeline.RunBackfillWindowChannels(ctx, id, from, to, channels, ignore)
+}
+
+// codex verify #2: the start is read again under the digest lock, so a
+// digest committed between the run's decision and the lock is not digested
+// over again.
+func TestRange_DigestCommittedBeforeTheLockIsNotDigestedAgain(t *testing.T) {
+	f := newFixture(t)
+	day := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	at := func(h int) time.Time { return day.Add(time.Duration(h) * time.Hour) }
+	seedDigest(t, f.db, "1:C1", day.AddDate(0, 0, 5), day.AddDate(0, 0, 5).Add(time.Hour)) // the forward mark
+	f.fetch.onFetch = func(_, _ time.Time) error {
+		seedMessage(t, f.db, "1:C1", at(5), "early-5")
+		seedMessage(t, f.db, "1:C1", at(15), "late-15")
+		return nil
+	}
+	r := f.newRun(t, false)
+	r.Digest = &racingDigester{Pipeline: f.pipe, before: func() { seedDigest(t, f.db, "1:C1", at(0), at(10)) }}
+
+	require.NoError(t, r.Range(context.Background(), day, day.Add(24*time.Hour)))
+	joined := fmt.Sprint(f.gen.prompts)
+	assert.Contains(t, joined, "late-15")
+	assert.NotContains(t, joined, "early-5", "the digest committed before the lock holds it")
 }
 
 // m2: the rollup is marked pending before any digest is written. The model
