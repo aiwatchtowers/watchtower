@@ -487,6 +487,17 @@ privacy page says so.
   costs one extra full publish (v1 limit; telling a first creation apart needs state the bridge does not keep). No
   sidecar migration: the tables were all there.
 
+### Phase 3 gate record (2026-11-03)
+
+- **Automated (Task 25 Step 1), on `feature/go-hub`:** `make test`, `make lint-all`, `make kit-test`,
+  `make mobile-test` (777 tests) and `make relay-interop` (5/5, relay at the pinned `VERSION`) pass. `make test-swift`
+  passes class by class after two test-isolation fixes (#646: a pair test reset the inherited `--config` flag; #648:
+  `HubDesktopEventsTests` wrote layouts to the runner's defaults). The Task 20 `/dev/entitlement` scenarios move to
+  Task 27 with the rest of the switch.
+- **Manual (Step 2, M1–M5 + the no-iCloud pause):** not run. The owner closed the check ask (#972) as not a priority
+  now; the default taken is to run them on the owner's Mac before `feature/go-hub` merges into main. Until then
+  adoption on a real Mac, the downgrade guard and the bridge with Desktop quit are covered by tests only.
+
 ## Phase 4 — pushes, indicators, measurements
 
 Plan [`2026-10-31-go-hub-phase-4.md`](../superpowers/plans/2026-10-31-go-hub-phase-4.md) (relay pinned at `bcca870`,
