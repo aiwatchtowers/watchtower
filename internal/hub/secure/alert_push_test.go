@@ -150,9 +150,90 @@ func TestAlertPushClipsTheTitleOnceTheBodyIsGone(t *testing.T) {
 	}
 }
 
+// The sources cap these texts in grapheme clusters (clipText): a familyZWJ
+// emoji is one cluster of 25 bytes, a flagUA one of 8.
+const (
+	familyZWJ = "👨‍👩‍👧‍👦"
+	flagUA    = "🇺🇦"
+)
+
+func TestAlertPushFitsWorstCaseGraphemes(t *testing.T) {
+	ks := newKeySource(t)
+	in := pushFields("ask-42", strings.Repeat(flagUA, 60), strings.Repeat(flagUA, 60)+" · "+strings.Repeat(flagUA, 60),
+		strings.Repeat(familyZWJ, 120))
+	p, err := NewSealer(ks).AlertPush("ask-42", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(p.Envelope()); n != alertPushEnvelope {
+		t.Fatalf("envelope %d bytes", n)
+	}
+	_, f, err := openPush(t, ks, AlertPushWireName, p.Envelope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodePush(t, f)
+	if got.Key != "ask-42" || got.WorkbenchName != in.WorkbenchName {
+		t.Errorf("key %q name %q", got.Key, got.WorkbenchName)
+	}
+	// 120 families do not fit beside a full name and title: the body goes
+	// first, then the title loses whole flags.
+	kept := strings.TrimSuffix(got.Title, "…")
+	if got.Body != "" || !strings.HasSuffix(got.Title, "…") || !strings.HasPrefix(in.Title, kept) ||
+		strings.ReplaceAll(strings.ReplaceAll(kept, flagUA, ""), " · ", "") != "" {
+		t.Errorf("body %q, title %q not clipped on whole clusters", got.Body, got.Title)
+	}
+}
+
+func TestAlertPushNeverLeavesADanglingJoinerOrHalfAFlag(t *testing.T) {
+	ks := newKeySource(t)
+	s := NewSealer(ks)
+	// Every body length from short to well past the bucket.
+	for n := 1; n <= 60; n += 7 {
+		in := pushFields("ask-42", strings.Repeat("w", 60), strings.Repeat("t", 123), strings.Repeat(familyZWJ+flagUA, n))
+		p, err := s.AlertPush("ask-42", in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, f, err := openPush(t, ks, AlertPushWireName, p.Envelope())
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept := strings.TrimSuffix(decodePush(t, f).Body, "…")
+		if strings.HasSuffix(kept, "\u200d") {
+			t.Errorf("n=%d: dangling ZWJ in %q", n, kept)
+		}
+		if rest := strings.ReplaceAll(strings.ReplaceAll(kept, familyZWJ, ""), flagUA, ""); rest != "" {
+			t.Errorf("n=%d: half a cluster left: %q", n, rest)
+		}
+	}
+}
+
+func TestAlertPushClipsWorkbenchNameLast(t *testing.T) {
+	ks := newKeySource(t)
+	in := pushFields("ask-42", strings.Repeat(familyZWJ, 60), strings.Repeat(familyZWJ, 60)+" · "+strings.Repeat(familyZWJ, 60),
+		strings.Repeat(familyZWJ, 120))
+	p, err := NewSealer(ks).AlertPush("ask-42", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, f, err := openPush(t, ks, AlertPushWireName, p.Envelope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodePush(t, f)
+	if got.Key != "ask-42" || p.Key() != "ask-42" || got.Body != "" || got.Title != "" {
+		t.Errorf("key %q body %q title %q", got.Key, got.Body, got.Title)
+	}
+	if !strings.HasSuffix(got.WorkbenchName, "…") || strings.ReplaceAll(strings.TrimSuffix(got.WorkbenchName, "…"), familyZWJ, "") != "" ||
+		got.WorkbenchName == "…" {
+		t.Errorf("workbench name %q", got.WorkbenchName)
+	}
+}
+
 func TestAlertPushTooLargeEvenWithEmptyTexts(t *testing.T) {
-	in := pushFields("ask-42", strings.Repeat("😀", 300), "a", "b")
-	if _, err := NewSealer(newKeySource(t)).AlertPush("ask-42", in); !errors.Is(err, ErrAlertTooLarge) {
+	in := pushFields(strings.Repeat("k", 1000), "a", "b", "c")
+	if _, err := NewSealer(newKeySource(t)).AlertPush(in.Key, in); !errors.Is(err, ErrAlertTooLarge) {
 		t.Errorf("err %v, want ErrAlertTooLarge", err)
 	}
 }

@@ -105,6 +105,7 @@ final class GoSealedEnvelopeTests: XCTestCase {
         let expected = try JSONDecoder().decode(WorkAlertPayload.self, from: Data(hex: item.payload))
         XCTAssertEqual(opener.open(wireName: "alert-push", envelope: envelope), expected)
         XCTAssertEqual(expected.key, "ask-42")
+        XCTAssertEqual(expected.requestID, 11, "every WorkAlertPayload key is in the fixture")
         XCTAssertEqual(item.id, "ask_alert-ask-42")
 
         let parts = item.id.split(separator: "-", maxSplits: 1).map(String.init)

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/rivo/uniseg"
 	"golang.org/x/crypto/chacha20poly1305"
 
 	"watchtower/internal/hub/wire"
@@ -248,6 +249,8 @@ func (s *Sealer) signedSymmetric(zone, plain string, f InnerFrame, c EnvelopeCla
 	if zone == "" {
 		return Record{}, errors.New("secure: record without a zone")
 	}
+	// Checked before WireName as well as in sealSigned: a sealer without a
+	// signing key refuses before it reads the meta key.
 	if len(s.k.Signer()) != ed25519.PrivateKeySize {
 		return Record{}, ErrSignatureRequired
 	}
@@ -347,19 +350,27 @@ func (p Push) Sealed() bool { return p.sealed }
 // AlertPush seals the frame ask_alert-<key> as class alert under
 // K_alert[current], signed by hub_sig, with the data-zone AAD of
 // AlertPushWireName and the frame padded to the 1 KiB bucket whatever its
-// text. When the payload does not fit that bucket, Body and then Title lose
-// one rune at a time and end in "…" until it does; every other field stays
-// as it is. Only the push is clipped, never the data-zone record.
-// payload.Key must be key.
+// text. When the payload does not fit that bucket, Body, then Title, then
+// WorkbenchName lose one grapheme cluster at a time and end in "…" until it
+// does; every other field stays as it is. Only the push is clipped, never
+// the data-zone record. payload.Key must be key.
 func (s *Sealer) AlertPush(key string, payload WorkAlertFields) (Push, error) {
 	if key == "" || payload.Key != key {
 		return Push{}, fmt.Errorf("%w: the push key is not the payload's", ErrNameMismatch)
 	}
 	f := InnerFrame{Kind: alertKind, ID: alertKind + "-" + key}
-	body, title := []rune(payload.Body), []rune(payload.Title)
-	nb, nt := len(body), len(title)
+	// Clipped in this order, each only once the one before is empty.
+	texts := []*string{&payload.Body, &payload.Title, &payload.WorkbenchName}
+	clusters := make([][]string, len(texts))
+	kept := make([]int, len(texts))
+	for i, t := range texts {
+		clusters[i] = graphemes(*t)
+		kept[i] = len(clusters[i])
+	}
 	for {
-		payload.Body, payload.Title = clipRunes(body, nb), clipRunes(title, nt)
+		for i, t := range texts {
+			*t = clipGraphemes(clusters[i], kept[i])
+		}
 		b, err := wire.Marshal(payload)
 		if err != nil {
 			return Push{}, fmt.Errorf("secure: encoding an alert push: %w", err)
@@ -368,14 +379,11 @@ func (s *Sealer) AlertPush(key string, payload WorkAlertFields) (Push, error) {
 		if f.EncodedLength() <= alertPushFrame {
 			break
 		}
-		switch {
-		case nb > 0:
-			nb--
-		case nt > 0:
-			nt--
-		default:
+		i := slices.IndexFunc(kept, func(n int) bool { return n > 0 })
+		if i < 0 {
 			return Push{}, ErrAlertTooLarge
 		}
+		kept[i]--
 	}
 	env, err := s.sealSigned(AlertPushWireName, f, ClassAlert, alertPushFrame)
 	if err != nil {
@@ -387,16 +395,28 @@ func (s *Sealer) AlertPush(key string, payload WorkAlertFields) (Push, error) {
 	return Push{envelope: env, key: key, sealed: true}, nil
 }
 
-// clipRunes is the first n runes of r, ending in "…" when any are dropped,
-// and "" once none is kept.
-func clipRunes(r []rune, n int) string {
+// graphemes splits s into its grapheme clusters (what the sources' clipText
+// counts), so a clip never leaves half an emoji, a dangling ZWJ or a lone
+// regional indicator.
+func graphemes(s string) []string {
+	var out []string
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		out = append(out, g.Str())
+	}
+	return out
+}
+
+// clipGraphemes is the first n clusters of g, ending in "…" when any are
+// dropped, and "" once none is kept.
+func clipGraphemes(g []string, n int) string {
 	switch {
-	case n >= len(r):
-		return string(r)
+	case n >= len(g):
+		return strings.Join(g, "")
 	case n == 0:
 		return ""
 	}
-	return string(r[:n]) + "…"
+	return strings.Join(g[:n], "") + "…"
 }
 
 // ToPhone seals a RelayZone record for device (class relayToPhone, its h2p

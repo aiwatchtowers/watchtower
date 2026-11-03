@@ -620,7 +620,7 @@ func sealGoVectors(t *testing.T) goSealedFile {
 	// The relay push: no zone record, the AAD names AlertPushWireName in the
 	// data zone (the Kit's AlertOpener.open(wireName: "alert-push", …)).
 	push := WorkAlertFields{Event: "ask", Key: "ask-42", WorkbenchID: 7, WorkbenchName: "Acme", SessionID: int64p(9),
-		AskID: int64p(42), Title: "Acme · Build", Body: "Which database?", Quick: true}
+		AskID: int64p(42), RequestID: int64p(11), Title: "Acme · Build", Body: "Which database?", Quick: true}
 	pushPayload, err := hubwire.Marshal(push)
 	if err != nil {
 		t.Fatal(err)
