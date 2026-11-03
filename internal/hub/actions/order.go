@@ -25,6 +25,10 @@ type record struct {
 	env    []byte
 	expect state.Control
 	at     time.Time // the transport's ServerAt (zero for a held action)
+	// readAt is when the processor got the record's page from the transport:
+	// zero for a held action drained later and for the hub's own echo, so
+	// only an action applied on its first read is timed.
+	readAt time.Time
 }
 
 // actionName is an ordered action's plain record name, a-<device>-<seq>
@@ -378,6 +382,10 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 	ps.report.Echoed++
 	if registered && out.Status == wire.StatusApplied {
 		ps.nudges = append(ps.nudges, reg.opts.Nudges...)
+		if run && p.cfg.Latency != nil && !r.readAt.IsZero() {
+			// Committed above: the stamp is outside the transaction.
+			p.cfg.Latency.Applied(string(p.cfg.Transport.Kind()), r.readAt, p.cfg.Clock(), reg.opts.Nudges)
+		}
 	}
 	return nil
 }

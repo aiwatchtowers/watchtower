@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/measure"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
@@ -94,6 +95,7 @@ type zoneWatcher interface {
 type hubRuntime struct {
 	sup     *supervisor
 	st      *state.Store
+	lat     *measure.Recorder // the content-free latency samples (RC §10)
 	mode    string
 	name    string
 	id      identity.Identity
@@ -292,6 +294,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 
 	sealer := secure.NewSealer(h.kr)
 	opener := secure.NewOpener(h.kr, h.kr)
+	h.lat = measure.New(st, o.Clock)
 	var pub *slices.Publisher
 	h.center = link.NewCenter(link.Config{
 		Store: st, Keys: h.kr, Opener: opener, Host: hostInfo(o, name, authPub), Clock: o.Clock,
@@ -314,7 +317,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
-		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos, Contact: h.noteContact,
+		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos, Contact: h.noteContact, Latency: h.lat,
 	}
 	if o.Desktop != nil {
 		// One processor per transport, the switcher their Switch; the
@@ -357,7 +360,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	}
 	pub = slices.NewPublisher(slices.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: srcs, Clock: o.Clock,
-		OnError: h.observe,
+		OnError: h.observe, Latency: h.lat,
 		Linked: func() (bool, error) {
 			devices, err := st.Devices()
 			return len(devices) > 0, err
@@ -389,10 +392,14 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		h.startWiring(hctx, h.wiring)
 	}
 	h.trace("publisher")
-	h.wg.Add(3)
+	h.wg.Add(4)
 	go func() {
 		defer h.wg.Done()
 		_ = pub.Run(hctx)
+	}()
+	go func() {
+		defer h.wg.Done()
+		h.measureLoop(hctx)
 	}()
 	go func() {
 		defer h.wg.Done()
@@ -416,6 +423,34 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	h.kick(h.houseKick)
 	ok = true
 	return h, nil
+}
+
+// measureLoop writes the latency samples once a second and prunes them to
+// the window and the row cap once a minute, then writes what is left when
+// the hub stops. A failure is logged by class and the samples it held are
+// dropped (timings, never retried).
+func (h *hubRuntime) measureLoop(ctx context.Context) {
+	flush := time.NewTicker(time.Second)
+	defer flush.Stop()
+	prune := time.NewTicker(time.Minute)
+	defer prune.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if err := h.lat.Flush(); err != nil {
+				log.Printf("hub: writing latency samples failed (%s)", errClass(err))
+			}
+			return
+		case <-flush.C:
+			if err := h.lat.Flush(); err != nil {
+				log.Printf("hub: writing latency samples failed (%s)", errClass(err))
+			}
+		case <-prune.C:
+			if err := h.lat.Prune(); err != nil {
+				log.Printf("hub: pruning latency samples failed (%s)", errClass(err))
+			}
+		}
+	}
 }
 
 // ensureEnabledAt stamps hub_meta.enabled_at once, as the Swift hub does

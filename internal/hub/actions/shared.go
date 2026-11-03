@@ -99,6 +99,7 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 		errs = passError(b, err, errs)
 	}
 	err := p.pull(ctx, g.zone, func(batch transport.Batch) error {
+		ps.readAt = p.cfg.Clock()
 		heldBack := false
 		for i, rec := range batch.Changed {
 			if ps.budget <= 0 {
