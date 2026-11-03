@@ -2,21 +2,27 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/slices"
+	"watchtower/internal/hub/state"
 )
 
-// The owner's off (go hub plan 3 Task 23 review): turning Mobile off deletes
-// the records the hub published, as POLICY-03's wipe does — through the
-// running transports before the hub stops (the bridge still up), and while
-// the hub stays off, retried from the stopped wipe until nothing published
-// is left. Only published records go: linked phones, their keyboxes, the
-// mailboxes and the keys stay, so turning on again republishes and the
-// phones read on (the Swift hub deleted its zones). Whether the owner's off
-// should also unlink phones is the owner's call (ask #956): ownerOff is the
-// one place to change.
+// The owner's off (go hub plan 3 Task 23 review, ask #956): turning Mobile
+// off deletes the records the hub published, as POLICY-03's wipe does —
+// through the running transports before the hub stops (the bridge still
+// up), and while the hub stays off, retried from the stopped wipe until
+// nothing published is left — and unlinks every phone, as the Swift hub's
+// off did (its zones deleted, then the link center forgot the phones and
+// reset the group keys). Each linked phone goes through `hub unlink`'s
+// offline path (its row and grants go, its keybox reads revoked, the epoch
+// rotates) and a phone waiting for the owner is refused, so turning on again
+// needs a fresh pairing. The hub's own identity key stays, as the Swift
+// hub's Keychain identity did. The policy's off (POLICY-03) never unlinks:
+// only the owner's switch does.
 
 // OffDelete* are `hub status --json`'s off_delete.state values while the
 // owner's switch is off ("" while it is on).
@@ -44,13 +50,56 @@ var (
 )
 
 // ownerOff is what the owner's off does to a running hub: stop it after
-// deleting what it published (keepNothing), keeping the phones linked.
+// deleting what it published (keepNothing); reconcile then unlinks the
+// phones (unlinkForOff).
 func (s *supervisor) ownerOff() {
 	s.stopHub(keepNothing)
 	now := time.Now()
 	s.noteOffDelete(now)
 	s.offWipeBackoff = offWipeRetry
 	s.nextOffWipe = now.Add(offWipeRetry)
+}
+
+// unlinkForOff unlinks every linked phone and refuses every phone waiting
+// for the owner while the owner's switch is off (ask #956), through
+// `hub unlink`'s offline path on the supervisor's store. Run at every
+// reconcile while no hub runs: a no-op once nothing is linked, and it also
+// covers an off taken while the hub was not running. A failure is logged
+// once per streak and retried at the next reconcile.
+func (s *supervisor) unlinkForOff() {
+	s.offlineMu.Lock()
+	defer s.offlineMu.Unlock()
+	devices, err := s.st.Devices()
+	var pending []link.Pending
+	if err == nil {
+		pending, err = link.NewCenter(link.Config{Store: s.st, Clock: s.o.Clock}).PendingLinks()
+	}
+	ids := make([]string, 0, len(devices)+len(pending))
+	for _, d := range devices {
+		ids = append(ids, d.ID)
+	}
+	for _, p := range pending {
+		ids = append(ids, p.DeviceID)
+	}
+	for _, id := range ids {
+		if err != nil {
+			break
+		}
+		if uerr := UnlinkOffline(s.o.Dir, s.st, id, s.o.Clock); uerr != nil && !errors.Is(uerr, state.ErrNoDevice) {
+			err = uerr
+		}
+	}
+	if err != nil {
+		if !s.offUnlinkLogged {
+			s.offUnlinkLogged = true
+			log.Printf("hub: off: unlinking the phones failed (%s): retried", errClass(err))
+		}
+		return
+	}
+	s.offUnlinkLogged = false
+	if len(devices) > 0 {
+		log.Printf("hub: off: %d phone(s) unlinked", len(devices))
+	}
 }
 
 // retryOffWipe is the stopped retry while the owner's switch is off: what

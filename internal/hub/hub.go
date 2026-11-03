@@ -451,6 +451,9 @@ type supervisor struct {
 	// a failed read of what is left was logged in this streak.
 	offWipeBackoff    time.Duration
 	offWipeReadLogged bool
+	// offUnlinkLogged: a failed unlink of the phones at the owner's off was
+	// logged in this streak (unlinkForOff).
+	offUnlinkLogged bool
 	// v1 is the last v1 session-host probe's answer (v1Known: probed in
 	// this daemon cycle; the cycle's tick forgets it).
 	v1, v1Known bool
@@ -560,6 +563,9 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	}
 	if s.hub == nil && on && mode == policy.MobileOff {
 		s.wipeStopped(ctx)
+	}
+	if s.hub == nil && !on {
+		s.unlinkForOff() // ask #956: the owner's off unlinks the phones
 	}
 	if s.hub == nil && !on && mode != policy.MobileOff && !time.Now().Before(s.nextOffWipe) {
 		s.retryOffWipe(ctx)

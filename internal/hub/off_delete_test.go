@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"database/sql"
 	"slices"
 	"testing"
 	"time"
@@ -33,21 +34,27 @@ func ownerOffRig(t *testing.T) (*rig, string) {
 	return r, data
 }
 
-func disableHub(t *testing.T, dir string) {
+func switchHub(t *testing.T, dir, op string) {
 	t.Helper()
 	c, err := Dial(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	if a, err := c.Do(ControlRequest{Op: OpDisable}); err != nil || !a.OK {
-		t.Fatalf("disable: %+v, %v", a, err)
+	if a, err := c.Do(ControlRequest{Op: op}); err != nil || !a.OK {
+		t.Fatalf("%s: %+v, %v", op, a, err)
 	}
+}
+
+func disableHub(t *testing.T, dir string) {
+	t.Helper()
+	switchHub(t, dir, OpDisable)
 }
 
 // TestOwnerOffDeletesWhatWasPublished: the owner's off deletes what the hub
 // published (as the Swift hub's deleteZonesForHubOff and POLICY-03's wipe),
-// keeps the linked phones, and says so in status (off_delete ok).
+// unlinks the phones (ask #956: the phone's row goes, it reads revoked) and
+// says so in status (off_delete ok, no phones).
 func TestOwnerOffDeletesWhatWasPublished(t *testing.T) {
 	r, data := ownerOffRig(t)
 	disableHub(t, r.dir)
@@ -55,9 +62,9 @@ func TestOwnerOffDeletesWhatWasPublished(t *testing.T) {
 	if got := liveRecords(t, r.fake, data); len(got) != 0 {
 		t.Fatalf("the data zone still holds %v after the owner's off", got)
 	}
-	eventually(t, 10*time.Second, "off_delete ok", func() bool {
-		d := r.rec.last().OffDelete
-		return d.State == OffDeleteOK && d.At != ""
+	eventually(t, 10*time.Second, "off_delete ok, no phones", func() bool {
+		s := r.rec.last()
+		return s.OffDelete.State == OffDeleteOK && s.OffDelete.At != "" && s.Phones == 0
 	})
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
@@ -67,8 +74,29 @@ func TestOwnerOffDeletesWhatWasPublished(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	if devices, err := st.Devices(); err != nil || len(devices) != 1 {
-		t.Fatalf("the linked phone went with the off: %v %v", devices, err)
+	if devices, err := st.Devices(); err != nil || len(devices) != 0 {
+		t.Fatalf("the phone stayed linked after the owner's off: %v %v", devices, err)
+	}
+	var revoked int
+	if err := st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+		return tx.QueryRow(`SELECT COUNT(*) FROM revoked_devices`).Scan(&revoked)
+	}); err != nil || revoked != 1 {
+		t.Fatalf("the unlinked phone's revoked row: %d, %v", revoked, err)
+	}
+}
+
+// TestOwnerOffThenOnNeedsAFreshPairing: after the owner's off, turning on
+// again runs the same hub (its identity kept, as the Swift hub's Keychain
+// identity) with no linked phone, so the phone has to pair again.
+func TestOwnerOffThenOnNeedsAFreshPairing(t *testing.T) {
+	r, _ := ownerOffRig(t)
+	hubID := r.rec.last().HubID
+	disableHub(t, r.dir)
+	r.waitState(StateOff, ReasonDisabled)
+	switchHub(t, r.dir, OpEnable)
+	r.waitState(StateRunning, "")
+	if s := r.rec.last(); s.HubID != hubID || s.Phones != 0 {
+		t.Fatalf("after off and on: hub %q (was %q), %d phones", s.HubID, hubID, s.Phones)
 	}
 }
 

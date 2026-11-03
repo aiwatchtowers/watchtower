@@ -435,6 +435,10 @@ func TestPolicy03_OffStopsHubKeepsSetting(t *testing.T) {
 			t.Fatalf("slice state of %s kept after the wipe: %v %v", k, h, err)
 		}
 	}
+	// The policy's off is not the owner's (ask #956): the phones stay linked.
+	if devices, err := st.Devices(); err != nil || len(devices) != 1 {
+		t.Fatalf("the policy's off unlinked the phone: %v %v", devices, err)
+	}
 }
 
 // TestPolicy03_LooseningDoesNotStartHubWhenSettingOff is the Go twin of

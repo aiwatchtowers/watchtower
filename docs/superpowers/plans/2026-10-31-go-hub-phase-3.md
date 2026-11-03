@@ -766,6 +766,10 @@ All Global Constraints of Plans 1a, 1b and 2 hold (byte compatibility, zone byte
 10. **`CloudBridgeCore` library + own test target.** The bridge code is a library over `WatchtowerSync` only, the executable is `main.swift`, the tests are their own target; both bridge folders are excluded from the app and Desktop test targets. Frames are hand-coded (no `swift-protobuf` in `Package.resolved`) (Tasks 4, 10).
 11. **`transport` value set** in `hub phones --json`: `cloudkit|relay|pending` (`pending` = a relay link not yet vouched, which Phase 2 Task 10 already answers in `hub phones`), one set for both tasks (Task 21).
 
+### Owner answers during review
+
+12. **The owner's off unlinks the phones** (ask #956, "as today"): turning Mobile off deletes what the hub published and unlinks every phone through `hub unlink`'s offline path (a waiting phone is refused), so turning on again needs a fresh pairing; the hub's identity key stays, as the Swift hub's Keychain identity did. The policy's off (POLICY-03) still keeps the phones (Task 23).
+
 ## Known limits
 
 - A record that keeps failing inside a CloudKit change page holds that zone. The bridge fails the whole page closed, so its cursor never passes a record the hub did not see. The pass retries every time, and there is no poisoned-record state to skip it (Task 10, review round 1).

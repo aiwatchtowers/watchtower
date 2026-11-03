@@ -17,7 +17,8 @@ extension MobileSettingsModel {
     nonisolated static let linkTitle = "Link a phone…"
     nonisolated static let toggleTitle = "Mobile sync"
     nonisolated static let toggleOnCaption = "This Mac shares its board and sessions with your linked phones."
-    nonisolated static let toggleOffCaption = "Off. Linked phones are kept."
+    /// The owner's off unlinks every phone (ask #956); the policy's off keeps them.
+    nonisolated static let toggleOffCaption = "Off. Turning Mobile off unlinks your phones: link them again after you turn it on."
     /// A Go hub ran first and a Swift hub's state appeared beside it (ask #949): off, no action here.
     nonisolated static let swiftBesideGoTitle = "Mobile is off"
     nonisolated static let swiftBesideGoDetail = "This Mac has phone data from two Watchtower setups. "

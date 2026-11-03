@@ -255,7 +255,9 @@ final class MobileSettingsModelTests: XCTestCase {
     func testStatesFromHubJSON() async {
         let cases: [(json: String, state: Model.State, copy: Model.OffCopy?)] = [
             (#"{"state":"off","reason":"disabled"}"#, .off(reason: "disabled"),
-             Model.OffCopy(title: "Mobile sync", detail: "Off. Linked phones are kept.", showsToggle: true, toggleOn: false, managed: false)),
+             Model.OffCopy(title: "Mobile sync",
+                           detail: "Off. Turning Mobile off unlinks your phones: link them again after you turn it on.",
+                           showsToggle: true, toggleOn: false, managed: false)),
             (#"{"state":"off","reason":"policy_off"}"#, .off(reason: "policy_off"),
              Model.OffCopy(title: "Mobile is turned off by your organization",
                            detail: "Managed by your organization. Linked phones are kept and work again when it is allowed.",

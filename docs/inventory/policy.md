@@ -69,6 +69,7 @@
 
 ## Changelog
 
+- 2026-11-03 (go hub plan 3 Task 23, PR #610, ask #956): strengthening, no guard relaxed. The owner's Mobile off now unlinks every phone (as the Swift hub's off did); the policy's off is not the owner's and keeps them: `TestPolicy03_OffStopsHubKeepsSetting` also asserts the linked phone stays after `MobileSync = off`. Text unchanged.
 - 2026-11-02 (go hub plan 3 Task 22, PR #605 review): strengthening, no guard relaxed. Two guards for the production branch (the Swift hub retired, the Go hub's hand-over): `MobileSync = off` still wipes a Swift state that has not been handed over yet, and loosening never starts the Swift hub. The two earlier Swift guards stay, on the Swift hub's own branch, until Task 24 maps them to the Go twins.
 - 2026-11-02 (Go hub phase 3 Task 21, PR #604): strengthening, no guard relaxed. POLICY-03's Go twin for a desktop host added (`internal/hub/resolve_desktop_test.go::TestPolicy03_OffStopsDesktopHostHubKeepsSetting`): MobileSync off stops the desktop host's hub and deletes what it published (on CloudKit while the bridge still runs, with the recorded identity store), `hub_meta.enabled` untouched. Text unchanged.
 - 2026-10-31 (Go hub phase 1, board #1284, **ask #807**): strengthening, no guard relaxed. POLICY-03's Go twins added for the Go hub (`internal/hub`). Text unchanged. Note `docs/features/go-hub.md`.
