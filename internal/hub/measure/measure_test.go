@@ -80,11 +80,11 @@ func TestSliceSaveResolvesAppliedSaved(t *testing.T) {
 	f := newFixture(t)
 	// An ask_answer read at 0, applied at 30 ms, nudging owner_ask.
 	f.r.Applied("relay", f.at(0), f.at(30*time.Millisecond), []string{"owner_ask"})
-	// A cycle that started before the apply does not count; another kind
+	// A source read that began before the apply does not count; another kind
 	// does not count.
 	f.r.Saved("relay", "owner_ask", f.at(10*time.Millisecond), f.at(50*time.Millisecond))
 	f.r.Saved("relay", "workbench", f.at(60*time.Millisecond), f.at(80*time.Millisecond))
-	// The owner_ask save of a cycle started after it does.
+	// The owner_ask save whose read began after it does.
 	f.r.Saved("relay", "owner_ask", f.at(100*time.Millisecond), f.at(230*time.Millisecond))
 	// Once resolved, a later save writes nothing more.
 	f.r.Saved("relay", "owner_ask", f.at(300*time.Millisecond), f.at(400*time.Millisecond))

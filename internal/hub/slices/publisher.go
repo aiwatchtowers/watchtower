@@ -97,10 +97,10 @@ type Config struct {
 }
 
 // SaveLatency is the publisher's side of the latency samples
-// (measure.Recorder): kind saved on transport by a cycle that started at
-// startedAt, done at doneAt.
+// (measure.Recorder): kind saved on transport (the one its write went to),
+// from a source read that began at readAt, done at doneAt.
 type SaveLatency interface {
-	Saved(transport, kind string, startedAt, doneAt time.Time)
+	Saved(transport, kind string, readAt, doneAt time.Time)
 }
 
 // CycleReport is what one cycle did. Skipped names records not published
@@ -145,6 +145,11 @@ type Publisher struct {
 	// unlinkedSeen: a cycle saw no phone linked and no cycle has completed
 	// since one is.
 	unlinkedSeen bool
+	// kindRead and kindTransport are the latency stamp of the kind being
+	// published: when its source read began and the transport its first
+	// write went to (set by publishKind).
+	kindRead      time.Time
+	kindTransport transport.Kind
 
 	mu          sync.Mutex      // guards the dirty set, the pause and lastPublish
 	paused      bool            // a hold: no cycle runs, the dirty set waits
@@ -410,7 +415,6 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 	p.cycleMu.Lock()
 	defer p.cycleMu.Unlock()
 	rep := CycleReport{Deferred: map[Kind]time.Time{}}
-	started := p.clock()
 	p.mu.Lock()
 	paused := p.paused
 	p.mu.Unlock()
@@ -465,7 +469,7 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		if wrote {
 			p.lastWrite[k] = now
 			if err == nil {
-				p.stampSaved(k, started)
+				p.stampSaved(k)
 			}
 		}
 		if errors.Is(err, errEpochMoved) {
@@ -528,6 +532,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		return false, err
 	}
 	var items []Item
+	p.kindRead, p.kindTransport = p.clock(), ""
 	for _, s := range srcs {
 		got, err := s.Items(ctx)
 		if err != nil {
@@ -593,6 +598,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		// One Save per kind, not chunked: after a rotation or a new phone a
 		// big kind goes as one request of up to N sealed records. The hosted
 		// relay client (Task 8) or Plan 1b caps or splits the batch.
+		p.noteWriteTransport()
 		outs, err := p.c.Transport.Save(ctx, saves)
 		if err != nil {
 			return false, fmt.Errorf("slices: saving %s: %w", k, err)
@@ -665,6 +671,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		dels = append(dels, transport.DeleteItem{Name: w})
 	}
 	dels = p.withSignalDeletes(k, dels)
+	p.noteWriteTransport()
 	outs, err := p.c.Transport.Delete(ctx, p.c.DataZone, dels)
 	if err != nil {
 		return wrote, fmt.Errorf("slices: deleting %s: %w", k, err)
@@ -699,12 +706,20 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	return wrote, nil
 }
 
+// noteWriteTransport takes the transport of the kind's first write, before
+// it is sent: a switch later in the cycle does not retag the stamp.
+func (p *Publisher) noteWriteTransport() {
+	if p.c.Latency != nil && p.kindTransport == "" {
+		p.kindTransport = p.c.Transport.Kind()
+	}
+}
+
 // stampSaved hands the latency recorder a kind this cycle wrote.
-func (p *Publisher) stampSaved(k Kind, started time.Time) {
-	if p.c.Latency == nil || p.c.Transport == nil {
+func (p *Publisher) stampSaved(k Kind) {
+	if p.c.Latency == nil || p.kindTransport == "" {
 		return
 	}
-	p.c.Latency.Saved(string(p.c.Transport.Kind()), string(k), started, p.clock())
+	p.c.Latency.Saved(string(p.kindTransport), string(k), p.kindRead, p.clock())
 }
 
 // alertSignals reports whether new alerts get a signal record: on CloudKit,

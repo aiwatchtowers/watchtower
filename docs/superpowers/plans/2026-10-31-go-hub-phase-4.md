@@ -313,10 +313,10 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   const Window = 7 * 24 * time.Hour; const MaxRows = 20000; const SaveWait = 60 * time.Second
   type Recorder struct{…}; func New(store *state.Store, clock func() time.Time) *Recorder
   func (r *Recorder) Applied(transport string, readAt, appliedAt time.Time, kinds []string) // first-read applies only
-  func (r *Recorder) Saved(transport string, kind string, startedAt, doneAt time.Time)    // resolves waiting applies of kind
+  func (r *Recorder) Saved(transport string, kind string, readAt, doneAt time.Time)       // readAt: the kind's source read began; resolves waiting applies of kind
   func (r *Recorder) Flush() error                                                         // batched write, once a second
   ```
-  `readAt` = when the transport handed the processor the record's batch. A waiting apply resolves at the first successful save of one of its kinds whose cycle started after `appliedAt`, writing `applied_saved` (done − applied) and `read_saved` (done − read) together; none within `SaveWait` → neither. Waiting applies are in memory, capped at 256 (oldest dropped).
+  `readAt` = when the transport handed the processor the record's batch. A waiting apply resolves at the first successful save of one of its kinds whose source read for that kind began after `appliedAt` (on the transport that save went to), writing `applied_saved` (done − applied) and `read_saved` (done − read) together; none within `SaveWait` → neither. Waiting applies are in memory, capped at 256 (oldest dropped).
 - **Depends on:** Task 0
 
 - [ ] **Step 1: Failing tests:** `TestAppliedActionGivesReadAppliedSample`, `TestHeldThenAppliedGivesNoSample`, `TestRepeatGivesNoSample`, `TestSliceSaveResolvesAppliedSaved` (an `ask_answer` → `owner_ask` save; `read_saved` = read → done of the same action), `TestNoSaveWithin60sGivesNoSample`, `TestSamplesTaggedWithTheActiveTransport`, `TestLatencyStatsNearestRank` (table of known ms → p50/p90), `TestLatencySamplesAreContentFreeAndBoundedPrune` (20 001 rows → 20 000; 8-day-old row gone; column allowlist: `at`, `transport`, `step`, `ms`; rules kept as decided by agent, shown to the owner on this review), `TestRecorderNeverWritesInsideAPassTransaction`.

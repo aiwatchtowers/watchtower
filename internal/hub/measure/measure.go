@@ -3,7 +3,7 @@
 // saved, per active transport. The processor stamps an action applied on its
 // first read (Applied), the publisher stamps each kind it saved (Saved); a
 // waiting apply resolves at the first save of one of its slice kinds whose
-// cycle started after it was applied. Samples are buffered in memory and
+// source read for that kind began after it was applied. Samples are buffered in memory and
 // written by Flush (once a second) outside any pass or cycle transaction;
 // nothing leaves the device.
 package measure
@@ -83,11 +83,11 @@ func (r *Recorder) Applied(transport string, readAt, appliedAt time.Time, kinds 
 	r.waiting = append(r.waiting, waiting{transport: transport, readAt: readAt, appliedAt: appliedAt, kinds: slices.Clone(kinds)})
 }
 
-// Saved stamps a successful save of kind by a publish cycle that started at
-// startedAt and finished the kind at doneAt. Every waiting apply of that
-// kind and transport applied before startedAt, and within SaveWait of
-// doneAt, resolves: applied_saved and read_saved are written together.
-func (r *Recorder) Saved(transport, kind string, startedAt, doneAt time.Time) {
+// Saved stamps a successful save of kind whose source read began at readAt
+// and whose write finished at doneAt. Every waiting apply of that kind and
+// transport applied before readAt (so the read saw it), and within SaveWait
+// of doneAt, resolves: applied_saved and read_saved are written together.
+func (r *Recorder) Saved(transport, kind string, readAt, doneAt time.Time) {
 	if r == nil || !measured(transport) {
 		return
 	}
@@ -98,7 +98,7 @@ func (r *Recorder) Saved(transport, kind string, startedAt, doneAt time.Time) {
 		switch {
 		case doneAt.Sub(w.appliedAt) > SaveWait:
 			continue // too late: no sample
-		case w.transport != transport || !slices.Contains(w.kinds, kind) || !startedAt.After(w.appliedAt):
+		case w.transport != transport || !slices.Contains(w.kinds, kind) || !readAt.After(w.appliedAt):
 			kept = append(kept, w)
 			continue
 		}
