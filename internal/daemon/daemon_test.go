@@ -1405,6 +1405,49 @@ func TestInbox09_RevokedAccountSyncErrorDoesNotFreeze(t *testing.T) {
 	assert.NotContains(t, inboxErr.Error(), "invalid_auth")
 }
 
+// TestInbox09_TeamMismatchSyncErrorDoesNotFreeze guards INBOX-09's
+// team-mismatch carve-out (amended 2026-11-03, owner decision in ask #454):
+// an account whose token is for another Slack team than its data
+// (sync.ErrSlackTeamMismatch) fails every cycle until a Re-login, exactly
+// like a revoked one, so its error alone does not freeze the shared inbox
+// watermark — while a sibling's other sync error still does.
+func TestInbox09_TeamMismatchSyncErrorDoesNotFreeze(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	t.Setenv("HOME", t.TempDir())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/team.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "team": map[string]any{"id": "T_OTHER", "name": "other", "domain": "other"}})
+	})
+	mismatchDB := db.OpenTestDB(t)
+	// The legacy workspace names the home team; the row has no cached team,
+	// so team.info is really called and answers another team.
+	require.NoError(t, mismatchDB.UpsertWorkspace(db.Workspace{ID: "T_HOME", Name: "home"}))
+	_, err := mismatchDB.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mismatchOrch := sync.NewOrchestrator(mismatchDB, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"),
+		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
+	mismatchOrch.SetLogger(log.New(os.Stderr, "[test-mismatch] ", 0))
+
+	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+	d.SetOrchestrators([]*sync.Orchestrator{mismatchOrch})
+	syncErr, inboxErr := d.phaseSlackSync(context.Background())
+	require.ErrorIs(t, syncErr, sync.ErrSlackTeamMismatch)
+	assert.NoError(t, inboxErr, "a team-mismatched account alone must not freeze the inbox watermark")
+
+	// A sibling failing for any other reason still freezes it.
+	var failCount atomic.Int32
+	failOrch, _ := newStatusTrackingOrchestrator(t, http.NewServeMux(), &failCount)
+	d.SetOrchestrators([]*sync.Orchestrator{mismatchOrch, failOrch})
+	_, inboxErr = d.phaseSlackSync(context.Background())
+	require.Error(t, inboxErr, "a sibling's other sync error must freeze the inbox watermark")
+	assert.NotErrorIs(t, inboxErr, sync.ErrSlackTeamMismatch)
+}
+
 // TestInbox09_RateLimitedSearchFreezes: a Slack-throttled search ends the
 // account's sync with no error but with messages left unfetched — that must
 // still freeze the inbox watermark, or the retried messages land behind it.

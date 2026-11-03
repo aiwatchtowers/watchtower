@@ -848,9 +848,11 @@ func (d *Daemon) reapStalePipelineRuns() {
 // inboxErr is what must freeze the inbox watermark (INBOX-09): every account
 // whose sync failed or left its search window incomplete (a rate limit,
 // broken pagination — Run returns nil for those), named by account — except
-// an account whose token is revoked. A revoked account fails every cycle
-// until the owner reconnects it, so freezing on it would stop every other
-// account's watermark for good; its status row already shows it as revoked.
+// an account whose token is revoked or signed in to another Slack team
+// (sync.ErrSlackTeamMismatch, amended 2026-11-03, ask #454). Either fails
+// every cycle until the owner reconnects it, so freezing on it would stop
+// every other account's watermark for good; its status row already shows it
+// (revoked, or the mismatch's Re-login error).
 func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil
@@ -882,7 +884,7 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 				if firstErr == nil {
 					firstErr = err
 				}
-				if !sync.IsRevokedAuthError(err) {
+				if !sync.IsRevokedAuthError(err) && !errors.Is(err, sync.ErrSlackTeamMismatch) {
 					freezing = append(freezing, fmt.Errorf("slack account %d: %w", o.AccountID(), err))
 				}
 			case o.SearchIncomplete():
