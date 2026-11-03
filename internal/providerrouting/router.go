@@ -46,11 +46,13 @@ type Request struct {
 	Model                 func(provider string, tier digest.Tier) string
 	Identity              func(provider string) string // Reliable account metadata only; empty = installation.
 	Capable               func(provider string, profile providers.InvocationProfile) bool
+	InputBytes            int // Actual serialized input submitted by an isolated text leaf.
 	Hook                  AttemptHook
 }
 type Attempt struct {
 	OperationID               string
 	Number                    int
+	InputBytes                int
 	Provider, Model, Revision string
 }
 type Result struct {
@@ -366,7 +368,7 @@ func (r *Router) Run(ctx context.Context, req Request, call func(context.Context
 			}
 		}
 		number++
-		a := Attempt{OperationID: req.OperationID, Number: number, Provider: p, Revision: req.Revision}
+		a := Attempt{OperationID: req.OperationID, Number: number, Provider: p, Revision: req.Revision, InputBytes: req.InputBytes}
 		if req.Model != nil {
 			a.Model = req.Model(p, req.Tier)
 		}

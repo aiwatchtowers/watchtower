@@ -19,6 +19,8 @@ type Meter struct {
 	pausedTotal  time.Duration
 	pausedAt     time.Time // zero = not paused
 	runRemaining int64
+	reserved     int64 // Serialized input held by admitted in-flight routed calls.
+	unknownUsage bool  // A failed estimated call has an unbounded unknown remainder.
 	crossed      InterruptReason
 	rearm        chan struct{}
 	carried      time.Duration // active time a resumed run spent before the restart
@@ -44,9 +46,23 @@ func NewMeter(budget Budget, clock Clock) *Meter {
 func (m *Meter) BeforeCall() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.beforeCallLocked()
+}
+
+func (m *Meter) beforeCallLocked() error {
+	if !m.clock.Now().Before(m.deadlineLocked()) {
+		m.flag(InterruptTimeout)
+		return &RunInterrupted{Reason: InterruptTimeout}
+	}
+	if m.unknownUsage {
+		return &SDKError{Name: ErrNameBudget, Message: "the previous model call has unknown remaining usage"}
+	}
 	if m.runRemaining <= 0 {
 		m.flag(InterruptBudget)
 		return &SDKError{Name: ErrNameBudget, Message: "the run's token budget is spent"}
+	}
+	if m.runRemaining-m.reserved <= 0 {
+		return &SDKError{Name: ErrNameBudget, Message: "the run's remaining tokens are reserved by active calls"}
 	}
 	return nil
 }
@@ -56,6 +72,10 @@ func (m *Meter) BeforeCall() error {
 func (m *Meter) Debit(in, out int64) (crossed InterruptReason) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.debitLocked(in, out)
+}
+
+func (m *Meter) debitLocked(in, out int64) (crossed InterruptReason) {
 	m.runRemaining -= in + out
 	if m.runRemaining <= 0 {
 		crossed = InterruptBudget
@@ -166,4 +186,46 @@ func (m *Meter) Remaining() Budget {
 	tokens := max(m.runRemaining, 0)
 	left := max(m.deadlineLocked().Sub(m.clock.Now()), 0)
 	return Budget{Tokens: int(tokens), Minutes: int(left / time.Minute)}
+}
+
+// markUnknown prevents further admission when failed usage is only a lower estimate.
+func (m *Meter) markUnknown() {
+	m.mu.Lock()
+	m.unknownUsage = true
+	m.mu.Unlock()
+}
+
+// admitAttempt reserves the known input lower bound across concurrent primitive
+// workers; output is charged from observed facts when the call completes.
+func (m *Meter) admitAttempt(input int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.beforeCallLocked(); err != nil {
+		return err
+	}
+	if input > m.runRemaining-m.reserved {
+		return &SDKError{Name: ErrNameBudget, Message: "the run has insufficient tokens for the model input"}
+	}
+	m.reserved += input
+	return nil
+}
+
+func (m *Meter) releaseAttempt(input int64) {
+	m.mu.Lock()
+	m.reserved -= input
+	m.mu.Unlock()
+}
+
+func (m *Meter) settleAttempt(input, in, out int64, unknown bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reserved -= input
+	m.debitLocked(in, out)
+	m.unknownUsage = m.unknownUsage || unknown
+}
+
+func (m *Meter) hasUnknownUsage() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.unknownUsage
 }

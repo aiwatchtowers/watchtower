@@ -23,6 +23,9 @@ import (
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providers"
 )
 
 // agentRecipeText is a manual recipe allowed agent:run, the light tier, one
@@ -245,6 +248,7 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 	s := &claudeStub{dir: dir, path: filepath.Join(dir, claudeStubName)}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "reply"), []byte(reply), 0o600))
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then echo \"codex-cli 0.145.0\"; exit 0; fi\n" +
 		"env > '" + dir + "/env'\n" +
 		"for a in \"$@\"; do printf '%s\\0' \"$a\"; done > '" + dir + "/argv'\n" +
 		"if [ -n \"$CODEX_HOME\" ]; then echo \"$CODEX_HOME\" > '" + dir + "/codex-home'; cp \"$CODEX_HOME/config.toml\" '" + dir + "/codex-home.toml'; " +
@@ -256,6 +260,8 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 		"rf=$(sed -n 's/.*\"--automation-ready-file\", *\"\\([^\"]*\\)\".*/\\1/p' '" + dir + "/allargs' | head -n 1)\n" +
 		"if [ -n \"$rf\" ] && [ ! -f '" + dir + "/noserver' ]; then : > \"$rf\"; fi\n" +
 		"echo $$ > '" + dir + "/pid'\n" +
+		"echo $$ >> '" + dir + "/starts'\n" +
+		"if [ -f '" + dir + "/wait' ]; then while [ ! -f '" + dir + "/release' ]; do sleep 0.01; done; fi\n" +
 		"if [ -f '" + dir + "/sleep' ]; then trap '' INT; exec sleep 30; fi\n" +
 		"if [ -f '" + dir + "/fail' ]; then exit 1; fi\n" +
 		"cat '" + dir + "/reply'\n"
@@ -581,4 +587,93 @@ func TestAutomationBackends_WireMCPAndAgent(t *testing.T) {
 		assert.Equal(t, want, b.Agent.Name(), provider)
 		assert.NotNil(t, b.Registry)
 	}
+}
+
+func TestAgent_RoutingKnownHealthUsesActualBackend(t *testing.T) {
+	for _, preferred := range []string{"claude", "codex"} {
+		t.Run(preferred, func(t *testing.T) {
+			sink := &ledgerSink{}
+			llmusage.SetSink(sink)
+			t.Cleanup(func() { llmusage.SetSink(nil) })
+			claude := newClaudeStub(t, `{"type":"result","result":"done","usage":{"input_tokens":12,"output_tokens":3}}`)
+			codex := newClaudeStub(t, `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`+"\n"+`{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`)
+			cfg := claude.config(t)
+			cfg.CodexPath = codex.path
+			cfg.AI.Provider = preferred
+			reserve := "codex"
+			selected := codex
+			skipped := claude
+			if preferred == "codex" {
+				reserve = "claude"
+				selected = claude
+				skipped = codex
+			}
+			cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+			cfg.AI.Providers = map[string]config.AIProviderConfig{"claude": {Models: config.AIModels{Light: "claude-haiku-5-5"}}, "codex": {Models: config.AIModels{Light: "gpt-6-light"}}}
+			store, err := providerhealth.Installation()
+			require.NoError(t, err)
+			require.NoError(t, store.RecordQuota(context.Background(), providerhealth.AccountScope(preferred, ""), &providers.Failure{Provider: preferred, Category: providers.Quota}))
+			f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
+			run := f.run(t, db.TriggerManual)
+			require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+			require.Equal(t, reserve, f.agentStep(t, run.ID).Name)
+			require.Zero(t, skipped.pid())
+			require.Positive(t, selected.pid())
+			require.Equal(t, tierModel(cfg, reserve, "light"), flagAfter(t, selected.argv(t), "--model"))
+			require.Len(t, sink.calls, 1)
+			require.Equal(t, reserve, sink.calls[0].Provider)
+			require.Equal(t, tierModel(cfg, reserve, "light"), sink.calls[0].Model)
+			require.NotEmpty(t, sink.calls[0].OperationID)
+			require.Equal(t, 1, sink.calls[0].Attempt)
+		})
+	}
+}
+
+func TestAgent_RoutingQuotaAfterProposalNeverRestartsChild(t *testing.T) {
+	claude := newClaudeStub(t, `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached|4102444800","usage":{"input_tokens":31,"output_tokens":7}}`)
+	codex := newClaudeStub(t, `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`+"\n"+`{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`)
+	cfg := claude.config(t)
+	cfg.CodexPath = codex.path
+	cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: "codex"}
+	f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
+	require.NoError(t, os.WriteFile(filepath.Join(claude.dir, "wait"), nil, 0o600))
+	id := f.enqueue(t, db.TriggerManual)
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _, err := f.exec.ExecuteInline(ctx, id); done <- err }()
+	require.Eventually(t, func() bool { return claude.pid() > 0 }, 5*time.Second, 10*time.Millisecond)
+	// The child's bound server may already have proposed an action when quota
+	// arrives. Persist that receipt while the real fake child is still running.
+	action, err := f.d.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"pending"}`, Surface: "automation", ContextType: "automation_run", ContextID: strconv.FormatInt(id, 10)})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(claude.dir, "release"), nil, 0o600))
+	require.NoError(t, <-done)
+	run, err := f.d.GetAutomationRun(id)
+	require.NoError(t, err)
+	require.Equal(t, db.RunFailed, run.Status)
+	require.Equal(t, int64(31), run.InputTokens)
+	require.Equal(t, int64(7), run.OutputTokens)
+	require.Zero(t, codex.pid(), "no reserve child within a started tool step")
+	starts, err := os.ReadFile(filepath.Join(claude.dir, "starts"))
+	require.NoError(t, err)
+	require.Len(t, strings.Fields(string(starts)), 1)
+	receipt, err := f.d.GetAgentAction(action)
+	require.NoError(t, err)
+	require.Equal(t, "pending", receipt.Status)
+	store, err := providerhealth.Installation()
+	require.NoError(t, err)
+	state, err := store.Read(context.Background(), providerhealth.AccountScope("claude", ""))
+	require.NoError(t, err)
+	require.Equal(t, providerhealth.QuotaWait, state.State)
+	next := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunSucceeded, next.Status, next.Error)
+	require.Equal(t, "codex", f.agentStep(t, next.ID).Name)
+	require.Positive(t, codex.pid())
+	starts, err = os.ReadFile(filepath.Join(claude.dir, "starts"))
+	require.NoError(t, err)
+	require.Len(t, strings.Fields(string(starts)), 1)
+	receipt, err = f.d.GetAgentAction(action)
+	require.NoError(t, err)
+	require.Equal(t, "pending", receipt.Status)
 }

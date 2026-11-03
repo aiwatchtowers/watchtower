@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,8 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
@@ -167,11 +170,64 @@ type cliAgentRunner struct {
 	configPath string // "" = the child's default
 	dbPath     string
 	provider   string // "claude" | "codex"
+	router     *providerrouting.Router
+	prepared   bool
 }
 
 func (r *cliAgentRunner) Name() string { return r.provider }
 
+// Prepare uses shared known health only. A selected runner remains bound for
+// its entire tool loop, including failures after proposals.
+func (r *cliAgentRunner) Prepare(ctx context.Context, tier string) (automations.AgentRunner, error) {
+	selected := *r
+	selected.prepared = true
+	if !r.cfg.AI.Fallback.Enabled || flagProvider != "" || aiFlagModel != "" || (r.cfg.AI.ConfiguredProvider != "" && r.cfg.AI.Provider != r.cfg.AI.ConfiguredProvider) {
+		selected.router = nil
+		return &selected, nil
+	}
+	if err := r.cfg.AI.Validate(); err != nil {
+		return nil, err
+	}
+	if selected.router == nil {
+		health, err := providerhealth.Installation()
+		selected.router = &providerrouting.Router{Health: health, Diagnostic: func(err error) { log.Printf("AI agent routing: %v", err) }}
+		if err != nil {
+			log.Printf("AI agent routing: %v", err)
+		}
+	}
+	provider, err := selected.router.Select(ctx, selected.routingRequest(tier))
+	if err != nil {
+		var failure *providers.Failure
+		if errors.As(err, &failure) && failure.Category == providers.Policy {
+			return nil, automations.PolicyError(err)
+		}
+		return nil, err
+	}
+	selected.provider = provider
+	return &selected, nil
+}
+
+func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
+	t := digest.TierLight
+	if tier == "strong" {
+		t = digest.TierStrong
+	}
+	return providerrouting.Request{Preferred: r.cfg.AI.Provider, Reserve: r.cfg.AI.Fallback.Provider,
+		Mode: providerrouting.PreferredReserve, Profile: providers.ToolPreflight, Retry: providerrouting.BeforeChild,
+		Tier: t, Revision: providers.RoutingRevision(r.cfg), Model: func(p string, _ digest.Tier) string { return tierModel(r.cfg, p, tier) },
+		Capable: func(p string, profile providers.InvocationProfile) bool {
+			return profile == providers.ToolPreflight && (p == "claude" || p == "codex")
+		}}
+}
+
 func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	if !r.prepared {
+		selected, err := r.Prepare(ctx, req.Tier)
+		if err != nil {
+			return automations.AgentResult{}, err
+		}
+		return selected.Run(ctx, req)
+	}
 	if err := providers.Allowed(r.provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608: nothing spawned, nothing metered
 	}
@@ -214,14 +270,40 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	if err := req.BeforeModelCall(); err != nil {
 		return automations.AgentResult{}, err
 	}
-	text, usage, err := client.QuerySync(ctx, automationAgentSystemPrompt, req.Instruction, "")
+	var text string
+	var usage *ai.Usage
+	var observed agentUsageObserver
+	query := func(callCtx context.Context) error {
+		var callErr error
+		text, usage, callErr = client.QuerySync(callCtx, automationAgentSystemPrompt, req.Instruction, "")
+		return callErr
+	}
+	if r.router == nil {
+		err = query(ctx)
+	} else {
+		route := r.routingRequest(req.Tier)
+		route.Preferred, route.Mode, route.Retry = r.provider, providerrouting.Pinned, providerrouting.Never
+		route.InputBytes = len(automationAgentSystemPrompt) + len(req.Instruction)
+		route.Hook = &observed
+		_, err = r.router.Run(ctx, route, func(callCtx context.Context, _ providerrouting.Attempt) (providerrouting.Result, error) {
+			callErr := query(callCtx)
+			return providerrouting.Result{Text: text}, callErr
+		})
+	}
 	if err != nil {
+		if observed.seen {
+			return observed.result, err
+		}
 		// A child that failed or was killed (cancel, deadline) reports no
 		// usage; it still read the instruction, so a provider without usage
 		// numbers cannot run unbounded (spec §7.5).
 		return automations.AgentResult{InputTokens: int64(len(req.Instruction)+3) / 4, Estimated: true}, err
 	}
 	res := agentResult(req.Instruction, text, usage)
+	if observed.seen {
+		res = observed.result
+		res.Text = text
+	}
 	// The server touches readyFile once it accepted the run's binding and
 	// serves: without it the child answered with no watchtower tools at all
 	// (e.g. the marker never reached the server), which is not a success.
@@ -229,6 +311,24 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		return res, errAgentToolsNeverConnected
 	}
 	return res, nil
+}
+
+// agentUsageObserver keeps the tool child's leaf usage even when QuerySync
+// returns a typed quota instead of a successful result. It never admits a replay.
+type agentUsageObserver struct {
+	seen   bool
+	result automations.AgentResult
+}
+
+func (*agentUsageObserver) Before(context.Context, providerrouting.Attempt) error { return nil }
+func (o *agentUsageObserver) After(_ context.Context, a providerrouting.Attempt, outcome providerrouting.Outcome) error {
+	if len(outcome.Calls) == 0 {
+		return nil
+	}
+	u := automations.ModelAttemptUsage(a, outcome)
+	o.seen = true
+	o.result = automations.AgentResult{Text: outcome.Result.Text, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, Estimated: u.Estimated, ReportedCostUSD: u.ReportedUSD}
+	return nil
 }
 
 // errAgentToolsNeverConnected is an agent() CLI child that exited without its
