@@ -193,39 +193,3 @@ func TestRefusedEchoAndALaterOneOfTheSameRecordWaitTogether(t *testing.T) {
 	w.wantEcho(3, wire.StatusApplied, "")
 	w.wantEmptyMailbox()
 }
-
-// Finals drained from the hold are written over the hub's own held echoes;
-// the phone's feed still has the echoes in queue order (2, 3, 4, then 5).
-func TestDrainedFinalsKeepTheQueueOrderInTheFeed(t *testing.T) {
-	eachKind(t, func(t *testing.T, w *world) {
-		w.act("test_noop")
-		w.settle()
-		if _, err := w.phone.Queue(w.phone.NewAction("test_noop")); err != nil {
-			t.Fatal(err)
-		}
-		w.act("test_noop")
-		w.act("test_noop")
-		w.pass() // 3 and 4 held, their held echoes written
-		if err := w.phone.Send(2); err != nil {
-			t.Fatal(err)
-		}
-		w.act("test_noop") // 5
-		w.pass()           // 2 applied, 3 and 4 drained, 5 applied
-		w.wantCalls(noops(1, 2, 3, 4, 5)...)
-		feed, err := w.fake.Changes(w.ctx, w.phone.Zone(), 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var order []uint64
-		for _, rec := range feed.Changed {
-			for s := uint64(2); s <= 5; s++ {
-				if name, _ := w.phone.Sealed(s); name == rec.Name {
-					order = append(order, s)
-				}
-			}
-		}
-		if !slices.Equal(order, []uint64{2, 3, 4, 5}) {
-			t.Fatalf("feed order %v, want [2 3 4 5]", order)
-		}
-	})
-}

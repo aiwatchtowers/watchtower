@@ -465,14 +465,15 @@ const saveBatch = 50
 // queuedRow is one queued row to save: its control row, the record resealed
 // for the mailbox and the precondition it is written under. superseded is
 // the ids of the earlier echoes of the same record it stands for
-// (collapseEchoes), settled with it. settled marks a row already written and
-// settled, saved again only to keep the queue order (writeQueued's tail).
+// (collapseEchoes), settled with it. landed marks a row already written, saved
+// again after a row re-saved ahead of it (writeQueued's tail): it stays
+// queued until that save lands, so a failed tail never leaves it ahead.
 type queuedRow struct {
 	c          state.Control
 	rec        secure.Record
 	expect     transport.Expect
 	superseded []int64
-	settled    bool
+	landed     bool
 }
 
 // expectOf is the transport precondition of queued row c.
@@ -560,7 +561,8 @@ func refusedForGood(err error) bool {
 //   - a failed precondition over the hub's own older record at its name (an
 //     echo after the hub's held or received echo): written again over it,
 //     when retry is set; so the phone's feed keeps the queue order, every row
-//     after it that landed is written again too, after it (the tail Save);
+//     after it that landed is written again too, after it (the tail Save), and
+//     leaves the queue only with that save;
 //   - any other failed precondition: the phone changed the record, and its
 //     copy is answered when read — done;
 //   - refused: notLanded.
@@ -593,8 +595,14 @@ func (p *Processor) writeQueued(ctx context.Context, b mailbox, rows []queuedRow
 	var tail []queuedRow
 	for i, o := range out {
 		r := rows[i]
-		if r.settled {
-			continue // written and settled before: saved again for the order only
+		if r.landed {
+			// Written before, saved again after a row re-saved ahead of it:
+			// it leaves the queue now, with the row it follows.
+			if err := p.settle(r); err != nil {
+				return written, failed, err
+			}
+			written++
+			continue
 		}
 		switch {
 		case o.Refused != nil:
@@ -606,13 +614,17 @@ func (p *Processor) writeQueued(ctx context.Context, b mailbox, rows []queuedRow
 				failed++
 				continue
 			}
-		case o.Saved:
-			tail = resaved(tail, r, o.RecordSeq)
-			if err := p.settle(r); err != nil {
-				return written, failed, err
+		case o.Saved || (o.Conflict != nil && bytes.Equal(o.Conflict.Envelope, r.rec.Envelope())):
+			// Written now, or in an earlier, partly written batch.
+			if len(tail) > 0 {
+				seq := o.RecordSeq
+				if !o.Saved {
+					seq = o.Conflict.RecordSeq
+				}
+				r.expect, r.landed = transport.Expect{Mode: transport.ExpectSeq, Seq: seq}, true
+				tail = append(tail, r)
+				continue
 			}
-		case o.Conflict != nil && bytes.Equal(o.Conflict.Envelope, r.rec.Envelope()):
-			tail = resaved(tail, r, o.Conflict.RecordSeq)
 			if err := p.settle(r); err != nil {
 				return written, failed, err
 			}
@@ -631,19 +643,9 @@ func (p *Processor) writeQueued(ctx context.Context, b mailbox, rows []queuedRow
 	return written + w, failed + f, err
 }
 
-// resaved adds r, written at seq, to the tail once the tail has begun (a
-// row before it is written again): r is then written again after it, over
-// its own record, as a settled row.
-func resaved(tail []queuedRow, r queuedRow, seq uint64) []queuedRow {
-	if len(tail) == 0 {
-		return tail
-	}
-	r.expect, r.settled = transport.Expect{Mode: transport.ExpectSeq, Seq: seq}, true
-	return append(tail, r)
-}
-
 // batchFailed handles a Save of rows that failed as a whole (see
-// writeQueued).
+// writeQueued). A landed row of a tail stays queued as it is: the next pass
+// meets it as its own identical record, behind the row re-saved ahead of it.
 func (p *Processor) batchFailed(ctx context.Context, b mailbox, rows []queuedRow, retry bool, err error) (written, failed int, _ error) {
 	if ctx.Err() != nil {
 		return 0, 0, ctx.Err()
@@ -659,7 +661,7 @@ func (p *Processor) batchFailed(ctx context.Context, b mailbox, rows []queuedRow
 		return written, failed, nil
 	}
 	for _, r := range rows {
-		if r.settled {
+		if r.landed {
 			continue
 		}
 		landed, err := p.notLanded(b, r, err)
@@ -668,7 +670,7 @@ func (p *Processor) batchFailed(ctx context.Context, b mailbox, rows []queuedRow
 		}
 		return 0, 1, err
 	}
-	return 0, 0, nil // only settled rows: written already, the order is lost
+	return 0, 0, nil
 }
 
 // settle removes r's row and the echoes it superseded from the queue.
