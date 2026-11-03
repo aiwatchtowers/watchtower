@@ -76,8 +76,11 @@ func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
 	payload := opened.hello.Device
 	now := c.now()
 	out := Pending{DeviceID: opened.device, Name: displayName(payload.Name), ReceivedAt: now}
+	// SAS v2: the confirm nonce is drawn only now, after the hello (and the
+	// keys it commits to) was opened and checked, so keys ground offline
+	// against any guessed nonce cannot reproduce another phone's code.
 	confirm := make([]byte, secure.ConfirmNonceLength)
-	if _, err := rand.Read(confirm); err != nil {
+	if err := c.readConfirm(confirm); err != nil {
 		return Pending{}, fmt.Errorf("link: random: %w", err)
 	}
 	defer clear(confirm)
@@ -144,6 +147,15 @@ func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
 		c.changed()
 	}
 	return out, nil
+}
+
+// readConfirm fills b with a fresh confirm nonce.
+func (c *Center) readConfirm(b []byte) error {
+	if c.drawConfirm != nil {
+		return c.drawConfirm(b)
+	}
+	_, err := rand.Read(b)
+	return err
 }
 
 // openHello opens env under each kept code's nonce and checks it; every
@@ -272,8 +284,8 @@ func errorClass(err error) string {
 // displayName is a hello's device name as the hub shows it (the Swift
 // MobileLinkCenter.displayName): control and format characters dropped
 // except the emoji joiner, line breaks and whitespace controls a space, runs
-// of whitespace one space, trimmed, at most wire.MaxMacNameLength runes
-// (the Kit clips grapheme clusters: known gap), "iPhone" when nothing is left.
+// of whitespace one space, trimmed, at most wire.MaxMacNameLength grapheme
+// clusters (wire.ClipMacName), "iPhone" when nothing is left.
 func displayName(raw string) string {
 	var b strings.Builder
 	for _, r := range raw {

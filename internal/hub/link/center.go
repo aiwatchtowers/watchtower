@@ -152,16 +152,21 @@ type Center struct {
 	sweep     Sweep
 	ck        ckState
 	retired   retiredCode
-	// linkMu lets one public-link write run at a time (cloudkit.go setLink)
-	// and issueMu one IssueCloudKit: the only locks held across a bridge
-	// call; LinkUrgent and Sharing never take them.
-	linkMu  sync.Mutex
+	// issueMu lets one IssueCloudKit run at a time: the only lock held
+	// across a bridge call (the public link has its one writer, setLink);
+	// LinkUrgent and Sharing never take it.
 	issueMu sync.Mutex
+	// shareTimeout bounds every share call and a wait for the public-link
+	// writer: ShareTimeout (tests shorten it).
+	shareTimeout time.Duration
 	// Test seams (cloudkit.go): beforeIssueStore runs before a CloudKit code
 	// is stored (an error fails the store); afterSweep runs after a deferred
 	// sweep returned, before its outcome is recorded.
 	beforeIssueStore func() error
 	afterSweep       func()
+	// drawConfirm fills a confirm nonce (hello.go decideHello); nil is
+	// crypto/rand. A test seam: it counts and names the draws.
+	drawConfirm func([]byte) error
 }
 
 // NewCenter builds a Center over c.
@@ -183,7 +188,7 @@ func NewCenter(c Config) *Center {
 		st: c.Store, keys: c.Keys, opener: c.Opener, host: c.Host, clock: c.Clock,
 		publish: c.Publish, events: make(chan PairEvent, eventBuffer),
 		sealer: secure.NewSealer(c.Keys), pairs: map[string]*pairSlot{},
-		container: c.Container, sweep: c.Sweep,
+		container: c.Container, sweep: c.Sweep, shareTimeout: ShareTimeout,
 	}
 }
 
