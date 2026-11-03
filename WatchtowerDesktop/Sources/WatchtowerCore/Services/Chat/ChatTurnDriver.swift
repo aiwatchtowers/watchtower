@@ -172,6 +172,7 @@ package final class ChatTurnDriver {
                 if let previous {
                     if self.lastSessionError?.message == previous { self.lastSessionError = nil }
                     if turn?.persistError == previous { turn?.persistError = nil }
+                    if self.liveTurn?.persistError == previous { self.liveTurn?.persistError = nil }
                 }
             } catch {
                 guard let self else { return }

@@ -409,3 +409,35 @@ extension ChatTurnDriverTests {
         XCTAssertNil(driver.liveTurn)
     }
 }
+
+extension ChatTurnDriverTests {
+    func testIdleActualRepairQueuedBeforeBeginClearsTheInheritedDiagnostic() async throws {
+        for unrelatedError in [false, true] {
+            try await pool.write { db in
+                try db.execute(sql: """
+                    CREATE TRIGGER fail_actual_repair BEFORE UPDATE OF actual_provider ON chat_conversations
+                    BEGIN SELECT RAISE(ABORT, 'actual metadata blocked'); END
+                    """)
+            }
+            let driver = makeDriver()
+            let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
+            let ready = ChatEvent.sessionReady(sessionID: nil, provider: "codex", model: "resolved-model", routing: metadata)
+            driver.apply(ready)
+            await driver.writesSettled()
+            XCTAssertNotNil(driver.actualPersistenceError)
+            try await pool.write { try $0.execute(sql: "DROP TRIGGER fail_actual_repair") }
+            // The repair captured no turn. Begin inherits the still-visible failure
+            // before that queued write runs, and its own write follows the repair.
+            driver.apply(ready)
+            let turn = driver.begin(messageID: messageID, turnID: "t")
+            XCTAssertNotNil(turn.persistError)
+            if unrelatedError { turn.persistError = "Unrelated reply storage failure" }
+            await driver.writesSettled()
+            XCTAssertNil(driver.actualPersistenceError)
+            XCTAssertNil(driver.lastSessionError)
+            XCTAssertEqual(turn.persistError, unrelatedError ? "Unrelated reply storage failure" : nil)
+            driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
+            await driver.writesSettled()
+        }
+    }
+}
