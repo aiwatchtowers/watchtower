@@ -46,7 +46,7 @@ func (g *routedTestLeaf) Generate(ctx context.Context, _, _, _ string) (string, 
 		err = &providers.Failure{Provider: g.provider, Category: providers.Quota}
 	}
 	if g.record {
-		c := llmusage.Call{Provider: g.provider, Model: "haiku", OK: err == nil}
+		c := llmusage.Call{Provider: g.provider, Model: "haiku", OK: err == nil, Estimated: g.usage == nil}
 		if g.usage != nil {
 			c.Input = int64(g.usage.InputTokens)
 			c.Output = int64(g.usage.OutputTokens)

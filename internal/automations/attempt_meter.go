@@ -89,8 +89,10 @@ func ModelAttemptUsage(a providerrouting.Attempt, o providerrouting.Outcome) Mod
 	var u ModelUsage
 	for _, c := range o.Calls {
 		in := c.Input + c.CacheRead + c.CacheWrite5m + c.CacheWrite1h
-		// A leaf's zero usage is not proof that a failed child consumed nothing.
-		if in+c.Output == 0 {
+		// Non-estimated leaf facts include authoritative reported zeros and
+		// children that never started. Only unknown/estimated zeros need input
+		// and partial-output estimation here.
+		if in+c.Output == 0 && c.Estimated {
 			estimate := modelUsage(nil, a.InputBytes, len(o.Result.Text))
 			in, c.Output, c.Estimated = estimate.InputTokens, estimate.OutputTokens, true
 		}
