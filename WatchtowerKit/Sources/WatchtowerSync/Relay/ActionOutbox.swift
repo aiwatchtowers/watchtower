@@ -13,6 +13,8 @@ public enum ActionOutboxError: Error, Equatable {
     case noHubID
     /// `retry(id:)` on a row that is unknown or not failed (still on its way, say).
     case notRetryable
+    /// A control only an ordered hub reads (`transport_switch`) toward a hub on today's path: nothing is queued.
+    case legacyPath
 }
 
 /// The phone's action producer: enqueues ActionRequests into the relay zone

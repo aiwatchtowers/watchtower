@@ -219,6 +219,38 @@ extension ActionOutbox {
         return queued
     }
 
+    // MARK: transport_switch (relay client Phase 3b Task 19)
+
+    /// Asks the ordered hub to move to `target`: a `transport_switch{target}` control queued behind the others, then
+    /// a flush. Returns the control id (`id`, minted by the caller so it can name the request before it leaves), which
+    /// the caller writes into the other transport's mailbox too (rule 9's initiator write); an id already queued is a
+    /// no-op. A hub on today's path reads no controls: `ActionOutboxError.legacyPath`, nothing queued.
+    @discardableResult
+    public func enqueueSwitchRequest(target: TransportKind, id: String = UUID().uuidString) async throws -> String {
+        let id = try await onChain { try await self.queueSwitchRequest(target, id: id) }.value
+        requestFlush()
+        return id
+    }
+
+    private func queueSwitchRequest(_ target: TransportKind, id: String) async throws -> String {
+        guard try orderedPath() else { throw ActionOutboxError.legacyPath }
+        let control = try switchRequest(target: target, id: id)
+        let at = now()
+        let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
+        try store.enqueueControl(QueuedControl(
+            id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at))
+        logger.notice("transport_switch to \(target.rawValue, privacy: .public) queued")
+        return control.id
+    }
+
+    /// The `transport_switch{target}` control with id `id`, for this phone and hub.
+    public func switchRequest(target: TransportKind, id: String) throws -> ControlPayload {
+        guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
+        guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        return ControlPayload(
+            id: id, kind: .transportSwitch, deviceID: device.uuidString, hubID: hub.uuidString, target: target.rawValue)
+    }
+
     // MARK: A transport switch (relay client Phase 3)
 
     /// The hub moved to another transport: once the operation in flight on the chain ends, this outbox writes

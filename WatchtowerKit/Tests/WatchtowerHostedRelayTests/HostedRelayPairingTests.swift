@@ -303,6 +303,24 @@ final class HostedRelayPairingTests: HostedRelayScenarioCase {
         await assertRefusal(.slotsFull(macs: macs.sorted())) { try await pairer.promote(slot: slot) }
     }
 
+    /// `add_slot` (an upgraded iCloud link, Phase 3b Task 19): without a vouch the relay answers `HUB_NOT_VOUCHED`,
+    /// rethrown as the client threw it; after one the Mac takes a slot; a repeat is a no-op.
+    func testAddSlotNeedsAVouch() async throws {
+        let (phone, mac) = try await phoneAndMac()
+        let pairer = HostedRelayPairing(session: HostedRelaySession(client: phone))
+
+        do {
+            try await pairer.addSlot(mac: mac.deviceID)
+            XCTFail("added without a vouch")
+        } catch HostedRelayError.server(code: .hubNotVouched, _) {}
+        try await vouch(pairer, mac)
+        try await pairer.addSlot(mac: mac.deviceID)
+        try await pairer.addSlot(mac: mac.deviceID)
+
+        let macs = try await pairer.accountState().macs
+        XCTAssertEqual(macs, [mac.deviceID])
+    }
+
     func testCloseIsBestEffort() async throws {
         let (phone, mac) = try await phoneAndMac()
         let pairer = HostedRelayPairing(session: HostedRelaySession(client: phone))

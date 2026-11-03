@@ -19,8 +19,11 @@ public enum DesktopReachability: Equatable, Sendable {
 ///   enqueues reflecting back are skipped),
 /// - `recording_upload` echoes → the `RecordingUploadAcking` seam,
 /// - hub `control` records (relay client Phase 1) → `resend_from` to
-///   `ActionOutbox.resendFrom`, `transport_switch_rejected` logged; both read
-///   once (`handled_controls`) and deleted. `transport_switched` and
+///   `ActionOutbox.resendFrom`, `transport_switch_rejected` to the rejection
+///   handler (relay client Phase 3b: the session's upgrade to the relay; with
+///   none set it is only logged); both read once (`handled_controls`) and
+///   deleted, a rejection only once its handler returned true (else it stays
+///   and is handed again at every later cycle, as a transport control). `transport_switched` and
 ///   `hub_on_relay` go to the transport handler (relay client Phase 3, which
 ///   ends Phase 1 Ruling 9): marked handled and deleted only once it returns
 ///   true, else left in the mailbox and handed again at every later cycle
@@ -99,7 +102,11 @@ public actor RelayFeed {
     private let onHubOnRelay: (@Sendable () async -> Void)?
     /// Decides a `transport_switched` or `hub_on_relay` control (the session's transport follower); true = handled.
     private var transportHandler: (@Sendable (ControlPayload) async -> Bool)?
-    /// Transport controls the handler has not decided yet, by control id, with their record: handed again each cycle.
+    /// Decides a `transport_switch_rejected` (the session's upgrade to the relay); true = handled. With none set, a
+    /// rejection is read, logged and deleted (no switch was asked).
+    private var rejectionHandler: (@Sendable (ControlPayload) async -> Bool)?
+    /// Transport controls and rejections a handler has not decided yet, by control id, with their record: handed
+    /// again each cycle.
     private var undecided: [String: (control: ControlPayload, record: CloudRecord)] = [:]
     /// When a hub control is marked handled (its id is kept 15 days).
     private let now: @Sendable () -> Date
@@ -138,6 +145,11 @@ public actor RelayFeed {
     /// Sets (or clears) the transport handler: the session's `TransportFollower`.
     public func setTransportHandler(_ handler: (@Sendable (ControlPayload) async -> Bool)?) {
         transportHandler = handler
+    }
+
+    /// Sets (or clears) the rejection handler: the session's upgrade to the relay (relay client Phase 3b Task 19).
+    public func setRejectionHandler(_ handler: (@Sendable (ControlPayload) async -> Bool)?) {
+        rejectionHandler = handler
     }
 
     // MARK: - One cycle
@@ -313,13 +325,17 @@ public actor RelayFeed {
         case other(handler: SideHandler)
     }
 
-    /// One `transport_switched` or `hub_on_relay` to the handler: marked handled and its delete returned once it
-    /// decided; else kept for the next cycle (nil).
+    /// One `transport_switched` or `hub_on_relay` to the transport handler (a `transport_switch_rejected` to the
+    /// rejection handler, wherever it was read): marked handled and its delete returned once it decided; else kept
+    /// for the next cycle (nil).
     private func decideTransport(
         _ control: ControlPayload, record: CloudRecord, reading: Reading = .own
     ) async throws -> ConditionalDelete? {
         let decided: Bool
         switch reading {
+        case _ where control.kind == .transportSwitchRejected:
+            decided = await rejectionHandler?(control) ?? false
+            if !decided, case .own = reading { undecided[control.id] = (control, record) }
         case .own:
             decided = await transportHandler?(control) ?? false
             if !decided { undecided[control.id] = (control, record) }
@@ -353,6 +369,10 @@ public actor RelayFeed {
             return Self.delete(record)
         }
         switch control.kind {
+        case .transportSwitchRejected where rejectionHandler != nil:
+            // A second copy (the other mailbox's, a re-read) is deleted unread.
+            if try store.isControlHandled(id: control.id) { return Self.delete(record) }
+            return try await decideTransport(control, record: record, reading: reading)
         case .resendFrom, .transportSwitchRejected:
             // A second copy of a control already handled is deleted unread.
             if try store.isControlHandled(id: control.id) { return Self.delete(record) }
@@ -366,7 +386,7 @@ public actor RelayFeed {
                     logger.warning("resend_from \(control.id, privacy: .public) without a seq dropped")
                 }
             } else {
-                // Phase 1 never asks for a switch, so there is nothing to stop waiting for.
+                // No rejection handler: nothing on this phone asks for a switch, so there is nothing to stop waiting for.
                 logger.notice("transport_switch_rejected \(control.id, privacy: .public) read; no switch was asked")
             }
             _ = try store.markControlHandled(id: control.id, at: now())
@@ -404,8 +424,9 @@ public actor RelayFeed {
     }
 
     /// Rule 12: one controls-only pass over another transport's mailbox (`side`, already pulled by the caller):
-    /// every `transport_switched` and `hub_on_relay` there goes to `handler`, through the same read-once ledger as
-    /// this feed's own controls, and is deleted there once decided. Nothing else is read, written or deleted, and no
+    /// every `transport_switched` and `hub_on_relay` there goes to `handler`, and every `transport_switch_rejected`
+    /// to the rejection handler while one is set (an upgrade's request is answered in the mailbox the hub read it
+    /// in), through the same read-once ledger as this feed's own controls, and is deleted there once decided. Nothing else is read, written or deleted, and no
     /// change token is kept (each pass reads the whole mailbox; the ledger makes it idempotent). Returns how many
     /// controls it deleted.
     @discardableResult
@@ -413,7 +434,8 @@ public actor RelayFeed {
         var deletes: [ConditionalDelete] = []
         for record in try await side.relayHygieneScan().opened where record.kind == RelayRecordKind.control.rawValue {
             guard let control = decode(ControlPayload.self, from: record),
-                  control.kind == .transportSwitched || control.kind == .hubOnRelay else { continue }
+                  control.kind == .transportSwitched || control.kind == .hubOnRelay
+                    || (control.kind == .transportSwitchRejected && rejectionHandler != nil) else { continue }
             if let delete = try await read(control, record: record, reading: .other(handler: handler)) {
                 deletes.append(delete)
             }
@@ -487,7 +509,9 @@ public actor RelayFeed {
         }
         guard let control = decode(ControlPayload.self, from: record) else { return (true, false) }
         let delete = try await read(control, record: record, reading: .other(handler: handler))
-        return (delete != nil || !(control.kind == .transportSwitched || control.kind == .hubOnRelay), false)
+        let decides = control.kind == .transportSwitched || control.kind == .hubOnRelay
+            || (control.kind == .transportSwitchRejected && rejectionHandler != nil)
+        return (delete != nil || !decides, false)
     }
 
     /// The control names `ours`: an absent id names nobody; while ours is unknown it cannot be told apart, so the

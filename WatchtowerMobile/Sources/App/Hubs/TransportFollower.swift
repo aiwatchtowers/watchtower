@@ -28,7 +28,9 @@ protocol TransportFollowerHost: AnyObject {
 /// (from `ReplicaHydrator`); the policy decides, this class acts on the hub's session and registry row.
 ///
 /// State: the route and the transport left are the registry row's (`LinkRecord.transport`, `leftTransport`, with
-/// `switchedBy` and `switchedAt`); the newest epoch is the Keychain's. A move is made crash-safe by its order:
+/// `switchedBy` and `switchedAt`); the newest epoch is the Keychain's. A move to the relay, or a `requestAnswered` naming
+/// the relay, ends a pending upgrade from iCloud as `switched` (`LinkRecord.relayUpgrade`, Phase 3b Task 19); while one
+/// waits, a same-epoch `transport_switched{relay}` on iCloud is that move (`answersUpgrade`). A move is made crash-safe by its order:
 /// 1. the outbox stops writing (`holdFlushes`), then its unechoed actions are queued again for the new transport
 ///    (rule 13) or listed as Not delivered (R32);
 /// 2. the new route is written to the row, in one registry write;
@@ -114,15 +116,30 @@ final class TransportFollower {
             Self.logger.notice("transport input waits for the Keychain")
             return false
         }
-        let state = FollowerState(
+        var state = FollowerState(
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
             leftTransport: link.leftTransport)
+        if Self.answersUpgrade(input, link: link, newestEpoch: epoch) {
+            // The hub already runs on the relay in the epoch this phone has (a lapse moved the phone back to iCloud
+            // without a new epoch): for the upgrade waiting on it, that answer is the move. The shared policy is left
+            // as it is (the sim twins read it); it sees the epoch as one ahead of the phone's.
+            state.newestEpoch = epoch - 1
+        }
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
             return false
         }
         return await execute(commands, next: next, link: link, input: input, host: host)
+    }
+
+    /// A same-epoch `transport_switched{relay}` on iCloud while an upgrade waits for its answer (relay client Phase 3b
+    /// Task 19).
+    private static func answersUpgrade(_ input: FollowerInput, link: LinkRecord, newestEpoch: UInt32) -> Bool {
+        guard case let .switched(.relay, epoch, _, _, _, _, _) = input, epoch == newestEpoch, epoch > 0,
+              (link.transport ?? .cloudKit) == .cloudKit, let upgrade = link.relayUpgrade, upgrade.isPending,
+              upgrade.step == .requested else { return false }
+        return true
     }
 
     /// Asked only when the input could lead to the relay (the policy reads it nowhere else).
@@ -146,6 +163,7 @@ final class TransportFollower {
         var listUndelivered = false
         var handled = false
         var decided = false
+        var answered = false
     }
 
     /// The commands gathered into one plan.
@@ -154,7 +172,9 @@ final class TransportFollower {
         for command in commands {
             switch command {
             case .mergeKeybox: plan.merge = true
-            case .requestAnswered: logger.notice("the hub answered on the transport the phone is on")
+            case .requestAnswered:
+                logger.notice("the hub answered on the transport the phone is on")
+                plan.answered = true
             case let .moveRoute(to, _, by, at): plan.move = (to, by, at)
             case .resendUnechoedOnNewTransport: plan.resend = true
             case .sendEpochAck(let epoch): plan.ack = epoch
@@ -204,8 +224,19 @@ final class TransportFollower {
         if plan.move != nil {
             host.moveSession(hubID: hubID)
         }
+        if plan.answered, case .switched(.relay, _, _, _, _, _, _) = input, !upgradeAnswered(host: host) { return false }
         if case .marker = input { return true }
         return plan.handled || plan.decided
+    }
+
+    /// The hub answered a pending upgrade's request that it runs on the relay, where the phone already is (relay client
+    /// Phase 3b Task 19): the upgrade ends as `switched`. An answer naming iCloud is no switch and leaves it waiting. false when the row could not be written (the control is read again).
+    private func upgradeAnswered(host: any TransportFollowerHost) -> Bool {
+        guard var link = host.followerLink(hubID: hubID), var upgrade = link.relayUpgrade, upgrade.isPending,
+              upgrade.step == .requested else { return true }
+        upgrade.step = .switched
+        link.relayUpgrade = upgrade
+        return host.persistRoute(link)
     }
 
     /// Step 1: on a move the outbox stops writing; unechoed actions go back to the queue for the new transport, or
@@ -260,6 +291,13 @@ final class TransportFollower {
             guard let mac = link.relayMacDeviceID else { return false }
             moved.setRelay(mac: mac)
             moved.leftTransport = next.leftTransport
+            // An upgrade under way (or refused meanwhile) ends here: the hub is on the relay with this phone.
+            if var upgrade = moved.relayUpgrade, upgrade.step != .switched {
+                upgrade.step = .switched
+                upgrade.refusal = nil
+                upgrade.retryAt = nil
+                moved.relayUpgrade = upgrade
+            }
         case .cloudKit:
             moved.setCloudKit(left: next.leftTransport)
         }
