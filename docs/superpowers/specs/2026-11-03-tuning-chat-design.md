@@ -107,15 +107,17 @@ Rules for every file destination are the same as `writeClaudeMD`. The file is re
 | A/B proposed / running / done | as §3.6 |
 | No tools | ollama: the figures line stays, the starters are hidden, "Tuning tools need Claude or Codex — pick one in Settings → AI" + **Open Settings** |
 | A/B too few inputs | the chat's answer plus a quiet line "Only 2 past calls of <prompt> match the current prompt — A/B needs 3. It will be possible after the prompt runs again."; no card |
-| Agent filter | the pane header: period picker, then **All / Claude Code / Codex** (only when both agents have sessions in the period), then **Tune**; Claude-only Statistics blocks carry "Claude Code only" |
+| Agent filter | the pane header: period picker, then **All / Claude Code / Codex** (only when both agents have sessions in the period), then **Tune**; Claude-only Statistics blocks carry "Claude Code only" (a `scopeNote` on `AgentAnalyticsBlock`, set from the report's new per-block `agents` key, text in `AgentAnalyticsFormat`) |
 | Narrow scope | panel at 360 pt: the card's diff wraps, its evidence links take their own line above the buttons, the A/B outputs stack (Without above With) |
 | Analytics off | the panel is not offered; **Tune** is hidden, as the coach sections are |
 
 In the panel the card's **Accept** is a secondary button, so the panel has one prominent action at a time (an A/B card's **Run** or **Propose this addition**); in the pane's Proposed edits the card keeps today's look. **Tune** has the selected look of a toggle while the panel is open.
 
-Destination labels (chip and diff caption, `CoachProposal.destinationLabel`): `claude_skill_user` → "Claude skill · <name>", `codex_skill_user` → "Codex skill · <name>", `pack_overlay` → "Watchtower skill · <name>", `codex_agents_md_user` → "Codex AGENTS.md", `codex_rules_allow` → "Codex rules". The proposal row and `coach proposals --json` gain a `skill` key (new column `coach_proposals.skill`, '' for other destinations); a skill destination's fingerprint includes it.
+Destination labels (chip and diff caption, `CoachProposal.destinationLabel`): `claude_skill_user` → "Claude skill · <name>", `codex_skill_user` → "Codex skill · <name>", `pack_overlay` → "Watchtower skill · <name>", `codex_agents_md_user` → "Codex AGENTS.md", `codex_rules_allow` → "Codex rules". These destinations are global, so their labels carry no "· all workbenches" suffix; the existing `claude_md_user` label keeps its suffix unchanged (not this feature's change). Already on the branch with the mockups: `CoachProposal.skill` (optional key `skill`), these labels, and the card footer that puts the evidence on its own line when it does not fit. The proposal row and `coach proposals --json` gain a `skill` key (new column `coach_proposals.skill`, '' for other destinations); a skill destination's fingerprint includes it.
 
-Every visible string (figures line, starters, tool-activity lines, A/B progress and totals, refusal and error lines) is produced in `TuningChatTexts` (WatchtowerCore) and covered by a test. Colours come only from `Tone`. There are no row separators and no stock list look. After implementation, the screens are compared against the mockups.
+`PanelSplit` draws its edge line across the panel in DesignShots renders (the mockups draw their own hairline); the builder fixes it in the design kit and checks the kit's Panels shot.
+
+Every visible string (folded accepted line, too-few-inputs line, figures line, starters, tool-activity lines, A/B progress and totals, refusal and error lines) is produced in `TuningChatTexts` (WatchtowerCore) and covered by a test. Colours come only from `Tone`. There are no row separators and no stock list look. After implementation, the screens are compared against the mockups.
 
 ### 4.5 Captured prompt inputs
 
