@@ -74,7 +74,7 @@ func (g *ClaudeGenerator) SetIsolatedChild(dropEnv ...string) {
 // modelForContext picks the tier model for a call: the source tag routes to
 // light or strong; an untagged call uses the strong model.
 func (g *ClaudeGenerator) modelForContext(ctx context.Context) string {
-	if s, ok := SourceFromContext(ctx); ok && TierForSource(s) == TierLight {
+	if TierForContext(ctx) == TierLight {
 		return g.modelLight
 	}
 	return g.modelStrong

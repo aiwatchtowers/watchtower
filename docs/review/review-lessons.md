@@ -2590,3 +2590,12 @@ Entry format:
 - weak-dimension: independent review breadth was limited by external Codex diff transmission being rejected by automatic approval review and unavailable toolkit APIs; three built-in lanes supplied evidence. The judge inspected source and existing filesystem seams without rerunning checks. [7]
 - rule-gap: no new rule; task-scope approval covers the storage primitive. Combining account/model scopes, bounded degraded routing and caller cleanup contexts remain integration obligations in the approved dependent task.
 - outcome: TBD
+
+## 2026-11-03 — provider-fallback bounded routing (#1486, Task 4) — verdict: changes-needed
+
+- contested: requiring a real deadline before claiming a recovery lease is correct, but every newly eligible factory must supply that bound. The raw CLI adapter passes zero timeout and chat-title callers supply no deadline, so even due circuits cannot recover through those safe pending requests. An enabled-only total bound implements the approved routing contract while off/pinned paths retain legacy behavior. [6/8]
+- false-positive: the exact transparent-router tier-scan exception preserves the existing source assertions; it is not an inventory guard weakening. Named-model parser exclusions look unnecessary, but no supported model failure was demonstrated, so this is not a correctness blocker. [7]
+- miss: recovery tests explicitly install deadlines and therefore missed the raw factory composition. A factory-level case must start with both circuits due and a deadline-free caller, then assert a bounded preferred probe and recovery. [6/7]
+- weak-dimension: external Codex review was unavailable after automatic approval rejected external diff transmission, and toolkit APIs were unavailable; built-in prosecutor, test and failure/privacy lanes supplied evidence. The test lane independently passed the router race suite. [7]
+- rule-gap: no new binding rule needed; approved bounded routing and recovery acceptance criteria already cover the missing factory deadline.
+- outcome: TBD

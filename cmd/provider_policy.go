@@ -88,6 +88,29 @@ func (g policyCheckedGenerator) Generate(ctx context.Context, systemPrompt, user
 	return g.inner.Generate(ctx, systemPrompt, userMessage, sessionID)
 }
 
+// SetIsolatedChild configures the leaf without dropping the policy decorator.
+func (g policyCheckedGenerator) SetIsolatedChild(dropEnv ...string) {
+	if s, ok := g.inner.(interface{ SetIsolatedChild(...string) }); ok {
+		s.SetIsolatedChild(dropEnv...)
+	}
+}
+
+// ImageCapability preserves optional image support while retaining the policy check.
+func (g policyCheckedGenerator) ImageCapability() bool {
+	_, ok := digest.ImageCapable(g.inner)
+	return ok
+}
+func (g policyCheckedGenerator) GenerateWithImage(ctx context.Context, system, user, path, media string) (string, *digest.Usage, error) {
+	if err := providers.Allowed(g.provider); err != nil {
+		return "", nil, err
+	}
+	inner, ok := digest.ImageCapable(g.inner)
+	if !ok {
+		return "", nil, providers.CapabilityError(g.provider, providers.Image, nil)
+	}
+	return inner.GenerateWithImage(ctx, system, user, path, media)
+}
+
 // checkedGenerator is the configured provider's generator behind a per-call
 // policy check, for the unattended paths that keep one generator for long.
 func checkedGenerator(cfg *config.Config) digest.Generator {

@@ -1,6 +1,9 @@
 package providers
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Codex exec 0.166 emits only ThreadErrorEvent.message (exec_events.rs),
 // losing UsageLimitReached's structured reset. Match the documented display
@@ -20,4 +23,17 @@ func CodexMessageFailure(message string, cause error) error {
 		return &Failure{Provider: "codex", Category: Quota, Scope: "installation", Cause: cause}
 	}
 	return TerminalFailure("codex", FailureDetail{Message: message}, 0, cause)
+}
+
+// CodexModelMessageFailure recognizes only the named-model display branch in
+// rust-v0.166.0 codex-rs/protocol/src/error.rs:691-708. An exact selected-model
+// match proves a model scope; unknown labels never poison an account circuit.
+func CodexModelMessageFailure(message, selected string, cause error) error {
+	if selected != "" && !strings.EqualFold(selected, "codex") && !strings.EqualFold(selected, "gpt-reserve") {
+		pattern := `^You[’']ve hit your usage limit for (?i:` + regexp.QuoteMeta(selected) + `)\. Switch to another model now, or try again ` + codexLocalReset + `\.$`
+		if regexp.MustCompile(pattern).MatchString(message) {
+			return &Failure{Provider: "codex", Category: Quota, Scope: "model", Bucket: selected, Cause: cause}
+		}
+	}
+	return CodexMessageFailure(message, cause)
 }

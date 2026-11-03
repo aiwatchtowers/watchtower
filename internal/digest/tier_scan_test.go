@@ -84,9 +84,11 @@ var allowedStrongSources = []allowedStrongSource{
 // caller before it reached the decorator. They are not new AI-call
 // origination points, so the scan does not require them to re-tag.
 var skipGenerateCallFiles = map[string]bool{
-	filepath.Join("internal", "digest", "pooled.go"):            true,
-	filepath.Join("internal", "digest", "timeout_generator.go"): true,
-	filepath.Join("cmd", "provider_policy.go"):                  true,
+	// Quota router decorator forwards the caller's context/source unchanged.
+	filepath.Join("internal", "providerrouting", "generator.go"): true,
+	filepath.Join("internal", "digest", "pooled.go"):             true,
+	filepath.Join("internal", "digest", "timeout_generator.go"):  true,
+	filepath.Join("cmd", "provider_policy.go"):                   true,
 }
 
 // TestTierForSource_EveryGenerateCallIsTagged is a property scan, not an

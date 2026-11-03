@@ -111,3 +111,11 @@ func SourceFromContext(ctx context.Context) (string, bool) {
 const (
 	SourceLight = "light"
 )
+
+// SetIsolatedChild forwards the host's process-group/environment isolation to
+// the physical leaf while retaining the shared pool.
+func (pg *PooledGenerator) SetIsolatedChild(dropEnv ...string) {
+	if s, ok := pg.inner.(interface{ SetIsolatedChild(...string) }); ok {
+		s.SetIsolatedChild(dropEnv...)
+	}
+}

@@ -360,3 +360,22 @@ func TestLLMAutomationRunsAndCallIDsPresent(t *testing.T) {
 		t.Fatalf("present = %v", present)
 	}
 }
+
+func TestLLMCallAttemptLinkageSurvivesSpoolImport(t *testing.T) {
+	d := openTestDB(t)
+	spool := filepath.Join(t.TempDir(), "calls.jsonl")
+	c := llmCall("route-leaf", llmAt, "watchtower", "digest.channel", "daemon", "haiku")
+	c.OperationID, c.Attempt, c.ConfigRevision = "operation", 2, "revision"
+	writeSpoolLines(t, spool, c)
+	if _, err := d.ImportLLMSpool(spool); err != nil {
+		t.Fatal(err)
+	}
+	var operation, revision, provider, model string
+	var attempt int
+	if err := d.QueryRow(`SELECT operation_id,attempt,config_revision,provider,model FROM llm_calls WHERE call_id=?`, c.CallID).Scan(&operation, &attempt, &revision, &provider, &model); err != nil {
+		t.Fatal(err)
+	}
+	if operation != c.OperationID || attempt != 2 || revision != c.ConfigRevision || provider != c.Provider || model != c.Model {
+		t.Fatal(operation, attempt, revision, provider, model)
+	}
+}

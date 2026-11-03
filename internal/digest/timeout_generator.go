@@ -51,6 +51,9 @@ func WithCallTimeout(inner Generator, d time.Duration) Generator {
 // invisible from outside this package, and the wiring tests that pin every
 // unattended AI path as bounded (H8) need to see it.
 func CallTimeout(g Generator) (time.Duration, bool) {
+	if bounded, ok := g.(interface{ CallTimeout() (time.Duration, bool) }); ok {
+		return bounded.CallTimeout()
+	}
 	tg, ok := g.(*timeoutGenerator)
 	if !ok {
 		return 0, false
@@ -190,3 +193,10 @@ type causeError struct{ err, cause error }
 
 func (e causeError) Error() string   { return e.err.Error() }
 func (e causeError) Unwrap() []error { return []error{e.err, e.cause} }
+
+// SetIsolatedChild retains host environment scrubbing through the deadline wrapper.
+func (g *timeoutGenerator) SetIsolatedChild(dropEnv ...string) {
+	if s, ok := g.inner.(interface{ SetIsolatedChild(...string) }); ok {
+		s.SetIsolatedChild(dropEnv...)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 )
 
 type coachCalls struct{ judge, propose int }
@@ -230,4 +231,60 @@ func TestCoachGenerator_IsStdinOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(argv), secret, "owner text must never be on argv")
 	assert.Contains(t, string(stdin), secret, "owner text goes on stdin")
+}
+
+func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
+	for _, preferred := range []string{"claude", "codex"} {
+		t.Run(preferred, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			reserve := "codex"
+			if preferred == reserve {
+				reserve = "claude"
+			}
+			cfg := &config.Config{}
+			cfg.AI.Provider = preferred
+			cfg.AI.ConfiguredProvider = preferred
+			cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+			for _, provider := range []string{"claude", "codex"} {
+				response := `{"type":"result","subtype":"success","result":"ok"}`
+				if provider == "codex" {
+					response = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}`
+				}
+				if provider == preferred {
+					if provider == "claude" {
+						response = `{"type":"result","subtype":"error_during_execution","is_error":true,"error":{"type":"usage_limit_reached"},"result":"quota"}`
+					} else {
+						response = `{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again later."}}`
+					}
+				}
+				out := filepath.Join(t.TempDir(), "response")
+				require.NoError(t, os.WriteFile(out, []byte(response), 0600))
+				bin := filepath.Join(t.TempDir(), provider)
+				script := "#!/bin/sh\ncat >/dev/null\ncat '" + out + "'\n"
+				require.NoError(t, os.WriteFile(bin, []byte(script), 0700))
+				if provider == "claude" {
+					cfg.ClaudePath = bin
+				} else {
+					cfg.CodexPath = bin
+				}
+			}
+			spool := filepath.Join(t.TempDir(), "calls.jsonl")
+			llmusage.SetSpoolPath(spool)
+			t.Cleanup(func() { llmusage.SetSpoolPath("") })
+			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), time.Second)
+			defer cancel()
+			text, _, _, err := coachGeneratorFactory(cfg).Generate(ctx, "", "request", "")
+			require.NoError(t, err)
+			require.Equal(t, "ok", text)
+			calls, skipped, err := llmusage.ParseSpoolFile(spool)
+			require.NoError(t, err)
+			require.Zero(t, skipped)
+			require.Len(t, calls, 2)
+			require.Equal(t, preferred, calls[0].Provider)
+			require.Equal(t, reserve, calls[1].Provider)
+			require.NotEmpty(t, calls[0].OperationID)
+			require.Equal(t, calls[0].OperationID, calls[1].OperationID)
+		})
+	}
 }

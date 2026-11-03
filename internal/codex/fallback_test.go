@@ -297,3 +297,85 @@ func TestQuotaEnvelopeRejectsNonErrorTypes(t *testing.T) {
 		})
 	}
 }
+
+// Codex rust-v0.166.0 core/src/session/session.rs constructs ShellSnapshot
+// with ShellTool off; shell_snapshot.rs::new is lazy, build/try_create can
+// launch the shell helper. No-tools profiles must disable both snapshot gates.
+func TestNoToolsDisablesIndependentShellSnapshot(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	for _, profile := range []providers.InvocationProfile{providers.BatchText, providers.Image} {
+		args, err := noToolsArgs(profile, "m", t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range []string{"features.shell_snapshot=false", "features.shell_snapshot_v2=false"} {
+			found := false
+			for _, arg := range args {
+				if arg == flag {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s lacks independent snapshot disable %s", profile, flag)
+			}
+		}
+	}
+}
+
+// This fake models the independent snapshot gate, not a real login shell.
+// Source: codex rust-v0.166.0 core/src/session/session.rs:1429-1455 and
+// core/src/shell_snapshot.rs (new configures; build/try_create runs helpers).
+func TestNoToolsFakeSnapshotHelperCannotRun(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	capture := t.TempDir()
+	t.Setenv("WT_SNAPSHOT_CAPTURE", capture)
+	bin := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+snapshot=enabled
+snapshot_v2=enabled
+for arg in "$@"; do
+ case "$arg" in
+ features.shell_snapshot=false) snapshot=disabled;;
+ features.shell_snapshot_v2=false) snapshot_v2=disabled;;
+ esac
+done
+if [ "$snapshot" = enabled ] || [ "$snapshot_v2" = enabled ]; then
+ printf helper >"$WT_SNAPSHOT_CAPTURE/helper"
+fi
+cat >/dev/null
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Prove the fake catches shell_tool=false without independent snapshot flags.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "-c", "features.shell_tool=false")
+	digest.IsolateChild(cmd, nil)
+	if _, err := cmd.Output(); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(capture, "helper")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("fake did not model the independent helper", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	gen := NewCodexGenerator("m", "m", bin)
+	gen.SetIsolatedChild()
+	if _, _, _, err := gen.Generate(ctx, "", "prompt", ""); err != nil {
+		t.Fatal(err)
+	}
+	image := filepath.Join(t.TempDir(), "image.png")
+	if err := os.WriteFile(image, []byte("fake-image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := gen.GenerateWithImage(digest.WithWorkDir(ctx, t.TempDir()), "", "prompt", image, "image/png"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("snapshot helper ran in no-tools profile", err)
+	}
+}

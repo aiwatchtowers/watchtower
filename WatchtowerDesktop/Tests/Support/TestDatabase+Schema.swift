@@ -2347,7 +2347,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     ok                    INTEGER NOT NULL DEFAULT 1,
     automation_id         INTEGER,
     automation_run_id     INTEGER
-);
+, operation_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, config_revision TEXT NOT NULL DEFAULT '');
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
