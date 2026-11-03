@@ -464,9 +464,9 @@ func TestUsageLLM_RejectsUnknownPeriod(t *testing.T) {
 }
 
 // An automation row carries the same token split as its section's total, so
-// the rows add up to the header (#916); untagged counts only Watchtower's
-// own calls with no purpose, never chat turns or automations.
-func TestUsageLLM_AutomationRowsCarryCacheAndUntaggedIsWatchtowerOnly(t *testing.T) {
+// the rows add up to the header (#916); a call with no purpose is untagged
+// in every section but chats, whose turns carry none by design.
+func TestUsageLLM_AutomationRowsCarryCacheAndChatsAreNeverUntagged(t *testing.T) {
 	database, _ := usageLLMEnv(t)
 	aid := seedUsageAutomation(t, database, "mine", "Mine", "owner")
 	require.NoError(t, database.InsertLLMCalls([]llmusage.Call{
@@ -483,16 +483,17 @@ func TestUsageLLM_AutomationRowsCarryCacheAndUntaggedIsWatchtowerOnly(t *testing
 	tot := rep.OwnAutomations.Totals
 	assert.Equal(t, int64(2*1000), row.CacheRead)
 	assert.Equal(t, int64(2*15), row.CacheWrite)
-	assert.Equal(t, tot.Input+tot.CacheRead+tot.CacheWrite+tot.Output,
-		row.Input+row.CacheRead+row.CacheWrite+row.Output, "the one row is the whole section")
+	assert.Equal(t, tot.Input+tot.CacheRead+tot.CacheWrite+tot.Output, row.tokens(), "the one row is the whole section")
 
 	assert.Equal(t, int64(1), rep.Watchtower.Totals.UntaggedCalls)
-	assert.Equal(t, int64(0), rep.OwnAutomations.Totals.UntaggedCalls, "an automation is named by its row")
+	assert.Equal(t, int64(1), rep.OwnAutomations.Totals.UntaggedCalls)
 	assert.Equal(t, int64(0), rep.Chats.UntaggedCalls, "chat turns carry no purpose by design")
-	assert.Equal(t, int64(0), rep.Workbenches.Helpers.UntaggedCalls)
-	assert.Equal(t, int64(1), rep.PageTotal.UntaggedCalls, "the page total's untagged calls are Watchtower's")
+	assert.Equal(t, int64(1), rep.Workbenches.Helpers.UntaggedCalls)
+	assert.Equal(t, int64(2), rep.PageTotal.UntaggedCalls, "Watchtower + your automations, no chats")
 
 	var text bytes.Buffer
 	require.NoError(t, printUsageLLM(&text, rep))
 	assert.Regexp(t, `Mine\s+1\s+2\s+2330\s+100\s`, text.String(), "the text row's tokens include the cache")
+	assert.Regexp(t, `Total \(no workbenches\).*\n\s+0 with estimated usage · 0 without a price · 2 untagged\n`,
+		text.String(), "the total's gaps are printed under it")
 }

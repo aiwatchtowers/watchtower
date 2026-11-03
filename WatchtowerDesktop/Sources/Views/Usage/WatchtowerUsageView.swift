@@ -117,7 +117,7 @@ private struct UsageReportBody: View {
     // MARK: Totals
 
     private var totalsCard: some View {
-        let totals = LLMUsagePresentation.totalsCard(report)
+        let totals = report.pageTotal
         let gaps = LLMUsagePresentation.gaps(totals)
         return VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(alignment: .top, spacing: Spacing.wide) {
@@ -243,9 +243,11 @@ private struct UsageReportBody: View {
     private func sectionTitle(_ title: String, totals: LLMUsageTotals) -> some View {
         HStack(spacing: Spacing.small) {
             cardTitle(title)
+                .layoutPriority(1)
             Text("— \(LLMUsagePresentation.sectionSummary(totals))")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 }

@@ -99,10 +99,7 @@ package enum LLMUsagePresentation {
 
     // MARK: - Totals
 
-    /// The top card: the page total, what Home's AI spend shows too.
-    package static func totalsCard(_ report: LLMUsageReport) -> LLMUsageTotals { report.pageTotal }
-
-    /// The grey line naming what the top card adds up.
+    /// The grey line naming what the top card (`page_total`, Home's AI spend) adds up.
     package static let totalsScope = "Watchtower, your automations and chats · workbenches not included"
 
     /// A section header's subtotal: "212 K tokens · $0.31".

@@ -272,7 +272,7 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
         runs = try c.decode(Int64.self, forKey: .runs)
         calls = try c.decode(Int64.self, forKey: .calls)
         input = try c.decode(Int64.self, forKey: .input)
-        // Absent from a CLI older than the keys: 0.
+        // A CLI older than the keys sends none: the row then counts input and output only.
         cacheRead = try c.decodeIfPresent(Int64.self, forKey: .cacheRead) ?? 0
         cacheWrite = try c.decodeIfPresent(Int64.self, forKey: .cacheWrite) ?? 0
         output = try c.decode(Int64.self, forKey: .output)
