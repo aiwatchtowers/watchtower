@@ -101,6 +101,27 @@ final class CoachPresentationTests: XCTestCase {
                        "~/.claude/CLAUDE.md · all workbenches")
     }
 
+    func testDestinationLabelTuningDestinations() throws {
+        func decoded(_ destination: String, skill: String?) throws -> CoachProposal {
+            var obj: [String: Any] = [
+                "id": 1, "title": "t", "why": "w", "destination": destination, "workbench_id": 0,
+                "prompt_id": "", "kind": "replace", "metric": "corrections", "before": "", "after": "",
+                "evidence": [], "sources": 1, "status": "open", "created_at": "2026-11-03T00:00:00Z",
+                "verdict": "", "reverts_id": 0, "budget": 0
+            ]
+            if let skill { obj["skill"] = skill }
+            return try JSONDecoder().decode(CoachProposal.self, from: JSONSerialization.data(withJSONObject: obj))
+        }
+        XCTAssertEqual(try decoded("claude_skill_user", skill: "review-pr").destinationLabel, "Claude skill · review-pr")
+        XCTAssertEqual(try decoded("codex_skill_user", skill: "lint").destinationLabel, "Codex skill · lint")
+        XCTAssertEqual(try decoded("pack_overlay", skill: "watchtower-flow").destinationLabel,
+                       "Watchtower skill · watchtower-flow")
+        XCTAssertEqual(try decoded("claude_skill_user", skill: nil).destinationLabel, "Claude skill")
+        XCTAssertEqual(try decoded("codex_agents_md_user", skill: nil).destinationLabel, "Codex AGENTS.md")
+        XCTAssertEqual(try decoded("codex_rules_allow", skill: nil).destinationLabel, "Codex rules")
+        XCTAssertNil(try decoded("session", skill: nil).skill)
+    }
+
     func testDiffLines() {
         let p = proposal(before: "a\nb\nc", after: "a\nB\nc\nd")
         XCTAssertEqual(p.diffLines, [.kept("a"), .removed("b"), .added("B"), .kept("c"), .added("d")])

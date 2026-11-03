@@ -76,6 +76,17 @@ extension CoachProposal {
     }
 
     package var destinationLabel: String {
+        // The owner's own files and the pack serve every workbench by nature:
+        // no "all workbenches" suffix.
+        let named = { (kind: String) in [kind, self.skill ?? ""].filter { !$0.isEmpty }.joined(separator: " · ") }
+        switch destination {
+        case "claude_skill_user": return named("Claude skill")
+        case "codex_skill_user": return named("Codex skill")
+        case "pack_overlay": return named("Watchtower skill")
+        case "codex_agents_md_user": return "Codex AGENTS.md"
+        case "codex_rules_allow": return "Codex rules"
+        default: break
+        }
         let base: String
         switch destination {
         case "session": base = "Session instructions"

@@ -79,10 +79,13 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
     package let revertsID: Int64
     /// Runes the destination allows; 0 = no budget.
     package let budget: Int
+    /// The skill a skill destination edits (`claude_skill_user`,
+    /// `codex_skill_user`, `pack_overlay`); absent for the others.
+    package var skill: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, why, destination, kind, metric, before, after, evidence, sources, status
-        case baseline, verdict, budget
+        case baseline, verdict, budget, skill
         case workbenchID = "workbench_id", promptID = "prompt_id", createdAt = "created_at"
         case decidedAt = "decided_at", verdictValue = "verdict_value", verdictAt = "verdict_at"
         case revertsID = "reverts_id"

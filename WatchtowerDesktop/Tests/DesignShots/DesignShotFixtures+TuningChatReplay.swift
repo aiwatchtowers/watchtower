@@ -23,6 +23,8 @@ struct TuningReplayCard: View {
     }
 
     static let addition = "When a thread ends in a decision, name who made it."
+    /// Only inputs captured with the current template version are replayed (§4.6).
+    static let versionLine = "Past calls captured with prompt v3 · current v3"
 
     static let inputs = [
         Input(id: 1, label: "Fri 16:40 · 38 messages",
@@ -45,7 +47,13 @@ struct TuningReplayCard: View {
                 Chip(text: "Watchtower prompt · digest.channel", color: .secondary)
             }
             title.font(.headline)
-            Text(costLine).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(costLine)
+                Text(Self.versionLine)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
             additionBlock
             phaseBody
             buttons
@@ -85,7 +93,9 @@ struct TuningReplayCard: View {
             EmptyView()
         case .running:
             ProgressView(value: 3, total: 10).controlSize(.small)
-            rows { index in index < 1 ? ("done", Tone.success) : index == 1 ? ("running", Color.accentColor) : ("waiting", .secondary) }
+            rows { index in
+                index < 1 ? ("done", Tone.success) : index == 1 ? ("running", Color.accentColor) : ("waiting", .secondary)
+            }
         case .done:
             ForEach(Self.inputs.prefix(2)) { input in outputRow(input) }
             rows(from: 2) { index in Self.inputs[index].changed ? ("changed", Color.accentColor) : ("same", .secondary) }
