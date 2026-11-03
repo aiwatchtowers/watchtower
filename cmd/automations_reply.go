@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 )
 
@@ -45,7 +46,7 @@ func runAutomationsReply(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer database.Close()
-	o, a, err := loadReplyTarget(database, outputID, index)
+	o, a, err := loadReplyTarget(database, outputID, index, autoFlags.ContentHash)
 	if err != nil {
 		return err
 	}
@@ -58,7 +59,7 @@ func runAutomationsReply(cmd *cobra.Command, _ []string) error {
 	if err := confirmWithOwner(replyVerb, inboxReplyConfirmDetail(database, o.ID, index)); err != nil {
 		return err
 	}
-	runID, err := database.PressInboxOutputAction(o.ID, index, time.Now())
+	runID, err := database.PressInboxOutputAction(o.ID, index, autoFlags.ContentHash, time.Now())
 	if err != nil {
 		return err
 	}
@@ -83,9 +84,10 @@ func runAutomationsReply(cmd *cobra.Command, _ []string) error {
 
 // loadReplyTarget reads the card and its automation and refuses, in
 // PressInboxOutputAction's order, a press the card cannot take: not an
-// inbox card, closed, not a Reply action, already pressed. The press
-// re-checks all of it in its own transaction.
-func loadReplyTarget(database *db.DB, outputID int64, index int) (*db.AutomationOutput, *db.Automation, error) {
+// inbox card, changed since drawn (contentHash given and not the row's),
+// closed, not a Reply action of the flattened action list, already pressed.
+// The press re-checks all of it in its own transaction.
+func loadReplyTarget(database *db.DB, outputID int64, index int, contentHash string) (*db.AutomationOutput, *db.Automation, error) {
 	o, err := database.GetAutomationOutput(outputID)
 	if err != nil {
 		return nil, nil, err
@@ -93,10 +95,17 @@ func loadReplyTarget(database *db.DB, outputID int64, index int) (*db.Automation
 	if o.Kind != "inbox" {
 		return nil, nil, fmt.Errorf("output %d is a %s output: %w", outputID, o.Kind, db.ErrOutputNotFound)
 	}
+	if contentHash != "" && contentHash != o.ContentHash {
+		return nil, nil, fmt.Errorf("inbox card %d: %w", outputID, db.ErrOutputChanged)
+	}
 	if o.DoneAt != nil || o.DismissedAt != nil {
 		return nil, nil, fmt.Errorf("inbox card %d: %w", outputID, db.ErrOutputClosed)
 	}
-	if index >= len(o.Actions) || o.Actions[index].Kind != db.InboxActionReply {
+	actions, err := flattenedCardActions(o)
+	if err != nil {
+		return nil, nil, err
+	}
+	if index >= len(actions) || actions[index].Kind != db.InboxActionReply {
 		return nil, nil, fmt.Errorf("inbox card %d action %d: %w", outputID, index, db.ErrNotAReplyAction)
 	}
 	if o.PressedAt != nil {
@@ -107,6 +116,16 @@ func loadReplyTarget(database *db.DB, outputID int64, index int) (*db.Automation
 		return nil, nil, err
 	}
 	return o, a, nil
+}
+
+// flattenedCardActions is card o's press order (blocks.FlattenActions over
+// its stored document): the index `reply --action` names.
+func flattenedCardActions(o *db.AutomationOutput) ([]db.InboxAction, error) {
+	doc, err := blocks.Decode(o.BlocksJSON)
+	if err != nil {
+		return nil, fmt.Errorf("inbox card %d: %w", o.ID, err)
+	}
+	return blocks.FlattenActions(o.Actions, doc), nil
 }
 
 // requireInboxReply refuses a press when a's confirmed recipe does not hold

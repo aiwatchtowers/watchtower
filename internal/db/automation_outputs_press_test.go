@@ -69,7 +69,7 @@ func TestPressInboxOutputAction_OnePressOneRun(t *testing.T) {
 	out := seedInboxCard(t, d, a, "Bug A-1", "https://example.com/a-1", replyActionsJSON)
 	now := runTestNow.Add(time.Minute)
 
-	runID, err := d.PressInboxOutputAction(out, 0, now)
+	runID, err := d.PressInboxOutputAction(out, 0, "", now)
 	if err != nil {
 		t.Fatalf("press: %v", err)
 	}
@@ -107,11 +107,11 @@ func TestPressInboxOutputAction_SecondPressRefused(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunnableAutomation(t, d, "triage")
 	out := seedInboxCard(t, d, a, "Bug", "", replyActionsJSON)
-	runID, err := d.PressInboxOutputAction(out, 0, runTestNow)
+	runID, err := d.PressInboxOutputAction(out, 0, "", runTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.PressInboxOutputAction(out, 0, runTestNow.Add(time.Second))
+	_, err = d.PressInboxOutputAction(out, 0, "", runTestNow.Add(time.Second))
 	var already *AlreadyPressedError
 	if !errors.As(err, &already) || already.RunID != runID {
 		t.Fatalf("second press = %v; want AlreadyPressedError{%d}", err, runID)
@@ -134,7 +134,7 @@ func TestPressInboxOutputAction_ClosedCardRefused(t *testing.T) {
 		if _, err := d.Exec(`UPDATE automation_outputs SET `+col+` = ? WHERE id = ?`, formatAutomationTime(runTestNow), out); err != nil {
 			t.Fatal(err)
 		}
-		_, err := d.PressInboxOutputAction(out, 0, runTestNow)
+		_, err := d.PressInboxOutputAction(out, 0, "", runTestNow)
 		wantErrIs(t, col, err, ErrOutputClosed)
 	}
 	if n := countReplyRuns(t, d); n != 0 {
@@ -146,13 +146,13 @@ func TestPressInboxOutputAction_RefusesNonReplyAndBadIndex(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunnableAutomation(t, d, "triage")
 	out := seedInboxCard(t, d, a, "Bug", "", `[{"label":"Open","kind":"link","open":"https://example.com/x","primary":true}]`)
-	_, err := d.PressInboxOutputAction(out, 0, runTestNow)
+	_, err := d.PressInboxOutputAction(out, 0, "", runTestNow)
 	wantErrIs(t, "a link action", err, ErrNotAReplyAction)
-	_, err = d.PressInboxOutputAction(out, 4, runTestNow)
+	_, err = d.PressInboxOutputAction(out, 4, "", runTestNow)
 	wantErrIs(t, "index 4", err, ErrNotAReplyAction)
-	_, err = d.PressInboxOutputAction(out, -1, runTestNow)
+	_, err = d.PressInboxOutputAction(out, -1, "", runTestNow)
 	wantErrIs(t, "index -1", err, ErrNotAReplyAction)
-	_, err = d.PressInboxOutputAction(out+100, 0, runTestNow)
+	_, err = d.PressInboxOutputAction(out+100, 0, "", runTestNow)
 	wantErrIs(t, "a missing output", err, ErrOutputNotFound)
 
 	var run int64
@@ -164,7 +164,7 @@ func TestPressInboxOutputAction_RefusesNonReplyAndBadIndex(t *testing.T) {
 		VALUES (?, ?, 'report', 'r', 'b', ?) RETURNING id`, a, run, replyActionsJSON).Scan(&report); err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.PressInboxOutputAction(report, 0, runTestNow)
+	_, err = d.PressInboxOutputAction(report, 0, "", runTestNow)
 	wantErrIs(t, "a report output", err, ErrOutputNotFound)
 	if n := countReplyRuns(t, d); n != 0 {
 		t.Errorf("reply runs = %d; want 0", n)
@@ -186,7 +186,7 @@ func TestPressInboxOutputAction_NotRunnableRefused(t *testing.T) {
 			if _, err := d.Exec(update, a); err != nil {
 				t.Fatal(err)
 			}
-			_, err := d.PressInboxOutputAction(out, 0, runTestNow)
+			_, err := d.PressInboxOutputAction(out, 0, "", runTestNow)
 			wantErrIs(t, name, err, ErrOutputAutomationNotRunnable)
 			if n := countReplyRuns(t, d); n != 0 {
 				t.Errorf("reply runs = %d; want 0", n)
@@ -202,7 +202,7 @@ func TestPressInboxOutputAction_DataComesFromTheStoredRow(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunnableAutomation(t, d, "triage")
 	out := seedInboxCard(t, d, a, "Bug", "", `[{"label":"Later","kind":"reply","reply":"later"}]`)
-	runID, err := d.PressInboxOutputAction(out, 0, runTestNow)
+	runID, err := d.PressInboxOutputAction(out, 0, "", runTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,14 +219,14 @@ func TestPressInboxOutputAction_PressedReportedBeforeNotRunnable(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunnableAutomation(t, d, "triage")
 	out := seedInboxCard(t, d, a, "Bug", "", replyActionsJSON)
-	runID, err := d.PressInboxOutputAction(out, 0, runTestNow)
+	runID, err := d.PressInboxOutputAction(out, 0, "", runTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`UPDATE automations SET enabled = 0 WHERE id = ?`, a); err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.PressInboxOutputAction(out, 0, runTestNow.Add(time.Second))
+	_, err = d.PressInboxOutputAction(out, 0, "", runTestNow.Add(time.Second))
 	var already *AlreadyPressedError
 	if !errors.As(err, &already) || already.RunID != runID {
 		t.Fatalf("press of a pressed card of a disabled automation = %v; want AlreadyPressedError{%d}", err, runID)
@@ -237,7 +237,7 @@ func TestPressInboxOutputAction_PressedRunDeletedSaysSentWithoutNumber(t *testin
 	d := openTestDB(t)
 	a := seedRunnableAutomation(t, d, "triage")
 	out := seedInboxCard(t, d, a, "Bug", "", replyActionsJSON)
-	runID, err := d.PressInboxOutputAction(out, 0, runTestNow)
+	runID, err := d.PressInboxOutputAction(out, 0, "", runTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestPressInboxOutputAction_PressedRunDeletedSaysSentWithoutNumber(t *testin
 	if p := readPress(t, d, out); p.runID != nil || p.at == nil {
 		t.Fatalf("press after the run's delete = %+v; want pressed_at kept, pressed_run_id NULL", p)
 	}
-	_, err = d.PressInboxOutputAction(out, 0, runTestNow.Add(time.Second))
+	_, err = d.PressInboxOutputAction(out, 0, "", runTestNow.Add(time.Second))
 	var already *AlreadyPressedError
 	if !errors.As(err, &already) || already.RunID != 0 {
 		t.Fatalf("second press = %v; want AlreadyPressedError{0}", err)
