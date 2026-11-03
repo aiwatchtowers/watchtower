@@ -15,11 +15,14 @@ import (
 var _ EventPuller = (*relay.Transport)(nil)
 
 // eventPuller is the puller that also reads events (as the hosted relay
-// does), logging the zones each read was for.
+// does), logging the zones each read was for; own is what OwnWrites says.
 type eventPuller struct {
 	*puller
 	events, pulls []string
+	own           bool
 }
+
+func (e *eventPuller) OwnWrites(transport.Event) bool { return e.own }
 
 func (e *eventPuller) PullEvent(ctx context.Context, ev transport.Event, apply func(transport.Batch) error) error {
 	e.events = append(e.events, ev.Zone)

@@ -173,3 +173,37 @@ func TestRelayTransport_PullEventOwnWriteAfterAForeignOneReads(t *testing.T) {
 		t.Fatalf("%d reads, applied %v, token %d", n, h.got, h.token(t))
 	}
 }
+
+// An own write whose event arrives before its Save returned (another
+// goroutine's Save, here another transport of the same hub) is not known as
+// own yet: the zone is read, never skipped. OwnWrites says the same.
+func TestRelayTransport_PullEventUnnotedOwnWriteIsRead(t *testing.T) {
+	h := newPullEventHarness(t)
+	other := h.newTransport(t)
+	out, err := other.Save(t.Context(), []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := transport.Event{Zone: h.zone, Seq: out[0].RecordSeq}
+	if h.tr.OwnWrites(ev) {
+		t.Fatal("an unnoted write taken as own")
+	}
+	before := h.changes()
+	h.pullEvent(t, ev)
+	if n := h.changes() - before; n != 1 || h.token(t) != out[0].RecordSeq {
+		t.Fatalf("%d reads, token %d", n, h.token(t))
+	}
+	// A noted one is own until the token passes it.
+	out, err = h.tr.Save(t.Context(), []transport.SaveItem{{Record: h.seal(t, "target-2", `{}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev = transport.Event{Zone: h.zone, Seq: out[0].RecordSeq}
+	if !h.tr.OwnWrites(ev) {
+		t.Fatal("a noted own write not taken as own")
+	}
+	h.pullEvent(t, ev)
+	if h.tr.OwnWrites(ev) || h.tr.OwnWrites(transport.Event{Zone: h.zone}) {
+		t.Fatal("an event already read, or a resync marker, taken as own")
+	}
+}

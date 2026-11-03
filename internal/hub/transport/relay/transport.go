@@ -805,6 +805,13 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 // Anything else — a write by someone else in between, a record too large to
 // come inline, a delete, a resync marker (Seq 0), a zone never read (token
 // 0) — is Pull of that zone.
+//
+// Own seqs are noted when Save returns. An event can overtake that (a Save
+// from another goroutine whose event arrives first, a Save that failed as a
+// whole yet wrote): its seq is then not known as own and the zone is read —
+// a read too many, never a skip too many. A seq noted after the token passed
+// it is never looked at (firstForeign starts above the token) and goes with
+// the next setToken.
 func (t *Transport) PullEvent(ctx context.Context, ev transport.Event, apply func(transport.Batch) error) error {
 	zone := ev.Zone
 	since, err := t.o.Store.ZoneToken(zone)
@@ -827,6 +834,20 @@ func (t *Transport) PullEvent(ctx context.Context, ev transport.Event, apply fun
 		return t.setToken(zone, ev.Seq)
 	}
 	return t.Pull(ctx, zone, apply)
+}
+
+// OwnWrites reports whether every seq after zone's stored token up to ev.Seq
+// is one the hub's own Save got (no relay op: the token is the sidecar's).
+// False for a resync marker, a zone never read and an event already read.
+func (t *Transport) OwnWrites(ev transport.Event) bool {
+	if ev.Seq == 0 {
+		return false
+	}
+	since, err := t.o.Store.ZoneToken(ev.Zone)
+	if err != nil || since == 0 || ev.Seq <= since {
+		return false
+	}
+	return t.firstForeign(ev.Zone, since, ev.Seq) > ev.Seq
 }
 
 // setToken stores zone's token and forgets the own-write seqs it passed.

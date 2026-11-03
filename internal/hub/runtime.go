@@ -756,8 +756,10 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		case strings.HasPrefix(ev.Zone, transport.PairZone("")):
 			h.pairing(ctx, strings.TrimPrefix(ev.Zone, transport.PairZone("")))
 		case h.isMailbox(ev.Zone):
+			if h.passEvent(ctx, ev) {
+				break // only the hub's own writes: no phone wrote, nothing to poll
+			}
 			h.touch()
-			h.passEvent(ctx, ev)
 			if h.sw != nil {
 				// The other transport's mailbox may have news too (a
 				// switch back, an epoch_ack): its poll runs now.
@@ -815,19 +817,20 @@ func (h *hubRuntime) pass(ctx context.Context) {
 // passEvent is the pass a mailbox event asks for: on the hosted relay only
 // that mailbox, read from the event (actions.Processor.PassEvent). It is not
 // the backstop: lastPass stays, so the timer's pass over every mailbox
-// still comes.
-func (h *hubRuntime) passEvent(ctx context.Context, ev transport.Event) {
-	h.runPass(ctx, &ev)
+// still comes. own reports an event that stood only for the hub's own
+// writes (actions.PassReport.OwnEcho): nothing was read.
+func (h *hubRuntime) passEvent(ctx context.Context, ev transport.Event) (own bool) {
+	return h.runPass(ctx, &ev)
 }
 
 // runPass runs a mailbox pass (PassEvent for ev when set), again while the
 // batch limit left records, up to 10 times, then once more on a kick.
-func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) {
+func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) (ownEcho bool) {
 	if h.ckAccountUnread() {
 		h.refreshCloudKitAccount(ctx) // the bridge may have come up since start
 	}
 	if h.isHeld() || h.iCloudPaused() {
-		return
+		return false
 	}
 	if h.sup.o.onPass != nil {
 		h.sup.o.onPass()
@@ -850,7 +853,10 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) {
 		if err != nil {
 			h.observe(err)
 			log.Printf("hub: mailbox pass failed (%s)", errClass(err))
-			return
+			return false
+		}
+		if rep.OwnEcho {
+			return true
 		}
 		h.mu.Lock()
 		h.lastRelay = h.sup.o.Clock()
@@ -859,10 +865,11 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) {
 		}
 		h.mu.Unlock()
 		if rep.Remaining == 0 {
-			return
+			return false
 		}
 	}
 	h.kick(h.passKick)
+	return false
 }
 
 // linkUpkeep follows a link change (and backs it up on a timer): the pair

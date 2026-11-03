@@ -817,6 +817,8 @@ func live(r *relayv1.Record) bool { return r != nil && !r.GetDeleted() }
 
 func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 	res := &relayv1.SaveResult{}
+	ch := changed{}
+	defer ch.announce(s, caller)
 	for i, it := range sv.GetItems() {
 		rec := it.GetRecord()
 		z := s.zone(rec.GetZone())
@@ -843,7 +845,7 @@ func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 		meta := proto.Clone(stored).(*relayv1.Record)
 		meta.Envelope = nil
 		res.Saved = append(res.Saved, meta)
-		s.zoneChangedLocked(caller, rec.GetZone(), z.seq, inlineRecord(sv, stored))
+		ch.add(rec.GetZone(), z.seq, stored)
 	}
 	return &relayv1.Response{Result: &relayv1.Response_Save{Save: res}}
 }
@@ -851,6 +853,8 @@ func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 func (s *Server) del(caller string, d *relayv1.Delete) *relayv1.Response {
 	res := &relayv1.DeleteResult{}
 	z := s.zone(d.GetZone())
+	ch := changed{}
+	defer ch.announce(s, caller)
 	for i, it := range d.GetItems() {
 		cur := z.recs[it.GetName()]
 		if it.ExpectedSeq != nil && (!live(cur) || cur.GetRecordSeq() != it.GetExpectedSeq()) {
@@ -864,7 +868,7 @@ func (s *Server) del(caller string, d *relayv1.Delete) *relayv1.Response {
 		if live(cur) {
 			z.seq++
 			z.recs[it.GetName()] = &relayv1.Record{Zone: d.GetZone(), Name: it.GetName(), RecordSeq: z.seq, Deleted: true}
-			s.zoneChangedLocked(caller, d.GetZone(), z.seq, nil)
+			ch.add(d.GetZone(), z.seq, nil)
 		}
 	}
 	return &relayv1.Response{Result: &relayv1.Response_Delete{Delete: res}}
@@ -1016,14 +1020,36 @@ func (s *Server) zoneChangedLocked(_, zoneName string, seq uint64, rec *relayv1.
 // (64 KiB).
 const maxInlineRecord = 64 << 10
 
-// inlineRecord is the record a save's event carries: the stored record when
-// the save wrote exactly one item that fits inline, as the relay does; nil
-// otherwise.
-func inlineRecord(sv *relayv1.Save, stored *relayv1.Record) *relayv1.Record {
-	if len(sv.GetItems()) != 1 || len(stored.GetEnvelope()) > maxInlineRecord {
-		return nil
+// changed collects one write call's changes per zone, in zone order of
+// first write, so the call announces each zone once, as the relay does: one
+// ZoneChanged at the zone's last seq, with the record inline only when the
+// call wrote exactly that one record there (and it fits).
+type changed struct {
+	zones []string
+	last  map[string]uint64
+	recs  map[string][]*relayv1.Record // nil entries: deletes
+}
+
+func (c *changed) add(zone string, seq uint64, rec *relayv1.Record) {
+	if c.last == nil {
+		c.last, c.recs = map[string]uint64{}, map[string][]*relayv1.Record{}
 	}
-	return proto.Clone(stored).(*relayv1.Record)
+	if _, ok := c.last[zone]; !ok {
+		c.zones = append(c.zones, zone)
+	}
+	c.last[zone] = seq
+	c.recs[zone] = append(c.recs[zone], rec)
+}
+
+// announce sends the collected changes; s.mu is held.
+func (c *changed) announce(s *Server, writer string) {
+	for _, z := range c.zones {
+		var inline *relayv1.Record
+		if recs := c.recs[z]; len(recs) == 1 && recs[0] != nil && len(recs[0].GetEnvelope()) <= maxInlineRecord {
+			inline = proto.Clone(recs[0]).(*relayv1.Record)
+		}
+		s.zoneChangedLocked(writer, z, c.last[z], inline)
+	}
 }
 
 // writeLoop writes c's queue in order until the socket ends or a write

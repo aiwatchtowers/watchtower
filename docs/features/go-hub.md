@@ -565,22 +565,34 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
 - **One mailbox per event.** `actions.Processor.PassEvent` reads only the phone's own mailbox the event names (its held
   actions next in line first, as Pass does), then writes the queues; an event for any other zone, the shared
   `RelayZone` or a transport that is not an `EventPuller` runs `Pass`. The runtime's 30 s backstop still runs `Pass`
-  over every mailbox, and an event pass does not move its timer.
+  over every mailbox, and an event pass does not move its timer. So a phone whose mailbox read failed is read again at
+  its own next event or the next backstop pass, not at another phone's event as before.
 - **No read when the event says it all** (`relay.Transport.PullEvent`; zone seqs grow by one per write, so the seqs
   between the stored token and the event's `seq` are exactly the writes not read yet). Already read (`seq` ≤ token):
-  nothing. Every seq after the token is one the hub's own `Save` got (kept per zone, at most 256, forgotten once the
-  token passes them): the token moves, nothing is read. Only the event's own seq is someone else's and the relay carried
-  the record inline (≤ 64 KiB, one-record saves): that one-record page is applied, then the token moves. Anything else
-  — another writer's seq in between, no inline record (a delete, a merged event, a large record), the resync marker
-  (seq 0), a zone never read (token 0) — is `Pull` of that zone. An own write never stands for a write it may hide;
-  a failed apply keeps the token, so the hub's own `received` echo of an unsettled claim is still read back (the
-  `outcome_unknown` path). `transport.Event` carries `Seq` and `Inline`.
+  nothing. Every seq after the token is one the hub's own `Save` got (`OwnWrites`; kept per zone in memory, at most
+  256, forgotten once the token passes them; a restart forgets them and the hub reads again): the event pass does
+  nothing at all (`PassReport.OwnEcho`: no read, no queue write, and the runtime neither stamps a phone contact nor
+  kicks the other transport's poll); the token passes those seqs with the next read. Only the event's own seq is
+  someone else's and the relay carried the record inline (≤ 64 KiB, one-record saves): that one-record page is
+  applied, then the token moves. Anything else — another writer's seq in between, no inline record (a delete, a merged
+  event, a large record), the resync marker (seq 0), a zone never read (token 0) — is `Pull` of that zone. An own
+  write never stands for a write it may hide, and one whose event overtakes its `Save`'s answer is read, never
+  skipped. A mailbox whose last read stopped on an error (a claim whose done transaction failed among them) is read
+  with `Pull` at its next event, its own writes not skipped (`Processor.unread`), so the hub's own `received` echo of
+  a begun action is read back and settled `outcome_unknown`. `transport.Event` carries `Seq` and `Inline`.
 - **One save per mailbox.** `flushMailbox` writes the mailbox's queued echoes and controls in one `Save` (in queue
-  order, at most 50 rows per call) and settles each row by its outcome as before; an echo that meets the hub's own
-  older record is written over it in one more `Save` after the batch. A `Save` refused as a whole may have written part
-  of the batch: nothing is settled, the first row is marked failed, and the next pass reads the mailbox before it writes
-  again (a row that did land then meets its own record). A whole-batch refusal for good is retried row by row so only
-  the refused row is dropped. The `received` echo of a claim still goes out before its handler runs.
+  order, at most 50 rows per call) and settles each row by its outcome as before. The queued echoes of one record (a
+  held echo and the final one, a received echo and the final one) are folded into one row first — the last echo's
+  content at its place, under the last one's precondition when it names a record version, else the latest one an
+  earlier echo names — so one batch never writes a record twice and a partly written batch cannot leave an older echo
+  over a newer one; the folded rows leave the queue with it. An echo that meets the hub's own older record is
+  written over it in one more `Save`, together with every row after it that landed, so the phone's feed keeps the
+  queue order; a conflict with the hub's own identical record means it landed in an earlier, partly written batch
+  (done). A `Save` refused as a whole may have written part of the batch: nothing is settled, the first row is marked
+  failed, and the next pass reads the mailbox before it writes again. A whole-batch refusal for good is retried row
+  by row so only the refused row is dropped. The `received` echo of a claim still goes out before its handler runs.
+- **relaytest** sends one `ZoneChanged` per write call and zone (the zone's last seq, the record inline only when the
+  call wrote exactly that one record), to the writer too, as the relay does.
 
 Measured with `TestMeasure_HubLatencyOverTheStand` (200 actions, local stand, hub ops counted on its HTTP client; the
 1 s run includes the test's 1 s link and backstop cadence, about three reads and two other ops per second):
