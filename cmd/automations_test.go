@@ -907,10 +907,12 @@ func TestAutomationsCLI_ValidateAgainstAddsLLM(t *testing.T) {
 	c := newAutoCLI(t)
 	text := autoCLIRecipeText("const a = llm('light', 'x')\nconst b = 2\nreturn a")
 	a := c.confirmedRecipe(t, "digest", text)
-	c.runOnce(t, a, a.ApprovalHash) // the confirmed text is known from the run snapshot
 	plain := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
 	p := c.confirmedRecipe(t, "pay", plain)
-	c.runOnce(t, p, p.ApprovalHash)
+	strong := strings.Replace(text, "llm:light", "llm:strong", 1)
+	s := c.confirmedRecipe(t, "strong", strong)
+	callNoPerm := strings.Replace(plain, "return 1", "return llm('light', 'x')", 1)
+	u := c.indexRecipe(t, "unconfirmed", callNoPerm) // never confirmed: validated as new
 
 	for _, tc := range []struct {
 		name, slug, text string
@@ -923,6 +925,9 @@ func TestAutomationsCLI_ValidateAgainstAddsLLM(t *testing.T) {
 		{"call added", "digest", autoCLIRecipeText("const a = llm('light', 'x')\nconst b = llm('light', 'y')\nreturn a + b"), a.ID, true},
 		{"llm permission added", "pay", strings.Replace(plain, "  - jira:read@PAY\n", "  - jira:read@PAY\n  - llm:light\n", 1), p.ID, true},
 		{"other change", "pay", strings.Replace(plain, "tokens: 1000", "tokens: 2000", 1), p.ID, false},
+		{"llm:light to llm:strong", "digest", strings.Replace(text, "llm:light", "llm:strong", 1), a.ID, true},
+		{"llm:strong to llm:light", "strong", text, s.ID, false},
+		{"unconfirmed with a call", "unconfirmed", callNoPerm, u.ID, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), tc.slug, tc.text), "--against", idArg(tc.id))
