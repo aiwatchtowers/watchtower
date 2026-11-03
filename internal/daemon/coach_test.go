@@ -259,11 +259,7 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 						response = `{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again later."}}`
 					}
 				}
-				out := filepath.Join(t.TempDir(), "response")
-				require.NoError(t, os.WriteFile(out, []byte(response), 0600))
-				bin := filepath.Join(t.TempDir(), provider)
-				script := "#!/bin/sh\ncat >/dev/null\ncat '" + out + "'\n"
-				require.NoError(t, os.WriteFile(bin, []byte(script), 0700))
+				bin := fakeCLI(t, provider, response)
 				if provider == "claude" {
 					cfg.ClaudePath = bin
 				} else {
@@ -273,9 +269,7 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			spool := filepath.Join(t.TempDir(), "calls.jsonl")
 			llmusage.SetSpoolPath(spool)
 			t.Cleanup(func() { llmusage.SetSpoolPath("") })
-			// A hang guard only: two shell stubs start in turn, which takes
-			// well over a second on a loaded machine.
-			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), 30*time.Second)
+			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), time.Second)
 			defer cancel()
 			text, _, _, err := coachGeneratorFactory(cfg).Generate(ctx, "", "request", "")
 			require.NoError(t, err)

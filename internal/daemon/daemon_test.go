@@ -29,6 +29,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	runFakeCLIIfAsked()
 	// Allow sub-second poll intervals in tests for fast execution.
 	minPollInterval = 1 * time.Millisecond
 	// Fresh database files under t.TempDir() start from the template too:
