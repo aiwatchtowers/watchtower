@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -68,8 +69,8 @@ func slackBackfillRange(fromArg, toArg string, now time.Time) (floor, upper time
 		return time.Time{}, time.Time{}, errors.New("--to is in the future")
 	}
 	upper = to.AddDate(0, 0, 1)
-	if days := int(upper.Sub(from).Hours()/24 + 0.5); days > slackBackfillMaxDays {
-		return time.Time{}, time.Time{}, fmt.Errorf("the range is %d days; at most %d at a time", days, slackBackfillMaxDays)
+	if from.AddDate(0, 0, slackBackfillMaxDays).Before(upper) {
+		return time.Time{}, time.Time{}, fmt.Errorf("at most %d days at a time", slackBackfillMaxDays)
 	}
 	return from, upper, nil
 }
@@ -97,8 +98,16 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("account %d not found: %w", accountID, err)
 	}
-	if acct.Status == "removed" || !acct.Enabled {
+	switch {
+	case acct.Status == "removed" || !acct.Enabled:
 		return fmt.Errorf("slack account %d is removed or disabled; enable it first", accountID)
+	case acct.Status == "revoked" || acct.Status == "purged":
+		return fmt.Errorf("slack account %d needs a Re-login first (status %s)", accountID, acct.Status)
+	}
+	// A purge deletes the account's rows in chunks; a backfill must not
+	// refill them behind it (PURGE-01).
+	if err := refuseLoginDuringPurge(database, "slack", accountID); err != nil {
+		return err
 	}
 	token, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), accountID).Load()
 	if err != nil {
@@ -116,6 +125,7 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 	client.SetLogger(logger)
 	orch := sync.NewOrchestrator(database, client, cfg, accountID)
 	orch.SetLogger(logger)
+	orch.SetTokenTeam(token.TeamID)
 	det := newIssueKeyDetector(cfg, database, logger)
 	if det != nil {
 		orch.SetJiraKeyDetector(det)
@@ -131,12 +141,13 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 		pipe = newBackfillDigestPipeline(cfg, database, gen, logger, det)
 	}
 
-	out := cmd.OutOrStdout()
-	return backfillSlackRange(cmd, out, orch, pipe, accountID, floor, upper)
+	return backfillSlackRange(cmd.Context(), cmd.OutOrStdout(), orch, pipe, floor, upper)
 }
 
 // newBackfillDigestPipeline wires the digest pipeline the way the daemon does
-// for its history backfill (prompt store, track linker, key detector).
+// for its history backfill (prompt store, track linker, key detector) in
+// runSync (cmd/sync.go), which keeps its own copy because it also hands the
+// tracks pipeline to the daemon.
 func newBackfillDigestPipeline(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger, det *issuekey.KeyDetector) *digest.Pipeline {
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	tracksPipe.SetPromptStore(prompts.New(database, nil))
@@ -153,11 +164,9 @@ func newBackfillDigestPipeline(cfg *config.Config, database *db.DB, gen digest.G
 // backfillSlackRange walks [floor, upper) in history-backfill chunks, newest
 // first: fetch (BackfillSearch), then — when pipe is set — the chunk's
 // digests and daily rollups. It stops at the first chunk it cannot finish
-// and says how to resume; everything fetched so far stays saved.
-func backfillSlackRange(cmd *cobra.Command, out io.Writer, orch *sync.Orchestrator, pipe *digest.Pipeline, accountID int64, floor, upper time.Time) error {
-	ctx := cmd.Context()
+// and names the --to that resumes there; everything fetched stays saved.
+func backfillSlackRange(ctx context.Context, out io.Writer, orch *sync.Orchestrator, pipe *digest.Pipeline, floor, upper time.Time) error {
 	floorTS := float64(floor.Unix())
-	total := 0
 	for reached := float64(upper.Unix()); ; {
 		fromTS, toTS, ok := historybackfill.NextChunk(reached, floorTS)
 		if !ok {
@@ -165,43 +174,53 @@ func backfillSlackRange(cmd *cobra.Command, out io.Writer, orch *sync.Orchestrat
 		}
 		from, to := time.Unix(int64(fromTS), 0), time.Unix(int64(toTS), 0)
 		days := from.Format("2006-01-02") + ".." + to.Add(-time.Second).Format("2006-01-02")
-		saved, err := orch.BackfillSearch(ctx, from, to)
-		switch {
-		case errors.Is(err, sync.ErrSlackTeamMismatch):
+		line, err := backfillSlackChunk(ctx, orch, pipe, from, to)
+		if err != nil {
 			var mismatch *sync.TeamMismatchError
 			if errors.As(err, &mismatch) {
 				return errors.New(mismatch.OwnerMessage())
 			}
-			return err
-		case errors.Is(err, sync.ErrBackfillIncomplete):
-			return fmt.Errorf("%s: Slack did not return every page (rate limit); run the same command again later", days)
-		case err != nil:
-			return fmt.Errorf("%s: %w", days, err)
+			return fmt.Errorf("%s: %w; resume with --to %s", days, err, to.Add(-time.Second).Format("2006-01-02"))
 		}
-		total += saved
-		line := fmt.Sprintf("%s: %d messages", days, saved)
-		if pipe != nil {
-			res, _, err := pipe.RunBackfillWindow(ctx, accountID, fromTS, toTS)
-			if err != nil {
-				return fmt.Errorf("%s: digests: %w", days, err)
-			}
-			if !res.Complete {
-				return fmt.Errorf("%s: messages saved, digests not finished (another digest run holds the lock, "+
-					"or the chunk needs more passes); run the same command again", days)
-			}
-			if err := pipe.RunBackfillRollupsForAccount(ctx, accountID, fromTS, toTS); err != nil {
-				if errors.Is(err, digest.ErrDigestLocked) {
-					return fmt.Errorf("%s: messages and digests saved, daily rollups wait for another digest run; "+
-						"run the same command again", days)
-				}
-				return fmt.Errorf("%s: daily rollups: %w", days, err)
-			}
-			line += ", " + strconv.Itoa(res.Digests) + " digests, daily rollups done"
-		}
-		fmt.Fprintln(out, line)
+		fmt.Fprintf(out, "%s: %s\n", days, line)
 		reached = fromTS
 	}
-	fmt.Fprintf(out, "Slack account %d: %d messages fetched for %s..%s\n", accountID, total,
+	fmt.Fprintf(out, "Slack account %d: %s..%s done\n", orch.AccountID(),
 		floor.Format("2006-01-02"), upper.AddDate(0, 0, -1).Format("2006-01-02"))
 	return nil
+}
+
+// backfillSlackChunk fetches one chunk and, with pipe set, digests it and
+// rolls up its days. line is the chunk's report.
+func backfillSlackChunk(ctx context.Context, orch *sync.Orchestrator, pipe *digest.Pipeline, from, to time.Time) (string, error) {
+	saved, err := orch.BackfillSearch(ctx, from, to)
+	if errors.Is(err, sync.ErrSlackTeamMismatch) {
+		return "", err
+	}
+	if errors.Is(err, sync.ErrBackfillIncomplete) {
+		return "", fmt.Errorf("slack did not return every page (rate limit), %d messages saved; run it again later", saved)
+	}
+	if err != nil {
+		return "", err
+	}
+	line := strconv.Itoa(saved) + " messages"
+	if pipe == nil {
+		return line, nil
+	}
+	fromTS, toTS := float64(from.Unix()), float64(to.Unix())
+	res, _, err := pipe.RunBackfillWindow(ctx, orch.AccountID(), fromTS, toTS)
+	if err != nil {
+		return "", fmt.Errorf("messages saved, digests failed: %w", err)
+	}
+	if !res.Complete {
+		return "", errors.New("messages saved, digests not finished (another digest run holds the lock, " +
+			"or the chunk needs more passes); run it again")
+	}
+	if err := pipe.RunBackfillRollupsForAccount(ctx, orch.AccountID(), fromTS, toTS); err != nil {
+		if errors.Is(err, digest.ErrDigestLocked) {
+			return "", errors.New("messages and digests saved, daily rollups wait for another digest run; run it again")
+		}
+		return "", fmt.Errorf("messages and digests saved, daily rollups failed: %w", err)
+	}
+	return line + ", " + strconv.Itoa(res.Digests) + " digests, daily rollups done", nil
 }

@@ -41,10 +41,13 @@ func (e *TeamMismatchError) OwnerMessage() string {
 	return fmt.Sprintf("Signed in to a different Slack workspace (%s) — Re-login to %s", got, e.Home.DisplayName())
 }
 
-// checkHomeTeam refuses teamID when acct's stored data belongs to another
-// team (db.SlackAccountHomeTeam). Every sync path calls it before its first
-// write: ensureWorkspace (cached or first-run team), syncMetadata (the full
-// sync's team.info) and BackfillSearch.
+// checkHomeTeam refuses teamID, and the token file's team (SetTokenTeam),
+// when acct's stored data belongs to another team (db.SlackAccountHomeTeam).
+// Every sync path calls it before its first write: ensureWorkspace (cached or
+// first-run team), syncMetadata (the full sync's team.info) and
+// BackfillSearch. For an account whose home team is its own row (every
+// account but a legacy #1) the row check alone cannot fail; the token team
+// and the full sync's team.info are what can.
 func (o *Orchestrator) checkHomeTeam(acct db.SlackAccount, teamID, teamName string) error {
 	home, err := o.db.SlackAccountHomeTeam(acct)
 	if err != nil {
@@ -52,6 +55,9 @@ func (o *Orchestrator) checkHomeTeam(acct db.SlackAccount, teamID, teamName stri
 	}
 	if home.Conflicts(teamID) {
 		return &TeamMismatchError{AccountID: o.accountID, Home: home, TeamID: teamID, TeamName: teamName}
+	}
+	if home.Conflicts(o.tokenTeamID) {
+		return &TeamMismatchError{AccountID: o.accountID, Home: home, TeamID: o.tokenTeamID}
 	}
 	return nil
 }

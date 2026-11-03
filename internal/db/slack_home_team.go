@@ -59,6 +59,8 @@ func (db *DB) SlackAccountHomeTeam(acct SlackAccount) (SlackHomeTeam, error) {
 // LatestSlackMessageTime returns the post time of accountID's newest stored
 // message; ok is false when the account holds none.
 func (db *DB) LatestSlackMessageTime(accountID int64) (time.Time, bool, error) {
+	// "N:" <= channel_id < "N;" is the account's namespace as an index range
+	// (';' sorts right after ':'), so "10:" never counts as account 1.
 	prefix := strconv.FormatInt(accountID, 10)
 	var ts sql.NullFloat64
 	err := db.QueryRow(`SELECT MAX(ts_unix) FROM messages WHERE channel_id >= ? AND channel_id < ?`,

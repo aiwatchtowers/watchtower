@@ -144,4 +144,32 @@ func TestTeamGuard_UsersOnlyRecordsMismatch(t *testing.T) {
 	acct, err := ts.db.GetSlackAccount(ts.accountID)
 	require.NoError(t, err)
 	require.Equal(t, "error", acct.Status)
+	require.Equal(t, mismatch.OwnerMessage(), acct.Error)
+}
+
+// A token file left on another team than the row (its save failed after the
+// row was written) is refused on the cached path, which never asks
+// team.info, and the run is flagged for the daemon's backfill pause.
+func TestTeamGuard_TokenOfAnotherTeamIsRefused(t *testing.T) {
+	var searches int
+	var mu gosync.Mutex
+	ts := newTestSetup(t, teamGuardMux("T_HOME", &searches, &mu))
+	require.NoError(t, ts.db.UpdateSlackAccountConnection(ts.accountID, "T_HOME", "home-team", "home", "1:U001"))
+	ts.orch.SetTokenTeam("T_OTHER")
+
+	err := ts.orch.Run(context.Background(), SyncOptions{})
+	require.ErrorIs(t, err, ErrSlackTeamMismatch)
+	require.True(t, ts.orch.TeamMismatch())
+	require.Zero(t, searches)
+	acct, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	require.Equal(t, "Signed in to a different Slack workspace (T_OTHER) — Re-login to home-team", acct.Error)
+
+	_, err = ts.orch.BackfillSearch(context.Background(), time.Now().Add(-48*time.Hour), time.Now())
+	require.ErrorIs(t, err, ErrSlackTeamMismatch)
+	require.Zero(t, searches)
+
+	ts.orch.SetTokenTeam("T_HOME")
+	require.NotErrorIs(t, ts.orch.Run(context.Background(), SyncOptions{}), ErrSlackTeamMismatch)
+	require.False(t, ts.orch.TeamMismatch(), "Run resets the flag")
 }

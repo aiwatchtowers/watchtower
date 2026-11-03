@@ -75,6 +75,11 @@ func slackBackfillEnv(t *testing.T, rowTeamID string) (*db.DB, *[]string) {
 		mu.Lock()
 		queries = append(queries, r.FormValue("query"))
 		mu.Unlock()
+		if slackBackfillRateLimited {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "messages": map[string]any{
 			"matches": []map[string]any{{"user": "U001", "username": "alice", "ts": "1773403200.000100", "text": "hello",
@@ -118,7 +123,8 @@ func TestSlackBackfill_FetchesTheRangeNewestFirstWithoutMovingTheWatermark(t *te
 	assert.Regexp(t, `^after:2026-03-\d\d before:2026-03-\d\d$`, (*queries)[0])
 	assert.Regexp(t, `^after:2026-03-\d\d before:2026-03-\d\d$`, (*queries)[1])
 	assert.Greater(t, (*queries)[0], (*queries)[1], "the newer chunk is fetched first")
-	assert.Contains(t, out, "Slack account 1: 2 messages fetched for 2026-03-10..2026-03-12")
+	assert.Contains(t, out, "1 messages")
+	assert.Contains(t, out, "Slack account 1: 2026-03-10..2026-03-12 done")
 
 	has, err := database.SlackAccountHasMessages(1)
 	require.NoError(t, err)
@@ -145,5 +151,57 @@ func TestSlackBackfill_RefusesADisabledAccount(t *testing.T) {
 	_, err := runSlackBackfillCmd("--account", "1", "--from", "2026-03-10", "--to", "2026-03-12")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "disabled")
+	assert.Empty(t, *queries)
+}
+
+// slackBackfillRateLimited makes slackBackfillEnv's search answer 429.
+var slackBackfillRateLimited bool
+
+func TestSlackBackfill_RateLimitNamesTheResumeDay(t *testing.T) {
+	_, queries := slackBackfillEnv(t, "T_HOME")
+	slackBackfillRateLimited = true
+	t.Cleanup(func() { slackBackfillRateLimited = false })
+
+	_, err := runSlackBackfillCmd("--account", "1", "--from", "2026-03-10", "--to", "2026-03-12")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limit")
+	assert.Contains(t, err.Error(), "resume with --to 2026-03-12", "the newest chunk was not finished")
+	assert.NotEmpty(t, *queries)
+}
+
+func TestSlackBackfill_RefusesARevokedAccount(t *testing.T) {
+	database, queries := slackBackfillEnv(t, "T_HOME")
+	require.NoError(t, database.SetSlackAccountAuthState(1, "revoked", "token_revoked"))
+
+	_, err := runSlackBackfillCmd("--account", "1", "--from", "2026-03-10", "--to", "2026-03-12")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Re-login first")
+	assert.Empty(t, *queries)
+}
+
+// PURGE-01: a backfill must not refill an account a purge is deleting.
+func TestSlackBackfill_RefusesDuringAPurge(t *testing.T) {
+	database, queries := slackBackfillEnv(t, "T_HOME")
+	_, err := database.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state)
+		VALUES ('slack', 1, 'revoked', '2026-01-01T00:00:00Z', 'running')`)
+	require.NoError(t, err)
+
+	_, err = runSlackBackfillCmd("--account", "1", "--from", "2026-03-10", "--to", "2026-03-12")
+	require.ErrorIs(t, err, errLoginDuringPurge)
+	assert.Empty(t, *queries)
+}
+
+// The row is on the home team but the token file names another one (a
+// token save that failed after the row was written): nothing is searched.
+func TestSlackBackfill_RefusesATokenOfAnotherTeam(t *testing.T) {
+	_, queries := slackBackfillEnv(t, "T_HOME")
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	require.NoError(t, watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), 1).Save(
+		&watchtowerslack.Token{AccessToken: "xoxp-test", TeamID: "T_OTHER"}))
+
+	_, err = runSlackBackfillCmd("--account", "1", "--from", "2026-03-10", "--to", "2026-03-12")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Re-login to Acme")
 	assert.Empty(t, *queries)
 }

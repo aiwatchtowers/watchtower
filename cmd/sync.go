@@ -1122,6 +1122,7 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
+		orch.SetTokenTeam(token.TeamID)
 		if keyDetector != nil {
 			orch.SetJiraKeyDetector(keyDetector)
 		}

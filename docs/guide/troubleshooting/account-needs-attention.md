@@ -32,7 +32,7 @@ A Slack row says **Signed in to a different Slack workspace (…) — Re-login t
 1. Press **Re-login** on the row. If Slack's page shows another workspace, switch to the one the row names first, then approve.
 2. To use the other workspace too, press **Add Slack Workspace** instead; it becomes an account of its own.
 
-After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run; with digests on it also writes their digests and daily rollups).
+After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run; with digests on it also writes their digests and daily rollups, so pick only the days that are missing). Mentions from those days show in digests, not in the Inbox.
 
 ## How to check
 

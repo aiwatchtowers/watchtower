@@ -100,7 +100,24 @@ type Orchestrator struct {
 	jiraKeyDetector interface {
 		ProcessMessageBatch(msgs []db.Message) (int, error)
 	}
+
+	// tokenTeamID is the team the account's token file names (SetTokenTeam);
+	// "" when unknown. checkHomeTeam refuses it like the row's team, so a
+	// token left on another team than the row is caught on every path.
+	tokenTeamID string
+
+	// teamMismatch reports that the last Run stopped on a TeamMismatchError.
+	// Run resets it; the daemon reads it via TeamMismatch to pause the
+	// account's history backfill instead of holding its chunks.
+	teamMismatch bool
 }
+
+// SetTokenTeam records the team the account's token file names.
+func (o *Orchestrator) SetTokenTeam(teamID string) { o.tokenTeamID = teamID }
+
+// TeamMismatch reports that the last Run refused the account's token or team
+// as another team than the account's data (ErrSlackTeamMismatch).
+func (o *Orchestrator) TeamMismatch() bool { return o.teamMismatch }
 
 // SetJiraKeyDetector sets an optional Jira key detector for linking synced
 // Slack messages to the Jira issues they mention.
@@ -201,6 +218,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.fileLookups = 0
 	o.resetMediaPlan()
 	err := o.run(ctx, opts)
+	o.teamMismatch = errors.Is(err, ErrSlackTeamMismatch)
 	if ctx.Err() != nil {
 		o.slackClient.ResetAPIStats()
 	}
@@ -215,8 +233,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 // roster marker, so the next regular sync does not fetch the roster again
 // within the day. Only a dead token (IsRevokedAuthError) or a token for
 // another team (ErrSlackTeamMismatch) is recorded on the account row; any
-// other outcome leaves the row's auth state alone — a
-// transient failure (rate limit retries exhausted, the network) is the
+// other outcome leaves the row's auth state alone — a transient failure (rate limit retries exhausted, the network) is the
 // caller's to report and must not mark the account broken, and a success
 // must not erase a search-gap note the last full cycle kept there, since
 // this run never searched.

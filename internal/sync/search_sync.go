@@ -216,10 +216,16 @@ func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (
 	if err != nil {
 		return 0, err
 	}
-	// A moved account (#915) waits for its Re-login: held, never a strike.
+	// A moved account (#915) waits for its Re-login. The daemon pauses its
+	// row on the cycle's TeamMismatch; wrapped as incomplete, a chunk that
+	// still gets here is held, never struck.
 	if err := o.checkHomeTeam(acct, acct.TeamID, acct.TeamName); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrBackfillIncomplete, err)
 	}
+	// A caller that never ran Run (`slack backfill`) still saves the owner's
+	// own media as theirs and links on the right domain.
+	o.account = acct
+	o.slackClient.SetTeamDomain(acct.TeamDomain)
 	o.resetMediaPlan()
 	after, before := slackSearchRange(from, to)
 	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false, nil)

@@ -195,3 +195,54 @@ func TestReusableSlackWorkspace_UsesTheHomeTeam(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Acme")
 }
+
+func TestConnectSlackAccount_RefusalFitsTheDesktopLineWithLongNames(t *testing.T) {
+	env := newTeamGuardEnv(t, "T_HOME", "Acme")
+	_, err := env.db.Exec(`UPDATE workspace SET name = 'Acme Engineering Worldwide'`)
+	require.NoError(t, err)
+	stubSlackIdentityServer(t, "U_OTHER", "T_OTHER", "Acme Dev Sandbox Workspace", "dev")
+
+	_, err = env.connect(t)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "watchtower slack add")
+	assert.Less(t, len(err.Error()), 200, err.Error())
+}
+
+// A removed account keeps its row but no longer holds the team: adding the
+// team again is allowed. So is the other team a moved account #1 was signed
+// in to, because duplicates compare home teams.
+func TestConnectSlackAccount_NewRowAllowsRemovedOrMovedTeams(t *testing.T) {
+	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox") // moved: home T_HOME
+	gone, err := env.db.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	require.NoError(t, env.db.UpdateSlackAccountConnection(gone, "T_THIRD", "Third", "", ""))
+	require.NoError(t, env.db.SetSlackAccountRemoved(gone))
+
+	for _, team := range []string{"T_OTHER", "T_THIRD"} {
+		id, err := env.db.CreateSlackAccount(db.SlackAccount{})
+		require.NoError(t, err)
+		stubSlackIdentityServer(t, "U_OWNER", team, "Team "+team, "t")
+		_, err = connectSlackAccount(context.Background(), env.cfg, env.db, id,
+			&auth.OAuthResult{AccessToken: "xoxp-" + team}, true, &bytes.Buffer{})
+		require.NoError(t, err, team)
+	}
+}
+
+func TestConnectSlackAccount_RepairWithoutMessagesOrWatermarkLeavesItAlone(t *testing.T) {
+	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
+	require.NoError(t, env.db.SetSlackAccountSearchWatermark(env.id, "2026-03-01"))
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+	_, err := env.connect(t)
+	require.NoError(t, err)
+	acct, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-03-01", acct.SearchLastDate, "no stored message: nothing to rewind to")
+
+	env2 := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
+	env2.addMessage(t, time.Date(2026, 2, 1, 12, 0, 0, 0, time.Local))
+	_, err = env2.connect(t)
+	require.NoError(t, err)
+	acct, err = env2.db.GetSlackAccount(env2.id)
+	require.NoError(t, err)
+	assert.Empty(t, acct.SearchLastDate, "no watermark stays a first run")
+}
