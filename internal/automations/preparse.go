@@ -17,8 +17,9 @@ var syncOnlyWords = map[string]bool{
 func PreParse(script string) error {
 	s := &jsScan{src: script, line: 1}
 	for s.i < len(s.src) {
-		if word, line := s.next(); word != "" {
-			return &PreParseError{Word: word, Line: line}
+		word, start := s.next()
+		if syncOnlyWords[word] && !s.afterDot(start) && !s.afterTypeof(start) && !s.beforeColon() {
+			return &PreParseError{Word: word, Line: s.line}
 		}
 	}
 	return nil
@@ -33,7 +34,9 @@ type jsScan struct {
 	templates []int // the brace depth at each open template ${
 }
 
-// next consumes one token; it returns a refused word and its line, or "".
+// next consumes one token; it returns an identifier in code and its start
+// offset, or "" for anything else (strings, template text, comments,
+// punctuation). After an identifier s.i is just past it.
 func (s *jsScan) next() (string, int) {
 	c := s.src[s.i]
 	rest := s.src[s.i:]
@@ -129,17 +132,13 @@ func (s *jsScan) closeBrace() {
 	s.braces--
 }
 
-// word consumes an identifier and reports it when it is refused.
+// word consumes an identifier and returns it with its start offset.
 func (s *jsScan) word() (string, int) {
 	start := s.i
 	for s.i < len(s.src) && isIdentByte(s.src[s.i]) {
 		s.i++
 	}
-	w := s.src[start:s.i]
-	if !syncOnlyWords[w] || s.afterDot(start) || s.afterTypeof(start) || s.beforeColon() {
-		return "", 0
-	}
-	return w, s.line
+	return s.src[start:s.i], start
 }
 
 // afterDot reports a property access (`x.async`), not a spread (`...x`).
@@ -165,12 +164,18 @@ func (s *jsScan) afterTypeof(start int) bool {
 }
 
 // beforeColon reports an object key (`{async: 1}`).
-func (s *jsScan) beforeColon() bool {
+func (s *jsScan) beforeColon() bool { return s.nextByte() == ':' }
+
+// nextByte is the first non-space byte at or after s.i, or 0 at the end.
+func (s *jsScan) nextByte() byte {
 	p := s.i
 	for p < len(s.src) && isSpace(s.src[p]) {
 		p++
 	}
-	return p < len(s.src) && s.src[p] == ':'
+	if p == len(s.src) {
+		return 0
+	}
+	return s.src[p]
 }
 
 func isIdentByte(c byte) bool {

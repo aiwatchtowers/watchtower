@@ -50,6 +50,12 @@ type validateJSON struct {
 	// text (AUTO-06: the panel shows these as Go parsed them); {} when the text
 	// does not parse.
 	Fields validateFieldsJSON `json:"fields"`
+	// AddsLLM is the panel's AI-step warning: the text has more llm() call
+	// sites (automations.LLMCallSites) than the confirmed text, or widens to
+	// an llm: permission; with no confirmed text (no --against, or none
+	// known), any call site or llm: permission. False when the text does not
+	// parse.
+	AddsLLM bool `json:"adds_llm"`
 }
 
 // validateFieldsJSON is the approval hash's non-manifest fields (trigger,
@@ -137,11 +143,23 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 	}
 	v.Widening = automations.Covers(baseline, v.Permissions)
 	v.FeedsSourcesToLLM = m.FeedsSourcesToLLM()
+	v.AddsLLM = addsLLM(r, confirmed, v.Widening)
 	if err := automations.CheckManifestPolicy(m, lookup); err != nil {
 		v.OK = false
 		v.Errors = append(v.Errors, err.Error())
 	}
 	return v
+}
+
+// addsLLM reports whether r adds an AI step to confirmed (nil = a new
+// recipe): more llm() call sites, or an llm: entry among widening.
+func addsLLM(r, confirmed *automations.Recipe, widening []string) bool {
+	before := 0
+	if confirmed != nil {
+		before = automations.LLMCallSites(confirmed.Script)
+	}
+	return automations.LLMCallSites(r.Script) > before ||
+		slices.ContainsFunc(widening, func(p string) bool { return strings.HasPrefix(p, "llm:") })
 }
 
 func runAutomationsValidate(cmd *cobra.Command, args []string) error {
