@@ -138,13 +138,18 @@ type fakeSend struct {
 	mu     sync.Mutex
 	script map[string][]error // relay id → answers in order (the last repeats)
 	block  map[string]bool    // relay id → wait for ctx instead of answering
+	// hold: relay id → the call waits for this channel (not for ctx), then
+	// gives its scripted answer; the call's ctx is handed out on ctxs.
+	hold   map[string]chan struct{}
+	ctxs   chan context.Context
 	seen   []call
 	calls  chan call
 	before func(c call) // runs inside the call, before the answer
 }
 
 func newFakeSend(clock *fakeClock) *fakeSend {
-	return &fakeSend{clock: clock, script: map[string][]error{}, block: map[string]bool{}, calls: make(chan call, 256)}
+	return &fakeSend{clock: clock, script: map[string][]error{}, block: map[string]bool{},
+		hold: map[string]chan struct{}{}, ctxs: make(chan context.Context, 16), calls: make(chan call, 256)}
 }
 
 func (f *fakeSend) answer(relayID string, errs ...error) {
@@ -157,7 +162,7 @@ func (f *fakeSend) SendAlert(ctx context.Context, relayID string, p secure.Push)
 	c := call{relay: relayID, key: p.Key(), at: f.clock.Now(), env: p.Envelope()}
 	f.mu.Lock()
 	f.seen = append(f.seen, c)
-	block := f.block[relayID]
+	block, hold := f.block[relayID], f.hold[relayID]
 	var err error
 	if s := f.script[relayID]; len(s) > 0 {
 		err = s[0]
@@ -174,6 +179,10 @@ func (f *fakeSend) SendAlert(ctx context.Context, relayID string, p secure.Push)
 	if block {
 		<-ctx.Done()
 		return ctx.Err()
+	}
+	if hold != nil {
+		f.ctxs <- ctx
+		<-hold
 	}
 	return err
 }
@@ -215,20 +224,23 @@ func (a *fakeAway) set(away bool) {
 // rig is a pusher over a real sidecar, a fake relay, a fake clock and a
 // switchable target list.
 type rig struct {
-	t        *testing.T
-	dir      string
-	st       *state.Store
-	sealer   *secure.Sealer
-	clock    *fakeClock
-	send     *fakeSend
-	away     *fakeAway
-	mu       sync.Mutex
-	targets  []Target
-	refresh  int
-	p        *Pusher
-	settles  chan settled
-	settleMu sync.Mutex
-	all      []settled
+	t       *testing.T
+	dir     string
+	st      *state.Store
+	sealer  *secure.Sealer
+	clock   *fakeClock
+	send    *fakeSend
+	away    *fakeAway
+	mu      sync.Mutex
+	targets []Target
+	refresh int
+	// refreshGate, when set, holds every RefreshAccount until it closes (or
+	// its ctx ends).
+	refreshGate chan struct{}
+	p           *Pusher
+	settles     chan settled
+	settleMu    sync.Mutex
+	all         []settled
 }
 
 func newRig(t *testing.T, phones ...string) *rig {
@@ -259,10 +271,21 @@ func (r *rig) newPusher() *Pusher {
 			defer r.mu.Unlock()
 			return slices.Clone(r.targets), nil
 		},
-		RefreshAccount: func(context.Context) { r.mu.Lock(); r.refresh++; r.mu.Unlock() },
-		Away:           r.away,
-		Clock:          r.clock.Now,
-		Timer:          r.clock.Timer,
+		RefreshAccount: func(ctx context.Context) {
+			r.mu.Lock()
+			r.refresh++
+			gate := r.refreshGate
+			r.mu.Unlock()
+			if gate != nil {
+				select {
+				case <-gate:
+				case <-ctx.Done():
+				}
+			}
+		},
+		Away:  r.away,
+		Clock: r.clock.Now,
+		Timer: r.clock.Timer,
 	})
 	p.onSettle = func(key, device, outcome, reason string) {
 		s := settled{key, device, outcome, reason}
@@ -351,7 +374,10 @@ func (r *rig) refreshes() int {
 	return r.refresh
 }
 
-// relayErr is the error the relay transport returns for code on send_alert.
+// relayErr is a relay-coded answer as the transport hands it on: the
+// client's error for code, mapped by MapError (the classes every op shares;
+// send_alert's own NOT_FOUND and "not implemented" mappings are written as
+// their transport errors in the tests instead).
 func relayErr(code relayv1.ErrorCode, message string, retryAfter *uint32) error {
 	return fmt.Errorf("relay: send_alert: %w", relay.MapError(&client.Error{E: &relayv1.Error{
 		Code: code, Message: message, RetryAfterS: retryAfter,
@@ -522,15 +548,58 @@ func TestRateLimitedWithoutRetryAfterWaitsOneSecondAndCapsAtAMinute(t *testing.T
 
 func TestUnavailableRetriesOnTheNextConnect(t *testing.T) {
 	r := newRig(t, "phone-a")
-	r.send.answer("relay-phone-a", fmt.Errorf("relay: send_alert: %w", transport.ErrUnavailable), nil)
+	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, "", nil), nil)
 	r.start()
 	r.enqueue("ask-1")
 	r.call()
-	r.wait()
+	if d := r.wait(); d != unavailableRetry {
+		t.Fatalf("wait %v; want %v", d, unavailableRetry)
+	}
 	r.p.Reconnected() // no clock advance: the connection ends the wait
 	r.call()
 	if s := r.next(); s.outcome != state.AlertAccepted {
 		t.Fatalf("settled %v", s)
+	}
+}
+
+func TestRelayUnavailableRetriedAfterItsWait(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, "", nil), nil)
+	r.start()
+	r.p.Reconnected() // a connection before the failure is stale: it ends no wait
+	r.enqueue("ask-1")
+	r.call()
+	r.clock.Advance(r.wait())
+	r.call()
+	if s := r.next(); s.outcome != state.AlertAccepted {
+		t.Fatalf("settled %v", s)
+	}
+	if n := r.send.count("relay-phone-a"); n != 2 {
+		t.Fatalf("send_alert %d times; want 2", n)
+	}
+}
+
+// A failure with no relay answer (MapError's ErrUnavailable around a
+// connection error): the request may have reached the relay, so the push is
+// never resent and counts as received.
+func TestTransportFailureSettlesInFlightNoRetry(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.send.answer("relay-phone-a", fmt.Errorf("relay: send_alert: %w", relay.MapError(errors.New("connection reset"))))
+	r.start()
+	r.enqueue("ask-1")
+	if s := r.next(); s != (settled{"ask-1", "phone-a", "expired", "in_flight"}) {
+		t.Fatalf("settled %v; want expired (in_flight)", s)
+	}
+	r.p.Stop()
+	if n := r.send.count("relay-phone-a"); n != 1 {
+		t.Fatalf("send_alert %d times; want 1 (no retry)", n)
+	}
+	if len(r.clock.waits) != 0 {
+		t.Fatal("a retry was scheduled")
+	}
+	got, err := r.st.ReceivedAlertPushes([]string{"ask-1"})
+	if err != nil || !got["ask-1"]["phone-a"] {
+		t.Fatalf("ReceivedAlertPushes = %v, %v; want phone-a", got, err)
 	}
 }
 
@@ -699,10 +768,14 @@ func TestStopSettlesQueuedExpired(t *testing.T) {
 	r.enqueue("ask-3")
 	r.p.Stop()
 	got := r.nextN(3)
-	for _, s := range got {
-		if s.outcome != "expired" || s.reason != "stopped" {
-			t.Fatalf("settled %v; want all expired (stopped)", got)
-		}
+	slices.SortFunc(got, func(a, b settled) int { return strings.Compare(a.key, b.key) })
+	want := []settled{
+		{"ask-1", "phone-a", "expired", "in_flight"}, // its request was in progress
+		{"ask-2", "phone-a", "expired", "stopped"},
+		{"ask-3", "phone-a", "expired", "stopped"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("settled %v; want %v", got, want)
 	}
 	// After Stop nothing is queued.
 	r.enqueue("ask-4")
@@ -731,14 +804,18 @@ func TestAbandonSettlesQueuedAndReturnsKeys(t *testing.T) {
 		t.Fatalf("Abandon = %v", keys)
 	}
 	got := r.nextN(2)
-	for _, s := range got {
-		if s.device != "phone-a" || s.outcome != "expired" || s.reason != "switched" {
-			t.Fatalf("settled %v", got)
-		}
+	slices.SortFunc(got, func(a, b settled) int { return strings.Compare(a.key, b.key) })
+	want := []settled{
+		{"ask-1", "phone-a", "expired", "in_flight"}, // interrupted mid-request
+		{"ask-2", "phone-a", "expired", "switched"},  // queued, never sent
 	}
-	acc, err := r.st.AcceptedAlertPushes(keys)
-	if err != nil || !acc["ask-1"]["phone-b"] || acc["ask-1"]["phone-a"] {
-		t.Fatalf("accepted %v, %v", acc, err)
+	if !slices.Equal(got, want) {
+		t.Fatalf("settled %v; want %v", got, want)
+	}
+	// ask-1 may have reached phone-a: Resignal must skip it there too.
+	rec, err := r.st.ReceivedAlertPushes(keys)
+	if err != nil || !rec["ask-1"]["phone-a"] || !rec["ask-1"]["phone-b"] || rec["ask-2"]["phone-a"] || !rec["ask-2"]["phone-b"] {
+		t.Fatalf("received %v, %v", rec, err)
 	}
 	// The pusher keeps running after a switch.
 	r.send.mu.Lock()
@@ -747,6 +824,121 @@ func TestAbandonSettlesQueuedAndReturnsKeys(t *testing.T) {
 	r.enqueue("ask-3")
 	if got := r.nextN(2); got[0].outcome != "accepted" || got[1].outcome != "accepted" {
 		t.Fatalf("after Abandon %v", got)
+	}
+	r.p.Stop()
+	var toA []string
+	r.send.mu.Lock()
+	for _, c := range r.send.seen {
+		if c.relay == "relay-phone-a" {
+			toA = append(toA, c.key)
+		}
+	}
+	r.send.mu.Unlock()
+	if !slices.Equal(toA, []string{"ask-1", "ask-3"}) {
+		t.Fatalf("phone-a got %v; want [ask-1 ask-3] (ask-2 abandoned unsent)", toA)
+	}
+}
+
+func TestAbandonLetsAnAnswerThatWinsStand(t *testing.T) {
+	r := newRig(t, "phone-a")
+	gate := make(chan struct{})
+	r.send.hold["relay-phone-a"] = gate
+	r.start()
+	r.enqueue("ask-1")
+	r.call()
+	callCtx := <-r.send.ctxs
+	keys := make(chan []string, 1)
+	go func() { keys <- r.p.Abandon(state.ReasonSwitched) }()
+	<-callCtx.Done() // Abandon has cancelled the request…
+	close(gate)      // …and the relay's Ok arrives anyway
+	if got := <-keys; len(got) != 0 {
+		t.Fatalf("Abandon = %v; want none (the push was accepted)", got)
+	}
+	if s := r.next(); s != (settled{"ask-1", "phone-a", "accepted", ""}) {
+		t.Fatalf("settled %v; want accepted", s)
+	}
+}
+
+func TestAbandonDuringARetryWait(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_RATE_LIMITED, "", proto.Uint32(30)))
+	r.start()
+	r.enqueue("ask-1")
+	r.call()
+	r.wait()
+	if keys := r.p.Abandon(state.ReasonSwitched); !slices.Equal(keys, []string{"ask-1"}) {
+		t.Fatalf("Abandon = %v", keys)
+	}
+	if s := r.next(); s != (settled{"ask-1", "phone-a", "expired", "switched"}) {
+		t.Fatalf("settled %v; want expired (switched)", s)
+	}
+	r.clock.Advance(time.Minute)
+	r.p.Stop()
+	if n := r.send.count("relay-phone-a"); n != 1 {
+		t.Fatalf("send_alert %d times; want 1", n)
+	}
+	if rec, _ := r.st.ReceivedAlertPushes([]string{"ask-1"}); len(rec) != 0 {
+		t.Fatalf("received %v; a refused push is not received", rec)
+	}
+}
+
+// An Enqueue whose rows are written before an Abandon and whose items would
+// enter the queue after it queues nothing.
+func TestEnqueueOverlappingAbandonQueuesNothing(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.start()
+	r.p.beforeQueue = func() {
+		if keys := r.p.Abandon(state.ReasonSwitched); len(keys) != 0 {
+			t.Errorf("Abandon = %v; nothing was queued yet", keys)
+		}
+	}
+	r.enqueue("ask-1")
+	if s := r.next(); s != (settled{"ask-1", "phone-a", "expired", "switched"}) {
+		t.Fatalf("settled %v; want expired (switched)", s)
+	}
+	r.p.beforeQueue = nil
+	r.p.Stop()
+	if n := r.send.count("relay-phone-a"); n != 0 {
+		t.Fatalf("send_alert %d times; want 0", n)
+	}
+}
+
+func TestStartRefusedTwiceAndAfterStop(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.start()
+	if err := r.p.Start(context.Background()); err == nil {
+		t.Fatal("second Start accepted")
+	}
+	p2 := r.newPusher()
+	p2.Stop()
+	if err := p2.Start(context.Background()); err == nil {
+		t.Fatal("Start after Stop accepted")
+	}
+}
+
+func TestRefreshCoalescedAcrossPhones(t *testing.T) {
+	r := newRig(t, "phone-a", "phone-b", "phone-c")
+	r.refreshGate = make(chan struct{})
+	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, "", nil))
+	r.send.answer("relay-phone-b", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
+	r.send.block["relay-phone-c"] = true
+	r.start()
+	r.enqueue("ask-1")
+	for range 3 {
+		r.call()
+	}
+	r.nextN(2) // a forbidden, b not_paying: one refresh runs, held
+	// Abandon never waits on the refresh.
+	if keys := r.p.Abandon(state.ReasonSwitched); !slices.Equal(keys, []string{"ask-1"}) {
+		t.Fatalf("Abandon = %v", keys)
+	}
+	if s := r.next(); s != (settled{"ask-1", "phone-c", "expired", "in_flight"}) {
+		t.Fatalf("settled %v", s)
+	}
+	close(r.refreshGate)
+	r.p.Stop()
+	if n := r.refreshes(); n != 1 {
+		t.Fatalf("account refreshed %d times; want 1 for the burst", n)
 	}
 }
 

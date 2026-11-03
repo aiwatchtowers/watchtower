@@ -16,7 +16,7 @@ func TestBeginAlertPushRefusesASecondRow(t *testing.T) {
 		t.Fatalf("second BeginAlertPush = %v, %v; want false", ok, err)
 	}
 	// Settled, it is still refused: a push is never begun twice.
-	if err := s.SettleAlertPush("ask-1", "phone-a", AlertAccepted, "", 1, t0); err != nil {
+	if _, err := s.SettleAlertPush("ask-1", "phone-a", AlertAccepted, "", 1, t0); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := s.BeginAlertPush("ask-1", "phone-a", t0.Add(time.Minute)); err != nil || ok {
@@ -35,12 +35,15 @@ func TestSettleAlertPushSettlesOnlyAPendingRow(t *testing.T) {
 	if _, err := s.BeginAlertPush("ask-1", "phone-a", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SettleAlertPush("ask-1", "phone-a", AlertAccepted, "", 2, t0.Add(time.Second)); err != nil {
-		t.Fatal(err)
+	if ok, err := s.SettleAlertPush("ask-1", "phone-a", AlertAccepted, "", 2, t0.Add(time.Second)); err != nil || !ok {
+		t.Fatalf("settle = %v, %v; want changed", ok, err)
 	}
 	// A later settle (a restart's expiry, a late duplicate) does not rewrite it.
-	if err := s.SettleAlertPush("ask-1", "phone-a", AlertExpired, ReasonStopped, 3, t0.Add(2*time.Second)); err != nil {
-		t.Fatal(err)
+	if ok, err := s.SettleAlertPush("ask-1", "phone-a", AlertExpired, ReasonStopped, 3, t0.Add(2*time.Second)); err != nil || ok {
+		t.Fatalf("second settle = %v, %v; want unchanged", ok, err)
+	}
+	if ok, err := s.SettleAlertPush("ask-9", "phone-a", AlertAccepted, "", 1, t0); err != nil || ok {
+		t.Fatalf("settle of a missing row = %v, %v; want unchanged", ok, err)
 	}
 	got, err := s.LastAlertOutcomes(t0)
 	if err != nil || got["phone-a"] != AlertAccepted {
@@ -50,10 +53,10 @@ func TestSettleAlertPushSettlesOnlyAPendingRow(t *testing.T) {
 	if _, err := s.BeginAlertPush("ask-2", "phone-a", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SettleAlertPush("ask-2", "phone-a", "delivered", "", 1, t0); err == nil {
+	if _, err := s.SettleAlertPush("ask-2", "phone-a", "delivered", "", 1, t0); err == nil {
 		t.Fatal("unknown outcome accepted")
 	}
-	if err := s.SettleAlertPush("ask-2", "phone-a", AlertExpired, "late", 1, t0); err == nil {
+	if _, err := s.SettleAlertPush("ask-2", "phone-a", AlertExpired, "late", 1, t0); err == nil {
 		t.Fatal("unknown reason accepted")
 	}
 }
@@ -66,7 +69,7 @@ func TestExpirePendingAlertPushesAtStart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SettleAlertPush("ask-1", "phone-b", AlertAccepted, "", 1, t0); err != nil {
+	if _, err := s.SettleAlertPush("ask-1", "phone-b", AlertAccepted, "", 1, t0); err != nil {
 		t.Fatal(err)
 	}
 	n, err := s.ExpirePendingAlertPushes(t0.Add(time.Hour))
@@ -93,13 +96,14 @@ func TestAlertPushReads(t *testing.T) {
 		if _, err := s.BeginAlertPush(key, dev, at); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.SettleAlertPush(key, dev, outcome, reason, 1, at); err != nil {
+		if _, err := s.SettleAlertPush(key, dev, outcome, reason, 1, at); err != nil {
 			t.Fatal(err)
 		}
 	}
 	settle("ask-1", "phone-a", AlertAccepted, "", t0)
 	settle("ask-1", "phone-b", AlertNoToken, "", t0)
 	settle("ask-2", "phone-a", AlertExpired, ReasonOverflow, t0.Add(time.Minute))
+	settle("ask-2", "phone-b", AlertExpired, ReasonInFlight, t0.Add(time.Minute))
 	settle("ask-3", "phone-a", AlertExpired, ReasonOverflow, t0.Add(-time.Hour))
 	settle("ask-4", "phone-b", AlertPushOff, "", t0.Add(2*time.Minute))
 	if _, err := s.BeginAlertPush("ask-5", "phone-a", t0.Add(3*time.Minute)); err != nil {
@@ -109,10 +113,12 @@ func TestAlertPushReads(t *testing.T) {
 	if n, err := s.AlertPushOverflows(t0); err != nil || n != 1 {
 		t.Fatalf("AlertPushOverflows = %d, %v; want 1", n, err)
 	}
-	acc, err := s.AcceptedAlertPushes([]string{"ask-1", "ask-2", "ask-9"})
-	want := map[string]map[string]bool{"ask-1": {"phone-a": true}}
-	if err != nil || len(acc) != 1 || !maps.Equal(acc["ask-1"], want["ask-1"]) {
-		t.Fatalf("AcceptedAlertPushes = %v, %v; want %v", acc, err, want)
+	// Accepted, or expired in flight (it may have reached the relay); an
+	// overflowed or refused push is not received.
+	got, err := s.ReceivedAlertPushes([]string{"ask-1", "ask-2", "ask-9"})
+	want := map[string]map[string]bool{"ask-1": {"phone-a": true}, "ask-2": {"phone-b": true}}
+	if err != nil || len(got) != 2 || !maps.Equal(got["ask-1"], want["ask-1"]) || !maps.Equal(got["ask-2"], want["ask-2"]) {
+		t.Fatalf("ReceivedAlertPushes = %v, %v; want %v", got, err, want)
 	}
 	// Newest settled outcome per phone; a pending row is no outcome.
 	last, err := s.LastAlertOutcomes(t0)
@@ -124,7 +130,7 @@ func TestAlertPushReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := s.db.QueryRow(`SELECT count(*) FROM alert_pushes`).Scan(&n); err != nil || n != 5 {
-		t.Fatalf("after prune %d rows (%v); want 5 (the one before t0 gone)", n, err)
+	if err := s.db.QueryRow(`SELECT count(*) FROM alert_pushes`).Scan(&n); err != nil || n != 6 {
+		t.Fatalf("after prune %d rows (%v); want 6 (the one before t0 gone)", n, err)
 	}
 }

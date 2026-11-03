@@ -11,7 +11,7 @@ CREATE TABLE alert_pushes (
     alert_key TEXT NOT NULL,
     device_id TEXT NOT NULL,
     outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'accepted', 'no_token', 'not_paying', 'forbidden', 'push_off', 'too_large', 'expired', 'failed')),
-    reason TEXT NOT NULL DEFAULT '' CHECK (reason IN ('', 'freshness', 'owner_back', 'restart', 'switched', 'overflow', 'stopped')),
+    reason TEXT NOT NULL DEFAULT '' CHECK (reason IN ('', 'freshness', 'owner_back', 'restart', 'switched', 'overflow', 'stopped', 'in_flight')),
     attempts INTEGER NOT NULL DEFAULT 0,
     first_at REAL NOT NULL,
     settled_at REAL,

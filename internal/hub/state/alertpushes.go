@@ -2,6 +2,7 @@ package state
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -21,7 +22,7 @@ const (
 	AlertFailed    = "failed"
 )
 
-// The reasons an alert push expired unsent.
+// The reasons an alert push expired: unsent, except in_flight.
 const (
 	ReasonFreshness = "freshness"  // the 5-minute window ended
 	ReasonOwnerBack = "owner_back" // the owner came back to the Mac
@@ -29,7 +30,18 @@ const (
 	ReasonSwitched  = "switched"   // the hub switched to CloudKit
 	ReasonOverflow  = "overflow"   // the phone's queue was full
 	ReasonStopped   = "stopped"    // the hub stopped
+	// ReasonInFlight: the request may have reached the relay (interrupted
+	// while in progress, or a connection failure with no relay answer), so
+	// it is never resent and counts as received (ReceivedAlertPushes).
+	ReasonInFlight = "in_flight"
 )
+
+// AlertPushSettle is one push's settle: its row, its outcome (reason only
+// for expired) and its attempt count.
+type AlertPushSettle struct {
+	Key, Device, Outcome, Reason string
+	Attempts                     int
+}
 
 // BeginAlertPush writes the pending row of key's push to device; false when
 // a row exists already (pending or settled): a push is never begun twice.
@@ -66,18 +78,47 @@ func (s *Store) BeginAlertPushes(key string, devices []string, at time.Time) ([]
 
 // SettleAlertPush settles the pending row of key's push to device with its
 // outcome (reason only for expired) and attempt count. A row already settled
-// keeps its outcome; a missing row is no error.
-func (s *Store) SettleAlertPush(key, device, outcome, reason string, attempts int, at time.Time) error {
+// keeps its outcome and a missing row is no error: false then (nothing
+// changed).
+func (s *Store) SettleAlertPush(key, device, outcome, reason string, attempts int, at time.Time) (bool, error) {
+	changed, err := s.SettleAlertPushes([]AlertPushSettle{{Key: key, Device: device, Outcome: outcome, Reason: reason, Attempts: attempts}}, at)
+	if err != nil {
+		return false, err
+	}
+	return changed[0], nil
+}
+
+// SettleAlertPushes is SettleAlertPush for several rows in one short write
+// transaction; changed[i] reports whether xs[i]'s row was pending.
+func (s *Store) SettleAlertPushes(xs []AlertPushSettle, at time.Time) ([]bool, error) {
+	changed := make([]bool, len(xs))
+	if len(xs) == 0 {
+		return changed, nil
+	}
 	err := s.write(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE alert_pushes SET outcome = ?, reason = ?, attempts = ?, settled_at = ?
-			WHERE alert_key = ? AND device_id = ? AND outcome = 'pending'`,
-			outcome, reason, attempts, toReal(at), key, device)
-		return err
+		stmt, err := tx.Prepare(`UPDATE alert_pushes SET outcome = ?, reason = ?, attempts = ?, settled_at = ?
+			WHERE alert_key = ? AND device_id = ? AND outcome = 'pending'`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stmt.Close() }()
+		for i, x := range xs {
+			res, err := stmt.Exec(x.Outcome, x.Reason, x.Attempts, toReal(at), x.Key, x.Device)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			changed[i] = n == 1
+		}
+		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("settling an alert push: %w", err)
+		return nil, fmt.Errorf("settling alert pushes: %w", err)
 	}
-	return nil
+	return changed, nil
 }
 
 // ExpirePendingAlertPushes settles every pending row expired (reason
@@ -111,38 +152,40 @@ func (s *Store) AlertPushOverflows(since time.Time) (int, error) {
 	return n, nil
 }
 
-// AcceptedAlertPushes is, for each of keys, the devices whose push the relay
-// accepted (key → device → true); a key with none is absent.
-func (s *Store) AcceptedAlertPushes(keys []string) (map[string]map[string]bool, error) {
+// ReceivedAlertPushes is, for each of keys, the devices that may hold its
+// push (key → device → true): the relay accepted it, or it expired in flight
+// and may have reached the relay. A key with none is absent. Resignal skips
+// these pairs.
+func (s *Store) ReceivedAlertPushes(keys []string) (map[string]map[string]bool, error) {
 	out := map[string]map[string]bool{}
-	for _, k := range keys {
-		devices, err := s.acceptedAlertPushes(k)
-		if err != nil {
-			return nil, fmt.Errorf("reading accepted alert pushes: %w", err)
-		}
-		if len(devices) > 0 {
-			out[k] = devices
-		}
+	if len(keys) == 0 {
+		return out, nil
 	}
-	return out, nil
-}
-
-// acceptedAlertPushes is the devices whose push of key the relay accepted.
-func (s *Store) acceptedAlertPushes(key string) (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT device_id FROM alert_pushes WHERE alert_key = ? AND outcome = 'accepted'`, key)
+	list, err := json.Marshal(keys)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading received alert pushes: %w", err)
+	}
+	rows, err := s.db.Query(`SELECT alert_key, device_id FROM alert_pushes
+		WHERE alert_key IN (SELECT value FROM json_each(?))
+			AND (outcome = 'accepted' OR (outcome = 'expired' AND reason = 'in_flight'))`, string(list))
+	if err != nil {
+		return nil, fmt.Errorf("reading received alert pushes: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := map[string]bool{}
 	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
-			return nil, err
+		var k, d string
+		if err := rows.Scan(&k, &d); err != nil {
+			return nil, fmt.Errorf("reading received alert pushes: %w", err)
 		}
-		out[d] = true
+		if out[k] == nil {
+			out[k] = map[string]bool{}
+		}
+		out[k][d] = true
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading received alert pushes: %w", err)
+	}
+	return out, nil
 }
 
 // LastAlertOutcomes is each device's newest settled outcome among the pushes

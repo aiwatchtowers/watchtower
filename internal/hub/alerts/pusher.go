@@ -4,10 +4,12 @@
 // Each push is sent at most once per (alert key, phone): its ledger row is
 // written pending before the push is queued and settled with its outcome
 // class after the request; a row still pending at hub start is settled
-// expired and never resent. A push not accepted within Freshness of the
-// alert's first save is dropped, and none is sent while the owner is back at
-// the Mac. The alert's text lives only in memory, sealed in the queue item;
-// the ledger and the logs carry ids and classes only (FILES-01).
+// expired and never resent, and a request that may have reached the relay
+// without an answer (interrupted, or a connection failure) settles expired
+// in_flight and is never resent either. A push not accepted within Freshness
+// of the alert's first save is dropped, and none is sent while the owner is
+// back at the Mac. The alert's text lives only in memory, sealed in the
+// queue item; the ledger and the logs carry ids and classes only (FILES-01).
 package alerts
 
 import (
@@ -25,6 +27,7 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
+	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
@@ -40,9 +43,11 @@ const (
 	// relay's retry_after_s when it sends one).
 	retryDefault = time.Second
 	retryCap     = 60 * time.Second
-	// unavailableRetry is the wait after an unreachable relay when no new
-	// connection (Reconnected) comes first.
+	// unavailableRetry is the wait after the relay answered UNAVAILABLE when
+	// no new connection (Reconnected) comes first.
 	unavailableRetry = 30 * time.Second
+	// refreshTimeout bounds one account refresh.
+	refreshTimeout = 15 * time.Second
 )
 
 // Target is a phone a push goes to: its sidecar device id and its relay
@@ -57,8 +62,9 @@ type Config struct {
 	// Targets is the phones to push to now: linked, with a relay device id,
 	// a hub reader and paying (Eligible).
 	Targets func(ctx context.Context) ([]Target, error)
-	// RefreshAccount re-reads the relay account state; called once per
-	// not_paying or forbidden answer.
+	// RefreshAccount re-reads the relay account state after a not_paying or
+	// forbidden answer: run off the senders, one at a time (answers that come
+	// while one runs share it), bounded by its own timeout.
 	RefreshAccount func(ctx context.Context)
 	// Away is the work-alert policy's owner-away input, checked before every
 	// send, retries included. Nil reads as always away; an error as away.
@@ -95,17 +101,23 @@ func Eligible(devices []state.Device, acct *relayv1.AccountState) []Target {
 type Pusher struct {
 	c Config
 
-	mu       sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelCauseFunc
-	running  bool
-	stopped  bool
-	senders  map[string]*sender
-	tooLarge map[string]bool // alert keys logged as too large
+	mu         sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelCauseFunc
+	starting   bool
+	running    bool
+	stopped    bool
+	gen        uint64 // bumped by every Abandon
+	abandoned  string // the last Abandon's reason
+	refreshing bool
+	senders    map[string]*sender
+	tooLarge   map[string]bool // alert keys logged as too large
 
 	wg sync.WaitGroup
-	// onSettle, when set (tests), sees every settled push.
-	onSettle func(key, device, outcome, reason string)
+	// Test hooks: onSettle sees every push whose row a settle changed;
+	// beforeQueue runs in Enqueue between the pending rows and the queues.
+	onSettle    func(key, device, outcome, reason string)
+	beforeQueue func()
 }
 
 // item is one queued push: ids, the sealed envelope and its deadline.
@@ -125,11 +137,12 @@ type sender struct {
 
 // flight is the push a sender works on (sending or waiting to retry).
 type flight struct {
-	key     string
-	cancel  context.CancelCauseFunc
-	done    chan struct{}
-	outcome string // set before done closes
-	reason  string
+	key    string
+	cancel context.CancelCauseFunc
+	done   chan struct{}
+	// Set before done closes: how it settled and whether its row changed.
+	outcome, reason string
+	changed         bool
 }
 
 // expiry is the cancel cause that settles a push expired with its reason.
@@ -152,19 +165,30 @@ func New(c Config) *Pusher {
 }
 
 // Start settles every push left pending by the previous run expired (reason
-// restart, never resent), then accepts pushes until Stop or ctx ends.
+// restart, never resent), then accepts pushes until Stop or ctx ends. A
+// Pusher starts once.
 func (p *Pusher) Start(ctx context.Context) error {
+	p.mu.Lock()
+	if p.starting || p.running || p.stopped {
+		p.mu.Unlock()
+		return errors.New("hub alerts: pusher already started")
+	}
+	p.starting = true
+	p.mu.Unlock()
+
 	n, err := p.c.Store.ExpirePendingAlertPushes(p.c.Clock())
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.starting = false
 	if err != nil {
 		return fmt.Errorf("hub alerts: %w", err)
 	}
 	if n > 0 {
 		log.Printf("hub alerts: %d pushes pending at start settled expired (restart), never resent", n)
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.running || p.stopped {
-		return errors.New("hub alerts: pusher already started")
+	if p.stopped {
+		return errors.New("hub alerts: pusher stopped while starting")
 	}
 	p.ctx, p.cancel = context.WithCancelCause(ctx)
 	p.running = true
@@ -174,10 +198,12 @@ func (p *Pusher) Start(ctx context.Context) error {
 // Enqueue queues key's push to every target phone that was never pushed
 // this key. The pending rows are written first, in one short transaction,
 // then the items enter the queues; it never waits on a send. savedAt is the
-// alert's first save (the start of its freshness window).
+// alert's first save (the start of its freshness window). An Enqueue that
+// overlaps an Abandon queues nothing: its rows settle expired with the
+// abandon's reason (the runtime calls Enqueue only while on the relay).
 func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time.Time) {
 	p.mu.Lock()
-	ctx, running := p.ctx, p.running
+	ctx, running, gen := p.ctx, p.running, p.gen
 	p.mu.Unlock()
 	if !running {
 		log.Printf("hub alerts: push of %s not queued: the pusher is not running", key)
@@ -213,42 +239,49 @@ func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time
 		if errors.Is(err, secure.ErrAlertTooLarge) {
 			outcome = state.AlertTooLarge
 		}
-		log.Printf("hub alerts: push of %s not sealed (%s): settled %s", key, errClass(err), outcome)
+		log.Printf("hub alerts: push of %s not sealed (%s)", key, errClass(err))
+		xs := make([]state.AlertPushSettle, 0, len(begun))
 		for _, d := range begun {
-			p.settle(key, d, outcome, "", 0)
+			xs = append(xs, state.AlertPushSettle{Key: key, Device: d, Outcome: outcome})
 		}
+		p.settleAll(xs)
 		return
 	}
+	if p.beforeQueue != nil {
+		p.beforeQueue()
+	}
 	deadline := savedAt.Add(Freshness)
-	var refused []struct{ device, reason string }
+	var refused []state.AlertPushSettle
 	p.mu.Lock()
 	for _, d := range begun {
-		if !p.running {
-			refused = append(refused, struct{ device, reason string }{d, state.ReasonStopped})
-			continue
-		}
-		s := p.senderLocked(d)
-		if len(s.queue) >= QueuePerPhone {
-			refused = append(refused, struct{ device, reason string }{d, state.ReasonOverflow})
-			continue
-		}
-		s.queue = append(s.queue, item{key: key, device: d, relay: relayOf[d], push: push, deadline: deadline})
-		select {
-		case s.wake <- struct{}{}:
+		reason := ""
+		switch {
+		case !p.running:
+			reason = state.ReasonStopped
+		case p.gen != gen:
+			reason = p.abandoned
 		default:
+			s := p.senderLocked(d)
+			if len(s.queue) >= QueuePerPhone {
+				reason = state.ReasonOverflow
+				break
+			}
+			s.queue = append(s.queue, item{key: key, device: d, relay: relayOf[d], push: push, deadline: deadline})
+			select {
+			case s.wake <- struct{}{}:
+			default:
+			}
+		}
+		if reason != "" {
+			refused = append(refused, state.AlertPushSettle{Key: key, Device: d, Outcome: state.AlertExpired, Reason: reason})
 		}
 	}
 	p.mu.Unlock()
-	for _, r := range refused {
-		if r.reason == state.ReasonOverflow {
-			log.Printf("hub alerts: push of %s to %s dropped: its queue is full", key, r.device)
-		}
-		p.settle(key, r.device, state.AlertExpired, r.reason, 0)
-	}
+	p.settleAll(refused)
 }
 
-// Reconnected wakes the pushes waiting after an unreachable relay: the
-// relay has a connection again.
+// Reconnected wakes the pushes waiting after the relay answered UNAVAILABLE:
+// the relay has a connection again. Only a sender waiting then reacts.
 func (p *Pusher) Reconnected() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -260,23 +293,32 @@ func (p *Pusher) Reconnected() {
 	}
 }
 
-// Abandon settles every queued push, and the one each phone works on unless
-// its answer comes first, expired with reason, and returns their alert keys
-// (sorted, once each). The pusher keeps running: a later Enqueue is pushed
-// as usual. The runtime calls it on a switch to CloudKit.
+// Abandon settles every queued push expired with reason, and the one each
+// phone works on: expired with reason while it waits to retry, expired
+// in_flight when its request is in progress, or its own answer when that
+// comes first. It returns the alert keys it settled expired (sorted, once
+// each). The pusher keeps running; an Enqueue overlapping the Abandon queues
+// nothing. The runtime calls it on a switch to CloudKit.
 func (p *Pusher) Abandon(reason string) []string {
-	queued, flights := p.takeAll()
+	p.mu.Lock()
+	p.gen++
+	p.abandoned = reason
+	queued, flights := p.takeAllLocked()
 	for _, f := range flights {
 		f.cancel(expiry{reason})
 	}
+	p.mu.Unlock()
+
 	keys := map[string]bool{}
-	for _, it := range queued {
-		p.settle(it.key, it.device, state.AlertExpired, reason, 0)
-		keys[it.key] = true
+	xs := expireAll(queued, reason)
+	for i, ok := range p.settleAll(xs) {
+		if ok {
+			keys[xs[i].Key] = true
+		}
 	}
 	for _, f := range flights {
 		<-f.done
-		if f.outcome == state.AlertExpired && f.reason == reason {
+		if f.changed && f.outcome == state.AlertExpired {
 			keys[f.key] = true
 		}
 	}
@@ -288,29 +330,30 @@ func (p *Pusher) Abandon(reason string) []string {
 	return out
 }
 
-// Stop settles every queued push and the ones in progress expired (reason
-// stopped) and waits for the senders to end. It is safe to call twice.
+// Stop settles every queued push expired (reason stopped), and the ones in
+// progress (stopped, or in_flight mid-request), and waits for the senders
+// and any account refresh to end. No send starts after Stop. Safe to call
+// twice.
 func (p *Pusher) Stop() {
 	p.mu.Lock()
 	wasRunning := p.running
 	p.running, p.stopped = false, true
+	var queued []item
+	if wasRunning {
+		queued, _ = p.takeAllLocked()
+		p.cancel(expiry{state.ReasonStopped})
+	}
 	p.mu.Unlock()
 	if !wasRunning {
 		return
 	}
-	queued, _ := p.takeAll()
-	p.cancel(expiry{state.ReasonStopped})
-	for _, it := range queued {
-		p.settle(it.key, it.device, state.AlertExpired, state.ReasonStopped, 0)
-	}
+	p.settleAll(expireAll(queued, state.ReasonStopped))
 	p.wg.Wait()
 }
 
-// takeAll empties every queue and returns the items with the flights in
-// progress.
-func (p *Pusher) takeAll() ([]item, []*flight) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// takeAllLocked empties every queue and returns the items with the flights
+// in progress (p.mu held).
+func (p *Pusher) takeAllLocked() ([]item, []*flight) {
 	var (
 		queued  []item
 		flights []*flight
@@ -323,6 +366,14 @@ func (p *Pusher) takeAll() ([]item, []*flight) {
 		}
 	}
 	return queued, flights
+}
+
+func expireAll(items []item, reason string) []state.AlertPushSettle {
+	xs := make([]state.AlertPushSettle, 0, len(items))
+	for _, it := range items {
+		xs = append(xs, state.AlertPushSettle{Key: it.key, Device: it.device, Outcome: state.AlertExpired, Reason: reason})
+	}
+	return xs
 }
 
 // senderLocked is device's sender, started on first use (p.mu held, running).
@@ -358,7 +409,7 @@ func (p *Pusher) run(s *sender) {
 		s.cur = f
 		p.mu.Unlock()
 
-		f.outcome, f.reason = p.deliver(ctx, s, it)
+		f.outcome, f.reason, f.changed = p.deliver(ctx, s, it)
 		cancel(nil)
 		p.mu.Lock()
 		s.cur = nil
@@ -368,43 +419,72 @@ func (p *Pusher) run(s *sender) {
 }
 
 // deliver sends one push, retrying inside its freshness window, and settles
-// it. It returns the outcome and reason it settled.
-func (p *Pusher) deliver(ctx context.Context, s *sender, it item) (string, string) {
+// it. It returns the outcome and reason it settled and whether the row
+// changed.
+func (p *Pusher) deliver(ctx context.Context, s *sender, it item) (string, string, bool) {
 	attempts := 0
-	expire := func(reason string) (string, string) {
-		p.settle(it.key, it.device, state.AlertExpired, reason, attempts)
-		return state.AlertExpired, reason
+	finish := func(outcome, reason string) (string, string, bool) {
+		changed := p.settleAll([]state.AlertPushSettle{{
+			Key: it.key, Device: it.device, Outcome: outcome, Reason: reason, Attempts: attempts,
+		}})[0]
+		return outcome, reason, changed
 	}
 	for {
 		if err := context.Cause(ctx); err != nil {
-			return expire(reasonOf(err))
-		}
-		if !p.c.Clock().Before(it.deadline) {
-			return expire(state.ReasonFreshness)
-		}
-		if !p.away() {
-			return expire(state.ReasonOwnerBack)
-		}
-		attempts++
-		err := p.c.Send.SendAlert(ctx, it.relay, it.push)
-		if err != nil && ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-			return expire(reasonOf(context.Cause(ctx)))
-		}
-		outcome, wait, onConnect := classify(err)
-		if wait == 0 {
-			p.settle(it.key, it.device, outcome, "", attempts)
-			p.after(it, outcome)
-			return outcome, ""
+			return finish(state.AlertExpired, reasonOf(err))
 		}
 		remaining := it.deadline.Sub(p.c.Clock())
 		if remaining <= 0 {
-			return expire(state.ReasonFreshness)
+			return finish(state.AlertExpired, state.ReasonFreshness)
+		}
+		if !p.away() {
+			return finish(state.AlertExpired, state.ReasonOwnerBack)
+		}
+		// The attempt ends at the window's end; a cancel (Abandon, Stop)
+		// issued before this point is seen here, under the lock it is
+		// issued under, so no request starts after one.
+		actx, acancel := context.WithTimeoutCause(ctx, remaining, expiry{state.ReasonFreshness})
+		p.mu.Lock()
+		cancelled := ctx.Err() != nil
+		p.mu.Unlock()
+		if cancelled {
+			acancel()
+			continue
+		}
+		attempts++
+		err := p.c.Send.SendAlert(actx, it.relay, it.push)
+		interrupted, cause := actx.Err() != nil, context.Cause(actx)
+		acancel()
+		if err != nil && !relayAnswered(err) {
+			// No relay answer: the request may have reached it.
+			if interrupted && reasonOf(cause) == state.ReasonFreshness {
+				return finish(state.AlertExpired, state.ReasonFreshness)
+			}
+			if interrupted || errors.Is(err, transport.ErrUnavailable) {
+				return finish(state.AlertExpired, state.ReasonInFlight)
+			}
+		}
+		outcome, wait, onConnect := classify(err)
+		if wait == 0 {
+			o, r, changed := finish(outcome, "")
+			if changed {
+				p.after(it, outcome)
+			}
+			return o, r, changed
+		}
+		left := it.deadline.Sub(p.c.Clock())
+		if left <= 0 {
+			continue // the window ended during the request
 		}
 		var reconnect <-chan struct{}
 		if onConnect {
+			select { // a connection that came before this wait is stale
+			case <-s.reconnect:
+			default:
+			}
 			reconnect = s.reconnect
 		}
-		fire, stop := p.c.Timer(min(wait, remaining))
+		fire, stop := p.c.Timer(min(wait, left))
 		select {
 		case <-fire:
 		case <-reconnect:
@@ -414,14 +494,20 @@ func (p *Pusher) deliver(ctx context.Context, s *sender, it item) (string, strin
 	}
 }
 
-// after acts on a settled answer: one account refresh after not_paying or
+// relayAnswered reports whether err is the relay's own coded answer, as
+// opposed to a failure to reach it or to hear back.
+func relayAnswered(err error) bool {
+	var pe *client.Error
+	return errors.As(err, &pe) ||
+		errors.Is(err, transport.ErrNoPushToken) || errors.Is(err, transport.ErrPushOff)
+}
+
+// after acts on a settled answer: an account refresh after not_paying or
 // forbidden, one log line per alert key for a push too large.
 func (p *Pusher) after(it item, outcome string) {
 	switch outcome {
 	case state.AlertNotPaying, state.AlertForbidden:
-		if p.c.RefreshAccount != nil {
-			p.c.RefreshAccount(p.ctx)
-		}
+		p.refresh()
 	case state.AlertTooLarge:
 		p.mu.Lock()
 		first := !p.tooLarge[it.key]
@@ -436,8 +522,35 @@ func (p *Pusher) after(it item, outcome string) {
 	}
 }
 
-// classify maps a send_alert answer to its outcome class, or to a retry: the
-// wait, and whether a new connection ends it early.
+// refresh runs RefreshAccount in its own goroutine unless one runs already;
+// Stop waits for it, nothing else does.
+func (p *Pusher) refresh() {
+	if p.c.RefreshAccount == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.refreshing || !p.running {
+		p.mu.Unlock()
+		return
+	}
+	p.refreshing = true
+	ctx := p.ctx
+	p.wg.Add(1)
+	p.mu.Unlock()
+	go func() {
+		defer p.wg.Done()
+		rctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+		defer cancel()
+		p.c.RefreshAccount(rctx)
+		p.mu.Lock()
+		p.refreshing = false
+		p.mu.Unlock()
+	}()
+}
+
+// classify maps a relay answer to its outcome class, or to a retry: the
+// wait, and whether a new connection ends it early. Only RATE_LIMITED,
+// TRAFFIC_LIMIT_EXCEEDED and the relay's own UNAVAILABLE are retried.
 func classify(err error) (outcome string, wait time.Duration, onConnect bool) {
 	switch {
 	case err == nil:
@@ -458,7 +571,7 @@ func classify(err error) (outcome string, wait time.Duration, onConnect bool) {
 			d = retryDefault
 		}
 		return "", min(d, retryCap), false
-	case errors.Is(err, transport.ErrUnavailable):
+	case errors.Is(err, transport.ErrUnavailable) && relayAnswered(err):
 		return "", unavailableRetry, true
 	default:
 		return state.AlertFailed, 0, false
@@ -484,19 +597,32 @@ func (p *Pusher) away() bool {
 	return away || err != nil
 }
 
-// settle writes a push's outcome and logs it: ids and classes only.
-func (p *Pusher) settle(key, device, outcome, reason string, attempts int) {
-	if err := p.c.Store.SettleAlertPush(key, device, outcome, reason, attempts, p.c.Clock()); err != nil {
-		log.Printf("hub alerts: push of %s to %s not settled (%s)", key, device, errClass(err))
+// settleAll settles xs in one write transaction and logs each row it
+// changed (ids and classes only); a row already settled is left as is
+// without a line. changed[i] is false for every row when the write fails.
+func (p *Pusher) settleAll(xs []state.AlertPushSettle) []bool {
+	if len(xs) == 0 {
+		return nil
 	}
-	if reason != "" {
-		log.Printf("hub alerts: push of %s to %s: %s (%s) after %d attempts", key, device, outcome, reason, attempts)
-	} else {
-		log.Printf("hub alerts: push of %s to %s: %s after %d attempts", key, device, outcome, attempts)
+	changed, err := p.c.Store.SettleAlertPushes(xs, p.c.Clock())
+	if err != nil {
+		log.Printf("hub alerts: %d pushes not settled (%s)", len(xs), errClass(err))
+		return make([]bool, len(xs))
 	}
-	if p.onSettle != nil {
-		p.onSettle(key, device, outcome, reason)
+	for i, x := range xs {
+		if !changed[i] {
+			continue
+		}
+		if x.Reason != "" {
+			log.Printf("hub alerts: push of %s to %s: %s (%s) after %d attempts", x.Key, x.Device, x.Outcome, x.Reason, x.Attempts)
+		} else {
+			log.Printf("hub alerts: push of %s to %s: %s after %d attempts", x.Key, x.Device, x.Outcome, x.Attempts)
+		}
+		if p.onSettle != nil {
+			p.onSettle(x.Key, x.Device, x.Outcome, x.Reason)
+		}
 	}
+	return changed
 }
 
 // errClass names an error by its class, never its text (FILES-01).
