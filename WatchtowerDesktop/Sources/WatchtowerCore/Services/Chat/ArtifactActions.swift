@@ -3,7 +3,7 @@ import Foundation
 /// What an artifact button does. A value, not an effect: only the App-side
 /// `ArtifactActionPerformer` turns it into a pasteboard write / URL open.
 /// There is deliberately no case that sends anything (CHAT-05).
-package enum ArtifactAction: Equatable, Sendable {
+package enum ChatArtifactAction: Equatable, Sendable {
     case open(URL)
     case copyThenOpen(text: String, url: URL?)
     case copy(String)
@@ -12,7 +12,7 @@ package enum ArtifactAction: Equatable, Sendable {
 package struct ArtifactMenuItem: Equatable, Sendable {
     package let title: String
     package let systemImage: String
-    package let action: ArtifactAction
+    package let action: ChatArtifactAction
 }
 
 /// Pure builders: "open ready, never send" (spec §7.2).
@@ -45,19 +45,19 @@ package enum ArtifactActions {
             .filter { !$0.isEmpty }
     }
 
-    private static func withBody(head: String, separator: String, bodyParam: String, body: String) -> ArtifactAction {
+    private static func withBody(head: String, separator: String, bodyParam: String, body: String) -> ChatArtifactAction {
         let full = body.isEmpty ? head : head + separator + bodyParam + "=" + encode(body)
         if full.count < maxURLLength, let url = URL(string: full) { return .open(url) }
         return .copyThenOpen(text: body, url: URL(string: head))
     }
 
-    package static func gmailComposeURL(meta: [String: String], body: String) -> ArtifactAction {
+    package static func gmailComposeURL(meta: [String: String], body: String) -> ChatArtifactAction {
         let params = query([("to", meta["to"]), ("cc", meta["cc"]), ("su", meta["subject"])])
         let head = "https://mail.google.com/mail/?view=cm&fs=1" + (params.isEmpty ? "" : "&" + params)
         return withBody(head: head, separator: "&", bodyParam: "body", body: body)
     }
 
-    package static func mailtoURL(meta: [String: String], body: String) -> ArtifactAction {
+    package static func mailtoURL(meta: [String: String], body: String) -> ChatArtifactAction {
         let to = addresses(meta["to"]).map(encode).joined(separator: ",")
         let params = query([("cc", meta["cc"]), ("subject", meta["subject"])])
         let head = "mailto:" + to + (params.isEmpty ? "" : "?" + params)
@@ -67,7 +67,7 @@ package enum ArtifactActions {
     /// `meta["title"]` is the event title; start/end are ISO 8601 (offset,
     /// `Z`, local `yyyy-MM-ddTHH:mm[:ss]` in `timeZone`, or a date for all-day;
     /// an all-day `end` is inclusive). No end → one hour.
-    package static func calendarTemplateURL(meta: [String: String], body: String, timeZone: TimeZone = .current) -> ArtifactAction {
+    package static func calendarTemplateURL(meta: [String: String], body: String, timeZone: TimeZone = .current) -> ChatArtifactAction {
         let params = query([
             ("text", meta["title"]),
             ("dates", calendarDates(start: meta["start"], end: meta["end"], timeZone: timeZone)),

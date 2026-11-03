@@ -194,7 +194,7 @@ struct ArtifactPanelView: View {
         .disabled(!draft.isComplete)
     }
 
-    private func run(_ action: ArtifactAction) {
+    private func run(_ action: ChatArtifactAction) {
         let outcome = ArtifactActionPerformer.perform(action)
         if case .copyThenOpen(_, let url) = action, outcome.copied {
             notice = url == nil ? "Copied to the clipboard." : "Copied to the clipboard — paste it into the opened draft."

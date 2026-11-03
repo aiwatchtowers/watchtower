@@ -29,6 +29,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all)
     }
 
+    /// Inbox builder A's shots alone (mockups a-01 … a-11).
+    func testInboxBuilderAShotsRender() throws {
+        try renderShots(InboxBuilderAShotFixtures.shots)
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }

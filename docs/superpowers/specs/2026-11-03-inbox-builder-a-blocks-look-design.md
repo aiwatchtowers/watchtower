@@ -160,7 +160,7 @@ with no `--approve`: one pending `agent_actions` row, which the owner approves o
 | Newest proposal for this button | Button |
 |---|---|
 | none | **idle** — pressable |
-| `pending` | **waiting** — disabled, "Waiting for approval"; a click opens the approval card |
+| `pending` | **waiting** — a secondary button "Waiting for approval" that stays clickable: a click opens the approval card and never proposes again |
 | `approved` or `executing`, and in flight (this Desktop's own approve/apply process for the row is running, or `decided_at` is less than `TargetButtonStuckAfter` = 2 minutes old) | **creating** — disabled, "Creating task…" with a small progress mark |
 | `approved` or `executing`, not in flight (no live process of ours and `decided_at` 2 minutes old or more) | **stuck** — "Didn't finish" with **Try again** (see "A proposal stuck in approved or executing") |
 | `applied`, and its task still exists (a target with `source_id = 'action:<row id>'`) | **created** — "Task created"; a click opens that target |
