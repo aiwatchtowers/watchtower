@@ -187,6 +187,11 @@ func (db *DB) TransitionAgentAction(id int64, from []string, to, resultJSON, err
 		applied_at = CASE WHEN ? != '' THEN ? ELSE applied_at END
 		WHERE id = ? AND status IN (`+placeholders+`)`, args...)
 	if err != nil {
+		// A retry's claim of an Inbox button's older row while a newer
+		// proposal of the button is open: typed, the UPDATE changed nothing.
+		if open := db.openProposalAfterViolation(id, err); open != 0 {
+			return false, &ErrButtonNewerProposalOpen{ID: open}
+		}
 		return false, fmt.Errorf("transitioning agent action %d to %s: %w", id, to, err)
 	}
 	n, err := res.RowsAffected()

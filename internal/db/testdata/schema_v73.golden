@@ -6,6 +6,9 @@ ON account_purges(source, account_id) WHERE state IN ('scheduled','running')
 index	idx_agent_actions_conversation
 CREATE INDEX idx_agent_actions_conversation ON agent_actions(conversation_id, created_at)
 
+index	idx_agent_actions_open_context
+CREATE UNIQUE INDEX idx_agent_actions_open_context ON agent_actions(context_type, context_id) WHERE context_type = 'automation_output' AND status IN ('pending','approved','executing')
+
 index	idx_agent_actions_status
 CREATE INDEX idx_agent_actions_status ON agent_actions(status)
 
@@ -502,6 +505,9 @@ CREATE INDEX idx_target_links_target ON target_links(target_target_id)
 
 index	idx_target_status_history_target
 CREATE INDEX idx_target_status_history_target ON target_status_history(target_id, changed_at)
+
+index	idx_targets_action_source
+CREATE UNIQUE INDEX idx_targets_action_source ON targets(source_id) WHERE source_type = 'chat' AND source_id LIKE 'action:%' AND source_id != 'action:0'
 
 index	idx_targets_due
 CREATE INDEX idx_targets_due ON targets(due_date)
