@@ -259,6 +259,12 @@ Task 12's run against the stand at `3a99bd7`: 44 passed, 20 skipped, 0 failed. T
 
 The environment variables do not collide, and `TestInterop_KitPhone` skips without `-kit-dir`, so the first runner's `-run '^TestInterop_'` passes over it.
 
+**The desktop host on the stand (Phase 3b Task 24, R24).** `RELAY_INTEROP_DESKTOP=1 make relay-interop-kit-hub RELAY=<relay checkout>` is the second harness's desktop run: the Go half runs `-run 'TestInterop_KitPhone(FollowsASwitch)?$' -kit-desktop` and the Kit half gets `WT_GO_HUB_INTEROP_DESKTOP=1`; in it the relay-only `TestInterop_KitPhone` and `testKitPhoneLinksDrivesAndUnlinksTheGoHub` skip, so the one handoff folder serves the desktop test alone (Task 20 adds it). Unset or `0` is the relay-only run, unchanged. Its pieces, test-only:
+
+- `startDesktopHub` (`internal/hub/interop_desktop_test.go`, build tag `interop`) runs `Run` as a desktop host: the relay on the stand through the wire tap, CloudKit through the real bridge client over a `bridgefake` on the hub dir (the bridge process is a `sleep` stub in its own process group), `["cloudkit","relay"]`, the gate opened by a fresh sidecar and `hub enable`. `TestInterop_DesktopHostOnTheStand` runs it under `make relay-interop`.
+- `serveCloudKitLoop` serves that fake's phone side on `127.0.0.1:<random port>` behind a per-run token (32 random bytes, `Authorization: Bearer`; a request without it is 403): `POST /changes`, `/save`, `/delete` (conditional on `absent` or the change tag) and `/accept-share` (the phone's iCloud user becomes an accepted participant of both shares, and its writes carry it as their creator). The Go test hands the URL and the token to the Kit in `ck.url` (`{"url","token"}`, mode 0600). `TestLoopbackRefusesWithoutTheToken` and `TestLoopbackListensOnLoopbackOnly` pin the boundary.
+- `LoopbackCloudTransport` (`WatchtowerHostedRelayTesting`, linked by no app target) is the Kit phone's iCloud leg over it: `CloudSyncTransport` + `ConditionalTransport`, every change page in one batch, a record with an asset refused (assets are not carried). `LoopbackCloudTransportTests` runs it against a `URLProtocol` stub.
+
 ### CI mode of the interop scripts
 
 There is no relay CI job: the owner dropped it on 2026-11-02 (spec §12 p. 4; the Swift part is being rewritten in Go). The two Kit interop scripts stay as local entry points, run by hand, and keep a non-interactive CI mode:

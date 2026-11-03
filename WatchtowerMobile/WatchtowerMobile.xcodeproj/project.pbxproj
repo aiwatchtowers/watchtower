@@ -101,6 +101,7 @@
 		50BA1DEC7AE8647281478CA1 /* NewBoardTargetSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */; };
 		517133D8B559D38811A85FE0 /* RelayStandControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = E155AE7F17A95371CE9C1626 /* RelayStandControl.swift */; };
 		51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D1C1D5173ED2758596AA8F /* SettingsView.swift */; };
+		51D71B7F8C68456BA6973DC1 /* LoopbackCloudTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D80B57CDB9AF17399663B6A8 /* LoopbackCloudTransport.swift */; };
 		539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43762D471529DE769FDD240A /* WorkbenchView.swift */; };
 		5499E788A16EA0CBDE2FD812 /* TargetStatusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D403CB3F9A7FA2CB7C28C34 /* TargetStatusStyle.swift */; };
 		54E8066B476CBC3BC9835B67 /* CalendarRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 598DCCEEF7E141F8F086FB80 /* CalendarRow.swift */; };
@@ -514,6 +515,7 @@
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D576A6CEC011983BF063A3B7 /* AgendaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgendaView.swift; sourceTree = "<group>"; };
 		D69C7DC55D6D770B0AC24F86 /* InlineCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCards.swift; sourceTree = "<group>"; };
+		D80B57CDB9AF17399663B6A8 /* LoopbackCloudTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackCloudTransport.swift; sourceTree = "<group>"; };
 		D88CC35762ED750977196374 /* BoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardView.swift; sourceTree = "<group>"; };
 		D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1034,6 +1036,7 @@
 				A3B316D87384C7980D86DD15 /* FakeHostedRelay+Faults.swift */,
 				AD363A2DEA5B38733BD37221 /* FakeHostedRelay+Network.swift */,
 				3423ED435746DC6583E674BC /* FakeHostedRelay+Zones.swift */,
+				D80B57CDB9AF17399663B6A8 /* LoopbackCloudTransport.swift */,
 				B89F1F70869635249DF29C32 /* ManualRelayClock.swift */,
 				E155AE7F17A95371CE9C1626 /* RelayStandControl.swift */,
 			);
@@ -1391,6 +1394,7 @@
 				DA434D692C1CA4EB4C68A2AD /* LinkRoutePolicyTests.swift in Sources */,
 				06EE5CC835773038323C08F9 /* LinkingFakes.swift in Sources */,
 				BE065B6613140A83D5C37021 /* LinkingViewModelTests.swift in Sources */,
+				51D71B7F8C68456BA6973DC1 /* LoopbackCloudTransport.swift in Sources */,
 				3801F0A3B71A6F6A2F3A8C49 /* MacsModelTests.swift in Sources */,
 				DC7F8EAE3E9FAB3BD3B6EF4C /* ManualRelayClock.swift in Sources */,
 				46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */,

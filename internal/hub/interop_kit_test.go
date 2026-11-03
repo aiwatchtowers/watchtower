@@ -253,6 +253,9 @@ func TestInterop_KitPhone(t *testing.T) {
 	if *kitDir == "" {
 		t.Skip("no -kit-dir: run `make relay-interop-kit-hub RELAY=<relay checkout>`")
 	}
+	if *kitDesktop {
+		t.Skip("-kit-desktop: the handoff folder is the desktop host's run (RELAY_INTEROP_DESKTOP=1)")
+	}
 	k := kitRun{t: t, dir: *kitDir}
 	logs := &logTap{}
 	log.SetOutput(logs)
