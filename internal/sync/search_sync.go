@@ -208,8 +208,18 @@ var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate l
 // (widened to whole days; the fetch side of the chunk convention in
 // internal/historybackfill/chunk.go) without touching the search watermark, the
 // progress heartbeat or the account's auth/error state. An incomplete search
-// returns an error wrapping ErrBackfillIncomplete.
+// returns an error wrapping ErrBackfillIncomplete, and so does an account
+// whose token is for another team than its data (TeamMismatchError): nothing
+// is searched until the owner signs in to the home team again.
 func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {
+	acct, err := o.db.GetSlackAccount(o.accountID)
+	if err != nil {
+		return 0, err
+	}
+	// A moved account (#915) waits for its Re-login: held, never a strike.
+	if err := o.checkHomeTeam(acct, acct.TeamID, acct.TeamName); err != nil {
+		return 0, fmt.Errorf("%w: %w", ErrBackfillIncomplete, err)
+	}
 	o.resetMediaPlan()
 	after, before := slackSearchRange(from, to)
 	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false, nil)
