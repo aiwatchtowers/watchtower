@@ -179,6 +179,9 @@ targets:
       # product would link a second copy of WatchtowerHostedRelay beside the host app's, and errors thrown by one
       # copy would not match a catch in the other.
       - path: ../WatchtowerKit/Sources/WatchtowerHostedRelayTesting
+        # The loopback CloudKit store is the Kit ↔ Go hub interop's alone (Phase 3 R24): nothing in the phone links it.
+        excludes:
+          - LoopbackCloudTransport.swift
     configFiles:
       Debug: Base.xcconfig
       Release: Base.xcconfig

@@ -1,4 +1,4 @@
-# Relay client — the phone's hosted relay transport in the Kit (Phase 2, 2026-10-31, board #1239, #1240; Phase 3a, board #1241, #1242, #1247)
+# Relay client — the phone's hosted relay transport in the Kit (Phase 2, 2026-10-31, board #1239, #1240; Phase 3a, board #1241, #1242, #1247; Phase 3b, 2026-11-03)
 
 Spec: `docs/superpowers/specs/2026-10-29-relay-client-design.md` (below: "the spec"). Plans: `docs/superpowers/plans/2026-10-31-relay-client-phase-2.md` (rulings R1–R20) and `…-phase-3.md` (its own R1–R21; "Phase 3 R4" below means the latter). Where the two collide, the section says which. Server contract: the relay repository's `proto/README.md` and `relay.proto` at the pinned commit; client rules: its `sim/README.md` ("sim rule N").
 
@@ -298,7 +298,7 @@ RELAY_INTEROP_CI=1 WATCHTOWER_CHECKOUT=<watchtower checkout> bash <watchtower ch
 
 ## Phase 3a — the phone app uses it (2026-11-02, board #1241, #1242, #1247)
 
-Plan: `docs/superpowers/plans/2026-10-31-relay-client-phase-3.md`. Phase 3a wires the relay into the iPhone app and ships dark: no Release build builds a relay client (Phase 3 R1). Phase 3b (upgrading a CloudKit link to the relay, the switch end to end) waits for the Go hub's switcher and is not built. Phase 3a changes no Go hub production file; the Go side is test-only.
+Plan: `docs/superpowers/plans/2026-10-31-relay-client-phase-3.md`. Phase 3a wires the relay into the iPhone app and ships dark: no Release build builds a relay client (Phase 3 R1). Phase 3a changes no Go hub production file; the Go side is test-only. Phase 3b (upgrading a CloudKit link to the relay, the switch end to end) is the next section.
 
 ### Identity and Keychain items (Phase 3 R1)
 
@@ -361,6 +361,14 @@ Three Macs in slots shows the "Add Mac" screen (`RelaySlotsModel`, `RelaySlotsVi
 
 `make relay-interop-kit-hub RELAY=<relay checkout>` (`scripts/relay-interop-kit-hub.sh`) runs the real Go hub's `TestInterop_KitPhone` (`internal/hub/interop_kit_test.go`, build tag `interop`, test-only) beside the Kit's `KitGoHubInteropTests` (`FILTER=KitGoHubInteropTests`) on the relay's stand, handing off through files: link, vouch, promote, actions and unlink. With attestation off, today's Go hub registering as a Mac is a hub the phone vouches for. The CI mode's switches, `RELAY_INTEROP_CI=1` (`scripts/relay-interop-ci-lib.sh`) and `WATCHTOWER_CHECKOUT`, are in "CI mode of the interop scripts" above.
 
+## Phase 3b — upgrading an iCloud link and the switch end to end (2026-11-03, board #1241, #1242, #1247)
+
+Same plan, Tasks 19–24 (rulings R22–R25). Phase 3b merged `feature/go-hub` into the branch (Task 22), so the phone's switch runs against the real Go desktop hub. It is still dark: nothing outside tests starts an upgrade (R23).
+
+- **The device record's relay id (Task 23, R22).** An iCloud-linked phone names its `relay_device_id` in its own `device` record, with `relay_auth_pub` and `relay_id_sig` over `"watchtower/v1/relay-id"` ‖ 0x00 ‖ hub_id ‖ device_id ‖ id; the Go hub stores it only with a valid proof and when no other phone holds it, then re-syncs `set_hub_readers`. Details in "The link route rule" above and in the protocol spec §5.5; the Go side is in [go-hub.md](go-hub.md), Phase 3.
+- **The upgrade's steps and refusals (Task 19).** Step 0 checks (relay available, the hub's relay identity, `ordered_actions`, paying), then the device record, `vouch_hub`, `add_slot`, the reader wait (24 h), `transport_switch{relay}`; refusals `too_soon` (keeps `retry_after_s`), `not_paying`, `not supported yet`, `unavailable` (one automatic retry) and `.readerNotConfirmed`, each its own state, with the slot kept until an unlink. Details in "Upgrading an iCloud link to the relay" above.
+- **The switch interop (Task 20)** and **the second harness's desktop run (Task 24, R24)**: "The desktop host on the stand" and "The switch end to end" under "Twins and interop"; the two Kit ↔ Go hub harnesses both stay (R25).
+
 ## v1 limits
 
 - **A resync that the relay refuses mid-way is silent.** Every pull from 0 sets `Changes.resync` (relay `bcca870`, Phase 3 Task 17), so the tombstone floor no longer stalls a multi-page resync. What can still stall one is the relay refusing a flagged middle page with `TOKEN_EXPIRED` (a zone rebuilt mid-resync); the pull is then held, and the only trace is one `relay resync stalled partway, held` log line (category `HostedRelay`, zone kind only). No `relayEvents` case or screen reports it.
@@ -381,5 +389,5 @@ Three Macs in slots shows the "Add Mac" screen (`RelaySlotsModel`, `RelaySlotsVi
 - **`relayUse` is `.no` for a hub without the Mac's relay id (Task 11):** a move to the relay is refused, the policy never asks.
 - **Side mailbox (Task 12).** The CloudKit drain keeps the phone's own `device` record (the relay drain deletes it per rule 15), so a stale `device` record stays in the CloudKit zone. A CloudKit drain re-fetches the whole CloudKit database once per launch (the engine keeps one state for the whole database). The outage poll starts at the session's first unanswered fetch, with a 60 s floor.
 - **A relay-only link without iCloud has no fallback** (Phase 3 R19) until a re-link.
-- **Phase 3b, the upgrade is model only (Task 19, R23):** `HubSession.upgradeToRelay()` exists and is tested, but no screen calls it before Phase 4; the switch end to end on the real hub is Task 20. The dark ship means no production phone can pay, link or switch over Relay before Phase 4.
+- **Phase 3b, the upgrade is model only (Task 19, R23):** `HubSession.upgradeToRelay()` exists and is tested, but no screen calls it: the per-Mac switch screen is Phase 4; the switch end to end on the real hub is Task 20. The dark ship means no production phone can pay, link or switch over Relay before Phase 4.
 - **Smaller parked items.** A pull after a terminal stop redials the socket each time. A `ZoneChanged` that carries a record still costs one `changes` round trip (R9).
