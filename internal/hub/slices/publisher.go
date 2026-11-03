@@ -535,6 +535,11 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 			}
 		}()
 	}
+	// A stop during the reads (the heartbeat's accounts read, which may not
+	// heed ctx) writes nothing, whatever the transport does with an ended ctx.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 
 	seen := map[string]bool{}
 	var (

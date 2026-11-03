@@ -452,6 +452,21 @@ func TestCloudKitConfirmCloseKeepsTheParticipantsForTheGrace(t *testing.T) {
 	}
 }
 
+// twin of MobileHubServiceTests.testIssuingACodeWakesTheRelayLoop: a new
+// code runs a pass at once instead of waiting for the idle cadence's tick.
+func TestIssuingACodeRunsAPassAtOnce(t *testing.T) {
+	f := newFakeCadence()
+	h := startCloudKitHub(t, func(_ string, ck *ckShares) {
+		ck.quiet.Store(true) // no zone events: passes come from the ticks only
+	}, f.configure)
+	settled := h.settle()
+	if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
+		t.Fatal(err)
+	}
+	h.next(link.EventQR)
+	eventually(t, 2*time.Second, "a pass after the code", func() bool { return h.passes.Load() > settled })
+}
+
 func TestPullNowRunsAPassAtOnce(t *testing.T) {
 	var mu sync.Mutex
 	var urgent bool

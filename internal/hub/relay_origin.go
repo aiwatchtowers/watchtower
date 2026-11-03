@@ -8,3 +8,8 @@ package hub
 // WATCHTOWER_RELAY_ORIGIN and config hub.relay_origin take precedence (Go hub
 // phase 2 plan, Global Constraints "Relay origin").
 var DefaultRelayOrigin string
+
+// BuildFlavor is the build profile's flavor (cmd.BuildFlavor, set through
+// ldflags; empty for the default build), copied here by cmd at init. The
+// heartbeat carries it as wire.FlavorOf(BuildFlavor).
+var BuildFlavor string

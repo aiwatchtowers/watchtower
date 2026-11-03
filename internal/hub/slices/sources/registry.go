@@ -80,7 +80,14 @@ type Set struct {
 	// Sessions is the terminal_session source: the handlers' SessionWindows
 	// (what the phone may ask a chat or a report of).
 	Sessions *TerminalSessionSource
+	// Staged is the meeting_transcript source's staged-asset reset (nil
+	// unless the mode publishes transcripts).
+	Staged StagedAssets
 }
+
+// StagedAssets forgets what a source staged after the runtime removed its
+// files (an iCloud account change): its next Items stages anew.
+type StagedAssets interface{ ForgetStaged() }
 
 // WorkbenchOnlyKinds is what All publishes under MobileSync =
 // workbench_only, in AllKinds order; the hub adds its own heartbeat and
@@ -197,6 +204,9 @@ func All(c Config) (*Set, error) {
 			return nil, fmt.Errorf("hub slices: %w", err)
 		}
 		set.Sources = append(set.Sources, CalendarEvent(c.DB, cal), transcripts, jobs)
+		if st, ok := transcripts.(StagedAssets); ok {
+			set.Staged = st
+		}
 	}
 	return set, nil
 }
