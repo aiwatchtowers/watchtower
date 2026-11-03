@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// The latency steps (00012, RC §10): a phone action read → applied, applied
+// The latency steps (00011, RC §10): a phone action read → applied, applied
 // → the slice that shows it saved, and read → saved (the per-action total,
 // recorded together with applied_saved).
 const (

@@ -53,7 +53,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - **Desktop screens** (spec §12.4 and the workbench rule): every new or changed screen gets its mockup states in `docs/design/mockups/go-hub/index.html` (Task 1) and a `DesignShotCatalog` entry per state — **empty, loading, error with Retry, busy, narrow width** — on fixture data (`acme`, `example.com`); every UI string lives in its model and is pinned by a model test (view-source scan, as Phase 3 Task 23); colours only through `Tone`/semantic styles, `SettingsSection` + `.kitRow`, no row separators; after implementation `make desktop-shots DESKTOP_SHOTS=<dir>` is compared with the mockup and the PNGs go into the PR.
 - **Pinned copy** (RC §10 mockup, verbatim where it exists): "Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, or subscribe on <phone>."; "On this Mac's side, <N> actions from this phone are not applied yet." (`1 action from this phone is not applied yet`; replaces the mockup's "were not delivered — it shows them with Retry", which describes the phone's outbox, review ask #866); "Relay unavailable for <N> min. Phones keep their changes and send them when it is back."; "Connected · last change delivered <age> ago"; "Content-free timings kept on this Mac only."; "This Mac's Relay storage is full (5 GB). New changes are not sent until older recordings are removed." (verbatim, review ask #866); new: "<phone name>'s Relay mailbox is full." (one per affected phone), "Notifications aren't set up on this iPhone. Open Watchtower on it once.", "Relay has no notifications configured.", "No timings yet. They appear after the first action from a phone.", "This Mac's part alone is over the 500 ms goal.", "Last alert: sent to relay", "<N> alerts were dropped because too many were waiting." (`1 alert was dropped …`), "Connecting to Relay…", "Couldn't read the timings." + **Retry**, "Diagnostics", the step labels "Phone action read → applied", "Applied → slice saved", "Phone action read → slice saved". Task 1's coverage table is the complete list.
 - **Swift** follows the "Swift / Desktop conventions" of `docs/review/review-rules.md`; every Swift task runs `make lint-swift`.
-- Sidecar migrations continue from the newest file on `feature/go-hub`: `00010_switch_epochs.sql` is the newest (Task 0, 2026-11-03), so this plan adds `00011_alert_pushes.sql` (Task 4) and `00012_latency_samples.sql` (Task 6); re-check when the task starts.
+- Sidecar migrations continue from the newest file on `feature/go-hub`: `00010_switch_epochs.sql` is the newest (Task 0, 2026-11-03), so this plan adds `00011_latency_samples.sql` (Task 6, merged first) and `00012_alert_pushes.sql` (Task 4); re-check when the task starts.
 - Inner loop only per task; the full gate (`make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`) runs once, in Task 11.
 
 ## Review Focus
@@ -216,7 +216,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 ### Task 4: The pusher — eligibility, ledger, retries, outcomes
 
 **Files:**
-- Create: `internal/hub/state/migrations/00011_alert_pushes.sql`, `internal/hub/state/alertpushes.go`
+- Create: `internal/hub/state/migrations/00012_alert_pushes.sql`, `internal/hub/state/alertpushes.go`
 - Create: `internal/hub/alerts/pusher.go`
 - Test: `internal/hub/alerts/pusher_test.go`, `internal/hub/state/alertpushes_test.go`
 
@@ -225,7 +225,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - Produces:
   ```go
   package state
-  // 00011: CREATE TABLE alert_pushes(alert_key TEXT NOT NULL, device_id TEXT NOT NULL,
+  // 00012: CREATE TABLE alert_pushes(alert_key TEXT NOT NULL, device_id TEXT NOT NULL,
   //   outcome TEXT NOT NULL CHECK (outcome IN ('pending','accepted','no_token','not_paying','forbidden','push_off','too_large','expired','failed')),
   //   reason TEXT NOT NULL DEFAULT '' CHECK (reason IN ('','freshness','owner_back','restart','switched','overflow','stopped')),
   //   attempts INTEGER NOT NULL DEFAULT 0, first_at REAL NOT NULL, settled_at REAL, PRIMARY KEY (alert_key, device_id))
@@ -293,7 +293,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 ### Task 6: Hub-side latency samples
 
 **Files:**
-- Create: `internal/hub/state/migrations/00012_latency_samples.sql`, `internal/hub/state/latency.go`, `internal/hub/measure/measure.go`
+- Create: `internal/hub/state/migrations/00011_latency_samples.sql`, `internal/hub/state/latency.go`, `internal/hub/measure/measure.go`
 - Modify: `internal/hub/actions/processor.go` (stamps), `internal/hub/slices/publisher.go` (save stamps), `internal/hub/runtime.go` (recorder, prune ticker)
 - Test: `internal/hub/measure/measure_test.go`, `internal/hub/state/latency_test.go`, `internal/hub/actions/processor_test.go` (stamp cases)
 
@@ -302,7 +302,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - Produces:
   ```go
   package state
-  // 00012: CREATE TABLE latency_samples(at REAL NOT NULL, transport TEXT NOT NULL CHECK (transport IN ('cloudkit','relay')),
+  // 00011: CREATE TABLE latency_samples(at REAL NOT NULL, transport TEXT NOT NULL CHECK (transport IN ('cloudkit','relay')),
   //   step TEXT NOT NULL CHECK (step IN ('read_applied','applied_saved','read_saved')), ms INTEGER NOT NULL CHECK (ms >= 0));
   //   CREATE INDEX latency_samples_at ON latency_samples(at)
   type LatencyRow struct{ Step, Transport string; P50, P90 time.Duration; Samples int }
