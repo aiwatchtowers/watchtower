@@ -114,7 +114,12 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 		}
 		gen, savePool := cliPooledGenerator(cfg)
 		defer savePool()
-		run.Digest, _ = newLinkedDigestPipeline(cfg, database, gen, logger, det)
+		pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger)
+		if det != nil {
+			pipe.SetJiraKeyDetector(det)
+			tracksPipe.SetJiraKeyDetector(det)
+		}
+		run.Digest = pipe
 	}
 
 	release, err := slackbackfill.LockLedger(cfg.WorkspaceDir())

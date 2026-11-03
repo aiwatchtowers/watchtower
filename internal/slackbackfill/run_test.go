@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	gosync "sync"
 	"syscall"
 	"testing"
@@ -270,7 +271,7 @@ func TestRange_PartlyCoveredDayIsStoredNotDigested(t *testing.T) {
 	require.NoError(t, r.Range(context.Background(), day, day.Add(24*time.Hour)))
 	assert.Zero(t, f.gen.calls(), "a covered day is not digested")
 	assert.Contains(t, r.Out.(*bytes.Buffer).String(),
-		"1 channel days already had a digest: their messages are saved, not digested", "the run says so")
+		"1 channel days had messages inside an existing digest: saved, not digested again", "the run says so")
 	assert.Equal(t, 2, countDigests(t, f.db, `channel_id = '1:C1'`))
 	assert.Zero(t, dailyOn(t, f.db, day))
 	var stored int
@@ -337,7 +338,7 @@ func TestRange_LaterDigestInsideTheDayIsCutOut(t *testing.T) {
 	assert.Contains(t, joined, "gap-3", "the part before the later digest is digested")
 	assert.NotContains(t, joined, "in-later-9")
 	assert.Equal(t, 3, countDigests(t, f.db, `channel_id = '1:C1'`))
-	assert.Contains(t, r.Out.(*bytes.Buffer).String(), "1 channel days already had a digest")
+	assert.Contains(t, r.Out.(*bytes.Buffer).String(), "1 channel days had messages inside an existing digest")
 }
 
 // racingDigester commits a digest (the daemon's) after the run decided what
@@ -403,6 +404,12 @@ func TestRange_DigestCommittedInsideTheWindowIsCutOutOnTheRerun(t *testing.T) {
 	assert.Contains(t, joined, "before-5")
 	assert.Contains(t, joined, "after-15")
 	assert.NotContains(t, joined, "inside-10")
+	assert.Equal(t, 1, strings.Count(joined, "before-5"), "digested once")
+	assert.Equal(t, 1, strings.Count(joined, "after-15"), "digested once")
+
+	calls := f.gen.calls()
+	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
+	assert.Equal(t, calls, f.gen.calls(), "a third run digests nothing")
 }
 
 // m2: the rollup is marked pending before any digest is written. The model

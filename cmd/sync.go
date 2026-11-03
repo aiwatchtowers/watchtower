@@ -937,7 +937,11 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	defer cleanupPool()
 	// One shared detector across both pipelines, so the known-project-key set
 	// is loaded once rather than once per pipeline.
-	pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger, newIssueKeyDetector(cfg, database, logger))
+	pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger)
+	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
+		pipe.SetJiraKeyDetector(det)
+		tracksPipe.SetJiraKeyDetector(det)
+	}
 	d.SetDigestPipeline(pipe)
 	d.SetTracksPipeline(tracksPipe)
 	peoplePipe := guide.New(database, cfg, gen, logger)
@@ -1290,18 +1294,15 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 }
 
 // newLinkedDigestPipeline is the digest pipeline every sync path runs: the
-// prompt store, the tracks pipeline linked between channel digests and
-// rollups, and det (nil when no tracker is connected) shared by both.
-func newLinkedDigestPipeline(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger, det *issuekey.KeyDetector) (*digest.Pipeline, *tracks.Pipeline) {
+// prompt store and the tracks pipeline linked between channel digests and
+// rollups. Each caller wires the Jira key detector itself, so the wiring
+// guard (TestJiraKeyDetectorIsWiredIntoBothPipelines) sees the direct calls.
+func newLinkedDigestPipeline(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) (*digest.Pipeline, *tracks.Pipeline) {
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	tracksPipe.SetPromptStore(prompts.New(database, nil))
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))
 	pipe.TrackLinker = tracksPipe
-	if det != nil {
-		pipe.SetJiraKeyDetector(det)
-		tracksPipe.SetJiraKeyDetector(det)
-	}
 	return pipe, tracksPipe
 }
 
@@ -1577,7 +1578,11 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	// Digests (with tracks linked between channel digests and rollups)
 	fmt.Fprintln(out)
 	digestSpinner := ui.NewSpinner(out, "Generating digests...")
-	pipe, _ := newLinkedDigestPipeline(cfg, database, gen, logger, newIssueKeyDetector(cfg, database, logger))
+	pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger)
+	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
+		pipe.SetJiraKeyDetector(det)
+		tracksPipe.SetJiraKeyDetector(det)
+	}
 	pipe.OnProgress = func(done, total int, status string) {
 		digestSpinner.UpdateProgress(done, total, status)
 	}

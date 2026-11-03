@@ -244,7 +244,7 @@ func (r *Run) chunk(ctx context.Context, from, to time.Time) (string, error) {
 	}
 	line = fmt.Sprintf("%s, %d digests, daily rollups run for %d days", line, digests, rolled)
 	if kept > 0 {
-		line += fmt.Sprintf("; %d channel days already had a digest: their messages are saved, not digested", kept)
+		line += fmt.Sprintf("; %d channel days had messages inside an existing digest: saved, not digested again", kept)
 	}
 	return line, nil
 }
@@ -282,7 +282,7 @@ func (r *Run) digestDay(ctx context.Context, dayFrom, dayTo time.Time) (digests,
 		}
 		if !res.Complete {
 			return digests, kept, false, errors.New("messages saved, digests not finished (another digest run holds the lock, " +
-				"or the day needs more passes); run it again")
+				"a digest was written meanwhile, or the day needs more passes); run it again")
 		}
 	}
 	if !day.RollupPending {
@@ -319,8 +319,9 @@ type spanGroup struct {
 // and groups the channels by span, newest span first. Coverage looks at the
 // whole UTC day, so a day split across two chunks is decided the same in
 // both. kept counts the channel days with a message at or below the mark
-// that a digest keeps from being digested: a covered day, or a later
-// digest's period.
+// that lies inside an existing digest — a covered day, or a later digest's
+// period (on a rerun usually the backfill's own) — and is therefore not
+// digested again.
 func (r *Run) uncoveredGroups(id int64, dayFrom, dayTo time.Time, day *ledgerDay) (groups []spanGroup, kept int, err error) {
 	start := dayFrom.UTC().Truncate(24 * time.Hour)
 	whole := spanOf(start, start.Add(24*time.Hour))
