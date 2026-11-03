@@ -97,6 +97,22 @@ package enum LLMUsagePresentation {
 
     package static func calls(_ count: Int64) -> String { count.formatted(.number) }
 
+    // MARK: - Totals
+
+    /// The grey line naming what the top card (`page_total`, Home's AI spend) adds up.
+    package static let totalsScope = "Watchtower, your automations and chats · workbenches not included"
+
+    /// What the top card adds up: the report's `page_total` (the same number
+    /// as Home's AI spend), never one section's totals.
+    package static func cardTotals(_ report: LLMUsageReport) -> LLMUsageTotals {
+        report.pageTotal
+    }
+
+    /// A section header's subtotal: "212 K tokens · $0.31".
+    package static func sectionSummary(_ totals: LLMUsageTotals) -> String {
+        "\(tokens(totals.tokens)) tokens · \(cost(totals))"
+    }
+
     // MARK: - Totals gaps
 
     package struct Gap: Equatable, Sendable {

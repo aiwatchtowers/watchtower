@@ -8,28 +8,28 @@
   "own_automations": {
     "totals": {
       "calls": 226, "errors": 1, "estimated_calls": 0, "no_price_calls": 1, "untagged_calls": 0,
-      "input": 60000, "cache_read": 0, "cache_write": 0, "output": 1003000,
+      "input": 60000, "cache_read": 4000000, "cache_write": 100000, "output": 1003000,
       "cost_usd": 22.4, "cost_is_lower_bound": true
     },
     "rows": [
       { "automation_id": 7, "name": "Weekly to-do", "runs": 6, "calls": 6,
-        "input": 37000, "output": 3000, "cost_usd": 0.5, "cost_is_estimate": true },
+        "input": 37000, "cache_read": 400000, "cache_write": 20000, "output": 3000, "cost_usd": 0.5, "cost_is_estimate": true },
       { "automation_id": 3, "name": "Triage new tracker issues", "runs": 110, "calls": 220,
-        "input": 23000, "output": 1000000, "cost_usd": 21.9, "cost_is_estimate": false,
+        "input": 23000, "cache_read": 3600000, "cache_write": 80000, "output": 1000000, "cost_usd": 21.9, "cost_is_estimate": false,
         "cost_is_lower_bound": true }
     ]
   },
   "page_total": {
-    "calls": 1606, "errors": 4, "estimated_calls": 12, "no_price_calls": 30, "untagged_calls": 3,
-    "input": 1472000, "cache_read": 44600000, "cache_write": 1300000, "output": 1789000,
-    "cost_usd": 124.6, "cost_is_lower_bound": true
+    "calls": 954, "errors": 4, "estimated_calls": 12, "no_price_calls": 31, "untagged_calls": 3,
+    "input": 1472000, "cache_read": 45100000, "cache_write": 1172000, "output": 1513000,
+    "cost_usd": 119.9, "cost_is_lower_bound": true
   },
   "period": "7d",
   "watchtower": {
     "totals": {
-      "calls": 1284, "errors": 3, "estimated_calls": 12, "no_price_calls": 30, "untagged_calls": 3,
-      "input": 212000, "cache_read": 9000000, "cache_write": 400000, "output": 486000,
-      "cost_usd": 41.2, "cost_is_lower_bound": true
+      "calls": 632, "errors": 3, "estimated_calls": 12, "no_price_calls": 30, "untagged_calls": 3,
+      "input": 212000, "cache_read": 5500000, "cache_write": 172000, "output": 210000,
+      "cost_usd": 36.5, "cost_is_lower_bound": true
     },
     "rows": [
       { "purpose": "media.describe", "models": ["sonnet"], "calls": 120,

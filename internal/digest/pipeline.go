@@ -196,6 +196,7 @@ type Pipeline struct {
 	backfillRollups                      bool
 	backfillRollupFrom, backfillRollupTo float64
 	backfillRollupAccountID              int64
+	backfillRollupReceipts               bool // write history_backfill_daily receipts (RunBackfillRollupsForAccount under routing)
 }
 
 // backfillScope is set only while RunBackfillWindow runs: a backfill window
@@ -211,7 +212,10 @@ type backfillScope struct {
 	mu         sync.Mutex
 	considered map[string]float64
 	failed     map[string]bool
-	errs       []error // every failure of the call, in order
+	errs       []error         // every failure of the call, in order
+	only       map[string]bool // nil = every channel; else only these, each loading (from, to] (RunBackfillWindowChannels)
+	ignore     map[int64]bool  // with only: the digests whose period does not move a channel's start
+	held       map[string]bool // with only: channels a digest starts inside the window of (scopedStart)
 }
 
 // inBackfill reports whether the pipeline is writing a backfill digest or
@@ -501,6 +505,18 @@ func (p *Pipeline) RunRollups(ctx context.Context) error {
 type channelWindow struct {
 	channelID string
 	since     float64
+	// afterSince loads (since, to] instead of [since, to]: the message on
+	// since belongs to the digest that ends there (RunBackfillWindowChannels).
+	afterSince bool
+}
+
+// loadFrom is the first ts_unix the window loads. ts_unix holds whole
+// seconds, so since+1 excludes exactly the messages on since.
+func (w channelWindow) loadFrom() float64 {
+	if w.afterSince {
+		return w.since + 1
+	}
+	return w.since
 }
 
 // RunChannelDigests generates digests for every channel holding messages its
@@ -555,7 +571,7 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 // offered again with its undigested messages still inside the window — no
 // other channel's success can move it past them.
 func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, error) {
-	firstRunSince := p.initialHistorySince(nowUnix)
+	firstRunSince := p.InitialHistorySince(nowUnix)
 	fastForwardTS, err := p.db.GetDigestFastForwardTS()
 	if err != nil {
 		p.logger.Printf("digest: reading fast-forward ts: %v", err)
@@ -676,10 +692,10 @@ func channelDigestSince(c db.ChannelDigestCandidate, firstRunSince, fastForwardT
 	return since
 }
 
-// initialHistorySince is the window start a channel that has never been
+// InitialHistorySince is the window start a channel that has never been
 // digested falls back to: initial_history_days before now (set during
 // onboarding).
-func (p *Pipeline) initialHistorySince(nowUnix float64) float64 {
+func (p *Pipeline) InitialHistorySince(nowUnix float64) float64 {
 	days := p.cfg.Sync.InitialHistoryDays
 	if days <= 0 {
 		days = config.DefaultInitialHistDays
@@ -917,7 +933,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 // everything. Both are the one condition advancesWindow states, and both take
 // the over-cap reload below.
 func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) (msgs []db.Message, consideredFloor float64, err error) {
-	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.DefaultTimeRangeLimit)
+	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.loadFrom(), nowUnix, db.DefaultTimeRangeLimit)
 	if err != nil || len(msgs) < db.DefaultTimeRangeLimit {
 		return msgs, 0, err
 	}
@@ -946,7 +962,7 @@ func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) (msgs []
 // a silent stall is the worse of the two failures. The ideas pipeline makes the
 // same call at its own boundary.
 func (p *Pipeline) loadOpeningSecondOverCap(w channelWindow, nowUnix float64) ([]db.Message, float64, error) {
-	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.BoundarySecondRowLimit)
+	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.loadFrom(), nowUnix, db.BoundarySecondRowLimit)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1186,7 +1202,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 		}
 	}
 
-	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false, ctx); err != nil {
+	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false); err != nil {
 		p.logger.Printf("digest: error storing digest for channel %s: %v", e.channelID, err)
 		agg.recordError(err)
 		p.markBackfillFailed(err, e.channelID)
@@ -1519,7 +1535,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		return fmt.Errorf("checking existing daily rollup for %s: %w", dayStart.Format("2006-01-02"), err)
 	}
 	if !needed {
-		if p.backfillRollups && RoutingEnabled(p.generator, ctx) {
+		if p.backfillRollupReceipts {
 			return p.db.MarkHistoryBackfillDailyExisting(p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo, fromUnix, toUnix)
 		}
 		return nil // nothing new since the last rollup for this day
@@ -1563,7 +1579,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv, true, ctx)
+	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv, true)
 }
 
 // RunWeeklyTrends generates a weekly trends digest from daily rollups.
@@ -1635,7 +1651,7 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv, false, ctx)
+	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv, false)
 }
 
 // RunPeriodSummary generates a summary across all digests in the given time range.
@@ -1817,11 +1833,7 @@ func (p *Pipeline) digestContentChanged(digestType string, from, to float64, sum
 // unread after the upsert — used only by the daily rollup's genuine
 // regeneration path (gated upstream in runDailyRollupForDate), so the owner
 // re-sees a rollup whose content actually changed underneath a prior read.
-func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int, resetReadOnWrite bool, contexts ...context.Context) error {
-	ctx := context.Background()
-	if len(contexts) > 0 {
-		ctx = contexts[0]
-	}
+func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int, resetReadOnWrite bool) error {
 	// Aggregate topics into flat arrays for legacy columns (backward compat).
 	var allTopicTitles []string
 	var allDecisions []Decision
@@ -1880,7 +1892,7 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 
 	var digestID int64
 	var err error
-	if digestType == "daily" && p.backfillRollups && RoutingEnabled(p.generator, ctx) {
+	if digestType == "daily" && p.backfillRollupReceipts {
 		digestID, err = p.db.UpsertHistoryBackfillDaily(d, p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo)
 	} else if digestType == "daily" && p.dailyAttemptID != "" {
 		digestID, err = p.db.UpsertDailyDigestAttempt(d, p.dailyAttemptID)

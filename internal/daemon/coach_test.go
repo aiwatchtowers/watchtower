@@ -259,11 +259,7 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 						response = `{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again later."}}`
 					}
 				}
-				out := filepath.Join(t.TempDir(), "response")
-				require.NoError(t, os.WriteFile(out, []byte(response), 0600))
-				bin := filepath.Join(t.TempDir(), provider)
-				script := "#!/bin/sh\ncat >/dev/null\ncat '" + out + "'\n"
-				require.NoError(t, os.WriteFile(bin, []byte(script), 0700))
+				bin := fakeCLI(t, provider, response)
 				if provider == "claude" {
 					cfg.ClaudePath = bin
 				} else {

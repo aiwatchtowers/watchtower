@@ -180,10 +180,23 @@ func (d *Daemon) accountState(kind string, id int64) historybackfill.AccountStat
 	case err != nil:
 		d.logger.Printf("history backfill: %s account %d lookup: %v", kind, id, err)
 		return historybackfill.AccountOK
-	case status == "revoked":
+	case status == "revoked", kind == "slack" && d.slackTeamMismatch(id):
 		return historybackfill.AccountRevoked
 	}
 	return historybackfill.AccountOK
+}
+
+// slackTeamMismatch reports that the account's sync this cycle refused its
+// token as another team than its data (#915): like a revoked account, its
+// backfill row pauses until the Re-login instead of holding chunks into
+// MaxHold strikes.
+func (d *Daemon) slackTeamMismatch(id int64) bool {
+	for _, o := range d.orchestrators {
+		if o.AccountID() == id {
+			return o.TeamMismatch()
+		}
+	}
+	return false
 }
 
 // backfillAccount looks up a row's account and returns its status, whether

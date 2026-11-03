@@ -100,7 +100,24 @@ type Orchestrator struct {
 	jiraKeyDetector interface {
 		ProcessMessageBatch(msgs []db.Message) (int, error)
 	}
+
+	// tokenTeamID is the team the account's token file names (SetTokenTeam);
+	// "" when unknown. checkHomeTeam refuses it like the row's team, so a
+	// token left on another team than the row is caught on every path.
+	tokenTeamID string
+
+	// teamMismatch reports that the last Run stopped on a TeamMismatchError.
+	// Run resets it; the daemon reads it via TeamMismatch to pause the
+	// account's history backfill instead of holding its chunks.
+	teamMismatch bool
 }
+
+// SetTokenTeam records the team the account's token file names.
+func (o *Orchestrator) SetTokenTeam(teamID string) { o.tokenTeamID = teamID }
+
+// TeamMismatch reports that the last Run refused the account's token or team
+// as another team than the account's data (ErrSlackTeamMismatch).
+func (o *Orchestrator) TeamMismatch() bool { return o.teamMismatch }
 
 // SetJiraKeyDetector sets an optional Jira key detector for linking synced
 // Slack messages to the Jira issues they mention.
@@ -201,6 +218,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.fileLookups = 0
 	o.resetMediaPlan()
 	err := o.run(ctx, opts)
+	o.teamMismatch = errors.Is(err, ErrSlackTeamMismatch)
 	if ctx.Err() != nil {
 		o.slackClient.ResetAPIStats()
 	}
@@ -213,15 +231,15 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 // (users.list, every page) into users — no search, channels, messages or
 // reactions. It ignores the roster's daily throttle and stamps the shared
 // roster marker, so the next regular sync does not fetch the roster again
-// within the day. Only a dead token (IsRevokedAuthError) is recorded on the
-// account row; any other outcome leaves the row's auth state alone — a
-// transient failure (rate limit retries exhausted, the network) is the
+// within the day. Only a dead token (IsRevokedAuthError) or a token for
+// another team (ErrSlackTeamMismatch) is recorded on the account row; any
+// other outcome leaves the row's auth state alone — a transient failure (rate limit retries exhausted, the network) is the
 // caller's to report and must not mark the account broken, and a success
 // must not erase a search-gap note the last full cycle kept there, since
 // this run never searched.
 func (o *Orchestrator) RunUsersOnly(ctx context.Context) error {
 	err := o.runUsersOnly(ctx)
-	if IsRevokedAuthError(err) {
+	if IsRevokedAuthError(err) || errors.Is(err, ErrSlackTeamMismatch) {
 		o.recordAuthResult(ctx, err)
 	} else if err != nil {
 		o.logger.Printf("users-only sync failed (account state left as is): %v", err)
@@ -306,7 +324,7 @@ func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 	if IsRevokedAuthError(err) {
 		status = "revoked"
 	}
-	msg := err.Error()
+	msg := ownerErrorText(err)
 	if o.searchGapNote != "" {
 		// A later phase failing must not erase the record of a data gap the
 		// search phase already clamped in this same run.
@@ -801,13 +819,17 @@ func (o *Orchestrator) finishSync() {
 
 // ensureWorkspace loads (and, on first run, resolves via team.info) the
 // connected account's team info. Skips the API call if already cached on
-// the slack_accounts row.
+// the slack_accounts row. A team other than the home team of the account's
+// stored data is refused before anything is written (TeamMismatchError).
 func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
 	acct, err := o.db.GetSlackAccount(o.accountID)
 	if err != nil {
 		return fmt.Errorf("loading slack account %d: %w", o.accountID, err)
 	}
 	if acct.TeamID != "" {
+		if err := o.checkHomeTeam(acct, acct.TeamID, acct.TeamName); err != nil {
+			return err
+		}
 		o.logger.Printf("workspace: account %d team %s [cached]", o.accountID, acct.TeamID)
 		o.account = acct
 		o.slackClient.SetTeamDomain(acct.TeamDomain)
@@ -817,6 +839,9 @@ func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
 	info, err := o.slackClient.GetTeamInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("fetching team info: %w", err)
+	}
+	if err := o.checkHomeTeam(acct, info.ID, info.Name); err != nil {
+		return err
 	}
 	if err := o.db.UpdateSlackAccountConnection(o.accountID, info.ID, info.Name, info.Domain, acct.CurrentUserID); err != nil {
 		return fmt.Errorf("updating slack account %d: %w", o.accountID, err)
@@ -851,6 +876,9 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 	teamInfo, err := o.slackClient.GetTeamInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("fetching team info: %w", err)
+	}
+	if err := o.checkHomeTeam(o.account, teamInfo.ID, teamInfo.Name); err != nil {
+		return err
 	}
 	if err := o.db.UpdateSlackAccountConnection(o.accountID, teamInfo.ID, teamInfo.Name, teamInfo.Domain, o.account.CurrentUserID); err != nil {
 		return fmt.Errorf("updating slack account %d: %w", o.accountID, err)

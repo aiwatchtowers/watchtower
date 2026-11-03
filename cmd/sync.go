@@ -938,13 +938,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetAIWorkerPool(gen.pool)
 	d.SetRoutingJob(gen.bindSync)
 	d.SetRoutingWatch(func(watchCtx context.Context) { gen.watch(watchCtx, flagConfig, logger) })
-	tracksPipe := tracks.New(database, cfg, gen, logger)
-	tracksPipe.SetPromptStore(prompts.New(database, nil))
-	pipe := digest.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-	pipe.TrackLinker = tracksPipe
 	// One shared detector across both pipelines, so the known-project-key set
 	// is loaded once rather than once per pipeline.
+	pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger)
 	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
 		pipe.SetJiraKeyDetector(det)
 		tracksPipe.SetJiraKeyDetector(det)
@@ -1125,6 +1121,7 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
+		orch.SetTokenTeam(token.TeamID)
 		if keyDetector != nil {
 			orch.SetJiraKeyDetector(keyDetector)
 		}
@@ -1297,6 +1294,19 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 	// Needs the media pass set first (SetMediaPipeline runs before
 	// wireJiraSyncers in the daemon setup); a nil pass is logged.
 	registerConfluenceMedia(d.MediaPipeline(), database, fetchers, logger)
+}
+
+// newLinkedDigestPipeline is the digest pipeline every sync path runs: the
+// prompt store and the tracks pipeline linked between channel digests and
+// rollups. Each caller wires the Jira key detector itself, so the wiring
+// guard (TestJiraKeyDetectorIsWiredIntoBothPipelines) sees the direct calls.
+func newLinkedDigestPipeline(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) (*digest.Pipeline, *tracks.Pipeline) {
+	tracksPipe := tracks.New(database, cfg, gen, logger)
+	tracksPipe.SetPromptStore(prompts.New(database, nil))
+	pipe := digest.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
+	pipe.TrackLinker = tracksPipe
+	return pipe, tracksPipe
 }
 
 // newIssueKeyDetector is issuekey.NewKeyDetectorIfEnabled with the detector's
@@ -1571,11 +1581,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	// Digests (with tracks linked between channel digests and rollups)
 	fmt.Fprintln(out)
 	digestSpinner := ui.NewSpinner(out, "Generating digests...")
-	pipe := digest.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-	tracksPipe := tracks.New(database, cfg, gen, logger)
-	tracksPipe.SetPromptStore(prompts.New(database, nil))
-	pipe.TrackLinker = tracksPipe
+	pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger)
 	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
 		pipe.SetJiraKeyDetector(det)
 		tracksPipe.SetJiraKeyDetector(det)
