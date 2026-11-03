@@ -727,6 +727,9 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if _, _, err := h.center.Issue(); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
+		// The phone's hello may come at once: a pass now rather than at the
+		// idle cadence's next tick (the Swift hub's wakeRelay, #66.7).
+		h.kick(h.passKick)
 		return ControlAnswer{OK: true}
 	case OpConfirm:
 		if pl == nil || r.Device == "" {

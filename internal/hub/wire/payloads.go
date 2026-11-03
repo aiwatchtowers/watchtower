@@ -47,6 +47,16 @@ const (
 	SharingUnavail   = "unavailable"
 )
 
+// FlavorOf is the heartbeat flavor of a build flavor (the build profile's
+// BUILD_FLAVOR, Desktop's WTBuildFlavor; HubIdentity.flavor): none or "dev"
+// is the default build, any other is a corporate build.
+func FlavorOf(buildFlavor string) string {
+	if buildFlavor == "" || buildFlavor == "dev" {
+		return FlavorDefault
+	}
+	return FlavorCorp
+}
+
 // ActionRequest is a phone action and, rewritten by the hub, its echo. The
 // kind stays a string: an unknown kind is answered, not rejected on decode.
 type ActionRequest struct {
