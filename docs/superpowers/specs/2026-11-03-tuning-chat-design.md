@@ -154,7 +154,7 @@ Every visible string (figures line, starters, tool-activity lines, A/B progress 
 - Cost: price rows for the Codex models in `internal/pricing`, with a Codex-shaped cost (input, cached input, cache write, output; reasoning output counted as output). An unknown model gives cost 0 and `cost_estimated` as today, never a guess.
 - Workbench Codex terminal sessions link by `terminal_sessions.agent_transcript_path` (else by the session id in the filename), the twin of `ClaudeTerminalSessionIDs`.
 - `agentreport`: the report's totals, time model, tasks, cost, commands and trouble include Codex rows. Claude-only blocks (context parts, skill listing, Claude hints) say "Claude Code only" when Codex sessions are in the period. The report and the pane gain an agent filter **All / Claude Code / Codex** (a `KitSegmentedPicker` beside the period, shown only when both agents have sessions in the period).
-- AGENTLOG contracts amended in `docs/inventory/` (the agent column, the exec exclusion), with the owner's approval through this spec's review.
+- AGENTLOG contracts amended in `docs/inventory/` (the agent column, the exec exclusion), approved in ask #999.
 
 ### 4.8 Writers and races (summary)
 
@@ -209,12 +209,12 @@ Phases 1, 2 and 4 are independent and can run in parallel lanes. Phase 3 needs 1
 | D7 | Prompts change through additions only | ask #995 |
 | D8 | Editable skills: global (`~/.claude/skills`, `~/.agents/skills`) and the Watchtower pack as a personal overlay; no repository skills | ask #995 |
 | D9 | The button is renamed **Tune**; the panel overlays the pane like the board panel (460 pt, 360–720, remembered) | agent's call |
-| D10 | Chat proposals skip the coach's 3-source floor and 3-open cap but keep every other check, and do not take a weekly slot | agent's call (contract change, COACH-01 — owner approves with this spec) |
+| D10 | Chat proposals skip the coach's 3-source floor and 3-open cap but keep every other check, and do not take a weekly slot | ask #999 (COACH-01 amendment approved) |
 | D11 | A/B runs only on the owner's **Run** press with the cost shown; no automatic judge | agent's call |
 | D12 | Source deletion removes all captured inputs of that account (coarse, not per message) | agent's call |
-| D13 | Codex `exec` sessions are excluded from analytics (Watchtower's own children are exec) | agent's call (contract change, AGENTLOG — owner approves with this spec) |
+| D13 | Codex `exec` sessions are excluded from analytics (Watchtower's own children are exec) | ask #999 (AGENTLOG amendment approved) |
 | D14 | The chat never creates a new skill; only `~/.codex/AGENTS.md` may be created | agent's call |
-| D15 | A pack overlay counts as shipped bytes for drift (DEV-04 amendment) | agent's call (contract change — owner approves with this spec) |
+| D15 | A pack overlay counts as shipped bytes for drift (DEV-04 amendment) | ask #999 (DEV-04 amendment approved) |
 | D16 | Codex allow lines come only from a Codex twin of `SafeAllowRule` | agent's call |
 | D17 | In the panel Accept is secondary; an accepted card folds to one line in the feed; the stale line stays the coach's existing text; no-tools keeps the figures line and hides starters; **Tune** shows as on while open | agent's call (mockups) |
 | D18 | `coach_proposals.skill` column and destination labels for the new destinations | agent's call |
