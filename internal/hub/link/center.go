@@ -132,6 +132,11 @@ type Center struct {
 	// locked section revoked, told from unlock (guarded by mu).
 	onRevoke func(device string)
 	revoked  []string
+	// onTypingAsk and typingAsks: the typing-request seam (OnTypingRequest)
+	// and the phones the locked section saw newly ask to type, told from
+	// unlock (guarded by mu).
+	onTypingAsk func(device, name string)
+	typingAsks  []TypingAsk
 	// beforeKeys is a test seam: run by Keyboxes between the device read
 	// and the key read.
 	beforeKeys func()
@@ -206,7 +211,8 @@ func (c *Center) unlock() {
 	dirty := c.dirty
 	c.dirty = false
 	revoked, onRevoke := c.revoked, c.onRevoke
-	c.revoked = nil
+	asks, onAsk := c.typingAsks, c.onTypingAsk
+	c.revoked, c.typingAsks = nil, nil
 	c.mu.Unlock()
 	if dirty && c.publish != nil {
 		c.publish(KindDeviceGrant)
@@ -216,6 +222,29 @@ func (c *Center) unlock() {
 			onRevoke(d)
 		}
 	}
+	if onAsk != nil {
+		for _, a := range asks {
+			onAsk(a.DeviceID, a.Name)
+		}
+	}
+}
+
+// TypingAsk is a linked phone that newly asks to type into sessions.
+type TypingAsk struct {
+	DeviceID string
+	Name     string
+}
+
+// OnTypingRequest sets fn, called once per request after a change commits
+// in which a linked phone, not allowed to type, newly asks to (PROJ-16,
+// spec §10, OD-2): its device record turns the request on, or it links with
+// the request on. The same request again, or a phone already allowed, calls
+// nothing. fn runs outside the center's lock, on the deciding call's
+// goroutine; Desktop turns it into the macOS notice that asks the owner.
+func (c *Center) OnTypingRequest(fn func(device, name string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onTypingAsk = fn
 }
 
 // OnRevoke sets fn, called with a phone's device id after a change that took

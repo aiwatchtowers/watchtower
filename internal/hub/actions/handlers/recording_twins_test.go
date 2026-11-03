@@ -77,11 +77,11 @@ func TestRecordingRefusedUnderWorkbenchOnly(t *testing.T) {
 	}
 }
 
-// The Swift order (ask #969 Q4 default): the policy is checked at the
-// ingest, after the exactly-once checks, so a retry of an upload received
-// before the policy turned workbench_only is answered received again, not
-// refused, and no second recording is queued.
-func TestRecordingReceivedAgainUnderWorkbenchOnly(t *testing.T) {
+// The Go order (ask #969 Q4, the owner kept it): the policy is checked
+// before the exactly-once ledger, so a retry of an upload received before
+// the policy turned workbench_only is refused like any other upload, and no
+// second recording is queued.
+func TestRecordingRetryRefusedUnderWorkbenchOnly(t *testing.T) {
 	e := newRecEnv(t)
 	e.beat(e.now)
 	mode := policy.MobileAllowed
@@ -91,8 +91,9 @@ func TestRecordingReceivedAgainUnderWorkbenchOnly(t *testing.T) {
 	}
 	before := e.files()
 	mode = policy.MobileWorkbenchOnly
-	if out := e.h.IntakeRecording(context.Background(), e.upload("u-1", []byte("audio"))); out.Status != wire.StatusReceived {
-		t.Fatalf("retry under workbench_only: %+v, want received again", out)
+	if out := e.h.IntakeRecording(context.Background(), e.upload("u-1", []byte("audio"))); out.Status != wire.StatusFailed ||
+		out.Reason != reasonWriteFailed || out.Message != PolicyBlockedMessage {
+		t.Fatalf("retry under workbench_only: %+v, want the policy refusal", out)
 	}
 	if after := e.files(); len(after) != len(before) {
 		t.Fatalf("files %v -> %v", before, after)

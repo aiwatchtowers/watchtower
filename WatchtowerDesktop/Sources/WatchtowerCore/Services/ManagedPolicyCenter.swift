@@ -16,11 +16,6 @@ package final class ManagedPolicyCenter {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var observer: (any NSObjectProtocol)?
     @ObservationIgnored private var observedCenter: NotificationCenter?
-    /// Told after a refresh that changed the policy.
-    @ObservationIgnored package var onChange: (@MainActor (ManagedPolicy) -> Void)?
-    /// Told after every refresh, changed or not (a retry that waits for the
-    /// next tick, e.g. the mobile hub's wipe under `MobileSync = off`).
-    @ObservationIgnored package var onRefresh: (@MainActor (ManagedPolicy) -> Void)?
 
     package init(read: @escaping () -> [String: Any]) {
         self.read = read
@@ -30,9 +25,7 @@ package final class ManagedPolicyCenter {
         let next = ManagedPolicy.normalize(read())
         if next != policy {
             policy = next
-            onChange?(next)
         }
-        onRefresh?(policy)
     }
 
     /// Refreshes now, on each `activation` notification and every `interval`.

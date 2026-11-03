@@ -104,44 +104,11 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
         XCTAssertEqual(single, named.count, "a named file moved: point the scan at it")
     }
 
-    /// The mobile hub's ledger is exempt (owner decision, ask #368): every
-    /// synchronous write in `HubSyncState*.swift` goes through its `queue`,
-    /// the hub's private sidecar database (`MobileHub/hubstate.db`). Only the
-    /// Desktop writes that file — never the daemon, a hook or the CLI — so no
-    /// other process can hold its write lock and the busy wait #590 is about
-    /// cannot happen there. The exemption covers that receiver in those
-    /// files only: a write to any other handle there (the shared workspace
-    /// database included) still fails, and the sidecar must stay its own
-    /// file.
-    func testTheMobileHubSidecarIsTheOnlyExemptWriter() throws {
-        let hub = Self.sources.appendingPathComponent("Services/MobileHub")
-        let write = try NSRegularExpression(pattern: Self.syncWrite)
-        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: hub, includingPropertiesForKeys: nil))
-        var scanned = 0
-        for case let url as URL in enumerator where url.lastPathComponent.hasPrefix("HubSyncState") {
-            scanned += 1
-            let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
-            for (index, line) in lines.enumerated() where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
-                guard let match = write.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-                      let range = Range(match.range, in: line) else { continue }
-                let call = String(line[range])
-                XCTAssertTrue(Self.isSidecarWrite(call),
-                              "\(url.lastPathComponent):\(index + 1) writes another handle than the sidecar `queue`")
-            }
-        }
-        XCTAssertGreaterThanOrEqual(scanned, 3, "the HubSyncState files moved: point the exemption at them")
-        let state = try String(contentsOf: hub.appendingPathComponent("HubSyncState.swift"), encoding: .utf8)
-        XCTAssertTrue(state.contains("let queue: DatabaseQueue"), "the sidecar is the hub's own DatabaseQueue")
-        let service = try String(contentsOf: hub.appendingPathComponent("MobileHubService.swift"), encoding: .utf8)
-        XCTAssertTrue(service.contains(#"HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)"#),
-                      "the sidecar is its own file, never the workspace database")
-    }
-
     /// Board #670 is complete: no file under `Sources/` writes the database
     /// synchronously, apart from the named exemptions — `offMainWrites`,
-    /// `otherExemptWrites` and the mobile hub's sidecar `queue` (see
-    /// `testTheMobileHubSidecarIsTheOnlyExemptWriter`). A new synchronous
-    /// write anywhere, a Queries helper's included, fails here.
+    /// `otherExemptWrites` and the CloudKit bridge's own ledger (see
+    /// `testTheBridgeTagMapIsItsOwnFile`). A new synchronous write anywhere,
+    /// a Queries helper's included, fails here.
     func testNoSynchronousDatabaseWriteAnywhereInSources() throws {
         let write = try NSRegularExpression(pattern: Self.syncWrite)
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: Self.sources, includingPropertiesForKeys: nil))
@@ -160,8 +127,6 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
                     exempted.insert(name)
                     continue
                 }
-                // The hub sidecar's own handle; its own test pins the rest.
-                if name.hasPrefix("HubSyncState"), Self.isSidecarWrite(String(line[range])) { continue }
                 // The CloudKit bridge's own ledger (see
                 // testTheBridgeTagMapIsItsOwnFile): a separate process
                 // writing a private file nothing else opens.
@@ -186,24 +151,10 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
         XCTAssertFalse(text.contains("DatabasePool"), "the bridge ledger never opens the workspace database")
     }
 
-    /// A hub ledger write through the sidecar: its `queue`, or a nested
-    /// `db.inTransaction` inside one of that queue's writes.
-    private static func isSidecarWrite(_ call: String) -> Bool {
-        call.contains(" queue.") || call.contains(" db.inTransaction")
-    }
-
     /// Synchronous-looking writes that never run on the main actor, by file
-    /// and exact line, each with its reason:
-    /// - `PermissionRequestSlice.expire`: called only from
-    ///   `SlicePublisher.publishOnce`, a nonisolated `async` method of a
-    ///   non-actor class, so it runs on the cooperative pool, never the main
-    ///   thread (it writes the shared database's `permission_requests`).
-    /// - `BoardHandlers`: `field.write(db, …)` is the board field's own
-    ///   setter, called inside `try await dbPool.write`, not a GRDB write.
-    private static let otherExemptWrites: [String: String] = [
-        "PermissionRequestSlice.swift": "let expired = try writer.write { db in",
-        "BoardHandlers.swift": "return .wrote(try field.write(db, targetID, value))"
-    ]
+    /// and exact line, each with its reason. None today: the Swift hub's two
+    /// went with it (go hub plan 3 Task 24).
+    private static let otherExemptWrites: [String: String] = [:]
 
     /// The one synchronous write that never runs on the main thread, by
     /// file and its exact line: `OwnerPresenceCenter.databaseWriter`'s

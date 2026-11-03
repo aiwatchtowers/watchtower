@@ -14,6 +14,8 @@ package struct HubStatus: Decodable, Equatable, Sendable {
     package let mode: String?
     package let recordings: String?
     package let adoption: String?
+    /// How many phones are linked (`phones`); nil when the answer carried none.
+    package let phones: Int?
 
     package init(
         state: String,
@@ -23,7 +25,8 @@ package struct HubStatus: Decodable, Equatable, Sendable {
         host: String? = nil,
         mode: String? = nil,
         recordings: String? = nil,
-        adoption: String? = nil
+        adoption: String? = nil,
+        phones: Int? = nil
     ) {
         func value(_ text: String?) -> String? { text?.isEmpty == false ? text : nil }
         self.state = state
@@ -34,6 +37,7 @@ package struct HubStatus: Decodable, Equatable, Sendable {
         self.mode = value(mode)
         self.recordings = value(recordings)
         self.adoption = value(adoption)
+        self.phones = phones
     }
 
     /// This status with a newer `state` and `reason` (a watch event), the
@@ -41,12 +45,12 @@ package struct HubStatus: Decodable, Equatable, Sendable {
     package func with(state: String, reason: String?) -> Self {
         Self(
             state: state, reason: reason, hubID: hubID, transport: transport, host: host, mode: mode,
-            recordings: recordings, adoption: adoption
+            recordings: recordings, adoption: adoption, phones: phones
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case state, reason, transport, host, mode, recordings, adoption
+        case state, reason, transport, host, mode, recordings, adoption, phones
         case hubID = "hub_id"
     }
 
@@ -60,7 +64,8 @@ package struct HubStatus: Decodable, Equatable, Sendable {
             host: try c.decodeIfPresent(String.self, forKey: .host),
             mode: try c.decodeIfPresent(String.self, forKey: .mode),
             recordings: try c.decodeIfPresent(String.self, forKey: .recordings),
-            adoption: try c.decodeIfPresent(String.self, forKey: .adoption)
+            adoption: try c.decodeIfPresent(String.self, forKey: .adoption),
+            phones: try c.decodeIfPresent(Int.self, forKey: .phones)
         )
     }
 }
@@ -219,6 +224,10 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
     /// A heartbeat answer's last phone contact (keep-awake, Task 23); nil
     /// when no hub runs or no phone was ever in touch.
     package let phoneContactAt: Date?
+    /// A typing_request's phone name; a bring_forward's workbench and session.
+    package let name: String?
+    package let workbenchID: Int64?
+    package let sessionID: Int64?
 
     package init(
         op: String? = nil,
@@ -235,7 +244,10 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         audioPath: String? = nil,
         eventID: String? = nil,
         startedAt: Date? = nil,
-        phoneContactAt: Date? = nil
+        phoneContactAt: Date? = nil,
+        name: String? = nil,
+        workbenchID: Int64? = nil,
+        sessionID: Int64? = nil
     ) {
         self.op = op
         self.event = event
@@ -252,10 +264,15 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
         self.eventID = eventID?.isEmpty == false ? eventID : nil
         self.startedAt = startedAt
         self.phoneContactAt = phoneContactAt
+        self.name = name
+        self.workbenchID = workbenchID
+        self.sessionID = sessionID
     }
 
     private enum CodingKeys: String, CodingKey {
-        case op, event, ok, error, state, reason, pair, status
+        case op, event, ok, error, state, reason, pair, status, name
+        case workbenchID = "workbench_id"
+        case sessionID = "session_id"
         case viewNeeded = "view_needed"
         case uploadID = "upload_id"
         case deviceID = "device_id"
@@ -282,7 +299,10 @@ package struct HubControlAnswer: Decodable, Equatable, Sendable {
             audioPath: try c.decodeIfPresent(String.self, forKey: .audioPath),
             eventID: try c.decodeIfPresent(String.self, forKey: .eventID),
             startedAt: try c.decodeIfPresent(Double.self, forKey: .startedAt).map { Date(timeIntervalSince1970: $0) },
-            phoneContactAt: try c.decodeIfPresent(String.self, forKey: .phoneContactAt).flatMap(Self.rfc3339)
+            phoneContactAt: try c.decodeIfPresent(String.self, forKey: .phoneContactAt).flatMap(Self.rfc3339),
+            name: try c.decodeIfPresent(String.self, forKey: .name),
+            workbenchID: try c.decodeIfPresent(Int64.self, forKey: .workbenchID),
+            sessionID: try c.decodeIfPresent(Int64.self, forKey: .sessionID)
         )
     }
 
@@ -304,6 +324,13 @@ package enum HubEvent: Equatable, Sendable {
     /// A pairing step (`qr`, `waiting`, `sas`, `linked`, `refused`); never a URL or a code.
     case pair(kind: String, deviceID: String?)
     case switched
+    /// A linked phone newly asks to type into sessions (PROJ-16, OD-2).
+    case typingRequest(deviceID: String, name: String)
+    /// A phone start asked to bring its workbench and session forward
+    /// (mobile POC spec §6.5).
+    case bringForward(workbenchID: Int64, sessionID: Int64)
+    /// The linked phones or their grants changed (a link, an unlink).
+    case devicesChanged
     /// An event this Desktop does not know (a newer hub): skipped.
     case unknown
 
@@ -318,6 +345,13 @@ package enum HubEvent: Equatable, Sendable {
         case "recording_queued": self = .recordingQueued(uploadID: answer.uploadID ?? "")
         case "pair": self = .pair(kind: answer.pair ?? "", deviceID: answer.deviceID)
         case "switched": self = .switched
+        case "typing_request":
+            guard let device = answer.deviceID else { self = .unknown; return }
+            self = .typingRequest(deviceID: device, name: answer.name ?? "")
+        case "devices_changed": self = .devicesChanged
+        case "bring_forward":
+            guard let workbench = answer.workbenchID, let session = answer.sessionID else { self = .unknown; return }
+            self = .bringForward(workbenchID: workbench, sessionID: session)
         default: self = .unknown
         }
     }

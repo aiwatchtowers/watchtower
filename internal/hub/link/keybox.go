@@ -33,6 +33,7 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 		reason  string
 		others  []pendingDevice
 		linked  bool
+		asks    bool
 	)
 	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		p, found, err := pendingTx(tx, device)
@@ -67,6 +68,10 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 			return err
 		}
 		linked = true
+		if err := tx.QueryRow(`SELECT typing_requested AND NOT typing_allowed FROM devices WHERE device_id = ? COLLATE NOCASE`,
+			p.deviceID).Scan(&asks); err != nil {
+			return err
+		}
 		rest, err := pendingDevicesTx(tx)
 		if err != nil {
 			return err
@@ -93,6 +98,9 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 	case linked:
 		log.Printf("hub link: linked phone %s, %d other requests refused", request.deviceID, len(others))
 		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name})
+		if asks {
+			c.typingAsks = append(c.typingAsks, TypingAsk{DeviceID: strings.ToUpper(request.deviceID), Name: displayName(request.name)})
+		}
 		for _, o := range others {
 			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode})
 		}

@@ -235,6 +235,44 @@ final class HubCenterTests: XCTestCase {
         XCTAssertEqual(queued, ["u-1", "u-2"], "an event with no id is dropped")
     }
 
+    /// PROJ-16 (OD-2): each `typing_request` reaches the owner's notice once
+    /// (the hub sends one per request); a `bring_forward` names the
+    /// workbench and the session to show.
+    func testTypingRequestAndBringForwardReachTheApp() async {
+        let center = makeCenter()
+        var asked: [String] = []
+        var forward: [[Int64]] = []
+        center.onTypingRequest = { asked.append("\($0) \($1)") }
+        center.onBringForward = { forward.append([$0, $1]) }
+        center.start()
+        await waitUntil("the stream is open") { client.watches == 1 }
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        client.emit(.typingRequest(deviceID: "AABB", name: "Colleague A's iPhone"))
+        client.emit(.bringForward(workbenchID: 3, sessionID: 9))
+        await waitUntil("both events") { asked.count == 1 && forward.count == 1 }
+        XCTAssertEqual(asked, ["AABB Colleague A's iPhone"])
+        XCTAssertEqual(forward, [[3, 9]])
+        XCTAssertEqual(center.linksChanged, 0, "neither changes the links")
+    }
+
+    /// Learn's "iPhone paired" reads the CLI status's `phones`: a linked
+    /// phone and a devices change (an unlink from either side) read it again.
+    func testLinkAndDevicesChangedReadThePhonesAgain() async {
+        let cli = FakeCLIRunner(stdout: Data(#"{"state":"running","phones":1}"#.utf8))
+        let center = makeCenter(cli: cli)
+        center.start()
+        await waitUntil("the stream is open") { client.watches == 1 }
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        await waitUntil("the first read") { center.status?.phones == 1 }
+        var reads = cli.invocations.count
+        client.emit(.pair(kind: "linked", deviceID: "AABB"))
+        await waitUntil("re-read after a link") { cli.invocations.count > reads }
+        reads = cli.invocations.count
+        client.emit(.devicesChanged)
+        await waitUntil("re-read after a devices change") { cli.invocations.count > reads }
+        XCTAssertEqual(center.linksChanged, 2)
+    }
+
     func testNoHubFallsBackToCLIStatus() async throws {
         client.reachable = false
         let cli = FakeCLIRunner(stdout: Data(#"{"state":"off","reason":"desktop_host","host":"desktop","recordings":"off"}"#.utf8))

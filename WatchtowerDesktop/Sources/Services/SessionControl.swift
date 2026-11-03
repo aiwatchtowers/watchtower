@@ -5,10 +5,9 @@ import WatchtowerSync
 
 /// The Mac-side gates for acting on a running session: typing a line into
 /// it (PROJ-16), one Esc (PROJ-21 §6) and answering its permission prompt
-/// (PROJ-21). Shared by the phone's handlers (`SessionInputHandlers`,
-/// `PermissionAnswerHandlers`), which keep their device grants, board scope
-/// and action age on top, and the Workchat composer (#711), whose answers
-/// are decided by `"Mac"`.
+/// (PROJ-21), for the Workchat composer (#711), whose answers are decided
+/// by `"Mac"`. The phone's twin of these gates is the Go hub's
+/// (`internal/hub/actions/handlers`).
 @MainActor
 final class SessionControl {
     typealias Status = @MainActor (_ sessionID: Int64) -> SessionAgentStatus?
@@ -234,10 +233,14 @@ final class SessionControl {
         }
     }
 
+    /// The phone's cap on a permission request's summary, in graphemes
+    /// (the Go hub's permission slice, mobile POC spec §4).
+    nonisolated static let phoneSummaryCap = 2000
+
     /// The allow rule as the phone sees the request — shortened by Go's
-    /// flag or the slice's own cap — plus the Mac's symlink-resolved path.
+    /// flag or the phone's cap — plus the Mac's symlink-resolved path.
     nonisolated private static func allowBlock(toolName: String, summary: String, clippedByGo: Bool) -> PermissionAllowBlock? {
-        let clipped = PermissionRequestSlice.wireSummary(summary, clippedByGo: clippedByGo).clipped
+        let clipped = clippedByGo || summary.count > phoneSummaryCap
         return PermissionAllowBlock.check(toolName: toolName, summary: summary, clipped: clipped)
             ?? resolvedSettingsPath(toolName: toolName, path: summary)
     }

@@ -1,10 +1,11 @@
-# Go hub (phase 1 core on the relay, phase 2 headless hosts)
+# Go hub (phase 1 core on the relay, phase 2 headless hosts, phase 3 the Mac)
 
 The phone hub rewritten in Go and run by the daemon: it links phones, applies their actions in order, publishes the
 slices on change and starts, types into and stops workbench sessions through `watchtower session-host`. In phase 1 it
-runs **only** in a separate `hubtest-*` test workspace behind environment variables; the Swift hub in the Desktop
-(`docs/features/mobile-companion.md`) is still the live hub. Phase 2 runs it live on headless hosts — Linux and a Mac
-without the app ("Phase 2 — headless hosts" below); phases 3–4 move the Mac onto it and delete the Swift hub.
+runs **only** in a separate `hubtest-*` test workspace behind environment variables. Phase 2 runs it live on headless
+hosts — Linux and a Mac without the app ("Phase 2 — headless hosts" below). Phase 3 moves the Mac onto it ("Phase 3 —
+the Mac on the Go hub" below) and deletes the Swift hub that lived in the Desktop: since go hub plan 3 Task 24 the Go
+hub is the only hub. Phase 4 adds pushes and measurements.
 
 - Spec: [`docs/superpowers/specs/2026-10-31-go-hub-design.md`](../superpowers/specs/2026-10-31-go-hub-design.md)
   (approved, ask #819). Phone ↔ hub protocol:
@@ -351,7 +352,54 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
 - `SLOT_ADDED` is best effort: a hub whose socket was closed at that moment learns of its slot from a poll, at most
   every 30 s during the short link retry and about once a minute after it (the link backstop).
 
-## Phase 3 — the identity store on a desktop host
+## Phase 3 — the Mac on the Go hub
+
+Plan [`2026-10-31-go-hub-phase-3.md`](../superpowers/plans/2026-10-31-go-hub-phase-3.md) (approved ask #856; owner
+decisions asks #843, #851, #956; the plan's Global Constraints are the contract).
+
+- **Desktop live mode.** On a desktop host the daemon runs the hub in `<config.DataRoot()>/.hub` (0700, files 0600).
+  Never two hubs: it starts on real data only once adoption finished (`hub_meta.adopted_at`) or when the Mac had no
+  Swift hub state and the owner turned Mobile on. A `MobileHub/` that appears after `adopted_at` is logged and never
+  read, imported or deleted.
+- **CloudKit bridge.** `WatchtowerCloudBridge.app` (an `LSUIElement` helper the daemon launches directly and restarts
+  with backoff 1 s → 60 s) carries sealed envelopes and metadata over `<hub dir>/bridge.sock` (0600, peer UID
+  checked, u32 BE length ‖ protobuf, 4 MiB max); assets travel as file paths only. It holds no hub key and opens no
+  envelope. Its CloudKit state is `<hub dir>/cloudkit/`. It keeps running while the hub is on the relay, to poll the
+  CloudKit mailboxes for a switch back (decision 4).
+- **Adoption** (`hub adopt`). Desktop's `HubAdoptionDriver` reads the state only through `hub adopt --status --json`,
+  hands the settings over on stdin (`--settings-stdin`), then the keys on stdin (`--keys-stdin`, a separate call),
+  deletes its Keychain items, and confirms (`--confirm-deleted`). Go derives the Swift directory itself and leaves
+  `MobileHub/` empty but for `MOVED` (`hub_impl=go\nmoved_to=<hub dir>\n`). A phone recording mid-transcription
+  becomes one `failed` job with class `hub_moved` (decision 3). Until `--confirm-deleted`, the Swift identity stays in
+  the Desktop's Keychain items, which Reset All Data does not remove (the guide's privacy page says so).
+  **Set up Mobile again** (`hub adopt --set-aside`, after `no_keys`) writes `MOVED` and moves the Swift files into
+  `MobileHub/set-aside-<UTC time>/`: kept, never imported or deleted.
+- **Transport switch.** Only a person switches: a paying phone's `transport_switch`, or `entitlement_expired`. A switch
+  toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
+  accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are
+  kept for 7 days (decision 2). `hub_meta.transport` is `cloudkit|relay`.
+- **Desktop's watch events** (`desktop_watch`, besides `status`, `recording_queued`, `pair` and `switched`):
+  `typing_request` (`device_id`, `name`: a linked phone newly asks to type, once per request; Desktop posts the
+  PROJ-16 notice "Allow "<name>" to type into Claude Code sessions?" while the app is in the background),
+  `bring_forward` (`workbench_id`, `session_id`: an applied phone start with `bring_forward`; Desktop brings the
+  workbench forward and shows the session) and `devices_changed` (no fields: a link, an unlink from either side or a
+  grant changed; Desktop reads `hub status` again, Learn's "iPhone paired"). A headless host has no Desktop
+  watching: these events reach nobody and `bring_forward` moves nothing.
+- **Desktop never opens `hubstate.db`** (decision 5): every Desktop read is `hub … --json` or the control socket
+  (`HubCenter`, `MobileSettingsModel`, `PhoneRecordingQueue`, `HubKeepAwake`). Guard:
+  `WatchtowerDesktop/Tests/Core/DesktopNeverOpensTheSidecarTests.swift` refuses every Swift string literal under
+  `WatchtowerDesktop/Sources` that names `hubstate.db` or `MobileHub`, with no exception.
+- **The Swift hub is deleted** (Task 24). `Services/MobileHub/`, `MobileHubMovedGuard`, `OwnerAwayCenter`/`OwnerAwayPolicy`
+  (Go: `internal/hub/platform`, `TestAwayFromThePolicy`) and the tray's CloudKit push forwarding are gone. Each Swift
+  hub test is mapped in the Task 24 PR (spec §13 "Ported guards"): most have a Go twin, the obsolete ones are listed
+  with their reasons. The two POLICY-03 guards on the `MobileSync = off` wipe of a Swift state not yet handed over
+  (`testRetiredOffWipesAPendingSwiftStateAndKeepsSetting`, `testRetiredWipeNeverCreatesOrRepairsKeys`) are retired with no
+  Go twin (owner decision, ask #969 Q1): nothing wipes what the Swift hub published to iCloud before the hand-over; those
+  records stay in iCloud until the owner handles them (v1 limit). `HubKeyringVectorTests` stays as a standalone ChaChaPoly check of the Swift
+  vector `internal/hub/identity/testdata/swift-keyring.json`. Learn's "iPhone paired" signal reads `phones` from
+  `hub status --json`.
+
+### The identity store on a desktop host
 
 `identity.ForDesktopHost(st, dir, identity.KeychainUsable)` picks the store once and records it in `hub_meta`
 `identity_store` (`keychain` | `file`); later starts follow the record and never re-decide. `KeychainStore` keeps the whole
@@ -368,7 +416,7 @@ malformed staged file is nothing staged too). The probe refuses every service st
 case). `KeychainUsable` comes from the string ldflag
 `identity.KeychainBuildFlag` (`-X` sets strings only); a plain `go build` defaults to the Keychain.
 
-### Keychain check (2026-11-01, Task 1 Step 1)
+#### Keychain check (2026-11-01, Task 1 Step 1)
 
 `scripts/hub-keychain-check.sh` (run from a plain Terminal; refuses under an agent marker) builds two `watchtower`
 binaries of different versions, signs both as `scripts/build-app.sh` signs `Contents/MacOS/watchtower` (same identity
@@ -391,7 +439,7 @@ reachable: a binary without a `keychain-access-groups` entitlement gets `errSecM
 CLI has no provisioning profile of its own. Both `scripts/build-app.sh` and the `Makefile` therefore pass
 `-X watchtower/internal/hub/identity.KeychainBuildFlag=false` (pinned by `scripts/tests/test-build-app-relay.sh`), so a
 desktop host keeps its identity in `<hub dir>/identity.key` (0600), like a headless host (owner, ask #807). The guide's
-privacy page says so in Task 24.
+privacy page says so.
 
 ## Phase 3 — the iCloud account (ask #969 Q3: as the Swift hub)
 

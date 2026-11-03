@@ -134,6 +134,10 @@ func unhex(t *testing.T, s string) []byte {
 	return b
 }
 
+// TestKeyring_OpensSwiftSealedKeys opens the Swift-sealed sidecar keys.
+// testdata/swift-keyring.json is frozen: the retired Swift hub's HubKeyring
+// wrote it (go hub plan 3 Task 24 deleted that code), so it must never be
+// regenerated.
 func TestKeyring_OpensSwiftSealedKeys(t *testing.T) {
 	raw, err := os.ReadFile("testdata/swift-keyring.json")
 	if err != nil {

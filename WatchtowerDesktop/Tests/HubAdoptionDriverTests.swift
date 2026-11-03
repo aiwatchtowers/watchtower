@@ -19,7 +19,6 @@ final class HubAdoptionDriverTests: XCTestCase {
     private var restartWaiters: [CheckedContinuation<Void, Never>] = []
     private var settings = HubAdoptSettings(enabled: true, startSessionAllows: [:])
     private var delivered = 0
-    private var storageCloses = true
     private var deadline: Duration = HubAdoptionDriver.stepDeadline
 
     override func setUp() async throws {
@@ -29,7 +28,6 @@ final class HubAdoptionDriverTests: XCTestCase {
         restartSettled = true
         restartWaiters = []
         delivered = 0
-        storageCloses = true
         deadline = HubAdoptionDriver.stepDeadline
     }
 
@@ -43,14 +41,6 @@ final class HubAdoptionDriverTests: XCTestCase {
                 self.log.append("restart-wait")
                 if !self.restartSettled { await withCheckedContinuation { self.restartWaiters.append($0) } }
                 self.log.append("restart-settled")
-            },
-            policyOffWipe: { [log] in log?.append("policy-wipe") },
-            stopSwiftHub: { [weak self, log] in
-                log?.append("swift-hub-stop")
-                await Task.yield()
-                guard self?.storageCloses == true else { return false }
-                log?.append("swift-storage-closed")
-                return true
             },
             cancelPhoneRecordings: { [log] names in
                 log?.append("cancel:\(names.joined(separator: ","))")
@@ -87,8 +77,8 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(result, .done)
         XCTAssertEqual(hub.state.identity, "confirmed")
         XCTAssertEqual(log.events, [
-            "cli:--status", "policy-wipe", "restart-wait", "restart-settled",
-            "cli:--status", "keychain:lookup:hub-acme", "swift-hub-stop", "swift-storage-closed",
+            "cli:--status", "restart-wait", "restart-settled",
+            "cli:--status", "keychain:lookup:hub-acme",
             "cancel:rec_1.m4a", "cli:--settings-stdin", "adopted:rec_1.m4a",
             "cli:--status", "keychain:lookup:hub-acme", "cli:--keys-stdin",
             "keychain:delete:hub-acme", "cli:--confirm-deleted"
@@ -96,27 +86,6 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(delivered, 1, "the Desktop's copy of the toggle goes once the Go hub took it")
         XCTAssertFalse(keys.has("hub-acme"))
         XCTAssertEqual(keys.creations, 0, "the hand-over never creates keys")
-    }
-
-    func testAdoptionStopsTheSwiftHubBeforeHubAdopt() async throws {
-        present()
-        try keys.seed(hubID: "hub-acme")
-        _ = await makeDriver().run()
-        let events = log.events
-        let stop = try XCTUnwrap(events.firstIndex(of: "swift-hub-stop"))
-        let closed = try XCTUnwrap(events.firstIndex(of: "swift-storage-closed"))
-        let adopt = try XCTUnwrap(events.firstIndex(of: "cli:--settings-stdin"))
-        XCTAssertLessThan(stop, closed)
-        XCTAssertLessThan(closed, adopt, "the storage is closed before the adopting hub adopt starts")
-    }
-
-    func testAStorageThatDoesNotCloseFailsSwiftBusyBeforeHubAdopt() async throws {
-        present()
-        try keys.seed(hubID: "hub-acme")
-        storageCloses = false
-        let result = await makeDriver().run()
-        XCTAssertEqual(result, .failed(reason: "swift_busy"))
-        XCTAssertFalse(log.events.contains("cli:--settings-stdin"))
     }
 
     /// While the restart step waits for Continue nothing shows: the status
@@ -128,8 +97,8 @@ final class HubAdoptionDriverTests: XCTestCase {
         let driver = makeDriver()
         let run = Task { await driver.run() }
         for _ in 0..<40 { await Task.yield() }
-        XCTAssertEqual(log.events, ["cli:--status", "policy-wipe", "restart-wait"],
-                       "nothing but the unseen read and the POLICY-03 check runs before Continue")
+        XCTAssertEqual(log.events, ["cli:--status", "restart-wait"],
+                       "nothing but the unseen read runs before Continue")
         XCTAssertEqual(driver.state, .idle)
         XCTAssertFalse(driver.state.isShown, "Settings → Mobile is no spinner while Continue waits")
 
@@ -144,7 +113,7 @@ final class HubAdoptionDriverTests: XCTestCase {
         _ = await makeDriver().run()
         let events = log.events
         XCTAssertLessThan(try XCTUnwrap(events.firstIndex(of: "restart-settled")),
-                          try XCTUnwrap(events.firstIndex(of: "swift-hub-stop")))
+                          try XCTUnwrap(events.firstIndex(of: "keychain:lookup:hub-acme")))
     }
 
     func testNoSwiftStateSkips() async {
@@ -248,7 +217,6 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(driver.state.setUpAgainTitle, "Set up Mobile again")
         XCTAssertEqual(keys.creations, 0, "the lookup never creates an identity")
         XCTAssertFalse(keys.has("hub-acme"))
-        XCTAssertFalse(log.events.contains("swift-hub-stop"))
         XCTAssertFalse(log.events.contains { $0.hasPrefix("cancel:") }, "the recordings stay Desktop's")
         XCTAssertFalse(hub.calls.contains { $0.args.contains("--settings-stdin") || $0.args.contains("--keys-stdin") })
     }
@@ -368,7 +336,6 @@ final class HubAdoptionDriverTests: XCTestCase {
         XCTAssertEqual(result, .failed(reason: "swift_schema"))
         XCTAssertEqual(driver.state, result)
         XCTAssertEqual(driver.state.retryTitle, "Retry")
-        XCTAssertTrue(log.events.contains("swift-hub-stop"), "the Swift hub was stopped and nothing started it again")
         XCTAssertEqual(delivered, 0)
 
         hub.adoptError = nil

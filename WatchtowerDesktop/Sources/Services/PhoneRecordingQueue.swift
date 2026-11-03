@@ -23,9 +23,8 @@ extension MeetingRecorderCenter: PhoneRecordingJobObserving {}
 /// whose answer names the audio file and its origin), hands the audio to the
 /// transcriber's phone ingest, reports each phase back (`recording_progress`)
 /// and ends the job with its transcript or a failure class, never text
-/// (`recording_finish`). It replaces the Swift hub's `PhoneRecordingJobs`
-/// once the Swift hub is gone (Task 24); until then both run, each acting
-/// only on its own hub's uploads.
+/// (`recording_finish`). It replaced the Swift hub's `PhoneRecordingJobs`
+/// (go hub plan 3 Task 24).
 ///
 /// The hub's audio is the only copy (the phone deleted its own on
 /// `received`): it is removed only once the transcript is saved; on any

@@ -541,19 +541,3 @@ private final class WindowVisibilityView: NSView {
         onChange?(window.occlusionState.contains(.visible))
     }
 }
-
-/// Settings → Mobile once a newer Watchtower runs the phone hub (spec §12.1):
-/// one section, one row with the model's line, no toggle (go hub phase 3
-/// Task 2; the guard and this view go with the Swift hub in Task 24).
-struct MobileMovedView: View {
-    let title: String
-    let message: String
-
-    var body: some View {
-        SettingsSection(title: title) {
-            SettingRow(title: message) { EmptyView() }
-        }
-        .padding(.vertical, Spacing.medium)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
