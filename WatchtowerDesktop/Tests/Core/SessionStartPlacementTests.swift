@@ -72,40 +72,4 @@ final class SessionStartPlacementTests: XCTestCase {
         XCTAssertNil(SessionStartPlacement.worktreeTop(ofCwd: "/r/elsewhere"))
         XCTAssertNil(SessionStartPlacement.worktreeTop(ofCwd: "/r/.claude/worktrees"))
     }
-
-    private func held(_ id: Int64, _ folder: String, at createdAt: String) -> TerminalSession {
-        var r = row(folderPath: folder, worktreeBranch: "wt/x")
-        r.id = id
-        r.title = "s\(id)"
-        r.createdAt = createdAt
-        return r
-    }
-
-    func testLaterHolderIsALaterRowInTheSameWorktree() {
-        let top = "/r/.claude/worktrees/session-10-2"
-        let me = held(10, top, at: "2026-10-14T10:00:00Z")
-        let later = held(12, top + "/app", at: "2026-10-15T10:00:00Z")
-        let latest = held(13, top, at: "2026-10-16T10:00:00Z")
-        let holder = SessionStartPlacement.laterHolder(of: top, row: me, among: [me, later, latest])
-        XCTAssertEqual(holder?.id, 13, "the latest of the later rows")
-    }
-
-    func testLaterHolderIgnoresItselfEarlierRowsAndOtherWorktrees() {
-        let top = "/r/.claude/worktrees/session-10-2"
-        let me = held(10, top, at: "2026-10-14T10:00:00Z")
-        let earlier = held(4, top, at: "2026-10-01T10:00:00Z")
-        let sibling = held(11, "/r/.claude/worktrees/session-10-20", at: "2026-10-15T10:00:00Z")
-        let mainFolder = held(12, "/r", at: "2026-10-15T10:00:00Z")
-        XCTAssertNil(SessionStartPlacement.laterHolder(of: top, row: me, among: [me, earlier, sibling, mainFolder]))
-        XCTAssertNil(SessionStartPlacement.laterHolder(of: top, row: me, among: []))
-    }
-
-    func testLaterHolderBreaksATieOnTheSameSecondById() {
-        let top = "/r/.claude/worktrees/a"
-        let me = held(10, top, at: "2026-10-14T10:00:00Z")
-        let sameSecondHigher = held(11, top, at: "2026-10-14T10:00:00Z")
-        let sameSecondLower = held(9, top, at: "2026-10-14T10:00:00Z")
-        XCTAssertEqual(SessionStartPlacement.laterHolder(of: top, row: me, among: [sameSecondLower, sameSecondHigher])?.id, 11)
-        XCTAssertNil(SessionStartPlacement.laterHolder(of: top, row: me, among: [sameSecondLower]))
-    }
 }

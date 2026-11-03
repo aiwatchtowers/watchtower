@@ -66,20 +66,4 @@ package enum SessionStartPlacement: Equatable, Sendable {
         }
         return nil
     }
-
-    /// The session that holds worktree `top` instead of `row`, when one does:
-    /// another row whose folder is in `top` and that was placed later
-    /// (`created_at`, then id). Its worktree path was reused after `row`'s
-    /// directory was removed, so a resume of `row` there would run in that
-    /// session's worktree (spec 2026-10-14 §7). nil — `row` still holds `top`
-    /// — otherwise, whatever branch the worktree is on now: agents switch
-    /// branches and detach HEAD inside their own worktree.
-    package static func laterHolder(of top: String, row: TerminalSession, among rows: [TerminalSession]) -> TerminalSession? {
-        rows
-            .filter { other in
-                other.id != row.id && worktreeTop(ofCwd: other.folderPath) == top
-                    && (other.createdAt, other.id) > (row.createdAt, row.id)
-            }
-            .max { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
-    }
 }

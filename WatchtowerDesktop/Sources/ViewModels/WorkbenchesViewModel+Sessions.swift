@@ -1089,7 +1089,8 @@ extension WorkbenchesViewModel {
     /// — the row `.unavailable`, nothing launches — when the branch is gone
     /// too or the worktree could not be restored; never a start in the main
     /// folder. A setup command never runs here. An existing directory
-    /// launches unless a later session holds that path now (`isStillHeld`).
+    /// launches on the row's branch or one its own agent used there
+    /// (`isStillHeld`).
     private func restoreWorktree(_ row: TerminalSession) async -> Bool {
         guard let branch = row.worktreeBranch, let projectID = row.projectID, let center = terminalCenter else { return true }
         if center.states[row.id] == .running { return true }
@@ -1126,14 +1127,15 @@ extension WorkbenchesViewModel {
     }
 
     /// Whether the worktree at the row's folder is still the row's own. On
-    /// `branch` it is; on another branch or a detached HEAD (an agent's
-    /// `git checkout` inside its worktree) it is unless another session row
-    /// placed later claims the same top — the path reused after this row's
-    /// directory was removed (`SessionStartPlacement.laterHolder`). A status
-    /// that could not be read, a folder that is not a worktree of the
-    /// workbench, an unreadable database or a later holder leave the row
-    /// `.unavailable` and false: never a launch in somebody else's worktree.
-    /// Called with `cli` and a terminal center present (`restoreWorktree`).
+    /// `branch` it is. On another branch or a detached HEAD it is only when
+    /// the session's own agent worked there on it: a `terminal_session_worktrees`
+    /// pair (this row's id, the realpath(3)-resolved top, the branch now — ''
+    /// for a detached HEAD) the state hooks recorded (spec 2026-10-14 §7).
+    /// Anything else — a branch the session never used, a status that could
+    /// not be read, a folder that is not a worktree of the workbench, an
+    /// unreadable ledger — leaves the row `.unavailable` and false: never a
+    /// launch in somebody else's worktree. Called with `cli` and a terminal
+    /// center present (`restoreWorktree`).
     private func isStillHeld(_ row: TerminalSession, projectID: Int64, branch: String, top: String) async -> Bool {
         guard let cli, let center = terminalCenter else { return false }
         let status: WorkbenchGitStatus
@@ -1149,19 +1151,28 @@ extension WorkbenchesViewModel {
             return false
         }
         if !status.detached, status.branch == branch { return true }
-        let holder: TerminalSession?
-        do {
-            let rows = try await dbPool.read { try TerminalSessionQueries.fetchInFolder($0, top: top) }
-            holder = SessionStartPlacement.laterHolder(of: top, row: row, among: rows)
-        } catch {
-            center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(error.localizedDescription)")
-            return false
+        // A non-detached status without a branch name is never matched
+        // against the ledger's '' (detached) pairs.
+        if status.detached || !status.branch.isEmpty {
+            let roots = Array(Set([top, CodeRootPolicy.symlinkResolvedPath(URL(fileURLWithPath: top))]))
+            let ledgerBranch = status.detached ? "" : status.branch
+            let rowID = row.id
+            do {
+                let worked = try await dbPool.read {
+                    try TerminalSessionQueries.hasWorktree($0, sessionID: rowID, roots: roots, branch: ledgerBranch)
+                }
+                if worked { return true }
+            } catch {
+                center.refuseLaunch(
+                    row, reason: "The worktree at \(top) could not be checked: the session's worktree record "
+                        + "could not be read (\(error.localizedDescription))."
+                )
+                return false
+            }
         }
-        guard let holder else { return true }
-        let now = status.detached ? "a detached HEAD" : status.branch
+        let now = status.detached ? "a detached HEAD" : (status.branch.isEmpty ? "an unnamed branch" : status.branch)
         center.refuseLaunch(
-            row, reason: "The worktree at \(top) now belongs to the session \"\(holder.title)\" (on \(now), "
-                + "not \(branch)) — start a new session."
+            row, reason: "The worktree at \(top) is now on \(now), not \(branch) — start a new session."
         )
         return false
     }

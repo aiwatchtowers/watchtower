@@ -119,18 +119,22 @@ package enum TerminalSessionQueries {
         )
     }
 
-    /// Every row, of any workbench, whose folder is `top` or inside it —
-    /// the candidates `SessionStartPlacement.laterHolder` decides among.
-    package static func fetchInFolder(_ db: Database, top: String) throws -> [TerminalSession] {
-        try TerminalSession.fetchAll(
+    /// Whether the session's own agent has worked in the worktree at one of
+    /// `roots` on `branch` ('' = a detached HEAD): a pair the state hooks
+    /// recorded in `terminal_session_worktrees` (migration 00111). Pass the
+    /// worktree top both as given and symlink-resolved — the hooks store the
+    /// resolved path.
+    package static func hasWorktree(_ db: Database, sessionID: Int64, roots: [String], branch: String) throws -> Bool {
+        guard !roots.isEmpty else { return false }
+        let marks = Array(repeating: "?", count: roots.count).joined(separator: ", ")
+        return try Bool.fetchOne(
             db,
             sql: """
-                SELECT * FROM terminal_sessions
-                WHERE folder_path = ? OR substr(folder_path, 1, length(?) + 1) = ? || '/'
-                ORDER BY id
+                SELECT EXISTS (SELECT 1 FROM terminal_session_worktrees
+                WHERE session_id = ? AND branch = ? AND root IN (\(marks)))
                 """,
-            arguments: [top, top, top]
-        )
+            arguments: StatementArguments([sessionID, branch] as [any DatabaseValueConvertible] + roots)
+        ) ?? false
     }
 
     package static func fetchForTarget(_ db: Database, targetID: Int64) throws -> [TerminalSession] {

@@ -35,24 +35,37 @@ final class TerminalSessionPlacementQueriesTests: XCTestCase {
         XCTAssertThrowsError(try db.write { try WorkbenchQueries.setWorktreeSetup($0, projectID: 999, command: "x") })
     }
 
-    func testFetchInFolderReturnsRowsInTheFolderOnly() throws {
+    func testHasWorktreeMatchesOnlyTheSessionsOwnRootAndBranch() throws {
         let db = try TestDatabase.create()
         let projectID = try db.write { try TestDatabase.insertWorkbench($0, folder: "/repo") }
-        let other = try db.write { try TestDatabase.insertWorkbench($0, name: "other", folder: "/other") }
-        func add(_ p: Int64, _ folder: String) throws -> Int64 {
+        func add(_ title: String) throws -> Int64 {
             try db.write { db in
                 try TerminalSessionQueries.create(db, .init(
-                    projectID: p, kind: .claude, title: "t", folderPath: folder, claudeSessionID: UUID().uuidString)).id
+                    projectID: projectID, kind: .claude, title: title, folderPath: "/repo/.claude/worktrees/a",
+                    claudeSessionID: UUID().uuidString)).id
             }
         }
-        let top = "/repo/.claude/worktrees/a_b"
-        let exact = try add(projectID, top)
-        let inside = try add(projectID, top + "/app")
-        let fromOtherWorkbench = try add(other, top)
-        _ = try add(projectID, "/repo/.claude/worktrees/a_bc")
-        _ = try add(projectID, "/repo/.claude/worktrees/aXb")
-        _ = try add(projectID, "/repo")
-        let ids = try db.read { try TerminalSessionQueries.fetchInFolder($0, top: top) }.map(\.id)
-        XCTAssertEqual(ids, [exact, inside, fromOtherWorkbench])
+        let me = try add("me")
+        let other = try add("other")
+        try db.write { db in
+            for (id, root, branch) in [(me, "/private/repo/.claude/worktrees/a", "fix/x"),
+                                       (me, "/private/repo/.claude/worktrees/a", ""),
+                                       (other, "/private/repo/.claude/worktrees/a", "fix/y")] {
+                try db.execute(
+                    sql: "INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at) VALUES (?, ?, ?, ?)",
+                    arguments: [id, root, branch, "2026-11-03T10:00:00Z"])
+            }
+        }
+        let roots = ["/repo/.claude/worktrees/a", "/private/repo/.claude/worktrees/a"]
+        func has(_ id: Int64, _ roots: [String], _ branch: String) throws -> Bool {
+            try db.read { try TerminalSessionQueries.hasWorktree($0, sessionID: id, roots: roots, branch: branch) }
+        }
+        XCTAssertTrue(try has(me, roots, "fix/x"))
+        XCTAssertTrue(try has(me, roots, ""), "a detached HEAD the agent made")
+        XCTAssertFalse(try has(me, roots, "fix/y"), "another session's branch")
+        XCTAssertFalse(try has(me, ["/repo/.claude/worktrees/a"], "fix/x"), "the unresolved path alone")
+        XCTAssertFalse(try has(me, ["/private/repo/.claude/worktrees/b"], "fix/x"), "another worktree")
+        XCTAssertFalse(try has(me, [], "fix/x"))
+        XCTAssertTrue(try has(other, roots, "fix/y"))
     }
 }

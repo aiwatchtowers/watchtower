@@ -162,13 +162,16 @@ command). When the branch is gone too (#535 removes a merged branch), the row is
 "The worktree and its branch wt/… were cleaned up — start a new session." Never a silent start in
 the main folder.
 
-When the directory exists, ownership is decided by the path, not the branch (amended 2026-11-03):
-an agent may switch branches or detach HEAD inside its own worktree, so the resume launches there
-unless another session row placed later (`created_at`, then id) has its folder in the same worktree
-top — the path was reused after this row's directory was removed — which leaves the row unavailable:
-"The worktree at <top> now belongs to the session "<title>" … — start a new session." An unreadable
-git status or a folder that is not a worktree of the workbench is refused as before. The row's
-`worktree_branch` stays as recorded.
+When the directory exists, the resume launches only on a branch the row's own agent used there
+(amended 2026-11-03): on the row's `worktree_branch`, or on another branch or a detached HEAD
+(agents run `git checkout -b` or detach HEAD inside their own worktree) when #535's ledger
+`terminal_session_worktrees` holds the pair (this row's id, the symlink-resolved worktree top, the
+current branch, '' for a detached HEAD). A non-detached status with an empty branch never matches a
+'' pair. Anything else is refused, fail closed — a branch the session never used there (a reused
+path, another session's worktree, one made by hand, a legacy row without ledger pairs): "The
+worktree at <top> is now on <branch>, not <wt/…> — start a new session." An unreadable git status,
+a folder that is not a worktree of the workbench and an unreadable ledger are refused too. The
+row's `worktree_branch` stays as recorded.
 
 ## 8. Workbench integration inside a worktree
 
