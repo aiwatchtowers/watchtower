@@ -39,8 +39,7 @@ package protocol AutomationRunNotifying {
 @Observable
 package final class QuickRunCenter {
     package enum Origin: Equatable, Sendable {
-        /// `phone`: a linked phone's `automation_run` (ask #692).
-        case palette, tray, phone
+        case palette, tray
     }
 
     package enum Outcome: Equatable, Sendable {
@@ -153,18 +152,6 @@ package final class QuickRunCenter {
         let outcome = await start(row, origin: pendingOrigin)
         if case .refused = outcome { return }
         if pendingConfirm == row { pendingConfirm = nil }
-    }
-
-    /// A run the phone asked for (ask #692): the caller read `row` fresh and
-    /// found it runnable; a `confirm: true` recipe was confirmed on the phone,
-    /// so no sheet comes up here. Watched like any quick run; a refusal is
-    /// returned only, never left in `lastError`, which the palette and sheet show.
-    package func runFromPhone(_ row: QuickRunRow) async -> Outcome {
-        do {
-            return try await launch(row, origin: .phone)
-        } catch {
-            return .refused(AutomationsViewModel.message(for: error))
-        }
     }
 
     /// **Cancel** in the sheet: nothing runs.

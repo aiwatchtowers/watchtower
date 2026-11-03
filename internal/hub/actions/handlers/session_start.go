@@ -11,6 +11,7 @@ import (
 	"github.com/rivo/uniseg"
 
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/wire"
 )
 
 // SessionStartStopHandlers' values and messages, verbatim.
@@ -58,8 +59,10 @@ var startStopKinds = []string{"session_start", "session_stop"}
 // the port's to add after either. open_existing answers the target's session
 // when it has one. With no entity (#1189) it is New Session: mode new, the
 // phone's brief required (1–StartBriefLimit characters after trimming).
-// bring_forward is checked and has nothing to bring forward: the hub has no
-// window. applied carries {session_id, stage: starting}.
+// bring_forward true, once the start is applied, tells Deps.BringForward the
+// workbench and the session (Desktop brings them forward; a headless host
+// has no window and ignores it); false moves nothing on the Mac's screen.
+// applied carries {session_id, stage: starting}.
 //
 // session_stop (entity the session id) is a host Stop request on a live
 // board session; one that is not live is applied with no request.
@@ -76,10 +79,22 @@ func (h *Handlers) startSession(ctx context.Context, r actions.Request) actions.
 	workbenchID, okWB := intParam(r, "workbench_id")
 	mode, okMode := stringParam(r, "mode")
 	planFirst, okPlan := boolParam(r, "plan_first")
-	_, okForward := boolParam(r, "bring_forward")
+	bringForward, okForward := boolParam(r, "bring_forward")
 	if !okWB || !okMode || !okPlan || !okForward {
 		return failed(reasonInvalidParams, "session_start needs a workbench_id, mode, plan_first and bring_forward")
 	}
+	out := h.startOne(ctx, r, workbenchID, mode, planFirst)
+	if bringForward && h.d.BringForward != nil && out.Status == wire.StatusApplied {
+		if id, ok := out.Result["session_id"].(int64); ok {
+			h.d.BringForward(workbenchID, id)
+		}
+	}
+	return out
+}
+
+// startOne is startSession past the common parameters: a target's start, or
+// New Session without one.
+func (h *Handlers) startOne(ctx context.Context, r actions.Request, workbenchID int64, mode string, planFirst bool) actions.Outcome {
 	if r.Action.EntityID == nil {
 		return h.startUntargeted(ctx, r, workbenchID, mode, planFirst)
 	}

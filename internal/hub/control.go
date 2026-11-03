@@ -61,7 +61,8 @@ const (
 	// DisplayOver), a claimed recording's phase and percent, and a stream of
 	// the hub's events for Desktop (the connection stays open and gets one
 	// line per event: EventStatus, EventRecordingQueued, EventPair,
-	// EventSwitched).
+	// EventSwitched, EventTypingRequest, EventBringForward,
+	// EventDevicesChanged).
 	OpDesktopView, OpRecordingProgress, OpDesktopWatch = "desktop_view", "recording_progress", "desktop_watch"
 	// OpConfirmDeleted records that Desktop deleted its own Keychain items
 	// after the key hand-over (plan 3 Task 16): identity adopted ->
@@ -81,6 +82,18 @@ const (
 	EventPair = "pair"
 	// EventSwitched is an accepted transport switch (the switcher, Task 18).
 	EventSwitched = "switched"
+	// EventTypingRequest is a linked phone newly asking to type into
+	// sessions (PROJ-16, OD-2): DeviceID and its display Name; Desktop asks
+	// the owner with a macOS notice while the app is in the background.
+	EventTypingRequest = "typing_request"
+	// EventBringForward is a phone start with "Bring the window forward"
+	// (mobile POC spec §6.5): WorkbenchID and SessionID are what Desktop
+	// brings forward.
+	EventBringForward = "bring_forward"
+	// EventDevicesChanged is a change of the linked phones or their grants
+	// (a link, an unlink from either side): no fields; Desktop reads the
+	// status again.
+	EventDevicesChanged = "devices_changed"
 )
 
 // The error classes a ControlAnswer carries.
@@ -169,6 +182,10 @@ type ControlAnswer struct {
 	// was last in touch — the Desktop's keep-awake input (Task 23).
 	PhoneContactAt *time.Time `json:"phone_contact_at,omitempty"`
 	Pair           string     `json:"pair,omitempty"`
+	// WorkbenchID and SessionID: a bring_forward event's workbench and the
+	// session the phone started there.
+	WorkbenchID int64 `json:"workbench_id,omitempty"`
+	SessionID   int64 `json:"session_id,omitempty"`
 }
 
 // serveControl listens on <dir>/hub.sock until the returned stop is called

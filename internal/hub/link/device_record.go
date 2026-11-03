@@ -116,6 +116,7 @@ func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayloa
 	c.mu.Lock()
 	defer c.unlock()
 	var asked, typingRevoked, permsRevoked, changed bool
+	var askedName string
 	err := c.st.WithTx(ctx, func(tx *sql.Tx) error {
 		var (
 			name                                    string
@@ -137,6 +138,7 @@ func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayloa
 		revokeTyping := !p.TypingRequested && typingReq && typingAllowed
 		revokePerms := !permsWanted && permsReq && permsAllowed
 		asked = p.TypingRequested && !typingAllowed && !typingReq
+		askedName = newName
 		changed = newName != name || p.StartSessions != startAllowedNow || revokeTyping || revokePerms ||
 			p.TypingRequested != typingReq || permsWanted != permsReq
 		typingRevoked, permsRevoked = revokeTyping, revokePerms
@@ -157,6 +159,7 @@ func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayloa
 	}
 	if asked {
 		log.Printf("hub link: phone %s asks to type into sessions", strings.ToUpper(device))
+		c.typingAsks = append(c.typingAsks, TypingAsk{DeviceID: strings.ToUpper(device), Name: askedName})
 	}
 	if typingRevoked {
 		log.Printf("hub link: phone %s turned typing off: grant revoked", strings.ToUpper(device))

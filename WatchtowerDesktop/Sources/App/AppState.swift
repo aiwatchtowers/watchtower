@@ -401,7 +401,6 @@ final class AppState {
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
-    @ObservationIgnored let ownerAwayCenter = OwnerAwayCenter(box: OwnerAwayBox())
     /// Raises an unanswered Chat question into an owner ask (owner asks v2,
     /// Part 5); nil without a CLI runner.
     private(set) var chatQuestionEscalator: ChatQuestionEscalator?
@@ -413,40 +412,19 @@ final class AppState {
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
-    /// The opt-in mobile hub (mobile POC spec §6.1): nil while
-    /// `mobileSyncEnabled` is off. Rebuilt whenever `initWorkbenches` re-runs,
-    /// because it holds the centers that function replaces.
-    /// Set only by the hub build in `AppState+MobileHub.swift`.
-    var mobileHub: MobileHubService?
-    /// Why the hub's storage could not be opened, for Settings → Mobile.
-    var mobileHubInitError: String?
-    /// A newer Watchtower runs the phone hub (`MOVED`, spec §12.1): resolved
-    /// at launch and before every hub build or start (`resolveMobileHubMoved`),
-    /// never on a view read.
-    var isMobileHubMoved = false
-    /// Where the toggle lives; tests pass a throwaway suite.
+    /// Where Mobile's Desktop-side settings live (the keep-awake switch, the
+    /// pre-hand-over toggle the Go hub takes once); tests pass a throwaway suite.
     @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
-    /// The policy's `MobileSync` mode for the hub's background parts (#608).
-    @ObservationIgnored let mobileSyncPolicy = MobileSyncPolicyBox()
-    @ObservationIgnored var policyOffWipeDone = false
-    /// Opens the hub's transport and sidecar; nil (the default) opens the
-    /// live storage in `mobileHubDirectory`. Tests pass a stub.
-    @ObservationIgnored var makeMobileHubStorage: (() throws -> MobileHubStorage)?
-    /// The Swift hub's directory: the live storage's, and where the
-    /// downgrade guard looks for `MOVED`. Under XCTest a fresh temporary
-    /// path (`MobileHubStorage.defaultDirectory`), never this Mac's own.
-    @ObservationIgnored var mobileHubDirectory: URL = MobileHubStorage.defaultDirectory()
-    /// Built once per run and kept across hub rebuilds and toggles.
-    @ObservationIgnored var mobileHubStorage: MobileHubStorage?
-    @ObservationIgnored var mobileHubPool: DatabasePool?
     var hubAdoption: HubAdoptionDriver? // Mobile's hand-over to the Go hub (`startHubAdoption`)
-    /// The Swift hub never starts (never two hubs); false under XCTest only, until go hub plan 3 Task 24.
-    @ObservationIgnored var swiftHubRetired =
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil && NSClassFromString("XCTestCase") == nil
     @ObservationIgnored var hubAdoptionDeps: HubAdoptionDeps? // the hand-over's runner and keys; nil: the live ones
-    /// Built with the first hub and kept across rebuilds, so a QR on screen
-    /// keeps its link when `initWorkbenches` replaces the hub.
-    @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
+    /// The hub's Desktop events' AppKit side, seamed for tests: whether the
+    /// app is in front, the PROJ-16 typing notice, and the main window
+    /// brought forward (`bringWorkbenchForward`).
+    @ObservationIgnored var appIsActive: @MainActor () -> Bool = { NSApp?.isActive == true }
+    @ObservationIgnored var postTypingRequestNotice: @MainActor (_ deviceID: String, _ name: String) -> Void = {
+        NotificationService.shared.sendMobileTypingRequestNotification(deviceID: $0, name: $1)
+    }
+    @ObservationIgnored var frontMainWindow: @MainActor (AppState) -> Void = { $0.frontLiveMainWindow() }
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
@@ -572,9 +550,6 @@ final class AppState {
         daemonManager.onSyncFinished = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
-        managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
-        managedPolicy.onRefresh = { [weak self] _ in self?.retryPolicyOffWipe() }
-        resolveMobileHubMoved()
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
@@ -768,12 +743,10 @@ final class AppState {
                     self?.agentAnalyticsCenter?.stop(); self?.coachCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
-                    self?.ownerAwayCenter.stop()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
                     // Sessions waiting in the Undo batch were deleted in the
                     // quit's async phase (PROJ-17, `QuitCoordinator`).
-                    self?.mobileHub?.stop()
                     self?.stopHubCenterForQuit()
                     self?.automationsViewModel?.stop()
                     self?.automationSessionCenter?.stop()
@@ -1872,7 +1845,6 @@ final class AppState {
         reports.start()
         specReviewLoop.start()
         ownerPresenceCenter?.start()
-        ownerAwayCenter.start()
         chatQuestionEscalator?.start()
         replaceHubCenter(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
@@ -1883,7 +1855,7 @@ final class AppState {
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
         Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
-        startMobile(dbPool: dbPool) // after the restart step, which the hand-over awaits
+        startHubAdoption() // after the restart step, which the hand-over awaits
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {
             automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)

@@ -326,10 +326,10 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		}
 	}
 	if run {
-		// A stop never reaches into an apply (the Swift processor's handler
-		// was shielded from the pass's cancellation): the handler runs on
-		// its own context, bounded by HandlerTimeout, so a stopped pass lets
-		// the record in flight finish and the hub's stop stays bounded.
+		// A stop never reaches into an apply: the handler runs on its own
+		// context, bounded by HandlerTimeout, so a stopped pass lets the
+		// record in flight finish and commit, the next one waits, and the
+		// hub's stop stays bounded (the Go behaviour; ask #969 Q4 kept it).
 		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), HandlerTimeout)
 		out = normalize(reg.handler(hctx, Request{Device: b.id, Hub: p.cfg.Keys.HubID(), RecordName: plain, Action: a, ReceivedAt: now}))
 		cancel()

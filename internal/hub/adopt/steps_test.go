@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -201,33 +200,21 @@ func TestAdoptMigratesOldAlertedAsksAsPushed(t *testing.T) {
 // columns: the (name, type) pairs of HubSyncState+Keys.swift's
 // addMissingColumns calls and HubSyncState.swift's relay_processed pairs,
 // plus HubSyncState.swift's devices names (type INTEGER NOT NULL DEFAULT 0).
+// The Swift hub's sources are gone (go hub plan 3 Task 24); the list was read
+// from them at the deletion and is frozen here, as every Swift sidecar an
+// adoption meets was written by them.
 func TestFoldedInMatchesTheSwiftAlters(t *testing.T) {
-	dir := filepath.Join("..", "..", "..", "WatchtowerDesktop", "Sources", "Services", "MobileHub")
-	var swift []string
-	pair := regexp.MustCompile(`\("([a-z_]+)", "([A-Z][^"]*)"\)`)
-	for _, name := range []string{"HubSyncState.swift", "HubSyncState+Keys.swift"} {
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			t.Skipf("the Swift hub's source is gone (Task 24): %v", err)
-		}
-		for _, m := range pair.FindAllStringSubmatch(string(b), -1) {
-			swift = append(swift, m[1]+" "+m[2])
-		}
-		if name == "HubSyncState.swift" {
-			list := regexp.MustCompile(`for name in \[([^\]]*)\]`).FindStringSubmatch(string(b))
-			if list == nil {
-				t.Fatal("the devices ALTER names were not found")
-			}
-			for _, n := range regexp.MustCompile(`"([a-z_]+)"`).FindAllStringSubmatch(list[1], -1) {
-				swift = append(swift, n[1]+" INTEGER NOT NULL DEFAULT 0")
-			}
-		}
+	swift := []string{
+		"agreement_key BLOB", "agreement_key BLOB", "confirm_nonce BLOB", "confirm_nonces_drawn INTEGER NOT NULL DEFAULT 0",
+		"done_seq INTEGER", "echo BLOB", "last_seq INTEGER", "link_nonce TEXT", "name TEXT",
+		"permissions_allowed INTEGER NOT NULL DEFAULT 0", "permissions_requested INTEGER NOT NULL DEFAULT 0", "scope TEXT",
+		"signing_key BLOB", "start_sessions INTEGER NOT NULL DEFAULT 1", "start_sessions_granted INTEGER NOT NULL DEFAULT 0",
+		"typing_requested INTEGER NOT NULL DEFAULT 0", "typing_requested INTEGER NOT NULL DEFAULT 0", "wire_name TEXT",
 	}
 	var ours []string
 	for _, c := range foldedIn {
 		ours = append(ours, c.column+" "+c.typ)
 	}
-	sort.Strings(swift)
 	sort.Strings(ours)
 	if strings.Join(swift, "\n") != strings.Join(ours, "\n") {
 		t.Fatalf("Swift ALTER columns:\n%s\nfoldedIn:\n%s", strings.Join(swift, "\n"), strings.Join(ours, "\n"))
