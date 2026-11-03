@@ -353,6 +353,28 @@ func lowHeapBudget(t *testing.T, budget uint64) {
 	runtime.GC() // a fresh live-heap reading for the run's baseline
 }
 
+// garbageSink keeps the compiler from dropping an allocation the test then
+// turns into garbage.
+var garbageSink []byte
+
+// A run's baseline does not take in garbage past one budget: a run stopped
+// for memory leaves its heap behind uncollected, and counted in the next
+// run's baseline it doubled that run's room (back-to-back memory bombs grew
+// until one's last native step outlived AbandonGrace: the CI flake of
+// TestSandbox_HeapBudgetStopsTheRun).
+func TestSandbox_HeapBaselineLeavesGarbageOut(t *testing.T) {
+	lowHeapBudget(t, 32<<20)
+	_, start := heapReadings()
+	garbageSink = make([]byte, 256<<20)
+	for i := 0; i < len(garbageSink); i += 4096 {
+		garbageSink[i] = 1
+	}
+	garbageSink = nil
+	if got := heapBaseline(); got > start+RunHeapBudget {
+		t.Fatalf("baseline = %d MiB, start %d MiB; want the 256 MiB of garbage left out", got>>20, start>>20)
+	}
+}
+
 // Two runs under the budget each, together over it, do not stop each
 // other: a run's baseline moves up when a sibling starts or ends. The order
 // is fixed by SDK calls, not by sleeps: A allocates, then B starts and
