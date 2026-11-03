@@ -1317,19 +1317,32 @@ const (
 	InboxActionChat  = "chat"
 	InboxActionAgent = "agent"
 	InboxActionReply = "reply"
+	// InboxActionTarget's press proposes create_target (Inbox builder A).
+	InboxActionTarget = "target"
 )
 
 // InboxAction is one button of an Inbox card. Kind names the one payload
-// field set: Open (link), Chat (chat), Agent (agent) or Reply + Data (reply).
+// field set: Open (link), Chat (chat), Agent (agent), Reply + Data (reply)
+// or Target (target). The field order is the canonical JSON order that
+// blocks.ActionHash hashes.
 type InboxAction struct {
-	Label   string            `json:"label"`
-	Kind    string            `json:"kind"`
-	Open    string            `json:"open,omitempty"`
-	Chat    string            `json:"chat,omitempty"`
-	Agent   *InboxAgentAction `json:"agent,omitempty"`
-	Reply   string            `json:"reply,omitempty"`
-	Data    json.RawMessage   `json:"data,omitempty"`
-	Primary bool              `json:"primary,omitempty"`
+	Label   string             `json:"label"`
+	Kind    string             `json:"kind"`
+	Open    string             `json:"open,omitempty"`
+	Chat    string             `json:"chat,omitempty"`
+	Agent   *InboxAgentAction  `json:"agent,omitempty"`
+	Reply   string             `json:"reply,omitempty"`
+	Target  *InboxTargetAction `json:"target,omitempty"`
+	Data    json.RawMessage    `json:"data,omitempty"`
+	Primary bool               `json:"primary,omitempty"`
+}
+
+// InboxTargetAction is a target action's proposed task: its title, an
+// optional intent and an optional parent target id (0 = top level).
+type InboxTargetAction struct {
+	Title  string `json:"title"`
+	Intent string `json:"intent,omitempty"`
+	Parent int64  `json:"parent,omitempty"`
 }
 
 // InboxAgentAction is an agent action's task and its optional workbench.
