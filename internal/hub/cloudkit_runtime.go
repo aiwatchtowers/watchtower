@@ -138,11 +138,13 @@ func (h *hubRuntime) sweepShares(ctx context.Context) {
 // other event. PullNow (a silent push, or the bridge's reconnect, after
 // which pushes may have been missed) is the relay's resync: what the phones
 // wait for goes out again, the link check runs, and a pass runs at once.
-// AccountChanged closes the link the old iCloud user opened.
+// AccountChanged closes the link the old iCloud user opened and removes the
+// staged assets (forgetStagedAssets).
 func (h *hubRuntime) cloudKitEvent(ctx context.Context, ev transport.Event) bool {
 	switch {
 	case ev.AccountChanged:
 		h.refreshCloudKitAccount(ctx)
+		h.forgetStagedAssets()
 		if s, ok := h.shares(); ok {
 			cctx, cancel := context.WithTimeout(ctx, opTimeout)
 			err := h.center.AccountChanged(cctx, s)

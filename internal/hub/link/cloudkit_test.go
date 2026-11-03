@@ -45,24 +45,49 @@ type fakeShares struct {
 	calls    []string
 	// on runs once, before the next call of its op answers (outside mu).
 	on map[string]func()
+	// hanging ops block until their context ends (a call the bridge never
+	// answers); inLink and maxInLink count the public-link calls running.
+	hanging   map[string]bool
+	stop      chan struct{}
+	inLink    int
+	maxInLink int
 }
 
 func newFakeShares() *fakeShares {
 	return &fakeShares{
 		account: transport.AccountAvailable, owner: ownerUser, parts: map[string][]transport.Participant{}, failing: map[string]bool{},
 		dataURL: "https://share.example.com/d", relayURL: "https://share.example.com/r",
+		hanging: map[string]bool{}, stop: make(chan struct{}),
 	}
 }
 
-func (f *fakeShares) call(op string) error {
+// hang makes op's calls block until their context ends or the test ends
+// (newCKRig ends them at cleanup).
+func (f *fakeShares) hang(op string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hanging[op] = true
+}
+
+func (f *fakeShares) call(ctx context.Context, op string) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, op)
 	hook := f.on[op]
 	delete(f.on, op)
-	failing := f.failing[op]
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	f.mu.Lock()
+	failing, hanging := f.failing[op], f.hanging[op]
+	f.mu.Unlock()
+	if hanging {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-f.stop:
+			return transport.ErrUnavailable
+		}
 	}
 	if failing {
 		return transport.ErrUnavailable
@@ -96,8 +121,8 @@ func (f *fakeShares) setOwner(name string) {
 	f.owner = name
 }
 
-func (f *fakeShares) AccountStatus(context.Context) (transport.Account, error) {
-	if err := f.call("account_status"); err != nil {
+func (f *fakeShares) AccountStatus(ctx context.Context) (transport.Account, error) {
+	if err := f.call(ctx, "account_status"); err != nil {
 		return "", err
 	}
 	f.mu.Lock()
@@ -105,8 +130,8 @@ func (f *fakeShares) AccountStatus(context.Context) (transport.Account, error) {
 	return f.account, nil
 }
 
-func (f *fakeShares) OwnerUser(context.Context) (string, error) {
-	if err := f.call("owner_user"); err != nil {
+func (f *fakeShares) OwnerUser(ctx context.Context) (string, error) {
+	if err := f.call(ctx, "owner_user"); err != nil {
 		return "", err
 	}
 	f.mu.Lock()
@@ -114,8 +139,8 @@ func (f *fakeShares) OwnerUser(context.Context) (string, error) {
 	return f.owner, nil
 }
 
-func (f *fakeShares) EnsureShares(context.Context) (string, string, error) {
-	if err := f.call("ensure_shares"); err != nil {
+func (f *fakeShares) EnsureShares(ctx context.Context) (string, string, error) {
+	if err := f.call(ctx, "ensure_shares"); err != nil {
 		return "", "", err
 	}
 	f.mu.Lock()
@@ -124,8 +149,17 @@ func (f *fakeShares) EnsureShares(context.Context) (string, string, error) {
 	return f.dataURL, f.relayURL, nil
 }
 
-func (f *fakeShares) SetPublicLink(_ context.Context, open bool) error {
-	if err := f.call("set_public_link"); err != nil {
+func (f *fakeShares) SetPublicLink(ctx context.Context, open bool) error {
+	f.mu.Lock()
+	f.inLink++
+	f.maxInLink = max(f.maxInLink, f.inLink)
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.inLink--
+		f.mu.Unlock()
+	}()
+	if err := f.call(ctx, "set_public_link"); err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -134,8 +168,8 @@ func (f *fakeShares) SetPublicLink(_ context.Context, open bool) error {
 	return nil
 }
 
-func (f *fakeShares) Participants(_ context.Context, zone string) ([]transport.Participant, error) {
-	if err := f.call("participants"); err != nil {
+func (f *fakeShares) Participants(ctx context.Context, zone string) ([]transport.Participant, error) {
+	if err := f.call(ctx, "participants"); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
@@ -143,8 +177,8 @@ func (f *fakeShares) Participants(_ context.Context, zone string) ([]transport.P
 	return slices.Clone(f.parts[zone]), nil
 }
 
-func (f *fakeShares) RemoveParticipants(_ context.Context, zone string, names []string) error {
-	if err := f.call("remove_participants"); err != nil {
+func (f *fakeShares) RemoveParticipants(ctx context.Context, zone string, names []string) error {
+	if err := f.call(ctx, "remove_participants"); err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -215,7 +249,9 @@ func newCKRig(t *testing.T) *ckRig {
 	t.Helper()
 	r := newRig(t)
 	r.c = r.ckCenter(DefaultSweep)
-	return &ckRig{rig: r, s: newFakeShares(), ctx: context.Background()}
+	s := newFakeShares()
+	t.Cleanup(func() { close(s.stop) })
+	return &ckRig{rig: r, s: s, ctx: context.Background()}
 }
 
 func (r *rig) ckCenter(sw Sweep) *Center {

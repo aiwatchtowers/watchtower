@@ -99,11 +99,40 @@ func repairSwiftCopy(db *sql.DB) error {
 			return fmt.Errorf("%w: adding %s.%s: %w", ErrSwiftSchema, c.table, c.column, err)
 		}
 	}
+	if err := migrateAlertedAsks(db); err != nil {
+		return err
+	}
 	if _, exists, err := hasColumn(db, "slice_state", "wire_name"); err != nil || !exists {
 		return err
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS slice_state_by_wire ON slice_state (wire_name)`); err != nil {
 		return fmt.Errorf("%w: %w", ErrSwiftSchema, err)
+	}
+	return nil
+}
+
+// migrateAlertedAsks is HubSyncState.migrateAlertedAsks, the Swift hub's own
+// upgrade of a file from a build before the work alerts: each row of the
+// ask-only ledger alerted_asks was pushed when it was written, so it becomes
+// a pushed ask-<id> work alert, and the old table goes. work_alerts is
+// created first (00001's definition), as the Swift createSchema does.
+func migrateAlertedAsks(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'alerted_asks'`).Scan(&n); err != nil {
+		return fmt.Errorf("%w: %w", ErrSwiftCorrupt, err)
+	}
+	if n == 0 {
+		return nil
+	}
+	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS work_alerts (key TEXT PRIMARY KEY, seen_at REAL NOT NULL, pushed_at REAL, generation INTEGER NOT NULL)`,
+		`INSERT OR IGNORE INTO work_alerts (key, seen_at, pushed_at, generation)
+			SELECT 'ask-' || ask_id, at AS seen_at, at AS pushed_at, generation FROM alerted_asks`,
+		`DROP TABLE alerted_asks`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			return fmt.Errorf("%w: moving alerted_asks: %w", ErrSwiftSchema, err)
+		}
 	}
 	return nil
 }

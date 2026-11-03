@@ -457,7 +457,7 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return s.setEnabled(false)
 	case OpName:
 		name := strings.TrimSpace(r.Name)
-		if name == "" || len([]rune(name)) > wire.MaxMacNameLength {
+		if name == "" || wire.ClipMacName(name) != name {
 			return ControlAnswer{Error: ErrClassBadRequest}
 		}
 		if err := s.st.SetMeta(state.MetaDisplayName, name); err != nil {
@@ -727,6 +727,9 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if _, _, err := h.center.Issue(); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
+		// The phone's hello may come at once: a pass now rather than at the
+		// idle cadence's next tick (the Swift hub's wakeRelay, #66.7).
+		h.kick(h.passKick)
 		return ControlAnswer{OK: true}
 	case OpConfirm:
 		if pl == nil || r.Device == "" {

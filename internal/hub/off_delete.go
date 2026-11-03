@@ -60,8 +60,9 @@ func (s *supervisor) ownerOff() {
 	s.nextOffWipe = now.Add(offWipeRetry)
 }
 
-// unlinkForOff unlinks every linked phone and refuses every phone waiting
-// for the owner while the owner's switch is off (ask #956), through
+// unlinkForOff removes the staged assets (removeStagedAssets), unlinks every
+// linked phone and refuses every phone waiting for the owner while the
+// owner's switch is off (ask #956), through
 // `hub unlink`'s offline path on the supervisor's store. Run at every
 // reconcile while no hub runs: a no-op once nothing is linked, and it also
 // covers an off taken while the hub was not running. Only a switch written
@@ -76,6 +77,11 @@ func (s *supervisor) unlinkForOff() {
 	defer s.offlineMu.Unlock()
 	if v, _, err := s.st.Meta(state.MetaEnabled); err != nil || v != "0" {
 		return
+	}
+	// The staged assets and their keys go with the phones (the Swift hub's
+	// off removed its asset store); no hub runs, so nothing stages meanwhile.
+	if aerr := removeStagedAssets(s.o.Dir, s.st); aerr != nil {
+		log.Printf("hub: off: removing the staged assets failed (%s): retried", errClass(aerr))
 	}
 	devices, err := s.st.Devices()
 	var pending []link.Pending

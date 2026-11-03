@@ -272,6 +272,10 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 // actions and queues the final echo. seq 0 is a legacy action (legacy.go):
 // keyed by its plain name, with no order to move.
 func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, seq uint64, plain string, ps *pass) error {
+	// A stopped pass stops between records: nothing of this one is begun.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now := p.cfg.Clock()
 	reg, registered := p.cfg.Dispatcher.lookup(a.Kind)
 	key := b.ledgerKey(plain, seq)
@@ -309,6 +313,9 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 			out, run = Outcome{Status: wire.StatusExpired, Reason: reasonExpired}, false
 		}
 	}
+	if run {
+		p.contact(now) // admitted: the phone was in touch
+	}
 	if run && reg.opts.NonIdempotent {
 		claimed, err := p.claim(ctx, b, r, o, a, key, plain, reg.opts.ReceivedEcho, now, ps)
 		if err != nil {
@@ -319,7 +326,13 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		}
 	}
 	if run {
-		out = normalize(reg.handler(ctx, Request{Device: b.id, Hub: p.cfg.Keys.HubID(), RecordName: plain, Action: a, ReceivedAt: now}))
+		// A stop never reaches into an apply (the Swift processor's handler
+		// was shielded from the pass's cancellation): the handler runs on
+		// its own context, bounded by HandlerTimeout, so a stopped pass lets
+		// the record in flight finish and the hub's stop stays bounded.
+		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), HandlerTimeout)
+		out = normalize(reg.handler(hctx, Request{Device: b.id, Hub: p.cfg.Keys.HubID(), RecordName: plain, Action: a, ReceivedAt: now}))
+		cancel()
 	}
 	if _, err := out.result(); err != nil {
 		out = unencodable(b.id)
@@ -333,7 +346,13 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		return err
 	}
 	device := b.id.String()
-	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
+	dctx := ctx
+	if run {
+		// The handler ran: its outcome commits even when the pass was
+		// stopped meanwhile.
+		dctx = context.WithoutCancel(ctx)
+	}
+	if err := p.decide(dctx, b, func(tx *sql.Tx) error {
 		if err := state.MarkDone(tx, key, ledgerOutcome(out), stored, nil, p.cfg.Clock()); err != nil {
 			return err
 		}

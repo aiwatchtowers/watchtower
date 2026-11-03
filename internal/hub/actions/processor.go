@@ -48,6 +48,12 @@ type Config struct {
 	// while no phone is linked (link.Center.WantsHellos: a code open or a
 	// link urgent); nil reads it on every pass.
 	HelloWanted func() bool
+	// Contact, when set, is told each phone contact a pass admits (the
+	// Swift RelayProcessor's noteContact, keep-awake ask #614): an action
+	// that passed the gates (now) and a linked phone's device record (its
+	// seen_at, else updated_at, never later than now). A refused action, an
+	// unlink and a record nobody here holds a key for are no contact.
+	Contact func(at time.Time)
 	// Latency takes the hub-side timing stamps (internal/hub/measure); nil
 	// records none. It is called after the deciding transaction committed,
 	// never inside one.
@@ -343,6 +349,13 @@ func passError(b mailbox, err error, errs []error) []error {
 	// One phone's failure never holds back the other phones.
 	log.Printf("hub: reading device %s's mailbox: %s", b.id, errClass(err))
 	return append(errs, err)
+}
+
+// contact tells Config.Contact of a phone contact at at.
+func (p *Processor) contact(at time.Time) {
+	if p.cfg.Contact != nil {
+		p.cfg.Contact(at)
+	}
 }
 
 func (p *Processor) nudge(ps *pass) {
