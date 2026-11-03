@@ -124,6 +124,9 @@ func (b *turnBackend) Close() error { return b.Cancel() }
 // bare boundary → nothing (protocol v2 never wipes text).
 func ChunkEvents(turnID string, c ai.StreamChunk) []Event {
 	switch {
+	case c.Routing != nil:
+		r := c.Routing
+		return []Event{{Type: EventSessionReady, Provider: r.Provider, Model: r.Model, PreferredProvider: r.PreferredProvider, RoutingMode: r.Mode, Reason: r.Reason}}
 	case c.Tool != nil && !c.Tool.Done:
 		return []Event{{Type: EventToolStart, TurnID: turnID, ID: c.Tool.ID, Name: displayToolName(c.Tool.Name),
 			Args: toolArgs(string(c.Tool.Args))}}

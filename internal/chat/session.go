@@ -78,7 +78,11 @@ func (s *Session) Run(ctx context.Context, in io.Reader) error {
 		_ = s.b.Close()
 		return err
 	}
-	if err := s.w.Emit(Event{Type: EventSessionReady, SessionID: sid, Provider: s.Provider, Model: s.Model}); err != nil {
+	ready := Event{Type: EventSessionReady, SessionID: sid, Provider: s.Provider, Model: s.Model}
+	if routed, ok := s.b.(interface{ RoutingEvent() Event }); ok {
+		ready = routed.RoutingEvent()
+	}
+	if err := s.w.Emit(ready); err != nil {
 		_ = s.b.Close()
 		return err
 	}

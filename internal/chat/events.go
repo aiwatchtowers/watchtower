@@ -60,26 +60,29 @@ const (
 type Event struct {
 	// Cause retains a typed provider failure inside the host. It is deliberately
 	// absent from protocol-v2 JSON; routing metadata is added by the chat adapter.
-	Cause     error           `json:"-"`
-	Type      string          `json:"type"`
-	TurnID    string          `json:"turn_id,omitempty"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Args      json.RawMessage `json:"args,omitempty"`
-	OK        *bool           `json:"ok,omitempty"`
-	Summary   string          `json:"summary,omitempty"`
-	Sources   []Source        `json:"sources,omitempty"`
-	TokensIn  int             `json:"tokens_in,omitempty"`
-	TokensOut int             `json:"tokens_out,omitempty"`
-	Model     string          `json:"model,omitempty"`
-	Provider  string          `json:"provider,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	Status    string          `json:"status,omitempty"`
-	Code      string          `json:"code,omitempty"`
-	Message   string          `json:"message,omitempty"`
-	Retryable bool            `json:"retryable,omitempty"`
-	ActionID  int64           `json:"action_id,omitempty"`
+	Cause             error           `json:"-"`
+	Type              string          `json:"type"`
+	TurnID            string          `json:"turn_id,omitempty"`
+	Text              string          `json:"text,omitempty"`
+	ID                string          `json:"id,omitempty"`
+	Name              string          `json:"name,omitempty"`
+	Args              json.RawMessage `json:"args,omitempty"`
+	OK                *bool           `json:"ok,omitempty"`
+	Summary           string          `json:"summary,omitempty"`
+	Sources           []Source        `json:"sources,omitempty"`
+	TokensIn          int             `json:"tokens_in,omitempty"`
+	TokensOut         int             `json:"tokens_out,omitempty"`
+	Model             string          `json:"model,omitempty"`
+	Provider          string          `json:"provider,omitempty"`
+	SessionID         string          `json:"session_id,omitempty"`
+	PreferredProvider string          `json:"preferred_provider,omitempty"`
+	RoutingMode       string          `json:"routing_mode,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	Status            string          `json:"status,omitempty"`
+	Code              string          `json:"code,omitempty"`
+	Message           string          `json:"message,omitempty"`
+	Retryable         bool            `json:"retryable,omitempty"`
+	ActionID          int64           `json:"action_id,omitempty"`
 }
 
 // ToolWaitMessage is the waiting step's label.

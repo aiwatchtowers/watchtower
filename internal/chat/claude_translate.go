@@ -141,8 +141,9 @@ type pendingBlock struct {
 // subagent events are dropped. Safe for concurrent use: the backend feeds it
 // from its reader goroutine and marks interrupts from Cancel.
 type ClaudeTranslator struct {
-	limits providers.ClaudeLimitTracker
-	turnID func() string
+	limits        providers.ClaudeLimitTracker
+	turnID        func() string
+	recordContext context.Context
 
 	mu          sync.Mutex
 	blocks      map[int]*pendingBlock
@@ -207,7 +208,13 @@ func (t *ClaudeTranslator) feed(line []byte) (fedLine, error) {
 	f, call, err := t.translate(line)
 	if call != nil {
 		// Outside the lock: the record is a file append.
-		recordTurn(*call)
+		t.mu.Lock()
+		ctx := t.recordContext
+		t.mu.Unlock()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		llmusage.Record(ctx, *call)
 	}
 	return f, err
 }
@@ -322,10 +329,11 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	return c
 }
 
-// recordTurn records one chat turn's call in the LLM usage ledger; the
-// session's surface and purpose come from the process (ai session).
-func recordTurn(c llmusage.Call) {
-	llmusage.Record(context.Background(), c)
+// SetTurnContext binds this turn's leaf ledger record to its routing attempt.
+func (t *ClaudeTranslator) SetTurnContext(ctx context.Context) {
+	t.mu.Lock()
+	t.recordContext = ctx
+	t.mu.Unlock()
 }
 
 func (t *ClaudeTranslator) streamEvent(ev *claudeStreamEv) []Event {

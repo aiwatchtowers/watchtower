@@ -23,8 +23,8 @@ deadline-free safe callers can recover a due circuit. Earlier caller deadlines w
 pinned and excluded automation calls retain their original legacy deadline.
 
 Off and explicit provider/model pins return the original legacy generator.
-Stop/ask guards explicitly use `legacyCLIGenerator`; spec reviewer and generic
-`ai.Provider` clients are unchanged. Chat activation belongs to Task 8. SDK
+Stop/ask guards explicitly use `legacyCLIGenerator`; spec reviewer remains excluded. Tool-bearing `ai.Provider` clients use the
+Task 8 preflight described below. SDK
 sources (`automation.*`) and automation-tagged contexts use the legacy path
 unless the SDK supplies `WithAttemptHook` (Task 7). Hook `Before` admits each attempt;
 `After` receives its result/error and the leaf's recorded facts before reserve
@@ -194,3 +194,52 @@ durable pipeline guarantee is added. Current built-in primitives run inline at
 slots; `ask()` remains workbench-only, while `track.scan` remains a personal
 `custom_tracks` primitive. The SDK uncertainty metadata does not make these
 recipes resumable.
+
+## Chat and tool preflight (Task 8)
+
+Migration 172 gives existing conversations `routing_mode=pinned`; newly inserted
+conversations default to `preferred_reserve`. `provider`/`model` remain the legacy
+pin pair. `actual_provider`, `actual_model` and `routing_reason` record the chosen
+attempt independently of the global preference. `SetChatRouting` is a manual
+selection and clears the previous actual pair. A chosen reserve remains sticky
+across turns and DB reopen; recovery of the preferred alone does not switch that
+conversation back. If the sticky reserve is exhausted, a new automatic turn may select recovered
+preferred after policy and capability checks; if both are waiting, no child starts. A new conversation starts from configured preferred.
+Explicit CLI provider/model flags, including the default model, are pins.
+
+Auto-enabled sessions defer the warm child until the pending turn is known.
+`Router.Select` checks policy, then shared known health, then the available
+candidate's capabilities before construction/start. A healthy candidate missing
+a required capability fails without switching merely for capability.
+`Router.Run` then wraps exactly one pinned, never-retried turn, including the warm startup. A typed terminal event's internal `Cause` is
+observed even when the backend returns nil. A newly discovered quota preserves
+partial text and action rows, records health, and ends that turn with
+`retryable=false`. A later new turn can choose reserve. Cancellation retires an
+auto session's child; a new turn replays persisted Watchtower history. Between
+providers the old backend is closed and reaped; native session IDs never cross.
+Off/pinned sessions retain their legacy warm lifecycle.
+
+The selected provider builds its own strong model, prompt, MCP setup and
+claude.ai mode. An unavailable required claude.ai mode, image/PDF (including
+project files), or Codex-incompatible Quick Connection prevents reserve startup;
+there is no text-only downgrade. This is conservative: a main chat with its
+claude.ai tool mode enabled requires that mode. Preflight performs no paid probe.
+Tool-bearing query, embedded chats, REPL and Jira analyzer factories use the same
+known-health selection and single-call outcome recording. Native-thread IDs returned by a routed streaming client bind subsequent calls
+to that actual provider/model. An unknown incoming native ID fails closed with
+no child; an explicit `--provider` pin or a fresh session is required. Off/pinned
+legacy callers retain their existing behavior. Stop hooks and spec reviewers retain
+their separate excluded factories.
+
+Protocol v2 adds `preferred_provider`, `routing_mode` and `reason` alongside the
+actual `provider`/`model`. Auto sessions first emit readiness without claiming a
+physical provider; their per-turn readiness supplies the selected actual pair.
+The fixture is `internal/chat/testdata/routing_v2.jsonl`. Extra fields are additive
+for old readers; no text reset event was added. Task 9 owns the Desktop controls.
+
+Replay reads up to 200 newest content-free action receipts for prior assistant
+turns on the active path, including failed empty replies without tool events.
+The summary includes durable action ID, tool, status and whether a result/error
+is recorded; full arguments, results and diagnostics are omitted. Current turns,
+regenerate owner rows, abandoned branches and other conversations are excluded.
+The existing replay character cap still applies; receipts never execute actions.

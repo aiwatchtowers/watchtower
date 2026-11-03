@@ -2626,3 +2626,12 @@ Entry format:
 - weak-dimension: composition coverage between established recorder semantics and the new attempt adapter; existing recorder tests establish known zeros, but the new SDK tests did not carry them across the hook. External Codex transmission remained unavailable after automatic approval rejection; unavailable toolkit APIs were replaced with built-in lanes. Judge verified source and reported scoped check evidence without rerunning checks. [7]
 - rule-gap: no new binding rule needed; the approved observed-versus-estimated usage boundary and exact attempt accounting already cover this defect. Full phase gates remain scheduled after Task 8.
 - outcome: TBD
+
+## 2026-11-03 — provider-fallback chat/tool preflight (#1490, Task 8) — verdict: changes-needed
+
+- contested: sticky reserve protects a healthy ongoing conversation from recovery-driven switching; it does not forbid a new safe turn selecting recovered preferred after that reserve becomes exhausted. The added test and feature note encoded the stronger, unapproved restriction. [6/7]
+- false-positive: a test-lane quality score of 7/10 is not a severity-7 gap. Audit linkage, replay-size/Unicode, direct capability and exact native-ID assertions remain optional strengthening absent another demonstrated defect. [7]
+- miss: the failure lane caught connection-capability storage failures converted into ordinary unsupported-capability results. A conservative refusal still needs to preserve the original operational error. [9]
+- weak-dimension: composition coverage; the sticky/recovery test asserted the residual defect as intent. External Codex transmission was unavailable after automatic approval rejection; toolkit APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source without rerunning scoped checks; full Gate B remains due after review convergence. [7]
+- rule-gap: no new binding rule needed; approved spec section 5 and the existing swallowed-error/absent-versus-error rules settle both findings.
+- outcome: TBD
