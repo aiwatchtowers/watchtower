@@ -21,6 +21,9 @@ struct ChatThreadView: View {
             let thread = ChatThreadIndex(chatVM.thread.map(\.message))
             ForEach(chatVM.thread) { item in
                 row(item, thread).id(item.id)
+                if chatVM.reviewedMessageID == item.id {
+                    ChatActionReviewView(actions: chatVM.actionFeed.rows.filter { chatVM.reviewedActionIDs.contains($0.id) })
+                }
                 actionCards(forTurn: item.message.turnID)
             }
             unattachedActionCards
@@ -85,6 +88,7 @@ struct ChatThreadView: View {
             },
             regenerate: { id in Task { await chatVM.regenerate(messageID: id) } },
             retry: { id in Task { await chatVM.retry(messageID: id) } },
+            reviewActions: { chatVM.reviewActions(messageID: $0) },
             continueStopped: { id in Task { await chatVM.continueStopped(messageID: id) } },
             showVariant: { id, offset in
                 if let target = chatVM.variant(of: id, offset: offset) {
@@ -135,7 +139,7 @@ struct ChatThreadView: View {
     /// A card a live step waits on (`tool_wait`, same action id) is outlined,
     /// so the step's "see the approval card below" points at one card.
     private func agentActionCard(_ action: AgentAction) -> some View {
-        let awaited = chatVM.liveTurn?.waitingActionIDs.contains(action.id) ?? false
+        let awaited = (chatVM.liveTurn?.waitingActionIDs.contains(action.id) ?? false) || chatVM.reviewedActionIDs.contains(action.id)
         return AgentActionCardView(
             action: action,
             inFlight: chatVM.actionFeed.inFlight.contains(action.id),

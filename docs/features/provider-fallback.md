@@ -243,3 +243,53 @@ The summary includes durable action ID, tool, status and whether a result/error
 is recorded; full arguments, results and diagnostics are omitted. Current turns,
 regenerate owner rows, abandoned branches and other conversations are excluded.
 The existing replay character cap still applies; receipts never execute actions.
+
+## Desktop chat intent and actual execution (Task 9)
+
+New main chats use **Preferred + reserve · Auto**. Migration 172's historical
+rows keep their provider/model pair as a pin; the composer offers the explicitly
+combined **Preferred + reserve · Auto model** choice to remove both. **Only**
+provider and explicit model choices remain hard pins. Automatic session argv
+omits both `--provider` and `--model`: Go reads routing intent from the row.
+Observing actual metadata does not change the pool's wanted configuration.
+
+Protocol-v2 ready events carry preferred/mode/reason separately from actual
+provider/model. An empty automatic ready event claims no started provider.
+`ChatTurnDriver` records selected actual metadata in the existing conversation
+and message columns without resetting text or steps; the embedded v1 stream has
+additive `routing` and typed error fields for the same actual-message contract.
+The current native claude.ai required-capability guard is unchanged: a reserve
+that cannot supply required tools or attachments is refused before startup.
+
+Healthy reserve sessions remain sticky. **Use preferred** between turns clears
+sticky metadata and retires the idle host; the existing pool waits for its exit
+before launching the replacement. Busy or queued turns cannot change routing,
+unsent drafts remain intact, and no global provider preference is written.
+The Go preflight may return an exhausted sticky reserve to a recovered compatible
+preferred before a new turn; it never replays a started turn.
+
+`watchtower ai routing-status` reads local installation quota metadata through
+`Router.Status` and `Store.Peek`. The reader uses the router's exact account and
+selected strong-model scopes, returns the configured revision, and exposes only
+provider/state/next-check metadata. It claims no lease, performs no inference,
+and never rewrites health state. Expired leases project `quota_wait` in the
+returned copy; a passed reset never means available. Storage, policy and cancel
+errors remain errors. Desktop refreshes on entering a chat, app activation and
+turn boundaries; it does not promise instant background recovery notification.
+This is the canonical reader for subsequent settings integration.
+
+A typed started-quota error persists `quota_exhausted` in the existing
+`error_code`, including partial replies. Reload therefore cannot restore Retry,
+Continue or Regenerate for that turn. A short transient `rate_limit` keeps its
+existing retry behavior. **Review actions** reads and opens existing persisted
+action IDs/status/results without sending a prompt, approving a proposal, or
+executing an action; empty receipt lists do not claim that no effects occurred.
+The user can check these actions and then send a new message.
+
+`ChatRoutingPresentation` consumes the canonical status DTO and actual session
+metadata. Its copy comes from the approved `ProviderFallbackPreview`; runtime
+next-check times come from metadata, while sample times remain in shot fixtures.
+`ChatRoutingStatusView` is shared by production and light/dark, narrow and
+reverse-provider catalog scenes. Tests cover argv, parser/driver/DB reload,
+embedded typed quota handling, action review without sending, explicit pins,
+sticky retirement and bounded warm sessions.

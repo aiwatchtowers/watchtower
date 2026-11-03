@@ -360,3 +360,21 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertTrue(fake.killed)
     }
 }
+
+extension ChatSessionClientTests {
+    func testAutomaticArgumentsDoNotAccidentallyCreateAPin() {
+        let automatic = ChatSessionConfig(conversationID: 42, provider: "claude", model: "resolved-model", automatic: true)
+        let args = ChatSessionClient.arguments(for: automatic, dbPath: nil)
+        XCTAssertFalse(args.contains("--provider"))
+        XCTAssertFalse(args.contains("--model"))
+        XCTAssertFalse(args.contains("--routing-mode"))
+        var observed = automatic
+        observed.provider = "codex"
+        observed.model = "actual-model"
+        XCTAssertTrue(automatic.isCompatible(with: observed), "actual metadata must never retire a busy automatic host")
+        observed.automatic = false
+        XCTAssertFalse(automatic.isCompatible(with: observed))
+        XCTAssertTrue(ChatSessionClient.arguments(for: observed, dbPath: nil).contains("--provider"))
+        XCTAssertTrue(ChatSessionClient.arguments(for: observed, dbPath: nil).contains("--model"))
+    }
+}

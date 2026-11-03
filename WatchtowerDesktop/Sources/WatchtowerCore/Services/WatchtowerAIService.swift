@@ -290,8 +290,16 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             if let sid = json["session_id"] as? String {
                 return .sessionID(sid)
             }
+        case "routing":
+            return .routing(provider: json["provider"] as? String ?? "", model: json["model"] as? String ?? "",
+                            metadata: ChatRoutingMetadata.parse(json))
         case "error":
             if let errMsg = json["error"] as? String {
+                if let code = json["code"] as? String {
+                    return .failure(ChatSessionError(turnID: nil, code: ChatErrorCode(rawValue: code) ?? .internalError,
+                                                     message: errMsg, retryable: json["retryable"] as? Bool ?? false,
+                                                     reason: json["reason"] as? String))
+                }
                 return .error(errMsg)
             }
         case "done":

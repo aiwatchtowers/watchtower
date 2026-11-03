@@ -23,6 +23,8 @@ final class ChatErrorPresentationTests: XCTestCase {
     /// The sign-in hint follows the row's provider: never "claude login" for
     /// a codex or ollama turn.
     func testAuthHintFollowsTheProvider() {
+        let unknown = ChatErrorPresentation.message(for: "auth", provider: "")
+        XCTAssertFalse(unknown.contains("claude login"), "automatic startup has no actual provider yet")
         let codex = ChatErrorPresentation.message(for: "auth", provider: "codex")
         XCTAssertTrue(codex.contains("codex login"))
         XCTAssertFalse(codex.contains("claude"))

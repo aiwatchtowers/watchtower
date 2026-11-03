@@ -73,3 +73,9 @@ final class DesignShotsTests: XCTestCase {
         return seen.count
     }
 }
+
+extension DesignShotsTests {
+    func testRuntimeFallbackChatShotsRender() throws {
+        try renderShots(ProviderFallbackShotFixtures.runtimeShots)
+    }
+}

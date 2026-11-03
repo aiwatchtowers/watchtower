@@ -319,3 +319,61 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(try steps().map(\.toolID), ["a", "orphan"], "the held call is still a step after the turn")
     }
 }
+
+extension ChatTurnDriverTests {
+    func testActualRoutingAndStartedQuotaSurviveReloadWithAndWithoutPartial() async throws {
+        for provider in ["claude", "codex"] {
+            for text in ["", "Saved partial"] {
+                let driver = makeDriver()
+                driver.begin(messageID: messageID, turnID: "t")
+                let preferred = provider == "claude" ? "codex" : "claude"
+                let json = """
+                    {"type":"session_ready","provider":"\(provider)","model":"actual-\(provider)",
+                     "preferred_provider":"\(preferred)","routing_mode":"preferred_reserve","reason":"quota_exhausted"}
+                    """
+                driver.apply(try XCTUnwrap(ChatEvent.parse(json)))
+                driver.apply(.textDelta(turnID: "t", text: text))
+                driver.apply(try XCTUnwrap(ChatEvent.parse("""
+                    {"type":"error","turn_id":"t","code":"rate_limit","reason":"quota_exhausted",
+                     "message":"Quota reached","retryable":false}
+                    """)))
+                await driver.writesSettled()
+                let reloaded = try row()
+                XCTAssertEqual(reloaded.provider, provider)
+                XCTAssertEqual(reloaded.model, "actual-\(provider)")
+                XCTAssertEqual(reloaded.text, text)
+                XCTAssertEqual(reloaded.status, text.isEmpty ? "error" : "partial")
+                XCTAssertEqual(reloaded.errorCode, "quota_exhausted")
+                XCTAssertFalse(ChatErrorPresentation.isRetryable(reloaded.errorCode))
+                let id = conversationID
+                let conv = try await pool.read { try ChatConversationQueries.fetchByID($0, id: id) }
+                XCTAssertEqual(conv?.actualProvider, provider)
+                XCTAssertEqual(conv?.actualModel, "actual-\(provider)")
+                XCTAssertEqual(driver.routing?.preferredProvider, preferred)
+            }
+        }
+    }
+
+    func testTransientRateLimitDoesNotBecomeStartedQuota() async throws {
+        let driver = makeDriver()
+        driver.begin(messageID: messageID, turnID: "t")
+        driver.apply(.error(ChatSessionError(turnID: "t", code: .rateLimit, message: "Slow down", retryable: true)))
+        await driver.writesSettled()
+        XCTAssertEqual(try row().errorCode, "rate_limit")
+        XCTAssertTrue(ChatErrorPresentation.isRetryable(try row().errorCode))
+    }
+}
+
+extension ChatTurnDriverTests {
+    func testPinnedWarmReadySuppliesActualModelWithoutUsageEvents() async throws {
+        let driver = makeDriver()
+        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
+        driver.apply(.sessionReady(sessionID: nil, provider: "codex", model: "resolved-model", routing: metadata))
+        await driver.writesSettled()
+        driver.begin(messageID: messageID, turnID: "t")
+        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
+        await driver.writesSettled()
+        XCTAssertEqual(try row().provider, "codex")
+        XCTAssertEqual(try row().model, "resolved-model")
+    }
+}

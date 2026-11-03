@@ -180,3 +180,27 @@ final class ChatConversationQueriesTests: XCTestCase {
         }
     }
 }
+
+extension ChatConversationQueriesTests {
+    func testAutomaticChoiceExplicitlyRemovesPinsAndResetsStickyActual() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try pool.write { db in
+            let conv = try ChatConversationQueries.create(db)
+            XCTAssertTrue(conv.isAutomatic)
+            try ChatConversationQueries.setRouting(db, id: conv.id, automatic: false, provider: "codex", model: "old-model")
+            try db.execute(sql: "UPDATE chat_conversations SET actual_provider = 'codex', actual_model = 'old-model' WHERE id = ?",
+                           arguments: [conv.id])
+            let pinned = try XCTUnwrap(ChatConversationQueries.fetchByID(db, id: conv.id))
+            XCTAssertFalse(pinned.isAutomatic)
+            XCTAssertEqual(pinned.model, "old-model")
+            try ChatConversationQueries.setRouting(db, id: conv.id, automatic: true, provider: "claude", model: nil)
+            let automatic = try XCTUnwrap(ChatConversationQueries.fetchByID(db, id: conv.id))
+            XCTAssertTrue(automatic.isAutomatic)
+            XCTAssertNil(automatic.provider)
+            XCTAssertNil(automatic.model)
+            XCTAssertNil(automatic.actualProvider)
+            XCTAssertNil(automatic.actualModel)
+        }
+    }
+}

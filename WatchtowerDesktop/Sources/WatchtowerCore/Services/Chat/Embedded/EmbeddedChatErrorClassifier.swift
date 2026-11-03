@@ -20,6 +20,11 @@ package enum EmbeddedChatErrorClassifier {
     }
 
     package static func classify(_ error: Error) -> Failure {
+        if let failure = error as? ChatSessionError {
+            let code = ChatErrorCode(rawValue: failure.persistenceCode) ?? failure.code
+            return Failure(code: code, message: failure.message,
+                           retryable: failure.retryable && code != .quotaExhausted)
+        }
         if let aiError = error as? WatchtowerAIError {
             switch aiError {
             case .cliNotFound, .launchFailed:

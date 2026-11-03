@@ -71,6 +71,17 @@ package final class EmbeddedChatEngine {
     package private(set) var postTurnResults: [Int64: ChatPostTurnResult] = [:]
     /// The latest turn failed on the provider's side: Retry may rerun it.
     package private(set) var canRetry = false
+    package private(set) var reviewedMessageID: Int64?
+    package private(set) var reviewedActions: [AgentAction] = []
+
+    /// Read existing receipts only. This never acquires a stream slot or sends a prompt.
+    package func reviewActions(messageID: Int64) {
+        guard let message = messages.first(where: { $0.id == messageID })?.message else { return }
+        do {
+            reviewedActions = try store.actions(turnID: message.turnID)
+            reviewedMessageID = messageID
+        } catch { report(error, prefix: "Couldn't load existing actions") }
+    }
 
     @ObservationIgnored package var onTurnFinished: ((TurnOutcome) -> Void)?
     /// A new owner message is on disk (text, conversation id, message id), for
@@ -472,6 +483,21 @@ package final class EmbeddedChatEngine {
             for try await event in stream {
                 guard isCurrent(turn) else { return }
                 running?.lastEvent = clock()
+                if case .failure(let failure) = event {
+                    fail(EmbeddedChatErrorClassifier.classify(failure))
+                    continue
+                }
+                if case let .routing(provider, model, _) = event {
+                    let store = store
+                    await writes.run { [self] in
+                        do {
+                            try await store.saveActual(messageID: turn.messageID, provider: provider, model: model)
+                        } catch {
+                            failForStore(error, prefix: "Couldn't save the actual provider")
+                        }
+                    }
+                    continue
+                }
                 switch reducer.apply(event) {
                 case .text(let text):
                     turn.replaceText(text, now: clock())
@@ -714,7 +740,10 @@ package final class EmbeddedChatEngine {
         let sessionError = ChatSessionError(turnID: turn.turnID, code: failure.code ?? .internalError,
                                             message: failure.message, retryable: failure.retryable)
         turn.finish(.failed(sessionError), at: clock())
-        if persist { await persistFinal(turn, text: text, status: "error", failure: failure) }
+        if persist {
+            let status = failure.code == .quotaExhausted && !text.isEmpty ? "partial" : "error"
+            await persistFinal(turn, text: text, status: status, failure: failure)
+        }
         canRetry = failure.retryable
         return .failed(messageID: turn.messageID, message: failure.message)
     }
