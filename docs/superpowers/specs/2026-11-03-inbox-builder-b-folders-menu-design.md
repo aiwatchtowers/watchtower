@@ -22,14 +22,14 @@ The Inbox stops being a list shaped by our filters and becomes a menu of folders
 3. `folder` on `output.inbox` (the field A reserves) and a per-automation folder (its **route**); creating a folder from the editor on save; deleting a folder moves its contents to the parent.
 4. Needs approval: the built-in recipe `needs-approval` (no `llm()`), the `approval` trigger fired on every action state change and on reminder created / due, Desktop-added actions, the native card fallback, the render-time state check.
 5. Waiting for me: a built-in over the attention detector, one living artifact, on the `sync` trigger after the detector.
-6. Native row actions for a list row `ref`, at parity with today's per-kind card actions.
+6. Native row actions for a list row `ref`, at parity with today's per-kind card actions, plus **Reply…** on Slack, Jira and Linear items that proposes a reply into Needs approval (ask #445).
 7. The ⋯ menu on artifacts and folders, **+ New artifact…**, the root's ⋯ with Learned Rules and Assistant Profile, the header's **?**.
 8. The five filters (and the **All** mix) go; existing content shows in folders per the umbrella's mapping.
 
 ## Non-goals
 
 - The block schema, its renderer, `blocks`/`key` on `output.inbox`, living upsert and removal by key, the Look step — sub-project A.
-- Rebuilding Morning brief, Track my threads and Idea finder on blocks — sub-project C. B shows their current content in the root until then (Q2).
+- Rebuilding Morning brief, Track my threads and Idea finder on blocks — sub-project C. B shows their current content in the root until then (ask #445).
 - People and Catch Up — sub-project D. B's `DefaultFolder` field is what D uses to put People in its own folder.
 - The phone's Inbox (#1170). A folder is a Mac concept in v1; the phone keeps its current Inbox slice.
 - Dragging an artifact onto a folder. **Move to folder ▸** moves the automation; dragging single artifacts is v2 *(agent's call)*.
@@ -75,7 +75,7 @@ How the agent proposes it: the editor chat's draft carries a `folder` suggestion
 
 ### Unread counts and the sidebar badge
 
-Per artifact *(umbrella, agent's call)*: an artifact whose document has no row `ref` counts 1 when unread (`read_at` NULL, not done, not dismissed); an artifact with row refs counts the number of its rows that **wait on the owner** (table below), whatever its read state. A folder's count is the sum over its own artifacts (not its children's; the menu shows each folder's own number). Needs approval counts the approvals it shows. Legacy entries (Q2) count as today's filter rows did.
+Per artifact *(umbrella, agent's call)*: an artifact whose document has no row `ref` counts 1 when unread (`read_at` NULL, not done, not dismissed); an artifact with row refs counts the number of its rows that **wait on the owner** (table below), whatever its read state. A folder's count is the sum over its own artifacts (not its children's; the menu shows each folder's own number). Needs approval counts the approvals it shows. Legacy entries (ask #445) count as today's filter rows did.
 
 The sidebar's Inbox badge becomes the sum of the counts of every folder that is not hidden *(agent's call: one rule the owner can check by adding the menu's numbers)*. Today's badge (`ActionStripViewModel.badgeCount`, read by `SidebarCountsViewModel`) counts proposals, due reminders, ideas to judge, unread messages, the latest unread briefing and built-in notices; the new sum keeps all of these (they sit in Needs approval and the root) and adds unread automation artifacts.
 
@@ -140,26 +140,35 @@ For a row with a `ref` the Desktop draws, at the row's trailing edge, exactly th
 
 | `ref.kind` | Actions (today's source) | Path |
 |---|---|---|
-| `inbox_item` | **Open in Slack/Mail/Jira/Linear** (with a permalink), **Discuss in Chat**, **Hand to Agent…**, **Done**, **Hide**, **Snooze ▾** (Tomorrow, In 3 days, Next week) — `InboxMessagePane` | `messageDone`, `hideMessage`, `snoozeMessage` (`watchtower inbox resolve|dismiss|snooze`), `InboxCardCommand` for open/chat/agent |
+| `inbox_item` | **Open in Slack/Mail/Jira/Linear** (with a permalink), **Discuss in Chat**, **Hand to Agent…**, **Done**, **Hide**, **Snooze ▾** (Tomorrow, In 3 days, Next week) — `InboxMessagePane`; plus **Reply…** for a Slack, Jira or Linear item (ask #445, below) | `messageDone`, `hideMessage`, `snoozeMessage` (`watchtower inbox resolve|dismiss|snooze`), `InboxCardCommand` for open/chat/agent; Reply: `watchtower actions propose` (below) |
 | `track` | **Done**, ⋯ **Stop watching**, **Make a Task** (extracted track), **Go to Target** (linked custom track), **Delete…** (custom track) — `TrackCardActions` | `markTrackDone`, `stopWatching`, Make a Task as today, `CustomTrackControlling` |
 | `idea` | the verdict buttons of `IdeaDetailPane` for the idea's state (**Approve**/**Reject**/**Not now ▾**, or **Activate**/**Drop**); pressing the row opens the full `IdeaDetailPane` in the reading pane with **Merge…**, **Make a Task**, **Delete…** | `IdeasViewModel` as today (IDEA-04) |
 | `reminder` | **Done**, **Snooze 1h**, the Slack message link | `markReminderDone`, `snoozeReminder` |
 | `action` | **Approve**, **Reject**, **Edit…**; after a failed apply **Retry**, **Dismiss** | `approve`, `reject`, `retry`, `dismiss` (`AgentActionFeed`, STRIP-03) |
 
-- **Restore** for a stopped track is not a row action in B: a stopped track is not shown (table above). The legacy Track my threads entry keeps today's Stopped fold with **Restore** (Q2); how C's block version shows stopped tracks is C's.
+- **Restore** for a stopped track is not a row action in B: a stopped track is not shown (table above). The legacy Track my threads entry keeps today's Stopped fold with **Restore** (ask #445); how C's block version shows stopped tracks is C's.
 - **Busy:** while a press on a row runs, that row's buttons are disabled with a small progress indicator (`ActionStripViewModel.isWriting(_:)`, keyed by the row's `InboxSelection`: `inbox_item` → `.message`, `track` → `.track`, `idea` → `.idea`, `reminder` → `.reminder`, `action` → `.proposal`).
 - **Success:** the refresh after the write reads the record closed; the row leaves; the count drops.
 - **Failure:** the row stays, with the error line under it and **Retry**, which repeats the same press. `ActionStripViewModel` gains `rowErrors: [InboxSelection: RowFailure]` (message + the press to repeat); today's strip-wide `lastError` stays for read failures only *(agent's call: a failed Done must be visible on the row it belongs to)*. `AgentActionFeed`'s own per-row errors (`rowErrors`) are shown the same way.
-- **Duplicates:** on a row with a `ref` the native action wins; the recipe's row actions of the same kind (open, chat, agent) are not drawn (`nativeKinds`), so a ping has one **Open**. A recipe's `reply` action stays (no native Reply exists; see Q1).
+- **Duplicates:** on a row with a `ref` the native action wins; the recipe's row actions of the same kind are not drawn (`nativeKinds`), so a ping has one **Open** and one **Reply**. Per kind: `inbox_item` suppresses the recipe's `open`, `chat`, `agent`, and `reply` when the item has a native Reply (Slack, Jira, Linear; a mail item keeps the recipe's `reply`, which queues an automation run as today); `track` and `idea` suppress the recipe's `target` (A's new kind) because **Make a Task** is native; `reminder` suppresses `open`; `action` suppresses nothing (A refuses recipe actions next to an action ref's Approve only by built-in origin).
 - **Preview:** in A's `.preview` mode native actions are drawn disabled.
-- Native actions never grant a permission and add no new write path: each is a button that already exists on today's card.
+- Native actions never grant a permission. All but **Reply…** are buttons that already exist on today's card; **Reply…** adds one proposal path (below), which never sends anything by itself.
+
+### Reply from a row (ask #445)
+
+- **Which items.** By `inbox_items.trigger_type`: Slack (`mention`, `dm`, `thread_reply`, `reaction`) → `send_slack_message`; Jira (`jira_assigned`, `jira_comment_mention`) → `add_jira_comment`; Linear (`linear_assigned`, `linear_comment_mention`) → `add_linear_comment`. Mail (`email_received`) has no write path in Watchtower, so its row has no **Reply…** (it keeps **Open in Mail**). A Slack item without a permalink, or a Jira/Linear item without an issue key, has no **Reply…** either *(the owner's rule in ask #445: no Reply unless a write path exists)*.
+- **The press.** **Reply…** opens a one-line composer under the row (plain text, ⌘↩ to propose, Esc to cancel; the owner types it — no AI draft in v1 *(agent's call)*). **Propose Reply** runs `watchtower actions propose --tool <tool> --surface inbox --context inbox_item:<id> --args <json>` without `--approve`. Args are bound to the item's own place: Slack `{"channel": <the item's permalink>, "account_id": <its account>, "text", "reason": "Reply from Waiting for me"}` — a message link replies in its thread, a reply's link in the parent thread, and `send_slack_message`'s Normalize pins the recipient at propose time exactly as `docs/features/slack-send.md` says (no re-resolution at Execute); Jira `{"key": <issue key>, "account_id", "body", "reason"}`; Linear `{"key", "account_id", "body", "reason"}`.
+- **Where it lands.** The proposal is a pending `agent_actions` row; the approval hook draws it in **Needs approval** like any proposal, with the item's label ("Reply to colleague A in #acme-release"). Nothing is sent until the owner presses **Approve** there (`actions approve`, the owner's Confirm and AGENT-05's claim as today). **Edit…** there edits the text (`send_slack_message` allows `text` and `candidate`). Rejecting it leaves the item open.
+- **The row afterwards.** The row stays (the item is still open) with the caption "Reply waiting for approval" and **Reply…** disabled while that proposal is pending (read from `agent_actions` by `context_type='inbox_item'`). Once the reply is posted, INBOX-02 resolves the item at the next sync (the owner's own reply in the thread / comment on the issue) and the row leaves.
+- **Failure.** A refused proposal (validation, unknown channel, a deleted issue) keeps the composer open with the CLI's message under it; nothing is written.
+- **Code changes it needs.** `send_slack_message`, `add_jira_comment` and `add_linear_comment` gain `tools.InboxSurface` in `Surfaces`. `actions propose` gains `--context <type>:<id>` and refuses `--approve` for an `External` tool ("an external tool is approved in Needs approval") so a Reply can never be proposed and applied in one press. The strip/badge rule that leaves out `surface='inbox'` rows (`AgentActionQueries.fetchStrip` / `awaitingOwnerCount`, C1) narrows to the one-press tool `apply_track_action`, so a Reply proposal shows in Needs approval and counts in the badge.
 
 ## The Inbox screen
 
 Three columns *(agent's call: the existing `InboxSplitView` list + reading pane, with the folder menu as a new first column)*:
 
 1. **Folder menu** (`InboxFolderMenu`, ~220 pt, resizable): the root "Inbox" with its count, Needs approval with its count, the owner folders as a disclosure tree with icons and counts; **+ New Folder** and **+ New Artifact…** at the bottom. Hidden folders are absent (or dimmed under **Show Hidden Folders**). The header keeps the **?** (`ReactionCheatSheetView`, `InboxAuxPane.reactionCommands`).
-2. **Artifact list** of the selected folder, newest change first (A's `changed_at`), with unread dots; in the root, Waiting for me is pinned first while it has open rows *(agent's call)*; legacy entries (Q2) interleave by their own time.
+2. **Artifact list** of the selected folder, newest change first (A's `changed_at`), with unread dots; in the root, Waiting for me is pinned first while it has open rows *(agent's call)*; legacy entries (ask #445) interleave by their own time.
 3. **Reading pane**: the selected artifact through A's `ArtifactView` (with B's ref hooks), or a legacy entry's existing pane, or a native card. The artifact header carries **⋯**.
 
 **Menus:**
@@ -199,9 +208,9 @@ Nothing is copied or rewritten in the database: content shows where the mapping 
 | Automations filter: automation outputs | their automation's route — root unless moved; markdown shown as a text block (A) |
 | Automations filter: proposals, due reminders; All: built-in notices | Needs approval |
 | Messages filter (`inbox_items`) | Waiting for me in the root (legacy Messages entry until its first run) |
-| Day filter (briefings, day plans) | root: legacy **Morning brief** entries, one per date, today's `InboxDayPane` (Q2) |
-| Tracks filter | root: legacy **Track my threads** entry, today's track list with its Stopped fold and `InboxTrackPane` (Q2) |
-| Ideas filter | root: legacy **Idea finder** entry, today's idea list, New idea row and `InboxIdeaPane`, with **Find Ideas in Past Messages…** in its ⋯ (Q2) |
+| Day filter (briefings, day plans) | root: legacy **Morning brief** entries, one per date, today's `InboxDayPane` (ask #445) |
+| Tracks filter | root: legacy **Track my threads** entry, today's track list with its Stopped fold and `InboxTrackPane` (ask #445) |
+| Ideas filter | root: legacy **Idea finder** entry, today's idea list, New idea row and `InboxIdeaPane`, with **Find Ideas in Past Messages…** in its ⋯ (ask #445) |
 | All | gone: the root is not a mix of every folder |
 | `inbox.filter` default | replaced by `inbox.folder` (the selected folder id); an old value opens the root |
 | `InboxRoute` (nav hosts `briefings`, `dayPlan`, `tracks`, `ideas`; Home's Getting ready links) | a folder plus a selection: the root with the day / Track my threads / Idea finder legacy entry selected |
@@ -278,12 +287,14 @@ Errors (exit 1, message on stderr, nothing written): `the Inbox menu changed —
 
 Approved already:
 
+- **AGENT-03, AGENT-07** (ask #445, Reply from a row): AGENT-03 — `send_slack_message`, `add_jira_comment` and `add_linear_comment` join the owner-only `inbox` surface; they stay External, the `inbox` surface is still no trust place (`trustSurfaceErr`), so every Reply waits for the owner's Approve; `actions propose --approve` is refused for External tools. AGENT-07 — `actions propose` without `--approve` stays refused under every agent marker and needs no Confirm (nothing is applied); the Approve in Needs approval keeps `actions approve`'s marker refusal and Confirm. AGENT-01 and AGENT-05 unchanged (one press = one pending row; apply once). The C1 changelog note in `docs/inventory/agent-actions.md` ("its one tool `apply_track_action`") gets the new tools and the narrowed strip exclusion. Guards added: `TestActionsPropose_RefusesApproveForExternalTool`, `TestActionsPropose_ReplyRecordsOnePendingRow`, `cmd/actions_registry_test.go` registry pin of the three tools' surfaces, `AgentActionQueriesTests.testStripShowsInboxReplyProposals`; `testStripAndBadgeLeaveOutInboxPressRows` keeps its name and still holds for `apply_track_action`.
+
 - **AUTO-*** (ask #961): the `approval` trigger (an event type, built-in only), `folder` on `output.inbox`, `concurrency: 1` for living outputs. AUTO-09 holds: `approvals.Fire` only queues (`db.EnqueueAutomationRun` / merge) and wakes. AUTO-05 holds (concurrency 1). AUTO-06 holds: both built-ins are shipped bytes confirmed by `ConfirmShippedBuiltin`; their owner copies need the owner. Changelog lines in `docs/inventory/automations.md` in the commits that land the code; the built-in note's "built-ins run only at their slot" sentence is amended with the `RunsAtSlot` narrowing (covered by ask #961's approval trigger, which cannot work otherwise).
 - **INBOX-02, INBOX-09** (ask #952): guarantees unchanged — the detector, its auto-resolve and watermark are not touched. A changelog line notes that open items are now shown by Waiting for me (and the Messages legacy entry), and that an auto-resolved item leaves the artifact at the next read through the render-time check. No Observable change, no guard change.
 
 Need a new owner ask before review (filed by the controller):
 
-- **STRIP-01** (amend): the Inbox's gesture-gated tables keep their rule, but two built-ins now write `automation_outputs` rows the owner did not make by a gesture of their own: `needs-approval` (one per gesture-gated approval — a view of them) and `waiting-for-me` (from the attention detector's ambient findings). Wording to propose: the two built-in artifacts are views of their records (approvals; `inbox_items`), their rows act only on those records, and no other built-in may write a `ref` of kind `action` or `reminder` (A's rule). The "Automations filter" and "All mix" wording goes.
+- **STRIP-01** (amend; pending ask #446): the Inbox's gesture-gated tables keep their rule; its C1 sentence "`surface='inbox'` rows are left out of the strip and badge" narrows to `apply_track_action` rows (a Reply proposal from a row is gesture-gated — the owner typed and pressed it — and shows in Needs approval); but two built-ins now write `automation_outputs` rows the owner did not make by a gesture of their own: `needs-approval` (one per gesture-gated approval — a view of them) and `waiting-for-me` (from the attention detector's ambient findings). Wording to propose: the two built-in artifacts are views of their records (approvals; `inbox_items`), their rows act only on those records, and no other built-in may write a `ref` of kind `action` or `reminder` (A's rule). The "Automations filter" and "All mix" wording goes.
 - **STRIP-02** (amend wording): `refresh()` stays one pure read; the Desktop's writes are unchanged (plus nothing for folders — the folder tables are CLI-written configuration, not an item store); "There is no strip-local table" gains "the folder tables hold the menu's arrangement only, never an item".
 - **STRIP-03** (amend wording): native row actions call the same functions; the Desktop's reminder writes additionally run `inbox approvals changed`, which only queues. No new decision path.
 - **INBOX-05** (amend Observable): the Learned Rules pane is reached from the root folder's ⋯ instead of the strip's ⋯; the store, its readers and writers are unchanged. Guards unchanged.
@@ -300,7 +311,7 @@ Go (inner loop per package):
 - `internal/automations`: `approval` accepted for a built-in and refused for a Personal and a workbench recipe with a readable error; `where` on `approval` refused; `RunsAtSlot` narrowing with `TestAutomation_RunsAtSlotMatchesSlotSQL`; the `folder` field hook — an existing slug sets `folder_id`, an unknown slug leaves NULL and journals the line, a non-string refused, dry run records the slug without writing.
 - `internal/automations/builtin`: `approvals.Fire` enqueues one run, a second fire merges into the queued run, 101 refs → 100 + `truncated`, not runnable (off / unconfirmed) → nothing queued and no error, enqueue error logged and returned to no caller; `needs-approval` and `waiting-for-me` recipes parse as built-ins, have no `llm()` call site, write the expected keys on a fixture, remove closed keys, cap at 50 with the oldest first; the primitives on degenerate input (no approvals, only reminders not yet due, an action whose args are not valid JSON, 0 and 200 and 201 open items, an item with empty text).
 - `internal/daemon`: `phaseWaitingForMe` runs after `phaseInbox` in `runSync`'s order; `phaseApprovalSweep` fires for a newly due reminder, for an open approval with no or an older artifact, for an artifact of a closed record, and does not fire when everything matches.
-- `cmd`: pinned JSON keys for every `inbox folders` verb; agent-marker refusal; `inbox approvals changed` with a malformed ref (refused) and with the daemon not running (queued, exit 0).
+- `cmd`: `actions propose` for each Reply tool records exactly one pending row with `surface='inbox'` and the `inbox_item` context, refuses `--approve` for an External tool, refuses under agent markers, refuses a Slack reply whose channel link does not resolve (no row); pinned JSON keys for every `inbox folders` verb; agent-marker refusal; `inbox approvals changed` with a malformed ref (refused) and with the daemon not running (queued, exit 0).
 - Dual-path fixture: `internal/inbox/testdata/open_items.json` (rows + expected open ids at a fixed now) read by the Go `attention.waiting` test and by Swift `InboxRefStateTests`, so the two open predicates cannot drift; the same pattern for actions (`awaitingOwnerCount`) and reminders.
 
 Swift (`make test-swift FILTER=…`, Core where possible):
@@ -310,12 +321,15 @@ Swift (`make test-swift FILTER=…`, Core where possible):
 - `NeedsApprovalSelectionTests`: recipe card vs native per the four conditions; mixed; recipe off; last run failed; artifact older than the approval's change; more than 50.
 - `InboxFoldersCLITests`: argument contract per verb, decoding the pinned keys, the conflict phrase mapped to `.menuChanged`.
 - `InboxFolderMenuModelTests`: drag → move arguments; drop refused past depth; conflict → re-read + reload line, no retry; CLI missing → edits disabled.
+- `InboxReplyTests`: Reply shown per trigger type (four Slack, two Jira, two Linear → yes; `email_received`, missing permalink, missing key → no); the args per tool bound to the item's permalink / key and account; one propose call per press, none on Esc or empty text; pending proposal → caption and Reply disabled; refusal keeps the composer with the message; the recipe's `reply` suppressed exactly when the native Reply exists.
 - `InboxRowActionsTests`: ref → `InboxSelection` mapping, the per-kind action set equals today's card's set (one test per kind against the card's own action list), busy, failure keeps the row with its error and Retry repeats the press, native kinds suppress the recipe's duplicates.
 - `ActionStripViewModelTests` stays green, and its STRIP guards keep their names.
 - DesignShotCatalog: every state in the table above, plus the Needs approval and Waiting for me states, rendered by `make desktop-shots`.
 
 ## Decisions
 
+- Waiting for me rows get **Reply…**: a `send_slack_message` proposal bound to the item's own thread or channel (recipient pinned at propose), landing in Needs approval, never sent directly; Jira and Linear items reply through `add_jira_comment` / `add_linear_comment` the same way; mail has no write path and no Reply; AGENT-03/AGENT-07 amendments approved — ask #445.
+- Day cards, tracks and ideas stay visible in the root as legacy entries over today's panes (Morning brief per date, Track my threads, Idea finder) until sub-project C retires each — ask #445.
 - Folders, root first and undeletable, Needs approval pinned, many automations per folder — ask #947.
 - Filters replaced by folders with the umbrella's content mapping; the detector becomes Waiting for me in the root — ask #952.
 - Waiting for me is one living artifact listing everything that waits; native row actions per `ref` kind — ask #959.
@@ -345,28 +359,24 @@ Swift (`make test-swift FILTER=…`, Core where possible):
 - No artifact drag in v1; Move to folder moves the automation — agent's call.
 - Learned Rules / Assistant Profile in the root's ⋯; the ? stays in the header; Find Ideas in Past Messages moves to the Idea finder entry — agent's call (umbrella).
 - HTML mockups now, DesignShotCatalog shots as plan Task 1 for the owner's check before the rest is built — agent's call.
+- Reply text is typed by the owner in a one-line composer, no AI draft in v1; a pending Reply disables the row's Reply — agent's call.
+- Native wins over a recipe action of the same kind per `ref` kind, incl. A's `target` on track and idea rows — agent's call.
 
 ## Contract with sub-project A
 
 B builds on these seams as A's spec names them; anything else here is B's.
 
 1. **Row `ref`.** A list row's `ref` is `{kind: inbox_item | track | idea | reminder | action, id: integer > 0}`, validated by A, stored in the canonical document, decoded to `ArtifactRef` (`kind: ArtifactRefKind`, `id: Int64`). `action` and `reminder` refs are accepted only from built-in automations; B relies on that and does not widen it.
-2. **Ref hooks.** `ArtifactRefHooks` in `ArtifactEnvironment`: `isOpen(ArtifactRef) -> Bool` (B: the "shown" column), `nativeActions(ArtifactRef, ArtifactRenderMode) -> AnyView?` (B: the native row actions; disabled in `.preview`), `nativeKinds(ArtifactRef) -> Set<ArtifactActionKind>` (B: open, chat, agent for kinds whose native set has them). A hidden row is left out of the list's own count; all rows hidden → the list's `empty` text.
+2. **Ref hooks.** `ArtifactRefHooks` in `ArtifactEnvironment`: `isOpen(ArtifactRef) -> Bool` (B: the "shown" column), `nativeActions(ArtifactRef, ArtifactRenderMode) -> AnyView?` (B: the native row actions incl. the Reply composer, which must fit under the row — B draws it inside the returned view; disabled in `.preview`), `nativeKinds(ArtifactRef) -> Set<ArtifactActionKind>` (B: the per-kind sets under "Duplicates", which include `reply` and A's new `target` kind). A hidden row is left out of the list's own count; all rows hidden → the list's `empty` text.
 3. **Counting.** `ArtifactDocument.refs` (every row ref in document order); B applies the "waits" column to them.
 4. **Living outputs.** `artifacts: living`, upsert on `(automation_id, key)` in the run's commit, `output.remove({key})` committed only on success, `written_at` (last write) and `changed_at` (last content change). B's Needs approval rule compares `written_at` with the approval's change; B's lists order by `changed_at`.
 5. **`folder` field.** A's `(*automations.OutputMod).RegisterInboxField("folder", fn)`; B registers it, owns its semantics (slug lookup, fallback, journal line), the `automation_outputs.folder_id` column and migration, its write in `commitRunTx` (a living upsert rewrites `folder_id` too — the last run's choice wins), the dry-run `DraftOutput` field and the Swift reads. Until B's hook lands, A refuses `folder` with `output.inbox(): folder is not available yet`.
 6. **Editor entry.** `AppState.openAutomationEditor(_:step:)` with `AutomationEditorStep.collects | .look | .schedule` for the ⋯ entries. If A has not landed when B's menu task runs, the entries open the Automations tab's editor for the automation without a step (`AutomationsViewModel.showEditor`), and switch to the step API when it exists.
 7. **Today's Inbox.** A draws blocks in today's `InboxReadingPane` until B replaces the screen; B's reading pane hosts the same `ArtifactView` and keeps A's `.unsupported` / `.unreadable` lines.
+8. **Action kinds.** A's `output.inbox` action kinds are `open`, `chat`, `agent`, `reply` and the new `target` (owner press → `create_target` proposal, ask #445). B suppresses `target` on track and idea rows (native **Make a Task**) and otherwise leaves it to A; a `target` press on an artifact proposes through the registry and therefore appears in Needs approval like any proposal — B needs nothing more from A for it.
 
 What B needs from A before its own tasks can run: items 1–4 for the two built-ins and the native row actions (plan Tasks 9, 10, 13), item 5 for the `folder` hook (Task 6), item 6 optional (Task 14 falls back). Folder config, CLI, menu, the `approval` trigger plumbing, the Needs approval native cards and the legacy entries do not wait on A.
 
 ## Open questions for the owner
 
-**Q1. Waiting for me rows: Reply or not.** The umbrella lists a ping's row actions as Done, Snooze, Hide, Reply; today's message card has no Reply — it has Open in Slack/Mail/Jira/Linear, Discuss in Chat, Hand to Agent…, Done, Hide, Snooze ▾.
-- (a) Exact parity with today's card, no Reply; the owner replies in Slack through **Open**. **Recommended**: no new write path in B.
-- (b) Add **Reply**, which proposes `send_slack_message` bound to the item's thread and goes through the approval path (lands in Needs approval). A new write path from the Inbox, its own ask under AGENT-*.
-
-**Q2. Day cards, tracks and ideas before sub-project C.** They become artifacts only when C rebuilds Morning brief, Track my threads and Idea finder on blocks.
-- (a) B shows each in the root as a legacy entry over today's panes (Morning brief per date, Track my threads, Idea finder) until C retires it. **Recommended**: the filters go now and nothing is lost.
-- (b) B keeps the Day, Tracks and Ideas filters as tabs inside the root until C; B removes only Messages and Automations.
-- (c) B ships the folders but keeps every filter until C lands.
+None. Q1 (Reply) and Q2 (legacy entries) were answered in ask #445 and are under Decisions.

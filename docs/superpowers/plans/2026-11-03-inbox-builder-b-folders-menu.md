@@ -2,13 +2,13 @@
 
 **Spec:** [2026-11-03-inbox-builder-b-folders-menu-design.md](../specs/2026-11-03-inbox-builder-b-folders-menu-design.md)
 **Umbrella:** [2026-11-02-inbox-builder-design.md](../specs/2026-11-02-inbox-builder-design.md) (board #1400). **Sibling plan:** `2026-11-03-inbox-builder-a-blocks-look.md` (sub-project A; "A Task N" below refers to it).
-**Status:** for owner review together with the spec. Task 13's Reply line waits on the spec's Q1; Tasks 12 and 16's legacy entries follow the answer to Q2 (the plan is written for the recommended (a)). Task 16's inventory edits wait on the owner asks the spec lists.
+**Status:** for owner review together with the spec (author loop, ask #448). Q1 and Q2 answered in ask #445: Reply on a row is Task 18; legacy entries in the root (Tasks 12 and 16). Task 16's inventory edits wait on ask #446; Task 18's AGENT-03/AGENT-07 edits are approved (ask #445) and land with its code.
 
 ## Execution rules
 
 - Each task runs in its own worktree and branch, merged by the controller into `feature/inbox-builder-b`; never two implementers in one tree. Tasks whose `Depends on` are all merged may run in parallel lanes: the **Go lane** (Tasks 2–9, 15's Go half) and the **Swift lane** (Tasks 1, 10–14, 15's Swift half, 16) meet at Task 10 (schema) and Task 13 (A's renderer).
 - **Owner checkpoint after Task 1:** the controller files an ask with the Task 1 shots. Swift Tasks 11–16 start only after the owner's answer; Go Tasks 2–9 do not wait.
-- **Sub-project A gates:** Tasks 6, 8, 9 and 13 start only after the named A tasks are merged into the shared base the controller uses for B (A Task 3 migration and living upsert, A Task 4 `artifacts:` key, A Task 5 SDK and field hook, A Task 1 renderer and hooks, A Task 10 cards with blocks). Everything else does not wait on A.
+- **Sub-project A gates:** Tasks 6, 8, 9, 13 and 18's Swift half start only after the named A tasks are merged into the shared base the controller uses for B (A Task 3 migration and living upsert, A Task 4 `artifacts:` key, A Task 5 SDK and field hook, A Task 1 renderer and hooks, A Task 10 cards with blocks). Everything else does not wait on A.
 - Inner loop only (CLAUDE.md): `go test ./internal/<pkg>` for the touched packages, `go test ./cmd -run '<Name>'` for cmd tests, `make test-swift FILTER=<Class>`, `make lint-diff`. The full gate (`make test`, `make test-swift`, `make lint-all`) runs once after Task 9 (Go phase), once after Task 16 (Swift phase), and before the PR — by the controller.
 - Each implementer self-reviews against `docs/review/review-rules.md` (Go sections and, for Swift, "Swift / Desktop conventions") and `docs/design/desktop-style-guide.md` before hand-back; the independent review uses the same checklist. Every task's brief carries the spec's invariants verbatim: CAS never retried by the Desktop; the Desktop writes no folder table; an open approval always on screen, a closed one never; native row actions only call today's functions; no `llm()` in the two built-ins.
 - Migration: one task (Task 2), the `add-migration` skill, number = next free at implementation (in-flight branches may hold 00172+; A's migration is separate). No table rebuild.
@@ -213,11 +213,21 @@ Tests: `InboxRouteTests` (every alias host and feature lands on the right folder
 
 Checks: `make test-swift FILTER='Inbox|ActionStrip|Home'`, `make lint-diff`.
 
+## Task 18 — Reply from a row (ask #445)
+
+**Depends on:** Task 13 (Swift half); Go half: none. **Lane:** Go half then Swift half (one branch).
+
+Files: Go — `internal/tools/slack_send.go`, `internal/tools/jira_write.go`, `internal/tools/linear_write.go` (`tools.InboxSurface` added to each tool's `Surfaces`); `cmd/actions_propose.go` (`--context <type>:<id>` stored as `context_type`/`context_id`, validated `inbox_item:<positive int>`; `--approve` refused for an `External` tool with "an external tool is approved in Needs approval"); `cmd/actions_registry_test.go` (surface pins); `docs/inventory/agent-actions.md` (AGENT-03, AGENT-07 and the C1 note, as the spec's inventory section says, approved in ask #445). Swift — `WatchtowerCore/Database/Queries/AgentActionQueries.swift` (`fetchStrip` / `awaitingOwnerCount` leave out only `surface='inbox' AND tool='apply_track_action'`); new `WatchtowerCore/Services/Inbox/InboxReplyPolicy.swift` (`static func tool(for item: InboxItem) -> InboxReplyTool?` by trigger type, nil for mail, a missing permalink or key; `static func args(for:text:) -> String`); new `Views/Inbox/Folders/InboxReplyComposer.swift`; `InboxRowActionsView` gains **Reply…** and the "Reply waiting for approval" caption; `ActionStripViewModel.proposeReply(_ itemID: Int, text: String) async` over `CLIRunnerProtocol`, recording a row failure on refusal; `InboxRefHooks.nativeKinds` adds `reply` for items with a Reply tool; the Task 1 shot `inbox-b-rows-inbox-item` gains the composer and the waiting caption (`inbox-b-row-reply-composer`, `inbox-b-row-reply-pending`).
+
+Tests: Go — `TestActionsPropose_ReplyRecordsOnePendingRow` (each of the three tools: one pending row, `surface='inbox'`, context `inbox_item:<id>`, nothing applied, no Slack/Jira/Linear client called), `TestActionsPropose_RefusesApproveForExternalTool`, refusal under every agent marker, `--context` malformed (`inbox_item:`, `x:1`, `inbox_item:-1`), a Slack permalink that does not resolve → refused with no row, a reply-in-thread link pins `thread_ts`; `apply_track_action` with `--approve` unchanged. Swift — `InboxReplyTests` (spec list), `AgentActionQueriesTests.testStripShowsInboxReplyProposals`, `testStripAndBadgeLeaveOutInboxPressRows` still green.
+
+Checks: `go test ./internal/tools`, `go test ./cmd -run 'ActionsPropose|ActionsRegistry'`, `make test-swift FILTER='InboxReplyTests|AgentActionQueriesTests|InboxRowActionsTests'`, `make lint-diff`.
+
 ## Task 17 — Guide, feature note, CLAUDE.md
 
-**Depends on:** Tasks 1–16. **Lane:** docs.
+**Depends on:** Tasks 1–16 and 18. **Lane:** docs.
 
-Files: `docs/guide/features/inbox.md` rewritten per `docs/guide/WRITING.md` (folders, the root, Needs approval, Waiting for me, row buttons, the ⋯ menus, Learned Rules and Assistant Profile in the root's ⋯), its Learn cards: `inbox-filters` replaced through a §9.7 replace chain by `inbox-folders`, a card for Needs approval and one for Waiting for me, `since: next`; `docs/guide/features/automations-built-in.md` (the two built-ins, Sends lines); `docs/guide/features/automations.md` (`folder` on `output.inbox`, Move to folder); new `docs/features/inbox-folders.md` (architecture, contracts, the dual paths, v1 limits from the spec's non-goals); one CLAUDE.md "Feature Notes" line pointing at it; `docs/features/automations.md` and `docs/features/built-in-automations.md` cross-references.
+Files: `docs/guide/features/inbox.md` rewritten per `docs/guide/WRITING.md` (folders, the root, Needs approval, Waiting for me, row buttons incl. Reply… and where the reply waits, the ⋯ menus, Learned Rules and Assistant Profile in the root's ⋯), its Learn cards: `inbox-filters` replaced through a §9.7 replace chain by `inbox-folders`, a card for Needs approval and one for Waiting for me, `since: next`; `docs/guide/features/automations-built-in.md` (the two built-ins, Sends lines); `docs/guide/features/automations.md` (`folder` on `output.inbox`, Move to folder); new `docs/features/inbox-folders.md` (architecture, contracts, the dual paths, v1 limits from the spec's non-goals); one CLAUDE.md "Feature Notes" line pointing at it; `docs/features/automations.md` and `docs/features/built-in-automations.md` cross-references.
 
 Tests: `go test ./docs/guide` (`TestGuideCardsValid`, guide parse), `go test ./internal/learn`.
 
