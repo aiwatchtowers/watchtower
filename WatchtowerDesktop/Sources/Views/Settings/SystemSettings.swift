@@ -189,12 +189,9 @@ struct SystemSettings: View {
                 get: { config.aiProvider ?? "claude" },
                 set: { newProvider in
                     let oldProvider = config.aiProvider ?? "claude"
-                    config.aiProvider = newProvider
-                    // Reset models when switching providers so they don't carry over
+                    config.selectAIProvider(newProvider)
+                    // A provider change invalidates the previous connection check.
                     if newProvider != oldProvider {
-                        config.aiModel = nil
-                        config.aiModelLight = nil
-                        config.aiModelStrong = nil
                         connectionTestResult = nil
                     }
                 }

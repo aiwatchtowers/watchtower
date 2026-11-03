@@ -16,6 +16,7 @@ package ideas
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -163,21 +164,10 @@ func (p *Pipeline) language() string {
 // Every pass always runs, regardless of whether an earlier one failed — a
 // persistent single-source failure (a revoked Jira token, say) must never
 // block the OTHER source's pass, the "one source's failure never blocks the
-// other" principle carried over from the pre-split Run. Returns the first
-// error any pass produced, if any, without swallowing it.
+// other" principle carried over from the pre-split Run. Returns all pass errors, so a provider wait cannot hide an ordinary cause.
 func (p *Pipeline) RunStreamDigests(ctx context.Context) error {
 	p.lastPromptNote = ""
-	var firstErr error
-	if err := p.runEmailDigests(ctx); err != nil {
-		firstErr = err
-	}
-	if err := p.runJiraDigests(ctx, time.Time{}); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	if err := p.runLinearDigests(ctx); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	return firstErr
+	return errors.Join(p.runEmailDigests(ctx), p.runJiraDigests(ctx, time.Time{}), p.runLinearDigests(ctx))
 }
 
 // Run executes the ideas pipeline's stage-2 consolidator (runConsolidate)

@@ -19,7 +19,7 @@ func TestAuto08_ReplayLogCapCountsTheStoredLog(t *testing.T) {
 		&db.AutomationRunReplay{Seq: 1, Kind: StepKindLLM, ClockJSON: "[]", ResultJSON: &stored})
 	step := j.Begin(StepKindLLM, "light", nil)
 	step.record(argsHash(nil), "[]", true)
-	step.recordOutcome(encodedResult(`"done"`), nil) // 8 bytes: alone under the cap, 22 with the stored log
+	step.recordOutcome(encodedResult(`"done"`), nil, false) // 8 bytes: alone under the cap, 22 with the stored log
 	if !j.replayOff {
 		t.Fatal("the log passed MaxReplayLogBytes across the restart without making the run not resumable")
 	}

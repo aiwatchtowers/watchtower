@@ -46,5 +46,9 @@ func (t *CodexUsage) add(u *CodexUsage) {
 
 // CodexError holds error information from a Codex CLI call.
 type CodexError struct {
-	Message string `json:"message"`
+	Type     string `json:"type"`
+	Code     string `json:"code"`
+	Status   int    `json:"status"`
+	ResetsAt int64  `json:"resets_at"`
+	Message  string `json:"message"`
 }

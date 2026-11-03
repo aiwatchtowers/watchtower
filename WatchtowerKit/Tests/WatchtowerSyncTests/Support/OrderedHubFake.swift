@@ -194,7 +194,12 @@ struct OrderedRig {
     let feed: RelayFeed
     let hub: OrderedHubFake
 
-    static func make(ordered: Bool = true, hubID: String? = TestE2E.hubID.uuidString) async throws -> Self {
+    static func make(
+        ordered: Bool = true,
+        hubID: String? = TestE2E.hubID.uuidString,
+        onActionApplied: (@Sendable () async -> Void)? = nil,
+        onHubOnRelay: (@Sendable () async -> Void)? = nil
+    ) async throws -> Self {
         let keys = try TestE2E.phoneStore()
         let inner = InMemoryCloudTransport()
         let recorder = RecordingConditionalTransport(inner: inner)
@@ -204,7 +209,9 @@ struct OrderedRig {
         if ordered { try await outbox.enableOrderedActions() }
         await outbox.setHubID(hubID)
         let clock: @Sendable () -> Date = { base }
-        let feed = RelayFeed(transport: phone, store: store, outbox: outbox, now: clock)
+        let feed = RelayFeed(
+            transport: phone, store: store, outbox: outbox, onActionApplied: onActionApplied, onHubOnRelay: onHubOnRelay,
+            now: clock)
         return Self(
             inner: inner, recorder: recorder, phone: phone, store: store, outbox: outbox, feed: feed,
             hub: OrderedHubFake(inner: inner))

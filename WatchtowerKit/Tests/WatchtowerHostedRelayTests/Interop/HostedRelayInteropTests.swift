@@ -24,6 +24,14 @@ final class HostedRelayTransportInteropTests: HostedRelayTransportTests {
     }
 }
 
+/// `vouch_hub` and the vouched-hub rules against the stand at the Kit's pin (attestation off there,
+/// so the attestation answers run on the fake only).
+final class HostedRelayVouchInteropTests: HostedRelayVouchTests {
+    override func makeBackend() throws -> RelayBackend {
+        try RelayBackend.standFromEnvironment()
+    }
+}
+
 final class RelaySimOrderInteropTests: RelaySimOrderTwins {
     override func makeBackend() throws -> RelayBackend {
         try RelayBackend.standFromEnvironment()

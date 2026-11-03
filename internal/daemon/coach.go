@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessionfeed"
 )
@@ -34,6 +36,9 @@ const (
 // import); the model tier comes from digest.TierForSource("coach.propose")
 // (strong).
 var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
+	snapshot := *cfg
+	snapshot.AI.Providers = maps.Clone(cfg.AI.Providers)
+	cfg = &snapshot
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
 		return digest.RefusedGenerator{Err: err} // #608: the run fails with the policy error, no fallback
 	}
@@ -50,7 +55,23 @@ var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	if s, ok := gen.(interface{ SetStdinOnly(bool) }); ok {
 		s.SetStdinOnly(true)
 	}
-	return digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
+	legacy := digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
+	return providerrouting.WrapGenerator(cfg, legacy, func(provider string) digest.Generator {
+		light, strong := providers.ResolveModelsFor(cfg, provider)
+		var leaf digest.Generator
+		switch provider {
+		case "codex":
+			leaf = codex.NewCodexGenerator(light, strong, cfg.CodexPath)
+		case "claude":
+			leaf = digest.NewClaudeGenerator(light, strong, cfg.ClaudePath)
+		default:
+			return digest.RefusedGenerator{Err: providers.Allowed(provider)}
+		}
+		if s, ok := leaf.(interface{ SetIsolatedChild(...string) }); ok {
+			s.SetIsolatedChild()
+		}
+		return leaf
+	}, providerrouting.GeneratorOptions{Timeout: digest.DaemonAICallTimeout})
 }
 
 // coachSessionDirs is the test seam for the transcript directories the owner

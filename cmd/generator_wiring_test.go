@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ func TestCliGeneratorProviderSwitch(t *testing.T) {
 		{"codex", "*codex.CodexGenerator"},
 		{"ollama", "*ollama.Generator"},
 		{"", "*digest.ClaudeGenerator"},
-		{"unknown", "*digest.ClaudeGenerator"},
+		{"unknown", "cmd.refusedProvider"},
 	}
 	for _, tt := range tests {
 		t.Run("gen/"+tt.provider, func(t *testing.T) {
@@ -50,6 +51,7 @@ func TestNewAIClientProviderSwitch(t *testing.T) {
 		{"codex", "*codex.Client"},
 		{"ollama", "*ollama.Client"},
 		{"", "*ai.Client"},
+		{"unknown", "cmd.refusedProvider"},
 	}
 	for _, tt := range tests {
 		t.Run("client/"+tt.provider, func(t *testing.T) {
@@ -59,6 +61,22 @@ func TestNewAIClientProviderSwitch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An unknown provider is a configuration error, never permission to send
+// the owner's request to Claude. Both factories must refuse before spawn.
+func TestUnknownProviderFactoriesRefuseCalls(t *testing.T) {
+	cfg := &config.Config{AI: config.AIConfig{Provider: "unknown"}}
+	text, usage, sessionID, err := cliGenerator(cfg).Generate(context.Background(), "system", "request", "")
+	require.EqualError(t, err, `unknown AI provider "unknown"`)
+	assert.Empty(t, text)
+	assert.Nil(t, usage)
+	assert.Empty(t, sessionID)
+
+	answer, clientUsage, err := newAIClient(cfg, "").QuerySync(context.Background(), "system", "request", "")
+	require.EqualError(t, err, `unknown AI provider "unknown"`)
+	assert.Empty(t, answer)
+	assert.Nil(t, clientUsage)
 }
 
 // Runtime B: the ollama provider on a tool-bearing chat surface (--tools chat)

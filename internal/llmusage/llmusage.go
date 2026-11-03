@@ -26,6 +26,9 @@ import (
 // llm_calls column names and the spool's line keys.
 type Call struct {
 	CallID          string   `json:"call_id"`
+	OperationID     string   `json:"operation_id,omitempty"`
+	Attempt         int      `json:"attempt,omitempty"`
+	ConfigRevision  string   `json:"config_revision,omitempty"`
 	At              string   `json:"at"`
 	Surface         string   `json:"surface"`
 	Purpose         string   `json:"purpose"`
@@ -150,6 +153,12 @@ func Record(ctx context.Context, c Call) {
 	if c.AutomationID == nil {
 		if aid, rid, ok := AutomationFrom(ctx); ok {
 			c.AutomationID, c.AutomationRunID = &aid, &rid
+		}
+	}
+	if route, ok := ctx.Value(attemptKey{}).(attemptContext); ok {
+		c.OperationID, c.Attempt, c.ConfigRevision = route.attempt.OperationID, route.attempt.Number, route.attempt.Revision
+		if route.observe != nil {
+			route.observe(c)
 		}
 	}
 	if c.EstCostUSD == nil {

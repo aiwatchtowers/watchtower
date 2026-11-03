@@ -23,6 +23,22 @@ enum LinkNotice: Equatable {
     /// dropped at launch, and the phone pairs again with a new code.
     case encryptionReScan
 
+    /// An iCloud link to a Mac that runs over Relay ended, because this iPhone cannot use Relay (R4): the
+    /// never-live link that got `hub_on_relay` or a relay marker.
+    case macOnRelay(macName: String)
+    /// The owner confirmed a Relay link and it finishes in the background (Settings → Macs shows it).
+    case finishingInBackground(macName: String)
+    /// A confirmed Relay link waits for the owner (its Settings → Macs row has Try Again and Cancel).
+    case needsOwner(macName: String, reason: PromotedLink.Reason)
+
+    /// The notices about a Relay link have an OK button; the others a close or Scan button.
+    var dismissTitle: String? {
+        switch self {
+        case .macOnRelay, .finishingInBackground, .needsOwner: "OK"
+        case .removed, .stale, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan: nil
+        }
+    }
+
     /// What a removal reports: a recording problem first, then a capture
     /// it stopped and kept (for the Mac named `macName`, when one hub's
     /// link ended), else `otherwise` (by default the "Not sent" count, or
@@ -49,8 +65,16 @@ enum LinkNotice: Equatable {
             problem + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         case .encryptionReScan:
             "Watchtower now encrypts your data. Scan the code on your Mac again."
+        case let .macOnRelay(macName):
+            "\(macName) runs over Relay — \(LinkFailure.macOnRelayHint)"
+        case let .finishingInBackground(macName):
+            "\(macName) will finish linking in the background. \(Self.seeMacs)"
+        case let .needsOwner(macName, reason):
+            "\(reason.message(macName: macName)) \(Self.seeMacs)"
         }
     }
+
+    private static let seeMacs = "See Settings → Macs."
 
     private static func notSentText(_ count: Int) -> String {
         count == 1

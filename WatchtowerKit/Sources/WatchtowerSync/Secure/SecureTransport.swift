@@ -130,6 +130,27 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             payload: envelope, notifyLevel: nil, assetFileURL: record.assetFileURL)
     }
 
+    /// Opens a keybox envelope taken from a control (`transport_switched`'s `keybox`, relay client Phase 3) as the
+    /// replica opens the data zone's: under its wire name `keybox-<DEVICE_ID>` on the data lane, signed by `hub_sig`
+    /// and sealed to this phone's `dev_kx`. Phone only, for this phone's own device id. The envelope and the keys it
+    /// carries are secrets: never logged.
+    public func openKeybox(sealed: Data, deviceID: UUID) throws -> Keybox {
+        guard case let .phone(hubID, own) = keys.role, own == deviceID else { throw SecureTransportError.wrongRole }
+        let header = try Envelope.parse(sealed).header
+        guard header.hubID == hubID else { throw EnvelopeError.wrongHub }
+        guard header.senderID == hubID else { throw EnvelopeError.wrongSender }
+        guard header.envelopeClass == .keybox else { throw EnvelopeError.wrongClass(header.envelopeClass) }
+        let context = EnvelopeContext(zone: .data, wireName: Keybox.recordName(deviceID: deviceID.uuidString))
+        let frame = try SealedBox.open(
+            sealed, envelopeClass: .keybox, recipient: try keys.deviceAgreement(),
+            info: SealedBox.keyboxInfo(hubID: hubID, deviceID: deviceID), context: context,
+            verifier: try keys.hubSigningPublicKey()
+        ).frame
+        do { return try RelayCoder.makeDecoder().decode(Keybox.self, from: frame.payload) } catch {
+            throw EnvelopeError.frameMalformed
+        }
+    }
+
     private func sealAsHub(_ record: CloudRecord, frame: InnerFrame, context: EnvelopeContext, hubID: UUID) throws -> Data {
         let epoch = try keys.currentEpoch()
         switch record.zone {
@@ -187,6 +208,35 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         return try EnvelopeSealer.sealSymmetric(
             frame, envelopeClass: .relayToHub, key: try keys.relayKey(.phoneToHub, deviceID: deviceID, epoch: epoch),
             hubID: hubID, senderID: deviceID, epoch: epoch, seq: try keys.nextSeq(), context: context, signer: nil)
+    }
+
+    /// Sim rule 14: this phone's own stored p2h envelope, opened with its relay key at the envelope's epoch (derived
+    /// from the static link keys, so no kept epoch key is needed) and sealed again under the current epoch with a
+    /// fresh envelope seq, under the same wire name; the plain frame (an action's `action_seq` with it) is unchanged.
+    /// nil when it does not open as this phone's own relay record. A locked keychain throws `keysUnavailable`.
+    func reseal(ownEnvelope envelope: Data, wireName: String, modifiedAt: Date) throws -> CloudRecord? {
+        guard case let .phone(hubID, deviceID) = keys.role else { throw SecureTransportError.wrongRole }
+        do {
+            guard let header = try? Envelope.parse(envelope).header, header.hubID == hubID, header.senderID == deviceID,
+                  header.envelopeClass == .relayToHub
+            else { return nil }
+            let key = try keys.relayKey(.phoneToHub, deviceID: deviceID, epoch: header.epoch)
+            let frame: InnerFrame
+            do {
+                frame = try EnvelopeSealer.openSymmetric(
+                    envelope, accepting: [.relayToHub], context: EnvelopeContext(zone: .relay, wireName: wireName),
+                    verifier: nil) { _ in key }.frame
+            } catch is EnvelopeError {
+                return nil
+            }
+            guard Self.phoneRelayKinds.contains(frame.kind), try self.wireName(plain: frame.id, zone: .relay) == wireName
+            else { return nil }
+            return try seal(CloudRecord(
+                recordName: frame.id, zone: .relay, kind: frame.kind, modifiedAt: modifiedAt, payload: frame.payload,
+                notifyLevel: frame.notifyLevel, asset: frame.asset))
+        } catch KeyStoreError.locked {
+            throw SecureTransportError.keysUnavailable
+        }
     }
 
     // MARK: - CloudSyncTransport

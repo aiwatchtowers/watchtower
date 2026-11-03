@@ -2565,3 +2565,64 @@ Entry format:
 - weak-dimension: independent review breadth was limited: external Codex was unavailable after sandbox failure and automatic approval rejection of unauthorized diff transmission; all three toolkit specialist APIs were unavailable. Prosecutor and judge found no substantive issue; unavailable lanes are not clean reviews.
 - rule-gap: no new rule; distinguish verification of a proposed presentation contract from verification of the future runtime feature.
 - outcome: TBD
+
+## 2026-11-02 — provider-fallback configuration (#1483) — verdict: approve
+
+- contested: a new authoritative provider model bucket requires the existing Desktop reader/writer in the same task; deferring Settings redesign does not justify silently ignored model edits. [6/8]
+- miss: initially green CLI tests missed legacy setter precedence and a Settings instance loaded before CLI migration. Mechanically failing regressions now cover both, plus untouched tiers, provider changes and partial edits. [7/8]
+- weak-dimension: external Codex review was unavailable after automatic approval rejected external diff transmission. Built-in prosecutor, test/error reviewers and judge converged after two fix rounds; unavailable reviews supply no evidence.
+- rule-gap: no new rule; apply the existing Go/Swift dual-writer and fresh-read requirements to provider model configuration.
+- outcome: TBD
+
+## 2026-11-03 — provider-fallback CLI isolation and typed errors (#1484, Task 2) — verdict: changes-needed
+
+- contested: a typed subscription-quota category and the historical ErrAICall marker serve different consumers. Preserve both when the old diagnostic classified the call as unavailable; do not mark every quota error unavailable merely because it is quota. Paired baseline/current probes through the real Codex generator and timeout decorator confirmed the lost marker for a status-429 usage-limit envelope. [6/8]
+- false-positive: the new diagnostic-only quota test does not itself encode this regression: its cause never matched the historical unavailable predicate, so its no-marker assertion remains valid. [7]
+- miss: the paired probe also found that requiring a redundant inner type field stopped unpacking an older trusted failed-turn envelope containing status and error. The lost HTTP diagnostic independently breaks historical retry handling; quota trust can remain conservative while legacy status handling survives. [6/8]
+- weak-dimension: 7. The tests exercise typed causes and subprocess envelopes separately, but missed their composition with existing retry markers and the legacy envelope shape. External Codex was unavailable after automatic approval rejected diff transmission; toolkit APIs were unavailable, so built-in prosecutor, test and failure/security lanes supplied the panel evidence.
+- rule-gap: no new binding rule needed; the approved task explicitly preserves pipeline error handling, and the common checklist preserves errors with fallback disabled. Actual baseline/current execution distinguished two independent compatibility failures.
+- outcome: TBD
+
+## 2026-11-03 — provider-fallback shared health (#1485, Task 3) — verdict: approve
+
+- contested: helper processes exercise shared persisted ownership, crash release and initialization, but starting two helpers alone does not guarantee simultaneous lock contention. A rendezvous would strengthen concurrency evidence; inspection of the lock-held read/modify/atomic-replace transaction found no corresponding defect. [7]
+- false-positive: a coverage quality rating of 8/10 is not a severity-8 gap. Missing backward-clock and late-write-failure injection tests are optional strengthening here: comparisons defer work conservatively, and Claim explicitly discards its capability on transaction failure. [6/7]
+- weak-dimension: independent review breadth was limited by external Codex diff transmission being rejected by automatic approval review and unavailable toolkit APIs; three built-in lanes supplied evidence. The judge inspected source and existing filesystem seams without rerunning checks. [7]
+- rule-gap: no new rule; task-scope approval covers the storage primitive. Combining account/model scopes, bounded degraded routing and caller cleanup contexts remain integration obligations in the approved dependent task.
+- outcome: TBD
+
+## 2026-11-03 — provider-fallback bounded routing (#1486, Task 4) — verdict: changes-needed
+
+- contested: requiring a real deadline before claiming a recovery lease is correct, but every newly eligible factory must supply that bound. The raw CLI adapter passes zero timeout and chat-title callers supply no deadline, so even due circuits cannot recover through those safe pending requests. An enabled-only total bound implements the approved routing contract while off/pinned paths retain legacy behavior. [6/8]
+- false-positive: the exact transparent-router tier-scan exception preserves the existing source assertions; it is not an inventory guard weakening. Named-model parser exclusions look unnecessary, but no supported model failure was demonstrated, so this is not a correctness blocker. [7]
+- miss: recovery tests explicitly install deadlines and therefore missed the raw factory composition. A factory-level case must start with both circuits due and a deadline-free caller, then assert a bounded preferred probe and recovery. [6/7]
+- weak-dimension: external Codex review was unavailable after automatic approval rejected external diff transmission, and toolkit APIs were unavailable; built-in prosecutor, test and failure/privacy lanes supplied evidence. The test lane independently passed the router race suite. [7]
+- rule-gap: no new binding rule needed; approved bounded routing and recovery acceptance criteria already cover the missing factory deadline.
+- outcome: TBD
+
+## 2026-11-03 — provider-fallback deferred batches (#1487, Task 5) — verdict: changes-needed
+
+- contested: a retained daily descriptor cannot use the rolling daily freshness predicate as completion proof: later channel rows make an already committed attempt regenerate. Completion must distinguish the claimed attempt from a legitimate daily row that predates its claim; an existence-only shortcut breaks ordinary regeneration. [6]
+- false-positive: the test lane quality score of 8/10 is not a severity-8 coverage finding. Reverse worker completion and exact people prompt assertions are optional strengthening absent an independently demonstrated defect. [7]
+- miss: the failure/privacy lane found ordinary preflight errors discarded before throttle/no-data/budget returns and malformed positive-window shape accepted as empty work, then acknowledged. Metadata gates need observable non-deferred failures; durable descriptor validation must precede destructive acknowledgement. [6/9]
+- weak-dimension: crash coverage recreated a retained daily descriptor but backdated channel rows, leaving post-commit input arrival untested. External Codex diff transmission remained unavailable after automatic approval rejection; toolkit APIs were unavailable, and three built-in lanes supplied the panel evidence. Judge inspection was source-only; reported scoped checks were not independently rerun. [7]
+- rule-gap: no new binding rule needed; approved committed-output retry semantics and existing swallowed-error/absent-versus-invalid rules cover the defects. Full phase gates remain scheduled after Task 8.
+- outcome: TBD
+
+
+## 2026-11-03 — provider-fallback extraction/history (#1488, Task 6) — verdict: changes-needed
+
+- contested: a transactional monotonic floor update is insufficient when its caller still performs the legacy unconditional setter afterward. A retained forward claim can legitimately finish below a live floor advanced by historical extraction, so review the full wrapper-to-transaction-to-wrapper path for every source. [6/8]
+- false-positive: the test lane quality score of 8/10 is not a severity-8 coverage gap. Explicit receipt/floor rollback assertions, off/pinned metadata assertions and cursor checks are optional strengthening; existing rollback/cursor coverage supplies useful evidence. [7]
+- miss: the failure lane alone caught the outer Gmail/IMAP/Jira setters undoing the new monotonic transaction. Primitive-level higher-floor tests did not exercise the production account wrappers with a retained forward claim. [6/7]
+- weak-dimension: composition coverage; restart tests and transaction tests independently passed while the enclosing legacy write remained. External Codex diff transmission was unavailable after automatic approval rejection; specialist APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source and reported check evidence without rerunning checks. [7]
+- rule-gap: no new binding rule needed; the approved retained-progress contract and requirement correctness already cover the floor regression. Full phase gates remain scheduled after Task 8.
+- outcome: TBD
+
+## 2026-11-03 — provider-fallback automation accounting (#1489, Task 7) — verdict: changes-needed
+
+- contested: an observed leaf with zero tokens and Estimated=false is authoritative, not missing usage. The Claude recorder deliberately emits that shape for both parsed zero-usage envelopes and children that never started; replacing it with a submitted-input estimate makes SDK totals disagree with the leaf and fabricates uncertainty after a known no-spend failure. Preserve those facts and estimate genuinely missing usage. [6/8]
+- false-positive: the test lane's 8/10 quality score is not a severity-8 coverage finding. Additional audit linkage/duration assertions, reverse post-proposal quota coverage and cache/multicall coverage remain optional strengthening. Applying the new generateMetered unknown-failure rule to agent's existing carve would exceed the approved Task 7 seam. [6/7]
+- weak-dimension: composition coverage between established recorder semantics and the new attempt adapter; existing recorder tests establish known zeros, but the new SDK tests did not carry them across the hook. External Codex transmission remained unavailable after automatic approval rejection; unavailable toolkit APIs were replaced with built-in lanes. Judge verified source and reported scoped check evidence without rerunning checks. [7]
+- rule-gap: no new binding rule needed; the approved observed-versus-estimated usage boundary and exact attempt accounting already cover this defect. Full phase gates remain scheduled after Task 8.
+- outcome: TBD

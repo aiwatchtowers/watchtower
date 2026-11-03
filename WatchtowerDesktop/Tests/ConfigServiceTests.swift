@@ -7,6 +7,180 @@ import WatchtowerCore
 @MainActor
 @Suite("ConfigService")
 struct ConfigServiceTests {
+    @Test("Migrated model edits update authoritative provider bucket")
+    func migratedModelEdits() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: sonnet, providers: {claude: {models: {strong: opus}}, codex: {}}}")
+        let service = ConfigService(configPath: path)
+        #expect(service.aiModelStrong == "opus")
+        service.aiModelStrong = "sonnet"
+        try service.save()
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.aiModelStrong == "sonnet")
+        reloaded.selectAIProvider("codex")
+        #expect(reloaded.aiModelStrong == nil)
+        reloaded.selectAIProvider("claude")
+        #expect(reloaded.aiModelStrong == "sonnet")
+    }
+
+    @Test("Legacy provider switches preserve original models")
+    func legacyProviderSwitchRestoresModels() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: sonnet}")
+        let service = ConfigService(configPath: path)
+        service.selectAIProvider("codex")
+        #expect(service.aiModelStrong == nil)
+        try service.save()
+        let reloaded = ConfigService(configPath: path)
+        reloaded.selectAIProvider("claude")
+        #expect(reloaded.aiModelStrong == "sonnet")
+    }
+
+    @Test("Direct provider assignment captures legacy and destination Default")
+    func directLegacyProviderSwitch() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: sonnet}")
+        let service = ConfigService(configPath: path)
+        service.aiProvider = "codex"
+        service.aiModel = nil
+        try service.save()
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.aiModelStrong?.isEmpty == true)
+        reloaded.selectAIProvider("claude")
+        #expect(reloaded.aiModelStrong == "sonnet")
+    }
+
+    @Test("Retired legacy setup model remains Default on provider switch")
+    func retiredLegacyProviderSwitch() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: claude-sonnet-4-6, models: {strong: ''}}")
+        let service = ConfigService(configPath: path)
+        service.selectAIProvider("codex")
+        service.selectAIProvider("claude")
+        #expect(service.aiModelStrong?.isEmpty == true)
+    }
+
+    @Test("Invalid enabled reserve pair is refused before saving")
+    func invalidReservePairPreservesFile() throws {
+        let cases = [
+            ("codex", "Reserve must be a different Claude or Codex provider"),
+            ("ollama", "Enabled fallback requires different Claude and Codex providers"),
+            ("unknown", "Unknown AI provider")
+        ]
+        for (destination, reason) in cases {
+            let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+            let original = try String(contentsOfFile: path, encoding: .utf8)
+            let service = ConfigService(configPath: path)
+            service.selectAIProvider(destination)
+            do {
+                try service.save()
+                Issue.record("An invalid reserve pair was saved")
+            } catch {
+                #expect(error.localizedDescription == "config.yaml can't be read (\(reason)) — fix the file, then try again.")
+            }
+            #expect(try String(contentsOfFile: path, encoding: .utf8) == original)
+        }
+    }
+
+    @Test("Bucket saves merge unknown fields and fresh reserve changes")
+    func bucketSavePreservesFreshFields() throws {
+        let path = makeTempConfig("ai: {provider: claude, providers: {claude: {models: {strong: opus}}}}")
+        let service = ConfigService(configPath: path)
+        service.aiModelStrong = "sonnet"
+        try "ai: {provider: claude, providers: {claude: {extra: keep, models: {strong: opus, custom: keep}}, codex: {models: {strong: fresh}}}}"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+        try service.save()
+        let yaml = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        let ai = yaml?["ai"] as? [String: Any]
+        let buckets = ai?["providers"] as? [String: [String: Any]]
+        #expect(buckets?["claude"]?["extra"] as? String == "keep")
+        let models = buckets?["claude"]?["models"] as? [String: String]
+        #expect(models?["custom"] == "keep")
+        let reserve = buckets?["codex"]?["models"] as? [String: String]
+        #expect(reserve?["strong"] == "fresh")
+    }
+
+    @Test("Save adopts fresh CLI buckets without stale model writes")
+    func staleLegacySaveAdoptsFreshBuckets() throws {
+        for edit in ["none", "sync", "calendar", "workers"] {
+            let path = makeTempConfig("ai: {provider: claude, model: sonnet}")
+            let service = ConfigService(configPath: path)
+            if edit == "sync" { service.syncWorkers = 3 }
+            if edit == "calendar" { service.calendarSyncDaysAhead = 9 }
+            if edit == "workers" { service.aiWorkers = 2 }
+            try "ai: {provider: claude, model: sonnet, workers: 2, providers: {claude: {models: {light: fresh-light, strong: fresh-strong}}}}"
+                .write(toFile: path, atomically: true, encoding: .utf8)
+            try service.save()
+            let reloaded = ConfigService(configPath: path)
+            #expect(reloaded.aiModelStrong == "fresh-strong", "edit: \(edit)")
+            #expect(reloaded.aiModelLight == "fresh-light")
+            #expect(service.aiModelStrong == "fresh-strong", "saved service must adopt fresh models")
+            service.aiWorkers = 4
+            try service.save()
+            #expect(ConfigService(configPath: path).aiModelStrong == "fresh-strong")
+        }
+    }
+
+    @Test("Intentional strong edit and clear override fresh CLI buckets")
+    func staleLegacyModelEditWins() throws {
+        for strong in ["opus", ""] {
+            let path = makeTempConfig("ai: {provider: claude, model: sonnet}")
+            let service = ConfigService(configPath: path)
+            service.aiModelStrong = strong.isEmpty ? nil : strong
+            #expect(service.hasUnsavedEdits, "explicit clear must remain saveable")
+            try "ai: {provider: claude, providers: {claude: {models: {strong: fresh-strong, light: fresh-light}}}}"
+                .write(toFile: path, atomically: true, encoding: .utf8)
+            try service.save()
+            let reloaded = ConfigService(configPath: path)
+            #expect(reloaded.aiModelStrong == strong)
+            #expect(!service.hasUnsavedEdits)
+            #expect(reloaded.aiModelLight == "fresh-light")
+        }
+    }
+
+    @Test("Provider choice preserves fresh profiles except explicitly edited tiers")
+    func providerChoicePreservesFreshProfiles() throws {
+        let explicitModels: [String?] = [nil, "own-model"]
+        for explicit in explicitModels {
+            let path = makeTempConfig("ai: {provider: claude, providers: {claude: {models: {strong: old-claude}}, codex: {}}}")
+            let service = ConfigService(configPath: path)
+            service.selectAIProvider("codex")
+            if let explicit { service.aiModelStrong = explicit }
+            let fresh = "ai: {provider: claude, providers: {claude: {models: {strong: fresh-claude}}, "
+                + "codex: {models: {strong: fresh-codex, light: fresh-light}}}}"
+            try fresh.write(toFile: path, atomically: true, encoding: .utf8)
+            try service.save()
+            let reloaded = ConfigService(configPath: path)
+            #expect(reloaded.aiProvider == "codex")
+            #expect(reloaded.aiModelStrong == (explicit ?? "fresh-codex"))
+            #expect(reloaded.aiModelLight == "fresh-light")
+            reloaded.selectAIProvider("claude")
+            #expect(reloaded.aiModelStrong == "fresh-claude")
+        }
+    }
+
+    @Test("Unsaved model edits survive switching to another provider")
+    func pendingModelsSurviveProviderChoice() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: sonnet, models: {light: custom-light}}")
+        let service = ConfigService(configPath: path)
+        service.aiModelStrong = "opus"
+        service.selectAIProvider("codex")
+        try service.save()
+        let reloaded = ConfigService(configPath: path)
+        reloaded.selectAIProvider("claude")
+        #expect(reloaded.aiModelStrong == "opus")
+        #expect(reloaded.aiModelLight == "custom-light")
+    }
+
+    @Test("Reload discards pending profile edits when the AI section was removed")
+    func reloadDiscardsRemovedProfileEdits() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: sonnet}")
+        let service = ConfigService(configPath: path)
+        service.aiModelStrong = "opus"
+        service.selectAIProvider("codex")
+        #expect(service.hasUnsavedEdits)
+        try "sync: {poll_interval: 5m}".write(toFile: path, atomically: true, encoding: .utf8)
+        service.reload()
+        #expect(service.parseError == nil)
+        #expect(!service.hasUnsavedEdits)
+    }
+
     private func makeTempConfig(_ yaml: String) -> String {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchtower-config-tests-\(UUID().uuidString)")

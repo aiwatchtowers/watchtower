@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // CodexGenerator implements digest.Generator by calling the Codex CLI.
@@ -47,7 +48,7 @@ func (g *CodexGenerator) SetIsolatedChild(dropEnv ...string) {
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
 func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage, _ string) (string, *digest.Usage, string, error) {
 	model := g.modelStrong
-	if s, ok := digest.SourceFromContext(ctx); ok && digest.TierForSource(s) == digest.TierLight {
+	if digest.TierForContext(ctx) == digest.TierLight {
 		model = g.modelLight
 	}
 
@@ -57,7 +58,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	if err != nil {
 		return "", nil, "", err
 	}
-	result, usage, err := g.run(ctx, codexBin, model, args, stdin, os.TempDir(), promptFile, systemPrompt+userMessage)
+	result, usage, err := g.run(ctx, providers.BatchText, codexBin, model, args, stdin, os.TempDir(), promptFile, systemPrompt+userMessage)
 	return result, usage, "", err
 }
 
@@ -85,11 +86,15 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	codexBin := FindBinary(g.codexPath)
-	args, stdin, promptFile, err := buildImageArgs(codexBin, g.modelStrong, systemPrompt, userMessage, imagePath, dir)
+	model := g.modelStrong
+	if tier, ok := digest.ModelTierFromContext(ctx); ok && tier == digest.TierLight {
+		model = g.modelLight
+	}
+	args, stdin, promptFile, err := buildImageArgs(codexBin, model, systemPrompt, userMessage, imagePath, dir)
 	if err != nil {
 		return "", nil, err
 	}
-	result, usage, err := g.run(ctx, codexBin, g.modelStrong, args, stdin, dir, promptFile, systemPrompt+userMessage)
+	result, usage, err := g.run(ctx, providers.Image, codexBin, model, args, stdin, dir, promptFile, systemPrompt+userMessage)
 	return result, usage, err
 }
 
@@ -98,7 +103,8 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 // output, or when run returns: codex refuses a pipe there (see Client.Query).
 // prompt is the call's prompt text, for the ledger's estimate when codex
 // reports no usage; every run is recorded (recordCodexCall), failures too.
-func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir, promptFile, prompt string) (string, *digest.Usage, error) {
+func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationProfile, codexBin, model string, args []string, stdin, dir, promptFile, prompt string) (_ string, _ *digest.Usage, err error) {
+	defer func() { err = providers.ContextFailure("codex", ctx, providers.ProcessFailure("codex", err)) }()
 	removePrompt := fsutil.RemoveOnce(promptFile)
 	defer removePrompt()
 	cmd := exec.CommandContext(ctx, codexBin, args...)
@@ -131,11 +137,11 @@ func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args [
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {
 		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
-		return "", nil, runError(model, output, err, stderrBuf.String(), codexBin)
+		return "", nil, providers.ContextFailure("codex", ctx, providers.ProfileStartupFailure("codex", profile, stderrBuf.String(), runError(model, output, err, stderrBuf.String(), codexBin)))
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
-	result, usage, parseErr := parseJSONLOutput(output)
+	result, usage, parseErr := parseJSONLOutputForModel(output, model)
 	if parseErr != nil {
 		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
 		return "", nil, parseErr
@@ -143,7 +149,7 @@ func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args [
 
 	if strings.TrimSpace(result) == "" {
 		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
-		return "", nil, fmt.Errorf("codex returned empty result")
+		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, fmt.Errorf("codex returned empty result"))
 	}
 	recordCodexCall(ctx, model, start, reported, ran, prompt, result, true)
 
@@ -156,23 +162,11 @@ func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args [
 	return result, digestUsage, nil
 }
 
-// execArgs is the common `codex exec` prefix every Watchtower call starts
-// with. Beyond the read-only sandbox it switches off codex's local and
-// account-connected tools: sandbox_mode=read-only still lets the model run
-// shell commands that read anywhere on disk, and the prompts carry untrusted
-// Slack/Gmail/Jira text, so an injected "list ~/Documents" (or a curious
-// model) would trigger a macOS TCC prompt attributed to Watchtower or pull
-// local files into stored output. This is the codex twin of the claude
-// side's `--tools ""` (batch) and DisallowedTools (chat). shell_tool also
-// gates unified exec; view_image reads local files; computer_use and the
-// browser_use pair drive the screen and a browser (their own TCC prompts);
-// apps/plugins would expose the owner's ChatGPT connectors — an
-// exfiltration channel for an injected prompt. MCP servers configured in
-// the owner's own codex config are disabled by a -c override in a run that
-// mounts the watchtower server or runs tool-less (Client.mount); web search
-// follows the owner's codex setting except where Client.execArgs turns it
-// off; the generators here keep the owner's codex setup. An
-// unknown features.* key is ignored by older codex builds.
+// execArgs is the common read-only prefix. Batch and image calls add the
+// explicit no-tools profile in noToolsArgs. shell_tool=false is the gate
+// for UnifiedExec too (codex 0.166 core/src/tools/spec_plan.rs add_shell_tools);
+// unified_exec=false alone is insufficient on that version. Interactive clients retain their
+// own MCP/read-folder runtime through Client.execArgs and mount.
 func execArgs(model string) []string {
 	return []string{
 		"exec",
@@ -204,7 +198,12 @@ func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, std
 	if err != nil {
 		return nil, "", "", err
 	}
-	return append(append(execArgs(model), instr...), "-"), stdin, promptFile, nil
+	safe, err := noToolsArgs(providers.BatchText, model, os.TempDir())
+	if err != nil {
+		_ = os.Remove(promptFile)
+		return nil, "", "", err
+	}
+	return append(append(safe, instr...), "-"), stdin, promptFile, nil
 }
 
 // buildImageArgs is buildArgs for an image call. Beyond execArgs it turns
@@ -219,32 +218,44 @@ func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath, workDir st
 	if strings.Contains(imagePath, ",") {
 		return nil, "", "", errors.New("the image path contains a comma")
 	}
-	owner, err := ownerServerNames(OwnerHome(), workDir)
+	safe, err := noToolsArgs(providers.Image, model, workDir)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("reading the codex MCP config: %w", err)
+		return nil, "", "", err
 	}
 	instr, stdin, promptFile, err := promptArgs(bin, systemPrompt, userMessage)
 	if err != nil {
 		return nil, "", "", err
 	}
-	override, _, _ := mcpOverride("", nil, nil, nil, owner, nil)
-	args = append(execArgs(model),
-		"-c", `web_search="disabled"`,
-		"-c", override,
-		"-c", "features.multi_agent=false",
-		"-c", "features.image_generation=false",
-		"-c", "features.skill_search=false",
-		"-c", "features.hooks=false",
-		"-c", "features.in_app_browser=false",
-		"-c", "features.skill_mcp_dependency_install=false",
-		"-c", "features.tool_suggest=false",
-		"--image="+imagePath)
+	args = append(safe, "--image="+imagePath)
 	return append(append(args, instr...), "-"), stdin, promptFile, nil
+}
+
+// noToolsArgs disables merged owner/system/project tools while retaining
+// authentication and custom model-provider transport in the original home.
+func noToolsArgs(profile providers.InvocationProfile, model, workDir string) ([]string, error) {
+	if !profile.ReplaySafe() {
+		return nil, providers.CapabilityError("codex", profile, errors.New("unsupported generator invocation profile"))
+	}
+	owner, err := ownerServerNames(OwnerHome(), workDir)
+	if err != nil {
+		return nil, providers.CapabilityError("codex", profile, fmt.Errorf("cannot isolate codex MCP config: %w", err))
+	}
+	override, _, _ := mcpOverride("", nil, nil, nil, owner, nil)
+	args := append(execArgs(model), "-c", `web_search="disabled"`, "-c", override)
+	for _, feature := range []string{"shell_snapshot", "shell_snapshot_v2", "multi_agent", "image_generation", "skill_search", "hooks", "codex_hooks", "in_app_browser", "skill_mcp_dependency_install", "tool_suggest", "code_mode", "code_mode_host", "goals"} {
+		args = append(args, "-c", "features."+feature+"=false")
+	}
+	return args, nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message
 // content and accumulated usage.
 func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
+	return parseJSONLOutputForModel(output, "")
+}
+
+func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage, error) {
+	var terminalFailure error
 	var lastContent string
 	totalUsage := &CodexUsage{}
 
@@ -263,10 +274,13 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 			continue
 		}
 
-		if event.Error != nil {
-			return "", nil, fmt.Errorf("codex error: %s", event.Error.Message)
+		if (event.Type == "turn.failed" || event.Type == "error") && event.Error != nil {
+			terminalFailure = eventTurnError(model, event.Error)
 		}
 
+		if event.Type == "turn.completed" || event.Type == "turn.started" {
+			terminalFailure = nil
+		}
 		if event.Usage != nil {
 			totalUsage.add(event.Usage)
 		}
@@ -276,8 +290,11 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 		}
 	}
 
+	if terminalFailure != nil {
+		return "", nil, terminalFailure
+	}
 	if lastContent == "" {
-		return "", nil, fmt.Errorf("no agent_message found in codex output")
+		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, fmt.Errorf("no agent_message found in codex output"))
 	}
 
 	return lastContent, totalUsage, nil
@@ -359,3 +376,6 @@ func classifyError(err error, stderr, codexBin string) error {
 	}
 	return fmt.Errorf("codex CLI error: %w", err)
 }
+
+// InvocationProfile identifies text generation as an isolated batch call.
+func (g *CodexGenerator) InvocationProfile() providers.InvocationProfile { return providers.BatchText }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // DaemonAICallTimeout bounds a single AI subprocess call made from the
@@ -50,6 +51,9 @@ func WithCallTimeout(inner Generator, d time.Duration) Generator {
 // invisible from outside this package, and the wiring tests that pin every
 // unattended AI path as bounded (H8) need to see it.
 func CallTimeout(g Generator) (time.Duration, bool) {
+	if bounded, ok := g.(interface{ CallTimeout() (time.Duration, bool) }); ok {
+		return bounded.CallTimeout()
+	}
 	tg, ok := g.(*timeoutGenerator)
 	if !ok {
 		return 0, false
@@ -112,7 +116,7 @@ func (g *timeoutGenerator) timedOut(parent, ctx context.Context, err error) bool
 }
 
 func (g *timeoutGenerator) deadlineError(err error) error {
-	return WithCause(fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded), ErrAICall)
+	return providers.WithFailure("", providers.Timeout, WithCause(fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded), errors.Join(err, ErrAICall)))
 }
 
 // ErrAICall marks a failure of an AI call that says nothing about the
@@ -127,6 +131,16 @@ var ErrAICall = errors.New("ai call failed")
 
 // aiTransportFailure reports the failures ErrAICall stands for.
 func aiTransportFailure(err error) bool {
+	var failure *providers.Failure
+	if errors.As(err, &failure) {
+		switch failure.Category {
+		case providers.Transport, providers.Timeout, providers.Auth, providers.Overload, providers.RateLimit:
+			return true
+		case providers.Unknown, providers.Quota: // preserve historical unavailable markers below
+		default:
+			return false
+		}
+	}
 	var execErr *exec.Error
 	var pathErr *fs.PathError
 	var exitErr *exec.ExitError
@@ -179,3 +193,10 @@ type causeError struct{ err, cause error }
 
 func (e causeError) Error() string   { return e.err.Error() }
 func (e causeError) Unwrap() []error { return []error{e.err, e.cause} }
+
+// SetIsolatedChild retains host environment scrubbing through the deadline wrapper.
+func (g *timeoutGenerator) SetIsolatedChild(dropEnv ...string) {
+	if s, ok := g.inner.(interface{ SetIsolatedChild(...string) }); ok {
+		s.SetIsolatedChild(dropEnv...)
+	}
+}

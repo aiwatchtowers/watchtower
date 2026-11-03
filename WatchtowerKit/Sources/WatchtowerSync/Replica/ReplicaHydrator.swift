@@ -43,6 +43,13 @@ public actor ReplicaHydrator {
     /// their own actor/Task (AppEnvironment wires it to the
     /// NotificationCoordinator that way).
     private let onRecordsApplied: (@Sendable ([AppliedSliceRecord]) -> Void)?
+    /// Handed the hub's transport marker (`TransportMarker`, relay client Phase 3) after every cycle in which the
+    /// stored marker differs from the last one the handler decided: the first cycle of a hydrator hands the stored
+    /// one, if any. Awaited, so a cycle ends once the follower decided; `false` (decide later: the paying check did
+    /// not answer, say) hands the same marker again next cycle. The record is stored like any other.
+    private let onTransportMarker: (@Sendable (TransportMarker) async -> Bool)?
+    /// The marker the handler last decided (or that did not decode) in this hydrator.
+    private var lastMarker: Data?
     private var loopTask: Task<Void, Never>?
     /// The currently-running cycle, if any. Concurrent `hydrateOnce` callers
     /// await this instead of starting their own — see `hydrateOnce`.
@@ -53,12 +60,14 @@ public actor ReplicaHydrator {
         transport: any CloudSyncTransport,
         store: ReplicaStore,
         pull: (@Sendable () async throws -> Void)? = nil,
-        onRecordsApplied: (@Sendable ([AppliedSliceRecord]) -> Void)? = nil
+        onRecordsApplied: (@Sendable ([AppliedSliceRecord]) -> Void)? = nil,
+        onTransportMarker: (@Sendable (TransportMarker) async -> Bool)? = nil
     ) {
         self.transport = transport
         self.store = store
         self.pull = pull
         self.onRecordsApplied = onRecordsApplied
+        self.onTransportMarker = onTransportMarker
     }
 
     // MARK: - One cycle
@@ -114,6 +123,7 @@ public actor ReplicaHydrator {
         if let onRecordsApplied, !indexed.isEmpty {
             onRecordsApplied(indexed)
         }
+        await handOverMarker()
         guard let stored else {
             // Dropped by the monotonic guard — a stale/overlapping batch whose
             // events are already behind our stored token. Nothing applied.
@@ -122,6 +132,31 @@ public actor ReplicaHydrator {
         // Only what the replica stored: relay records, signals, other phones'
         // keyboxes, refused, rolled-back and unchanged records are not counted.
         return (applied: stored, deleted: batch.deletedRecordNames.count)
+    }
+
+    /// Reads the stored transport marker (opened like any row; one that does not open yet waits) and hands it to
+    /// `onTransportMarker` when it changed since the last one decided. A marker that does not decode is logged once
+    /// per payload and never handed.
+    private func handOverMarker() async {
+        guard let onTransportMarker else { return }
+        let payload: Data?
+        do {
+            payload = try await store.reader.read { [store] db in try store.payload(forRecordName: TransportMarker.recordName, from: db) }
+        } catch {
+            return
+        }
+        guard let payload, payload != lastMarker else { return }
+        let marker: TransportMarker
+        do {
+            marker = try TransportMarker.decode(payload)
+        } catch {
+            lastMarker = payload
+            logger.warning("transport marker not followed: \(String(describing: error), privacy: .public)")
+            return
+        }
+        if await onTransportMarker(marker) {
+            lastMarker = payload
+        }
     }
 
     // MARK: - Poll loop

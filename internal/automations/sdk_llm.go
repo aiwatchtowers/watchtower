@@ -249,16 +249,14 @@ func stripCodeFence(s string) string {
 	return strings.TrimSpace(body)
 }
 
-// generateMetered is one metered Generate call; a successful call whose
-// usage the provider does not report is estimated as
-// ceil(len(prompt+reply)/4) tokens, a failed one debits only reported usage.
+// generateMetered preserves one SDK step across physical attempts and schema retries.
 func generateMetered(env *Env, b Backends, step *Step, tier, user string) (string, error) {
 	var reply string
-	err := env.MeteredModelCall(step, func(ctx context.Context) (ModelUsage, error) {
+	err := env.meteredAttempts(step, func(ctx context.Context) (ModelUsage, error) {
 		r, usage, err := generateTier(ctx, b.Generator, tier, user)
 		if err != nil {
-			// A failed call debits only the usage the provider reported.
-			return reportedUsage(usage), &SDKError{Name: ErrNameTool, Message: "the model call failed: " + err.Error()}
+			u := modelUsage(usage, len(llmSystemPrompt)+len(user), len(r))
+			return u, modelCallError(err, ErrNameTool, "the model call failed: ")
 		}
 		reply = r
 		return modelUsage(usage, len(llmSystemPrompt)+len(user), len(r)), nil

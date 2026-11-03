@@ -91,6 +91,12 @@ type AgentRunner interface {
 	Run(ctx context.Context, req AgentRequest) (AgentResult, error)
 }
 
+// AgentPreparer selects a backend using known health before creating the SDK
+// step or launching a child. The returned runner is bound to that selection.
+type AgentPreparer interface {
+	Prepare(context.Context, string) (AgentRunner, error)
+}
+
 // MCPCaller calls one tool of an enabled Quick Connection (P6). Only a tool
 // QC-02's verdict allows is ever called: the connection's last listing shows
 // it read-only, or the owner named it and the server does not mark it a

@@ -144,12 +144,99 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertEqual(try registry.pendingFarewells().map(\.route), [.cloudKit(.private), shared])
     }
 
-    func testAHostedRelayFarewellIsRefusedAndNothingIsKept() throws {
+    func testARelayFarewellIsKept() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite").path
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+        let relay = HubRoute.hostedRelay(macDeviceID: "mac-acme")
+        do {
+            let registry = try HubRegistry(path: path)
+            try registry.savePendingFarewell(farewell("hub-a", route: relay, since: 10))
+            try registry.savePendingFarewell(farewell("hub-b", route: .cloudKit(.private), since: 20))
+        }
+        let kept = try HubRegistry(path: path).pendingFarewells()
+        XCTAssertEqual(kept.map(\.route), [relay, .cloudKit(.private)])
+        XCTAssertEqual(kept.first?.record.payload, Data([1]))
+    }
+
+    /// `v3-relay` on a registry an earlier build wrote: its farewells read as CloudKit, the new table is there.
+    func testTheRelayMigrationKeepsAnEarlierRegistry() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite").path
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+        do {
+            let queue = try DatabaseQueue(path: path)
+            try queue.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
+                    INSERT INTO grdb_migrations VALUES ('v1'), ('v2-pending-farewells');
+                    CREATE TABLE hubs (
+                      hub_id TEXT PRIMARY KEY, link_json BLOB NOT NULL, flavor TEXT, sort_order INTEGER NOT NULL,
+                      state TEXT NOT NULL CHECK (state IN ('linked','unlinked_by_mac')), grant_missing_since REAL,
+                      last_heartbeat_at REAL, linked_on REAL NOT NULL
+                    );
+                    CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    CREATE TABLE pending_farewells (
+                      hub_id TEXT PRIMARY KEY, owner_name TEXT, user_record_name TEXT NOT NULL, record_name TEXT NOT NULL,
+                      zone TEXT NOT NULL, kind TEXT NOT NULL, modified_at REAL NOT NULL, payload BLOB NOT NULL, since REAL NOT NULL
+                    );
+                    INSERT INTO pending_farewells VALUES ('hub-a', '_owner-acme', '_owner-acme', 'wire-a', 'RelayZone', 'wt', 1, x'01', 10);
+                    """)
+            }
+            try queue.close()
+        }
+        let registry = try HubRegistry(path: path)
+        XCTAssertEqual(try registry.pendingFarewells().map(\.route), [.cloudKit(.shared(ownerName: "_owner-acme"))])
+        try registry.close()
+        let queue = try DatabaseQueue(path: path)
+        addTeardownBlock { try? queue.close() }
+        try queue.read { db in
+            XCTAssertTrue(try db.tableExists("pending_slot_removals"))
+            let columns = try db.columns(in: "pending_farewells").map(\.name)
+            XCTAssertTrue(columns.contains("route_kind"))
+            XCTAssertTrue(columns.contains("relay_mac_device_id"))
+        }
+    }
+
+    func testALinkSavedBeforeReadsAsCloudKit() throws {
+        let json = """
+            {"hubID":"hub-a","macName":"Acme Mac","scope":"private","ownerName":"_owner-acme",
+             "userRecordName":"_owner-acme","nonce":"n","deviceID":"device-acme-1"}
+            """
+        let link = try JSONDecoder().decode(LinkRecord.self, from: Data(json.utf8))
+        XCTAssertNil(link.transport)
+        XCTAssertNil(link.relayMacDeviceID)
+        XCTAssertEqual(link.route, .cloudKit(.private))
+        // Saved again, a CloudKit link writes none of the relay keys.
+        let saved = try XCTUnwrap(String(data: try JSONEncoder().encode(link), encoding: .utf8))
+        for key in ["transport", "relayMacDeviceID", "relayAuthPub", "hubTransports", "switchedBy", "switchedAt", "leftTransport"] {
+            XCTAssertFalse(saved.contains("\"\(key)\""), key)
+        }
+    }
+
+    func testARelayLinkRoundTrips() throws {
         let registry = try HubRegistry.inMemory()
-        XCTAssertThrowsError(
-            try registry.savePendingFarewell(farewell("hub-a", route: .hostedRelay(macDeviceID: "mac-acme"), since: 10))
-        ) { XCTAssertEqual($0 as? HubRegistryError, .unsupportedRoute) }
-        XCTAssertTrue(try registry.pendingFarewells().isEmpty)
+        let relay = LinkRecord(
+            hubID: "hub-relay", macName: "build-box", scope: .private, ownerName: "_owner-acme", userRecordName: "_owner-acme",
+            nonce: "n", dataShareURL: nil, relayShareURL: nil, deviceID: "device-acme-1", linkedAt: Date(timeIntervalSince1970: 5),
+            transport: .relay, relayMacDeviceID: "mac-acme", relayAuthPub: "pub-acme", hubTransports: ["relay"],
+            switchedBy: "device-acme-2", switchedAt: Date(timeIntervalSince1970: 6), leftTransport: .cloudKit
+        )
+        try registry.upsert(relay, now: Date())
+        let read = try XCTUnwrap(try registry.row("hub-relay")?.link)
+        XCTAssertEqual(read, relay)
+        XCTAssertEqual(read.route, .hostedRelay(macDeviceID: "mac-acme"))
+
+        // A CloudKit link moved to the relay takes its Mac's id with it.
+        var moved = link("hub-b")
+        moved.setRelay(mac: "mac-home")
+        XCTAssertEqual(moved.transport, .relay)
+        XCTAssertEqual(moved.route, .hostedRelay(macDeviceID: "mac-home"))
+
+        // A relay link without its Mac's relay id is never read as one.
+        let json = """
+            {"hubID":"hub-a","macName":"Acme Mac","scope":"private","ownerName":"_owner-acme",
+             "userRecordName":"_owner-acme","nonce":"n","transport":"relay"}
+            """
+        XCTAssertThrowsError(try JSONDecoder().decode(LinkRecord.self, from: Data(json.utf8)))
     }
 
     func testASavedLinkKeepsItsRoute() throws {

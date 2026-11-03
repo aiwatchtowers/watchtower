@@ -95,15 +95,61 @@ final class LinkPayloadTests: XCTestCase {
         XCTAssertEqual(try Self.parse(Self.v2FixtureURL), .failure(.olderVersion))
     }
 
-    func testAV4CodeReadsUpdateThePhone() throws {
+    // Relay client Phase 3 (Owner approval 5): this phone reads v4, so "newer" starts at v5.
+    func testAV5CodeReadsUpdateThePhone() throws {
         var object = try Self.fixtureObject()
-        object["v"] = 4
+        object["v"] = 5
         XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.newerVersion))
     }
 
     func testNewerVersionWinsOverUnknownShape() throws {
-        // A v4 code may drop v3 keys; the phone must still say "update".
-        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 4])), .failure(.newerVersion))
+        // A v5 code may drop v4 keys; the phone must still say "update".
+        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 5])), .failure(.newerVersion))
+    }
+
+    func testTheKitStillIssuesV3() {
+        XCTAssertEqual(LinkPayload.currentVersion, 3)
+        XCTAssertEqual(LinkPayload.newestReadable, 4)
+        let payload = LinkPayload.issue(
+            hubID: "hub-1", macName: "Acme Mac", ownerUser: "_owner", dataShare: nil, relayShare: nil,
+            hubSigningKey: Self.hubSigning, hubAgreementKey: Self.hubAgreement, now: Date())
+        XCTAssertEqual(payload.v, 3)
+        XCTAssertTrue(payload.offersCloudKit)
+        XCTAssertFalse(payload.offersRelay)
+    }
+
+    func testV3StillRequiresContainerAndOwner() throws {
+        for name in ["container", "owner_user"] {
+            var object = try Self.fixtureObject()
+            object.removeValue(forKey: name)
+            XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.missingField(name)))
+        }
+    }
+
+    func testV4WithoutContainerAndOwnerOffersNoICloudRoute() throws {
+        var object = try Self.fixtureObject()
+        object["v"] = 4
+        object.removeValue(forKey: "container")
+        object.removeValue(forKey: "owner_user")
+        let payload = try LinkPayload.parse(try Self.linkURL(object)).get()
+        XCTAssertNil(payload.container)
+        XCTAssertNil(payload.ownerUser)
+        XCTAssertFalse(payload.offersCloudKit)
+        XCTAssertFalse(payload.offersRelay)
+        object["container"] = WatchtowerCloud.containerID
+        XCTAssertFalse(try LinkPayload.parse(try Self.linkURL(object)).get().offersCloudKit, "owner_user still missing")
+    }
+
+    func testAnUnknownTransportReadsAsNil() throws {
+        var object = try Self.fixtureObject()
+        object["v"] = 4
+        object["transport"] = "carrier_pigeon"
+        object["transports"] = ["cloudkit", "carrier_pigeon"]
+        let payload = try LinkPayload.parse(try Self.linkURL(object)).get()
+        XCTAssertNil(payload.transport)
+        XCTAssertEqual(payload.transports, ["cloudkit", "carrier_pigeon"])
+        object["transport"] = "cloudkit"
+        XCTAssertEqual(try LinkPayload.parse(try Self.linkURL(object)).get().transport, .cloudKit)
     }
 
     func testAMissingHubKeyIsMissingField() throws {

@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/providers"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -322,6 +324,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// Top-level "error" events, kept for runError: they explain a run
 		// that exits non-zero without a turn.failed event.
 		var errLines []byte
+		var terminal error
 
 		for scanner.Scan() {
 			removePrompt()
@@ -335,10 +338,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				continue
 			}
 
-			if event.Error != nil {
-				_ = cmd.Wait()
-				errCh <- turnError(c.model, event.Error.Message)
-				return
+			if (event.Type == "turn.failed" || event.Type == "error") && event.Error != nil {
+				terminal = eventTurnError(c.model, event.Error)
+			}
+			if event.Type == "turn.started" || event.Type == "turn.completed" {
+				terminal = nil
+				errLines = nil
 			}
 			if event.Type == "error" {
 				errLines = append(append(errLines, line...), '\n')
@@ -386,8 +391,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			return
 		}
 
-		if err := cmd.Wait(); err != nil {
-			errCh <- runError(c.model, errLines, err, stderrBuf.String(), c.codexCmd)
+		if err := cmd.Wait(); terminal != nil {
+			if err != nil {
+				terminal = digest.WithCause(terminal, err)
+			}
+			errCh <- providers.ContextFailure("codex", ctx, terminal)
+		} else if err != nil {
+			errCh <- providers.ContextFailure("codex", ctx, runError(c.model, errLines, err, stderrBuf.String(), c.codexCmd))
 		} else {
 			ok = true
 		}
@@ -401,7 +411,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 // QuerySync sends a non-streaming request via the Codex CLI and returns
 // the full response text and token usage.
-func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
+func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (text string, usage *ai.Usage, err error) {
+	defer func() { err = providers.ContextFailure("codex", ctx, providers.ProcessFailure("codex", err)) }()
 	m, mountErr := c.mount()
 	if mountErr != nil {
 		return "", nil, mountErr
@@ -432,14 +443,14 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)
 	}
 
-	result, codexUsage, parseErr := parseJSONLOutput(output)
+	result, codexUsage, parseErr := parseJSONLOutputForModel(output, c.model)
 	if parseErr != nil {
 		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, parseErr
 	}
 	recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, result, true)
 
-	usage := &ai.Usage{
+	usage = &ai.Usage{
 		InputTokens:  codexUsage.InputTokens,
 		OutputTokens: codexUsage.OutputTokens,
 	}
@@ -454,4 +465,13 @@ func outputRemovingPrompt(cmd *exec.Cmd, removePrompt func()) ([]byte, error) {
 	cmd.Stdout = fsutil.OnFirstWrite(&out, removePrompt)
 	err := cmd.Run()
 	return out.Bytes(), err
+}
+
+// InvocationProfile marks the reviewer's distinct readonly runtime. Ordinary
+// clients keep their tool runtime and are eligible only for preflight selection.
+func (c *Client) InvocationProfile() providers.InvocationProfile {
+	if c.noServers {
+		return providers.ReviewReadonly
+	}
+	return providers.ToolPreflight
 }

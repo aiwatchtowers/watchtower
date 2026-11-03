@@ -129,11 +129,15 @@ func (p *Pipeline) learnedPrefs() string {
 
 // Pipeline generates and stores AI digests for Slack channels.
 type Pipeline struct {
-	db          *db.DB
-	cfg         *config.Config
-	generator   Generator
-	logger      *log.Logger
-	promptStore *prompts.Store
+	// DeferredSchedule enables the daemon-only pending input descriptor.
+	DeferredSchedule bool
+	// dailyAttemptID is scoped to the locked daemon daily write, never to a CLI/weekly run.
+	dailyAttemptID string
+	db             *db.DB
+	cfg            *config.Config
+	generator      Generator
+	logger         *log.Logger
+	promptStore    *prompts.Store
 
 	// SinceOverride, if non-zero, overrides the automatic "since last digest"
 	// window. Used by `digest generate --since` to force a custom time range.
@@ -189,7 +193,9 @@ type Pipeline struct {
 	backfill *backfillScope
 	// backfillRollups is true only while RunBackfillRollups runs (under the
 	// digest lock).
-	backfillRollups bool
+	backfillRollups                      bool
+	backfillRollupFrom, backfillRollupTo float64
+	backfillRollupAccountID              int64
 }
 
 // backfillScope is set only while RunBackfillWindow runs: a backfill window
@@ -199,6 +205,9 @@ type Pipeline struct {
 // later passes do not re-send them. mu guards all three: batch workers write
 // concurrently.
 type backfillScope struct {
+	accountID  int64
+	from, to   float64
+	durable    bool
 	mu         sync.Mutex
 	considered map[string]float64
 	failed     map[string]bool
@@ -328,6 +337,10 @@ func (p *Pipeline) Run(ctx context.Context) (int, *Usage, error) {
 		return 0, nil, nil
 	}
 
+	if err := Preflight(WithSource(ctx, "digest.channel_batch"), p.generator); err != nil {
+		return 0, nil, err
+	}
+
 	unlock, err := p.acquireDigestLock()
 	if err != nil {
 		p.logger.Printf("digest: skipping — %v", err)
@@ -387,6 +400,10 @@ func (p *Pipeline) RunChannelDigestsOnly(ctx context.Context) (int, *Usage, erro
 
 	if !p.cfg.Digest.Enabled {
 		return 0, nil, nil
+	}
+
+	if err := Preflight(WithSource(ctx, "digest.channel_batch"), p.generator); err != nil {
+		return 0, nil, err
 	}
 
 	unlock, err := p.acquireDigestLock()
@@ -453,10 +470,15 @@ func (p *Pipeline) runTrackLinker(ctx context.Context) {
 	}
 }
 
-// RunRollups generates daily/weekly rollups. Used by daemon after tracks pipeline has created tracks.
+// RunRollups generates the daily rollup after the daemon has created tracks.
+// Weekly trends are a separate, explicitly invoked operation.
 func (p *Pipeline) RunRollups(ctx context.Context) error {
 	if !p.cfg.Digest.Enabled {
 		return nil
+	}
+
+	if err := p.PreflightRollups(ctx); err != nil {
+		return err
 	}
 
 	unlock, err := p.acquireDigestLock()
@@ -486,6 +508,9 @@ type channelWindow struct {
 // usage. Channels are processed in parallel using digest.workers
 // (default: config.DefaultDigestWorkers).
 func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
+	if err := Preflight(WithSource(ctx, "digest.channel_batch"), p.generator); err != nil {
+		return 0, nil, err
+	}
 	nowUnix := float64(time.Now().Unix())
 
 	// `digest generate --since` is the operator escape hatch: it overrides every
@@ -504,7 +529,7 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	return p.runChannelWindows(ctx, windows, nowUnix)
+	return p.runScheduledChannelWindows(ctx, windows, nowUnix)
 }
 
 // runChannelDigestsForWindow generates channel digests over one uniform window
@@ -608,8 +633,15 @@ func (p *Pipeline) stampConsidered(channelID string, tsUnix float64) {
 		return
 	}
 	if b := p.backfill; b != nil {
-		// Backfill code never writes the forward considered mark: the
-		// backfill window keeps its own in memory.
+		// A declined model result has no digest row. Its chunk-local completion
+		// receipt is one atomic statement; saved digest rows already prove their
+		// own consumed prefix through LastDigestInRange. Forward marks stay separate.
+		if b.durable {
+			if err := p.db.SetHistoryBackfillConsidered(b.accountID, channelID, b.from, b.to, tsUnix); err != nil {
+				p.markBackfillFailed(err, channelID)
+				return
+			}
+		}
 		b.mu.Lock()
 		if tsUnix > b.considered[channelID] {
 			b.considered[channelID] = tsUnix
@@ -1056,15 +1088,15 @@ type batchAggregator struct {
 	totalInput  atomic.Int64
 	totalOutput atomic.Int64
 	totalAPI    atomic.Int64
-	lastErrMu   sync.Mutex
-	lastErr     error
+	errorsMu    sync.Mutex
+	errors      []error
 }
 
 func (a *batchAggregator) recordError(err error) {
 	a.errCount.Add(1)
-	a.lastErrMu.Lock()
-	a.lastErr = err
-	a.lastErrMu.Unlock()
+	a.errorsMu.Lock()
+	a.errors = append(a.errors, err)
+	a.errorsMu.Unlock()
 }
 
 // dispatchChannelBatches runs worker goroutines over batches and aggregates
@@ -1103,11 +1135,19 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 
 	gen := int(agg.generated.Load())
 	errs := int(agg.errCount.Load())
-	// If we found channels to process but ALL of them failed, report the error
-	// so the caller shows a meaningful message instead of "No new digests needed".
-	if gen == 0 && errs > 0 {
-		return 0, totalUsage, fmt.Errorf("all %d channel digest(s) failed, last error: %w", errs, agg.lastErr)
+	// Routed batches preserve every failure beside committed output. Legacy
+	// partial-success reporting stays unchanged when routing is off or pinned.
+	if errs > 0 {
+		allErrors := errors.Join(agg.errors...)
+		var wait interface{ ProviderDeferred() bool }
+		if RoutingEnabled(p.generator) || (errors.As(allErrors, &wait) && wait.ProviderDeferred()) {
+			return gen, totalUsage, fmt.Errorf("%d channel digest(s) failed: %w", errs, allErrors)
+		}
+		if gen == 0 {
+			return 0, totalUsage, fmt.Errorf("all %d channel digest(s) failed, last error: %w", errs, agg.errors[len(agg.errors)-1])
+		}
 	}
+
 	return gen, totalUsage, nil
 }
 
@@ -1389,7 +1429,7 @@ func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult
 // RunDailyRollup generates a cross-channel daily digest from today's channel digests.
 // M12 fix: use UTC for consistent timezone-independent digest deduplication.
 func (p *Pipeline) RunDailyRollup(ctx context.Context) error {
-	return p.runDailyRollupForDate(ctx, utcDayStart(time.Now()))
+	return p.runScheduledDaily(ctx)
 }
 
 // utcDayStart is the UTC midnight opening t's UTC calendar day — the daily
@@ -1479,6 +1519,9 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		return fmt.Errorf("checking existing daily rollup for %s: %w", dayStart.Format("2006-01-02"), err)
 	}
 	if !needed {
+		if p.backfillRollups && RoutingEnabled(p.generator) {
+			return p.db.MarkHistoryBackfillDailyExisting(p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo, fromUnix, toUnix)
+		}
 		return nil // nothing new since the last rollup for this day
 	}
 
@@ -1499,6 +1542,11 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 	}
 	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
+	if p.backfillRollups {
+		if err := Preflight(WithSource(ctx, "digest.daily"), p.generator); err != nil {
+			return err
+		}
+	}
 	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.daily"), systemPrompt, userMessage, "")
 	if err != nil {
 		return fmt.Errorf("generating daily rollup: %w", err)
@@ -1826,7 +1874,15 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 		contentChanged = p.digestContentChanged(digestType, from, to, d.Summary, d.Topics)
 	}
 
-	digestID, err := p.db.UpsertDigest(d)
+	var digestID int64
+	var err error
+	if digestType == "daily" && p.backfillRollups && RoutingEnabled(p.generator) {
+		digestID, err = p.db.UpsertHistoryBackfillDaily(d, p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo)
+	} else if digestType == "daily" && p.dailyAttemptID != "" {
+		digestID, err = p.db.UpsertDailyDigestAttempt(d, p.dailyAttemptID)
+	} else {
+		digestID, err = p.db.UpsertDigest(d)
+	}
 	if err != nil {
 		return err
 	}

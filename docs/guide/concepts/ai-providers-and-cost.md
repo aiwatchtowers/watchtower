@@ -23,13 +23,15 @@ Setup checks the Claude or Codex tool and keeps **Continue** off until it finds 
 
 ## Light and strong models
 <!-- learn
-id: ai-own-models
-title: Choose your own models
-text: Type a model into **Light Model** or **Strong Model** in **Settings → System → AI**; **Default** clears it.
+id: ai-models-per-provider
+title: Keep models for each provider
+text: Set **Light Model** and **Strong Model** in **Settings → System → AI**; each provider keeps its choices.
+replaces: [ai-own-models]
+changed: Switching providers restores their saved models.
 area: setup
 level: power
 kind: tip
-since: 0.24.0
+since: 0.26.5
 -->
 
 Every AI call is routed to one of two tiers, and each provider has a model per tier.
@@ -44,6 +46,28 @@ Defaults:
 - **Ollama / Local:** none, so pick a model; one model then serves both tiers.
 
 Override either tier in **Light Model** and **Strong Model**, or press **Default** to clear it.
+
+Each provider keeps its own model choices. Switching providers restores its saved choices; a provider without saved choices starts with **Default**.
+
+## A reserve provider for quota limits
+<!-- learn
+id: ai-reserve-provider
+title: Keep working when your AI plan runs out
+text: Set Codex or Claude as a reserve; background summaries switch to it when your plan's quota is used up.
+area: setup
+level: power
+kind: tip
+since: 0.26.5
+-->
+
+If you have both Claude Code and Codex, the other one can stand in when your plan's quota runs out. It is off until you turn it on in Terminal (there is no switch in Settings yet):
+
+```
+watchtower config set ai.fallback.provider codex
+watchtower config set ai.fallback.enabled true
+```
+
+Use `claude` as the provider when Codex is your main one. Only background work moves to the reserve: digests, people cards, ideas, history fetching and image descriptions. It switches only on a confirmed quota error, and it tries the reserve once, with the reserve's own **Light Model** and **Strong Model**. Chats, automations and Workbench sessions stay on your main provider. When both are out of quota, the unfinished work waits for a later sync and nothing already saved is lost. A provider your company's profile forbids is never used as the reserve.
 
 ## What drives cost
 <!-- learn

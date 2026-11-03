@@ -12,6 +12,8 @@ Claude runs out of quota sooner than expected, a warning says a limit will be hi
 
 Your Claude plan limit belongs to your Claude account, so Watchtower's background jobs, the chat, Workbench sessions and your own Claude use all count against the same 5-hour and weekly windows. Slack Digests and Tracks run every sync cycle and are the heaviest; a bot-heavy channel multiplies the work, and a freshly connected source adds a month of history. Watchtower reads the plan numbers every 5 minutes read-only, and never refreshes Claude Code's sign-in itself.
 
+If you enable a [reserve AI provider](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits), scheduled Slack digest batches and people card batches keep their unfinished input window when both providers are waiting for quota. They try the missing work on a later regular sync cycle; already saved digests and cards stay saved. Other background jobs keep their own retry schedules.
+
 ## Fix
 
 1. Open **Usage → Watchtower** and pick **7 days**. The table lists each job by cost (by tokens where no cost is known), so the biggest is first; **Your automations** and **Chats and workbenches** are below it.

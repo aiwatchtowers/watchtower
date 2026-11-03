@@ -1,14 +1,15 @@
 import CryptoKit
 import Foundation
+import WatchtowerSync
 
 /// The relay's device id and the bytes a device signs at register and login,
 /// byte-for-byte the Go client's (`client.DeviceID`, `client.RegisterClientDataHash`,
 /// `loginLocked`) and the relay's `proto/README.md`; pinned by
 /// `Fixtures/relay/auth_vectors.json`. Strings are UTF-8.
 public enum RelayAuthMessages {
-    /// lower-case unpadded RFC 4648 base32 of SHA-256(publicKey)
+    /// lower-case unpadded RFC 4648 base32 of SHA-256(publicKey); `RelayIDs.deviceID`
     public static func deviceID(publicKey: Data) -> String {
-        base32LowerUnpadded(Data(SHA256.hash(data: publicKey)))
+        RelayIDs.deviceID(publicKey: publicKey)
     }
 
     /// SHA256("relay/v1/register" ‖ nonce ‖ authPub ‖ origin)
@@ -26,31 +27,15 @@ public enum RelayAuthMessages {
         sha256(Data("relay/v1/login".utf8), nonce, Data(deviceID.utf8), Data(origin.string.utf8))
     }
 
+    /// SHA256("relay/v1/vouch" ‖ nonce ‖ hubDeviceID ‖ authPub ‖ origin) — what a phone's `vouch_hub`
+    /// assertion covers (proto README "Attestation"; vector of relay board #1432)
+    public static func vouchClientDataHash(nonce: Data, hubDeviceID: String, authPub: Data, origin: RelayOrigin) -> Data {
+        sha256(Data("relay/v1/vouch".utf8), nonce, Data(hubDeviceID.utf8), authPub, Data(origin.string.utf8))
+    }
+
     private static func sha256(_ parts: Data...) -> Data {
         var hasher = SHA256()
         for part in parts { hasher.update(data: part) }
         return Data(hasher.finalize())
-    }
-
-    private static let base32Alphabet = Array("abcdefghijklmnopqrstuvwxyz234567")
-
-    /// RFC 4648 base32, lower-case, no padding.
-    private static func base32LowerUnpadded(_ data: Data) -> String {
-        var out = ""
-        out.reserveCapacity((data.count * 8 + 4) / 5)
-        var buffer: UInt32 = 0
-        var bits = 0
-        for byte in data {
-            buffer = (buffer << 8) | UInt32(byte)
-            bits += 8
-            while bits >= 5 {
-                bits -= 5
-                out.append(base32Alphabet[Int((buffer >> UInt32(bits)) & 0x1F)])
-            }
-        }
-        if bits > 0 {
-            out.append(base32Alphabet[Int((buffer << UInt32(5 - bits)) & 0x1F)])
-        }
-        return out
     }
 }

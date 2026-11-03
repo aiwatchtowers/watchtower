@@ -12,10 +12,14 @@ import (
 	"time"
 
 	"watchtower/internal/llmusage"
+	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // claudeLine is the union of the stream-json line shapes the translator reads.
 type claudeLine struct {
+	Error     json.RawMessage `json:"error"`
+	limit     *providers.ClaudeRateLimitInfo
 	Type      string       `json:"type"`
 	Subtype   string       `json:"subtype"`
 	SessionID string       `json:"session_id"`
@@ -137,6 +141,7 @@ type pendingBlock struct {
 // subagent events are dropped. Safe for concurrent use: the backend feeds it
 // from its reader goroutine and marks interrupts from Cancel.
 type ClaudeTranslator struct {
+	limits providers.ClaudeLimitTracker
 	turnID func() string
 
 	mu          sync.Mutex
@@ -227,6 +232,7 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 	if l.SessionID != "" {
 		t.sessionID = l.SessionID
 	}
+	l.limit = t.limits.Observe(line)
 	f := fedLine{sessionID: l.SessionID}
 	switch l.Type {
 	case "stream_event":
@@ -449,8 +455,11 @@ func (t *ClaudeTranslator) result(l claudeLine) []Event {
 		if msg == "" {
 			msg = "claude turn failed: " + l.Subtype
 		}
+		cause := providers.ClaudeResultFailure(l.Type, l.Subtype, l.IsError, l.Error, msg, l.limit, logredact.Errorf("claude turn failed: %s", logredact.Text(msg)))
 		code, retry := ClassifyClaudeError(msg)
-		return []Event{usage, errorEvent(turnID, code, msg, retry)}
+		event := errorEvent(turnID, code, msg, retry)
+		event.Cause = cause
+		return []Event{usage, event}
 	}
 }
 

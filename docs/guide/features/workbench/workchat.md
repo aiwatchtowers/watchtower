@@ -93,7 +93,7 @@ text: Click the agent count above the field to see running tasks and open a suba
 area: development
 level: power
 kind: feature
-since: next
+since: 0.26.5
 action: nav:projects
 -->
 
@@ -101,13 +101,11 @@ Click the small agents icon and count above the field to open the running-agent 
 
 A **?** means the agent state is unavailable, rather than that no agents are running. Some agents appear before their transcript is ready; their row opens once the transcript can be read safely.
 
-
 A subagent's card opens it in the same pane, with **‹ Back** and a path bar that starts at **Workchat**. Subagents are read-only: write to the agent in the main Workchat.
 
 ## When it's empty or wrong
 
 - **Activity unavailable** or **Activity out of date · …**. The live hint could not refresh, or is more than ten seconds old. Timers stop and the agent count becomes unknown; click **Retry**. The session may still be working.
-
 - **⌃` does nothing.** No session is on screen, or both its modes show side by side in the split. Pick a session in the sessions panel, or turn the split off.
 - **Stop says A permission prompt is open — answer it on the card or in the terminal.** Esc would answer the prompt, so Stop holds back. Use the card or the terminal.
 - **Could not read the permission prompt.** Watchtower could not read its database, so no card shows. Answer in the terminal; the next session update tries again.

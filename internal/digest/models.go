@@ -1,5 +1,7 @@
 package digest
 
+import "context"
+
 // Tier identifies the model class a pipeline source routes to. Concrete
 // model names per tier live in the provider registry (internal/providers)
 // and in each generator's configuration — never here.
@@ -46,4 +48,26 @@ func TierForSource(source string) Tier {
 		// weekly edits to the owner's setup).
 		return TierStrong
 	}
+}
+
+// WithModelTier carries an explicit routing tier independently of the ledger's
+// purpose/source. It changes no legacy call without this context value.
+func WithModelTier(ctx context.Context, tier Tier) context.Context {
+	return context.WithValue(ctx, modelTierKey{}, tier)
+}
+
+type modelTierKey struct{}
+
+func ModelTierFromContext(ctx context.Context) (Tier, bool) {
+	tier, ok := ctx.Value(modelTierKey{}).(Tier)
+	return tier, ok && (tier == TierLight || tier == TierStrong)
+}
+
+// TierForContext resolves a routing override, then the caller's source tier.
+func TierForContext(ctx context.Context) Tier {
+	if tier, ok := ModelTierFromContext(ctx); ok {
+		return tier
+	}
+	source, _ := SourceFromContext(ctx)
+	return TierForSource(source)
 }

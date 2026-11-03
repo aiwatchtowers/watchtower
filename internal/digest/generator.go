@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // limitedWriter wraps a writer and stops writing after limit bytes.
@@ -73,7 +74,7 @@ func (g *ClaudeGenerator) SetIsolatedChild(dropEnv ...string) {
 // modelForContext picks the tier model for a call: the source tag routes to
 // light or strong; an untagged call uses the strong model.
 func (g *ClaudeGenerator) modelForContext(ctx context.Context) string {
-	if s, ok := SourceFromContext(ctx); ok && TierForSource(s) == TierLight {
+	if TierForContext(ctx) == TierLight {
 		return g.modelLight
 	}
 	return g.modelStrong
@@ -88,15 +89,16 @@ const validatePrompt = "reply ok"
 // at startup — those probes trigger macOS TCC prompts attributed to Watchtower.app.
 // Keychain-backed OAuth still works because CLAUDE_CONFIG_DIR is left untouched.
 func validateModelArgs(model string) []string {
-	return []string{
+	return append([]string{
 		"-p", validatePrompt,
 		"--output-format", "json",
+		"--verbose",
 		"--model", model,
 		"--no-session-persistence",
 		"--tools", "",
 		"--max-tokens", "10",
 		"--setting-sources", "project,local",
-	}
+	}, providers.ClaudeNoToolsArgs()...)
 }
 
 // generateArgs builds the CLI args for a digest generation request and their
@@ -109,7 +111,8 @@ func validateModelArgs(model string) []string {
 func generateArgs(model, systemPromptFile, userMessage string) ([]string, string) {
 	args := []string{
 		"-p",
-		"--output-format", "json",
+		"--output-format", "stream-json",
+		"--verbose",
 		"--model", model,
 		"--no-session-persistence",
 		"--tools", "",
@@ -118,7 +121,7 @@ func generateArgs(model, systemPromptFile, userMessage string) ([]string, string
 	if systemPromptFile != "" {
 		args = append(args, "--system-prompt-file", systemPromptFile)
 	}
-	return args, userMessage
+	return append(args, providers.ClaudeNoToolsArgs()...), userMessage
 }
 
 // ValidateModel sends a minimal request to verify the configured model is valid.
@@ -127,6 +130,7 @@ func (g *ClaudeGenerator) ValidateModel() (err error) {
 	claudeBin := claude.FindBinary(g.claudePath)
 	ctx, cancel := context.WithTimeout(llmusage.WithPurpose(context.Background(), "probe"), 30*time.Second)
 	defer cancel()
+	defer func() { err = providers.ContextFailure("claude", ctx, providers.ProcessFailure("claude", err)) }()
 
 	cmd := exec.CommandContext(ctx, claudeBin, validateModelArgs(g.modelStrong)...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
@@ -145,7 +149,11 @@ func (g *ClaudeGenerator) ValidateModel() (err error) {
 	output, err := cmd.Output()
 	if err != nil {
 		resp, _ = parseCLIOutput(output)
-		return fmt.Errorf("model validation failed for %q: %w", g.modelStrong, err)
+		cause := fmt.Errorf("model validation failed for %q: %w", g.modelStrong, err)
+		if resp != nil && resp.IsError {
+			return providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, cause)
+		}
+		return cause
 	}
 
 	resp, err = parseCLIOutput(output)
@@ -153,7 +161,7 @@ func (g *ClaudeGenerator) ValidateModel() (err error) {
 		return fmt.Errorf("model validation: unexpected response for %q: %w", g.modelStrong, err)
 	}
 	if resp.IsError {
-		return logredact.Errorf("model %q is not available: %s", g.modelStrong, logredact.Text(resp.Result))
+		return providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, logredact.Errorf("model %q is not available: %s", g.modelStrong, logredact.Text(resp.Result)))
 	}
 	return nil
 }
@@ -173,16 +181,18 @@ type cliUsage struct {
 
 // cliResponse is the JSON structure returned by `claude --output-format json`.
 type cliResponse struct {
-	Type       string   `json:"type"`
-	Result     string   `json:"result"`
-	CostUSD    float64  `json:"total_cost_usd"`
-	DurationMS int      `json:"duration_ms"`
-	NumTurns   int      `json:"num_turns"`
-	IsError    bool     `json:"is_error"`
-	SessionID  string   `json:"session_id"`
-	Subtype    string   `json:"subtype"`
-	StopReason string   `json:"stop_reason"`
-	Usage      cliUsage `json:"usage"`
+	limit      *providers.ClaudeRateLimitInfo
+	Type       string          `json:"type"`
+	Result     string          `json:"result"`
+	CostUSD    float64         `json:"total_cost_usd"`
+	DurationMS int             `json:"duration_ms"`
+	NumTurns   int             `json:"num_turns"`
+	IsError    bool            `json:"is_error"`
+	SessionID  string          `json:"session_id"`
+	Subtype    string          `json:"subtype"`
+	StopReason string          `json:"stop_reason"`
+	Error      json.RawMessage `json:"error"`
+	Usage      cliUsage        `json:"usage"`
 	// ModelUsage is the per-model usage the CLI reports, keyed by the
 	// model's full name (llmusage.ModelFromUsage).
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
@@ -222,6 +232,7 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 	if len(trimmed) > 0 && trimmed[0] == '{' {
 		var resp cliResponse
 		if err := json.Unmarshal(trimmed, &resp); err == nil {
+			resp.limit = providers.ClaudeResultLimit(output)
 			return &resp, nil
 		}
 	}
@@ -234,12 +245,16 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 		}
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].Type == "result" {
+				events[i].limit = providers.ClaudeResultLimit(output)
 				return &events[i], nil
 			}
 		}
 		return nil, fmt.Errorf("no result event found in claude CLI streaming output (%d events)", len(events))
 	}
 
+	if resp, err := parseStreamResult(output); err == nil {
+		return resp, nil
+	}
 	return nil, fmt.Errorf("unexpected claude CLI output format: %s", claude.DescribeOutput(trimmed))
 }
 
@@ -258,7 +273,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	systemPromptFile, payloads := systemPromptPayload(systemPrompt)
 	args, stdin := generateArgs(model, systemPromptFile, userMessage)
 
-	resp, err := g.runClaude(ctx, model, systemPrompt+userMessage, args, strings.NewReader(stdin), generateDir(),
+	resp, err := g.runClaude(ctx, providers.BatchText, model, systemPrompt+userMessage, args, strings.NewReader(stdin), generateDir(),
 		parseCLIOutput, payloads...)
 	if err != nil {
 		return "", nil, "", err
@@ -310,8 +325,9 @@ func cliUsageOf(model string, resp *cliResponse) *Usage {
 // error envelope and an empty result are errors. Every run of the child is
 // recorded in the LLM usage ledger under model, its usage estimated from
 // prompt (the text sent) when the envelope carries none.
-func (g *ClaudeGenerator) runClaude(ctx context.Context, model, prompt string, args []string, stdin io.Reader, dir string,
+func (g *ClaudeGenerator) runClaude(ctx context.Context, profile providers.InvocationProfile, model, prompt string, args []string, stdin io.Reader, dir string,
 	parse func([]byte) (*cliResponse, error), payloads ...string) (_ *cliResponse, err error) {
+	defer func() { err = providers.ContextFailure("claude", ctx, providers.ProcessFailure("claude", err)) }()
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
@@ -372,8 +388,8 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, model, prompt string, a
 			// behind kilobytes of usage telemetry. Parse it so the error
 			// carries that message instead of the whole blob.
 			if resp := envelope; resp != nil && resp.IsError {
-				return nil, WithCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
-					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp)), exitErr)
+				return nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, WithCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
+					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp)), exitErr))
 			}
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
 			if stderrMsg == "" {
@@ -385,7 +401,7 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, model, prompt string, a
 				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
-				return nil, WithCause(logredact.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr)
+				return nil, providers.ProfileStartupFailure("claude", profile, stderrMsg, WithCause(logredact.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr))
 			}
 			return nil, WithCause(fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 		}
@@ -394,18 +410,21 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, model, prompt string, a
 
 	resp, err := parse(output)
 	if err != nil {
-		return nil, err
+		return nil, providers.WithFailure("claude", providers.InvalidOutput, err)
 	}
 	envelope = resp
 
 	if resp.IsError {
 		// Same envelope, same empty-result trap as the non-zero-exit branch
 		// above — the CLI can flag is_error and still exit 0.
-		return nil, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
+		return nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp)))
 	}
 
 	if strings.TrimSpace(resp.Result) == "" {
-		return nil, fmt.Errorf("claude returned empty result (turns=%d, tokens=%d+%d)", resp.NumTurns, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+		return nil, providers.WithFailure("claude", providers.InvalidOutput, fmt.Errorf("claude returned empty result (turns=%d, tokens=%d+%d)", resp.NumTurns, resp.Usage.InputTokens, resp.Usage.OutputTokens))
 	}
 	return resp, nil
 }
+
+// InvocationProfile identifies text generation as an isolated batch call.
+func (g *ClaudeGenerator) InvocationProfile() providers.InvocationProfile { return providers.BatchText }

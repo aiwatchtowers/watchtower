@@ -239,7 +239,7 @@ func TestLLM_InputTooLarge(t *testing.T) {
 	}
 }
 
-func TestLLM_FailedCallDebitsOnlyReportedUsage(t *testing.T) {
+func TestLLM_FailedCallDebitsReportedOrEstimatedUsage(t *testing.T) {
 	cases := []struct {
 		name  string
 		usage []digest.Usage
@@ -254,8 +254,13 @@ func TestLLM_FailedCallDebitsOnlyReportedUsage(t *testing.T) {
 			r := mustReturn(t, `try { llm("x"); return "called" } catch (e) { return e.name + "|" + e.message }`,
 				sdkCase{perms: []string{"llm:light"}, gen: gen}, "ToolError|the model call failed: provider down")
 			tot := r.env.Journal.Totals()
-			if got := tot.InputTokens + tot.OutputTokens; got != tc.want || tot.Estimated {
-				t.Fatalf("debited %d (estimated %v); want %d, not estimated", got, tot.Estimated, tc.want)
+			estimated := tc.usage == nil
+			if estimated {
+				call := gen.Snapshot()[0]
+				tc.want = int64(len(call.SystemPrompt)+len(call.UserMessage)+3) / 4
+			}
+			if got := tot.InputTokens + tot.OutputTokens; got != tc.want || tot.Estimated != estimated {
+				t.Fatalf("debited %d (estimated %v); want %d, estimated %v", got, tot.Estimated, tc.want, estimated)
 			}
 			if rem := r.env.Meter.Remaining().Tokens; rem != 50000-int(tc.want) {
 				t.Fatalf("meter remaining = %d; want %d", rem, 50000-int(tc.want))

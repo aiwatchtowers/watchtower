@@ -1333,6 +1333,7 @@ func (d *Daemon) phaseChannelDigests(ctx context.Context) {
 	if d.digestPipe == nil {
 		return
 	}
+	d.digestPipe.DeferredSchedule = true
 	d.trackedPipelineRun("digests", func() pipelineRunStats {
 		n, usage, err := d.digestPipe.RunChannelDigestsOnly(ctx)
 		switch {
@@ -1698,11 +1699,18 @@ func (d *Daemon) injectTrackContext() {
 // (maxDailyAIAttempts) — RunRollups returns nil for every benign outcome
 // (feature off, lock held by another process, fewer than 2 channel digests,
 // nothing new since the last rollup) and non-nil only for a real failure, so
-// err != nil is exactly the real-attempt predicate; a DB read error also
-// consumes budget, matching day-plan/briefing. See rollupAttemptsExhausted's
+// ordinary errors consume budget, matching day-plan/briefing. Pure provider
+// deferral preserves the attempt marker, including its UTC calendar date. See rollupAttemptsExhausted's
 // doc comment for why the budget key is the UTC date, not local.
 func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 	if !d.config.Digest.Enabled || d.digestPipe == nil {
+		return
+	}
+	d.digestPipe.DeferredSchedule = true
+	if err := d.digestPipe.PreflightRollups(ctx); err != nil {
+		if !digest.ProviderDeferred(err) && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("rollup preflight error: %v", err)
+		}
 		return
 	}
 	date := rollupBudgetDate(now)
@@ -1710,7 +1718,9 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	if err := d.digestPipe.RunRollups(ctx); err != nil {
-		d.recordRollupAttempt(date)
+		if !digest.ProviderDeferred(err) {
+			d.recordRollupAttempt(date)
+		}
 		d.logger.Printf("rollup error: %v", err)
 	}
 }
@@ -1730,6 +1740,13 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 		return
 	}
 	if d.peoplePipe == nil {
+		return
+	}
+	d.peoplePipe.DeferredSchedule = true
+	if err := d.peoplePipe.Preflight(ctx); err != nil {
+		if !digest.ProviderDeferred(err) && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("people preflight error: %v", err)
+		}
 		return
 	}
 	now := time.Now()
@@ -1754,6 +1771,11 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if has, err := d.peoplePipe.HasData(); err != nil {
 		d.logger.Printf("people: data check failed, running anyway: %v", err)
 	} else if !has {
+		// Current source eligibility can remove all input from an old window.
+		// Drop that empty descriptor without claiming success for newer data.
+		if err := d.peoplePipe.AcknowledgeWindow(); err != nil {
+			d.logger.Printf("people: %v", err)
+		}
 		return
 	}
 
@@ -1763,7 +1785,7 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			d.logger.Printf("people cards error: %v", err)
 			// A shutdown mid-run is not a failed attempt: the next start
 			// resumes the users still without a card.
-			if !isBenignShutdownErr(ctx, err) {
+			if !isBenignShutdownErr(ctx, err) && !digest.ProviderDeferred(err) {
 				d.recordPeopleAttempt(date)
 			}
 		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
@@ -1774,8 +1796,19 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if n > 0 {
 				d.logger.Printf("generated %d people card(s)", n)
 			}
+			previous := d.lastPeople
 			d.lastPeople = now
-			d.saveLastPeople()
+			if !d.peoplePipe.RunStartedAt.IsZero() {
+				d.lastPeople = d.peoplePipe.RunStartedAt
+			}
+			if stampErr := d.saveLastPeople(); stampErr != nil {
+				d.lastPeople = previous
+				err = fmt.Errorf("saving people success stamp: %w", stampErr)
+			} else {
+				if ackErr := d.peoplePipe.AcknowledgeWindow(); ackErr != nil {
+					d.logger.Printf("people: %v", ackErr)
+				}
+			}
 		}
 		inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()
 		return pipelineRunStats{items: n, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
@@ -1959,11 +1992,12 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 		if err != nil {
 			d.logger.Printf("stream-digests error: %v", err)
 		}
-		// The throttle advances whenever the phase RAN, error or not — the
-		// lastIdeas precedent: unconsumed material simply waits for the next
-		// cycle rather than retrying immediately at repeated AI cost.
-		d.lastStreams = now
-		d.saveLastStreams()
+		// A pure provider wait is still due; account input receipts keep its
+		// original bounds. Ordinary/mixed errors retain the legacy throttle.
+		if !digest.ProviderDeferred(err) {
+			d.lastStreams = now
+			d.saveLastStreams()
+		}
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
 		return pipelineRunStats{inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
 	})
@@ -2345,11 +2379,13 @@ func (d *Daemon) loadLastPeople() {
 	d.logger.Printf("restored last people time: %s", d.lastPeople.Format(time.RFC3339))
 }
 
-func (d *Daemon) saveLastPeople() {
+func (d *Daemon) saveLastPeople() error {
 	data := strconv.FormatInt(d.lastPeople.Unix(), 10)
-	if err := os.WriteFile(d.lastPeoplePath(), []byte(data), 0o600); err != nil {
+	if err := fsutil.WriteFileAtomic(d.lastPeoplePath(), []byte(data), 0o600); err != nil {
 		d.logger.Printf("failed to save last people time: %v", err)
+		return err
 	}
+	return nil
 }
 
 func (d *Daemon) lastIdeasPath() string {

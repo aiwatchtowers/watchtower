@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/mcpoauth"
 	"watchtower/internal/netsec"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
 	"watchtower/internal/tools"
@@ -38,18 +39,45 @@ func validateModel(_ *config.Config) error {
 	return nil
 }
 
-// cliGenerator creates a bare Generator for one-off CLI commands.
+// legacyCLIGenerator creates a bare Generator for one-off CLI commands.
 // The provider comes from cfg.AI.Provider; the per-tier models resolve
 // through the provider registry (config overrides win, registry defaults
 // otherwise — see providers.ResolveModelsFor).
 //
 // A provider the organization's policy forbids yields a refusedProvider
 // (#608): every call fails with the policy error, no fallback.
-func cliGenerator(cfg *config.Config) digest.Generator {
+func legacyCLIGenerator(cfg *config.Config) digest.Generator {
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
 		return newRefusedProvider(err)
 	}
 	return buildGenerator(cfg)
+}
+
+// cliGenerator routes isolated one-off computations; Stop/ask guards use
+// legacyCLIGenerator explicitly, and tool-bearing clients remain unchanged.
+func cliGenerator(cfg *config.Config) digest.Generator {
+	legacy := legacyCLIGenerator(cfg)
+	return routedGenerator(cfg, legacy, nil, 0)
+}
+
+func routedGenerator(cfg *config.Config, legacy digest.Generator, pool *sessions.SessionPool, timeout time.Duration) digest.Generator {
+	snapshot := *cfg
+	snapshot.AI.Providers = maps.Clone(cfg.AI.Providers)
+	cfg = &snapshot
+	return providerrouting.WrapGenerator(cfg, legacy, func(provider string) digest.Generator {
+		leafConfig := *cfg
+		leafConfig.AI.Provider = provider
+		leaf := checkedGenerator(&leafConfig)
+		if s, ok := leaf.(interface{ SetIsolatedChild(...string) }); ok {
+			s.SetIsolatedChild()
+		}
+		if pool != nil {
+			pooled := digest.NewPooledGenerator(leaf, pool)
+			pooled.SetSessionLog(sessions.NewSessionLog(filepath.Join(cfg.WorkspaceDir(), "sessions.log")))
+			return pooled
+		}
+		return leaf
+	}, providerrouting.GeneratorOptions{Pinned: flagProvider != "" || aiFlagModel != "" || (cfg.AI.ConfiguredProvider != "" && cfg.AI.Provider != cfg.AI.ConfiguredProvider), Timeout: timeout})
 }
 
 // buildGenerator is the configured provider's generator, unchecked.
@@ -73,7 +101,8 @@ func buildGenerator(cfg *config.Config) digest.Generator {
 // the one AI path left unbounded. It is a var so the wiring test can pin that
 // the factory sources its generator here rather than building a bare one.
 var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
-	return digest.WithCallTimeout(checkedGenerator(cfg), digest.DaemonAICallTimeout)
+	legacy := digest.WithCallTimeout(checkedGenerator(cfg), digest.DaemonAICallTimeout)
+	return routedGenerator(cfg, legacy, nil, digest.DaemonAICallTimeout)
 }
 
 // cliPooledGenerator creates a PooledGenerator backed by a concurrency pool.
@@ -103,7 +132,7 @@ func cliPooledGenerator(cfg *config.Config) (digest.Generator, func()) {
 	gen.SetSessionLog(sessions.NewSessionLog(sessionLogPath))
 
 	cleanup := func() { pool.Close() }
-	return gen, cleanup
+	return routedGenerator(cfg, gen, pool, digest.DaemonAICallTimeout), cleanup
 }
 
 // newAIClient creates an ai.Provider for ask/chat commands, using the

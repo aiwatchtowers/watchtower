@@ -3,6 +3,7 @@ package ideas
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"watchtower/internal/db"
@@ -65,6 +66,14 @@ func (p *Pipeline) backfillMailbox(ctx context.Context, mb mailbox, from, to tim
 	if saved > 0 && saved < floor {
 		floor = saved
 	}
+	start, err := p.backfillExtractionStart(mb.source, mb.id, from, to, fmt.Sprint(floor))
+	if err != nil {
+		return from, false, err
+	}
+	floor, err = strconv.ParseFloat(start, 64)
+	if err != nil {
+		return from, false, err
+	}
 	complete, err = p.drainAccount(
 		func() (string, error) { return fmt.Sprint(floor), nil },
 		func() error {
@@ -115,6 +124,10 @@ func (p *Pipeline) BackfillJira(ctx context.Context, accountID int64, from, to t
 		if fromTS, _ := db.ParseJiraTime(floor); savedTS < fromTS {
 			floor = saved
 		}
+	}
+	floor, err = p.backfillExtractionStart("jira", accountID, from, to, floor)
+	if err != nil {
+		return from, false, err
 	}
 	complete, err = p.drainAccount(
 		func() (string, error) { return floor, nil },
