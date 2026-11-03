@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,8 +41,17 @@ func newTeamGuardEnv(t *testing.T, rowTeamID, rowTeamName string) teamGuardEnv {
 
 func (e teamGuardEnv) connect(t *testing.T) (slackIdentity, error) {
 	t.Helper()
-	return connectSlackAccount(context.Background(), e.cfg, e.db, e.id,
-		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "chat:write"}, false, &bytes.Buffer{})
+	identity, _, err := e.connectWarnings(t)
+	return identity, err
+}
+
+// connectWarnings is connect returning what it printed as warnings.
+func (e teamGuardEnv) connectWarnings(t *testing.T) (slackIdentity, string, error) {
+	t.Helper()
+	var warn bytes.Buffer
+	identity, err := connectSlackAccount(context.Background(), e.cfg, e.db, e.id,
+		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "chat:write"}, false, &warn)
+	return identity, warn.String(), err
 }
 
 func (e teamGuardEnv) token(t *testing.T) *watchtowerslack.Token {
@@ -68,7 +78,9 @@ func TestConnectSlackAccount_RefusesAnotherTeam(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Dev Sandbox")
 	assert.Contains(t, err.Error(), "Acme")
-	assert.Contains(t, err.Error(), "watchtower slack add")
+	assert.Equal(t, `sign in to "Acme", this account's Slack workspace (you chose "Dev Sandbox"); `+
+		"to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)", err.Error(),
+		"docs/guide/troubleshooting/account-needs-attention.md quotes this text")
 	assert.Less(t, len(err.Error()), 200, "the Desktop shows only stderr's first 200 characters under Re-login")
 
 	acct, err := env.db.GetSlackAccount(env.id)
@@ -126,8 +138,9 @@ func TestConnectSlackAccount_RepairsMovedAccountAndRewindsWatermark(t *testing.T
 	env.addMessage(t, newest)
 	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
 
-	_, err := env.connect(t)
+	_, warn, err := env.connectWarnings(t)
 	require.NoError(t, err)
+	assert.NotContains(t, warn, "slack backfill", "the rewind covers the missed days")
 	acct, err := env.db.GetSlackAccount(env.id)
 	require.NoError(t, err)
 	assert.Equal(t, "T_HOME", acct.TeamID)
@@ -144,8 +157,10 @@ func TestConnectSlackAccount_RepairKeepsAnOlderWatermark(t *testing.T) {
 	env.addMessage(t, time.Date(2026, 3, 5, 12, 0, 0, 0, time.Local))
 	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
 
-	_, err := env.connect(t)
+	_, warn, err := env.connectWarnings(t)
 	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(warn, "watchtower slack backfill --account 1"),
+		"the watermark did not move: one warning points at the backfill")
 	acct, err := env.db.GetSlackAccount(env.id)
 	require.NoError(t, err)
 	assert.Equal(t, "T_HOME", acct.TeamID)
@@ -232,16 +247,18 @@ func TestConnectSlackAccount_RepairWithoutMessagesOrWatermarkLeavesItAlone(t *te
 	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
 	require.NoError(t, env.db.SetSlackAccountSearchWatermark(env.id, "2026-03-01"))
 	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
-	_, err := env.connect(t)
+	_, warn, err := env.connectWarnings(t)
 	require.NoError(t, err)
+	assert.Contains(t, warn, "watchtower slack backfill --account 1")
 	acct, err := env.db.GetSlackAccount(env.id)
 	require.NoError(t, err)
 	assert.Equal(t, "2026-03-01", acct.SearchLastDate, "no stored message: nothing to rewind to")
 
 	env2 := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
 	env2.addMessage(t, time.Date(2026, 2, 1, 12, 0, 0, 0, time.Local))
-	_, err = env2.connect(t)
+	_, warn, err = env2.connectWarnings(t)
 	require.NoError(t, err)
+	assert.Empty(t, warn, "a first sync fetches everything: no warning")
 	acct, err = env2.db.GetSlackAccount(env2.id)
 	require.NoError(t, err)
 	assert.Empty(t, acct.SearchLastDate, "no watermark stays a first run")

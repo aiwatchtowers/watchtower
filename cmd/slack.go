@@ -157,8 +157,16 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	// First of the writes, so a failure leaves the row moved and the next
 	// sign-in tries again; once the row is home, nothing would.
 	if moved {
-		if err := rewindMovedSlackAccount(database, id); err != nil {
+		rewound, err := rewindMovedSlackAccount(database, id)
+		if err != nil {
 			return slackIdentity{}, fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
+		}
+		if !rewound {
+			// No stored message older than the watermark to rewind to (or the
+			// other team's messages were stored under this account): the days
+			// the other team's searches passed over stay missing.
+			fmt.Fprintf(warnOut, "warning: slack account %d is back on its workspace, but the next sync may not fetch "+
+				"the days it missed; fetch them with `watchtower slack backfill --account %d --from YYYY-MM-DD --to YYYY-MM-DD`\n", id, id)
 		}
 	}
 
@@ -230,7 +238,7 @@ func slackOtherTeamError(identity slackIdentity, home db.SlackHomeTeam) error {
 		got = identity.TeamID
 	}
 	return fmt.Errorf("sign in to %q, this account's Slack workspace (you chose %q); "+
-		"connect that one with Add Slack Workspace (`watchtower slack add`)", home.DisplayName(), got)
+		"to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)", home.DisplayName(), got)
 }
 
 // refuseDuplicateSlackTeam refuses a new account for a team another live
@@ -263,20 +271,24 @@ func refuseDuplicateSlackTeam(database *db.DB, id int64, identity slackIdentity)
 // search sync fetches the days the wrong team's empty searches marked as done.
 // The search window clamps a gap over 30 days and records it on the account.
 // An account with no stored message or no watermark is left as it is.
-func rewindMovedSlackAccount(database *db.DB, id int64) error {
+// rewound reports that the next sync searches the missed days: the watermark
+// moved back, or there is none (a first sync). It is false when nothing older
+// than the watermark is stored to rewind to — no message at all, or the other
+// team's messages stored under the account after its move.
+func rewindMovedSlackAccount(database *db.DB, id int64) (rewound bool, err error) {
+	current, err := database.GetSlackAccountSearchWatermark(id)
+	if err != nil || current == "" {
+		return err == nil, err
+	}
 	newest, ok, err := database.LatestSlackMessageTime(id)
 	if err != nil || !ok {
-		return err
-	}
-	current, err := database.GetSlackAccountSearchWatermark(id)
-	if err != nil {
-		return err
+		return false, err
 	}
 	day := newest.Format("2006-01-02")
-	if current == "" || day >= current {
-		return nil
+	if day >= current {
+		return false, nil
 	}
-	return database.SetSlackAccountSearchWatermark(id, day)
+	return true, database.SetSlackAccountSearchWatermark(id, day)
 }
 
 // rollbackSlackAccount soft-removes a row a command just created after its
