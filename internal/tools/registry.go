@@ -170,9 +170,10 @@ type Tool struct {
 
 	// ValidateBinding runs the argument checks that depend on where the call
 	// comes from (create_target's parent_id, accepted on the inbox surface
-	// only), in Propose after Validate; a *ValidationError writes no row.
-	// Validate sees no binding, so this is the one place such a rule lives.
-	// Optional.
+	// only), in Propose before Validate, so a refusal by surface comes before
+	// any database lookup the args would cause; a *ValidationError writes no
+	// row. Validate sees no binding, so this is the one place such a rule
+	// lives. Optional.
 	ValidateBinding func(b Binding, raw json.RawMessage) error
 
 	// Scope runs the checks that need the binding — "does this row belong to
@@ -677,14 +678,14 @@ func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMess
 	if err := directApplyGate(t, b); err != nil {
 		return nil, b, err
 	}
-	args, err = r.prepareProposalArgs(ctx, t, args)
-	if err != nil {
-		return nil, b, err
-	}
 	if t.ValidateBinding != nil {
 		if err := t.ValidateBinding(b, args); err != nil {
 			return nil, b, err
 		}
+	}
+	args, err = r.prepareProposalArgs(ctx, t, args)
+	if err != nil {
+		return nil, b, err
 	}
 	if reasonOf(args) == "" {
 		return nil, b, &ValidationError{Msg: `"reason" is required: say why you propose this`}

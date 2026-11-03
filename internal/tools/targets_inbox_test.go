@@ -55,11 +55,16 @@ func TestCreateTarget_ParentIDOnlyOnInbox(t *testing.T) {
 	reg := inboxReg(t, d)
 	parent := seedParent(t, d, "todo")
 
+	closed := seedParent(t, d, "done")
 	for _, surface := range []string{"main", "reaction", AutomationSurface} {
-		_, err := reg.Propose(context.Background(), "create_target", childArgs(parent), Binding{Surface: surface})
-		var verr *ValidationError
-		require.ErrorAs(t, err, &verr, surface)
-		assert.Equal(t, "parent_id is only for an Inbox card's button", verr.Msg, surface)
+		// The surface is refused before any lookup of the parent: a missing
+		// or closed one reads the same, so nothing leaks about it.
+		for _, p := range []int64{parent, 9999, closed} {
+			_, err := reg.Propose(context.Background(), "create_target", childArgs(p), Binding{Surface: surface})
+			var verr *ValidationError
+			require.ErrorAs(t, err, &verr, surface)
+			assert.Equal(t, "parent_id is only for an Inbox card's button", verr.Msg, "%s parent %d", surface, p)
+		}
 	}
 	assert.Zero(t, tableRows(t, d, "agent_actions"))
 
@@ -76,7 +81,7 @@ func TestCreateTarget_ParentIDOnlyOnInbox(t *testing.T) {
 	assert.Equal(t, InboxSurface, row.Surface)
 	assert.Equal(t, db.InboxButtonContextType, row.ContextType)
 	assert.Equal(t, "7:0:abc", row.ContextID)
-	assert.Equal(t, 1, tableRows(t, d, "targets"), "nothing created before Approve")
+	assert.Equal(t, 2, tableRows(t, d, "targets"), "nothing created before Approve")
 
 	ok, err := reg.Approve(context.Background(), rc.ActionID, nil)
 	require.NoError(t, err)
@@ -287,4 +292,35 @@ func TestAgent05_InboxButtonOneOpenProposal(t *testing.T) {
 	require.True(t, ok)
 	_, err = reg.Propose(context.Background(), "create_target", args, buttonBinding("7:0:abc"))
 	require.NoError(t, err, "a rejected proposal frees the button")
+}
+
+// A reclaim after an apply that crashed past its insert returns that task
+// even when its parent was deleted since (the child's parent_id went NULL):
+// the existing task is looked up before any parent check.
+func TestCreateTarget_ReclaimAfterParentGoneReturnsTask(t *testing.T) {
+	d := openDB(t)
+	reg := inboxReg(t, d)
+	parent := seedParent(t, d, "todo")
+	rc, err := reg.Propose(context.Background(), "create_target", childArgs(parent), buttonBinding("7:0:abc"))
+	require.NoError(t, err)
+	ok, err := reg.Approve(context.Background(), rc.ActionID, nil)
+	require.NoError(t, err)
+	require.True(t, ok)
+	applied, err := reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	require.Equal(t, "applied", applied.Status)
+
+	// The process "died" after the insert; the parent is deleted meanwhile;
+	// the owner's --force reclaim marks it failed and applies again.
+	_, err = d.Exec(`UPDATE agent_actions SET status = 'executing' WHERE id = ?`, rc.ActionID)
+	require.NoError(t, err)
+	require.NoError(t, d.DeleteTarget(int(parent)))
+	ok, err = d.TransitionAgentAction(rc.ActionID, []string{"executing"}, "failed", "", "reclaimed after an interrupted apply")
+	require.NoError(t, err)
+	require.True(t, ok)
+	again, err := reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", again.Status, again.Error)
+	assert.JSONEq(t, applied.ResultJSON, again.ResultJSON, "the same task")
+	assert.Equal(t, 1, tableRows(t, d, "targets"))
 }

@@ -34,25 +34,27 @@ const parentOnlyOnInboxMsg = "parent_id is only for an Inbox card's button"
 
 // openPersonalParent returns parent task id when it exists, is a personal
 // task (no workbench board) and is not done or dismissed — checked at
-// propose and again at apply, since the parent may close in between.
+// propose and again at apply, since the parent may close in between; the
+// insert re-checks it inside its write transaction.
 func openPersonalParent(d *db.DB, id int64) (*db.Target, error) {
 	if id < 0 {
 		return nil, &ValidationError{Msg: "parent_id must be a target id"}
 	}
-	p, err := d.GetTargetByID(int(id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, &ValidationError{Msg: fmt.Sprintf("parent_id: task #%d does not exist", id)}
-	}
+	p, err := d.OpenPersonalParent(id)
 	if err != nil {
-		return nil, fmt.Errorf("reading parent task #%d: %w", id, err)
-	}
-	switch {
-	case p.WorkbenchID.Valid:
-		return nil, &ValidationError{Msg: fmt.Sprintf("parent_id: task #%d is on a workbench board", id)}
-	case p.Status == "done" || p.Status == "dismissed":
-		return nil, &ValidationError{Msg: fmt.Sprintf("parent_id: task #%d is closed", id)}
+		return nil, parentError(err)
 	}
 	return p, nil
+}
+
+// parentError is a *db.ParentUnavailableError as the owner and the model read
+// it ("parent_id: task #N is closed"); any other error unchanged.
+func parentError(err error) error {
+	var pu *db.ParentUnavailableError
+	if errors.As(err, &pu) {
+		return &ValidationError{Msg: "parent_id: " + pu.Error(), Err: err}
+	}
+	return err
 }
 
 var dueDateRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$`)
@@ -145,10 +147,13 @@ func NewCreateTarget() *Tool {
 			}
 			return nil
 		},
+		// Runs before Validate, so off the inbox a parent_id is refused
+		// before any lookup of the parent (no existence leak). Args that
+		// do not decode are left to Validate's message.
 		ValidateBinding: func(b Binding, raw json.RawMessage) error {
 			var a createTargetArgs
-			if err := json.Unmarshal(raw, &a); err != nil {
-				return &ValidationError{Msg: "invalid arguments: " + err.Error()}
+			if json.Unmarshal(raw, &a) != nil {
+				return nil
 			}
 			if a.ParentID != 0 && b.Surface != InboxSurface {
 				return &ValidationError{Msg: parentOnlyOnInboxMsg}
@@ -185,6 +190,18 @@ func NewCreateTarget() *Tool {
 				// spaces, so each id says which one it belongs to.
 				SourceID: "action:" + strconv.FormatInt(call.ActionID, 10),
 			}
+			if call.ActionID > 0 {
+				// A reclaim after an apply that crashed past its insert
+				// returns that task first — before the parent checks, which
+				// would fail it if the parent went away since.
+				existing, err := d.TargetForAction(call.ActionID)
+				if err != nil {
+					return nil, err
+				}
+				if existing != 0 {
+					return map[string]any{"target_id": existing}, nil
+				}
+			}
 			if a.ParentID != 0 {
 				// Only an inbox row carries one (ValidateBinding); the parent
 				// may have closed since the propose.
@@ -197,6 +214,11 @@ func NewCreateTarget() *Tool {
 			}
 			id, err := createTargetOnce(d, t, call.ActionID)
 			if err != nil {
+				var pu *db.ParentUnavailableError
+				if errors.As(err, &pu) {
+					// The parent closed between the check above and the insert.
+					return nil, parentError(err)
+				}
 				return nil, fmt.Errorf("creating target: %w", err)
 			}
 			return map[string]any{"target_id": id}, nil

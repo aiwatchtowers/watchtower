@@ -192,12 +192,75 @@ func (db *DB) openProposalAfterViolation(id int64, err error) int64 {
 	return open
 }
 
+// ParentUnavailableError refuses a parent task a new child cannot go under:
+// it does not exist, is closed (done or dismissed) or lives on a workbench
+// board. Reason is the words after "task #N".
+type ParentUnavailableError struct {
+	ID     int64
+	Reason string
+}
+
+func (e *ParentUnavailableError) Error() string {
+	return fmt.Sprintf("task #%d %s", e.ID, e.Reason)
+}
+
+// checkOpenPersonalParent refuses parent id unless it exists, is a personal
+// task (project_id IS NULL) and is neither done nor dismissed.
+func checkOpenPersonalParent(q targetsQuerier, id int64) error {
+	var project sql.NullInt64
+	var status string
+	err := q.QueryRow(`SELECT project_id, status FROM targets WHERE id = ?`, id).Scan(&project, &status)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return &ParentUnavailableError{ID: id, Reason: "does not exist"}
+	case err != nil:
+		return fmt.Errorf("reading parent task #%d: %w", id, err)
+	case project.Valid:
+		return &ParentUnavailableError{ID: id, Reason: "is on a workbench board"}
+	case status == "done" || status == "dismissed":
+		return &ParentUnavailableError{ID: id, Reason: "is closed"}
+	}
+	return nil
+}
+
+// OpenPersonalParent returns parent task id, or *ParentUnavailableError
+// when a new child cannot go under it (checkOpenPersonalParent).
+func (db *DB) OpenPersonalParent(id int64) (*Target, error) {
+	if err := checkOpenPersonalParent(db, id); err != nil {
+		return nil, err
+	}
+	return db.GetTargetByID(int(id))
+}
+
+// TargetForAction is the id of the task create_target made for
+// agent_actions row actionID (source 'chat' / 'action:<actionID>'); 0 when
+// there is none.
+func (db *DB) TargetForAction(actionID int64) (int64, error) {
+	return targetForAction(db, actionID)
+}
+
+func targetForAction(q rowQuerier, actionID int64) (int64, error) {
+	var id int64
+	err := q.QueryRow(`SELECT id FROM targets WHERE source_type = 'chat' AND source_id = ?`,
+		"action:"+strconv.FormatInt(actionID, 10)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading the task of action #%d: %w", actionID, err)
+	}
+	return id, nil
+}
+
 // CreateTargetForAction creates create_target's task for agent_actions row
-// actionID (source 'chat' / 'action:<actionID>') at most once:
-// idx_targets_action_source makes the insert a no-op when the action's task
-// exists, and the existing id is returned with created=false. Insert and
-// read run in one write transaction, so the read sees the row that won.
-// actionID must be > 0 ('action:0' is outside the index).
+// actionID (source 'chat' / 'action:<actionID>') at most once. In one write
+// transaction it first returns an existing task of the action (created =
+// false) — before any parent check, so a reclaim after a crashed apply
+// returns the task even when its parent has gone since —, then checks
+// t.ParentID (checkOpenPersonalParent, *ParentUnavailableError), then
+// inserts; idx_targets_action_source keeps the insert a no-op should
+// another writer have won. actionID must be > 0 ('action:0' is outside the
+// index).
 func (db *DB) CreateTargetForAction(t Target, actionID int64) (int64, bool, error) {
 	if actionID <= 0 {
 		return 0, false, fmt.Errorf("create target for action: action id %d", actionID)
@@ -210,6 +273,21 @@ func (db *DB) CreateTargetForAction(t Target, actionID int64) (int64, bool, erro
 		return 0, false, fmt.Errorf("create target for action #%d: %w", actionID, err)
 	}
 	defer tx.Rollback()
+	existing, err := targetForAction(tx, actionID)
+	if err != nil {
+		return 0, false, err
+	}
+	if existing != 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, false, fmt.Errorf("committing the task of action #%d: %w", actionID, err)
+		}
+		return existing, false, nil
+	}
+	if t.ParentID.Valid {
+		if err := checkOpenPersonalParent(tx, t.ParentID.Int64); err != nil {
+			return 0, false, err
+		}
+	}
 	if err := checkParentBoard(tx, t.ParentID, t.WorkbenchID); err != nil {
 		return 0, false, err
 	}

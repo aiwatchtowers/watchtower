@@ -272,3 +272,33 @@ func TestAgent05_OpenContextIndexBackstop(t *testing.T) {
 	assert.False(t, isOpenContextViolation(errors.New("UNIQUE constraint failed: agent_actions.context_type, agent_actions.context_id")),
 		"a bare string is not the engine's constraint error")
 }
+
+// The parent is re-checked inside the insert's write transaction: a parent
+// closed after the tool's own check gets no child.
+func TestCreateTargetForAction_ParentClosedRefusedInTx(t *testing.T) {
+	d := openTestDB(t)
+	base := Target{Text: "p", Level: "week", Priority: "medium", Ownership: "mine", SourceType: "manual"}
+	cases := map[string]func() int64{
+		"is closed": func() int64 {
+			b := base
+			b.Status = "done"
+			id, err := d.CreateTarget(b)
+			require.NoError(t, err)
+			return id
+		},
+		"does not exist": func() int64 { return 9999 },
+	}
+	action := int64(10)
+	for want, seed := range cases {
+		parent := seed()
+		action++
+		_, _, err := d.CreateTargetForAction(Target{Text: "child", Status: "todo", Priority: "medium", Ownership: "mine",
+			ParentID: sql.NullInt64{Int64: parent, Valid: true}}, action)
+		var pu *ParentUnavailableError
+		require.ErrorAs(t, err, &pu, want)
+		assert.Equal(t, want, pu.Reason)
+		id, err := d.TargetForAction(action)
+		require.NoError(t, err)
+		assert.Zero(t, id, "no child")
+	}
+}
