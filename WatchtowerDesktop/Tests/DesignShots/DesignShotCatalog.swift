@@ -408,6 +408,9 @@ enum DesignShotCatalog {
         } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
             // The pairing sheet over `hub pair --json --stream`, mockup §11–§13.
             DesignShot(name: shot.rawValue, size: NSSize(width: 380, height: 400)) { MobileSettingsShotFixtures.pairing(shot) }
+        } + MobileDiagnosticsShotFixtures.Frame.allCases.map { frame in
+            // Settings → Mobile → Diagnostics (go hub phase 4 Task 9), mockup §22–§23.
+            DesignShot(name: frame.name, size: frame.size) { MobileDiagnosticsShotFixtures.screen(frame) }
         } + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
