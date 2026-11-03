@@ -550,20 +550,10 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	if err != nil {
 		return false, err
 	}
-	var items []Item
 	p.kindRead, p.kindTransport = p.clock(), ""
-	for _, s := range srcs {
-		got, err := s.Items(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return false, ctx.Err()
-			}
-			log.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, errClass(err))
-			rep.Failed = append(rep.Failed, k)
-			rep.Unfinished = append(rep.Unfinished, k)
-			return false, nil
-		}
-		items = append(items, got...)
+	items, ok, err := p.readItems(ctx, k, srcs, rep)
+	if !ok || err != nil {
+		return false, err
 	}
 	if k == KindDeviceGrant {
 		// A keybox payload carries epoch keys: wiped once sealed.
@@ -579,19 +569,54 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		return false, err
 	}
 
-	seen := map[string]bool{}
-	var (
-		saves   []transport.SaveItem
-		pending []pushed
-	)
-	// A new alert is pushed when its save goes to the relay; the alerts a
-	// switch to CloudKit asked for are signalled there (Resignal).
-	pushAlerts := k == KindAskAlert && p.c.OnAlertSaved != nil &&
-		p.c.Transport != nil && p.c.Transport.Kind() == transport.KindRelay
 	var resignal map[string]bool
 	if k == KindAskAlert {
 		resignal = p.resignalWanted()
 	}
+	saves, pending, seen := p.diffItems(k, items, known, resignal, rep)
+	if len(saves) > 0 {
+		if wrote, err = p.saveChanged(ctx, k, epoch, saves, pending, rep); err != nil {
+			return wrote, err
+		}
+	}
+	if k == KindAskAlert {
+		// An alert asked for that the slice no longer has resolved before
+		// it was signalled: nothing is left to write for it.
+		p.resignalGone(resignal, items)
+	}
+	deleted, err := p.deleteGone(ctx, k, known, seen, rep)
+	return wrote || deleted, err
+}
+
+// readItems reads every source of k. ok is false, with no error, when a
+// source failed (the kind is skipped this cycle and retried); an error is
+// the cycle's context ending.
+func (p *Publisher) readItems(ctx context.Context, k Kind, srcs []Source, rep *CycleReport) (items []Item, ok bool, err error) {
+	for _, s := range srcs {
+		got, err := s.Items(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, false, ctx.Err()
+			}
+			log.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, errClass(err))
+			rep.Failed = append(rep.Failed, k)
+			rep.Unfinished = append(rep.Unfinished, k)
+			return nil, false, nil
+		}
+		items = append(items, got...)
+	}
+	return items, true, nil
+}
+
+// diffItems seals the items whose payload changed since their last save (or
+// that Resignal asked for), with a new alert's signal on CloudKit and its
+// fields for OnAlertSaved on the relay. seen is every valid record name.
+func (p *Publisher) diffItems(k Kind, items []Item, known map[string]state.SliceRecord, resignal map[string]bool, rep *CycleReport) (saves []transport.SaveItem, pending []pushed, seen map[string]bool) {
+	seen = map[string]bool{}
+	// A new alert is pushed when its save goes to the relay; the alerts a
+	// switch to CloudKit asked for are signalled there (Resignal).
+	pushAlerts := k == KindAskAlert && p.c.OnAlertSaved != nil &&
+		p.c.Transport != nil && p.c.Transport.Kind() == transport.KindRelay
 	for _, it := range items {
 		name, ok := recordName(k, it.ID)
 		if !ok {
@@ -630,69 +655,74 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		saves = append(saves, transport.SaveItem{Record: rec})
 		pending = append(pending, pu)
 	}
+	return saves, pending, seen
+}
 
-	if len(saves) > 0 {
-		// One Save per kind, not chunked: after a rotation or a new phone a
-		// big kind goes as one request of up to N sealed records. The hosted
-		// relay client (Task 8) or Plan 1b caps or splits the batch.
-		p.noteWriteTransport()
-		outs, err := p.c.Transport.Save(ctx, saves)
+// saveChanged saves k's changed records in one Save, then their signals,
+// and records the hashes of those saved in one transaction (refused while
+// the epoch moved since the cycle read it); wrote is true when any was saved.
+func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves []transport.SaveItem, pending []pushed, rep *CycleReport) (wrote bool, err error) {
+	// One Save per kind, not chunked: after a rotation or a new phone a
+	// big kind goes as one request of up to N sealed records. The hosted
+	// relay client (Task 8) or Plan 1b caps or splits the batch.
+	p.noteWriteTransport()
+	outs, err := p.c.Transport.Save(ctx, saves)
+	if err != nil {
+		return false, fmt.Errorf("slices: saving %s: %w", k, err)
+	}
+	if len(outs) != len(saves) {
+		return false, fmt.Errorf("slices: saving %s: %d outcomes for %d records", k, len(outs), len(saves))
+	}
+	var done []pushed
+	for i, o := range outs {
+		if o.Saved {
+			done = append(done, pending[i])
+			continue
+		}
+		rep.Skipped = append(rep.Skipped, pending[i].name)
+		why := "a failed precondition"
+		if o.Refused != nil {
+			why = errClass(o.Refused)
+		}
+		p.warnOnce(pending[i].name, pending[i].hash, "refused by the transport ("+why+")")
+	}
+	if done, err = p.saveSignals(ctx, done, rep); err != nil {
+		return true, err
+	}
+	if len(done) == 0 {
+		return false, nil
+	}
+	at := p.clock()
+	err = p.c.Store.WithTx(ctx, func(tx *sql.Tx) error {
+		now, err := latestEpoch(state.EpochsTx(tx))
 		if err != nil {
-			return false, fmt.Errorf("slices: saving %s: %w", k, err)
+			return err
 		}
-		if len(outs) != len(saves) {
-			return false, fmt.Errorf("slices: saving %s: %d outcomes for %d records", k, len(outs), len(saves))
+		if now != epoch {
+			return errEpochMoved
 		}
-		var done []pushed
-		for i, o := range outs {
-			if o.Saved {
-				done = append(done, pending[i])
-				continue
+		for _, d := range done {
+			if err := state.SetSliceState(tx, d.name, d.wire, d.hash, at); err != nil {
+				return err
 			}
-			rep.Skipped = append(rep.Skipped, pending[i].name)
-			why := "a failed precondition"
-			if o.Refused != nil {
-				why = errClass(o.Refused)
-			}
-			p.warnOnce(pending[i].name, pending[i].hash, "refused by the transport ("+why+")")
 		}
-		if done, err = p.saveSignals(ctx, done, rep); err != nil {
-			return true, err
-		}
-		if len(done) > 0 {
-			wrote = true
-			at := p.clock()
-			err := p.c.Store.WithTx(ctx, func(tx *sql.Tx) error {
-				now, err := latestEpoch(state.EpochsTx(tx))
-				if err != nil {
-					return err
-				}
-				if now != epoch {
-					return errEpochMoved
-				}
-				for _, d := range done {
-					if err := state.SetSliceState(tx, d.name, d.wire, d.hash, at); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				return wrote, err
-			}
-			rep.Saved += len(done)
-			for _, d := range done {
-				delete(p.warned, d.name)
-			}
-			p.alertsSaved(done, at)
-		}
+		return nil
+	})
+	if err != nil {
+		return true, err
 	}
-	if k == KindAskAlert {
-		// An alert asked for that the slice no longer has resolved before
-		// it was signalled: nothing is left to write for it.
-		p.resignalGone(resignal, items)
+	rep.Saved += len(done)
+	for _, d := range done {
+		delete(p.warned, d.name)
 	}
+	p.alertsSaved(done, at)
+	return true, nil
+}
 
+// deleteGone deletes from the zone k's records its sources no longer list
+// (an alert with its signal) and forgets those deleted; deleted is true
+// when any was.
+func (p *Publisher) deleteGone(ctx context.Context, k Kind, known map[string]state.SliceRecord, seen map[string]bool, rep *CycleReport) (deleted bool, err error) {
 	var gone []string
 	for name := range known {
 		if !seen[name] {
@@ -700,7 +730,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		}
 	}
 	if len(gone) == 0 {
-		return wrote, nil
+		return false, nil
 	}
 	sort.Strings(gone)
 	dels := make([]transport.DeleteItem, 0, len(gone))
@@ -708,7 +738,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		w := known[name].WireName
 		if w == "" {
 			if w, err = p.c.Sealer.WireName(secure.ZoneData, name); err != nil {
-				return wrote, fmt.Errorf("slices: wire name of a gone %s record: %w", k, err)
+				return false, fmt.Errorf("slices: wire name of a gone %s record: %w", k, err)
 			}
 		}
 		dels = append(dels, transport.DeleteItem{Name: w})
@@ -717,36 +747,35 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	p.noteWriteTransport()
 	outs, err := p.c.Transport.Delete(ctx, p.c.DataZone, dels)
 	if err != nil {
-		return wrote, fmt.Errorf("slices: deleting %s: %w", k, err)
+		return false, fmt.Errorf("slices: deleting %s: %w", k, err)
 	}
 	if len(outs) != len(dels) {
-		return wrote, fmt.Errorf("slices: deleting %s: %d outcomes for %d records", k, len(outs), len(dels))
+		return false, fmt.Errorf("slices: deleting %s: %d outcomes for %d records", k, len(outs), len(dels))
 	}
 	logSignalDeletes(outs[len(gone):])
-	var deleted []string
+	var done []string
 	for i, o := range outs[:len(gone)] {
 		if o.Saved {
-			deleted = append(deleted, gone[i])
+			done = append(done, gone[i])
 		} else {
 			log.Printf("hub slices: delete of %s not done (%s); retried next cycle", gone[i], errClass(o.Refused))
 		}
 	}
-	if len(deleted) == 0 {
-		return wrote, nil
+	if len(done) == 0 {
+		return false, nil
 	}
-	wrote = true
 	if err := p.c.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		for _, name := range deleted {
+		for _, name := range done {
 			if err := state.DeleteSliceState(tx, name); err != nil {
 				return err
 			}
 		}
 		return nil
 	}); err != nil {
-		return wrote, err
+		return true, err
 	}
-	rep.Deleted += len(deleted)
-	return wrote, nil
+	rep.Deleted += len(done)
+	return true, nil
 }
 
 // noteWriteTransport takes the transport of the kind's first write, before
