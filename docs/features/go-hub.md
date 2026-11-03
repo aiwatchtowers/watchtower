@@ -188,7 +188,7 @@ Recorded for the owner; each was a review ruling during phase 1.
    (sim rule 16).
 3. **The Desktop→hub inputs arrive in phase 3.** Since plan 3 Task 5 the control socket takes:
    - `desktop_view`: `hidden` (session ids in the Desktop's PROJ-17 Undo batch: not published, not alerted, no
-     window slot) and `display_over` (`[{id, run, reported_at}]`, the background counts the Desktop shows over,
+     window slot, never reopened by an `open_existing` start) and `display_over` (`[{id, run, reported_at}]`, the background counts the Desktop shows over,
      #411; a count reads Stopped only while the row still holds that run start — null = not live — and that
      `agent_background_at`, as the Swift `ShownOverCount`), each at most 10 000 (`too_many_ids` beyond). In memory
      only; ignored while the Desktop heartbeat is stale (> 90 s), dropped when it was sent before that. The
