@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/tools"
@@ -33,6 +34,8 @@ type sdkCase struct {
 	backends  *automations.Backends // nil = Generator, Registry and a clock
 	modules   []automations.Module  // nil = DefaultModules
 	meter     *automations.Meter    // nil = 50000 tokens, 5 minutes on a fixed clock
+	living    bool                  // the recipe says artifacts: living
+	builtin   bool                  // a built-in automation (origin builtin)
 }
 
 type sdkRun struct {
@@ -97,11 +100,19 @@ func runSDK(t *testing.T, script string, c sdkCase) sdkRun {
 	if c.meter == nil {
 		c.meter = automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock)
 	}
+	recipe := &automations.Recipe{Script: script, ScriptLine: 10, Artifacts: automations.ArtifactsFeed}
+	if c.living {
+		recipe.Artifacts = automations.ArtifactsLiving
+	}
+	auto := &db.Automation{ID: 3, Slug: "acme"}
+	if c.builtin {
+		auto.Origin, auto.BuiltinID = db.OriginBuiltin, "acme"
+	}
 	env := &automations.Env{
 		Ctx:        context.Background(),
 		Run:        &db.AutomationRun{ID: 42, AutomationID: 3},
-		Automation: &db.Automation{ID: 3, Slug: "acme"},
-		Recipe:     &automations.Recipe{Script: script, ScriptLine: 10},
+		Automation: auto,
+		Recipe:     recipe,
 		Manifest:   m,
 		DryRun:     c.dryRun,
 		Journal:    c.journal,
@@ -567,7 +578,8 @@ func TestOutput_BufferedRows(t *testing.T) {
 		sdkCase{outputs: []string{"inbox", "report"}}, 1)
 	got := r.env.Buffer.Outputs()
 	want := []db.AutomationOutput{
-		{AutomationID: 3, RunID: 42, Kind: "inbox", Title: "A", Body: "a", Priority: "high"},
+		{AutomationID: 3, RunID: 42, Kind: "inbox", Title: "A", Body: "a", Priority: "high",
+			ContentHash: blocks.ContentHash("A", "a", nil, "high", "", nil)},
 		{AutomationID: 3, RunID: 42, Kind: "report", Title: "R", Body: "r"},
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {

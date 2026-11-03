@@ -110,10 +110,19 @@ func clip(s string, maxBytes int) string {
 	return s[:n] + clipMark
 }
 
+// DefaultPriority is the priority an inbox output without one is stored
+// with (automation_outputs.priority).
+const DefaultPriority = "medium"
+
 // ContentHash is the hex SHA-256 of the canonical JSON of an inbox
 // output's {title, body, blocks, priority, link, actions}: blocks is the
-// stored document or null, actions [] when none.
+// stored document or null, actions [] when none. Like the document's other
+// defaults, an omitted priority (”) is written out as DefaultPriority, so
+// it and an explicit "medium" are one content.
 func ContentHash(title, body string, doc *Document, priority, link string, actions []db.InboxAction) string {
+	if priority == "" {
+		priority = DefaultPriority
+	}
 	var blocks json.RawMessage
 	if doc != nil {
 		b, err := doc.Canonical()

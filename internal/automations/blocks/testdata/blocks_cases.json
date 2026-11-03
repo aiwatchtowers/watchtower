@@ -215,7 +215,7 @@
       "plain_text": "",
       "actions": [],
       "action_hashes": [],
-      "content_hash": "4d08fca0f5f2a29ec10bcb0a1b7a1e0e10806aae2518cfdf568e7b83f6d65043"
+      "content_hash": "a47faeb391e508d3f7bdbbf27833bd6c6cc3d0fc6d987556eea7dbd5703f4a2e"
     },
     {
       "name": "defaults written",
@@ -258,7 +258,7 @@
       "plain_text": "Today\n\nNothing here\n\nA\n\nColleague B\n\n- One",
       "actions": [],
       "action_hashes": [],
-      "content_hash": "5f0cb7609f3de05ab5895936b02f4669078b7333110066d40c2ac73e70580139"
+      "content_hash": "7e64c048f8560ec165460fd31f852bac0474b59495961195daf69e58e45c4504"
     },
     {
       "name": "strings trimmed",
@@ -290,7 +290,7 @@
       "plain_text": "Padded\n\nbody\n\nt\n- row — sub",
       "actions": [],
       "action_hashes": [],
-      "content_hash": "48e66c611d3e0140705b18d03b60034673e47f7578c4e6f3a92cc13ae29a25d3"
+      "content_hash": "9a14c015ba3db96f9dfaf8ff5e91a932b96ad896faf377763fae32caf8b90681"
     },
     {
       "name": "built-in action and reminder refs",
@@ -323,7 +323,7 @@
       "plain_text": "- Send the reply\n- Call colleague A",
       "actions": [],
       "action_hashes": [],
-      "content_hash": "308583b4c1e40a02a5a78a466be95d1d8133ba2acf640adfc0737301330be58a"
+      "content_hash": "e1ab0cb2bf885c75de84ded42836df276de2dc2176d82a88d9dfc270b11b7d77"
     },
     {
       "name": "target without intent or parent",
@@ -363,7 +363,7 @@
         "9643c67a5edfa3c5",
         "24549c2aea30cf86"
       ],
-      "content_hash": "b161d275b0c50eda827e3ecfd62ef0151a2ec2cfd88921213795a36f92a007c9"
+      "content_hash": "ebf55636cc7283a248cb61704eecbdab4147f20bb112ae63241c6251771eb793"
     },
     {
       "name": "flattened order",
@@ -457,7 +457,7 @@
         "8da40750b8aa3c3d",
         "bc2d5c3e89809d0c"
       ],
-      "content_hash": "faf7fa81cf91626edbfe06be59522f04bd5cb7563c9b9ba8ee997c14e5cf7b37"
+      "content_hash": "5a476ab7610787eb0ae4266a96c03c35bf79f2c4613c157dcf74b5e96b4be133"
     },
     {
       "name": "html characters are not escaped",
@@ -491,7 +491,7 @@
       "plain_text": "a <b> & c > d\n\n<x>\n&",
       "actions": [],
       "action_hashes": [],
-      "content_hash": "df9108d4cf810314b1d46495f96050560d386d2067fde6370d849aad96e9e27e"
+      "content_hash": "33997692bd1018cb8e271b5984f8411db8491a535227570ff214bd174b33a6f9"
     },
     {
       "name": "non-ASCII text",
@@ -550,7 +550,7 @@
       "action_hashes": [
         "a37c5ef6cfadaea4"
       ],
-      "content_hash": "35d39e2f570abdcff9bbe02f28b438a5057f3d1e6a69f0b6de690c1aa89d5929"
+      "content_hash": "6366b594ffe2aef4dfb2d78248da26e3bd5e2baba980282452500072b90b1033"
     },
     {
       "name": "reply data bytes",
@@ -587,7 +587,7 @@
       "action_hashes": [
         "6fa8d616cda2eba4"
       ],
-      "content_hash": "d6c4088528c44fcffa54dca02803b2019f7adaecd3100089614ca68ab6e0c585"
+      "content_hash": "d8737cba056fd2995eb9da5d1ff91b62113e65ebc3efcd4967896e19c15e4163"
     }
   ],
   "invalid": [
