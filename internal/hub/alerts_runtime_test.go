@@ -240,3 +240,26 @@ func TestRuntimeAlertConfigCarriesTheHooks(t *testing.T) {
 	rp.waitLog("push of ask-1 to " + rp.device + ": expired (switched)")
 	rp.waitLog("push of ask-2 to " + rp.device + ": expired (switched)")
 }
+
+// TestRestartPushesAnAlertSavedAtOnce: after a restart the relay transport
+// knows no readers until a set_hub_readers; the runtime syncs them before
+// its first publish, so an alert that cycle saves at once reaches the phone
+// that is a reader, exactly once.
+func TestRestartPushesAnAlertSavedAtOnce(t *testing.T) {
+	pr := startPushRig(t)
+	if err := pr.stop(); err != nil {
+		t.Fatal(err)
+	}
+	pr.src.set(t, workAlert("ask-9")) // new to the zone: the first cycle saves it
+	r2 := &vouchRig{rig: newRig(t, pr.dir), srv: pr.srv, clock: pr.clock}
+	o := r2.options()
+	o.newTransport, o.RelayOrigin, o.Clock, o.linkEvery = nil, pr.srv.URL, pr.clock.Now, time.Hour
+	o.away = alwaysAway{}
+	o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{pr.src} }
+	r2.start(o)
+	eventually(t, 15*time.Second, "the push after the restart", func() bool { return len(pr.srv.Alerts()) == 1 })
+	time.Sleep(200 * time.Millisecond) // a second push would have gone by now
+	if sent := pr.sendAlerts(); len(sent) != 1 || sent[0].GetPhoneDeviceId() != pr.phone {
+		t.Fatalf("send_alert requests %v, want one to the reader", sent)
+	}
+}

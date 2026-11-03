@@ -830,6 +830,24 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 		}
 	}
 	vouched := h.relayVouched()
+	h.syncReaders(ctx, rt, vouched)
+	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
+		h.watchZones(ctx, zw)
+	}
+	if !vouched && h.acct != nil && h.phoneLinked() {
+		// A linked phone and no slot: the hub expects one. SLOT_ADDED is
+		// best effort, so this backstop polls (at most every unvouchedPoll).
+		if _, err := h.readAccount(ctx); err != nil {
+			log.Printf("hub: reading the account state failed (%s)", errClass(err))
+		}
+	}
+	h.pass(ctx)
+	h.sup.poke()
+}
+
+// syncReaders sets the relay's hub readers to the linked phones the account
+// state holds in a slot (link upkeep, and once before the first publish).
+func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vouched bool) {
 	if rs, ok := rt.(readersSetter); ok && vouched && h.acct != nil {
 		// set_hub_readers is closed to an unvouched hub; the account state
 		// it is computed from comes through the one door.
@@ -845,18 +863,6 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 			log.Printf("hub: readers not synced (%s)", errClass(err))
 		}
 	}
-	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
-		h.watchZones(ctx, zw)
-	}
-	if !vouched && h.acct != nil && h.phoneLinked() {
-		// A linked phone and no slot: the hub expects one. SLOT_ADDED is
-		// best effort, so this backstop polls (at most every unvouchedPoll).
-		if _, err := h.readAccount(ctx); err != nil {
-			log.Printf("hub: reading the account state failed (%s)", errClass(err))
-		}
-	}
-	h.pass(ctx)
-	h.sup.poke()
 }
 
 // soonWindow is the link check's short-retry window after a link change

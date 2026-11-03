@@ -60,16 +60,30 @@ func (h *hubRuntime) withAlerts(c *slices.Config) {
 	c.OnAlertSaved, c.Away = h.alertSaved, h.sup.o.awayInput()
 }
 
+// firstReadersWait bounds the readers sync before the first publish.
+const firstReadersWait = 10 * time.Second
+
 // startPusher settles the pushes a previous run left pending and starts the
 // senders; a failure is logged and leaves the hub without pushes this run
-// (Enqueue refuses while the pusher is not running).
+// (Enqueue refuses while the pusher is not running). On the relay it then
+// syncs the readers once, bounded, before the publisher starts: the push
+// targets are the readers the relay accepted, and an alert first saved
+// with none known yet would never be pushed (its first save is its only
+// OnAlertSaved). A failed sync is logged; the link upkeep retries it.
 func (h *hubRuntime) startPusher(ctx context.Context) {
 	if h.push == nil {
 		return
 	}
 	if err := h.push.Start(ctx); err != nil {
 		log.Printf("hub: alert pushes off this run (%s)", errClass(err))
+		return
 	}
+	if h.tr == nil || h.tr.Kind() != transport.KindRelay {
+		return
+	}
+	sctx, cancel := context.WithTimeout(ctx, firstReadersWait)
+	defer cancel()
+	h.syncReaders(sctx, h.relayT(), h.relayVouched())
 }
 
 // stopPusher settles what is queued or in flight and waits for the senders.
