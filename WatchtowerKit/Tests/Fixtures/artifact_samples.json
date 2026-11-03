@@ -59,7 +59,6 @@
       "document": {
         "v": 1,
         "blocks": [
-          {"type": "heading", "text": "Waiting for you · 3", "level": 1},
           {"type": "list", "title": "", "empty": "Nobody is waiting on you", "rows": [
             {"title": "Release checklist", "subtitle": "Colleague A in #acme-release — “Can you look at the checklist before Friday?”", "badge": {"text": "2 days", "tone": "danger"}, "tone": "danger", "link": "",
              "actions": [{"label": "Reply", "kind": "reply", "reply": "t-1"}], "ref": {"kind": "inbox_item", "id": 41}},
@@ -79,7 +78,6 @@
       "document": {
         "v": 1,
         "blocks": [
-          {"type": "heading", "text": "Waiting for you · 3", "level": 1},
           {"type": "text", "markdown": "Two people need a sign-off before Friday; one review is open."},
           {"type": "list", "title": "", "empty": "Nobody is waiting on you", "rows": [
             {"title": "Release checklist", "subtitle": "Colleague A in #acme-release", "badge": {"text": "2 days", "tone": "danger"}, "tone": "danger", "link": "",

@@ -48,7 +48,7 @@ final class ArtifactBlocksTests: XCTestCase {
         init(from decoder: Decoder) throws {
             let value = try decoder.singleValueContainer().decode(AnyJSON.self)
             let data = try JSONSerialization.data(withJSONObject: value.object, options: [.fragmentsAllowed])
-            text = String(decoding: data, as: UTF8.self)
+            text = String(bytes: data, encoding: .utf8) ?? ""
         }
     }
 
@@ -67,10 +67,10 @@ final class ArtifactBlocksTests: XCTestCase {
                 object = value
             } else if let value = try? container.decode(String.self) {
                 object = value
-            } else if let value = try? container.decode([AnyJSON].self) {
+            } else if let value = try? container.decode([Self].self) {
                 object = value.map(\.object)
             } else {
-                object = try container.decode([String: AnyJSON].self).mapValues(\.object)
+                object = try container.decode([String: Self].self).mapValues(\.object)
             }
         }
     }

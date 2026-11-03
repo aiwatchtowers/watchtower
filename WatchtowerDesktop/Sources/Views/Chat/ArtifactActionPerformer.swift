@@ -11,7 +11,7 @@ struct ArtifactActionOutcome: Equatable {
 enum ArtifactActionPerformer {
     @discardableResult
     static func perform(
-        _ action: ArtifactAction,
+        _ action: WatchtowerCore.ArtifactAction,
         pasteboard: NSPasteboard = .general,
         open: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     ) -> ArtifactActionOutcome {

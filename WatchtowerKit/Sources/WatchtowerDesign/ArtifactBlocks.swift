@@ -118,8 +118,15 @@ public struct ArtifactListRow: Equatable, Sendable {
     public let actions: [ArtifactAction]
     public let ref: ArtifactRef?
 
-    public init(title: String, subtitle: String? = nil, badge: ArtifactBadge? = nil, tone: ArtifactTone? = nil,
-                link: String? = nil, actions: [ArtifactAction] = [], ref: ArtifactRef? = nil) {
+    public init(
+        title: String,
+        subtitle: String? = nil,
+        badge: ArtifactBadge? = nil,
+        tone: ArtifactTone? = nil,
+        link: String? = nil,
+        actions: [ArtifactAction] = [],
+        ref: ArtifactRef? = nil
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.badge = badge
@@ -192,7 +199,7 @@ public enum ArtifactBlock: Equatable, Sendable {
         /// Shown when no row is drawn.
         public let empty: String
 
-        public init(title: String? = nil, rows: [ArtifactListRow], empty: String = List.defaultEmpty) {
+        public init(title: String? = nil, rows: [ArtifactListRow], empty: String = Self.defaultEmpty) {
             self.title = title
             self.rows = rows
             self.empty = empty
@@ -222,8 +229,13 @@ public enum ArtifactBlock: Equatable, Sendable {
         public let lines: [ArtifactPersonLine]
         public let link: String?
 
-        public init(name: String, role: String? = nil, slackUser: String? = nil, lines: [ArtifactPersonLine] = [],
-                    link: String? = nil) {
+        public init(
+            name: String,
+            role: String? = nil,
+            slackUser: String? = nil,
+            lines: [ArtifactPersonLine] = [],
+            link: String? = nil
+        ) {
             self.name = name
             self.role = role
             self.slackUser = slackUser
@@ -271,7 +283,7 @@ public struct ArtifactDocument: Equatable, Sendable {
     public let version: Int
     public let blocks: [ArtifactBlock]
 
-    public init(version: Int = ArtifactDocument.supportedVersion, blocks: [ArtifactBlock]) {
+    public init(version: Int = Self.supportedVersion, blocks: [ArtifactBlock]) {
         self.version = version
         self.blocks = blocks
     }
@@ -287,7 +299,7 @@ public struct ArtifactDocument: Equatable, Sendable {
         }
         guard let items = object["blocks"] as? [Any],
               let blocks = try? items.map(ArtifactJSON.block) else { return .unreadable }
-        return .document(ArtifactDocument(version: Int(version), blocks: blocks))
+        return .document(Self(version: Int(version), blocks: blocks))
     }
 
     /// A card's own `actions_json` (Go `db.InboxAction` array); nil when it
@@ -500,6 +512,7 @@ enum ArtifactJSON {
         guard let value, !(value is NSNull) else { return nil }
         let data = try JSONSerialization.data(withJSONObject: value,
                                               options: [.sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed])
-        return String(decoding: data, as: UTF8.self)
+        guard let text = String(bytes: data, encoding: .utf8) else { throw Unreadable() }
+        return text
     }
 }
