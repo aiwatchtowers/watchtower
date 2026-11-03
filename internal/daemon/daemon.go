@@ -1992,11 +1992,12 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 		if err != nil {
 			d.logger.Printf("stream-digests error: %v", err)
 		}
-		// The throttle advances whenever the phase RAN, error or not — the
-		// lastIdeas precedent: unconsumed material simply waits for the next
-		// cycle rather than retrying immediately at repeated AI cost.
-		d.lastStreams = now
-		d.saveLastStreams()
+		// A pure provider wait is still due; account input receipts keep its
+		// original bounds. Ordinary/mixed errors retain the legacy throttle.
+		if !digest.ProviderDeferred(err) {
+			d.lastStreams = now
+			d.saveLastStreams()
+		}
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
 		return pipelineRunStats{inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
 	})

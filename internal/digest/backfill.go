@@ -59,7 +59,13 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 	defer unlock()
 
 	p.loadCaches()
-	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}}
+	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator)}
+	if scope.durable {
+		scope.considered, err = p.db.HistoryBackfillConsidered(slackAccountID, from, to)
+		if err != nil {
+			return BackfillWindowResult{}, &Usage{}, err
+		}
+	}
 	p.backfill = scope
 	defer func() { p.backfill = nil }()
 
@@ -95,6 +101,9 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 			prev[w.channelID] = w.since
 		}
 
+		if err := Preflight(WithSource(ctx, "digest.channel_batch"), p.generator); err != nil {
+			return res, usage, err
+		}
 		n, u, err := p.runChannelWindows(ctx, windows, to)
 		res.Digests += n
 		addBackfillUsage(usage, u)
@@ -209,6 +218,12 @@ func backfillProgressed(prev map[string]float64, windows []channelWindow) bool {
 // Lock contention returns an error wrapping ErrDigestLocked, so the caller
 // can hold the chunk instead of counting a failure.
 func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) error {
+	return p.RunBackfillRollupsForAccount(ctx, 0, from, to)
+}
+
+// RunBackfillRollupsForAccount gives each source chunk its own completion
+// receipts, while the daily output still summarizes workspace-global channels.
+func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int64, from, to float64) error {
 	if !p.cfg.Digest.Enabled {
 		return nil
 	}
@@ -221,6 +236,8 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 
 	p.loadCaches()
 	p.backfillRollups = true
+	p.backfillRollupFrom, p.backfillRollupTo = from, to
+	p.backfillRollupAccountID = account
 	defer func() { p.backfillRollups = false }()
 
 	var errs []error
@@ -229,6 +246,15 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			break
+		}
+		if RoutingEnabled(p.generator) {
+			done, err := p.db.HistoryBackfillDailyCompleted(account, from, to, float64(d.Unix()))
+			if err != nil {
+				return err
+			}
+			if done {
+				continue
+			}
 		}
 		if err := p.runDailyRollupForDate(ctx, d); err != nil {
 			if len(errs) > 0 {

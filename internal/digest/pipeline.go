@@ -193,7 +193,9 @@ type Pipeline struct {
 	backfill *backfillScope
 	// backfillRollups is true only while RunBackfillRollups runs (under the
 	// digest lock).
-	backfillRollups bool
+	backfillRollups                      bool
+	backfillRollupFrom, backfillRollupTo float64
+	backfillRollupAccountID              int64
 }
 
 // backfillScope is set only while RunBackfillWindow runs: a backfill window
@@ -203,6 +205,9 @@ type Pipeline struct {
 // later passes do not re-send them. mu guards all three: batch workers write
 // concurrently.
 type backfillScope struct {
+	accountID  int64
+	from, to   float64
+	durable    bool
 	mu         sync.Mutex
 	considered map[string]float64
 	failed     map[string]bool
@@ -628,8 +633,15 @@ func (p *Pipeline) stampConsidered(channelID string, tsUnix float64) {
 		return
 	}
 	if b := p.backfill; b != nil {
-		// Backfill code never writes the forward considered mark: the
-		// backfill window keeps its own in memory.
+		// A declined model result has no digest row. Its chunk-local completion
+		// receipt is one atomic statement; saved digest rows already prove their
+		// own consumed prefix through LastDigestInRange. Forward marks stay separate.
+		if b.durable {
+			if err := p.db.SetHistoryBackfillConsidered(b.accountID, channelID, b.from, b.to, tsUnix); err != nil {
+				p.markBackfillFailed(err, channelID)
+				return
+			}
+		}
 		b.mu.Lock()
 		if tsUnix > b.considered[channelID] {
 			b.considered[channelID] = tsUnix
@@ -1507,6 +1519,9 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		return fmt.Errorf("checking existing daily rollup for %s: %w", dayStart.Format("2006-01-02"), err)
 	}
 	if !needed {
+		if p.backfillRollups && RoutingEnabled(p.generator) {
+			return p.db.MarkHistoryBackfillDailyExisting(p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo, fromUnix, toUnix)
+		}
 		return nil // nothing new since the last rollup for this day
 	}
 
@@ -1527,6 +1542,11 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 	}
 	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
+	if p.backfillRollups {
+		if err := Preflight(WithSource(ctx, "digest.daily"), p.generator); err != nil {
+			return err
+		}
+	}
 	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.daily"), systemPrompt, userMessage, "")
 	if err != nil {
 		return fmt.Errorf("generating daily rollup: %w", err)
@@ -1856,7 +1876,9 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 
 	var digestID int64
 	var err error
-	if digestType == "daily" && p.dailyAttemptID != "" {
+	if digestType == "daily" && p.backfillRollups && RoutingEnabled(p.generator) {
+		digestID, err = p.db.UpsertHistoryBackfillDaily(d, p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo)
+	} else if digestType == "daily" && p.dailyAttemptID != "" {
 		digestID, err = p.db.UpsertDailyDigestAttempt(d, p.dailyAttemptID)
 	} else {
 		digestID, err = p.db.UpsertDigest(d)

@@ -291,7 +291,7 @@ func (s slackSource) Fetch(ctx context.Context, from, to time.Time) error {
 // are left for errors about the chunk's data, such as an AI reply that
 // cannot be used. Any other error passes through unchanged.
 func backfillErr(err error) error {
-	if err == nil || errors.Is(err, historybackfill.ErrHold) || !transientErr(err) {
+	if err == nil || digest.ProviderDeferred(err) || errors.Is(err, historybackfill.ErrHold) || !transientErr(err) {
 		return err
 	}
 	return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
@@ -305,6 +305,12 @@ func backfillErr(err error) error {
 // errors (digest.ChunkErrors) is transient only when every one of them is:
 // one data error makes it a strike (F8).
 func transientErr(err error) bool {
+	// A typed wait joined with an ordinary cause must not inherit the wait's
+	// legacy ErrAICall marker and hide the material/storage error.
+	if hasProviderWait(err) {
+		return digest.ProviderDeferred(err)
+	}
+
 	var chunk *digest.ChunkErrors
 	if errors.As(err, &chunk) && len(chunk.Errs) > 0 {
 		for _, e := range chunk.Errs {
@@ -325,6 +331,28 @@ func transientErr(err error) bool {
 		(errors.As(err, &gmailErr) && gmailErr.Transient())
 }
 
+// hasProviderWait only detects mixed aggregates so their ordinary failure
+// policy survives. Only digest.ProviderDeferred decides whether to defer.
+func hasProviderWait(err error) bool {
+	if err == nil {
+		return false
+	}
+	if digest.ProviderDeferred(err) {
+		return true
+	}
+	if many, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range many.Unwrap() {
+			if hasProviderWait(child) {
+				return true
+			}
+		}
+	}
+	if one, ok := err.(interface{ Unwrap() error }); ok {
+		return hasProviderWait(one.Unwrap())
+	}
+	return false
+}
+
 func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
 	d := s.d
 	if !d.config.Digest.Enabled || d.digestPipe == nil {
@@ -337,7 +365,7 @@ func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, err
 	}
 	// The rollups' digest-lock contention is a hold, like the window's (which
 	// reports it as incomplete); any other lock error is a failure (F8).
-	if err := d.digestPipe.RunBackfillRollups(ctx, fromTS, toTS); err != nil {
+	if err := d.digestPipe.RunBackfillRollupsForAccount(ctx, s.id, fromTS, toTS); err != nil {
 		return false, backfillErr(err)
 	}
 	return true, nil

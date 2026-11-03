@@ -2,10 +2,12 @@ package ideas
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 )
 
 // BackfillResult totals one Backfill run's yield across every drain cycle.
@@ -109,6 +111,12 @@ func (p *Pipeline) BackfillWith(ctx context.Context, from, to time.Time, progres
 		return result, fatalErr
 	}
 
+	if hasDeferredExtraction(softErr) {
+		result.Cycles = cycles
+		result.Capped = capped1
+		return result, softErr
+	}
+
 	// The consolidator keeps its own gate, as in Run: with ideas.enabled=false
 	// only the stage-1 stream digests (gated by the caller on streams.enabled)
 	// run, and the registry spends nothing (FEAT-01, R17).
@@ -122,8 +130,7 @@ func (p *Pipeline) BackfillWith(ctx context.Context, from, to time.Time, progres
 	// nothing, and moves no floor, or its own per-phase cycle budget runs
 	// out — independent of phase 1's budget (GB2), so a stage-1 pass that
 	// capped out never starves the consolidator of its turn. softErr threads
-	// phase 1's error through so the "first error across BOTH phases wins"
-	// rule holds even though the two phases are now two functions.
+	// phase 1's errors through without losing an ordinary cause behind a wait.
 	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, from, to, &floors.ws, cycles, progress, softErr, opts.Prompt)
 	result.Cycles = cycles
 	result.Proposed = proposed
@@ -139,8 +146,7 @@ func (p *Pipeline) BackfillWith(ctx context.Context, from, to time.Time, progres
 // from the ordinary converged-with-nothing-left-to-do exit. A per-account
 // digest failure is logged and does not stop the loop (matches
 // runEmailDigests/runJiraDigests' own log-and-continue contract) — softErr
-// carries the first one, for the caller to surface only if phase 2 doesn't
-// also fail. fatalErr is reserved for a floor-read failure, which the
+// carries every cause. fatalErr is reserved for a floor-read failure, which the
 // caller must treat as an immediate abort of the whole Backfill call.
 func (p *Pipeline) drainStage1(ctx context.Context, to time.Time, boxes []mailbox, jiraAccounts []db.JiraAccount, floors *backfillFloors, progress func(cycle int)) (cycles int, capped bool, softErr, fatalErr error) {
 	converged := false
@@ -155,8 +161,12 @@ func (p *Pipeline) drainStage1(ctx context.Context, to time.Time, boxes []mailbo
 			progress(cycles)
 		}
 
-		if perr := p.runStage1Passes(ctx, to, boxes, jiraAccounts, floors); perr != nil && softErr == nil {
-			softErr = perr
+		if perr := p.runStage1Passes(ctx, to, boxes, jiraAccounts, floors); perr != nil {
+			softErr = errors.Join(softErr, perr)
+			// An unchanged floor on quota is not evidence that the window drained.
+			if hasDeferredExtraction(perr) {
+				return cycles, false, softErr, nil
+			}
 		}
 
 		afterEmail, afterJira, aferr := p.currentStage1Floors(boxes, jiraAccounts, floors)
@@ -179,8 +189,7 @@ func (p *Pipeline) drainStage1(ctx context.Context, to time.Time, boxes []mailbo
 // current drainStage1 cycle: an account Backfill lowered runs from its
 // in-memory floor (advanced in floors), any other account (covered, so not
 // lowered) runs its ordinary stored-floor pass. Each failure is logged
-// naming its source and account, and the first one is returned (nil if all
-// succeeded) for the caller's own "first error wins" accumulator.
+// naming its source and account, and all causes are joined (nil if all succeeded).
 func (p *Pipeline) runStage1Passes(ctx context.Context, to time.Time, boxes []mailbox, jiraAccounts []db.JiraAccount, floors *backfillFloors) error {
 	if p.generator == nil {
 		return nil
@@ -191,9 +200,7 @@ func (p *Pipeline) runStage1Passes(ctx context.Context, to time.Time, boxes []ma
 			return
 		}
 		p.logf("ideas: backfill %s digest: %v", what, err)
-		if firstErr == nil {
-			firstErr = err
-		}
+		firstErr = errors.Join(firstErr, err)
 	}
 	for _, mb := range boxes {
 		if floor, ok := floors.email[mb]; ok {
@@ -241,9 +248,7 @@ func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, ws 
 		cProposed, cDeduped, floorsMoved, softErr := p.consolidateCycle(ctx, from, to, ws, prompt)
 		if softErr != nil {
 			p.logf("ideas: backfill consolidate pass: %v", softErr)
-			if firstErr == nil {
-				firstErr = softErr
-			}
+			firstErr = errors.Join(firstErr, softErr)
 			erroredOut = true
 			break // an erroring pass says nothing about convergence — stop draining
 		}
@@ -271,8 +276,7 @@ func consolidateConverged(proposed, mentionsDeduped int, floorsMoved bool) bool 
 // consolidateCycle runs one consolidate call from the in-memory workspace
 // floors ws (which it advances) and reports whether they moved —
 // drainConsolidate's single-cycle unit. softErr is an ordinary consolidate
-// failure, which the caller folds into its own "first error wins"
-// accumulator.
+// failure, which the caller joins with any earlier failures.
 func (p *Pipeline) consolidateCycle(ctx context.Context, from, to time.Time, ws *workspaceFloors, prompt string) (proposed, mentionsDeduped int, floorsMoved bool, softErr error) {
 	before := *ws
 	proposed, mentionsDeduped, err := p.consolidate(ctx, from, to, ws, prompt)
@@ -476,4 +480,26 @@ func maxJiraFloor(a, b string) string {
 	default:
 		return a
 	}
+}
+
+// A mixed failure still stops this drain without hiding its ordinary causes;
+// only digest.ProviderDeferred can classify it as a pure provider wait.
+func hasDeferredExtraction(err error) bool {
+	if err == nil {
+		return false
+	}
+	if digest.ProviderDeferred(err) {
+		return true
+	}
+	if many, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range many.Unwrap() {
+			if hasDeferredExtraction(child) {
+				return true
+			}
+		}
+	}
+	if one, ok := err.(interface{ Unwrap() error }); ok {
+		return hasDeferredExtraction(one.Unwrap())
+	}
+	return false
 }

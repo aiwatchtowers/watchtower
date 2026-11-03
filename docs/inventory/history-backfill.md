@@ -44,7 +44,7 @@
 
 **Status:** Enforced
 
-**Observable:** `RunBackfillWindow` keeps its "considered" stamps in memory for the call and its digests end below every forward window, so the forward per-channel `MAX(period_to)` and `digest_considered_ts` marks are unchanged and the forward digest window is unaffected. A channel the AI declines to digest does not loop the pass cycle.
+**Observable:** `RunBackfillWindow` keeps its "considered" stamps separate from forward marks (in memory for the legacy path; chunk-local SQLite completion receipts for routed deferred work) and its digests end below every forward window, so the forward per-channel `MAX(period_to)` and `digest_considered_ts` marks are unchanged and the forward digest window is unaffected. A channel the AI declines to digest does not loop the pass cycle.
 
 **Why locked:** Moving a forward mark would make the live digests skip or repeat real recent messages.
 

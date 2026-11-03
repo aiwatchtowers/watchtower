@@ -121,3 +121,16 @@ Desktop, dual path: `ReadinessQueries.runningBackfillStarts` reads the `started_
 - Swift: `Tests/Core/BackfillQueriesTests.swift`, `Tests/Core/BackfillProgressTests.swift`.
 
 Source deletions (2026-10-17, board #640): `BackfillSearch` passes no listing and never tombstones a Slack message (`TestBackfillSearch_NeverTombstones`); see [source-deletions.md](source-deletions.md).
+
+
+### Routed provider quota waits
+
+When provider fallback is enabled for a history AI primitive, a typed provider
+wait leaves the chunk's reached timestamp and poison-strike count unchanged,
+even past the ordinary transport hold's seven-day limit. Fetches still run and
+other source accounts still get their turn. Saved extraction passes (including
+valid empty results), declined Slack channels and saved daily rollups have local
+completion receipts so a restart retries missing AI steps within the original
+bounds. These receipts do not move Slack's forward considered marks or replay a
+whole built-in recipe. Ordinary transport/material failures retain their
+existing hold/strike rules. See [provider-fallback.md](provider-fallback.md).
