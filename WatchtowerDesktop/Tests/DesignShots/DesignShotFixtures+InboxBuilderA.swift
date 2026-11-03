@@ -4,7 +4,6 @@ import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
-import WatchtowerDesign
 
 /// Inbox builder A (plan Task 1): the block renderer, today's Inbox card
 /// states, every Look step state and the target button's states, on the
@@ -113,7 +112,7 @@ enum InboxBuilderAShotFixtures {
         title: String,
         result: ArtifactDecodeResult,
         body: String,
-        actions: [WatchtowerDesign.ArtifactAction]
+        actions: [ArtifactAction]
     ) -> AnyView {
         AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
             Text(source).font(.caption).foregroundStyle(.secondary)
@@ -213,7 +212,7 @@ enum InboxBuilderAShotFixtures {
 
     private struct Sample {
         let json: String
-        let cardActions: [WatchtowerDesign.ArtifactAction]
+        let cardActions: [ArtifactAction]
     }
 
     private static let releasePlainText = "Release 4.2 — where we are\n- Sign off the checklist — Colleague A [2 days]\n"
