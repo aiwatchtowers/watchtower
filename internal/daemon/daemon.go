@@ -1707,7 +1707,10 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	d.digestPipe.DeferredSchedule = true
-	if err := d.digestPipe.PreflightRollups(ctx); digest.ProviderDeferred(err) {
+	if err := d.digestPipe.PreflightRollups(ctx); err != nil {
+		if !digest.ProviderDeferred(err) && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("rollup preflight error: %v", err)
+		}
 		return
 	}
 	date := rollupBudgetDate(now)
@@ -1740,7 +1743,10 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 		return
 	}
 	d.peoplePipe.DeferredSchedule = true
-	if err := d.peoplePipe.Preflight(ctx); digest.ProviderDeferred(err) {
+	if err := d.peoplePipe.Preflight(ctx); err != nil {
+		if !digest.ProviderDeferred(err) && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("people preflight error: %v", err)
+		}
 		return
 	}
 	now := time.Now()

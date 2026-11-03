@@ -194,3 +194,45 @@ func TestPeopleMixedMaterialAndQuotaPreservesOriginalFailure(t *testing.T) {
 	require.ErrorAs(t, err, &deferred)
 	require.Equal(t, 2, gen.calls)
 }
+
+func TestPeopleInvalidPendingBoundsRemainErrorsAndPreserveDescriptor(t *testing.T) {
+	for _, bounds := range []string{`"To":2000000000`, `"From":-1,"To":2000000000`, `"From":0,"To":2000000000`, `"From":1,"To":0`, `"From":-2,"To":-1`} {
+		t.Run(bounds, func(t *testing.T) {
+			database := testDB(t)
+			cfg := testConfig()
+			t.Setenv("HOME", t.TempDir())
+			require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+			gen := &resumablePeopleGenerator{}
+			p := New(database, cfg, gen, testLogger())
+			p.DeferredSchedule = true
+			data := []byte(`{` + bounds + `,"StartedAt":"2030-01-01T00:00:00Z"}`)
+			require.NoError(t, os.WriteFile(p.windowPath(), data, 0o600))
+			_, err := p.HasData()
+			require.Error(t, err, "invalid bounds must not become benign no-data that the daemon acknowledges")
+			_, err = p.Run(context.Background())
+			require.Error(t, err)
+			require.Zero(t, gen.calls)
+			after, err := os.ReadFile(p.windowPath())
+			require.NoError(t, err)
+			require.Equal(t, data, after)
+		})
+	}
+}
+
+func TestPeoplePendingFutureStartedAtIsNotRejectedForClockSkew(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+	p := New(database, cfg, &resumablePeopleGenerator{}, testLogger())
+	p.DeferredSchedule = true
+	future := time.Now().AddDate(1, 0, 0)
+	data, err := json.Marshal(peopleWindow{From: 1, To: 2, StartedAt: future})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(p.windowPath(), data, 0o600))
+	from, to, started, err := p.scheduledWindow(false)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, from)
+	require.EqualValues(t, 2, to)
+	require.True(t, started.Equal(future))
+}

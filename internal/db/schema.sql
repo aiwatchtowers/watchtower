@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS digests (
     people_signals  TEXT NOT NULL DEFAULT '[]',   -- JSON array of PersonSignals from MAP phase (legacy)
     situations      TEXT NOT NULL DEFAULT '[]',   -- JSON array of Situation objects from channel digest
     running_summary TEXT NOT NULL DEFAULT '',     -- JSON running context for next digest (channel memory)
+    daily_attempt_id TEXT NOT NULL DEFAULT '',    -- local scheduled daily completion receipt, not replicated
     UNIQUE(channel_id, type, period_from, period_to)
 );
 CREATE INDEX IF NOT EXISTS idx_digests_channel ON digests(channel_id);

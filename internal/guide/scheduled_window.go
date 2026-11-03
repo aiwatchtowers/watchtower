@@ -38,7 +38,7 @@ func (p *Pipeline) scheduledWindow(claim bool) (float64, float64, time.Time, err
 		if err := json.Unmarshal(data, &w); err != nil {
 			return 0, 0, time.Time{}, fmt.Errorf("reading pending people window: %w", err)
 		}
-		if w.From >= w.To || w.StartedAt.IsZero() {
+		if w.From <= 0 || w.To <= 0 || w.From >= w.To || w.StartedAt.IsZero() {
 			return 0, 0, time.Time{}, fmt.Errorf("invalid pending people window")
 		}
 		return w.From, w.To, w.StartedAt, nil

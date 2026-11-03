@@ -103,7 +103,19 @@ ideas/history deferred integration is separate (Task 6).
 - Решил агент: approved scheduled Slack “period” maps to the actual daemon
   `RunRollups` → `RunDailyRollup` call graph (`digest.daily`). Its descriptor pins
   one UTC day, and `rollup_attempts.txt` remains unchanged on quota before/after
-  calls, including UTC date rollover. The committed daily row is its durable
-  completion stamp. A later ordinary cycle can process the current UTC day.
+  calls, including UTC date rollover. Migration `00170_daily_digest_attempt.sql`
+  gives each scheduled daily claim a random completion token, written atomically
+  with its output in
+  `digests.daily_attempt_id`. Ordinary upserts preserve it; it stays out of the
+  public Digest/wire shape. A retained descriptor checks the exact token/window,
+  independent of newer source rows, identical output and timestamp precision.
+  An older preclaim daily row still regenerates normally. A later ordinary cycle
+  can process the current UTC day.
   One-off `RunPeriodSummary` (`digest.period`) and `RunWeeklyTrends` remain outside
   the durable retry allowlist; no new scheduler or broader pipeline guarantee.
+
+Ordinary metadata preflight failures are logged immediately without starting a
+model, debiting a data attempt, or bypassing no-data/budget/throttle eligibility;
+expected shutdown cancellation is benign. Pending people windows require positive
+ordered bounds and a present StartedAt; invalid descriptors remain errors and
+retain their bytes, while future StartedAt is accepted for clock skew.

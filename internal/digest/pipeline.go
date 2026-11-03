@@ -131,11 +131,13 @@ func (p *Pipeline) learnedPrefs() string {
 type Pipeline struct {
 	// DeferredSchedule enables the daemon-only pending input descriptor.
 	DeferredSchedule bool
-	db               *db.DB
-	cfg              *config.Config
-	generator        Generator
-	logger           *log.Logger
-	promptStore      *prompts.Store
+	// dailyAttemptID is scoped to the locked daemon daily write, never to a CLI/weekly run.
+	dailyAttemptID string
+	db             *db.DB
+	cfg            *config.Config
+	generator      Generator
+	logger         *log.Logger
+	promptStore    *prompts.Store
 
 	// SinceOverride, if non-zero, overrides the automatic "since last digest"
 	// window. Used by `digest generate --since` to force a custom time range.
@@ -1852,7 +1854,13 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 		contentChanged = p.digestContentChanged(digestType, from, to, d.Summary, d.Topics)
 	}
 
-	digestID, err := p.db.UpsertDigest(d)
+	var digestID int64
+	var err error
+	if digestType == "daily" && p.dailyAttemptID != "" {
+		digestID, err = p.db.UpsertDailyDigestAttempt(d, p.dailyAttemptID)
+	} else {
+		digestID, err = p.db.UpsertDigest(d)
+	}
 	if err != nil {
 		return err
 	}
