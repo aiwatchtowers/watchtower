@@ -392,3 +392,25 @@ CLI has no provisioning profile of its own. Both `scripts/build-app.sh` and the 
 `-X watchtower/internal/hub/identity.KeychainBuildFlag=false` (pinned by `scripts/tests/test-build-app-relay.sh`), so a
 desktop host keeps its identity in `<hub dir>/identity.key` (0600), like a headless host (owner, ask #807). The guide's
 privacy page says so in Task 24.
+
+## Phase 3 — the iCloud account (ask #969 Q3: as the Swift hub)
+
+- **No usable account** (`no_account`, `restricted`, `temporarily_unavailable`, `no_entitlement`, as the bridge's
+  `AccountStatus` reads it at start, each daemon cycle, every 10 minutes and on `Event{account_changed}`) holds the
+  CloudKit side (`icloud.go`, hold reason `no_icloud`): CloudKit's processor reads nothing and, while CloudKit is the
+  active transport, the publisher publishes nothing and no mailbox pass or share sweep runs. A desktop host on the relay
+  goes on publishing there; only CloudKit's mailbox (the switch's standby poll) waits. The next read that finds the
+  account available releases it: one full diff and one pass. An account not read yet holds nothing. The status keeps
+  `state: running` and shows the account in its `cloudkit` block.
+- **An account change** (`Event{account_changed}`) and **a zone deleted on the server** (the bridge saw
+  `zoneNotFound`/`userDeletedZone`, created the hub's zones again and sends `Event{zones_recreated}`, `frames.json`
+  case `event_zones_recreated`) run `resetCloudKit` with CloudKit's processor and the publisher held (reason
+  `cloudkit_reset`): `state.WipeSyncState` (the Swift `wipeSyncState`) deletes every `slice_state` row, forgets the
+  unpublished work alerts of the current generation within the alert lifetime, bumps `sync_generation` and, for an
+  account change only, deletes CloudKit's mailbox token (`zone_tokens` of `relay/<relay id>/*`; a zone deletion keeps
+  it, the relay buffer survived); the staged assets go (`forgetStagedAssets`) and the resumed full diff republishes
+  and restages everything. The exactly-once ledger, the hub id, `enabled_at` and the keys stay. On a desktop host
+  whose active transport is the relay only the mailbox token is reset: the published state is the relay's, and a
+  switch to CloudKit republishes under a new epoch anyway. The account change still closes the old user's link
+  (`link.Center.AccountChanged`). The bridge cannot tell which zone was missing, so a deleted RelayZone alone also
+  republishes the data zone once. No sidecar migration: the tables were all there.

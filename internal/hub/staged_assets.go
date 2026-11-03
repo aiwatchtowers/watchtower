@@ -12,8 +12,8 @@ import (
 // Staged assets (the Swift SliceAssetStore.removeAll): the sealed files in
 // the hub's asset dir — the meeting transcripts' segments, and what an
 // adoption copied from the Swift hub — and the slice_assets descriptors an
-// adopted sidecar holds, each with its file's K_asset. The owner's off and
-// an iCloud account change remove both, so no key outlives its link; a plain
+// adopted sidecar holds, each with its file's K_asset. The owner's off, an
+// iCloud account change and a hub zone deleted on the server remove both, so no key outlives its link; a plain
 // stop keeps them (the next start's transcript read sweeps its own files).
 
 // errAssetDirNotADir: <dir>/assets is a symlink or not a directory; nothing
@@ -41,8 +41,8 @@ func removeStagedAssets(dir string, st *state.Store) error {
 	return errors.Join(err, st.DeleteSliceAssets())
 }
 
-// forgetStagedAssets is an iCloud account change's half (the Swift hub's
-// account reset): with the publisher held, so no cycle is reading or
+// forgetStagedAssets is a CloudKit reset's half (the Swift hub's account and
+// data-zone resets): with the publisher held, so no cycle is reading or
 // uploading a staged file, the files and descriptors go and the transcript
 // source forgets what it staged; the resumed full diff stages anew.
 func (h *hubRuntime) forgetStagedAssets() {
@@ -51,7 +51,7 @@ func (h *hubRuntime) forgetStagedAssets() {
 		defer h.pub.ResumeFor(pauseStagedAssets)
 	}
 	if err := removeStagedAssets(h.sup.o.Dir, h.st); err != nil {
-		log.Printf("hub: removing the staged assets after an iCloud account change failed (%s)", errClass(err))
+		log.Printf("hub: removing the staged assets after a CloudKit reset failed (%s)", errClass(err))
 	}
 	if h.wiring != nil && h.wiring.set.Staged != nil {
 		h.wiring.set.Staged.ForgetStaged()

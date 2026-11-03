@@ -310,6 +310,8 @@ public struct CloudKitBridgeCloud: BridgeCloud {
     public let hubID: String
     private let database: any BridgeDatabase
     private let entitlementPresent: @Sendable () -> Bool
+    /// Hears that the hub's zones were created again after CloudKit said one was gone (`Event{zones_recreated}`).
+    private let zonesRecreated: @Sendable () -> Void
     /// CloudKit's change page limit; the bridge splits a page that does not fit a frame.
     static let pageLimit = 200
     /// Every key but the asset.
@@ -318,11 +320,13 @@ public struct CloudKitBridgeCloud: BridgeCloud {
     public init(
         hubID: String,
         database: any BridgeDatabase = LiveBridgeDatabase(),
-        entitlementPresent: (@Sendable () -> Bool)? = nil
+        entitlementPresent: (@Sendable () -> Bool)? = nil,
+        zonesRecreated: @escaping @Sendable () -> Void = {}
     ) {
         self.hubID = hubID
         self.database = database
         self.entitlementPresent = entitlementPresent ?? { CloudKitTransport.entitlementPresent() }
+        self.zonesRecreated = zonesRecreated
     }
 
     private var zones: HubZones { HubZones(scope: .private, hubID: hubID) }
@@ -339,12 +343,15 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         return (zones.zoneID(for: kind), kind)
     }
 
-    /// Runs `body`, and once more after creating the hub's zones when CloudKit says a zone is missing.
+    /// Runs `body`, and once more after creating the hub's zones when CloudKit says a zone is missing. A zone
+    /// deleted on the server took what the hub published there with it, so the hub hears of the new zones
+    /// (`zonesRecreated`) and republishes everything (the Swift hub's data-zone reset).
     private func withZones<T>(_ db: any BridgeDatabase, _ body: () async throws -> T) async throws -> T {
         do {
             return try await body()
         } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
             try await db.saveZones(zones.allZoneIDs)
+            zonesRecreated()
             return try await body()
         }
     }

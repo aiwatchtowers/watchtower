@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/docs/guide"
@@ -165,6 +166,14 @@ type hubRuntime struct {
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
 	ckAccount transport.Account
+
+	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
+	// cannot be used, ckPubHeld while that also holds the publisher (CloudKit
+	// active), which ckPassHeld mirrors for the worker's pass.
+	ckHoldMu   sync.Mutex
+	ckHeld     bool
+	ckPubHeld  bool
+	ckPassHeld atomic.Bool
 
 	// push is the work-alert pusher (nil without a relay that sends them).
 	push *alerts.Pusher
@@ -789,7 +798,7 @@ func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 
 // pass is one processor pass, run again at once while it left records.
 func (h *hubRuntime) pass(ctx context.Context) {
-	if h.isHeld() {
+	if h.isHeld() || h.ckPassHeld.Load() {
 		return
 	}
 	if h.sup.o.onPass != nil {

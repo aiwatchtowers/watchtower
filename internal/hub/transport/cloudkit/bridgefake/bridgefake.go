@@ -204,6 +204,9 @@ func (f *Fake) PullNow() { f.broadcast(&bridgepb.Event{PullNow: true}) }
 // AccountChanged sends the account_changed event.
 func (f *Fake) AccountChanged() { f.broadcast(&bridgepb.Event{AccountChanged: true}) }
 
+// ZonesRecreated sends the zones_recreated event.
+func (f *Fake) ZonesRecreated() { f.broadcast(&bridgepb.Event{ZonesRecreated: true}) }
+
 // Block holds every request of op (FailNext's names) until release is
 // called; arrived is closed when the first one is held. A held request
 // holds its connection, as one slow CloudKit call holds the real bridge's
