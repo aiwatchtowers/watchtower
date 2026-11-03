@@ -248,6 +248,19 @@ func expire(v *Snapshot, now time.Time) bool {
 	v.LeaseUntil = time.Time{}
 	return true
 }
+
+// Peek reads local metadata without expiring a lease or rewriting quota state.
+// An expired lease projects quota_wait; real routing owns persisted cleanup.
+func (s *Store) Peek(ctx context.Context, scope Scope) (Snapshot, error) {
+	var out Snapshot
+	err := s.transaction(ctx, scope, func(v *Snapshot) (bool, error) {
+		out = *v
+		expire(&out, s.now()) // projection only; router owns the persisted cleanup
+		return false, nil
+	})
+	return out, err
+}
+
 func (s *Store) Read(ctx context.Context, scope Scope) (Snapshot, error) {
 	var out Snapshot
 	err := s.transaction(ctx, scope, func(v *Snapshot) (bool, error) { changed := expire(v, s.now()); out = *v; return changed, nil })

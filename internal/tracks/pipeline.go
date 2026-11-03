@@ -489,10 +489,10 @@ func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh
 	for _, e := range allEntries {
 		totalTopicCount += e.topicCount
 	}
-	batches := append(p.planTrackBatches(freshEntries), p.planTrackBatches(retryEntries)...)
+	batches := append(p.planTrackBatchesFor(ctx, freshEntries), p.planTrackBatchesFor(ctx, retryEntries)...)
 
 	p.logger.Printf("tracks: found %d topics across %d channels → %d batch(es), budget %d tokens",
-		totalTopicCount, len(allEntries), len(batches), p.contextBudget())
+		totalTopicCount, len(allEntries), len(batches), routingContextBudget(ctx, p.cfg))
 	p.progress(0, len(batches), fmt.Sprintf("Scanning %d channels (%d topics) for @%s in %d batch(es)...",
 		len(allEntries), totalTopicCount, userName, len(batches)))
 
@@ -782,8 +782,8 @@ func (p *Pipeline) filterEntriesByRelevance(entries []digestEntry, userID string
 }
 
 // contextBudget returns the configured AI context budget with the documented default.
-func (p *Pipeline) contextBudget() int {
-	budget := p.cfg.AI.ContextBudget
+func routingContextBudget(ctx context.Context, cfg *config.Config) int {
+	budget := config.RoutingSnapshot(ctx, cfg).AI.ContextBudget
 	if budget <= 0 {
 		budget = config.DefaultAIContextBudget
 	}
@@ -793,10 +793,10 @@ func (p *Pipeline) contextBudget() int {
 // planTrackBatches groups channels into batches sized by the AI context budget.
 // Each digest topic includes summary, decisions, action_items, situations,
 // key_messages — measured at ~700 tokens/topic in production.
-func (p *Pipeline) planTrackBatches(entries []digestEntry) [][]digestEntry {
+func (p *Pipeline) planTrackBatchesFor(ctx context.Context, entries []digestEntry) [][]digestEntry {
 	const tokensPerTopic = 700
 	const promptOverhead = 20000
-	maxTopicsPerBatch := max((p.contextBudget()-promptOverhead)/tokensPerTopic, 20)
+	maxTopicsPerBatch := max((routingContextBudget(ctx, p.cfg)-promptOverhead)/tokensPerTopic, 20)
 	return groupDigestBatches(entries, 15, maxTopicsPerBatch)
 }
 

@@ -23,6 +23,28 @@ package struct ChatTurnStore: Sendable {
         }
     }
 
+    package func saveActual(
+        conversationID: Int64,
+        messageID: Int64?,
+        provider: String,
+        model: String,
+        routing: ChatRoutingMetadata?,
+        projectID: Int64?
+    ) async throws {
+        guard !provider.isEmpty else { return }
+        try await dbPool.write { db in
+            // A late event from a retired prompt must not overwrite the moved chat.
+            try db.execute(sql: """
+                UPDATE chat_conversations SET actual_provider = ?, actual_model = ?, routing_reason = ?
+                WHERE id = ? AND project_id IS ?
+                """, arguments: [provider, model, routing?.reason ?? "", conversationID, projectID])
+            if let messageID {
+                try db.execute(sql: "UPDATE chat_messages SET provider = ?, model = ? WHERE id = ? AND conversation_id = ?",
+                               arguments: [provider, model, messageID, conversationID])
+            }
+        }
+    }
+
     package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {
         try await dbPool.write { db in
             try ChatStepQueries.upsertStart(db, messageID: messageID, seq: seq, toolID: start.id, name: start.name,
@@ -66,7 +88,7 @@ package struct ChatTurnStore: Sendable {
         try await dbPool.write { db in
             try ChatTreeQueries.updateAssistant(db, id: messageID, text: text, status: status,
                                                 tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut,
-                                                errorCode: error?.code.rawValue, errorMessage: error?.message)
+                                                errorCode: error?.persistenceCode, errorMessage: error?.message)
             if let model = usage?.model, !model.isEmpty {
                 try ChatTreeQueries.setModel(db, messageID: messageID, model: model)
             }

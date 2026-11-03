@@ -146,8 +146,9 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 
 // lightModel returns the resolved light-tier model name, used only as the
 // bookkeeping label on people cards (people.batch is a light-tier source).
-func (p *Pipeline) lightModel() string {
-	light, _ := providers.ResolveModelsFor(p.cfg, p.cfg.AI.Provider)
+func (p *Pipeline) lightModel(ctx context.Context) string {
+	cfg := config.RoutingSnapshot(ctx, p.cfg)
+	light, _ := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	return light
 }
 
@@ -209,8 +210,8 @@ func (p *Pipeline) currentWindow() (from, to float64) {
 // the negation of RunForWindow's OutcomeNoData. The daemon checks it before
 // opening a tracked run, so a workspace without data yet writes no empty
 // pipeline_runs row every cycle.
-func (p *Pipeline) HasData() (bool, error) {
-	from, to, _, err := p.scheduledWindow(false)
+func (p *Pipeline) HasData(contexts ...context.Context) (bool, error) {
+	from, to, _, err := p.scheduledWindow(false, contexts...)
 	if err != nil {
 		return false, err
 	}
@@ -392,7 +393,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
 					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
@@ -446,7 +447,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				if deferred := p.deferredCardError(err, materialErr, aiFailures, true); deferred != nil {
 					return int(completed.Load()), deferred
 				}
-				if p.routedCallUnavailable(err) {
+				if p.routedCallUnavailable(ctx, err) {
 					return int(completed.Load()), errors.Join(err, materialErr)
 				}
 				// Fallback: try individual processing for this batch.
@@ -486,7 +487,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					} else {
 						aiCards++
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
 					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
@@ -551,8 +552,8 @@ func (p *Pipeline) deferredCardError(err, materialErr error, failed int, batch b
 
 // Only routed full-data batch calls skip individual quality fallback for an
 // unavailable provider. Off/pinned generators retain their legacy fallback.
-func (p *Pipeline) routedCallUnavailable(err error) bool {
-	return digest.RoutingEnabled(p.generator) && errors.Is(err, digest.ErrAICall)
+func (p *Pipeline) routedCallUnavailable(ctx context.Context, err error) bool {
+	return digest.RoutingEnabled(p.generator, ctx) && errors.Is(err, digest.ErrAICall)
 }
 
 // batchUsagePerUser is shared by both data populations and keeps empty/nil
@@ -734,7 +735,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 }
 
 // storeBatchCard converts a BatchCardResult to a db.PeopleCard and stores it.
-func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int) error {
+func (p *Pipeline) storeBatchCard(ctx context.Context, stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int) error {
 	redFlags, _ := json.Marshal(result.RedFlags)
 	highlights, _ := json.Marshal(result.Highlights)
 	accomplishments, _ := json.Marshal(result.Accomplishments)
@@ -761,7 +762,7 @@ func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, f
 		DecisionStyle:      result.DecisionStyle,
 		Tactics:            string(tactics),
 		Status:             "active",
-		Model:              p.lightModel(),
+		Model:              p.lightModel(ctx),
 		PromptVersion:      pv,
 		InputTokens:        inTok,
 		OutputTokens:       outTok,

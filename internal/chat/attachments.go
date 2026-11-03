@@ -34,8 +34,10 @@ const MaxTurnAttachmentEncodedBytes int64 = 30 << 20
 // AttachmentError is a per-file rejection. The session maps it to the
 // protocol error code "attachment_unsupported" (not retryable).
 type AttachmentError struct {
-	Name   string
-	Reason string
+	// RequiresClaude identifies a supported binary file rejected only by a text-only backend.
+	RequiresClaude bool
+	Name           string
+	Reason         string
 }
 
 func (e *AttachmentError) Error() string {
@@ -123,7 +125,7 @@ func loadAttachment(a Attachment, textOnly bool) (loadedAttachment, error) {
 		return reject(fmt.Sprintf("unsupported file type %q (images, PDFs and text files only)", a.Mime))
 	}
 	if textOnly && kind != kindText {
-		return reject("images and PDFs need the Claude provider")
+		return loadedAttachment{}, &AttachmentError{Name: name, Reason: "images and PDFs need the Claude provider", RequiresClaude: true}
 	}
 	if size > limit {
 		return reject(fmt.Sprintf("file is %d bytes; the limit for this type is %d", size, limit))

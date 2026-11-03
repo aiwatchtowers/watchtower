@@ -9,6 +9,7 @@ struct ChatSessionConfig: Equatable, Sendable {
     var conversationID: Int64
     var provider: String
     var model: String?
+    var automatic: Bool
     var surface: String
     /// The chat project whose instructions/files join the session's prompt
     /// (`--project-id`); nil for a chat outside any project.
@@ -19,20 +20,22 @@ struct ChatSessionConfig: Equatable, Sendable {
         provider: String,
         model: String?,
         surface: String = "main",
+        automatic: Bool = false,
         projectID: Int64? = nil
     ) {
         self.conversationID = conversationID
         self.provider = provider
         self.model = model
         self.surface = surface
+        self.automatic = automatic
         self.projectID = projectID
     }
 
     /// Moving a chat into or out of a project changes its prompt, so a warm
     /// session spawned for the old project is not reused.
     func isCompatible(with other: Self) -> Bool {
-        conversationID == other.conversationID && provider == other.provider
-            && model == other.model && surface == other.surface && projectID == other.projectID
+        conversationID == other.conversationID && automatic == other.automatic
+            && (automatic || (provider == other.provider && model == other.model)) && surface == other.surface && projectID == other.projectID
     }
 }
 
@@ -116,9 +119,12 @@ final class ChatSessionClient {
     /// The argv — flags only, never content (CHAT-04). `--provider` is the
     /// root persistent flag; the rest are `ai session`'s own.
     static func arguments(for config: ChatSessionConfig, dbPath: String?) -> [String] {
-        var args = ["ai", "session", "--conversation", String(config.conversationID),
-                    "--provider", config.provider, "--surface", config.surface]
-        if let model = config.model, !model.isEmpty { args += ["--model", model] }
+        var args = ["ai", "session", "--conversation", String(config.conversationID)]
+        if !config.automatic {
+            args += ["--provider", config.provider]
+        }
+        args += ["--surface", config.surface]
+        if !config.automatic, let model = config.model, !model.isEmpty { args += ["--model", model] }
         if let projectID = config.projectID { args += ["--project-id", String(projectID)] }
         if let dbPath, !dbPath.isEmpty { args += ["--db-path", dbPath] }
         return args

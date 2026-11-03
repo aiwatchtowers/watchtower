@@ -341,3 +341,47 @@ func TestRawRouteDefaultBoundLeavesLegacyContextsUnchanged(t *testing.T) {
 		})
 	}
 }
+
+func TestContextGeneratorForwardsExactContextTextImageAndHooks(t *testing.T) {
+	ctx := digest.WithModelTier(digest.WithSource(context.Background(), "digest.channel_batch"), digest.TierStrong)
+	marker := &hook{}
+	ctx = WithAttemptHook(ctx, marker)
+	calls := 0
+	leaf := fakeImage{&fakeLeaf{call: func(got context.Context, system, user, session string) (string, *digest.Usage, string, error) {
+		calls++
+		if got != ctx {
+			t.Fatal("dispatcher replaced the caller context")
+		}
+		if source, _ := digest.SourceFromContext(got); source != "digest.channel_batch" {
+			t.Fatal(source)
+		}
+		if tier, _ := digest.ModelTierFromContext(got); tier != digest.TierStrong {
+			t.Fatal(tier)
+		}
+		if got.Value(hookKey{}) != marker {
+			t.Fatal("attempt accounting hook was lost")
+		}
+		if system != "system" || user != "user" {
+			t.Fatal(system, user)
+		}
+		return "reply", &digest.Usage{InputTokens: 1}, session, nil
+	}}}
+	gen := NewContextGenerator(func(got context.Context) digest.Generator {
+		if got != ctx {
+			t.Fatal("selection context changed")
+		}
+		return leaf
+	})
+	text, usage, session, err := gen.Generate(ctx, "system", "user", "session")
+	if err != nil || text != "reply" || usage.InputTokens != 1 || session != "session" {
+		t.Fatal(text, usage, session, err)
+	}
+	image, ok := digest.ImageCapable(gen, ctx)
+	if !ok {
+		t.Fatal("lost image capability")
+	}
+	text, usage, err = image.GenerateWithImage(ctx, "system", "user", "image.png", "image/png")
+	if err != nil || text != "reply" || usage.InputTokens != 1 || calls != 2 {
+		t.Fatal(text, usage, calls, err)
+	}
+}

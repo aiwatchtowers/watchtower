@@ -2625,6 +2625,41 @@ Entry format:
 - false-positive: the test lane's 8/10 quality score is not a severity-8 coverage finding. Additional audit linkage/duration assertions, reverse post-proposal quota coverage and cache/multicall coverage remain optional strengthening. Applying the new generateMetered unknown-failure rule to agent's existing carve would exceed the approved Task 7 seam. [6/7]
 - weak-dimension: composition coverage between established recorder semantics and the new attempt adapter; existing recorder tests establish known zeros, but the new SDK tests did not carry them across the hook. External Codex transmission remained unavailable after automatic approval rejection; unavailable toolkit APIs were replaced with built-in lanes. Judge verified source and reported scoped check evidence without rerunning checks. [7]
 - rule-gap: no new binding rule needed; the approved observed-versus-estimated usage boundary and exact attempt accounting already cover this defect. Full phase gates remain scheduled after Task 8.
+## 2026-11-03 — fix/resume-worktree-own-branch (6e0da8cf9: resume of a placed session no longer refuses on a branch other than `wt/<slug>`; refuses only when a later `terminal_sessions` row sits in the same worktree top — `SessionStartPlacement.laterHolder` + `TerminalSessionQueries.fetchInFolder`; panel: prosecutor (5) + 3 toolkit specialists, codex timed out; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested (F2, held major, 3 lanes): the "later holder" test guards a state the allocator already excludes — `freeSlug` skips every `wt/<slug>` a session row holds, so no later placed session can take a living row's path. The check can therefore only match unplaced rows (standalone terminals, which gives a false refusal) and is fail-open on the cases that matter: a deleted later session, a legacy row, a hand-made worktree at that path. The fix is positive evidence from the existing `terminal_session_worktrees` ledger: the row's own session recorded (resolved root, current branch or '' for detached). That covers rules §2 (reuse the existing table) and §6 (key off an affirmative field). It fails closed and is never worse than main. [2/6]
+- false-positive: none dismissed. F5 (the rule lives in a new-start type) is a nit and goes away with the ledger rewrite.
+- miss: codex was unavailable. The fail-open framing came from the prosecutor, code-reviewer and silent-failure-hunter. Only the prosecutor connected it to the allocator invariant that makes the negative check vacuous.
+- weak-dimension: 6. The refusal test seeds a state the allocator cannot produce, so the suite was green on a check that never fires in production.
+- rule-gap (candidate, dim 6): *a safety gate that relaxes a refusal keys its "allow" off positive evidence recorded by the actor (a ledger, a stamp). It never keys off "no conflicting row found", and a test of its refusal seeds a state the real allocator can produce.*
+- outcome: TBD
+
+## 2026-11-03 — provider-fallback chat/tool preflight (#1490, Task 8) — verdict: changes-needed
+
+- contested: sticky reserve protects a healthy ongoing conversation from recovery-driven switching; it does not forbid a new safe turn selecting recovered preferred after that reserve becomes exhausted. The added test and feature note encoded the stronger, unapproved restriction. [6/7]
+- false-positive: a test-lane quality score of 7/10 is not a severity-7 gap. Audit linkage, replay-size/Unicode, direct capability and exact native-ID assertions remain optional strengthening absent another demonstrated defect. [7]
+- miss: the failure lane caught connection-capability storage failures converted into ordinary unsupported-capability results. A conservative refusal still needs to preserve the original operational error. [9]
+- weak-dimension: composition coverage; the sticky/recovery test asserted the residual defect as intent. External Codex transmission was unavailable after automatic approval rejection; toolkit APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source without rerunning scoped checks; full Gate B remains due after review convergence. [7]
+- rule-gap: no new binding rule needed; approved spec section 5 and the existing swallowed-error/absent-versus-error rules settle both findings.
+- outcome: TBD
+
+
+## 2026-11-03 — provider-fallback Desktop chat (#1491, Task 9) — verdict: changes-needed
+
+- contested: different preferred and historical actual providers do not prove quota or recovery. Reopening an automatic chat after a saved preference change is sufficient to produce that pair without any quota history; presentation must preserve the routing cause rather than infer it from inequality. [6]
+- false-positive: the test lane quality score of 8/10 is not a severity-8 coverage gap. Existing substantive persistence, host-retirement, read-only health and production-component render evidence remains useful. [7]
+- miss: the failure lane found two lifecycle gaps: eager actual-metadata writes capture no turn and silently lose storage errors, and Stop after a typed embedded quota event overrides the already-known failure with a plain partial row. Terminal semantic failures must survive later cancellation and reload. [6/9]
+- weak-dimension: composition coverage across ready-before-turn and typed-error-before-stream-EOF boundaries; presentation tests also encoded the unsupported quota inference. External diff transmission remained unavailable after automatic approval rejection; toolkit APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source and reported scoped validation without rerunning checks. [7]
+- rule-gap: no new binding rule needed; the swallowed-error rule explicitly makes the eager-write failure a blocker, and approved reason-code/partial/action contracts cover the other defects. Native capability ask remains open and its strict guard is outside these fixes.
+- outcome: TBD
+
+## 2026-11-03 — provider-fallback configuration apply (#1492, Task 10) — verdict: approve
+
+- contested: a confirm-then-read identity callback is checked twice around acknowledgement reading. One legitimate daemon replacement either receives a fresh kernel identity confirmation on the second check or is rejected. A counterexample requiring repeated identity-file reversal is not supported by the exclusive workspace lock and watcher-join-before-PID-removal lifecycle. [6/8]
+- false-positive: the test lane's 8/10 quality score is not a severity-8 coverage finding. Direct provider-map clone mutation and disk-write-failure metadata-read assertions remain optional strengthening; source inspection found the clone and successful-write gate in place. [7]
+- miss: none established. Held real SDK execution and a mechanically failing dispatcher overlay exercise generation retention across multiple calls; real database receipts exercise optional routing capabilities across enable/disable, beyond isolated boolean tests. [6/7]
+- weak-dimension: independent tooling breadth remained limited: automatic approval rejected external diff transmission and specialist APIs were unavailable. Three built-in lanes supplied independent evidence; judge verified source and reported checks without rerunning them. [7]
+- rule-gap: no new rule needed. Distinguish successful runtime publication from successful acknowledgement, and inspect identity races against the supported writer lifecycle before promoting hypothetical interleavings to defects. Native capability approval and later Settings/integration tasks remain outside this leaf.
 - outcome: TBD
 
 ## 2026-11-03 — feature/914-slack-team-usage (#915 Slack home team + `slack backfill` digest-coverage ledger, #916 Usage totals; 36 files +2075/−66; panel: prosecutor (10) + codex (4) + all three pr-review-toolkit specialists; judge verified against 9ba0650ed by reading, targeted `go test ./internal/sync ./cmd -run …` green) — verdict: changes-needed

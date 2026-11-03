@@ -238,3 +238,37 @@ func TestSessionLogConcurrent(t *testing.T) {
 		t.Errorf("expected 50 lines, got %d", count)
 	}
 }
+
+func TestSessionPoolResizeSharesOldAndNewAdmission(t *testing.T) {
+	p := NewSessionPool(2)
+	defer p.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	first, err := p.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Resize(1)
+	p.Release(first)
+	waitCtx, stop := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer stop()
+	if _, err := p.Acquire(waitCtx); err == nil {
+		t.Fatal("shrinking must count the still-active old generation")
+	}
+	p.Release(second)
+	next, err := p.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Resize(2)
+	parallel, err := p.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Release(parallel)
+	p.Release(next)
+}

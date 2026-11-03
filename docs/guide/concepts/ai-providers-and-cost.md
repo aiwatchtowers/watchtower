@@ -67,7 +67,13 @@ watchtower config set ai.fallback.provider codex
 watchtower config set ai.fallback.enabled true
 ```
 
-Use `claude` as the provider when Codex is your main one. Only background work moves to the reserve: digests, people cards, ideas, history fetching and image descriptions. It switches only on a confirmed quota error, and it tries the reserve once, with the reserve's own **Light Model** and **Strong Model**. Chats, automations and Workbench sessions stay on your main provider. When both are out of quota, the unfinished work waits for a later sync and nothing already saved is lost. A provider your company's profile forbids is never used as the reserve.
+Use `claude` as the provider when Codex is your main one. Background summaries switch only on a confirmed quota error, with the reserve's own **Light Model** and **Strong Model**. When both are out of quota, supported unfinished AI steps wait for a later sync; source syncing continues. A provider your company's profile forbids is never used as the reserve. Workbench sessions keep their own agent.
+
+New chats use **Preferred + reserve · Auto**. **Only Claude**, **Only Codex**, **Only Ollama** or an explicit model pins the chat; old chats keep their pins until you explicitly choose **Preferred + reserve · Auto model**. **Current provider** shows who actually answers and its model. Codex and Ollama cannot read images or PDFs, and a reserve missing a required tool or attachment is refused before startup.
+
+The reserve is chosen before a new turn starts. A quota failure after work starts keeps the partial reply and offers **Review actions**, which opens saved actions without sending, approving or repeating anything. Check those actions, choose a provider if needed, then send a new message.
+
+A healthy reserve stays with the chat after the preferred provider recovers. **Use Claude** or **Use Codex** switches back between turns and keeps your draft. If that reserve later reaches its own limit, the next new turn can use the recovered compatible preferred provider. Availability refreshes when you enter a chat, return to the app or finish a turn; the app never sends a paid test prompt just to check recovery.
 
 ## What drives cost
 <!-- learn

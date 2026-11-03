@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os"
 	"sync"
 	"testing"
 
@@ -47,4 +49,36 @@ func TestCommand_DecodesSpecShape(t *testing.T) {
 		`{"type":"turn","turn_id":"u1","text":"hi","attachments":[{"path":"/abs/x.png","mime":"image/png","name":"x.png"}],"replay":true}`), &c))
 	assert.Equal(t, Command{Type: CommandTurn, TurnID: "u1", Text: "hi",
 		Attachments: []Attachment{{Path: "/abs/x.png", Mime: "image/png", Name: "x.png"}}, Replay: true}, c)
+}
+
+func TestRoutingProtocolV2FixtureUnknownFieldsAndPrivateCause(t *testing.T) {
+	data, err := os.ReadFile("testdata/routing_v2.jsonl")
+	require.NoError(t, err)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	n := 0
+	for scanner.Scan() {
+		var e Event
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &e))
+		require.Equal(t, "preferred_reserve", e.RoutingMode)
+		e.Cause = errors.New("private provider failure")
+		encoded, err := json.Marshal(e)
+		require.NoError(t, err)
+		require.JSONEq(t, string(scanner.Bytes()), string(encoded))
+		require.NotContains(t, string(encoded), "private")
+		var legacy struct {
+			Type, Provider, Model, Message string
+			Retryable                      bool
+		}
+		require.NoError(t, json.Unmarshal(encoded, &legacy))
+		require.NotEmpty(t, legacy.Type)
+		if e.Type == EventError {
+			require.False(t, legacy.Retryable)
+		}
+		n++
+	}
+	require.NoError(t, scanner.Err())
+	require.Equal(t, 3, n)
+	var future Event
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"session_ready","routing_mode":"future_mode","future_field":true}`), &future))
+	require.Equal(t, "future_mode", future.RoutingMode)
 }

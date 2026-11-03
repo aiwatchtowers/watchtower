@@ -5,6 +5,7 @@ import "context"
 // Preflight checks routing metadata without constructing a provider or claiming
 // an attempt. The interface keeps the pipeline independent of its router.
 func Preflight(ctx context.Context, gen Generator) error {
+	gen = ResolveGenerator(ctx, gen)
 	if check, ok := gen.(interface{ RoutingPreflight(context.Context) error }); ok {
 		return check.RoutingPreflight(ctx)
 	}
@@ -42,12 +43,28 @@ func ProviderDeferred(err error) bool {
 }
 
 // RoutingEnabled reports the metadata gate installed by the opt-in router.
-func RoutingEnabled(gen Generator) bool {
+func RoutingEnabled(gen Generator, contexts ...context.Context) bool {
+	ctx := context.Background()
+	if len(contexts) > 0 {
+		ctx = contexts[0]
+	}
+	gen = ResolveGenerator(ctx, gen)
 	if _, ok := gen.(interface{ RoutingPreflight(context.Context) error }); ok {
 		return true
 	}
 	if wrapper, ok := gen.(generatorWrapper); ok {
-		return RoutingEnabled(wrapper.wrappedGenerator())
+		return RoutingEnabled(wrapper.wrappedGenerator(), ctx)
 	}
 	return false
+}
+
+// ResolveGenerator preserves optional capabilities through a context-selected
+// immutable routing generation. Fixed generators retain their existing behavior.
+func ResolveGenerator(ctx context.Context, gen Generator) Generator {
+	if selected, ok := gen.(interface {
+		GeneratorForContext(context.Context) Generator
+	}); ok {
+		return ResolveGenerator(ctx, selected.GeneratorForContext(ctx))
+	}
+	return gen
 }

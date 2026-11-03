@@ -13,6 +13,8 @@ package protocol EmbeddedChatStore: AnyObject {
     /// empty `partial` placeholder, atomically.
     /// `provider` is stamped on the reply row (the error card's sign-in hint).
     func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64)
+    func actions(turnID: String) throws -> [AgentAction]
+    func saveActual(messageID: Int64, provider: String, model: String) async throws
     func saveProgress(messageID: Int64, text: String) async throws
     /// `status`: complete | partial | error. A `complete` reply also touches
     /// the conversation (its `updated_at` orders the target's tabs).
@@ -22,6 +24,11 @@ package protocol EmbeddedChatStore: AnyObject {
     /// The `sqlite` path handed to `ai query --db-path`; nil for a chat that
     /// reads no workspace data.
     var dbPath: String? { get }
+}
+
+extension EmbeddedChatStore {
+    package func actions(turnID: String) throws -> [AgentAction] { [] }
+    package func saveActual(messageID: Int64, provider: String, model: String) async throws {}
 }
 
 /// The existing `chat_messages`/`chat_conversations` columns, unchanged.
@@ -38,6 +45,21 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
     }
 
     package var dbPath: String? { dbPool.path }
+
+    package func actions(turnID: String) throws -> [AgentAction] {
+        try dbPool.read { db in
+            try AgentActionQueries.fetchByConversation(db, conversationID: conversationID).filter { $0.turnID == turnID }
+        }
+    }
+
+    package func saveActual(messageID: Int64, provider: String, model: String) async throws {
+        guard !provider.isEmpty else { return }
+        let conversationID = conversationID
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE chat_messages SET provider = ?, model = ? WHERE id = ? AND conversation_id = ?",
+                           arguments: [provider, model, messageID, conversationID])
+        }
+    }
 
     /// The conversation a context already has, read at once (no write, so
     /// no waiting on the write lock); nil when it has none yet.
@@ -158,17 +180,26 @@ package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
         return (ownerID, assistantID)
     }
 
+    package func saveActual(messageID: Int64, provider: String, model: String) async throws {
+        guard !provider.isEmpty else { return }
+        try update(messageID) { row in
+            ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: row.text, createdAt: row.createdAt,
+                              turnID: row.turnID, status: row.status, provider: provider, model: model,
+                              errorCode: row.errorCode, errorMessage: row.errorMessage)
+        }
+    }
+
     package func saveProgress(messageID: Int64, text: String) async throws {
         try update(messageID) { row in
             ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: text, createdAt: row.createdAt,
-                              turnID: row.turnID, status: row.status, provider: row.provider)
+                              turnID: row.turnID, status: row.status, provider: row.provider, model: row.model)
         }
     }
 
     package func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws {
         try update(messageID) { row in
             ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: text, createdAt: row.createdAt,
-                              turnID: row.turnID, status: status, provider: row.provider,
+                              turnID: row.turnID, status: status, provider: row.provider, model: row.model,
                               errorCode: errorCode, errorMessage: errorMessage)
         }
     }

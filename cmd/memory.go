@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/features"
 	"watchtower/internal/memory"
 	"watchtower/internal/prompts"
@@ -197,6 +198,10 @@ func memoryVaultPath(cfg *config.Config) string {
 // is recorded as a failed memory run and retried next cycle instead of
 // aborting sync or disabling the phase until a restart.
 func wireMemoryPipeline(d *daemon.Daemon, database *db.DB, cfg *config.Config, logger *log.Logger) {
+	wireMemoryPipelineWithGenerator(d, database, cfg, nil, logger)
+}
+
+func wireMemoryPipelineWithGenerator(d *daemon.Daemon, database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) {
 	if !cfg.Memory.Enabled {
 		return
 	}
@@ -205,7 +210,11 @@ func wireMemoryPipeline(d *daemon.Daemon, database *db.DB, cfg *config.Config, l
 		if err != nil {
 			return nil, fmt.Errorf("opening memory vault: %w", err)
 		}
-		return newMemoryPipelineFactory(database, vault, cfg, logger.Printf), nil
+		p := newMemoryPipelineFactory(database, vault, cfg, logger.Printf)
+		if gen != nil {
+			p.SetGenerator(gen)
+		}
+		return p, nil
 	})
 }
 

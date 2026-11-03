@@ -109,6 +109,10 @@ func (e *Executor) runGone(runID int64) bool {
 // snapshot that does not parse (failed/not_runnable), a malformed event payload or an unreadable
 // store (failed/backend), a script that does not compile (failed/script).
 func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Automation, how claimKind) (*Env, *Sandbox, *runEnd) {
+	b := e.b
+	if b.ForJob != nil {
+		ctx, b = b.ForJob(ctx, b)
+	}
 	r, err := ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), ScopeOf(*a))
 	if err != nil {
 		return nil, nil, failedEnd(db.ErrKindNotRunnable, fmt.Errorf("the recipe does not parse: %w", err))
@@ -153,7 +157,7 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 			return nil, nil, end
 		}
 	}
-	sb, err := NewSandbox(env, e.modules(e.b))
+	sb, err := NewSandbox(env, e.modules(b))
 	if err != nil {
 		return nil, nil, classifyRunError(err)
 	}

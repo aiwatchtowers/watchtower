@@ -933,8 +933,11 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// cheap struct, and the daemon's own phase methods gate execution on
 	// their own feature's config flag (internal/daemon/daemon.go), not on
 	// whether it was wired here.
-	gen, cleanupPool := cliPooledGenerator(cfg)
-	defer cleanupPool()
+	gen := newDaemonRouting(cfg)
+	defer gen.pool.Close()
+	d.SetAIWorkerPool(gen.pool)
+	d.SetRoutingJob(gen.bindSync)
+	d.SetRoutingWatch(func(watchCtx context.Context) { gen.watch(watchCtx, flagConfig, logger) })
 	// One shared detector across both pipelines, so the known-project-key set
 	// is loaded once rather than once per pipeline.
 	pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger)
@@ -955,7 +958,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetInboxPipeline(inboxPipe)
 	wireIdeasPipeline(d, database, cfg, gen, logger)
 	wireReactionCommandsPipeline(d, database, cfg, gen, logger)
-	wireMemoryPipeline(d, database, cfg, logger)
+	wireMemoryPipelineWithGenerator(d, database, cfg, gen, logger)
 	nextStepPipe := targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger)
 	nextStepPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetNextStepPipeline(nextStepPipe)

@@ -9,6 +9,8 @@ package enum StreamEvent {
     case sessionID(String)
     case error(String)        // the provider's own error text (`ai query` v1
                               // `error` line, which exits 0)
+    case failure(ChatSessionError)
+    case routing(provider: String, model: String, metadata: ChatRoutingMetadata?)
     case done
 
     /// The pre-`.error` fold: an error line as visible `[Error] …` text. Kept
@@ -16,6 +18,7 @@ package enum StreamEvent {
     /// what they did before the case existed.
     package var foldingErrorIntoText: Self {
         if case .error(let message) = self { return .text("[Error] \(message)") }
+        if case .failure(let failure) = self { return .text("[Error] \(failure.message)") }
         return self
     }
 }

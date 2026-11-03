@@ -23,8 +23,8 @@ deadline-free safe callers can recover a due circuit. Earlier caller deadlines w
 pinned and excluded automation calls retain their original legacy deadline.
 
 Off and explicit provider/model pins return the original legacy generator.
-Stop/ask guards explicitly use `legacyCLIGenerator`; spec reviewer and generic
-`ai.Provider` clients are unchanged. Chat activation belongs to Task 8. SDK
+Stop/ask guards explicitly use `legacyCLIGenerator`; spec reviewer remains excluded. Tool-bearing `ai.Provider` clients use the
+Task 8 preflight described below. SDK
 sources (`automation.*`) and automation-tagged contexts use the legacy path
 unless the SDK supplies `WithAttemptHook` (Task 7). Hook `Before` admits each attempt;
 `After` receives its result/error and the leaf's recorded facts before reserve
@@ -194,3 +194,172 @@ durable pipeline guarantee is added. Current built-in primitives run inline at
 slots; `ask()` remains workbench-only, while `track.scan` remains a personal
 `custom_tracks` primitive. The SDK uncertainty metadata does not make these
 recipes resumable.
+
+## Chat and tool preflight (Task 8)
+
+Migration 172 gives existing conversations `routing_mode=pinned`; newly inserted
+conversations default to `preferred_reserve`. `provider`/`model` remain the legacy
+pin pair. `actual_provider`, `actual_model` and `routing_reason` record the chosen
+attempt independently of the global preference. `SetChatRouting` is a manual
+selection and clears the previous actual pair. A chosen reserve remains sticky
+across turns and DB reopen; recovery of the preferred alone does not switch that
+conversation back. If the sticky reserve is exhausted, a new automatic turn may select recovered
+preferred after policy and capability checks; if both are waiting, no child starts. A new conversation starts from configured preferred.
+Explicit CLI provider/model flags, including the default model, are pins.
+
+Auto-enabled sessions defer the warm child until the pending turn is known.
+`Router.Select` checks policy, then shared known health, then the available
+candidate's capabilities before construction/start. A healthy candidate missing
+a required capability fails without switching merely for capability.
+`Router.Run` then wraps exactly one pinned, never-retried turn, including the warm startup. A typed terminal event's internal `Cause` is
+observed even when the backend returns nil. A newly discovered quota preserves
+partial text and action rows, records health, and ends that turn with
+`retryable=false`. A later new turn can choose reserve. Cancellation retires an
+auto session's child; a new turn replays persisted Watchtower history. Between
+providers the old backend is closed and reaped; native session IDs never cross.
+Off/pinned sessions retain their legacy warm lifecycle.
+
+The selected provider builds its own strong model, prompt, MCP setup and
+claude.ai mode. An unavailable required claude.ai mode, image/PDF (including
+project files), or Codex-incompatible Quick Connection prevents reserve startup;
+there is no text-only downgrade. This is conservative: a main chat with its
+claude.ai tool mode enabled requires that mode. Preflight performs no paid probe.
+Tool-bearing query, embedded chats, REPL and Jira analyzer factories use the same
+known-health selection and single-call outcome recording. Native-thread IDs returned by a routed streaming client bind subsequent calls
+to that actual provider/model. An unknown incoming native ID fails closed with
+no child; an explicit `--provider` pin or a fresh session is required. Off/pinned
+legacy callers retain their existing behavior. Stop hooks and spec reviewers retain
+their separate excluded factories.
+
+Protocol v2 adds `preferred_provider`, `routing_mode` and `reason` alongside the
+actual `provider`/`model`. Auto sessions first emit readiness without claiming a
+physical provider; their per-turn readiness supplies the selected actual pair.
+The fixture is `internal/chat/testdata/routing_v2.jsonl`. Extra fields are additive
+for old readers; no text reset event was added. Task 9 owns the Desktop controls.
+
+Replay reads up to 200 newest content-free action receipts for prior assistant
+turns on the active path, including failed empty replies without tool events.
+The summary includes durable action ID, tool, status and whether a result/error
+is recorded; full arguments, results and diagnostics are omitted. Current turns,
+regenerate owner rows, abandoned branches and other conversations are excluded.
+The existing replay character cap still applies; receipts never execute actions.
+
+## Desktop chat intent and actual execution (Task 9)
+
+New main chats use **Preferred + reserve · Auto**. Migration 172's historical
+rows keep their provider/model pair as a pin; the composer offers the explicitly
+combined **Preferred + reserve · Auto model** choice to remove both. **Only**
+provider and explicit model choices remain hard pins. Automatic session argv
+omits both `--provider` and `--model`: Go reads routing intent from the row.
+Observing actual metadata does not change the pool's wanted configuration.
+
+Protocol-v2 ready events carry preferred/mode/reason separately from actual
+provider/model. An empty automatic ready event claims no started provider.
+`ChatTurnDriver` records selected actual metadata in the existing conversation
+and message columns without resetting text or steps; the embedded v1 stream has
+additive `routing` and typed error fields for the same actual-message contract.
+The current native claude.ai required-capability guard is unchanged: a reserve
+that cannot supply required tools or attachments is refused before startup.
+
+Healthy reserve sessions remain sticky. **Use preferred** between turns clears
+sticky metadata and retires the idle host; the existing pool waits for its exit
+before launching the replacement. Busy or queued turns cannot change routing,
+unsent drafts remain intact, and no global provider preference is written.
+The Go preflight may return an exhausted sticky reserve to a recovered compatible
+preferred before a new turn; it never replays a started turn.
+
+`watchtower ai routing-status` reads local installation quota metadata through
+`Router.Status` and `Store.Peek`. The reader uses the router's exact account and
+selected strong-model scopes, returns the configured revision, and exposes only
+provider/state/next-check metadata. It claims no lease, performs no inference,
+and never rewrites health state. Expired leases project `quota_wait` in the
+returned copy; a passed reset never means available. Storage, policy and cancel
+errors remain errors. Desktop refreshes on entering a chat, app activation and
+turn boundaries; it does not promise instant background recovery notification.
+This is the canonical reader for subsequent settings integration.
+
+A typed started-quota error persists `quota_exhausted` in the existing
+`error_code`, including partial replies. Reload therefore cannot restore Retry,
+Continue or Regenerate for that turn. A short transient `rate_limit` keeps its
+existing retry behavior. **Review actions** reads and opens existing persisted
+action IDs/status/results without sending a prompt, approving a proposal, or
+executing an action; empty receipt lists do not claim that no effects occurred.
+The user can check these actions and then send a new message.
+
+`ChatRoutingPresentation` consumes the canonical status DTO and actual session
+metadata. Its copy comes from the approved `ProviderFallbackPreview`; runtime
+next-check times come from metadata, while sample times remain in shot fixtures.
+`ChatRoutingStatusView` is shared by production and light/dark, narrow and
+reverse-provider catalog scenes. Tests cover argv, parser/driver/DB reload,
+embedded typed quota handling, action review without sending, explicit pins,
+sticky retirement and bounded warm sessions.
+
+Ready-before-turn storage failures retain their underlying error on the session
+and appear in the existing persistence error strip even without a live turn.
+The next turn carries the diagnostic until an actual-metadata write succeeds;
+repair clears only the matching diagnostic, preserving unrelated errors.
+
+An embedded typed started-quota event remains the terminal outcome if the owner
+presses Stop while stdout is still draining. The partial/error row keeps its
+quota code and action review after reload. Ordinary Stop behavior is unchanged.
+
+Historical actual/provider inequality alone never proves quota or recovery.
+The Go chat adapter retains the persisted routing cause across sticky turns and
+reopens, updating its in-memory provider/cause only after the DB write succeeds.
+Automatic quota/recovery cards require an affirmative quota cause; recovery also
+requires matching available local health. Unknown or ordinary historical causes
+show the actual label and any diagnostic without inventing a quota explanation.
+
+### Applying AI configuration
+
+The running daemon reloads saved AI routing without restarting its process or
+Workbench terminals. Each sync cycle and automation run captures one immutable
+routing generation before work begins. A started job keeps its provider, models,
+paths, context budget and attempt/deadline semantics; later jobs capture the
+published generation. SDK modules and agent preflight bind together. Persistent
+pipelines, the memory opener, scheduler, waiting runs, replay journals and history
+checkpoints retain their existing owners. All generator generations share one
+worker admission pool, including separately constructed coach and agent calls;
+lowering its limit waits for existing calls to drain.
+
+`ai routing-status` additionally reports `saved_version`, optional `application`
+(identity, normalized revision, saved file version, preferred provider and optional
+error), and `application_error` for unreadable/corrupt acknowledgement metadata.
+The acknowledgement is an owner-only atomic sidecar beside the existing daemon
+PID file. Readers require the existing confirmed kernel start identity and reject
+replaced/dead daemons. The saved file version includes the local file identity,
+mtime and size, so a delayed acknowledgement cannot confirm a later A→B→A Save.
+It is distinct from the normalized routing revision and is not a second routing
+hash. Unchanged acknowledgements do not rewrite the sidecar every poll.
+
+Publication precedes acknowledgement. A failed acknowledgement write does not
+roll running jobs back: Settings says the current background configuration is
+unconfirmed and labels any older acknowledgement as the last confirmed provider.
+Retry only reads current saved state; it never rewrites a captured Settings draft.
+Concurrent Saves supersede older in-flight results. Existing daemon-status
+observations revoke confirmation if the daemon stops; Retry validates the new
+run. A separate feature-save failure never strands routing in Applying. Explicit process provider
+pins remain effective and are reported as an apply error when they differ from
+the saved route, including a same-provider pin with an enabled reserve. Saved
+and effective pinned revisions remain distinct. Fallback itself never writes configuration.
+
+New automatic main-chat contexts read the latest preference. Warm launched hosts
+retire after their active turn on a routing-revision change; pending hosts keep
+FIFO admission and read configuration on launch. Compatibility never uses the
+observed actual provider. Embedded turns already start a fresh query process;
+new engines read the current configured preference and active turns keep theirs.
+
+An explicit `--workspace` on `ai routing-status` selects that workspace's daemon
+identity and acknowledgement; quota health remains installation-wide. Reloading
+Settings revokes both previous confirmation and pending responses, even within
+the same workspace. This does not launch metadata commands from ConfigService
+initialization: the current saved revision is confirmed by the explicit apply or
+Retry action. A later response from before Reload or daemon loss cannot restore
+an older confirmation.
+
+Generator decorators expose `GeneratorForContext` for optional-capability
+inspection. `digest.Preflight`, `RoutingEnabled` and `ImageCapable` inspect the
+job-selected generation; dynamic callers must pass their job context, including
+through nested pool/timeout wrappers. An enabled old job retains its durable
+receipts after reserve is disabled, and a disabled old job does not acquire
+routing/deferred semantics merely because a newer job enables it.

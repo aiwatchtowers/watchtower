@@ -151,6 +151,7 @@ var cliNoContentCommands = map[string]bool{
 	"agents scan":                      true,
 	"agents stats":                     true,
 	"ai models":                        true,
+	"ai routing-status":                true, // Local provider health/revision metadata only.
 	"ai session":                       true,
 	"ai test":                          true,
 	"auth check-cert":                  true,

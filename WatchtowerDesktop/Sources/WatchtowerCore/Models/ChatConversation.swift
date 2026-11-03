@@ -15,6 +15,11 @@ package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equat
     package let titleSource: String
     package let provider: String?
     package let model: String?
+    package let routingMode: String
+    package let actualProvider: String?
+    package let actualModel: String?
+    package let routingReason: String?
+    package var isAutomatic: Bool { routingMode == "preferred_reserve" }
     package let projectID: Int64?
     package let activeLeafMessageID: Int64?
     /// When the owner last saw this chat (`ChatConversationQueries.markRead`);
@@ -25,6 +30,10 @@ package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equat
 
     package enum CodingKeys: String, CodingKey {
         case id, title, pinned, provider, model
+        case routingMode = "routing_mode"
+        case actualProvider = "actual_provider"
+        case actualModel = "actual_model"
+        case routingReason = "routing_reason"
         case sessionID = "session_id"
         case contextType = "context_type"
         case contextID = "context_id"
@@ -52,6 +61,10 @@ package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equat
         titleSource = try c.decodeIfPresent(String.self, forKey: .titleSource) ?? "prefix"
         provider = try c.decodeIfPresent(String.self, forKey: .provider)
         model = try c.decodeIfPresent(String.self, forKey: .model)
+        routingMode = try c.decodeIfPresent(String.self, forKey: .routingMode) ?? "pinned"
+        actualProvider = (try c.decodeIfPresent(String.self, forKey: .actualProvider)).flatMap { $0.isEmpty ? nil : $0 }
+        actualModel = (try c.decodeIfPresent(String.self, forKey: .actualModel)).flatMap { $0.isEmpty ? nil : $0 }
+        routingReason = (try c.decodeIfPresent(String.self, forKey: .routingReason)).flatMap { $0.isEmpty ? nil : $0 }
         projectID = try c.decodeIfPresent(Int64.self, forKey: .projectID)
         activeLeafMessageID = try c.decodeIfPresent(Int64.self, forKey: .activeLeafMessageID)
         readAt = try c.decodeIfPresent(Double.self, forKey: .readAt)

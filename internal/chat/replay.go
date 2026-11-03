@@ -132,5 +132,50 @@ func ReplayFromDB(d *db.DB, conversationID int64, turnID string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("reading tool steps: %w", err)
 	}
+	if steps == nil {
+		steps = map[int64][]string{}
+	}
+	if err := addActionReceipts(d, conversationID, hist, steps); err != nil {
+		return "", err
+	}
 	return BuildReplaySteps(hist, steps, ReplayCapChars), nil
+}
+
+// Receipts are data about prior proposals, never instructions to execute them.
+// Only assistant rows on the selected prior path can own an action summary.
+func addActionReceipts(d *db.DB, conversationID int64, hist []db.ChatMessage, steps map[int64][]string) error {
+	owners := map[string]int64{}
+	for _, m := range hist {
+		if m.Role == "assistant" && m.TurnID != "" {
+			owners[m.TurnID] = m.ID
+		}
+	}
+	if len(owners) == 0 {
+		return nil
+	}
+	turnIDs := make([]string, 0, len(owners))
+	for id := range owners {
+		turnIDs = append(turnIDs, id)
+	}
+	actions, err := d.ChatActionReceipts(conversationID, turnIDs)
+	if err != nil {
+		return fmt.Errorf("reading action receipts: %w", err)
+	}
+	for _, a := range actions {
+		id, ok := owners[a.TurnID]
+		if !ok {
+			continue
+		}
+		// Full arguments/results and provider diagnostics may contain secrets.
+		// Identity + durable status is enough to prevent a duplicate proposal.
+		line := fmt.Sprintf("action #%d %s: %s (persisted receipt; do not repeat)", a.ID, truncateRunes(collapseSpace(a.Tool), 80), a.Status)
+		if a.HasResult {
+			line += "; result recorded"
+		}
+		if a.HasError {
+			line += "; error recorded"
+		}
+		steps[id] = append(steps[id], line)
+	}
+	return nil
 }

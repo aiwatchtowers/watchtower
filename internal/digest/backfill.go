@@ -93,7 +93,7 @@ func (p *Pipeline) runBackfillWindow(ctx context.Context, slackAccountID int64, 
 	defer unlock()
 
 	p.loadCaches()
-	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, held: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator) && only == nil, only: only, ignore: ignore}
+	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, held: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator, ctx) && only == nil, only: only, ignore: ignore}
 	if scope.durable {
 		scope.considered, err = p.db.HistoryBackfillConsidered(slackAccountID, from, to)
 		if err != nil {
@@ -333,7 +333,7 @@ func (p *Pipeline) runBackfillRollups(ctx context.Context, account int64, from, 
 
 	p.loadCaches()
 	p.backfillRollups = true
-	p.backfillRollupReceipts = receipts && RoutingEnabled(p.generator)
+	p.backfillRollupReceipts = receipts && RoutingEnabled(p.generator, ctx)
 	p.backfillRollupFrom, p.backfillRollupTo = from, to
 	p.backfillRollupAccountID = account
 	defer func() { p.backfillRollups, p.backfillRollupReceipts = false, false }()

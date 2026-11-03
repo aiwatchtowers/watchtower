@@ -2,6 +2,7 @@ package chat
 
 import (
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -135,4 +136,56 @@ func TestReplayFromDB_UsesActivePathAndSteps(t *testing.T) {
 	assert.Contains(t, out, "Owner: what slipped?")
 	assert.Contains(t, out, "  · step: search_knowledge: 2 results")
 	assert.NotContains(t, out, "why?", "the running turn is sent as the turn text, not replayed")
+}
+
+func TestReplayFailedEmptyAssistantIncludesOnlyPriorPathReceipts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat.db")
+	d, err := db.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	_, err = d.Exec(`INSERT INTO chat_conversations(id,created_at,updated_at) VALUES(1,1,1),(2,1,1)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO chat_messages(id,conversation_id,parent_id,role,text,turn_id,status,created_at) VALUES
+ (1,1,NULL,'user','previous question','prior','complete',1),
+ (2,1,1,'assistant','','prior','error',2),
+ (3,1,2,'user','current question','current','complete',3),
+ (4,1,3,'assistant','','current','partial',4),
+ (5,1,1,'assistant','abandoned','branch','complete',5)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE chat_conversations SET active_leaf_message_id=4 WHERE id=1`)
+	require.NoError(t, err)
+	receipt, err := d.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"secret":"do not replay"}`, Reason: "private reason", Surface: "main", ConversationID: 1, TurnID: "prior"})
+	require.NoError(t, err)
+	_, err = d.TransitionAgentAction(receipt, []string{"pending"}, "failed", `{"secret":"private result"}`, "private error")
+	require.NoError(t, err)
+	for _, a := range []db.AgentAction{
+		{Tool: "current_tool", ConversationID: 1, TurnID: "current"},
+		{Tool: "branch_tool", ConversationID: 1, TurnID: "branch"},
+		{Tool: "other_conversation", ConversationID: 2, TurnID: "prior"},
+	} {
+		a.ArgsJSON = "{}"
+		_, err = d.InsertAgentAction(a)
+		require.NoError(t, err)
+	}
+	require.NoError(t, d.Close())
+	d, err = db.Open(path)
+	require.NoError(t, err)
+	out, err := ReplayFromDB(d, 1, "current")
+	require.NoError(t, err)
+	require.Contains(t, out, "create_target: failed")
+	require.Contains(t, out, "persisted receipt; do not repeat")
+	require.Contains(t, out, "result recorded; error recorded")
+	for _, s := range []string{"current_tool", "branch_tool", "other_conversation", "current question", "private", "do not replay", "abandoned"} {
+		require.NotContains(t, out, s)
+	}
+	// Regenerate removes both the new assistant and reused owner row. A receipt
+	// belonging to that owner turn cannot become prior history accidentally.
+	_, err = d.Exec(`DELETE FROM chat_messages WHERE id=5`)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE chat_messages SET turn_id='regenerate' WHERE id=4`)
+	require.NoError(t, err)
+	out, err = ReplayFromDB(d, 1, "regenerate")
+	require.NoError(t, err)
+	require.NotContains(t, out, "current_tool")
+	require.NotContains(t, out, "current question")
 }

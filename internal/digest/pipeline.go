@@ -730,7 +730,7 @@ func (p *Pipeline) runChannelWindows(ctx context.Context, windows []channelWindo
 	batches := p.planChannelBatches(entries)
 
 	total := len(entries)
-	workers := p.cfg.AI.Workers
+	workers := config.RoutingSnapshot(ctx, p.cfg).AI.Workers
 	if workers <= 0 {
 		workers = config.DefaultAIWorkers
 	}
@@ -1156,7 +1156,7 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 	if errs > 0 {
 		allErrors := errors.Join(agg.errors...)
 		var wait interface{ ProviderDeferred() bool }
-		if RoutingEnabled(p.generator) || (errors.As(allErrors, &wait) && wait.ProviderDeferred()) {
+		if RoutingEnabled(p.generator, ctx) || (errors.As(allErrors, &wait) && wait.ProviderDeferred()) {
 			return gen, totalUsage, fmt.Errorf("%d channel digest(s) failed: %w", errs, allErrors)
 		}
 		if gen == 0 {
