@@ -102,11 +102,16 @@ extension KitGoHubInteropTests {
         handoff.step = "follow_relay"
         let unechoed = try phone.replica.outboxRows([.queued, .sent])
         XCTAssertEqual(unechoed.map(\.actionSeq).count, 3, "the three actions wait for their echoes")
-        try await follower.pollUntil(within: Self.stepWait, "the move to the relay") { await $0.route == .relay }
-        XCTAssertEqual(try phone.newestEpoch(), linkedEpoch + 1)
-        let resent = try phone.replica.outboxRows([.queued, .sent, .settled]).filter { row in
-            unechoed.contains { $0.actionID == row.actionID }
+        // Controls only: the iCloud echoes of the three stay unread, so they are unechoed when the phone moves (a phone
+        // that had not read them yet) and rule 13 resends them.
+        try await poll(within: Self.stepWait, "the move to the relay") {
+            try await follower.readRouteControls()
+            return await follower.route == .relay
         }
+        XCTAssertEqual(try phone.newestEpoch(), linkedEpoch + 1)
+        // The rows the move queued again, read right after `resendUnechoed` (their echoes may settle them at once).
+        let resent = await follower.lastResent.filter { row in unechoed.contains { $0.actionID == row.actionID } }
+        XCTAssertEqual(resent.count, 3, "the three unechoed actions were queued again on the relay")
         for row in resent {
             XCTAssertEqual(row.envelope, unechoed.first { $0.actionID == row.actionID }?.envelope, "resent with the same bytes")
         }
@@ -237,6 +242,9 @@ extension KitGoHubInteropTests {
             try await follower.outbox.enqueue(kind: .digestRead, entityRecordName: nil, params: ["mark": .string(mark)])
         }
         _ = try await follower.outbox.flush()
+        // The lapse moment: no feed cycle ran since the flush, so both are still without their echo.
+        let atLapse = try phone.replica.outboxRows([.queued, .sent])
+        XCTAssertEqual(atLapse.count, lapseMarks.count, "the lapse actions are unechoed when the entitlement expires")
         handoff.step = "lapse"
         let account = try await stand.accountID(ofPhone: client.deviceID)
         try await stand.setEntitlement(accountID: account, state: "expired", for: .zero)
@@ -425,6 +433,8 @@ actor KitFollower {
     private var left: TransportKind?
     private var holdNext = false
     private var clockOffset: TimeInterval = 0
+    /// The rows the last move queued again (rule 13), read right after the requeue.
+    private(set) var lastResent: [OutboxRow] = []
     /// The route the replica adopts before the next feed cycle (its tokens reset).
     private var adoptRoute: TransportKind?
     private(set) var switchedBy: String?
@@ -550,6 +560,15 @@ actor KitFollower {
             }
         } catch {
             Self.trace("other mailbox not read: \(error)")
+        }
+    }
+
+    /// The route's mailbox, controls only (`RelayFeed.readControls`): echoes there stay unread.
+    func readRouteControls() async throws {
+        let route = route
+        _ = try await feed.readControls(over: try secure(route)) { [weak self] control in
+            guard let self else { return false }
+            return await self.handle(control, on: route)
         }
     }
 
@@ -683,7 +702,10 @@ actor KitFollower {
             holdNext = false
             await next.holdFlushes()
         }
-        if resend { _ = try await next.resendUnechoed(onNewTransport: target) }
+        if resend {
+            _ = try await next.resendUnechoed(onNewTransport: target)
+            lastResent = try phone.replica.outboxRows([.queued])
+        }
         // The replica takes the route before the new feed first reads, after the cycle that decided the move
         // stored its token (the app's new session adopts it as it opens).
         adoptRoute = target

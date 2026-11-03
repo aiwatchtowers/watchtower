@@ -177,6 +177,7 @@ GO_PIN="$(cut -d' ' -f1 "$ROOT/internal/hub/transport/relay/VERSION")"
 if HEAD="$(git -C "$RELAY" rev-parse HEAD 2>/dev/null)"; then
 	echo "relay-interop-kit-hub: relay checkout at $HEAD (Kit pin $KIT_PIN, Go hub pin $GO_PIN)" >&2
 	[ "$HEAD" = "$KIT_PIN" ] || echo "relay-interop-kit-hub: warning: the Kit's proto is pinned to $KIT_PIN" >&2
+	[ "$HEAD" = "$GO_PIN" ] || echo "relay-interop-kit-hub: warning: the Go hub's proto is pinned to $GO_PIN" >&2
 else
 	echo "relay-interop-kit-hub: $RELAY is not a git checkout (Kit pin $KIT_PIN, Go hub pin $GO_PIN)" >&2
 fi
