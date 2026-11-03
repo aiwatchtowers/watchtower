@@ -7,11 +7,18 @@ import XCTest
 /// socket. The Swift hub (and its `MobileHub/` directory) is gone, and the
 /// hand-over reads the Swift state only through `hub adopt --status --json`
 /// (Go derives the Swift directory itself). So no Swift string literal under
-/// `WatchtowerDesktop/Sources` names `hubstate.db` or `MobileHub` — with no
-/// exception. Type and file names (`AppState+MobileHub.swift`) are not
-/// literals and are not matched; neither are comments.
+/// `WatchtowerDesktop/Sources` names `hubstate` or `mobilehub` in any case
+/// (so `hubstate.db`, `MobileHub`, `MOBILEHUB` alike) — with no exception.
+/// Type and file names (`AppState+MobileHub.swift`) are not literals and are
+/// not matched; neither are comments.
 final class DesktopNeverOpensTheSidecarTests: XCTestCase {
-    static let forbidden = ["hubstate.db", "MobileHub"]
+    /// Matched case-insensitively, each part on its own.
+    static let forbidden = ["hubstate", "mobilehub"]
+
+    static func forbiddenWords(in literal: String) -> [String] {
+        let folded = literal.lowercased()
+        return forbidden.filter { folded.contains($0) }
+    }
 
     private static let sources = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent() // Core
@@ -26,7 +33,7 @@ final class DesktopNeverOpensTheSidecarTests: XCTestCase {
             scanned += 1
             let text = try String(contentsOf: url, encoding: .utf8)
             for literal in Self.stringLiterals(in: text) {
-                for word in Self.forbidden where literal.contains(word) {
+                for word in Self.forbiddenWords(in: literal) {
                     XCTFail("\(url.path.replacingOccurrences(of: Self.sources.path, with: "Sources")): "
                         + "a string literal names \(word): read the hub through `hub … --json` or its socket")
                 }
@@ -53,7 +60,10 @@ final class DesktopNeverOpensTheSidecarTests: XCTestCase {
             "Watchtower/MobileHub", #"raw \(x) hubstate.db"#, "\n    multi \"line\" hubstate.db\n    ",
             #"escaped \" quote"#, "plain", #"interpolated \(f("MobileHub"))"#
         ])
-        XCTAssertEqual(Self.stringLiterals(in: source).filter { lit in Self.forbidden.contains { lit.contains($0) } }.count, 4)
+        XCTAssertEqual(Self.stringLiterals(in: source).filter { !Self.forbiddenWords(in: $0).isEmpty }.count, 4)
+        XCTAssertEqual(Self.forbiddenWords(in: "Watchtower/MOBILEHUB"), ["mobilehub"], "any case")
+        XCTAssertEqual(Self.forbiddenWords(in: "HubState"), ["hubstate"], "the part alone, any extension")
+        XCTAssertEqual(Self.forbiddenWords(in: "Mobile hub"), [], "words apart are no name")
     }
 
     /// The contents of every string literal in `text` (`"…"`, `"""…"""` and

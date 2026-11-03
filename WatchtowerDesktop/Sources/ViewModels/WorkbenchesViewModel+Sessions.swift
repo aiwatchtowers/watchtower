@@ -350,34 +350,12 @@ extension WorkbenchesViewModel {
         mode: TargetStartMode,
         placement: Placement,
         planFirst: Bool = false,
-        worktree: WorktreeChoice = .auto,
-        throughGo: Bool = true
+        worktree: WorktreeChoice = .auto
     ) async throws -> TerminalSession {
         try await startTarget(
             targetID, title: nil, prompt: prompt, mode: mode, placement: placement,
-            askedIn: selectedWorkbenchID, planFirst: planFirst, checkLaunch: true, worktree: worktree, throughGo: throughGo
+            askedIn: selectedWorkbenchID, planFirst: planFirst, checkLaunch: true, worktree: worktree
         )
-    }
-
-    /// A new session of the workbench with no target (the phone's "No
-    /// target", #1189): New Session's start — the default agent (D6), a
-    /// provisional title the AI title replaces, placed in the folder or its
-    /// own worktree — with `prompt` as its first message, followed by
-    /// `TerminalLaunch.planFirstSuffix` when `planFirst`. As
-    /// `startForTarget`, a launch that did not run throws, and with
-    /// `.background` a failure is only logged.
-    @discardableResult
-    func startUntargeted(
-        projectID: Int64, prompt: String, placement: Placement, planFirst: Bool
-    ) async throws -> TerminalSession {
-        let agent = currentDefaultAgent()
-        return try await startInWorkbench(
-            projectID, prompt: planFirst ? "\(prompt) \(TerminalLaunch.planFirstSuffix)" : prompt, placement: placement,
-            ticket: placement == .background ? nil : beginSwitch(projectID: projectID), throughGo: false
-        ) { project in
-            .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: TerminalSessionNaming.provisional(now: self.now()),
-                  folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil)
-        }
     }
 
     /// A `session()` step's session (automations spec §13.1): a new session
@@ -401,13 +379,11 @@ extension WorkbenchesViewModel {
     /// workbench read here, started with `prompt`. Every failure — no
     /// terminal, the workbench gone or unreadable, a launch that did not
     /// run — throws and is reported for `ticket` (nil: logged only).
-    /// `throughGo`: see `createAndActivate`.
     private func startInWorkbench(
         _ projectID: Int64,
         prompt: String,
         placement: Placement,
         ticket: Int?,
-        throughGo: Bool = true,
         makeRow: (Workbench) -> TerminalSessionQueries.NewSession
     ) async throws -> TerminalSession {
         func fail(_ message: String) -> TargetStartError {
@@ -424,7 +400,7 @@ extension WorkbenchesViewModel {
         guard let project = fetched else { throw fail("Workbench #\(projectID) is gone.") }
         return try await createAndActivate(
             makeRow(project), prompt: prompt, placement: placement, ticket: ticket, checkLaunch: true,
-            placing: (project, .auto, nil), throughGo: throughGo
+            placing: (project, .auto, nil)
         )
     }
 
@@ -444,8 +420,7 @@ extension WorkbenchesViewModel {
         planFirst: Bool = false,
         checkLaunch: Bool = false,
         agent: AgentKind? = nil,
-        worktree: WorktreeChoice = .auto,
-        throughGo: Bool = true
+        worktree: WorktreeChoice = .auto
     ) async throws -> TerminalSession {
         guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
@@ -488,8 +463,7 @@ extension WorkbenchesViewModel {
             placement: placement,
             ticket: ticket,
             checkLaunch: checkLaunch,
-            placing: (found.project, worktree, text),
-            throughGo: throughGo
+            placing: (found.project, worktree, text)
         )
     }
 
@@ -878,16 +852,14 @@ extension WorkbenchesViewModel {
     /// command before its agent's first start — when that launch does not
     /// run, `startNotice` gives the command to run by hand.
     /// With `goSessionStart` set, a workbench agent row (`placing`) is
-    /// started by Go instead (`startInGo`) unless `throughGo` is false, which
-    /// keeps the Swift launch path (`startUntargeted`).
+    /// started by Go instead (`startInGo`).
     private func createAndActivate(
         _ new: TerminalSessionQueries.NewSession,
         prompt: String?,
         placement: Placement,
         ticket: Int?,
         checkLaunch: Bool,
-        placing: SessionPlacing? = nil,
-        throughGo: Bool = true
+        placing: SessionPlacing? = nil
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
         // Every new agent session passes here (New Session, Work on It, the
@@ -898,7 +870,7 @@ extension WorkbenchesViewModel {
             reportStartError(refusal, projectID: new.projectID, ticket: ticket)
             throw TargetStartError.failed(refusal)
         }
-        if throughGo, let placing, let wait = goSessionStart {
+        if let placing, let wait = goSessionStart {
             return try await startInGo(
                 new, prompt: prompt, placement: placement, ticket: ticket, checkLaunch: checkLaunch,
                 choice: placing.choice, wait: wait

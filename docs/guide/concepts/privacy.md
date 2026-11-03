@@ -14,7 +14,7 @@ Removing an account deletes its sign-in file. With **Delete an account's data wh
 
 In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits.
 
-Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, an older version's iPhone-sync folder next to them (`MobileHub`) and anything already in iCloud. The iPhone-sync keys go with the database folder. Delete the recordings by hand. To clear iPhone data, turn off **Mobile sync** and remove the phone before you reset.
+Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, an older version's iPhone-sync folder next to them (`MobileHub`, with any `set-aside-<time>` folder in it) and anything already in iCloud. The Mac's iPhone-sync keys go with the database folder. If an older version's keys were not handed over yet, they stay in your Keychain under `com.watchtower` until the hand-over finishes; Reset All Data does not remove them. Delete the recordings by hand. To clear iPhone data, turn off **Mobile sync** and remove the phone before you reset.
 
 ## Watchtower stays out of Time Machine
 <!-- learn
@@ -88,7 +88,7 @@ When it is on, your Mac publishes a trimmed view of its data to your own iCloud 
 
 It is end-to-end encrypted.
 
-Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`, not in the Keychain.
+Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`. An older version kept them in the Keychain; the update moves them into that file and then deletes the Keychain items.
 
 A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
 

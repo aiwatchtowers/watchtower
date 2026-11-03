@@ -49,6 +49,32 @@ final class HubAdoptionAppStateTests: XCTestCase {
         XCTAssertTrue(appState.hubAdoption === driver, "once per app run")
     }
 
+    /// Under XCTest an AppState without injected deps never builds the live
+    /// driver: no `watchtower hub adopt`, no Keychain, no live data root.
+    func testUnderXCTestWithoutDepsNoAdoptionStarts() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let appState = AppState { [:] }
+        appState.mobileSyncDefaults = defaults
+        XCTAssertTrue(AppState.runsUnderXCTest)
+
+        appState.startHubAdoption()
+        XCTAssertNil(appState.hubAdoption, "no live driver in a unit test")
+
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
+        defer {
+            appState.sessionAgentStateCenter?.stop()
+            appState.sessionReportCenter?.stop()
+            appState.workbenchNotificationCenter?.stop()
+            appState.workbenchesViewModel?.asks.stop()
+            appState.stopHubCenterForQuit()
+        }
+        XCTAssertNil(appState.hubAdoption, "initWorkbenches starts no adoption process either")
+    }
+
     func testRetryAndTheSettingsSwitch() async throws {
         hub.state = .init(hubID: "hub-acme", swiftState: "present")
         hub.adoptError = "locked"

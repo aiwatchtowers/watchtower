@@ -78,6 +78,11 @@ type Deps struct {
 	// RecordingQueued (nil = none) is told the upload id of each recording
 	// the intake queued for the transcriber (Desktop's desktop_watch).
 	RecordingQueued func(uploadID string)
+	// BringForward (nil = none) is told the workbench and the new session
+	// of a started session_start that asked for bring_forward (mobile POC
+	// spec §6.5): Desktop shows that workbench and session in front. A host
+	// without Desktop has no window and nobody hears it.
+	BringForward func(workbenchID, sessionID int64)
 }
 
 // Handlers is the registered handler set: its in-memory state (asks being

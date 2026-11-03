@@ -186,6 +186,10 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	deps.RecordingQueued = func(uploadID string) {
 		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
 	}
+	// A headless host has no Desktop watching: nobody hears it.
+	deps.BringForward = func(workbenchID, sessionID int64) {
+		h.sup.notifyDesktop(ControlAnswer{Event: EventBringForward, OK: true, WorkbenchID: workbenchID, SessionID: sessionID})
+	}
 	w.handlers = handlers.Register(d, deps)
 
 	w.lane = newStateLane(o.DB.DB, o.Clock)

@@ -245,3 +245,55 @@ func TestDesktopWatchAnswerComesFirstWithAStatusSnapshot(t *testing.T) {
 		}
 	}
 }
+
+// TestDesktopWatchHearsATypingRequest (PROJ-16, OD-2): the link center's
+// typing request (link.TestATypingRequestAsksTheOwnerOnce pins once per
+// request) reaches Desktop's watch as one typing_request line with the
+// phone's device id and display name, and nothing else.
+func TestDesktopWatchHearsATypingRequest(t *testing.T) {
+	w := &pairListener{queue: make(chan ControlAnswer, 1)}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{w: true}}
+	h := &hubRuntime{sup: s}
+	h.typingRequested("AAAA", "Colleague A's iPhone")
+	raw, err := json.Marshal(<-w.queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"event":"typing_request","ok":true,"device_id":"AAAA","name":"Colleague A's iPhone"}` {
+		t.Errorf("typing_request = %s", raw)
+	}
+	(&hubRuntime{}).typingRequested("AAAA", "x") // no supervisor (tests): nothing, no panic
+}
+
+// TestDesktopWatchHearsDevicesChanged: a link-center change of the phones
+// (device_grant) reaches the watch as one bare devices_changed line, so
+// Desktop reads the phones count again; another kind sends nothing.
+func TestDesktopWatchHearsDevicesChanged(t *testing.T) {
+	w := &pairListener{queue: make(chan ControlAnswer, 2)}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{w: true}}
+	h := &hubRuntime{sup: s}
+	h.devicesChanged([]string{"workbench"})
+	h.devicesChanged([]string{link.KindDeviceGrant})
+	raw, err := json.Marshal(<-w.queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"event":"devices_changed","ok":true}` || len(w.queue) != 0 {
+		t.Errorf("devices_changed = %s, %d more", raw, len(w.queue))
+	}
+}
+
+// TestDesktopWatchHearsBringForward: the bring_forward event carries the
+// workbench and the session only.
+func TestDesktopWatchHearsBringForward(t *testing.T) {
+	w := &pairListener{queue: make(chan ControlAnswer, 1)}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{w: true}}
+	s.notifyDesktop(ControlAnswer{Event: EventBringForward, OK: true, WorkbenchID: 3, SessionID: 9})
+	raw, err := json.Marshal(<-w.queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"event":"bring_forward","ok":true,"workbench_id":3,"session_id":9}` {
+		t.Errorf("bring_forward = %s", raw)
+	}
+}

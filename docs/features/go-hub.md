@@ -370,19 +370,29 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   hands the settings over on stdin (`--settings-stdin`), then the keys on stdin (`--keys-stdin`, a separate call),
   deletes its Keychain items, and confirms (`--confirm-deleted`). Go derives the Swift directory itself and leaves
   `MobileHub/` empty but for `MOVED` (`hub_impl=go\nmoved_to=<hub dir>\n`). A phone recording mid-transcription
-  becomes one `failed` job with class `hub_moved` (decision 3).
+  becomes one `failed` job with class `hub_moved` (decision 3). Until `--confirm-deleted`, the Swift identity stays in
+  the Desktop's Keychain items, which Reset All Data does not remove (the guide's privacy page says so).
+  **Set up Mobile again** (`hub adopt --set-aside`, after `no_keys`) writes `MOVED` and moves the Swift files into
+  `MobileHub/set-aside-<UTC time>/`: kept, never imported or deleted.
 - **Transport switch.** Only a person switches: a paying phone's `transport_switch`, or `entitlement_expired`. A switch
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are
   kept for 7 days (decision 2). `hub_meta.transport` is `cloudkit|relay`.
+- **Desktop's watch events** (`desktop_watch`, besides `status`, `recording_queued`, `pair` and `switched`):
+  `typing_request` (`device_id`, `name`: a linked phone newly asks to type, once per request; Desktop posts the
+  PROJ-16 notice "Allow "<name>" to type into Claude Code sessions?" while the app is in the background),
+  `bring_forward` (`workbench_id`, `session_id`: an applied phone start with `bring_forward`; Desktop brings the
+  workbench forward and shows the session) and `devices_changed` (no fields: a link, an unlink from either side or a
+  grant changed; Desktop reads `hub status` again, Learn's "iPhone paired"). A headless host has no Desktop
+  watching: these events reach nobody and `bring_forward` moves nothing.
 - **Desktop never opens `hubstate.db`** (decision 5): every Desktop read is `hub … --json` or the control socket
   (`HubCenter`, `MobileSettingsModel`, `PhoneRecordingQueue`, `HubKeepAwake`). Guard:
   `WatchtowerDesktop/Tests/Core/DesktopNeverOpensTheSidecarTests.swift` refuses every Swift string literal under
   `WatchtowerDesktop/Sources` that names `hubstate.db` or `MobileHub`, with no exception.
 - **The Swift hub is deleted** (Task 24). `Services/MobileHub/`, `MobileHubMovedGuard`, `OwnerAwayCenter`/`OwnerAwayPolicy`
   (Go: `internal/hub/platform`, `TestAwayFromThePolicy`) and the tray's CloudKit push forwarding are gone. Each Swift
-  hub test with a behavioural assertion has a Go twin (spec §13 "Ported guards"; the mapping table is in the Task 24
-  PR), except the rows waiting on ask #969. `HubKeyringVectorTests` stays as a standalone ChaChaPoly check of the Swift
+  hub test is mapped in the Task 24 PR (spec §13 "Ported guards"): most have a Go twin, the obsolete ones are listed
+  with their reasons, and the rows without a twin wait on ask #969. `HubKeyringVectorTests` stays as a standalone ChaChaPoly check of the Swift
   vector `internal/hub/identity/testdata/swift-keyring.json`. Learn's "iPhone paired" signal reads `phones` from
   `hub status --json`.
 

@@ -7,8 +7,9 @@ import WatchtowerSync
 /// epoch 1's `K_data ‖ K_alert` with ChaChaPoly under the identity's wrap key, the AAD binding the hub id
 /// (`wt/hub-meta/v1` ‖ hub UUID, `wt/hub-epoch/v1` ‖ hub UUID ‖ epoch u32 BE). Go's `identity.Keyring` must open
 /// them with the same wrap key and AADs (`TestKeyring_OpensSwiftSealedKeys`), so an adoption reads a Swift sidecar.
-/// The Swift hub is gone (go hub plan 3 Task 24); this test keeps the vector honest on its own: a plain run opens
-/// the fixture's sealed values, and `WT_E2E_REGENERATE=1` writes a fresh fixture with the same layout.
+/// **The fixture is frozen.** `internal/hub/identity/testdata/swift-keyring.json` was written by the retired Swift
+/// hub's `HubKeyring` (go hub plan 3 Task 24 deleted it); it stands for every Swift sidecar an adoption meets, so it
+/// must never be regenerated. This test only opens it, over ChaChaPoly and the two AADs, on its own.
 final class HubKeyringVectorTests: XCTestCase {
     struct Vector: Codable, Equatable {
         struct Epoch: Codable, Equatable {
@@ -50,12 +51,7 @@ final class HubKeyringVectorTests: XCTestCase {
         .deletingLastPathComponent() // WatchtowerDesktop
         .appendingPathComponent("internal/hub/identity/testdata/swift-keyring.json")
 
-    func testEmitSidecarKeyVector() throws {
-        if ProcessInfo.processInfo.environment["WT_E2E_REGENERATE"] == "1" {
-            try regenerate()
-            XCTFail("regenerated, re-run without WT_E2E_REGENERATE")
-            return
-        }
+    func testTheSwiftSealedSidecarKeysOpen() throws {
         let vector = try JSONDecoder().decode(Vector.self, from: Data(contentsOf: Self.fixtureURL))
         XCTAssertEqual(vector.hubID, Self.hubID)
         let epoch = try XCTUnwrap(vector.epochs.first)
@@ -77,23 +73,6 @@ final class HubKeyringVectorTests: XCTestCase {
         XCTAssertThrowsError(try Self.open(Data(hex: epoch.sealedKeys), aad: try Self.metaAAD(vector.hubID)))
     }
 
-    private func regenerate() throws {
-        let meta = Self.randomKey()
-        let keys = Self.randomKey() + Self.randomKey()
-        let vector = Vector(
-            hubID: Self.hubID,
-            kMetaSealed: try Self.seal(meta, aad: try Self.metaAAD(Self.hubID)).hex,
-            epochs: [.init(epoch: 1, sealedKeys: try Self.seal(keys, aad: try Self.epochAAD(Self.hubID, 1)).hex)],
-            kMeta: meta.hex, dataKey: keys.prefix(32).hex, alertKey: keys.suffix(32).hex)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
-        var data = try encoder.encode(vector)
-        data.append(0x0A)
-        try FileManager.default.createDirectory(
-            at: Self.fixtureURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: Self.fixtureURL)
-    }
-
     private static func metaAAD(_ hubID: String) throws -> Data {
         Data("wt/hub-meta/v1".utf8) + WireBytes.bytes(of: try WireBytes.hubUUID(hubID))
     }
@@ -104,15 +83,9 @@ final class HubKeyringVectorTests: XCTestCase {
         return aad
     }
 
-    private static func seal(_ plain: Data, aad: Data) throws -> Data {
-        try ChaChaPoly.seal(plain, using: wrapKey, authenticating: aad).combined
-    }
-
     private static func open(_ sealed: Data, aad: Data) throws -> Data {
         try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: sealed), using: wrapKey, authenticating: aad)
     }
-
-    private static func randomKey() -> Data { SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) } }
 }
 
 private extension Data {
