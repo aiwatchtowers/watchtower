@@ -152,10 +152,8 @@ func NewCreateTarget() *Tool {
 		// do not decode are left to Validate's message.
 		ValidateBinding: func(b Binding, raw json.RawMessage) error {
 			var a createTargetArgs
-			if json.Unmarshal(raw, &a) != nil {
-				return nil
-			}
-			if a.ParentID != 0 && b.Surface != InboxSurface {
+			decoded := json.Unmarshal(raw, &a) == nil
+			if decoded && a.ParentID != 0 && b.Surface != InboxSurface {
 				return &ValidationError{Msg: parentOnlyOnInboxMsg}
 			}
 			return nil
