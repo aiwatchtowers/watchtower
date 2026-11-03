@@ -555,26 +555,3 @@ func TestAccountRefreshUpdatesTargets(t *testing.T) {
 		t.Fatalf("send_alert requests %v", sent)
 	}
 }
-
-// TestReconnectWakesUnavailableRetries: the relay answered UNAVAILABLE (its
-// own code, after the client's retries), the push waits its 30 s; the
-// relay's reconnect marker reaches the runtime, which wakes the push: it is
-// sent again at once, with no time passing.
-func TestReconnectWakesUnavailableRetries(t *testing.T) {
-	unavailable := fmt.Errorf("relay: send_alert: %w", relay.MapError(&client.Error{E: &relayv1.Error{
-		Code: relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, Message: "unavailable",
-	}}))
-	w := newPushWorld(t, &scriptedAlerts{answers: []error{unavailable}, calls: make(chan string, 64)})
-	h := &hubRuntime{pub: w.pub, push: w.push}
-	w.src.set(t, workAlert("ask-1"))
-	w.cycle(hubslices.KindAskAlert)
-	w.nextCall()
-	if d := w.nextWait(); d != 30*time.Second {
-		t.Fatalf("wait after UNAVAILABLE %v, want 30 s", d)
-	}
-	h.onEvent(context.Background(), transport.Event{Zone: pushZone, Resync: true})
-	if k := w.nextCall(); k != "ask-1" {
-		t.Fatalf("retried %s", k)
-	}
-	w.waitLog(w.settledLine("ask-1", "accepted"))
-}

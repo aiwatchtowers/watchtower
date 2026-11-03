@@ -201,12 +201,11 @@ func (o Options) relayTransport(ctx context.Context, id identity.Identity, st *s
 	if err := os.MkdirAll(assets, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: creating the asset dir: %w", ErrStartFailed, err)
 	}
-	var opts []client.Option
-	if o.httpClient != nil {
-		opts = append(opts, client.WithHTTPClient(o.httpClient))
-	}
-	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, opts...), relay.Options{
-		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient,
+	// The client's HTTP is watched for its WebSocket connects (the alert
+	// pushes waiting after UNAVAILABLE wake on one).
+	connects := relay.WatchConnects(o.httpClient)
+	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, client.WithHTTPClient(connects.HTTPClient())), relay.Options{
+		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient, Connects: connects,
 	})
 	if len(zones) == 0 {
 		return t, nil
@@ -363,14 +362,16 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		srcs = kept
 	}
 	h.newPusher(sealer)
-	pub = slices.NewPublisher(slices.Config{
+	pc := slices.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: srcs, Clock: o.Clock,
-		OnError: h.observe, Latency: h.lat, OnAlertSaved: h.alertSaved, Away: o.awayInput(),
+		OnError: h.observe, Latency: h.lat,
 		Linked: func() (bool, error) {
 			devices, err := st.Devices()
 			return len(devices) > 0, err
 		},
-	})
+	}
+	h.withAlerts(&pc)
+	pub = slices.NewPublisher(pc)
 	h.pub = pub
 	if h.sw != nil {
 		h.sw.SetPublisher(pub)
@@ -726,7 +727,6 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 			// the account state the relay re-read may have new readers.
 			h.pub.PublishSoon(slices.UrgentKinds...)
 			h.kick(h.linkKick)
-			h.pushReconnected()
 		}
 		switch {
 		case strings.HasPrefix(ev.Zone, transport.PairZone("")):

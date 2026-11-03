@@ -1,6 +1,7 @@
 package switcher_test
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -12,8 +13,9 @@ import (
 )
 
 // OnSwitched sees each committed switch with its target, the active
-// transport already moved (the runtime drops its queued alert pushes there
-// on a switch to CloudKit, before the publisher resumes).
+// transport already moved and the publisher still held (the runtime drops
+// its queued alert pushes there on a switch to CloudKit and asks for their
+// signals before the publisher resumes).
 func TestOnSwitchedSeesEachCommittedSwitch(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		var (
@@ -22,9 +24,12 @@ func TestOnSwitchedSeesEachCommittedSwitch(t *testing.T) {
 		)
 		w.rebuild(func(c *switcher.Config) {
 			c.OnSwitched = func(target transport.Kind) {
+				// A held publisher's cycle reads and writes nothing.
+				rep, err := w.pub.Cycle(w.ctx, nil)
+				held := err == nil && rep.Aborted
 				mu.Lock()
 				defer mu.Unlock()
-				got = append(got, string(target)+":"+string(w.sw.Active().Kind()))
+				got = append(got, fmt.Sprintf("%s:%s:held=%v", target, w.sw.Active().Kind(), held))
 			}
 		})
 		ph := w.addPhone(true)
@@ -33,7 +38,7 @@ func TestOnSwitchedSeesEachCommittedSwitch(t *testing.T) {
 		w.moveTo(ph, wire.TransportCloudKit)
 		mu.Lock()
 		defer mu.Unlock()
-		if want := []string{"relay:relay", "cloudkit:cloudkit"}; !slices.Equal(got, want) {
+		if want := []string{"relay:relay:held=true", "cloudkit:cloudkit:held=true"}; !slices.Equal(got, want) {
 			t.Fatalf("OnSwitched %v, want %v", got, want)
 		}
 	})

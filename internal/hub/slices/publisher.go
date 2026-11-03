@@ -885,15 +885,24 @@ func (p *Publisher) alertsSaved(done []pushed, at time.Time) {
 }
 
 // resignalWanted is a copy of the alert keys Resignal asked for, on a
-// transport that writes signals; on any other the request is dropped (the
-// hub went back to the relay, which writes no signal).
+// transport that writes signals while the owner is still away. Otherwise the
+// requests are dropped: the hub went back to the relay, which writes no
+// signal, or the owner came back to the Mac before the write (a retried
+// signal write included).
 func (p *Publisher) resignalWanted() map[string]bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.resignal) == 0 {
+	n := len(p.resignal)
+	p.mu.Unlock()
+	if n == 0 {
 		return nil
 	}
-	if !p.alertSignals() {
+	back := !p.ownerAway()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.alertSignals() || back {
+		if back && len(p.resignal) > 0 {
+			log.Printf("hub slices: %d alerts not signalled on CloudKit: the owner is back at the Mac", len(p.resignal))
+		}
 		clear(p.resignal)
 		return nil
 	}
@@ -922,6 +931,15 @@ func (p *Publisher) resignalGone(asked map[string]bool, items []Item) {
 	}
 }
 
+// ownerAway is the owner-away input: nil reads as away, an error too.
+func (p *Publisher) ownerAway() bool {
+	if p.c.Away == nil {
+		return true
+	}
+	away, err := p.c.Away.Away()
+	return away || err != nil
+}
+
 // Resignal follows a switch to CloudKit that dropped the pushes of keys
 // (spec §12a, review ask #866). With the owner back at the Mac nothing is
 // written. A key every linked phone already received over the relay
@@ -934,11 +952,9 @@ func (p *Publisher) Resignal(keys []string) {
 	if len(keys) == 0 {
 		return
 	}
-	if p.c.Away != nil {
-		if away, err := p.c.Away.Away(); err == nil && !away {
-			log.Printf("hub slices: %d alerts not signalled on CloudKit: the owner is back at the Mac", len(keys))
-			return
-		}
+	if !p.ownerAway() {
+		log.Printf("hub slices: %d alerts not signalled on CloudKit: the owner is back at the Mac", len(keys))
+		return
 	}
 	devices, err := p.c.Store.Devices()
 	if err != nil {

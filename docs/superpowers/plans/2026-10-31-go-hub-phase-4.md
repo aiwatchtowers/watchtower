@@ -500,6 +500,8 @@ No inventory contract changes: no `docs/inventory/` entry covers `ask_alert`, pu
 - `accepted` is the relay's `Ok`, not a delivery: the relay keeps at most 4 alerts in flight per phone (`MAX_ALERTS_PER_PHONE`) and cancels the oldest beyond that, and APNs may still drop one; the hub cannot see either.
 - Push timing on the phone (APNs delivery) is not measured by the hub; it is part of the phone's end-to-end sample.
 - An alert sealed in an epoch the phone's alert material no longer holds (more than one rotation since) does not open; the NSE shows the generic notification, as on CloudKit today.
+- A crash while a switch toward CloudKit is in flight (the old side's drain and the rotation, before the switch's commit runs `OnSwitched`) leaves the queued pushes pending: at the restart they settle `expired` (reason `restart`) and those still-open alerts get no CloudKit signal. The alert itself still reaches the phone's replica as an `ask_alert` record, so it is the same class as the restart rule (never resent, never re-signalled).
+- Push targets are the paying linked phones the relay last accepted in `set_hub_readers`: an alert raised between a phone's admission and the next readers sync is not pushed to that phone (no ledger row; it still reaches the replica).
 
 ## Self-review (done while writing)
 

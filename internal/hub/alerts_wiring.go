@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	goslices "slices"
 	"time"
 
 	"watchtower/internal/hub/alerts"
@@ -41,6 +42,22 @@ func (h *hubRuntime) newPusher(sealer *secure.Sealer) {
 		Store: h.st, Sealer: sealer, Send: send, Targets: h.pushTargets, RefreshAccount: h.refreshForPush,
 		Away: h.sup.o.awayInput(), Clock: h.sup.o.Clock,
 	})
+	if c, ok := h.relayT().(connectNotifier); ok {
+		// Once per WebSocket connect, never per zone marker or overflow.
+		c.OnConnected(h.pushReconnected)
+	}
+}
+
+// connectNotifier is the relay transport's connect hook (relay.ConnectWatch).
+type connectNotifier interface{ OnConnected(fn func()) }
+
+// readerLister is the reader list the relay last accepted from the hub.
+type readerLister interface{ Readers() []string }
+
+// withAlerts gives the publisher's config the alert hooks: OnAlertSaved and
+// the owner-away input Resignal re-checks.
+func (h *hubRuntime) withAlerts(c *slices.Config) {
+	c.OnAlertSaved, c.Away = h.alertSaved, h.sup.o.awayInput()
 }
 
 // startPusher settles the pushes a previous run left pending and starts the
@@ -74,19 +91,29 @@ func (h *hubRuntime) alertSaved(key string, fields secure.WorkAlertFields, saved
 var errNoAccountState = errors.New("hub: the transport keeps no account state")
 
 // pushTargets is the pusher's Targets: the linked phones with a relay device
-// id that the last account state holds in a paying slot (a paying phone in
-// the hub's slot is one of its readers). It reads what the transport last
-// read, never the relay: Enqueue runs on the publisher's cycle.
+// id that the last account state holds in a paying slot and that the last
+// set_hub_readers the relay accepted names (a phone slotted after it, before
+// the next readers sync, would be refused forbidden, and that push never
+// retried). It reads what the transport last read and set, never the relay:
+// Enqueue runs on the publisher's cycle.
 func (h *hubRuntime) pushTargets(context.Context) ([]alerts.Target, error) {
 	a, ok := h.relayT().(relayAdmission)
-	if !ok {
+	r, ok2 := h.relayT().(readerLister)
+	if !ok || !ok2 {
 		return nil, errNoAccountState
 	}
 	devices, err := h.st.Devices()
 	if err != nil {
 		return nil, err
 	}
-	return alerts.Eligible(devices, a.LastAccountState()), nil
+	readers := r.Readers()
+	var out []alerts.Target
+	for _, t := range alerts.Eligible(devices, a.LastAccountState()) {
+		if goslices.Contains(readers, t.RelayID) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // refreshForPush is the pusher's RefreshAccount after a not_paying or
@@ -120,7 +147,7 @@ func switchPushes(push *alerts.Pusher, pub *slices.Publisher, target transport.K
 	}
 }
 
-// pushReconnected tells the pusher the relay connection is back.
+// pushReconnected tells the pusher the relay's WebSocket connected again.
 func (h *hubRuntime) pushReconnected() {
 	if h.push != nil {
 		h.push.Reconnected()

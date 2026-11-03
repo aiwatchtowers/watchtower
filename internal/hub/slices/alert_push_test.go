@@ -151,7 +151,7 @@ func TestNoSendAlertOnCloudKit(t *testing.T) {
 
 // resignalRig publishes ask-1 and ask-2 on the relay with two linked
 // phones, then moves the transport to CloudKit.
-func resignalRig(t *testing.T, away bool) (*rig, *Publisher, *fakeSource, []phone) {
+func resignalRig(t *testing.T, away bool) (*rig, *Publisher, *fakeSource, []phone, *fixedAway) {
 	t.Helper()
 	r := newRig(t, transport.KindRelay)
 	phones := []phone{r.linkPhone(), r.linkPhone()}
@@ -168,7 +168,7 @@ func resignalRig(t *testing.T, away bool) (*rig, *Publisher, *fakeSource, []phon
 	}
 	ft.kind.Store(transport.KindCloudKit)
 	r.advance(CloudKitSpacing)
-	return r, p, src, phones
+	return r, p, src, phones, a
 }
 
 func settle(t *testing.T, st *state.Store, key, device, outcome, reason string) {
@@ -195,7 +195,7 @@ func (r *rig) signalled(keys ...string) map[string]bool {
 // asked for is resaved with its signal once; one resolved meanwhile writes
 // nothing.
 func TestResignalSignalsOpenAlertsOnCloudKit(t *testing.T) {
-	r, p, src, _ := resignalRig(t, true)
+	r, p, src, _, _ := resignalRig(t, true)
 	src.set(alertItem(t, "ask-1", "a")) // ask-2 resolved before the switch's cycle
 	p.Resignal([]string{"ask-1", "ask-2"})
 	r.cycle(p, KindAskAlert)
@@ -219,7 +219,7 @@ func TestResignalSignalsOpenAlertsOnCloudKit(t *testing.T) {
 // TestResignalWritesNothingWhenOwnerIsBack: the owner back at the Mac at the
 // switch: no record, no signal.
 func TestResignalWritesNothingWhenOwnerIsBack(t *testing.T) {
-	r, p, _, _ := resignalRig(t, false)
+	r, p, _, _, _ := resignalRig(t, false)
 	p.Resignal([]string{"ask-1", "ask-2"})
 	if rep := r.cycle(p, KindAskAlert); rep.Saved != 0 {
 		t.Fatalf("saved %d records with the owner back", rep.Saved)
@@ -233,7 +233,7 @@ func TestResignalWritesNothingWhenOwnerIsBack(t *testing.T) {
 // (one accepted, one expired in_flight) gets no signal; ask-2 accepted by one
 // of the two gets one, and its accepted row stays.
 func TestResignalSkipsAlertsEveryPhoneAlreadyHad(t *testing.T) {
-	r, p, _, phones := resignalRig(t, true)
+	r, p, _, phones, _ := resignalRig(t, true)
 	a, b := phones[0].id.String(), phones[1].id.String()
 	settle(t, r.st, "ask-1", a, state.AlertAccepted, "")
 	settle(t, r.st, "ask-1", b, state.AlertExpired, state.ReasonInFlight)
@@ -249,5 +249,23 @@ func TestResignalSkipsAlertsEveryPhoneAlreadyHad(t *testing.T) {
 	}
 	if began, err := r.st.BeginAlertPush("ask-2", a, time.Now()); err != nil || began {
 		t.Fatalf("ask-2 could be pushed to the phone that had it again: %v, %v", began, err)
+	}
+}
+
+// TestResignalRechecksOwnerAwayAtTheWrite: asked while the owner was away,
+// the owner back before the cycle writes: no record, no signal, and the
+// request is dropped (an away owner later does not bring it back).
+func TestResignalRechecksOwnerAwayAtTheWrite(t *testing.T) {
+	r, p, _, _, away := resignalRig(t, true)
+	p.Resignal([]string{"ask-1", "ask-2"})
+	away.away.Store(false)
+	if rep := r.cycle(p, KindAskAlert); rep.Saved != 0 {
+		t.Fatalf("saved %d records with the owner back", rep.Saved)
+	}
+	away.away.Store(true)
+	r.advance(CloudKitSpacing)
+	r.cycle(p, KindAskAlert)
+	if n := r.signalCount(); n != 0 {
+		t.Fatalf("%d signals after the owner came back", n)
 	}
 }
