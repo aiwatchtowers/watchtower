@@ -165,6 +165,12 @@ func RecordingsCapability(on bool) *HeartbeatCapabilities {
 }
 
 // DevicePayload is the phone's link record (the hello's plain device part).
+// RelayDeviceID, RelayAuthPub and RelayIDSig are an upgraded phone's relay
+// identity in its own device record (protocol §5.5): its hosted-relay
+// device id, its relay_auth Ed25519 public key and that key's signature
+// over link.RelayIDProofMessage, each unpadded base64url; the hub stores the
+// id only when link.VerifyRelayIDProof accepts the three. Absent from older
+// phones and from a phone with no relay identity.
 type DevicePayload struct {
 	DeviceID             string  `json:"device_id"`
 	Name                 string  `json:"name"`
@@ -179,6 +185,9 @@ type DevicePayload struct {
 	PermissionsRequested *bool   `json:"permissions_requested,omitempty"`
 	SeenAt               *Time   `json:"seen_at,omitempty"`
 	UpdatedAt            Time    `json:"updated_at"`
+	RelayDeviceID        string  `json:"relay_device_id,omitempty"`
+	RelayAuthPub         string  `json:"relay_auth_pub,omitempty"`
+	RelayIDSig           string  `json:"relay_id_sig,omitempty"`
 }
 
 // DeviceHello is the plain payload of a hello, sealed to the hub's key.

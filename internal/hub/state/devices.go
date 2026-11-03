@@ -159,6 +159,24 @@ func (s *Store) Device(id string) (Device, bool, error) {
 	return d, true, nil
 }
 
+// SetRelayDeviceIDTx stores relayID as device's relay device id, in the
+// caller's transaction, and clears its relay admission stamp in the same
+// statement, so MarkRelayAdmitted stamps it again once the relay's account
+// state lists the new id. ErrNoDevice when device is not linked.
+func SetRelayDeviceIDTx(tx *sql.Tx, device, relayID string) error {
+	res, err := tx.Exec(`UPDATE devices SET relay_device_id = ?, relay_admitted_at = NULL
+		WHERE device_id = ? COLLATE NOCASE`, relayID, device)
+	if err != nil {
+		return fmt.Errorf("storing a device's relay id: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("storing a device's relay id: %w", err)
+	} else if n == 0 {
+		return ErrNoDevice
+	}
+	return nil
+}
+
 // LapseRelay marks device lapsed on the relay as of at (sim rule 16), in the
 // caller's transaction, and drops its held actions (echoed held, so the
 // phone lists them as not delivered); relay_skip_seq becomes the highest

@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
@@ -32,7 +33,11 @@ type DeviceRecord struct {
 // into start_sessions_allowed (its opt-out, never the owner's grant), stores
 // its typing and permission requests for the owner — a request is never a
 // grant — and revokes a grant whose request goes from on to off (the phone's
-// own revoke, spec §10). A rewrite for another toggle keeps a grant.
+// own revoke, spec §10). A rewrite for another toggle keeps a grant. A
+// record naming the phone's relay identity with its proof
+// (VerifyRelayIDProof) gives the phone that relay id when no other linked
+// phone holds it; an unproven or taken id is logged by class and ignored,
+// and the rest of the rewrite applies.
 func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceRecord) error {
 	row, linked, err := c.st.Device(device)
 	if err != nil {
@@ -115,18 +120,18 @@ func (c *Center) deviceCreatorMatches(ctx context.Context, r DeviceRecord) bool 
 func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayload) error {
 	c.mu.Lock()
 	defer c.unlock()
-	var asked, typingRevoked, permsRevoked, changed bool
-	var askedName string
+	var asked, typingRevoked, permsRevoked, changed, relayNamed bool
+	var askedName, relayRefused string
 	err := c.st.WithTx(ctx, func(tx *sql.Tx) error {
 		var (
-			name                                    string
+			name, storedRelay                       string
 			typingAllowed, typingReq                bool
 			permsAllowed, permsReq, startAllowedNow bool
 		)
 		err := tx.QueryRow(`SELECT name, typing_allowed, typing_requested,
-			permissions_allowed, permissions_requested, start_sessions_allowed
+			permissions_allowed, permissions_requested, start_sessions_allowed, ifnull(relay_device_id, '')
 			FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(
-			&name, &typingAllowed, &typingReq, &permsAllowed, &permsReq, &startAllowedNow)
+			&name, &typingAllowed, &typingReq, &permsAllowed, &permsReq, &startAllowedNow, &storedRelay)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // unlinked meanwhile
 		}
@@ -152,6 +157,10 @@ func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayloa
 			WHERE device_id = ? COLLATE NOCASE`,
 			newName, p.StartSessions, p.TypingRequested, permsWanted, revokeTyping, revokePerms,
 			decided, secs(c.now()), device)
+		if err != nil {
+			return err
+		}
+		relayNamed, relayRefused, err = c.takeRelayID(tx, device, storedRelay, p)
 		return err
 	})
 	if err != nil {
@@ -168,8 +177,49 @@ func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayloa
 	if permsRevoked {
 		log.Printf("hub link: phone %s turned permission answers off: grant revoked", strings.ToUpper(device))
 	}
+	if relayRefused != "" {
+		log.Printf("hub link: phone %s relay id ignored: %s", strings.ToUpper(device), relayRefused)
+	}
+	if relayNamed {
+		log.Printf("hub link: phone %s named its relay id", strings.ToUpper(device))
+		c.relayNamed = append(c.relayNamed, strings.ToUpper(device))
+	}
 	if changed {
 		c.changed()
 	}
 	return nil
+}
+
+// relayIDTaken is the class of a proven relay id another linked phone holds.
+const relayIDTaken = "held_by_another"
+
+// takeRelayID stores the relay id p names for device, in the rewrite's
+// transaction, when its proof holds, it differs from stored and no other
+// linked phone holds it (one relay id names one phone); the store clears the
+// relay admission stamp. A record naming no relay identity changes nothing
+// and logs nothing; refused is the class of any other refusal.
+func (c *Center) takeRelayID(tx *sql.Tx, device, stored string, p wire.DevicePayload) (named bool, refused string, err error) {
+	if p.RelayDeviceID == "" && p.RelayAuthPub == "" && p.RelayIDSig == "" {
+		return false, "", nil
+	}
+	devID, perr := secure.ParseID(device)
+	if perr != nil { // the processor names linked phones by their parsed id: never here
+		return false, relayIDInvalid, nil //nolint:nilerr // a refusal class, not a failure
+	}
+	id, class := checkRelayIDProof(c.keys.HubID(), devID, p)
+	if class != "" {
+		return false, class, nil
+	}
+	if id == stored {
+		return false, "", nil
+	}
+	var holders int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM devices WHERE relay_device_id = ? AND device_id <> ? COLLATE NOCASE`,
+		id, device).Scan(&holders); err != nil {
+		return false, "", err
+	}
+	if holders > 0 {
+		return false, relayIDTaken, nil
+	}
+	return true, "", state.SetRelayDeviceIDTx(tx, device, id)
 }
