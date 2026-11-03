@@ -128,11 +128,16 @@ extension MobileSettingsModel {
         case "not_admitted": return warning("Relay hasn't admitted this Mac yet: a phone with a Relay subscription has to link it.")
         case "vouch_revoked": return warning("The phone that vouched for this Mac on Relay took it back. Link a phone with Relay again.")
         case "needs_relay": return warning("This hub needs Relay to link phones.")
+        case "no_icloud": return warning(noICloudLine)
         case "no_relay_origin": return warning("Relay is not set up on this Mac: phones link over iCloud only.")
         case "not_test_workspace": return warning("Mobile runs only in its test workspace on this Mac.")
         default: return warning(unknownReason)
         }
     }
+
+    /// `no_icloud`: CloudKit, the active transport, has no usable iCloud
+    /// account (the account's own line says why); the hub goes on by itself.
+    nonisolated static let noICloudLine = "Paused until iCloud is available on this Mac. It goes on by itself."
 
     nonisolated static let unknownReason = "Mobile reports a problem this version can't name. It tries again by itself."
 

@@ -3,6 +3,21 @@ import CloudKit
 import Foundation
 import WatchtowerSync
 
+/// Hands the bridge's events to the socket server, which is built after the CloudKit backends that raise some of
+/// them; an event raised before the server exists, or after it went, is dropped (events are best effort).
+final class BridgeEventRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var server: BridgeSocketServer?
+
+    func attach(_ server: BridgeSocketServer) {
+        lock.withLock { self.server = server }
+    }
+
+    func send(_ event: BridgeEvent) {
+        lock.withLock { server }?.broadcast(event)
+    }
+}
+
 /// Silent pushes to the bridge become `Event{pull_now}` for the hub (Go hub spec §6.2), which then reads its
 /// mailboxes at once. The Swift hub got its silent pushes from CKSyncEngine's own database subscription
 /// (`TrayAppDelegate.application(_:didReceiveRemoteNotification:)` → `wakeRelay`); the bridge, with no engine,
@@ -109,11 +124,13 @@ public final class BridgeAppDelegate: NSObject, NSApplicationDelegate {
             exit(3)
         }
         let entitled = CloudKitTransport.entitlementPresent()
+        let events = BridgeEventRelay()
+        let zonesRecreated: @Sendable () -> Void = { events.send(BridgeEvent(zonesRecreated: true)) }
         let service = BridgeService(
             tags: tags, hubDir: hubDir,
             makeBackends: { hubID in
                 BridgeService.Backends(
-                    cloud: CloudKitBridgeCloud(hubID: hubID),
+                    cloud: CloudKitBridgeCloud(hubID: hubID, zonesRecreated: zonesRecreated),
                     shares: CloudKitZoneShares(hubID: hubID))
             },
             onHello: { hubID in
@@ -132,7 +149,8 @@ public final class BridgeAppDelegate: NSObject, NSApplicationDelegate {
             exit(4)
         }
         self.server = server
-        let push = PushReceiver { [weak server] event in server?.broadcast(event) }
+        events.attach(server)
+        let push = PushReceiver { events.send($0) }
         self.push = push
         accountObservation = push.observeAccountChanges()
         if entitled { NSApplication.shared.registerForRemoteNotifications() }

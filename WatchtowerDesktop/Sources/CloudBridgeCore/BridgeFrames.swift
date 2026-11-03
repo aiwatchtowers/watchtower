@@ -163,19 +163,30 @@ public struct BridgeParticipant: Equatable, Sendable {
     }
 }
 
-/// A server-sent event: a zone that may have changed, a silent push, or a transport-level error class.
+/// A server-sent event: a zone that may have changed, a silent push, a transport-level error class, an account
+/// change, or the hub's zones created again.
 public struct BridgeEvent: Equatable, Sendable {
     public var zone: String
     public var pullNow: Bool
     public var errorClass: String
     /// The Mac's iCloud account changed (`CKAccountChanged`).
     public var accountChanged: Bool
+    /// CloudKit said one of the hub's zones was gone and the bridge created them again: what the hub published
+    /// may be gone with it.
+    public var zonesRecreated: Bool
 
-    public init(zone: String = "", pullNow: Bool = false, errorClass: String = "", accountChanged: Bool = false) {
+    public init(
+        zone: String = "",
+        pullNow: Bool = false,
+        errorClass: String = "",
+        accountChanged: Bool = false,
+        zonesRecreated: Bool = false
+    ) {
         self.zone = zone
         self.pullNow = pullNow
         self.errorClass = errorClass
         self.accountChanged = accountChanged
+        self.zonesRecreated = zonesRecreated
     }
 }
 
@@ -612,6 +623,7 @@ extension BridgeEvent {
         w.put(2, pullNow)
         w.put(3, errorClass)
         w.put(4, accountChanged)
+        w.put(5, zonesRecreated)
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -622,6 +634,7 @@ extension BridgeEvent {
             case 2: e.pullNow = try value.bool(field)
             case 3: e.errorClass = try value.string(field)
             case 4: e.accountChanged = try value.bool(field)
+            case 5: e.zonesRecreated = try value.bool(field)
             default: break
             }
         }

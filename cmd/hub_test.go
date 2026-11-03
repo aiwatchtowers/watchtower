@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -266,6 +267,30 @@ func TestHubStatusPrintsTheNoRelayOriginRemedy(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, out, "Set the relay")
 	assert.NotContains(t, out, "no_relay_origin")
+}
+
+// A hub paused because CloudKit has no usable iCloud account says so in
+// both forms: state paused, reason no_icloud, and the text form's line.
+func TestHubStatusShowsTheNoICloudPause(t *testing.T) {
+	dir := hubTestDir(t)
+	hubTestConfig(t, "hubtest-x")
+	t.Setenv(hub.EnvTestWorkspace, "hubtest-x")
+	raw := fmt.Sprintf(`{"state":%q,"reason":%q,"transport":"cloudkit","cloudkit":{"account":"no_account"},"pid":%d,"run":"r"}`,
+		hub.StatePaused, hub.ReasonNoICloud, os.Getpid())
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "status.json"), []byte(raw), 0o600))
+
+	out, err := runHub(t, "status")
+	require.NoError(t, err)
+	assert.Contains(t, out, "hub: paused (no_icloud)")
+	assert.Contains(t, out, hubNoICloudLine)
+
+	out, err = runHub(t, "status", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.Equal(t, hub.StatePaused, m["state"])
+	assert.Equal(t, hub.ReasonNoICloud, m["reason"])
+	assert.NotContains(t, out, hubNoICloudLine, "the JSON form carries no sentence")
 }
 
 // desktopAppProbe is a darwin probe whose /Applications holds the app.

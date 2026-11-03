@@ -21,7 +21,8 @@ const (
 	StateRunning  = "running"
 	// StatePaused: a headless hub with no paying phone (spec §7.3) keeps
 	// its state and local work, publishes nothing and applies no action;
-	// pairing goes on.
+	// pairing goes on. A desktop host whose active transport is CloudKit is
+	// paused too while no iCloud account can be used (ReasonNoICloud).
 	StatePaused = "paused"
 )
 
@@ -66,6 +67,10 @@ const (
 	// and a Swift hub's state appeared beside it; the adoption refuses that
 	// state, and no hub runs until the owner chooses (ask #949, pending).
 	ReasonSwiftBesideGo = "swift_beside_go"
+	// ReasonNoICloud: paused, CloudKit is the active transport and the
+	// bridge reports an iCloud account that cannot be used (the Swift hub's
+	// "No iCloud account is signed in"); it resumes by itself (icloud.go).
+	ReasonNoICloud = "no_icloud"
 )
 
 // Status.Adoption values: where the Swift hub's adoption stands.

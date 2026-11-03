@@ -77,6 +77,15 @@ final class MobileSettingsModelTests: XCTestCase {
         await early.load()
         XCTAssertFalse(early.showsSlowingLine, "59 s is not yet")
 
+        // On CloudKit with no usable account the hub is paused (no_icloud):
+        // the hub line says so, the account line says why.
+        cli.status(#"{"state":"paused","reason":"no_icloud","transport":"cloudkit","bridge":"running","cloudkit":"#
+            + #"{"account":"no_account","throttled_since":"","signed":true}}"#)
+        await model.load()
+        XCTAssertEqual(model.hubLine, Model.HubLine(text: "Paused until iCloud is available on this Mac. It goes on by itself.",
+                                                    tone: .warning))
+        XCTAssertEqual(model.accountLine, "Mobile isn't available on this Mac: iCloud is off.")
+
         // Off: an unsigned build still says so; the account and the throttle are a running hub's.
         cli.status(#"{"state":"off","reason":"disabled","bridge":"unavailable","cloudkit":"#
             + #"{"account":"no_account","throttled_since":"2026-11-02T10:00:00Z","signed":false}}"#)
@@ -142,7 +151,7 @@ final class MobileSettingsModelTests: XCTestCase {
     func testEveryReasonHasOwnerCopy() async {
         let errors = ["start_failed", "sidecar_unreadable", "run_dir_unusable", "bridge_unavailable"]
         let warnings = ["locked", "relay_unreachable", "not_vouched", "not_admitted", "vouch_revoked", "needs_relay",
-                        "no_relay_origin", "not_test_workspace", "something_newer"]
+                        "no_icloud", "no_relay_origin", "not_test_workspace", "something_newer"]
         for reason in errors + warnings {
             let line = Model.reasonLine(reason)
             XCTAssertNotNil(line, reason)

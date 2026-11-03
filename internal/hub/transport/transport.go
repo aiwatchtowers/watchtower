@@ -146,7 +146,10 @@ type Control struct {
 // after a reconnect or a folded overflow): the runtime republishes what the
 // phones wait for. PullNow means a silent push reached the CloudKit bridge:
 // pull every zone now. AccountChanged means the Mac's iCloud account
-// changed (the CloudKit bridge): the runtime calls link.Center.AccountChanged.
+// changed (the CloudKit bridge): the runtime calls link.Center.AccountChanged
+// and republishes into the new account's zones. ZonesRecreated means the
+// CloudKit bridge created the hub's zones again after CloudKit said one was
+// gone (deleted on the server): the runtime republishes everything.
 // Events are best effort: a consumer still pulls on its own backstop timer.
 type Event struct {
 	Zone           string
@@ -155,6 +158,7 @@ type Event struct {
 	Resync         bool
 	PullNow        bool
 	AccountChanged bool
+	ZonesRecreated bool
 }
 
 // Transport is the record store under the sealer.

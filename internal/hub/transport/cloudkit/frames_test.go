@@ -118,6 +118,7 @@ func fixtureCases() []struct {
 		{"event_pull_now", &pb.Response{Result: &pb.Response_Event{Event: &pb.Event{PullNow: true}}}},
 		{"event_error", &pb.Response{Result: &pb.Response_Event{Event: &pb.Event{ErrorClass: "unavailable"}}}},
 		{"event_account_changed", &pb.Response{Result: &pb.Response_Event{Event: &pb.Event{AccountChanged: true}}}},
+		{"event_zones_recreated", &pb.Response{Result: &pb.Response_Event{Event: &pb.Event{ZonesRecreated: true}}}},
 	}
 }
 

@@ -156,3 +156,91 @@ func TestNoteWorkAlerts_APushMovesASeenRowToTheCurrentGeneration(t *testing.T) {
 		t.Fatalf("gen %d stop-3-1 = %+v", gen, m)
 	}
 }
+
+// twin of HubSyncStateWorkAlertsTests.testWipeBumpsGenerationAndKeepsPublishedRows
+// (and of HubSyncState.wipeSyncState's token half): the CloudKit reset bumps
+// the generation, keeps a published alert's row in its old generation,
+// forgets an unconfirmed one of the wiped generation, wipes every
+// slice_state row and the named mailboxes' tokens only, and keeps the
+// ledger and hub_meta.
+func TestWipeSyncStateBumpsGenerationAndKeepsPublishedRows(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	t0 := time.Unix(1_800_000_000, 0).UTC()
+	if _, _, err := s.NoteWorkAlerts(ctx, []string{"ask-1", "ask-2"}, nil, t0); err != nil {
+		t.Fatal(err)
+	}
+	// Seen before the alert lifetime's start: expired, not news after a reset.
+	if _, _, err := s.NoteWorkAlerts(ctx, []string{"ask-3"}, nil, t0.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := SetSliceState(tx, "ask_alert-ask-1", "w1", "h", t0); err != nil {
+			return err
+		}
+		if err := SetSliceState(tx, "workbench-1", "w2", "h", t0); err != nil {
+			return err
+		}
+		if err := SetZoneTokenTx(tx, "relay/r/*", 7); err != nil {
+			return err
+		}
+		if err := SetZoneTokenTx(tx, "relay/r/phone", 9); err != nil {
+			return err
+		}
+		if err := SetMetaTx(tx, MetaHubID, "hub-acme"); err != nil {
+			return err
+		}
+		return MarkDone(tx, "action-1", "applied", nil, nil, t0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.WipeSyncState(ctx, t0.Add(-time.Hour), "relay/r/*"); err != nil {
+		t.Fatal(err)
+	}
+
+	if g, err := s.SyncGeneration(); err != nil || g != 1 {
+		t.Fatalf("generation %d, %v", g, err)
+	}
+	_, marks, err := s.NoteWorkAlerts(ctx, nil, nil, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := marks["ask-1"]; !ok || m.Generation != 0 {
+		t.Fatalf("a published row keeps its old generation: %+v", marks)
+	}
+	if _, ok := marks["ask-2"]; ok {
+		t.Fatalf("an unconfirmed row of the wiped generation is forgotten: %+v", marks)
+	}
+	if m, ok := marks["ask-3"]; !ok || m.Generation != 0 {
+		t.Fatalf("a row seen before the cutoff stays: %+v", marks)
+	}
+	for _, kind := range []string{"ask_alert", "workbench"} {
+		if h, err := s.SliceHashes(kind); err != nil || len(h) != 0 {
+			t.Fatalf("%s hashes %v, %v", kind, h, err)
+		}
+	}
+	if v, err := s.ZoneToken("relay/r/*"); err != nil || v != 0 {
+		t.Fatalf("the named mailbox's token %d, %v", v, err)
+	}
+	if v, err := s.ZoneToken("relay/r/phone"); err != nil || v != 9 {
+		t.Fatalf("another zone's token %d, %v", v, err)
+	}
+	if phase, _, _, err := s.Phase("action-1"); err != nil || phase != PhaseDone {
+		t.Fatalf("the ledger: %q, %v", phase, err)
+	}
+	if v, ok, err := s.Meta(MetaHubID); err != nil || !ok || v != "hub-acme" {
+		t.Fatalf("hub_id %q %v %v", v, ok, err)
+	}
+
+	// A zone deletion names no mailbox: every token stays.
+	if err := s.SetZoneToken("relay/r/*", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WipeSyncState(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.ZoneToken("relay/r/*"); err != nil || v != 5 {
+		t.Fatalf("a zone reset moved the mailbox token: %d, %v", v, err)
+	}
+}

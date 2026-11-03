@@ -68,7 +68,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 
 | Verb | `--json` keys (pinned) |
 |---|---|
-| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`); phase 3: `off_delete` {`state` (`ok`/`pending`/`failed` while the owner's switch is off, "" while on: the owner's off deletes the records the hub published, as POLICY-03's wipe, through the running transports before the hub stops, then retried while off from 1 min doubling to 1 h while records stay; it removes the staged assets (`<hub dir>/assets` and the `slice_assets` descriptors an adoption brought, also on an iCloud account change; a plain stop keeps them); and it unlinks every phone, as the Swift hub's off did (owner, ask #956): `supervisor.unlinkForOff` runs `hub unlink`'s offline path for each linked phone (row and grants gone, keybox read revoked, epoch rotated) and refuses each waiting one, at every reconcile while the switch is written off (`0`; read again under the lock `hub enable` also takes; one phone failing does not stop the rest), so turning on again needs a fresh pairing; the hub's identity key stays, as the Swift hub's Keychain identity did. The policy's off never unlinks), `at` (last try, RFC 3339)}, `transcriber` (a Desktop heartbeat ever arrived: recordings can go on), `cloudkit` {`account` (bridge account state, "" = not read), `throttled_since` (RFC 3339, "" = not throttled), `signed` (a desktop host's build has the bridge and its entitlement)}, `kept_recordings` (absent at 0), `name` (the name phones show: `hub name`'s value, else the short host name; Settings → Mobile's Mac name row) |
+| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`; phase 3: `no_icloud` with `paused` on a CloudKit desktop host), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`); phase 3: `off_delete` {`state` (`ok`/`pending`/`failed` while the owner's switch is off, "" while on: the owner's off deletes the records the hub published, as POLICY-03's wipe, through the running transports before the hub stops, then retried while off from 1 min doubling to 1 h while records stay; it removes the staged assets (`<hub dir>/assets` and the `slice_assets` descriptors an adoption brought, also on an iCloud account change; a plain stop keeps them); and it unlinks every phone, as the Swift hub's off did (owner, ask #956): `supervisor.unlinkForOff` runs `hub unlink`'s offline path for each linked phone (row and grants gone, keybox read revoked, epoch rotated) and refuses each waiting one, at every reconcile while the switch is written off (`0`; read again under the lock `hub enable` also takes; one phone failing does not stop the rest), so turning on again needs a fresh pairing; the hub's identity key stays, as the Swift hub's Keychain identity did. The policy's off never unlinks), `at` (last try, RFC 3339)}, `transcriber` (a Desktop heartbeat ever arrived: recordings can go on), `cloudkit` {`account` (bridge account state, "" = not read), `throttled_since` (RFC 3339, "" = not throttled), `signed` (a desktop host's build has the bridge and its entitlement)}, `kept_recordings` (absent at 0), `name` (the name phones show: `hub name`'s value, else the short host name; Settings → Mobile's Mac name row) |
 | `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
@@ -440,3 +440,36 @@ CLI has no provisioning profile of its own. Both `scripts/build-app.sh` and the 
 `-X watchtower/internal/hub/identity.KeychainBuildFlag=false` (pinned by `scripts/tests/test-build-app-relay.sh`), so a
 desktop host keeps its identity in `<hub dir>/identity.key` (0600), like a headless host (owner, ask #807). The guide's
 privacy page says so.
+
+## Phase 3 — the iCloud account (ask #969 Q3: as the Swift hub)
+
+- **No usable account** (`no_account`, `restricted`, `temporarily_unavailable`, `no_entitlement`, as the bridge's
+  `AccountStatus` reads it at start, each daemon cycle, every 10 minutes and on `Event{account_changed}`) holds the
+  CloudKit side (`icloud.go`, hold reason `no_icloud`): CloudKit's processor reads nothing and, while CloudKit is the
+  active transport, the publisher publishes nothing and no mailbox pass or share sweep runs. A desktop host on the relay
+  goes on publishing there; only CloudKit's mailbox (the switch's standby poll) waits. The next read that finds the
+  account available releases it: one full diff and one pass. An account not read yet holds nothing (the bridge
+  starts after the hub, so each pass reads it again until a first answer). While
+  CloudKit is the active transport the status reads `state: paused`, `reason: no_icloud` (the Swift hub showed itself
+  unavailable, "No iCloud account is signed in"): `hub status` adds a line saying so and Settings → Mobile shows
+  "Paused until iCloud is available on this Mac. It goes on by itself." above the account's own line. On the relay
+  the status keeps `state: running`; the account shows in the `cloudkit` block either way.
+- **An account change** (`Event{account_changed}`) and **a zone deleted on the server** (the bridge saw
+  `zoneNotFound`/`userDeletedZone`, created the hub's zones again and sends `Event{zones_recreated}`, `frames.json`
+  case `event_zones_recreated`) run `resetCloudKit` with CloudKit's processor and the publisher held (reason
+  `cloudkit_reset`): `state.WipeSyncState` (the Swift `wipeSyncState`) deletes every `slice_state` row, forgets the
+  unpublished work alerts of the current generation within the alert lifetime, bumps `sync_generation` and, for an
+  account change only, deletes CloudKit's mailbox token (`zone_tokens` of `relay/<relay id>/*`; a zone deletion keeps
+  it, the relay buffer survived); the staged assets go (`forgetStagedAssets`) and the resumed full diff republishes
+  and restages everything. The exactly-once ledger, the hub id, `enabled_at` and the keys stay. On a desktop host
+  whose active transport is the relay only the mailbox token is reset: the published state is the relay's, and a
+  switch to CloudKit republishes under a new epoch anyway; a zone recreated there keeps the staged assets too (an
+  account change still removes them). A wipe that fails keeps both held and is retried at each housekeeping run
+  (daemon cycle, `houseEvery`) until it succeeds: released unwiped, the full diff would match the old hashes and
+  publish nothing into the new zone (in memory: a restart in between forgets it). On an account change the wipe runs
+  before the account is read again, and a pass follows at once. The account change still closes the old user's link
+  (`link.Center.AccountChanged`). The bridge cannot tell which zone was missing, so a deleted RelayZone alone also
+  republishes the data zone once. The bridge creates the zones lazily (on the first `zoneNotFound`), so the
+  first-ever CloudKit save of a hub — and the first save into a new account's zones — also reads as a recreation and
+  costs one extra full publish (v1 limit; telling a first creation apart needs state the bridge does not keep). No
+  sidecar migration: the tables were all there.

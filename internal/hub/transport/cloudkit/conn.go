@@ -251,8 +251,9 @@ func (c *Client) read(k *conn) {
 
 // eventOf is a bridge event as a transport event: a zone of this hub under
 // its runtime name (data/<relay id>, or the shared mailbox relay/<relay
-// id>/*, which the runtime reads as a mailbox event), a pull_now, or an
-// error class. Anything else is dropped.
+// id>/*, which the runtime reads as a mailbox event), a pull_now, an
+// account change, recreated zones, or an error class. Anything else is
+// dropped.
 func (c *Client) eventOf(ev *bridgepb.Event) (transport.Event, bool) {
 	switch {
 	case ev == nil:
@@ -261,6 +262,8 @@ func (c *Client) eventOf(ev *bridgepb.Event) (transport.Event, bool) {
 		return transport.Event{PullNow: true}, true
 	case ev.GetAccountChanged():
 		return transport.Event{AccountChanged: true}, true
+	case ev.GetZonesRecreated():
+		return transport.Event{ZonesRecreated: true}, true
 	case ev.GetErrorClass() != "":
 		if rateLimited(ev.GetErrorClass()) {
 			c.noteRate(true)
@@ -297,7 +300,8 @@ func (c *Client) emit(e transport.Event) {
 		case e.Err != nil && p.Err != nil && errors.Is(errKind(p.Err), errKind(e.Err)):
 			c.pending[i] = e // the latest of its class
 			return
-		case e.Err == nil && p.Err == nil && p.Zone == e.Zone && p.PullNow == e.PullNow && p.AccountChanged == e.AccountChanged:
+		case e.Err == nil && p.Err == nil && p.Zone == e.Zone && p.PullNow == e.PullNow && p.AccountChanged == e.AccountChanged &&
+			p.ZonesRecreated == e.ZonesRecreated:
 			return
 		}
 	}

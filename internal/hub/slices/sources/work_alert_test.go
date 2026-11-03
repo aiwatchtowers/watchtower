@@ -797,6 +797,75 @@ func TestWorkAlertSurvivesARotation(t *testing.T) {
 	}
 }
 
+// wipe is the CloudKit reset (state.WipeSyncState) at the rig's now, as the
+// runtime runs it after an iCloud account change.
+func (r *alertRig) wipe() {
+	r.t.Helper()
+	if err := r.st.WipeSyncState(context.Background(), r.clock().Add(-WorkAlertLifetime)); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// twin of WorkAlertSliceTests.testAnAccountResetRaisesNoAlertForPushedWork
+func TestWorkAlertAnAccountResetRaisesNoAlertForPushedWork(t *testing.T) {
+	r := newAlertRig(t)
+	project := r.workbench("acme")
+	r.ask(askSpec{project: project})
+	p := r.publisher()
+	r.cycle(p)
+	r.wipe()
+	before := len(r.savedAlerts())
+	r.advance(time.Second)
+	r.cycle(p)
+	if got := len(r.savedAlerts()); got != before {
+		t.Fatalf("the new zone got %d alerts for an old ask", got-before)
+	}
+	// The positive control: an ask filed after the reset still alerts.
+	r.advance(10 * time.Second)
+	fresh := r.ask(askSpec{project: project})
+	r.cycle(p)
+	if got := r.savedAlerts()[before:]; !equalStrings(got, []string{"ask_alert-" + askKey(fresh)}) {
+		t.Fatalf("after the reset: %v", got)
+	}
+}
+
+// twin of WorkAlertSliceTests.testAnAlertNeverConfirmedPublishedIsRaisedAfterAReset
+func TestWorkAlertAnAlertNeverConfirmedPublishedIsRaisedAfterAReset(t *testing.T) {
+	r := newAlertRig(t)
+	id := r.ask(askSpec{project: r.workbench("acme")})
+	// Pushed, but no save ever recorded its hash.
+	if got := r.keys(); !equalStrings(got, []string{askKey(id)}) {
+		t.Fatalf("alerts %v", got)
+	}
+	if h, err := r.st.SliceHashes(string(slices.KindAskAlert)); err != nil || len(h) != 0 {
+		t.Fatalf("hashes %v, %v", h, err)
+	}
+	r.wipe()
+	r.cycle(r.publisher())
+	if got := r.savedAlerts(); !equalStrings(got, []string{"ask_alert-" + askKey(id)}) {
+		t.Fatalf("saved %v", got)
+	}
+}
+
+// twin of WorkAlertSliceTests.testAnExpiredAlertOfAnOpenAskIsNotRaisedAgainAfterAReset
+func TestWorkAlertAnExpiredAlertOfAnOpenAskIsNotRaisedAgainAfterAReset(t *testing.T) {
+	r := newAlertRig(t)
+	id := r.ask(askSpec{project: r.workbench("acme")})
+	p := r.publisher()
+	r.cycle(p)
+	r.advance(WorkAlertLifetime + time.Second)
+	r.cycle(p)
+	if h, err := r.st.SliceHashes(string(slices.KindAskAlert)); err != nil || len(h) != 0 {
+		t.Fatalf("the expired record is still in the zone: %v, %v", h, err)
+	}
+	r.wipe()
+	r.advance(time.Second)
+	r.cycle(p)
+	if got := r.savedAlerts(); !equalStrings(got, []string{"ask_alert-" + askKey(id)}) {
+		t.Fatalf("alerted once, ever: %v", got)
+	}
+}
+
 // ---- payload ----
 
 func TestWorkAlertThePayloadIsCappedAndTitled(t *testing.T) {
