@@ -1,6 +1,6 @@
 # iPhone
 
-The Watchtower iPhone app is a window onto your Mac. It shows what is waiting for you, lets you answer asks, edit the Workbench board and start sessions, and records meetings you attend away from your desk. It works through your own iCloud, so nothing goes through a Watchtower server.
+The Watchtower iPhone app is a window onto your Mac. It shows what is waiting for you, lets you answer asks, edit the Workbench board and start sessions, and records meetings you attend away from your desk. It works through your own iCloud, or through Relay, which carries only encrypted data.
 
 ## Why use it
 
@@ -12,7 +12,7 @@ The Mac is the **hub**. With **Mobile sync** on, it publishes a slice of your da
 
 Everything is sealed with keys exchanged when you link, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's chat (below).
 
-An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps, and applies on wake. The Mac checks for phone requests every 30 seconds, or every 3 seconds for five minutes after the last one, and writes a heartbeat every 15 minutes.
+An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps, and applies on wake. The Mac checks for phone requests every 30 seconds, or every 3 seconds for ten minutes after the last one, and writes a heartbeat every 15 minutes.
 
 A phone links to up to four Macs and switches between them; each Mac is its own hub with its own data.
 
@@ -45,7 +45,7 @@ done_when: iphone.paired
 4. The phone shows a four-digit code. Check it matches the code on the Mac, then click **Link** there (**Refuse** cancels).
 5. The phone shows **Linked to <Mac name>**. **Continue** asks for notification permission and opens **Now**.
 
-If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares. Each phone row says how it syncs (**iCloud**, **Relay** or **Waiting for Relay**) and who switched it last. Failed phone recordings wait under **Recordings** (**Retry**, **Discard…**).
+If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares. Failed phone recordings wait under **Recordings** (**Retry**, **Discard…**).
 
 ### Use the three tabs
 <!-- learn
@@ -108,6 +108,10 @@ Without the typing switch, a running session's bottom bar says so, with **Turn O
 
 A running session's status shows how long it has been in that state, like **Working · 12m**.
 
+### See each phone from the Mac
+
+Settings → **Mobile** on the Mac lists each phone with how it syncs (**iCloud**, **Relay** or **Waiting for Relay**) and who switched it last. Over Relay, the **Relay** row says whether the Mac is connected, and a phone's row adds a line when something needs you: no subscription, actions not applied yet on the Mac's side, a full mailbox, or notifications not set up. **Diagnostics** shows how fast the Mac handles phone actions; the timings stay on the Mac.
+
 ### Answer prompts and interrupt agents
 
 Answering a Claude Code permission prompt and interrupting a working agent from the phone have their own page: [iPhone: permission prompts and interrupts](iphone-agent-prompts.md).
@@ -136,9 +140,6 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"<Mac> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
 - **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line.
-- **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
-- **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
-- **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
 - **Nothing updates.** Mobile stops when you quit Watchtower. Closing the window is fine.
 - **Mobile off after going back to an older Watchtower.** After this update, an older Watchtower can't run Mobile: update instead.
 

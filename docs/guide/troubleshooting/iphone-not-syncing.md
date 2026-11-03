@@ -9,10 +9,11 @@ The phone shows "Mac offline", never finds the Mac, an answered ask stays on **W
 - While linking: "This code expired", "This code can't be used", or "Sign in to iCloud on this iPhone to use Watchtower".
 - On the Mac, **Settings → Mobile** shows why Mobile is off, **Needs a signed build**, "iCloud is slowing sync down" or "Mobile is run by a newer Watchtower".
 - "<Mac> hasn't synced for a day" or "<Mac> removed this phone".
+- On a Mac that runs over Relay, **Settings → Mobile** shows "Relay unavailable for <N> min.", "This Mac's Relay storage is full (5 GB).", "<phone>'s Relay mailbox is full.", "Doesn't get updates: this Mac runs over Relay.", "On this Mac's side, <N> actions from this phone are not applied yet." or "Notifications aren't set up on this iPhone."
 
 ## Why
 
-The Mac is the hub. It publishes your data into your iCloud and applies the phone's changes only while Watchtower runs on an awake Mac with **Mobile sync** on. The phone calls the Mac online while its heartbeat, written every 15 minutes, is under 35 minutes old. Quitting Watchtower or sleeping the Mac stops the hub; closing the window does not.
+The Mac is the hub. It publishes your data into your iCloud and applies the phone's changes only while Watchtower runs on an awake Mac with **Mobile sync** on. The phone calls the Mac online while its heartbeat, written every 15 minutes, is under 35 minutes old. Quitting Watchtower or sleeping the Mac stops the hub; closing the window does not. Over Relay, only a phone with a Relay subscription gets updates, and the relay keeps a limited amount of storage for the Mac and for each phone.
 
 ## Fix
 
@@ -26,10 +27,16 @@ The Mac is the hub. It publishes your data into your iCloud and applies the phon
 8. **Removed this phone:** that hub is frozen. Tap **Forget** on the phone and link again with **Add Mac**.
 9. **iCloud is slowing sync down:** wait; it clears on its own.
 10. **Mobile is run by a newer Watchtower:** you opened an older Watchtower after an update moved the iPhone sync to the new version. This older app leaves the phone alone. Install the latest Watchtower and open it; the phone keeps its link.
+11. **Relay unavailable for <N> min.:** the Mac cannot reach the relay. Check the Mac's internet connection; phones keep their changes and send them when it is back.
+12. **This Mac's Relay storage is full (5 GB):** the Mac's space on the relay holds its recordings and transcripts, and new changes wait until older recordings are removed. Your data on the Mac is not affected.
+13. **<phone>'s Relay mailbox is full:** the Mac's replies to that phone are piling up unread. Open Watchtower on that phone so it reads them.
+14. **Doesn't get updates: this Mac runs over Relay:** that phone has no Relay subscription. Subscribe on it, or switch the Mac to iCloud from a subscribed phone.
+15. **On this Mac's side, <N> actions from this phone are not applied yet:** the Mac holds them until the phone sends the ones before them. Open Watchtower on the phone and keep it online until the line goes away.
+16. **Notifications aren't set up on this iPhone:** open Watchtower on that iPhone once.
 
 ## How to check
 
-**Now** reads "Mac online" with a small age, and a waiting change leaves **Waiting for your Mac**.
+**Now** reads "Mac online" with a small age, and a waiting change leaves **Waiting for your Mac**. Over Relay, the Mac's **Relay** row reads "Connected · last change delivered <age> ago" and the phone's row shows no warning line.
 
 ## If it did not help
 
