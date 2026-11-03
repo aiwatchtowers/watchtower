@@ -23,13 +23,15 @@ Setup checks the Claude or Codex tool and keeps **Continue** off until it finds 
 
 ## Light and strong models
 <!-- learn
-id: ai-own-models
-title: Choose your own models
-text: Type a model into **Light Model** or **Strong Model** in **Settings → System → AI**; **Default** clears it.
+id: ai-models-per-provider
+title: Keep models for each provider
+text: Set **Light Model** and **Strong Model** in **Settings → System → AI**; each provider keeps its choices.
+replaces: [ai-own-models]
+changed: Switching providers restores their saved models.
 area: setup
 level: power
 kind: tip
-since: 0.24.0
+since: next
 -->
 
 Every AI call is routed to one of two tiers, and each provider has a model per tier.
@@ -44,6 +46,8 @@ Defaults:
 - **Ollama / Local:** none, so pick a model; one model then serves both tiers.
 
 Override either tier in **Light Model** and **Strong Model**, or press **Default** to clear it.
+
+Each provider keeps its own model choices. Switching providers restores its saved choices; a provider without saved choices starts with **Default**.
 
 ## What drives cost
 <!-- learn

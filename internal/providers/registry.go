@@ -84,7 +84,9 @@ func ByID(id string) Provider {
 // ResolveModelsFor returns the concrete light/strong models the given
 // provider should use under cfg. Precedence per tier:
 //
-//	ai.models.<tier> → legacy ai.model (strong only) → registry default.
+//	ai.providers.<id>.models.<tier> → registry default when a bucket exists.
+//
+// Without a bucket: ai.models.<tier> → legacy ai.model → registry default.
 //
 // The config overrides describe the provider CONFIGURED IN THE FILE
 // (cfg.AI.ConfiguredProviderID(), which the --provider flag never mutates):
@@ -115,8 +117,11 @@ func ByID(id string) Provider {
 func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong string) {
 	p := ByID(providerID)
 	configured := p.ID == ByID(cfg.AI.ConfiguredProviderID()).ID
+	bucket, hasBucket := cfg.AI.Providers[providerID]
 
-	if configured {
+	if hasBucket {
+		strong = bucket.Models.Strong
+	} else if configured {
 		strong = cfg.AI.Models.Strong
 		if strong == "" {
 			if legacy := cfg.AI.Model; legacy != "" && legacy != config.DefaultAIModel {
@@ -129,7 +134,9 @@ func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong stri
 	}
 	strong = normalizePinnedModel(p, strong, p.DefaultStrong)
 
-	if configured {
+	if hasBucket {
+		light = bucket.Models.Light
+	} else if configured {
 		light = cfg.AI.Models.Light
 	}
 	if light == "" {

@@ -2565,3 +2565,11 @@ Entry format:
 - weak-dimension: independent review breadth was limited: external Codex was unavailable after sandbox failure and automatic approval rejection of unauthorized diff transmission; all three toolkit specialist APIs were unavailable. Prosecutor and judge found no substantive issue; unavailable lanes are not clean reviews.
 - rule-gap: no new rule; distinguish verification of a proposed presentation contract from verification of the future runtime feature.
 - outcome: TBD
+
+## 2026-11-02 — provider-fallback configuration (#1483) — verdict: approve
+
+- contested: a new authoritative provider model bucket requires the existing Desktop reader/writer in the same task; deferring Settings redesign does not justify silently ignored model edits. [6/8]
+- miss: initially green CLI tests missed legacy setter precedence and a Settings instance loaded before CLI migration. Mechanically failing regressions now cover both, plus untouched tiers, provider changes and partial edits. [7/8]
+- weak-dimension: external Codex review was unavailable after automatic approval rejected external diff transmission. Built-in prosecutor, test/error reviewers and judge converged after two fix rounds; unavailable reviews supply no evidence.
+- rule-gap: no new rule; apply the existing Go/Swift dual-writer and fresh-read requirements to provider model configuration.
+- outcome: TBD
