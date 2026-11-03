@@ -68,6 +68,24 @@ func rateLimitedSearch(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusTooManyRequests)
 }
 
+// `slack backfill` never calls Run: BackfillSearch itself loads the account
+// (the owner's own media and the file-host domain depend on it).
+func TestBackfillSearch_LoadsTheAccountWithoutRun(t *testing.T) {
+	var queries []string
+	var mu gosync.Mutex
+	ts := newTestSetup(t, searchAuditMux(oneMatchSearch(&queries, &mu)))
+	ts.orch.logger = log.New(io.Discard, "", 0)
+	require.NoError(t, ts.db.UpdateSlackAccountConnection(ts.accountID, "T001", "Acme", "acme", ts.ns("U_OWNER")))
+	require.Zero(t, ts.orch.account.ID, "a fresh orchestrator has no account")
+
+	_, err := ts.orch.BackfillSearch(context.Background(),
+		time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	assert.Equal(t, ts.accountID, ts.orch.account.ID)
+	assert.Equal(t, "acme", ts.orch.account.TeamDomain)
+	assert.Equal(t, ts.ns("U_OWNER"), ts.orch.account.CurrentUserID)
+}
+
 func TestBackfillSearch_SavesRangeWithoutTouchingWatermarkOrAuthState(t *testing.T) {
 	var queries []string
 	var mu gosync.Mutex
