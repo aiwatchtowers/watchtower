@@ -1340,10 +1340,12 @@ type InboxAgentAction struct {
 
 // ListAutomationOutputs returns up to limit outputs of kind (” = every
 // kind), most recently changed first (a same-hash living rewrite does not
-// move a card); limit ≤ 0 returns all of them.
+// move a card); limit ≤ 0 returns all of them. changed_at is set on every
+// commit and backfilled by 00173, so it is ordered on directly (the
+// (kind, changed_at) index applies).
 func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput, error) {
 	q := `SELECT ` + automationOutputCols + `
-		FROM automation_outputs WHERE (? = '' OR kind = ?) ORDER BY COALESCE(changed_at, created_at) DESC, id DESC`
+		FROM automation_outputs WHERE (? = '' OR kind = ?) ORDER BY changed_at DESC, id DESC`
 	args := []any{kind, kind}
 	if limit > 0 {
 		q += ` LIMIT ?`
