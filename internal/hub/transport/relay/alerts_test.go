@@ -107,21 +107,24 @@ func TestSendAlertRefusesAnUnsealedPush(t *testing.T) {
 
 func TestSendAlertErrorMapping(t *testing.T) {
 	retry := func(s uint32) *uint32 { return &s }
+	noToken := &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_NOT_FOUND, Message: "not found"}
+	rateLimited := &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_RATE_LIMITED, Message: "rate limited", RetryAfterS: retry(7)}
+	traffic := &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_TRAFFIC_LIMIT_EXCEEDED, Message: "traffic limit exceeded"}
 	cases := []struct {
 		name string
 		e    *relayv1.Error
 		want error
 		not  error
 	}{
-		{"no token", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_NOT_FOUND, Message: "not found"}, transport.ErrNoPushToken, nil},
+		{"no token", noToken, transport.ErrNoPushToken, nil},
 		{"push off", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "not implemented"}, transport.ErrPushOff, nil},
 		{"other unspecified", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "invalid request"}, nil, transport.ErrPushOff},
 		{"forbidden", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, Message: "forbidden"}, transport.ErrForbidden, nil},
 		{"not vouched", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED, Message: "hub not vouched"}, transport.ErrNotVouched, nil},
 		{"not paying", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, Message: "entitlement inactive"}, transport.ErrEntitlementInactive, nil},
 		{"too large", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_RECORD_TOO_LARGE, Message: "record too large"}, transport.ErrRecordTooLarge, nil},
-		{"rate limited", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_RATE_LIMITED, Message: "rate limited", RetryAfterS: retry(7)}, transport.ErrRateLimited, nil},
-		{"traffic", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_TRAFFIC_LIMIT_EXCEEDED, Message: "traffic limit exceeded"}, transport.ErrRateLimited, nil},
+		{"rate limited", rateLimited, transport.ErrRateLimited, nil},
+		{"traffic", traffic, transport.ErrRateLimited, nil},
 		{"unavailable", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, Message: "unavailable"}, transport.ErrUnavailable, nil},
 	}
 	for _, c := range cases {
@@ -136,17 +139,17 @@ func TestSendAlertErrorMapping(t *testing.T) {
 			t.Errorf("%s: code not kept: %v", c.name, err)
 		}
 	}
-	if got := RetryAfter(mapAlertError(&client.Error{E: cases[7].e})); got != 7*time.Second {
+	if got := RetryAfter(mapAlertError(&client.Error{E: rateLimited})); got != 7*time.Second {
 		t.Errorf("RetryAfter = %v, want 7s", got)
 	}
-	if got := RetryAfter(mapAlertError(&client.Error{E: cases[8].e})); got != 0 {
+	if got := RetryAfter(mapAlertError(&client.Error{E: traffic})); got != 0 {
 		t.Errorf("RetryAfter with no retry_after_s = %v, want 0", got)
 	}
 	if RetryAfter(nil) != 0 || RetryAfter(errors.New("x")) != 0 {
 		t.Error("RetryAfter of a non-relay error is not 0")
 	}
 	// NOT_FOUND keeps its generic mapping on every other op.
-	if errors.Is(MapError(&client.Error{E: cases[0].e}), transport.ErrNoPushToken) {
+	if errors.Is(MapError(&client.Error{E: noToken}), transport.ErrNoPushToken) {
 		t.Error("MapError maps NOT_FOUND to ErrNoPushToken outside send_alert")
 	}
 
@@ -161,7 +164,7 @@ func TestSendAlertErrorMapping(t *testing.T) {
 		t.Errorf("push off: %v", err)
 	}
 	r.relay.SetPushOff(false)
-	r.relay.FailNextWith("send_alert", cases[7].e)
+	r.relay.FailNextWith("send_alert", rateLimited)
 	err := r.tr.SendAlert(t.Context(), r.phoneID, r.push)
 	if !errors.Is(err, transport.ErrRateLimited) || RetryAfter(err) != 7*time.Second {
 		t.Errorf("rate limited: %v, retry after %v", err, RetryAfter(err))
@@ -189,6 +192,126 @@ func TestSendAlertErrorMapping(t *testing.T) {
 	}
 	if len(r.relay.Alerts()) != 0 {
 		t.Fatalf("a refused alert was pushed: %+v", r.relay.Alerts())
+	}
+}
+
+// An empty phone id is refused before any request.
+func TestSendAlertRefusesAnEmptyPhoneID(t *testing.T) {
+	r := newAlertRig(t)
+	hits := r.relay.Hits()
+	if err := r.tr.SendAlert(t.Context(), "", r.push); err == nil {
+		t.Fatal("empty phone id accepted")
+	}
+	if r.relay.Hits() != hits {
+		t.Fatal("an empty phone id reached the relay")
+	}
+}
+
+// HUB_NOT_VOUCHED on send_alert forgets the cached account state's slots, as
+// on every other op: the hub is in no slot now.
+func TestSendAlertNotVouchedForgetsTheAccountState(t *testing.T) {
+	r := newAlertRig(t)
+	r.registerPush(t)
+	if _, err := r.tr.AccountState(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !r.tr.Vouched() || !r.tr.Admitted() {
+		t.Fatal("not vouched and admitted before the refusal")
+	}
+	r.relay.RemoveSlot(r.phoneID, r.tr.c.DeviceID())
+	if err := r.tr.SendAlert(t.Context(), r.phoneID, r.push); !errors.Is(err, transport.ErrNotVouched) {
+		t.Fatalf("unvouched send_alert: %v", err)
+	}
+	if r.tr.Vouched() || r.tr.Admitted() {
+		t.Fatal("the cached account state survived HUB_NOT_VOUCHED")
+	}
+}
+
+// The fake answers send_alert in the relay's check order (push.ts
+// alertSender, then the phone's token): with two failing conditions the
+// earlier check's answer wins.
+func TestFakeSendAlertCheckOrder(t *testing.T) {
+	type setup func(*testing.T, *alertRig)
+	pushOff := func(_ *testing.T, r *alertRig) { r.relay.SetPushOff(true) }
+	notPaying := func(_ *testing.T, r *alertRig) { r.relay.SetPaying(r.phoneID, false) }
+	notReader := func(t *testing.T, r *alertRig) {
+		if err := r.tr.SetHubReaders(t.Context(), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	big := bytes.Repeat([]byte{1}, 3100) // base64 + 67 > 4096
+	notImplemented := "not implemented"
+	cases := []struct {
+		name  string
+		setup []setup
+		phone string // "" = the rig's phone
+		env   []byte // nil = the rig's push
+		code  relayv1.ErrorCode
+		msg   string // "" = any
+	}{
+		{"push off before not held", []setup{pushOff}, "other-phone", nil, relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, notImplemented},
+		{"push off before not paying", []setup{pushOff, notPaying}, "", nil, relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, notImplemented},
+		{"push off before not a reader", []setup{pushOff, notReader}, "", nil, relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, notImplemented},
+		{"push off before too large", []setup{pushOff}, "", big, relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, notImplemented},
+		{"push off before no token", []setup{pushOff}, "", nil, relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, notImplemented},
+		{"not paying before not a reader", []setup{notPaying, notReader}, "", nil, relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, ""},
+		{"not paying before too large", []setup{notPaying}, "", big, relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, ""},
+		{"not paying before no token", []setup{notPaying}, "", nil, relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, ""},
+		{"not a reader before too large", []setup{notReader}, "", big, relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, ""},
+		{"not a reader before no token", []setup{notReader}, "", nil, relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, ""},
+		{"too large before no token", nil, "", big, relayv1.ErrorCode_ERROR_CODE_RECORD_TOO_LARGE, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newAlertRig(t) // no push token registered
+			for _, s := range c.setup {
+				s(t, r)
+			}
+			phone, env := c.phone, c.env
+			if phone == "" {
+				phone = r.phoneID
+			}
+			if env == nil {
+				env = r.push.Envelope()
+			}
+			_, err := r.tr.c.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_SendAlert{SendAlert: &relayv1.SendAlert{
+				PhoneDeviceId: phone, Envelope: env,
+			}}})
+			var pe *client.Error
+			if !errors.As(err, &pe) || pe.E.GetCode() != c.code || (c.msg != "" && pe.E.GetMessage() != c.msg) {
+				t.Fatalf("answer %v, want %s %q", err, c.code, c.msg)
+			}
+		})
+	}
+}
+
+// With SetAccountState the fake reads the canned SlotHolder: its Paying flag
+// decides ENTITLEMENT_INACTIVE, and a state whose MacDeviceIds leaves this
+// hub out does not hold it (push.ts:216–217).
+func TestFakeSendAlertReadsTheCannedAccountState(t *testing.T) {
+	r := newAlertRig(t)
+	r.registerPush(t)
+	hub := r.tr.c.DeviceID()
+	send := func() error { return r.tr.SendAlert(t.Context(), r.phoneID, r.push) }
+	r.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: r.phoneID, Paying: false}}})
+	if err := send(); !errors.Is(err, transport.ErrEntitlementInactive) {
+		t.Errorf("canned not paying: %v", err)
+	}
+	r.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: r.phoneID, Paying: true}}})
+	if err := send(); err != nil {
+		t.Errorf("canned paying: %v", err)
+	}
+	r.relay.SetAccountState(&relayv1.AccountState{MacDeviceIds: []string{hub}, Phones: []*relayv1.SlotHolder{{PhoneDeviceId: r.phoneID, Paying: true}}})
+	if err := send(); err != nil {
+		t.Errorf("canned holding this hub: %v", err)
+	}
+	r.relay.SetAccountState(&relayv1.AccountState{MacDeviceIds: []string{"other-hub"}, Phones: []*relayv1.SlotHolder{{PhoneDeviceId: r.phoneID, Paying: true}}})
+	if err := send(); !errors.Is(err, transport.ErrForbidden) {
+		t.Errorf("canned holding another hub: %v", err)
+	}
+	r.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "other-phone", Paying: true}}})
+	if err := send(); !errors.Is(err, transport.ErrForbidden) {
+		t.Errorf("canned without the phone: %v", err)
 	}
 }
 

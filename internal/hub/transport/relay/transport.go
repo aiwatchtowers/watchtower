@@ -406,12 +406,18 @@ func (t *Transport) LastAccountState() *relayv1.AccountState {
 	return proto.Clone(t.account).(*relayv1.AccountState)
 }
 
-// do runs one op over HTTPS and maps its error. HUB_NOT_VOUCHED means the
-// hub is in no slot now, whatever the last account state said.
+// do runs one op over HTTPS and maps its error with MapError.
 func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
+	return t.doMapped(ctx, req, MapError)
+}
+
+// doMapped runs one op over HTTPS and maps its error with mapErr.
+// HUB_NOT_VOUCHED means the hub is in no slot now, whatever the last account
+// state said.
+func (t *Transport) doMapped(ctx context.Context, req *relayv1.Request, mapErr func(error) error) (*relayv1.Response, error) {
 	resp, err := t.c.Do(ctx, req)
 	if err != nil {
-		return nil, t.noteError(MapError(err))
+		return nil, t.noteError(mapErr(err))
 	}
 	return resp, nil
 }
@@ -611,8 +617,8 @@ func (t *Transport) Delete(ctx context.Context, zone string, items []transport.D
 
 // SendAlert implements transport.Alerts: one send_alert of p's envelope to
 // the phone with relay device id phoneRelayID, nothing else in the request.
-// It refuses a Push the Sealer did not build with secure.ErrUnsealed before
-// any I/O. A nil error is the relay's Ok (accepted, not delivered). The
+// It refuses a Push the Sealer did not build with secure.ErrUnsealed, and an
+// empty phoneRelayID, before any I/O. A nil error is the relay's Ok (accepted, not delivered). The
 // errors are mapAlertError's (transport.ErrNoPushToken, ErrPushOff, then
 // MapError's classes); RetryAfter reads a RATE_LIMITED wait.
 func (t *Transport) SendAlert(ctx context.Context, phoneRelayID string, p secure.Push) error {
@@ -625,10 +631,10 @@ func (t *Transport) SendAlert(ctx context.Context, phoneRelayID string, p secure
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := t.c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_SendAlert{SendAlert: &relayv1.SendAlert{
+	if _, err := t.doMapped(ctx, &relayv1.Request{Op: &relayv1.Request_SendAlert{SendAlert: &relayv1.SendAlert{
 		PhoneDeviceId: phoneRelayID, Envelope: p.Envelope(),
-	}}}); err != nil {
-		return fmt.Errorf("relay: send_alert: %w", t.noteError(mapAlertError(err)))
+	}}}, mapAlertError); err != nil {
+		return fmt.Errorf("relay: send_alert: %w", err)
 	}
 	return nil
 }

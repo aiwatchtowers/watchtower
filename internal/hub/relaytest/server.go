@@ -32,7 +32,9 @@
 // ENTITLEMENT_INACTIVE when it does not pay, FORBIDDEN when it is not in the
 // hub's last set_hub_readers, RECORD_TOO_LARGE when the APNs body would pass
 // 4096 bytes, NOT_FOUND without a token — and an accepted alert is kept for
-// Alerts (no APNs is modelled). FailNextWith scripts any other answer.
+// Alerts (no APNs is modelled). With SetAccountState the slot and paying
+// checks read the canned state (see holder). FailNextWith scripts any other
+// answer.
 //
 // Test-only: never imported by production code
 // (TestRelaytestIsImportedOnlyByTests).
@@ -630,9 +632,12 @@ func (s *Server) sendAlert(caller string, a *relayv1.SendAlert) *relayv1.Respons
 		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 	case s.pushOff:
 		return errMsg(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, "not implemented")
-	case !s.holds(phone, caller):
+	}
+	held, paying := s.holder(phone, caller)
+	switch {
+	case !held:
 		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
-	case !s.pays(phone):
+	case !paying:
 		return errResp(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE)
 	case !slices.Contains(s.hubReaders[caller], phone):
 		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
@@ -645,13 +650,24 @@ func (s *Server) sendAlert(caller string, a *relayv1.SendAlert) *relayv1.Respons
 	return ok()
 }
 
-// holds: phone holds hub in one of its slots (or, with SetAccountState, the
-// answered state lists the phone).
-func (s *Server) holds(phone, hub string) bool {
-	if s.account != nil {
-		return slices.ContainsFunc(s.account.GetPhones(), func(h *relayv1.SlotHolder) bool { return h.GetPhoneDeviceId() == phone })
+// holder is push.ts:216–217's snapshot check: whether phone holds hub in a
+// slot, and whether it pays. With SetAccountState it reads the canned state:
+// the phone's SlotHolder (its Paying flag), for hub only when the state's
+// MacDeviceIds lists it (an empty list stands for the asking hub alone, as
+// get_account_state answers each hub its own holders).
+func (s *Server) holder(phone, hub string) (held, paying bool) {
+	if st := s.account; st != nil {
+		if macs := st.GetMacDeviceIds(); len(macs) > 0 && !slices.Contains(macs, hub) {
+			return false, false
+		}
+		for _, h := range st.GetPhones() {
+			if h.GetPhoneDeviceId() == phone {
+				return true, h.GetPaying()
+			}
+		}
+		return false, false
 	}
-	return slices.Contains(s.slots[phone], hub)
+	return slices.Contains(s.slots[phone], hub), s.pays(phone)
 }
 
 func (s *Server) openPairing(caller, mac string) *relayv1.Response {
