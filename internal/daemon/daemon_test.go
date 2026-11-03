@@ -536,7 +536,7 @@ func TestDaemon_SaveLoadPeopleTime(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 	d.lastPeople = now
-	d.saveLastPeople()
+	require.NoError(t, d.saveLastPeople())
 
 	d2 := newDaemon(orch, cfg)
 	d2.SetLogger(log.New(os.Stderr, "[test2] ", 0))

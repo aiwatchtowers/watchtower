@@ -2599,3 +2599,12 @@ Entry format:
 - weak-dimension: external Codex review was unavailable after automatic approval rejected external diff transmission, and toolkit APIs were unavailable; built-in prosecutor, test and failure/privacy lanes supplied evidence. The test lane independently passed the router race suite. [7]
 - rule-gap: no new binding rule needed; approved bounded routing and recovery acceptance criteria already cover the missing factory deadline.
 - outcome: TBD
+
+## 2026-11-03 — provider-fallback deferred batches (#1487, Task 5) — verdict: changes-needed
+
+- contested: a retained daily descriptor cannot use the rolling daily freshness predicate as completion proof: later channel rows make an already committed attempt regenerate. Completion must distinguish the claimed attempt from a legitimate daily row that predates its claim; an existence-only shortcut breaks ordinary regeneration. [6]
+- false-positive: the test lane quality score of 8/10 is not a severity-8 coverage finding. Reverse worker completion and exact people prompt assertions are optional strengthening absent an independently demonstrated defect. [7]
+- miss: the failure/privacy lane found ordinary preflight errors discarded before throttle/no-data/budget returns and malformed positive-window shape accepted as empty work, then acknowledged. Metadata gates need observable non-deferred failures; durable descriptor validation must precede destructive acknowledgement. [6/9]
+- weak-dimension: crash coverage recreated a retained daily descriptor but backdated channel rows, leaving post-commit input arrival untested. External Codex diff transmission remained unavailable after automatic approval rejection; toolkit APIs were unavailable, and three built-in lanes supplied the panel evidence. Judge inspection was source-only; reported scoped checks were not independently rerun. [7]
+- rule-gap: no new binding rule needed; approved committed-output retry semantics and existing swallowed-error/absent-versus-invalid rules cover the defects. Full phase gates remain scheduled after Task 8.
+- outcome: TBD

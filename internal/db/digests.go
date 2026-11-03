@@ -14,8 +14,33 @@ import (
 // UpsertDigest inserts or replaces a digest based on the unique constraint
 // (channel_id, type, period_from, period_to).
 func (db *DB) UpsertDigest(d Digest) (int64, error) {
-	_, err := db.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	return db.upsertDigest(d, "")
+}
+
+// UpsertDailyDigestAttempt atomically commits the daily output and its local
+// completion receipt. Ordinary upserts preserve this receipt. It is deliberately
+// absent from Digest and wire/replica DTOs.
+func (db *DB) UpsertDailyDigestAttempt(d Digest, attemptID string) (int64, error) {
+	if d.Type != "daily" || d.ChannelID != "" || attemptID == "" {
+		return 0, fmt.Errorf("invalid daily digest attempt")
+	}
+	return db.upsertDigest(d, attemptID)
+}
+
+// DailyDigestAttemptCompleted proves this exact claim committed, irrespective
+// of source freshness, row id, timestamp precision or byte-identical output.
+func (db *DB) DailyDigestAttemptCompleted(from, to float64, attemptID string) (bool, error) {
+	var completed bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM digests WHERE channel_id = '' AND type = 'daily' AND period_from = ? AND period_to = ? AND daily_attempt_id = ? AND daily_attempt_id != '')`, from, to, attemptID).Scan(&completed)
+	if err != nil {
+		return false, fmt.Errorf("checking daily digest attempt: %w", err)
+	}
+	return completed, nil
+}
+
+func (db *DB) upsertDigest(d Digest, dailyAttemptID string) (int64, error) {
+	_, err := db.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd, daily_attempt_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, type, period_from, period_to) DO UPDATE SET
 			summary = excluded.summary,
 			topics = excluded.topics,
@@ -29,10 +54,11 @@ func (db *DB) UpsertDigest(d Digest) (int64, error) {
 			input_tokens = excluded.input_tokens,
 			output_tokens = excluded.output_tokens,
 			cost_usd = excluded.cost_usd,
+			daily_attempt_id = CASE WHEN excluded.daily_attempt_id != '' THEN excluded.daily_attempt_id ELSE digests.daily_attempt_id END,
 			created_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`,
 		d.ChannelID, d.Type, d.PeriodFrom, d.PeriodTo,
 		d.Summary, d.Topics, d.Decisions, d.ActionItems, d.PeopleSignals, d.Situations, d.RunningSummary,
-		d.MessageCount, d.Model, d.InputTokens, d.OutputTokens, d.CostUSD)
+		d.MessageCount, d.Model, d.InputTokens, d.OutputTokens, d.CostUSD, dailyAttemptID)
 	if err != nil {
 		return 0, fmt.Errorf("upserting digest: %w", err)
 	}

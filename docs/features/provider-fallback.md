@@ -67,3 +67,55 @@ model this independent gate using a fake helper marker, including a negative
 control with only ShellTool disabled. No installed inference or owner shell
 startup was executed. Ordinary terminal/agent profiles and managed requirements
 are unchanged.
+
+## Deferred scheduled digests and people batches (Task 5)
+
+The daemon's scheduled Slack digest batch/daily rollup and required `people.batch`
+primitive check the router's metadata gate before claiming work. Known quota or
+probe-busy waits make no model call; quota discovered during a call retains the
+leaf's physical usage record. Unsaved work gets no success/considered stamp or
+people poison attempt, including the persistent attempt file's calendar date.
+Mixed provider waits and material/storage failures retain the ordinary error
+policy; a successful worker cannot hide another worker's deferred result.
+
+Daemon-only `digest_pending_window.json`, `digest_pending_daily.json` and
+`people_pending_window.json` are
+small input descriptors containing ids/timestamps, never prompts or source text.
+They pin the original input boundaries across partial commits, restarts and date
+rollover. Existing database coverage/considered marks skip committed output;
+current filters and fast-forward guards still apply. People norms use the whole
+active population, including covered users. A completed people descriptor stays
+until the daemon atomically saves `last_people.txt`; a failed save preserves the
+old in-memory throttle and reports an error. The success timestamp is the
+original window's start of processing, so completing an old window does not
+claim newly arrived data was covered.
+
+Off/pinned generators and ordinary CLI commands acquire no durable descriptors.
+This is not a general job queue. Individual `people.reduce` quality fallbacks
+and optional `people.team` summaries retain their existing cadence; routed provider
+unavailability does not start individual quality retries. Off/pinned nonquota
+batch failures keep the legacy individual fallback. Source synchronization
+continues independently. Other scheduled pipelines retain their own retry rules;
+ideas/history deferred integration is separate (Task 6).
+
+### Decisions
+
+- Решил агент: approved scheduled Slack “period” maps to the actual daemon
+  `RunRollups` → `RunDailyRollup` call graph (`digest.daily`). Its descriptor pins
+  one UTC day, and `rollup_attempts.txt` remains unchanged on quota before/after
+  calls, including UTC date rollover. Migration `00170_daily_digest_attempt.sql`
+  gives each scheduled daily claim a random completion token, written atomically
+  with its output in
+  `digests.daily_attempt_id`. Ordinary upserts preserve it; it stays out of the
+  public Digest/wire shape. A retained descriptor checks the exact token/window,
+  independent of newer source rows, identical output and timestamp precision.
+  An older preclaim daily row still regenerates normally. A later ordinary cycle
+  can process the current UTC day.
+  One-off `RunPeriodSummary` (`digest.period`) and `RunWeeklyTrends` remain outside
+  the durable retry allowlist; no new scheduler or broader pipeline guarantee.
+
+Ordinary metadata preflight failures are logged immediately without starting a
+model, debiting a data attempt, or bypassing no-data/budget/throttle eligibility;
+expected shutdown cancellation is benign. Pending people windows require positive
+ordered bounds and a present StartedAt; invalid descriptors remain errors and
+retain their bytes, while future StartedAt is accepted for clock skew.

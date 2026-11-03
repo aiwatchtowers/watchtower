@@ -171,10 +171,7 @@ func (g *generator) CallTimeout() (time.Duration, bool) { return g.timeout, g.ti
 // Preflight is a metadata-only scheduler seam. Legacy generators have no new
 // health gate; routed generators recheck atomically when the real call starts.
 func Preflight(ctx context.Context, gen digest.Generator) error {
-	if check, ok := gen.(interface{ RoutingPreflight(context.Context) error }); ok {
-		return check.RoutingPreflight(ctx)
-	}
-	return nil
+	return digest.Preflight(ctx, gen)
 }
 func (g *generator) RoutingPreflight(ctx context.Context) error {
 	if g.excluded(ctx) {

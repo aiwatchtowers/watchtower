@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS digests (
     prompt_version  INTEGER NOT NULL DEFAULT 0,  -- version of prompt used for generation
     people_signals  TEXT NOT NULL DEFAULT '[]',   -- JSON array of PersonSignals from MAP phase (legacy)
     situations      TEXT NOT NULL DEFAULT '[]',   -- JSON array of Situation objects from channel digest
-    running_summary TEXT NOT NULL DEFAULT '',     -- JSON running context for next digest (channel memory)
+    running_summary TEXT NOT NULL DEFAULT '', daily_attempt_id TEXT NOT NULL DEFAULT '',     -- JSON running context for next digest (channel memory)
     UNIQUE(channel_id, type, period_from, period_to)
 );
 CREATE TABLE IF NOT EXISTS digest_participants (
