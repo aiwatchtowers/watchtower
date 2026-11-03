@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
 
@@ -71,13 +72,19 @@ func proposeInboxAction() (int64, error) {
 		return 0, fmt.Errorf("actions propose runs only on the %s surface, not %q", tools.InboxSurface, actionsProposeFlagSurface)
 	}
 	args := json.RawMessage(strings.TrimSpace(actionsProposeFlagArgs))
+	ctxType, ctxID := proposeContext(args)
+	if actionsProposeFlagApprove && ctxType == db.InboxButtonContextType {
+		// An Inbox card's button only proposes; the owner approves the row in
+		// its approval card (AGENT-05), like any other proposal.
+		return 0, fmt.Errorf("an Inbox button only proposes: approve it in its approval card; "+
+			"actions propose takes no --approve for context type %s", db.InboxButtonContextType)
+	}
 	if actionsProposeFlagApprove {
 		detail := fmt.Sprintf("%s\nArgs: %s", t.Name, args)
 		if err := confirmWithOwner("approve an action", detail); err != nil {
 			return 0, err
 		}
 	}
-	ctxType, ctxID := proposeContext(args)
 	rc, err := reg.Propose(context.Background(), t.Name, args, tools.Binding{
 		Surface:     tools.InboxSurface,
 		ContextType: ctxType,

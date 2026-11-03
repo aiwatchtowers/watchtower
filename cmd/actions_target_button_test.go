@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
 )
 
 // targetPressArgs is the Desktop's target-button press (Inbox builder A):
@@ -220,4 +221,20 @@ func TestAgent05_CreateTargetReclaimDoesNotDuplicate(t *testing.T) {
 	third := pressButton(t, "9:0:abc")
 	applyRow(t, third)
 	assert.Equal(t, 3, targetCount(t, database))
+}
+
+// The button only proposes: --approve with an automation_output context is
+// refused before the owner's Confirm is asked or a row is written; the owner
+// approves in the approval card.
+func TestActionsPropose_ButtonRefusesApprove(t *testing.T) {
+	database := writeActionsConfig(t)
+	got := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+
+	out, err := runPropose(t, targetPressArgs("7:0:abc", buttonArgs, "--approve")...)
+	require.Error(t, err, out)
+	assert.Equal(t, 1, exitCodeOf(err))
+	assert.Contains(t, err.Error(), "an Inbox button only proposes")
+	assert.Empty(t, *got, "no Confirm asked")
+	assert.Zero(t, actionRowCount(t, database))
+	assert.Zero(t, targetCount(t, database))
 }

@@ -85,7 +85,9 @@ surface (apply_track_action, create_target) is accepted, and only with
 agent_actions row); with --approve the same press approves and applies it,
 exactly as 'actions approve' does, and prints the same envelope.
 
-An Inbox card's target button proposes create_target without --approve,
+An Inbox card's target button proposes create_target without --approve
+(--approve is refused for that context: the owner approves the row in its
+approval card),
 with --context-type automation_output --context-id <output>:<index>:<action
 hash>: one pending row the owner approves in its approval card. A button
 with an open proposal, or whose applied task still exists, is refused with
