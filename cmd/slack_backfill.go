@@ -33,9 +33,10 @@ var slackBackfillCmd = &cobra.Command{
 	Short: "Fetch a past date range of one Slack account again, with its digests",
 	Long: "Searches Slack for every message of the account between --from and --to\n" +
 		"(local dates, both included) and saves them, newest days first, in the\n" +
-		"history backfill's 2-day chunks. With digests on, each chunk then gets its\n" +
-		"channel digests and the daily rollups of its days, the way the history\n" +
-		"backfill makes them. It moves no sync watermark and runs no inbox\n" +
+		"history backfill's 2-day chunks. With digests on, it digests only the\n" +
+		"channels and days no digest covered yet and rebuilds the daily rollup of\n" +
+		"each day that got a new digest; nothing is digested twice. It moves no\n" +
+		"sync watermark and runs no inbox\n" +
 		"detection. Run it again after a rate limit: fetched messages are kept.",
 	Args: cobra.NoArgs,
 	RunE: runSlackBackfill,
@@ -141,7 +142,7 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 		pipe = newBackfillDigestPipeline(cfg, database, gen, logger, det)
 	}
 
-	return backfillSlackRange(cmd.Context(), cmd.OutOrStdout(), orch, pipe, floor, upper)
+	return backfillSlackRange(cmd.Context(), cmd.OutOrStdout(), database, orch, pipe, floor, upper)
 }
 
 // newBackfillDigestPipeline wires the digest pipeline the way the daemon does
@@ -162,10 +163,11 @@ func newBackfillDigestPipeline(cfg *config.Config, database *db.DB, gen digest.G
 }
 
 // backfillSlackRange walks [floor, upper) in history-backfill chunks, newest
-// first: fetch (BackfillSearch), then — when pipe is set — the chunk's
-// digests and daily rollups. It stops at the first chunk it cannot finish
-// and names the --to that resumes there; everything fetched stays saved.
-func backfillSlackRange(ctx context.Context, out io.Writer, orch *sync.Orchestrator, pipe *digest.Pipeline, floor, upper time.Time) error {
+// first: fetch (BackfillSearch), then — when pipe is set — digests for what
+// no digest covered yet (backfillSlackDigests). It stops at the first chunk
+// it cannot finish and names the --to that resumes there; everything fetched
+// stays saved.
+func backfillSlackRange(ctx context.Context, out io.Writer, database *db.DB, orch *sync.Orchestrator, pipe *digest.Pipeline, floor, upper time.Time) error {
 	floorTS := float64(floor.Unix())
 	for reached := float64(upper.Unix()); ; {
 		fromTS, toTS, ok := historybackfill.NextChunk(reached, floorTS)
@@ -174,7 +176,7 @@ func backfillSlackRange(ctx context.Context, out io.Writer, orch *sync.Orchestra
 		}
 		from, to := time.Unix(int64(fromTS), 0), time.Unix(int64(toTS), 0)
 		days := from.Format("2006-01-02") + ".." + to.Add(-time.Second).Format("2006-01-02")
-		line, err := backfillSlackChunk(ctx, orch, pipe, from, to)
+		line, err := backfillSlackChunk(ctx, database, orch, pipe, from, to)
 		if err != nil {
 			var mismatch *sync.TeamMismatchError
 			if errors.As(err, &mismatch) {
@@ -190,9 +192,16 @@ func backfillSlackRange(ctx context.Context, out io.Writer, orch *sync.Orchestra
 	return nil
 }
 
-// backfillSlackChunk fetches one chunk and, with pipe set, digests it and
-// rolls up its days. line is the chunk's report.
-func backfillSlackChunk(ctx context.Context, orch *sync.Orchestrator, pipe *digest.Pipeline, from, to time.Time) (string, error) {
+// backfillSlackChunk fetches one chunk and, with pipe set, digests what no
+// digest covered before the fetch. line is the chunk's report.
+func backfillSlackChunk(ctx context.Context, database *db.DB, orch *sync.Orchestrator, pipe *digest.Pipeline, from, to time.Time) (string, error) {
+	var covered []map[string]bool
+	if pipe != nil {
+		var err error
+		if covered, err = digestedChannelDays(database, orch.AccountID(), from, to); err != nil {
+			return "", err
+		}
+	}
 	saved, err := orch.BackfillSearch(ctx, from, to)
 	if errors.Is(err, sync.ErrSlackTeamMismatch) {
 		return "", err
@@ -207,20 +216,102 @@ func backfillSlackChunk(ctx context.Context, orch *sync.Orchestrator, pipe *dige
 	if pipe == nil {
 		return line, nil
 	}
-	fromTS, toTS := float64(from.Unix()), float64(to.Unix())
-	res, _, err := pipe.RunBackfillWindow(ctx, orch.AccountID(), fromTS, toTS)
+	digests, rolled, err := backfillSlackDigests(ctx, database, pipe, orch.AccountID(), from, to, covered)
 	if err != nil {
-		return "", fmt.Errorf("messages saved, digests failed: %w", err)
+		return "", err
 	}
-	if !res.Complete {
-		return "", errors.New("messages saved, digests not finished (another digest run holds the lock, " +
-			"or the chunk needs more passes); run it again")
+	return fmt.Sprintf("%s, %d digests, daily rollups run for %d days", line, digests, rolled), nil
+}
+
+// backfillDays splits [from, to) into the UTC days the daily rollups use,
+// each clipped to the chunk.
+func backfillDays(from, to time.Time) [][2]time.Time {
+	var out [][2]time.Time
+	for d := from.UTC().Truncate(24 * time.Hour); d.Before(to); d = d.Add(24 * time.Hour) {
+		out = append(out, [2]time.Time{maxTime(d, from), minTime(d.Add(24*time.Hour), to)})
 	}
-	if err := pipe.RunBackfillRollupsForAccount(ctx, orch.AccountID(), fromTS, toTS); err != nil {
-		if errors.Is(err, digest.ErrDigestLocked) {
-			return "", errors.New("messages and digests saved, daily rollups wait for another digest run; run it again")
+	return out
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+// digestedChannelDays is, per day of backfillDays, the channels a digest has
+// already covered: the channel held messages that day before the fetch and
+// a channel digest's period overlaps the day. A digest period alone is not
+// enough: the first forward digest after a sync gap starts at the previous
+// digest's end, so its period spans the gap days it never saw a message of.
+func digestedChannelDays(database *db.DB, accountID int64, from, to time.Time) ([]map[string]bool, error) {
+	days := backfillDays(from, to)
+	out := make([]map[string]bool, len(days))
+	for i, day := range days {
+		dayFrom, dayTo := float64(day[0].Unix()), float64(day[1].Unix())
+		candidates, err := database.ChannelsWithMessagesInRange(accountID, dayFrom, dayTo)
+		if err != nil {
+			return nil, err
 		}
-		return "", fmt.Errorf("messages and digests saved, daily rollups failed: %w", err)
+		out[i] = map[string]bool{}
+		for _, c := range candidates {
+			has, err := database.ChannelDigestOverlaps(c.ChannelID, dayFrom, dayTo)
+			if err != nil {
+				return nil, err
+			}
+			if has {
+				out[i][c.ChannelID] = true
+			}
+		}
 	}
-	return line + ", " + strconv.Itoa(res.Digests) + " digests, daily rollups done", nil
+	return out, nil
+}
+
+// backfillSlackDigests digests, day by day, the channels of the account that
+// hold messages and were not covered before the fetch (covered, from
+// digestedChannelDays), then rebuilds the daily rollup of each day that got
+// a new digest. An already-digested channel day keeps its digest: its newly
+// fetched messages are stored and nothing else.
+func backfillSlackDigests(ctx context.Context, database *db.DB, pipe *digest.Pipeline, accountID int64, from, to time.Time, covered []map[string]bool) (digests, rolled int, err error) {
+	for i, day := range backfillDays(from, to) {
+		dayFrom, dayTo := float64(day[0].Unix()), float64(day[1].Unix())
+		candidates, err := database.ChannelsWithMessagesInRange(accountID, dayFrom, dayTo)
+		if err != nil {
+			return digests, rolled, err
+		}
+		var channels []string
+		for _, c := range candidates {
+			if !covered[i][c.ChannelID] {
+				channels = append(channels, c.ChannelID)
+			}
+		}
+		res, _, err := pipe.RunBackfillWindowChannels(ctx, accountID, dayFrom, dayTo, channels)
+		if err != nil {
+			return digests, rolled, fmt.Errorf("messages saved, digests failed: %w", err)
+		}
+		if !res.Complete {
+			return digests, rolled, errors.New("messages saved, digests not finished (another digest run holds the lock, " +
+				"or the day needs more passes); run it again")
+		}
+		digests += res.Digests
+		if res.Digests == 0 {
+			continue
+		}
+		if err := pipe.RunBackfillRollupsForAccount(ctx, accountID, dayFrom, dayTo); err != nil {
+			if errors.Is(err, digest.ErrDigestLocked) {
+				return digests, rolled, errors.New("messages and digests saved, a daily rollup waits for another digest run")
+			}
+			return digests, rolled, fmt.Errorf("messages and digests saved, daily rollup failed: %w", err)
+		}
+		rolled++
+	}
+	return digests, rolled, nil
 }
