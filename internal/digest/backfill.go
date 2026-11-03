@@ -53,13 +53,11 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 // a message on `from` belongs to the digest or day ending there — starting
 // after the newest period_to of the channel's digests overlapping the window,
 // except those in ignore (digests the caller found to have seen none of the
-// window's messages: a forward digest spanning a sync gap). That start is
-// read under the digest lock, on every pass, so a digest the daemon
-// committed after the caller decided is never digested over again. A call's
-// passes advance on what the call itself considered, kept in memory even
-// under routing (no history_backfill_considered receipt: a later run over the
-// same window must see messages fetched since). An empty list digests
-// nothing and is complete.
+// window's messages: a forward digest spanning a sync gap; scopedDigestEnds).
+// A call's passes advance on what the call itself considered, kept in memory
+// even under routing (no history_backfill_considered receipt: a later run
+// over the same window must see messages fetched since). An empty list
+// digests nothing and is complete.
 func (p *Pipeline) RunBackfillWindowChannels(ctx context.Context, slackAccountID int64, from, to float64, channels []string, ignore []int64) (BackfillWindowResult, *Usage, error) {
 	if len(channels) == 0 {
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
@@ -242,7 +240,9 @@ func (p *Pipeline) backfillWindows(slackAccountID int64, from, to, fastForwardTS
 
 // scopedDigestEnds returns, per channel, the newest period_to of its digests
 // overlapping (from, to] that are not in ignore: RunBackfillWindowChannels'
-// start. A period ending past to leaves the channel nothing to load.
+// start. It is read under the digest lock on every pass, so a digest the
+// daemon committed after the caller cut its window is never digested again.
+// A period ending past to leaves the channel nothing to load.
 func (p *Pipeline) scopedDigestEnds(slackAccountID int64, from, to float64, ignore map[int64]bool) (map[string]float64, error) {
 	digests, err := p.db.ChannelDigestsOverlapping(slackAccountID, from, to)
 	if err != nil {

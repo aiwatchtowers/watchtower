@@ -851,8 +851,9 @@ func (d *Daemon) reapStalePipelineRuns() {
 // an account whose token is revoked or signed in to another Slack team
 // (sync.ErrSlackTeamMismatch, amended 2026-11-03, ask #454). Either fails
 // every cycle until the owner reconnects it, so freezing on it would stop
-// every other account's watermark for good; its status row already shows it
-// (revoked, or the mismatch's Re-login error).
+// every other account's watermark for good; recordAuthResult marks its
+// status row (revoked, or the mismatch's Re-login error), and the error is
+// still logged and returned as the cycle's sync error.
 func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil

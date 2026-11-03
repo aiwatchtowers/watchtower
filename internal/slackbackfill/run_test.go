@@ -266,8 +266,11 @@ func TestRange_PartlyCoveredDayIsStoredNotDigested(t *testing.T) {
 		return nil
 	}
 
-	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
+	r := f.newRun(t, true)
+	require.NoError(t, r.Range(context.Background(), day, day.Add(24*time.Hour)))
 	assert.Zero(t, f.gen.calls(), "a covered day is not digested")
+	assert.Contains(t, r.Out.(*bytes.Buffer).String(),
+		"1 channel days already had a digest: their messages are saved, not digested", "the run says so")
 	assert.Equal(t, 2, countDigests(t, f.db, `channel_id = '1:C1'`))
 	assert.Zero(t, dailyOn(t, f.db, day))
 	var stored int
@@ -305,6 +308,36 @@ func TestRange_DigestWrittenAfterTheDecisionDoesNotCover(t *testing.T) {
 	assert.Contains(t, joined, "retry-15", "the later digest does not cover the day")
 	assert.NotContains(t, joined, "first-5", "nothing the later digest holds is digested again")
 	assert.Equal(t, 3, countDigests(t, f.db, `channel_id = '1:C1'`))
+}
+
+// A later digest that starts inside the day is cut out of the window: what
+// lies before it is still digested. The channel's gap digest ends inside the
+// day (the forward mark then), and the daemon's next forward digest lands
+// after the decision; the retry digests the gap part up to the later
+// digest's start, and says the later digest kept a message.
+func TestRange_LaterDigestInsideTheDayIsCutOut(t *testing.T) {
+	f := newFixture(t)
+	day := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	at := func(h int) time.Time { return day.Add(time.Duration(h) * time.Hour) }
+	seedDigest(t, f.db, "1:C1", day.AddDate(0, 0, -2), at(6)) // a gap digest: saw no message of the day
+	f.fetch.onFetch = func(_, _ time.Time) error {
+		seedMessage(t, f.db, "1:C1", at(3), "gap-3")
+		return sync.ErrBackfillIncomplete
+	}
+	require.ErrorIs(t, f.runRange(t, day, day.Add(24*time.Hour)), sync.ErrBackfillIncomplete)
+
+	seedDigest(t, f.db, "1:C1", at(6), at(12)) // the daemon's next forward digest
+	f.fetch.onFetch = func(_, _ time.Time) error {
+		seedMessage(t, f.db, "1:C1", at(9), "in-later-9")
+		return nil
+	}
+	r := f.newRun(t, true)
+	require.NoError(t, r.Range(context.Background(), day, day.Add(24*time.Hour)))
+	joined := fmt.Sprint(f.gen.prompts)
+	assert.Contains(t, joined, "gap-3", "the part before the later digest is digested")
+	assert.NotContains(t, joined, "in-later-9")
+	assert.Equal(t, 3, countDigests(t, f.db, `channel_id = '1:C1'`))
+	assert.Contains(t, r.Out.(*bytes.Buffer).String(), "1 channel days already had a digest")
 }
 
 // racingDigester commits a digest (the daemon's) after the run decided what

@@ -33,11 +33,8 @@ type ledgerDay struct {
 	// its messages before the first fetch: their periods do not count as
 	// covering the day.
 	Excluded []int64 `json:"excluded"`
-	// DigestIDMax is the highest digest id when the day was decided: a
-	// digest above it was written later — by the daemon, or by an earlier
-	// run of this command — so it never covers the day (it may not have
-	// seen the refetched messages), but RunBackfillWindowChannels still
-	// starts after it, so nothing it digested is digested again.
+	// DigestIDMax is the highest digest id when the day was decided; a
+	// digest above it was written later (coverage.go has the rule).
 	DigestIDMax   int64  `json:"digest_id_max"`
 	RollupPending bool   `json:"rollup_pending"` // digests may have been written, the rollup not rebuilt yet
 	DecidedAt     string `json:"decided_at"`     // RFC 3339 UTC

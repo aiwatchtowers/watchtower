@@ -12,38 +12,46 @@ import (
 	"watchtower/internal/db"
 )
 
-// An uncovered channel day is digested whole, cut at the channel's forward
-// mark, and only when a message lies inside ((from, to] spans).
+// An uncovered channel day is digested up to the channel's forward mark,
+// outside the periods of digests written since the decision, and only the
+// parts that hold a message ((from, to] spans).
 func TestUncovered(t *testing.T) {
 	day := span{0, 100}
 	cases := []struct {
 		name  string
 		limit float64
+		later []span
 		times []float64
-		want  span
-		ok    bool
+		want  []span
 	}{
-		{"the whole day", 1000, []float64{50}, span{0, 100}, true},
-		{"no message: nothing", 1000, nil, span{0, 100}, false},
-		{"a message on the day start is the previous day's", 1000, []float64{0}, span{0, 100}, false},
-		{"a message on the day end is kept", 1000, []float64{100}, span{0, 100}, true},
-		{"cut at the forward mark", 55, []float64{50, 60}, span{0, 55}, true},
-		{"only messages above the mark: nothing", 55, []float64{60}, span{0, 55}, false},
-		{"a message on the mark is kept", 50, []float64{50}, span{0, 50}, true},
-		{"a mark below the day: nothing", -1, []float64{50}, span{0, -1}, false},
+		{"the whole day", 1000, nil, []float64{50}, []span{{0, 100}}},
+		{"no message: nothing", 1000, nil, nil, nil},
+		{"a message on the day start is the previous day's", 1000, nil, []float64{0}, nil},
+		{"a message on the day end is kept", 1000, nil, []float64{100}, []span{{0, 100}}},
+		{"cut at the forward mark", 55, nil, []float64{50, 60}, []span{{0, 55}}},
+		{"a mark below the day: nothing", -1, nil, []float64{50}, nil},
+		{"a message on the mark is kept", 50, nil, []float64{50}, []span{{0, 50}}},
+		{"a later digest's period is cut out", 1000, []span{{30, 60}}, []float64{20, 45, 90}, []span{{0, 30}, {60, 100}}},
+		{"a message on a later period_to is that digest's", 1000, []span{{30, 60}}, []float64{60}, nil},
+		{"a message on a later period_from is not", 1000, []span{{30, 60}}, []float64{30}, []span{{0, 30}}},
+		{"overlapping later digests merge", 1000, []span{{30, 60}, {10, 40}}, []float64{35, 61}, []span{{60, 100}}},
+		{"a later digest past the day holds its tail", 1000, []span{{80, 500}}, []float64{70, 90}, []span{{0, 80}}},
 	}
 	for _, c := range cases {
-		got, ok := uncovered(day, c.limit, c.times)
-		assert.Equal(t, c.ok, ok, c.name)
-		if c.ok {
-			assert.Equal(t, c.want, got, c.name)
-		}
+		assert.Equal(t, c.want, uncovered(day, c.limit, c.later, c.times), c.name)
 	}
+}
+
+func TestCountTimes(t *testing.T) {
+	times := []float64{10, 20, 20, 30}
+	assert.Equal(t, 3, countTimes(span{10, 30}, times), "(from, to]")
+	assert.Equal(t, 0, countTimes(span{30, 10}, times), "an empty span")
+	assert.Equal(t, 0, countTimes(span{30, 40}, times))
 }
 
 // A channel's day is covered by a digest that existed at the decision and
 // that the ledger did not exclude; a later digest (id above digest_id_max)
-// never covers it.
+// never covers it and is returned as a later period.
 func TestCoveredChannels(t *testing.T) {
 	day := &ledgerDay{Excluded: []int64{2}, DigestIDMax: 3}
 	digests := []db.ChannelDigestPeriod{
@@ -55,6 +63,7 @@ func TestCoveredChannels(t *testing.T) {
 	}
 	assert.Equal(t, map[string]bool{"1:C1": true, "1:C2": true}, coveredChannels(digests, day))
 	assert.Empty(t, coveredChannels(nil, day))
+	assert.Equal(t, map[string][]span{"1:C3": {{0, 0}}}, laterPeriods(digests, day))
 }
 
 func TestExcludedDigests(t *testing.T) {

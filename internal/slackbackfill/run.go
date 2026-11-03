@@ -158,6 +158,7 @@ func (r *Run) freeze(floor, upper time.Time) error {
 	if err != nil {
 		return err
 	}
+	// One snapshot for every day this call decides, taken before any fetch.
 	idMax, err := r.DB.MaxDigestID()
 	if err != nil {
 		return err
@@ -226,13 +227,14 @@ func (r *Run) chunk(ctx context.Context, from, to time.Time) (string, error) {
 	if r.Digest == nil {
 		return line, nil
 	}
-	digests, rolled := 0, 0
+	digests, kept, rolled := 0, 0, 0
 	for _, d := range utcDaysNewestFirst(from, to) {
 		if err := r.CheckPurge(); err != nil {
 			return "", err
 		}
-		n, didRoll, err := r.digestDay(ctx, d[0], d[1])
+		n, k, didRoll, err := r.digestDay(ctx, d[0], d[1])
 		digests += n
+		kept += k
 		if err != nil {
 			return "", err
 		}
@@ -240,23 +242,28 @@ func (r *Run) chunk(ctx context.Context, from, to time.Time) (string, error) {
 			rolled++
 		}
 	}
-	return fmt.Sprintf("%s, %d digests, daily rollups run for %d days", line, digests, rolled), nil
+	line = fmt.Sprintf("%s, %d digests, daily rollups run for %d days", line, digests, rolled)
+	if kept > 0 {
+		line += fmt.Sprintf("; %d channel days already had a digest: their messages are saved, not digested", kept)
+	}
+	return line, nil
 }
 
 // digestDay digests, for every channel whose UTC day no digest covers
 // (coverage.go), the account's messages of the day (clipped to the chunk) at
 // or below the channel's forward mark — anything above belongs to the
-// forward digest — then rebuilds the day's daily rollup when it got a digest (now, or
-// in an unfinished earlier run: the ledger's rollup_pending).
-func (r *Run) digestDay(ctx context.Context, dayFrom, dayTo time.Time) (digests int, rolled bool, err error) {
+// forward digest — then rebuilds the day's daily rollup when it got a digest
+// (now, or in an unfinished earlier run: the ledger's rollup_pending). kept
+// counts the channel days a digest kept messages of from being digested.
+func (r *Run) digestDay(ctx context.Context, dayFrom, dayTo time.Time) (digests, kept int, rolled bool, err error) {
 	id := r.Fetch.AccountID()
 	day := r.Ledger.Days[ledgerKey(id, utcDayKey(dayFrom))]
 	if day == nil {
-		return 0, false, fmt.Errorf("slack backfill ledger has no entry for %s", utcDayKey(dayFrom))
+		return 0, kept, false, fmt.Errorf("slack backfill ledger has no entry for %s", utcDayKey(dayFrom))
 	}
-	groups, err := r.uncoveredGroups(id, dayFrom, dayTo, day)
+	groups, kept, err := r.uncoveredGroups(id, dayFrom, dayTo, day)
 	if err != nil {
-		return 0, false, err
+		return 0, kept, false, err
 	}
 	wasPending := day.RollupPending
 	if len(groups) > 0 && !wasPending {
@@ -264,39 +271,39 @@ func (r *Run) digestDay(ctx context.Context, dayFrom, dayTo time.Time) (digests 
 		// later still leaves the rollup to the rerun.
 		day.RollupPending = true
 		if err := r.Ledger.save(); err != nil {
-			return 0, false, err
+			return 0, kept, false, err
 		}
 	}
 	for _, g := range groups {
 		res, _, err := r.Digest.RunBackfillWindowChannels(ctx, id, g.span.from, g.span.to, g.channels, day.Excluded)
 		digests += res.Digests
 		if err != nil {
-			return digests, false, fmt.Errorf("messages saved, digests failed: %w", err)
+			return digests, kept, false, fmt.Errorf("messages saved, digests failed: %w", err)
 		}
 		if !res.Complete {
-			return digests, false, errors.New("messages saved, digests not finished (another digest run holds the lock, " +
+			return digests, kept, false, errors.New("messages saved, digests not finished (another digest run holds the lock, " +
 				"or the day needs more passes); run it again")
 		}
 	}
 	if !day.RollupPending {
-		return digests, false, nil
+		return digests, kept, false, nil
 	}
 	if digests == 0 && !wasPending {
 		// Nothing was written (muted channels, a declined model call).
 		day.RollupPending = false
-		return 0, false, r.Ledger.save()
+		return 0, kept, false, r.Ledger.save()
 	}
 	if err := r.Digest.RunBackfillDayRollups(ctx, float64(dayFrom.Unix()), float64(dayTo.Unix())); err != nil {
 		if errors.Is(err, digest.ErrDigestLocked) {
-			return digests, false, errors.New("messages and digests saved, a daily rollup waits for another digest run; run it again")
+			return digests, kept, false, errors.New("messages and digests saved, a daily rollup waits for another digest run; run it again")
 		}
-		return digests, false, fmt.Errorf("messages and digests saved, daily rollup failed: %w", err)
+		return digests, kept, false, fmt.Errorf("messages and digests saved, daily rollup failed: %w", err)
 	}
 	day.RollupPending = false
 	if err := r.Ledger.save(); err != nil {
-		return digests, false, err
+		return digests, kept, false, err
 	}
-	return digests, true, nil
+	return digests, kept, true, nil
 }
 
 // spanGroup is the channels sharing one uncovered span: one digest call.
@@ -305,45 +312,59 @@ type spanGroup struct {
 	channels []string
 }
 
-// uncoveredGroups resolves, with three queries for the day, the span to
+// uncoveredGroups resolves, with three queries for the day, the spans to
 // digest of every channel whose day is not covered — the window
-// [dayFrom, dayTo) (the UTC day clipped to the chunk) cut at its forward mark
-// — and groups the channels by span, newest span first. Coverage looks at
-// the whole UTC day, so a day split across two chunks is decided the same in
-// both.
-func (r *Run) uncoveredGroups(id int64, dayFrom, dayTo time.Time, day *ledgerDay) ([]spanGroup, error) {
+// [dayFrom, dayTo) (the UTC day clipped to the chunk) cut at the channel's
+// forward mark and outside every digest written since the day was decided —
+// and groups the channels by span, newest span first. Coverage looks at the
+// whole UTC day, so a day split across two chunks is decided the same in
+// both. kept counts the channel days with a message at or below the mark
+// that a digest keeps from being digested: a covered day, or a later
+// digest's period.
+func (r *Run) uncoveredGroups(id int64, dayFrom, dayTo time.Time, day *ledgerDay) (groups []spanGroup, kept int, err error) {
 	start := dayFrom.UTC().Truncate(24 * time.Hour)
 	whole := spanOf(start, start.Add(24*time.Hour))
 	digests, err := r.DB.ChannelDigestsOverlapping(id, whole.from, whole.to)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	window := spanOf(dayFrom, dayTo)
 	times, err := r.DB.ChannelMessageTimesInRange(id, window.from, window.to)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	marks, err := r.DB.ChannelForwardMarks(id)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	never := r.Digest.InitialHistorySince(float64(r.now().Unix()))
 
 	covered := coveredChannels(digests, day)
+	later := laterPeriods(digests, day)
 	bySpan := map[span][]string{}
 	for ch, ts := range times {
-		if covered[ch] {
-			continue
-		}
 		limit, ok := marks[ch]
 		if !ok {
 			limit = never
 		}
-		if s, ok := uncovered(window, limit, ts); ok {
+		reachable := countTimes(span{window.from, min(window.to, limit)}, ts)
+		if covered[ch] {
+			if reachable > 0 {
+				kept++
+			}
+			continue
+		}
+		pieces := uncovered(window, limit, later[ch], ts)
+		digestable := 0
+		for _, s := range pieces {
 			bySpan[s] = append(bySpan[s], ch)
+			digestable += countTimes(s, ts)
+		}
+		if digestable < reachable {
+			kept++
 		}
 	}
-	groups := make([]spanGroup, 0, len(bySpan))
+	groups = make([]spanGroup, 0, len(bySpan))
 	for s, chans := range bySpan {
 		slices.Sort(chans)
 		groups = append(groups, spanGroup{s, chans})
@@ -354,5 +375,5 @@ func (r *Run) uncoveredGroups(id int64, dayFrom, dayTo time.Time, day *ledgerDay
 		}
 		return cmp.Compare(strings.Join(a.channels, ","), strings.Join(b.channels, ","))
 	})
-	return groups, nil
+	return groups, kept, nil
 }
