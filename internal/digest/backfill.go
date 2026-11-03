@@ -44,6 +44,24 @@ type BackfillWindowResult struct {
 // created or opened) is returned as an error. The returned usage is the sum of this call's own passes — never the
 // pipeline's shared counters, which the forward phase also feeds.
 func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, from, to float64) (BackfillWindowResult, *Usage, error) {
+	return p.runBackfillWindow(ctx, slackAccountID, from, to, nil)
+}
+
+// RunBackfillWindowChannels is RunBackfillWindow limited to channels
+// (namespaced ids): the others' messages in the chunk are left as they are.
+// An empty list digests nothing and is complete.
+func (p *Pipeline) RunBackfillWindowChannels(ctx context.Context, slackAccountID int64, from, to float64, channels []string) (BackfillWindowResult, *Usage, error) {
+	if len(channels) == 0 {
+		return BackfillWindowResult{Complete: true}, &Usage{}, nil
+	}
+	only := make(map[string]bool, len(channels))
+	for _, c := range channels {
+		only[c] = true
+	}
+	return p.runBackfillWindow(ctx, slackAccountID, from, to, only)
+}
+
+func (p *Pipeline) runBackfillWindow(ctx context.Context, slackAccountID int64, from, to float64, only map[string]bool) (BackfillWindowResult, *Usage, error) {
 	if !p.cfg.Digest.Enabled {
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
 	}
@@ -59,7 +77,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 	defer unlock()
 
 	p.loadCaches()
-	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator)}
+	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator), only: only}
 	if scope.durable {
 		scope.considered, err = p.db.HistoryBackfillConsidered(slackAccountID, from, to)
 		if err != nil {
@@ -182,7 +200,7 @@ func (p *Pipeline) backfillWindows(slackAccountID int64, from, to, fastForwardTS
 	defer b.mu.Unlock()
 	windows := make([]channelWindow, 0, len(candidates))
 	for _, c := range candidates {
-		if b.failed[c.ChannelID] {
+		if b.failed[c.ChannelID] || (b.only != nil && !b.only[c.ChannelID]) {
 			continue
 		}
 		since := max(from, c.LastDigestInRange, b.considered[c.ChannelID], fastForwardTS)

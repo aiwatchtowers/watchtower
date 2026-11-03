@@ -549,6 +549,19 @@ func (db *DB) ChannelsWithMessagesInRange(slackAccountID int64, from, to float64
 	return candidates, nil
 }
 
+// ChannelDigestOverlaps reports whether a channel digest of channelID covers
+// any part of (from, to].
+func (db *DB) ChannelDigestOverlaps(channelID string, from, to float64) (bool, error) {
+	var has bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM digests
+		WHERE type = 'channel' AND channel_id = ? AND period_from < ? AND period_to > ?)`,
+		channelID, to, from).Scan(&has)
+	if err != nil {
+		return false, fmt.Errorf("checking digests of channel %s: %w", channelID, err)
+	}
+	return has, nil
+}
+
 // GetDigestDecisionsForChannel returns individual decisions from digests
 // that overlap with the given channel and time window.
 // Decisions are parsed from the JSON decisions field of each digest.

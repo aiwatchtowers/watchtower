@@ -25,6 +25,15 @@ The service revoked or expired the sign-in (a password change, an admin removing
 
 A row that says **Data deleted** (Slack, Google, Jira or Linear) is fixed the same way, with **Re-login**; the account then syncs again from scratch. See [My data was deleted](../concepts/revoked-access.md#my-data-was-deleted).
 
+## Slack is signed in to a different workspace
+
+A Slack row says **Signed in to a different Slack workspace (…) — Re-login to …**, or **Re-login** stops with "signed in to Slack workspace …, but this account holds …". An account keeps the workspace its messages came from, so Watchtower refuses a sign-in into another one and syncs nothing for that account until it is back.
+
+1. Press **Re-login** on the row. If Slack's page shows another workspace, switch to the one the row names first, then approve.
+2. To use the other workspace too, press **Add Slack Workspace** instead; it becomes an account of its own.
+
+After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run). With digests on, it writes digests only for channels and days no digest covered yet, and rebuilds the daily summary of those days; a day that already had its digest keeps it. Mentions from those days show in digests, not in the Inbox.
+
 ## How to check
 
 The dot turns green and the next sync cycle brings new data. The service dot stays red until every account under it is healthy.
