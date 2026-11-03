@@ -291,6 +291,12 @@ model call, no registry call) — owner-confirmed reading in ask #280. The
 comparison is within the draft's scope: `approval_hash` covers the scope, so
 the same text with another `workbench_id` hashes differently and dry-runs,
 which is equivalent to the allowed one-line edit (any edit makes a draft).
+The owner's preview (`automations preview --stdin --json`, the Look step's
+**Dry run**, Inbox builder A, ask #445) shares `draft_automation`'s
+evaluation (`authoring.EvaluateDraft`) and, as the owner's press, dry-runs
+an unconfirmed recipe too: it refuses under every marker
+(`WATCHTOWER_AUTOMATION_RUN_ID` included) before reading stdin, and the D16
+refusal above stays on the chat path.
 `save_automation` (P3) is the third caller of `ConfirmAutomation`: an
 `AlwaysAsk` write whose `Execute` runs only after the owner's Approve
 (AGENT-07) and confirms only the pinned `approval_hash`, refusing when the
@@ -368,6 +374,7 @@ code or permissions the owner did not see.
 
 - C3 watch recipes (board #801, spec §6.3/§8): `internal/automations/recipe_test.go` — `TestParseRecipe_SyncTriggerBuiltinOnly`, `TestParseRecipe_PersonalWatchRecipeParses`, `TestParseRecipe_WatchShapeRefusals`, `TestApprovalHash_TrackScanIsHashed`; `internal/automations/manifest_test.go` — `TestCapabilityForPrimitive_TrackScanIsPersonal`; `internal/automations/sdk_builtin_test.go` — `TestExecutor_PollNeverClaimsWatchRecipeRuns`, `TestExecutor_InlineRunsWatchRecipeOnlyWhenEnabled`, `TestAuto06_InlineRefusesUnconfirmedWatchRecipe` (Task 3); `internal/automations/builtin/watchslot_test.go` — `TestWatchSlot_RunsConfirmedEnabledRecipes`, `TestWatchSlot_HandEditedRecipeStopsTheScan`, `TestWatchSlot_DeletedRecipeLeavesTrackUnbound`, `TestWatchSlot_InstructionMirroredToTrack`; `internal/automations/builtin/runner_test.go` — `TestRunSyncInline_OffOrUnconfirmedWritesNothing`; `internal/automations/builtin/capture_test.go` — `TestCapturePrompts_RefusesUnconfirmed` (Task 8); `cmd/tracks_test.go` — `TestTracksCreate_WritesConfirmedWatch`, `TestTracksCreate_UnderAgentLeavesUnconfirmed`, `TestTracksStart_RefusedUnderAgentMarkers`, `TestTracksInstruction_RewritesAndConfirms`, `TestTracksInstruction_RefusesEditedRecipe`, `TestTracksGenerate_RefusedForUnconfirmedCopy`, `TestTracksScan_BoundUnconfirmedRecipeNeverScanned` (Task 11); `cmd/builtin_upgrade_test.go` — `TestAuto06_UpgradeConfirmsOnlyRenderedWatchRecipes`, `TestCustomTracksUpgrade_DismissedStaysUnbound` (Task 12)
 
+- 2026-11-03 (Inbox builder A, owner preview, ask #445): `cmd/automations_preview_test.go` — `TestAutomationsCLI_PreviewRefusedUnderAgentMarkers`; `internal/automations/authoring/draft_test.go` — `TestEvaluateDraft_DryRunsAnUnconfirmedRecipe`
 - 2026-11-03 (Inbox builder A, reply on a changed card): `cmd/automations_reply_test.go` — `TestAutomationsCLI_ReplyRefusedWhenCardChanged`; `internal/automations/executor_reply_card_test.go` — `TestExecutor_ReplyRunOnChangedCardCancelled`, `TestAuto08_ResumedReplyRunIsCheckedForChangedCard`; `internal/db/automation_outputs_press_blocks_test.go` — `TestPressInboxOutputAction_ContentHash`
 - 2026-11-03 (Inbox builder A, `artifacts`): `internal/automations/recipe_test.go` — `TestApprovalHash_ArtifactsIsHashed`; `internal/automations/indexer_test.go` — the `artifacts` case of `TestAuto06_ScheduleBudgetEditNeedsConfirmation`
 - 2026-10-21 (Inbox Reply): `internal/automations/indexer_test.go` — `TestApprovalHash_InboxReplyIsHashed`; `internal/automations/sdk_output_card_test.go` — `TestOutput_ReplyActionNeedsInboxReply`; `cmd/automations_reply_test.go` — `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`; `internal/automations/executor_test.go` — `TestExecutor_ReplyRunWithoutCapabilityFails`
@@ -638,7 +645,10 @@ chat-written and a read tool's arguments still carry data out (ask #326).
 real, QC-02 reads only. The
 editor's draft cache (`<workspace>/automation-drafts/<conversation id>.jsonl`,
 P3) is a UI cache of the tool's own result written by `draft_automation`
-itself, not by the script, and no database row.
+itself, not by the script, and no database row. The owner's preview
+(`automations preview --stdin --json`, Inbox builder A, ask #445) is the
+same dry run in memory: no row of any table, no draft-cache entry (its
+database handle is `query_only`), `output.remove` journaled `dry_run`.
 
 **Why locked:** Dry run is how the owner (and, for a confirmed recipe, the
 assistant) checks a recipe before trusting it; a dry run with side effects
@@ -705,6 +715,7 @@ turn a recipe into arbitrary code execution.
 - `internal/automations/sdk_shell_test.go` — `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`, `TestShell_RefusedInProtectedFolder`, `TestShell_RefusedWhenTheFolderPathHasALink`, `TestShell_NotAvailable`, `TestShell_ValidationError`, `TestShell_EnvHasRunMarkerAndNoSecrets`, `TestShell_KillsProcessGroupOnInterrupt`, `TestShell_TimeoutIsRemainingActiveBudget`, `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails`, `TestShell_NonZeroExitIsAResult`, `TestShell_DryRunStartsNoProcess`
 - `internal/automations/manifest_test.go` — `TestManifest_PersonalRefusesShellSessionAsk`, `TestManifest_ShellExactOnly` (P1)
 - `cmd/automations_agent_test.go` — `TestAutomationBackends_WireMCPAndAgent` (`Backends.Shell` and `Backends.Workbench` wired)
+- Inbox builder A (ask #445): `cmd/automations_preview_test.go` — `TestAutomationsCLI_PreviewWritesNoRows` (every table's row count unchanged, `llm()` faked); `internal/automations/sdk_output_blocks_test.go` — `TestOutput_RemoveDryRun`
 
 **Locked since:** 2026-10-14
 
@@ -712,6 +723,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-03 (Inbox builder A Task 6, board #1400, **AUTO-06/AUTO-12 amended, owner approved in ask #445**): the owner preview `watchtower automations preview --stdin --json [--slug S] [--workbench N] [--builtin ID]` — the editor Look step's **Dry run** — evaluates the text on stdin as `draft_automation` does (`authoring.EvaluateDraft`: validate, widening, `DryRunInMemory` with the draft bounds) and prints its `DraftResult` (draft_automation's keys; `DraftOutput` gains `blocks` (null when none), `key` and `content_hash`). **AUTO-12**: it writes no row of any table and no draft-cache entry (`query_only` handle). **AUTO-06**: owner-only, refused under every agent marker before stdin is read; as the owner's press it dry-runs an unconfirmed recipe too, the D16 refusal staying on the chat path. A new dry-run path, no guard relaxed. Guards added: `TestAutomationsCLI_PreviewRefusedUnderAgentMarkers`, `TestAutomationsCLI_PreviewWritesNoRows`, `TestEvaluateDraft_DryRunsAnUnconfirmedRecipe`.
 - 2026-11-03 (Inbox builder A Task 5, board #1400, **owner approved in asks #961 and #445**): the SDK side of blocks and living artifacts. `output.inbox` takes `blocks` (exclusive with `body`; stored canonical, `body` = its plain text), `key` (required with `artifacts: living`, refused otherwise) and hook-registered fields (`folder` reserved for sub-project B); every inbox card carries `blocks.ContentHash` (an omitted priority hashes as `medium`). `output.remove({key})` (gated by `outputs: [inbox]` and `artifacts: living`) is buffered and committed only with the success (**AUTO-04**), journaled `dry_run` in a dry run (**AUTO-12**); the buffer keeps one operation per key, the later wins. A target action inside a block needs `outputs: [target]` like a card's (**AUTO-02**); the card's own actions count toward the 50-action cap. Strengthening, no guard relaxed. Guards added: `TestOutput_RemoveDryRun`, `TestAuto12_LivingDryRunWritesNothing`, `TestAuto04_LivingRunCommitsUpsertAndRemoval`, `TestOutput_RemoveLaterWins`, `TestOutput_OutputsCapCountsKeptOutputs`, `TestAuto08_ResumeRebuildsLivingBuffer`; `TestOutput_TargetActionNeedsTargetOutput` gains its list-row case.
 - 2026-11-03 (board #1400, Inbox builder A, **owner approved in ask #961**): **AUTO-04 extended** — the run's one finish transaction also upserts living Inbox outputs by `(automation_id, output_key)` and deletes the keys `output.remove` buffered (migration 00173: `blocks_json`, `output_key`, `content_hash`, `written_at`, `changed_at`, partial unique index `idx_automation_outputs_key`); only a changed content hash makes a card new again (moves `changed_at`, clears read/done/dismissed/press). A failed, timed-out, over-budget or cancelled run leaves living rows byte-identical, like every other output. Guards added: `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess`. No guard relaxed.
 - 2026-11-03 (board #1400, Inbox builder A Task 4, **owner approved in ask #961**): **AUTO-05 extended** — `artifacts: living` requires `concurrency: 1` and `outputs: [inbox]` (parse errors otherwise; one rule function, `serialRunReasons`). **AUTO-06 extended** — `artifacts` is in `approval_hash`, written to the canonical form only when `living`, so feed recipes hash as before (`TestApprovalHash_GoldenCanonicalBytes` unchanged); `ApprovalFields` and `validate --json` `fields` carry `artifacts` so the confirming screen lists it. Strengthening, no guard relaxed. Guards added: `TestAuto05_LivingArtifactsNeedConcurrencyOne`, `TestApprovalHash_ArtifactsIsHashed`, the `artifacts` case of `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.

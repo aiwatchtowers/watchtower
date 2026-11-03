@@ -95,13 +95,23 @@ type DraftStep struct {
 	Tokens     int64  `json:"tokens"`
 }
 
-// DraftOutput is one output the run would have committed.
+// DraftOutput is one output the run would have committed. Blocks is its
+// canonical block document, JSON null when it has none (a markdown body;
+// Body is then the markdown, else the blocks' plain text); Key a living
+// artifact's key ("" for a feed output); ContentHash the card's content hash
+// (blocks.ContentHash; "" for an output other than inbox).
 type DraftOutput struct {
-	Kind     string `json:"kind"`
-	Title    string `json:"title"`
-	Body     string `json:"body"`
-	Priority string `json:"priority"`
+	Kind        string          `json:"kind"`
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	Priority    string          `json:"priority"`
+	Blocks      json.RawMessage `json:"blocks"`
+	Key         string          `json:"key"`
+	ContentHash string          `json:"content_hash"`
 }
+
+// noBlocks is DraftOutput.Blocks of an output without a block document.
+var noBlocks = json.RawMessage("null")
 
 // NewDraftAutomation is draft_automation (spec §11): validate a recipe the
 // chat is writing, compute its widening, and dry-run it in memory. It writes
@@ -135,6 +145,33 @@ func draftSchema() *jsonschema.Schema {
 	return s
 }
 
+// DraftTarget is what a draft edits: the saved automation's slug ("" = a
+// new recipe), its workbench (0 = personal) or the built-in it overrides.
+type DraftTarget struct {
+	Slug        string
+	WorkbenchID int64
+	BuiltinID   string
+}
+
+// EvaluateDraft is draft_automation's evaluation for the owner's preview
+// (`watchtower automations preview`, ask #445): validate text, compute its
+// widening and dry-run it in memory with the draft bounds, writing nothing
+// (AUTO-12). Unlike the chat tool it dry-runs an indexed unconfirmed recipe
+// too: the D16 refusal guards the chat path only, and the CLI refuses
+// under every agent marker before it gets here (AUTO-06).
+func EvaluateDraft(ctx context.Context, d Deps, text string, target DraftTarget) (*DraftResult, error) {
+	a := draftArgs{RecipeText: text, Slug: target.Slug, WorkbenchID: target.WorkbenchID, BuiltinID: target.BuiltinID}
+	return evaluate(ctx, d, a, evalOptions{})
+}
+
+// evalOptions tunes evaluate: the chat conversation whose read budget the
+// dry run spends (READ-01; 0 = none) and whether a draft equal to an indexed
+// unconfirmed recipe is refused its dry run (D16, the chat path).
+type evalOptions struct {
+	conversation      int64
+	refuseUnconfirmed bool
+}
+
 // draft runs evaluate and, on the editor surface, caches its result — or its
 // error, so an older draft never stays the newest — for the Desktop's Draft
 // panel (draftcache.go).
@@ -143,7 +180,7 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	if err := json.Unmarshal(call.Args, &a); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
-	res, err := evaluate(ctx, d, a, call.Binding.ConversationID)
+	res, err := evaluate(ctx, d, a, evalOptions{conversation: call.Binding.ConversationID, refuseUnconfirmed: true})
 	d.cacheDraft(call.Binding, a.RecipeText, res, err)
 	if err != nil {
 		return nil, err
@@ -152,8 +189,8 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 }
 
 // evaluate validates a draft, computes its widening and dry-runs it; the dry
-// run's reads spend conversation's read budget (READ-01).
-func evaluate(ctx context.Context, d Deps, a draftArgs, conversation int64) (*DraftResult, error) {
+// run's reads spend opts.conversation's read budget (READ-01).
+func evaluate(ctx context.Context, d Deps, a draftArgs, opts evalOptions) (*DraftResult, error) {
 	if strings.TrimSpace(a.RecipeText) == "" {
 		return nil, &tools.ValidationError{Msg: "recipe_text is required"}
 	}
@@ -193,19 +230,21 @@ func evaluate(ctx context.Context, d Deps, a draftArgs, conversation int64) (*Dr
 	if res.Widening, err = draftWidening(d.DB, scope, a.Slug, res.Manifest.Permissions); err != nil {
 		return nil, err
 	}
-	refused, err := isUnconfirmedRecipe(d.DB, scope, res.Manifest.ApprovalHash)
-	if err != nil {
-		return nil, err
-	}
-	if refused {
-		res.DryRun = &DraftDryRun{Steps: []DraftStep{}, Outputs: []DraftOutput{}, Status: dryRunRefused, Error: msgUnconfirmedRecipe}
-		return res, nil
+	if opts.refuseUnconfirmed {
+		refused, err := isUnconfirmedRecipe(d.DB, scope, res.Manifest.ApprovalHash)
+		if err != nil {
+			return nil, err
+		}
+		if refused {
+			res.DryRun = &DraftDryRun{Steps: []DraftStep{}, Outputs: []DraftOutput{}, Status: dryRunRefused, Error: msgUnconfirmedRecipe}
+			return res, nil
+		}
 	}
 	b := d.backends()
 	if scope.BuiltinID != "" && b.DefaultPrompt == nil {
 		b.DefaultPrompt = builtin.DefaultPromptFunc // builtin.defaultPrompt(name) in the dry run
 	}
-	rep, err := automations.DryRunInMemory(ctx, b, r, automations.DryRunOptions{Budget: draftBudget(r.Budget), ConversationID: conversation})
+	rep, err := automations.DryRunInMemory(ctx, b, r, automations.DryRunOptions{Budget: draftBudget(r.Budget), ConversationID: opts.conversation})
 	if err != nil {
 		return nil, fmt.Errorf("draft_automation: %w", err)
 	}
@@ -339,7 +378,14 @@ func dryRunOf(rep *automations.DryRunReport) *DraftDryRun {
 		})
 	}
 	for _, o := range rep.Outputs {
-		out.Outputs = append(out.Outputs, DraftOutput{Kind: o.Kind, Title: o.Title, Body: o.Body, Priority: o.Priority})
+		doc := noBlocks
+		if o.BlocksJSON != "" {
+			doc = json.RawMessage(o.BlocksJSON)
+		}
+		out.Outputs = append(out.Outputs, DraftOutput{
+			Kind: o.Kind, Title: o.Title, Body: o.Body, Priority: o.Priority,
+			Blocks: doc, Key: o.OutputKey, ContentHash: o.ContentHash,
+		})
 	}
 	return out
 }
