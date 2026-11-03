@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/policy"
 )
 
 // Recording intake (Go hub spec §8 p. 4a, the Swift RelayProcessor's
@@ -29,6 +30,9 @@ const (
 	NotSupportedMessage  = "This host can't transcribe recordings. Your recording stays on your phone."
 	HeldMessage          = "Your Mac's transcriber isn't running. The recording waits on your phone."
 	recordingWriteFailed = "Your Mac could not save this recording."
+	// PolicyBlockedMessage is the Swift hub's write_failed text for an
+	// upload refused by MobileSyncPolicy.checkRecordingAllowed.
+	PolicyBlockedMessage = "Your Mac could not save this recording: blocked by your organization's policy: phone recordings are not synced to this Mac"
 )
 
 // uploadIDRE keeps an upload id usable as a file name: the phone's UUID, with
@@ -68,6 +72,11 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 	}
 	if !uploadIDRE.MatchString(in.UploadID) {
 		return recFailed(reasonInvalidParams, "This recording has no usable id.")
+	}
+	if h.d.Policy != nil && h.d.Policy() != policy.MobileAllowed {
+		// A phone recording is not workbench data (#608, Q4): refused under
+		// MobileSync = workbench_only, before anything is downloaded.
+		return recFailed(reasonWriteFailed, PolicyBlockedMessage)
 	}
 	on, _, err := h.d.Store.Recordings()
 	if err != nil {

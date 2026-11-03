@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/logcanary"
+	"watchtower/internal/policy"
 )
 
 type recEnv struct {
@@ -229,6 +230,33 @@ func TestRecordingOversizedDownloadIsRefusedUndecrypted(t *testing.T) {
 	out := e.h.IntakeRecording(context.Background(), in)
 	if out.Reason != reasonInvalidParams || len(e.files()) != 0 {
 		t.Fatalf("%+v files=%v", out, e.files())
+	}
+}
+
+// twin of SlicePublisherPolicyTests.testRecordingCommandRefusedUnderWorkbenchOnly:
+// a phone recording is not workbench data, so MobileSync = workbench_only
+// refuses its upload before anything is downloaded; allowed takes it.
+func TestRecordingRefusedUnderWorkbenchOnly(t *testing.T) {
+	e := newRecEnv(t)
+	e.beat(e.now)
+	mode := policy.MobileWorkbenchOnly
+	e.h = Register(actions.NewDispatcher(), Deps{Store: e.store, RecordingsDir: e.dir, Clock: func() time.Time { return e.now },
+		Policy: func() string { return mode }})
+	in := e.upload("u-1", []byte("audio"))
+	downloaded := false
+	dl := in.Download
+	in.Download = func(c context.Context, dst string) error { downloaded = true; return dl(c, dst) }
+	out := e.h.IntakeRecording(context.Background(), in)
+	if out.Status != wire.StatusFailed || out.Reason != reasonWriteFailed ||
+		!strings.Contains(out.Message, "blocked by your organization's policy") {
+		t.Fatalf("outcome %+v", out)
+	}
+	if downloaded || len(e.files()) != 0 {
+		t.Fatalf("downloaded=%v files=%v", downloaded, e.files())
+	}
+	mode = policy.MobileAllowed
+	if out := e.h.IntakeRecording(context.Background(), e.upload("u-1", []byte("audio"))); out.Status != wire.StatusReceived {
+		t.Fatalf("allowed again: %+v", out)
 	}
 }
 
