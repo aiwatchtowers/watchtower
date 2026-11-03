@@ -195,7 +195,7 @@ func TestTwoPhonesNamedIPhoneAreBothListedByLinkDate(t *testing.T) {
 
 // twin of MobileLinkCenterTests.testASeventyEmojiNameIsClippedAtAGraphemeBoundary
 func TestASeventyEmojiNameIsClippedAtAGraphemeBoundary(t *testing.T) {
-	const family = "👩‍👩‍👧‍👦"
+	const family = "👩\u200d👩\u200d👧\u200d👦"
 	r := newRig(t)
 	code := r.issue()
 	a := newPhone(t)
@@ -538,9 +538,9 @@ func TestAHellosNameIsSanitisedForDisplay(t *testing.T) {
 	r := newRig(t)
 	code := r.issue()
 	cases := []struct{ name, want string }{
-		{"Owner‮s\niPhone​\u0007", "Owners iPhone"},
+		{"Owner\u202es\niPhone\u200b\u0007", "Owners iPhone"},
 		{strings.Repeat("x", 80), strings.Repeat("x", wire.MaxMacNameLength)},
-		{" \n‮ ", "iPhone"},
+		{" \n\u202e ", "iPhone"},
 	}
 	for _, c := range cases {
 		p := newPhone(t)
@@ -548,7 +548,7 @@ func TestAHellosNameIsSanitisedForDisplay(t *testing.T) {
 			t.Errorf("%q shown as %q, want %q", c.name, got.Name, c.want)
 		}
 	}
-	if got := displayName("Family 👨‍👩‍👧 phone"); got != "Family 👨‍👩‍👧 phone" {
+	if got := displayName("Family 👨\u200d👩\u200d👧 phone"); got != "Family 👨\u200d👩\u200d👧 phone" {
 		t.Errorf("emoji joiners: %q", got)
 	}
 }
