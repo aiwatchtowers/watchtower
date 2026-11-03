@@ -21,15 +21,19 @@ final class LLMUsageReportTests: XCTestCase {
         let rep = try report()
         XCTAssertEqual(rep.period, "7d")
         XCTAssertEqual(rep.ledgerSince, "2026-10-20T07:12:03Z")
-        XCTAssertEqual(rep.watchtower.totals.calls, 1284)
+        XCTAssertEqual(rep.watchtower.totals.calls, 632)
         XCTAssertEqual(rep.watchtower.totals.estimatedCalls, 12)
         XCTAssertEqual(rep.watchtower.totals.noPriceCalls, 30)
         XCTAssertEqual(rep.watchtower.totals.untaggedCalls, 3)
-        XCTAssertEqual(rep.watchtower.totals.cacheRead, 9_000_000)
-        XCTAssertEqual(rep.watchtower.totals.cacheWrite, 400_000)
-        XCTAssertEqual(rep.watchtower.totals.costUSD, 41.2)
+        XCTAssertEqual(rep.watchtower.totals.cacheRead, 5_500_000)
+        XCTAssertEqual(rep.watchtower.totals.cacheWrite, 172_000)
+        XCTAssertEqual(rep.watchtower.totals.costUSD, 36.5)
         XCTAssertTrue(rep.watchtower.totals.costIsLowerBound)
         XCTAssertEqual(rep.watchtower.rows.count, 7)
+        // The demo rows add up to their section header, as the CLI's do.
+        XCTAssertEqual(rep.watchtower.rows.map(\.calls).reduce(0, +), rep.watchtower.totals.calls)
+        XCTAssertEqual(rep.watchtower.rows.map(\.tokens).reduce(0, +), rep.watchtower.totals.tokens)
+        XCTAssertEqual(rep.watchtower.rows.compactMap(\.costUSD).reduce(0, +), 36.5, accuracy: 1e-9)
 
         let digest = try XCTUnwrap(rep.watchtower.rows.first { $0.purpose == "digest.channel" })
         XCTAssertEqual(digest.models, ["haiku", "sonnet"])
@@ -51,7 +55,7 @@ final class LLMUsageReportTests: XCTestCase {
         XCTAssertFalse(rep.ownAutomations.rows[0].costIsLowerBound, "absent key: not a lower bound")
         XCTAssertTrue(rep.ownAutomations.rows[1].costIsLowerBound)
         XCTAssertEqual(rep.chats.costUSD, 61.0)
-        XCTAssertEqual(rep.pageTotal.calls, 1606)
+        XCTAssertEqual(rep.pageTotal.calls, 954)
         XCTAssertEqual(rep.workbenches.sessions.sessions, 41)
         XCTAssertEqual(rep.workbenches.helpers.calls, 120)
         XCTAssertEqual(rep.workbenches.analyticsOff, ["demo-bench"])
@@ -191,7 +195,7 @@ final class LLMUsageReportTests: XCTestCase {
 
     func testSectionSummary() throws {
         let rep = try report()
-        XCTAssertEqual(LLMUsagePresentation.sectionSummary(rep.watchtower.totals), "10 M tokens · ≥ $41.20")
+        XCTAssertEqual(LLMUsagePresentation.sectionSummary(rep.watchtower.totals), "6.1 M tokens · ≥ $36.50")
         XCTAssertEqual(LLMUsagePresentation.sectionSummary(rep.ownAutomations.totals), "5.2 M tokens · ≥ $22.40")
         XCTAssertEqual(LLMUsagePresentation.sectionSummary(.zero), "0 tokens · —")
     }

@@ -20,16 +20,16 @@
     ]
   },
   "page_total": {
-    "calls": 1606, "errors": 4, "estimated_calls": 12, "no_price_calls": 31, "untagged_calls": 3,
-    "input": 1472000, "cache_read": 48600000, "cache_write": 1400000, "output": 1789000,
-    "cost_usd": 124.6, "cost_is_lower_bound": true
+    "calls": 954, "errors": 4, "estimated_calls": 12, "no_price_calls": 31, "untagged_calls": 3,
+    "input": 1472000, "cache_read": 45100000, "cache_write": 1172000, "output": 1513000,
+    "cost_usd": 119.9, "cost_is_lower_bound": true
   },
   "period": "7d",
   "watchtower": {
     "totals": {
-      "calls": 1284, "errors": 3, "estimated_calls": 12, "no_price_calls": 30, "untagged_calls": 3,
-      "input": 212000, "cache_read": 9000000, "cache_write": 400000, "output": 486000,
-      "cost_usd": 41.2, "cost_is_lower_bound": true
+      "calls": 632, "errors": 3, "estimated_calls": 12, "no_price_calls": 30, "untagged_calls": 3,
+      "input": 212000, "cache_read": 5500000, "cache_write": 172000, "output": 210000,
+      "cost_usd": 36.5, "cost_is_lower_bound": true
     },
     "rows": [
       { "purpose": "media.describe", "models": ["sonnet"], "calls": 120,
