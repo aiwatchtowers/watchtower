@@ -77,7 +77,7 @@ extension MeetingRecorderCenter {
     /// capture before `recorder.start` creates its file, a phone ingest
     /// before its row lands). Without it a Desktop start and a phone ingest
     /// in the same second both see the name free and share it.
-    nonisolated private static let claimedStems = NSLock.Guarded<Set<String>>([])
+    nonisolated private static let claimedStems = GuardedValue<Set<String>>([])
 
     /// `uniqueRecordingURL` that also holds the picked stem until
     /// `releaseRecordingClaim`, atomically with the pick.
@@ -103,16 +103,14 @@ extension MeetingRecorderCenter {
     }
 }
 
-private extension NSLock {
-    /// A value behind a lock.
-    final class Guarded<Value>: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value: Value
-        init(_ value: Value) { self.value = value }
-        func withLock<R>(_ body: (inout Value) -> R) -> R {
-            lock.lock()
-            defer { lock.unlock() }
-            return body(&value)
-        }
+/// A value behind a lock.
+private final class GuardedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    func withLock<R>(_ body: (inout Value) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
     }
 }
