@@ -12,7 +12,6 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
-	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
@@ -158,10 +157,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		w.live = newLiveness(l, h.phoneLinked, o.liveEvery, func() { h.publishSoon(livenessKinds...) })
 		live = w.live.get
 	}
-	away := o.away
-	if away == nil {
-		away = platform.NewAway()
-	}
+	away := o.awayInput()
 	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()

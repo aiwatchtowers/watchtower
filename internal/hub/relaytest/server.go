@@ -128,6 +128,7 @@ type Server struct {
 	pending    map[string][]frame // device → controls for its next WebSocket
 	lastDevice string             // the device that subscribed last (Push)
 	ready      chan struct{}      // closed at the first subscribe
+	wsDown     bool               // SetWebSocketDown: WebSockets cut and refused
 }
 
 type zone struct {
@@ -380,6 +381,22 @@ func (s *Server) Push(t testing.TB, ev *relayv1.Event) {
 	s.parkLocked(s.lastDevice, []frame{f})
 }
 
+// DropSockets closes every live WebSocket at once (the connection lost from
+// the clients' side): each client connects again and resubscribes.
+func (s *Server) DropSockets() {
+	s.mu.Lock()
+	var live []*conn
+	for _, c := range s.conns {
+		if !c.closed {
+			live = append(live, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range live {
+		_ = c.ws.CloseNow()
+	}
+}
+
 // SetPaying sets whether phone's account pays (a phone pays until told
 // otherwise). Turning it off sends Control{ENTITLEMENT_EXPIRED, detail: the
 // phone's device id} to every hub the phone holds in a slot.
@@ -393,6 +410,21 @@ func (s *Server) SetPaying(phone string, paying bool) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+// SetWebSocketDown cuts every open WebSocket and refuses new ones (503)
+// while down; ops over HTTPS go on. Up again, clients reconnect.
+func (s *Server) SetWebSocketDown(down bool) {
+	s.mu.Lock()
+	s.wsDown = down
+	var open []*conn
+	if down {
+		open = slices.Clone(s.all)
+	}
+	s.mu.Unlock()
+	for _, c := range open {
+		_ = c.ws.CloseNow()
+	}
 }
 
 // SetNow replaces the relay's clock (pending vouch expiry).
@@ -1026,6 +1058,13 @@ func (s *Server) end(c *conn) {
 }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	down := s.wsDown
+	s.mu.Unlock()
+	if down {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return

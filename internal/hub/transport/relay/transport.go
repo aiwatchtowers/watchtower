@@ -84,6 +84,9 @@ type Options struct {
 	// timeout). Relay ops go through the relay client's own HTTP client. The
 	// transport uses a copy with its own redirect rule (see checkRedirect).
 	HTTP *http.Client
+	// Connects (nil = none) sees the relay client's connects when the client
+	// was built over its HTTPClient (OnConnected).
+	Connects *ConnectWatch
 	// MaxAttachmentBytes caps one download (0 = MaxAttachmentBytes).
 	MaxAttachmentBytes int64
 }
@@ -105,9 +108,15 @@ type Transport struct {
 	conn       *client.Conn
 	closed     bool
 	account    *relayv1.AccountState
+	readers    []string // the last set_hub_readers the relay accepted (nil = none yet)
 	refreshing bool
 	refreshDue bool
-	wg         sync.WaitGroup
+	// accountKnown: account is a read the relay answered (false before the
+	// first read and after HUB_NOT_VOUCHED forgot it).
+	accountKnown bool
+	// observe sees every save's result per zone (ObserveSaves; nil = none).
+	observe func(zone string, err error)
+	wg      sync.WaitGroup
 }
 
 var (
@@ -369,7 +378,7 @@ func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, er
 		return nil, errors.New("relay: get_account_state: no account state in the answer")
 	}
 	t.mu.Lock()
-	t.account = st
+	t.account, t.accountKnown = st, true
 	t.mu.Unlock()
 	return st, nil
 }
@@ -395,6 +404,18 @@ func (t *Transport) anyPhone(match func(*relayv1.SlotHolder) bool) bool {
 	return slices.ContainsFunc(t.account.GetPhones(), match)
 }
 
+// KnownAccountState is a copy of the last account state read and whether one
+// is known: false (and an empty state) before the first read and after
+// HUB_NOT_VOUCHED forgot it.
+func (t *Transport) KnownAccountState() (*relayv1.AccountState, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.accountKnown {
+		return &relayv1.AccountState{}, false
+	}
+	return proto.Clone(t.account).(*relayv1.AccountState), true
+}
+
 // LastAccountState is a copy of the last account state read (an empty one
 // before any read, or after HUB_NOT_VOUCHED).
 func (t *Transport) LastAccountState() *relayv1.AccountState {
@@ -404,6 +425,33 @@ func (t *Transport) LastAccountState() *relayv1.AccountState {
 		return &relayv1.AccountState{}
 	}
 	return proto.Clone(t.account).(*relayv1.AccountState)
+}
+
+// Connected reports whether the live connection is up now: false before
+// Connect, while the client reconnects and after Close.
+func (t *Transport) Connected() bool {
+	t.mu.Lock()
+	conn, closed := t.conn, t.closed
+	t.mu.Unlock()
+	return conn != nil && !closed && conn.Connected()
+}
+
+// ObserveSaves hands f every Save's result per zone, after the request: nil
+// for each item the relay saved, the item's refusal for a refused one, and
+// the call's error for each zone of a save the relay refused whole (a
+// quota). A failed precondition and a save refused before any request are
+// not reported. f must not call back into the transport.
+func (t *Transport) ObserveSaves(f func(zone string, err error)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.observe = f
+}
+
+// observed is the save observer (nil = none).
+func (t *Transport) observed() func(zone string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.observe
 }
 
 // do runs one op over HTTPS and maps its error with MapError.
@@ -427,7 +475,7 @@ func (t *Transport) doMapped(ctx context.Context, req *relayv1.Request, mapErr f
 func (t *Transport) noteError(err error) error {
 	if errors.Is(err, transport.ErrNotVouched) {
 		t.mu.Lock()
-		t.account = &relayv1.AccountState{}
+		t.account, t.accountKnown = &relayv1.AccountState{}, false
 		t.mu.Unlock()
 	}
 	return err
@@ -537,10 +585,28 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 			zones[k] = w.GetRecord().GetZone()
 		}
 		t.rereadZones(zones)
+		if f := t.observed(); f != nil {
+			// A whole-call refusal names every zone of the batch; the hub's
+			// mailbox writes are single-item saves (actions/control.go), so a
+			// mailbox quota is never put on another phone's mailbox.
+			for _, z := range zones {
+				f(z, err)
+			}
+		}
 		return nil, fmt.Errorf("relay: save: %w", err)
 	}
 	if err := saveOutcomes(resp.GetSave(), index, out); err != nil {
 		return nil, fmt.Errorf("relay: save: %w", err)
+	}
+	if f := t.observed(); f != nil {
+		for i, it := range items {
+			switch o := out[i]; {
+			case o.Saved:
+				f(it.Record.Zone(), nil)
+			case o.Refused != nil:
+				f(it.Record.Zone(), o.Refused)
+			}
+		}
 	}
 	return out, nil
 }

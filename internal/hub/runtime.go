@@ -18,6 +18,7 @@ import (
 
 	"watchtower/docs/guide"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/alerts"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/measure"
@@ -131,6 +132,9 @@ type hubRuntime struct {
 	unvouched bool
 	gateMu    sync.Mutex
 	gateHeld  bool
+	// health is the relay's status indicators (relayhealth.go; nil
+	// without a relay).
+	health *relayHealth
 
 	// ctx is the hub's own context (cancelled by stop): the CloudKit share
 	// calls an owner request starts run under it (cloudkit_runtime.go).
@@ -161,6 +165,9 @@ type hubRuntime struct {
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
 	ckAccount transport.Account
+
+	// push is the work-alert pusher (nil without a relay that sends them).
+	push *alerts.Pusher
 }
 
 // loadIdentity reads the hub identity from the hub dir's 0600 file,
@@ -197,12 +204,11 @@ func (o Options) relayTransport(ctx context.Context, id identity.Identity, st *s
 	if err := os.MkdirAll(assets, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: creating the asset dir: %w", ErrStartFailed, err)
 	}
-	var opts []client.Option
-	if o.httpClient != nil {
-		opts = append(opts, client.WithHTTPClient(o.httpClient))
-	}
-	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, opts...), relay.Options{
-		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient,
+	// The client's HTTP is watched for its WebSocket connects (the alert
+	// pushes waiting after UNAVAILABLE wake on one).
+	connects := relay.WatchConnects(o.httpClient)
+	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, client.WithHTTPClient(connects.HTTPClient())), relay.Options{
+		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient, Connects: connects,
 	})
 	if len(zones) == 0 {
 		return t, nil
@@ -273,6 +279,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	} else if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
+	h.health = newRelayHealth(st, o.Clock, h.relayID, h.relayT())
 	if as, ok := h.relayT().(accountStater); ok {
 		h.acct = &accountReader{read: as.AccountState, vouched: h.relayVouched, clock: o.Clock}
 	}
@@ -362,14 +369,17 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		}
 		srcs = kept
 	}
-	pub = slices.NewPublisher(slices.Config{
+	h.newPusher(sealer)
+	pc := slices.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: srcs, Clock: o.Clock,
 		OnError: h.observe, Latency: h.lat,
 		Linked: func() (bool, error) {
 			devices, err := st.Devices()
 			return len(devices) > 0, err
 		},
-	})
+	}
+	h.withAlerts(&pc)
+	pub = slices.NewPublisher(pc)
 	h.pub = pub
 	if h.sw != nil {
 		h.sw.SetPublisher(pub)
@@ -395,6 +405,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		// Seeded before the publisher's start cycle reads the timeline.
 		h.startWiring(hctx, h.wiring)
 	}
+	h.startPusher(hctx)
 	h.trace("publisher")
 	h.wg.Add(4)
 	go func() {
@@ -453,6 +464,7 @@ func (h *hubRuntime) measureLoop(ctx context.Context) {
 			if err := h.lat.Prune(); err != nil {
 				log.Printf("hub: pruning latency samples failed (%s)", errClass(err))
 			}
+			h.pruneAlertPushes()
 		}
 	}
 }
@@ -826,6 +838,24 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 		}
 	}
 	vouched := h.relayVouched()
+	h.syncReaders(ctx, rt, vouched)
+	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
+		h.watchZones(ctx, zw)
+	}
+	if !vouched && h.acct != nil && h.phoneLinked() {
+		// A linked phone and no slot: the hub expects one. SLOT_ADDED is
+		// best effort, so this backstop polls (at most every unvouchedPoll).
+		if _, err := h.readAccount(ctx); err != nil {
+			log.Printf("hub: reading the account state failed (%s)", errClass(err))
+		}
+	}
+	h.pass(ctx)
+	h.sup.poke()
+}
+
+// syncReaders sets the relay's hub readers to the linked phones the account
+// state holds in a slot (link upkeep, and once before the first publish).
+func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vouched bool) {
 	if rs, ok := rt.(readersSetter); ok && vouched && h.acct != nil {
 		// set_hub_readers is closed to an unvouched hub; the account state
 		// it is computed from comes through the one door.
@@ -841,18 +871,6 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 			log.Printf("hub: readers not synced (%s)", errClass(err))
 		}
 	}
-	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
-		h.watchZones(ctx, zw)
-	}
-	if !vouched && h.acct != nil && h.phoneLinked() {
-		// A linked phone and no slot: the hub expects one. SLOT_ADDED is
-		// best effort, so this backstop polls (at most every unvouchedPoll).
-		if _, err := h.readAccount(ctx); err != nil {
-			log.Printf("hub: reading the account state failed (%s)", errClass(err))
-		}
-	}
-	h.pass(ctx)
-	h.sup.poke()
 }
 
 // soonWindow is the link check's short-retry window after a link change
@@ -1068,6 +1086,7 @@ func (h *hubRuntime) forwardPairEvents(ctx context.Context) {
 func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 	h.cancel()
 	h.wg.Wait()
+	h.stopPusher()
 	h.wiring.close()
 	if keep != nil && !h.vouched() {
 		// The data zone is closed to an unvouched hub: the records stay in

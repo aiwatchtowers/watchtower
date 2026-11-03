@@ -34,13 +34,21 @@ import (
 	"watchtower/internal/workbenchgit"
 )
 
+// afterTests runs, last first, once every test is done: what outlives one
+// test (the interop run's shared hub, interop_test.go).
+var afterTests []func()
+
 // TestMain seeds new database files from the migrated template.
 func TestMain(m *testing.M) {
 	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	for i := len(afterTests) - 1; i >= 0; i-- {
+		afterTests[i]()
+	}
+	os.Exit(code)
 }
 
 // fileDB is a watchtower.db file with one workbench.

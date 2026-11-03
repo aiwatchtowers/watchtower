@@ -127,7 +127,7 @@ type vouchRig struct {
 	advances []int
 }
 
-func startOnRelay(t *testing.T, rules bool) *vouchRig {
+func startOnRelay(t *testing.T, rules bool, configure ...func(*Options)) *vouchRig {
 	t.Helper()
 	policytest.Set(t, nil)
 	dir := shortDir(t)
@@ -142,6 +142,9 @@ func startOnRelay(t *testing.T, rules bool) *vouchRig {
 	o.soonTimer = func(time.Duration) (<-chan time.Time, func()) { // the 2 s ticks, fast
 		tm := time.NewTimer(20 * time.Millisecond)
 		return tm.C, func() { tm.Stop() }
+	}
+	for _, c := range configure {
+		c(&o)
 	}
 	r.start(o)
 	return r
@@ -188,7 +191,9 @@ func (r *vouchRig) link() linkedPhone {
 		t.Fatal(err)
 	}
 	store := &hubtest.RelayStore{}
-	phone, err := hubtest.FromLink(lp, store, nil)
+	// On the hub's clock: an action the phone stamps is never older than
+	// the hub's frozen now (it would expire unapplied).
+	phone, err := hubtest.FromLink(lp, store, r.clock.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

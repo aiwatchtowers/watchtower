@@ -108,6 +108,11 @@ type Config struct {
 	Paying          func(ctx context.Context) (map[string]bool, error)
 	OldSideTimeout  time.Duration
 	Clock           func() time.Time
+	// OnSwitched (nil = none) sees each switch once its commit moved the
+	// active transport to target, while the publisher is still held (the
+	// runtime drops the queued alert pushes on a switch to CloudKit and
+	// signals those alerts there, before the publisher resumes).
+	OnSwitched func(target transport.Kind)
 }
 
 // Switcher is the hub's dual transport. Request and Stale are called from

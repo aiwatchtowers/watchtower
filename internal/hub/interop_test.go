@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -36,12 +37,16 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/logcanary"
+	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -193,6 +198,8 @@ func (t *tappedTransport) resyncsOf(zone string) int {
 type interopOpts struct {
 	passEvery, linkEvery time.Duration
 	register             func(*actions.Dispatcher)
+	sources              func(*state.Store) []hubslices.Source
+	away                 platform.Away
 }
 
 // interopHub is one Run on the stand.
@@ -220,9 +227,29 @@ func (h *interopHub) transport() *tappedTransport {
 // stand, turns it on over the control socket and waits until it runs.
 func startHub(t *testing.T, opts interopOpts) *interopHub {
 	t.Helper()
+	return launchHub(t, opts, false)
+}
+
+// launchHub is startHub; a shared hub outlives t (sharedAlertHub): its dir,
+// policy and stop are undone after every test (afterTests), and nothing of
+// it logs through t once it runs.
+func launchHub(t *testing.T, opts interopOpts, shared bool) *interopHub {
+	t.Helper()
 	origin := needStand(t)
-	policytest.Set(t, nil)
-	dir := shortDir(t)
+	logf := t.Logf
+	var dir string
+	if shared {
+		restore := policy.SetReaderForTesting(func() map[string]any { return nil })
+		base, err := os.MkdirTemp("/tmp", "hubt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterTests = append(afterTests, restore, func() { _ = os.RemoveAll(base) })
+		dir, logf = filepath.Join(base, "h"), log.Printf
+	} else {
+		policytest.Set(t, nil)
+		dir = shortDir(t)
+	}
 	t.Setenv(EnvHubDir, dir)
 	t.Setenv(EnvRelayOrigin, origin)
 	t.Setenv(EnvTestWorkspace, interopWorkspace)
@@ -237,7 +264,7 @@ func startHub(t *testing.T, opts interopOpts) *interopHub {
 	o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
 		tr, err := o.relayTransport(ctx, id, st, zones)
 		if err != nil {
-			t.Logf("hub transport: %v", err)
+			logf("hub transport: %v", err)
 			return nil, err
 		}
 		tapped := newTappedTransport(tr.(*relay.Transport))
@@ -252,11 +279,16 @@ func startHub(t *testing.T, opts interopOpts) *interopHub {
 	o.checkEvery = 100 * time.Millisecond
 	o.lockRetry = 50 * time.Millisecond
 	o.passEvery, o.linkEvery, o.Register = opts.passEvery, opts.linkEvery, opts.register
+	o.Sources, o.away = opts.sources, opts.away
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel, h.done = cancel, make(chan error, 1)
 	go func() { h.done <- Run(ctx, o) }()
-	t.Cleanup(h.stop)
+	if shared {
+		afterTests = append(afterTests, h.stop)
+	} else {
+		t.Cleanup(h.stop)
+	}
 	eventually(t, stepWait, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
 		return err == nil
@@ -290,7 +322,11 @@ func (h *interopHub) stop() {
 	select {
 	case <-h.done:
 	case <-time.After(30 * time.Second):
-		h.t.Error("Run did not return after cancel")
+		if h.t != nil {
+			h.t.Error("Run did not return after cancel")
+		} else {
+			log.Printf("interop: a shared hub's Run did not return after cancel")
+		}
 	}
 }
 
@@ -571,10 +607,9 @@ func waitApplied(t *testing.T, p *hubtest.Phone, wait time.Duration, seqs ...uin
 // phone vouches and promotes, and the relay admits the hub (status running,
 // no reason, one phone), the phone reads its device_grant from the data zone
 // (linkPhone checks each step), the phone is stamped relay_admitted_at and
-// the heartbeat is published.
+// the heartbeat is published. Its hub and phone are sharedAlertHub's.
 func TestInterop_VouchedHubLinksAndPublishes(t *testing.T) {
-	h := startHub(t, interopOpts{passEvery: time.Second, linkEvery: time.Second})
-	l := linkPhone(t, h)
+	h, l, _ := sharedAlertHub(t)
 	if len(l.code) != 4 || strings.Trim(l.code, "0123456789") != "" {
 		t.Fatalf("code %q is not four digits", l.code)
 	}
@@ -797,5 +832,85 @@ func TestInterop_NoPlaintextOnTheWire(t *testing.T) {
 	}
 	if zones[p.Zone()] == 0 || zones[data] == 0 || zones[transport.PairZone(l.slot)] == 0 {
 		t.Fatalf("records read back per zone: %v", zones)
+	}
+}
+
+// alertProbe is a work-alert slice raised by an interop_alert action, and
+// the log it settles into.
+type alertProbe struct {
+	src   *pushSource
+	logs  *logcanary.Sink
+	items []hubslices.Item
+}
+
+// sharedAlert is one hub and one linked phone on the stand that
+// TestInterop_VouchedHubLinksAndPublishes and
+// TestInterop_SendAlertOnTheLocalStandIsPushOff share: the stand allows 10
+// registrations a minute per address, which a fifth hub and phone would
+// pass. The first of them to run starts it; it stops after every test.
+var sharedAlert struct {
+	once  sync.Once
+	ok    bool
+	h     *interopHub
+	l     *linked
+	probe *alertProbe
+}
+
+func sharedAlertHub(t *testing.T) (*interopHub, *linked, *alertProbe) {
+	t.Helper()
+	sharedAlert.once.Do(func() {
+		probe := &alertProbe{src: &pushSource{}, logs: &logcanary.Sink{}}
+		probe.src.set(t, workAlert("ask-1"))
+		probe.items, probe.src.items = probe.src.items, nil
+		prev := log.Writer()
+		log.SetOutput(io.MultiWriter(prev, probe.logs))
+		afterTests = append(afterTests, func() { log.SetOutput(prev) })
+		h := launchHub(t, interopOpts{
+			passEvery: time.Second, linkEvery: time.Second, away: alwaysAway{},
+			sources: func(*state.Store) []hubslices.Source { return []hubslices.Source{probe.src} },
+			register: func(d *actions.Dispatcher) {
+				d.Register("interop_alert", func(context.Context, actions.Request) actions.Outcome {
+					probe.src.mu.Lock()
+					probe.src.items = probe.items
+					probe.src.mu.Unlock()
+					return actions.Outcome{Status: wire.StatusApplied}
+				}, actions.KindOptions{Nudges: []string{string(hubslices.KindAskAlert)}})
+			},
+		}, true)
+		l := linkPhone(t, h)
+		h.t = nil // t ends before the hub does
+		sharedAlert.h, sharedAlert.l, sharedAlert.probe, sharedAlert.ok = h, l, probe, true
+	})
+	if !sharedAlert.ok {
+		t.Fatal("the shared hub did not start (see the test that started it)")
+	}
+	return sharedAlert.h, sharedAlert.l, sharedAlert.probe
+}
+
+// TestInterop_SendAlertOnTheLocalStandIsPushOff: the stand has no APNs key,
+// so a work alert's send_alert is answered "not implemented": the push
+// settles push_off after its one attempt, a final outcome (its ledger row is
+// settled, so nothing can retry it).
+func TestInterop_SendAlertOnTheLocalStandIsPushOff(t *testing.T) {
+	h, l, probe := sharedAlertHub(t)
+	seq, err := l.phone.Act("interop_alert")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitApplied(t, l.phone, stepWait, seq)
+	device := l.phone.ID().String()
+	line := "push of ask-1 to " + device + ": push_off after 1 attempts"
+	eventually(t, stepWait, "the push settled push_off", func() bool { return strings.Contains(probe.logs.String(), line) })
+	st, err := state.OpenReadOnly(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	last, err := st.LastAlertOutcomes(time.Now().Add(-time.Hour))
+	if err != nil || last[device] != state.AlertPushOff {
+		t.Fatalf("ledger outcomes %v, %v; want push_off", last, err)
+	}
+	if n, err := st.ExpirePendingAlertPushes(time.Now()); err == nil && n != 0 {
+		t.Fatalf("%d pushes still pending", n)
 	}
 }

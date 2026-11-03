@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,21 @@ type hubPhoneJSON struct {
 	Ordered              bool   `json:"ordered"`
 	LastAppliedActionSeq uint64 `json:"last_applied_action_seq"`
 	Transport            string `json:"transport"`
+	// The indicators below are null when not known: the read behind them
+	// failed (a warning on stderr; the phones are still listed).
+	//
+	// Paying is whether the relay lists the phone as paying; null unless
+	// the hub runs on the relay and knows the account state.
+	Paying *bool `json:"paying"`
+	// Undelivered is what this Mac's side holds of the phone's actions: the
+	// held ones, plus one for an open gap (a resend asked for).
+	Undelivered *int `json:"undelivered"`
+	// MailboxFull: the phone's relay mailbox refused the hub's write as over
+	// quota (the status file's mailbox_full_phones).
+	MailboxFull *bool `json:"mailbox_full"`
+	// Alerts is the outcome class of the phone's last settled alert push in
+	// the last 7 days, "" for none.
+	Alerts *string `json:"alerts"`
 }
 
 // hubUnlinkJSON is `hub unlink --json` (pinned keys).
@@ -223,13 +239,12 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 	default:
 		devices, err := st.Devices()
 		active, _, aerr := st.Meta(switcher.MetaTransport)
-		_ = st.Close()
 		if err := errors.Join(err, aerr); err != nil {
+			_ = st.Close()
 			return err
 		}
-		for _, d := range devices {
-			out = append(out, hubPhone(d, active))
-		}
+		out = hubPhoneRows(cmd, st, dir, devices, active)
+		_ = st.Close()
 	}
 	if asJSON {
 		return hubPrint(cmd, true, out, "")
@@ -244,6 +259,54 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	return nil
+}
+
+// hubPhoneRows is the devices as `hub phones` lists them, with the
+// indicators. A failed read of the alert ledger, the status file or a
+// phone's held actions leaves those indicators null with one warning on
+// stderr; the phones are listed either way.
+func hubPhoneRows(cmd *cobra.Command, st *state.Store, dir string, devices []state.Device, active string) []hubPhoneJSON {
+	warn := func(what string, err error) {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "hub phones: %s unreadable (%v): shown as unknown\n", what, err)
+	}
+	alerts, aerr := st.LastAlertOutcomes(time.Now().Add(-hub.AlertOutcomeWindow))
+	if aerr != nil {
+		warn("the alert outcomes", aerr)
+	}
+	status, serr := hub.ReadStatus(dir)
+	if serr != nil {
+		warn("the hub status", serr)
+	}
+	onRelay := serr == nil && (status.State == hub.StateRunning || status.State == hub.StatePaused) &&
+		status.Transport == wire.TransportRelay && status.PayingPhones != nil
+	heldWarned := false
+	out := make([]hubPhoneJSON, 0, len(devices))
+	for _, d := range devices {
+		p := hubPhone(d, active)
+		if n, err := st.HeldCount(d.ID); err == nil {
+			if d.ResendRequestedFrom > 0 {
+				n++ // the open gap
+			}
+			p.Undelivered = &n
+		} else if !heldWarned {
+			heldWarned = true
+			warn("the held actions", err)
+		}
+		if onRelay {
+			paying := slices.Contains(status.PayingPhones, d.ID)
+			p.Paying = &paying
+		}
+		if serr == nil {
+			full := slices.Contains(status.MailboxFullPhones, d.ID)
+			p.MailboxFull = &full
+		}
+		if aerr == nil {
+			a := alerts[d.ID]
+			p.Alerts = &a
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // hubPhoneTransportPending is `hub phones`' transport for a phone linked over

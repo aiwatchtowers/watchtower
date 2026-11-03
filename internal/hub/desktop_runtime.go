@@ -79,19 +79,25 @@ func (h *hubRuntime) desktopTransports(ctx context.Context, o Options) error {
 // newSwitcher builds the switcher over both transports from the processors'
 // template ac; the runtime's transport becomes its Front.
 func (h *hubRuntime) newSwitcher(ac actions.Config) error {
-	c := switcher.Config{
-		Store: h.st, Keys: h.kr, CloudKit: h.ck, Relay: h.rel, Actions: ac, Keyboxes: h.center.Keyboxes,
-		Clock: h.sup.o.Clock,
-	}
-	if h.acct != nil {
-		c.Paying = h.payingByDevice
-	}
-	sw, err := switcher.New(c)
+	sw, err := switcher.New(h.switcherConfig(ac))
 	if err != nil {
 		return err
 	}
 	h.sw, h.tr = sw, sw.Front()
 	return nil
+}
+
+// switcherConfig is the switcher's config over both transports, with the
+// alert pushes' switch hook.
+func (h *hubRuntime) switcherConfig(ac actions.Config) switcher.Config {
+	c := switcher.Config{
+		Store: h.st, Keys: h.kr, CloudKit: h.ck, Relay: h.rel, Actions: ac, Keyboxes: h.center.Keyboxes,
+		Clock: h.sup.o.Clock, OnSwitched: h.switchedTo,
+	}
+	if h.acct != nil {
+		c.Paying = h.payingByDevice
+	}
+	return c
 }
 
 // payingByDevice is the switcher's Paying: which linked phones the relay's
