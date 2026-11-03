@@ -23,6 +23,14 @@
 # dir is removed. A half that fails leaves a mark (kit.fail / go.fail) the
 # other reads, so neither waits out its timeouts. Exits 0 only when both pass.
 #
+# RELAY_INTEROP_DESKTOP=1 is the desktop host's run (relay client Phase 3b Task
+# 24): the Go half runs -run 'TestInterop_KitPhone(FollowsASwitch)?$' with
+# -kit-desktop (the hub is a Mac's desktop host on both transports, its CloudKit
+# side served to the phone by the loopback store whose URL and token it writes
+# to ck.url in the handoff folder; the relay-only TestInterop_KitPhone skips),
+# and the Kit half gets WT_GO_HUB_INTEROP_DESKTOP=1. Unset or 0: the relay-only
+# run above, unchanged.
+#
 # Environment: RELAY_INTEROP_PORT (default 8787), RELAY_INTEROP_KEEP=1 keeps
 # the temp dir (wrangler's log, the handoff files). WATCHTOWER_CHECKOUT is the
 # Watchtower checkout to test (default: this script's repo; needs a Makefile and
@@ -122,6 +130,20 @@ WORKER="$RELAY/worker"
 ROOT="$(ci_checkout "$(cd "$(dirname "$0")" && pwd)")" || die "no usable Watchtower checkout"
 PORT="${RELAY_INTEROP_PORT:-8787}"
 ORIGIN="http://127.0.0.1:$PORT"
+case "${RELAY_INTEROP_DESKTOP:-0}" in
+0)
+	DESKTOP=0
+	GO_RUN='^TestInterop_KitPhone$'
+	;;
+1)
+	DESKTOP=1
+	GO_RUN='TestInterop_KitPhone(FollowsASwitch)?$'
+	;;
+*)
+	echo "relay-interop-kit-hub: RELAY_INTEROP_DESKTOP is 1 or 0" >&2
+	exit 2
+	;;
+esac
 
 case "$PORT" in
 '' | *[!0-9]*)
@@ -169,7 +191,7 @@ cd "$ROOT" || exit 1
 echo "relay-interop-kit-hub: building the Go test and the Kit tests" >&2
 go test -count=1 -tags interop -run '^$' ./internal/hub >"$STATE/go-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/go-build.log" >&2; die "the Go interop test does not build"; }
-env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR make kit-test FILTER=KitGoHubInteropTests \
+env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR -u WT_GO_HUB_INTEROP_DESKTOP make kit-test FILTER=KitGoHubInteropTests \
 	>"$STATE/kit-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/kit-build.log" >&2; die "the Kit tests do not build"; }
 
@@ -236,11 +258,19 @@ mark() {
 }
 
 run_go() {
-	go test -count=1 -timeout 30m -tags interop -run '^TestInterop_KitPhone$' -v ./internal/hub \
-		-relay="$ORIGIN" -kit-dir="$HANDOFF" </dev/null
+	local desktop=()
+	[ "$DESKTOP" = 1 ] && desktop=(-kit-desktop)
+	go test -count=1 -timeout 30m -tags interop -run "$GO_RUN" -v ./internal/hub \
+		-relay="$ORIGIN" -kit-dir="$HANDOFF" ${desktop[@]+"${desktop[@]}"} </dev/null
 }
 run_kit() {
-	WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" make kit-test FILTER=KitGoHubInteropTests </dev/null
+	if [ "$DESKTOP" = 1 ]; then
+		WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" WT_GO_HUB_INTEROP_DESKTOP=1 \
+			make kit-test FILTER=KitGoHubInteropTests </dev/null
+	else
+		env -u WT_GO_HUB_INTEROP_DESKTOP WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" \
+			make kit-test FILTER=KitGoHubInteropTests </dev/null
+	fi
 }
 GOLOG="$STATE/go-test.log"
 KLOG="$STATE/kit-test.log"

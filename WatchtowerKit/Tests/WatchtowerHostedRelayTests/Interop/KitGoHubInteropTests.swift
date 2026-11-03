@@ -19,6 +19,9 @@ import XCTest
 /// `PhoneKeyProvider`, `EnvelopeReplicaOpener`, `ReplicaStore`, `ActionOutbox` and `RelayFeed`.
 final class KitGoHubInteropTests: HostedRelayScenarioCase {
     static let handoffVariable = "WT_GO_HUB_INTEROP_DIR"
+    /// Set to 1 by `RELAY_INTEROP_DESKTOP=1`: the Go hub is a desktop host and the handoff folder is its run's
+    /// (Phase 3b Task 24), so the relay-only run below skips.
+    static let desktopVariable = "WT_GO_HUB_INTEROP_DESKTOP"
     /// A step the Go side answers in seconds; the long ones (the hub's checks) get `goWait`.
     static let stepWait: TimeInterval = 120
     static let goWait: TimeInterval = 300
@@ -38,6 +41,9 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
     // MARK: - The run
 
     func testKitPhoneLinksDrivesAndUnlinksTheGoHub() async throws {
+        if ProcessInfo.processInfo.environment[Self.desktopVariable] == "1" {
+            throw XCTSkip("\(Self.desktopVariable)=1: the handoff folder is the desktop host's run")
+        }
         let handoff = Handoff(dir: try handoffDir())
         do {
             try await linkDriveAndUnlink(handoff)
