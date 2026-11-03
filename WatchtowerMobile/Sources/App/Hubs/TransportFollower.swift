@@ -30,7 +30,8 @@ protocol TransportFollowerHost: AnyObject {
 /// State: the route and the transport left are the registry row's (`LinkRecord.transport`, `leftTransport`, with
 /// `switchedBy` and `switchedAt`); the newest epoch is the Keychain's. A move to the relay, or a `requestAnswered` naming
 /// the relay, ends a pending upgrade from iCloud as `switched` (`LinkRecord.relayUpgrade`, Phase 3b Task 19); while one
-/// waits, a same-epoch `transport_switched{relay}` on iCloud is that move (`answersUpgrade`). A move is made crash-safe by its order:
+/// waits, the policy takes a same-epoch `transport_switched{relay}` on iCloud as that move
+/// (`FollowerState.relaySwitchRequested`). A move is made crash-safe by its order:
 /// 1. the outbox stops writing (`holdFlushes`), then its unechoed actions are queued again for the new transport
 ///    (rule 13) or listed as Not delivered (R32);
 /// 2. the new route is written to the row, in one registry write;
@@ -116,15 +117,9 @@ final class TransportFollower {
             Self.logger.notice("transport input waits for the Keychain")
             return false
         }
-        var state = FollowerState(
+        let state = FollowerState(
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
-            leftTransport: link.leftTransport)
-        if Self.answersUpgrade(input, link: link, newestEpoch: epoch) {
-            // The hub already runs on the relay in the epoch this phone has (a lapse moved the phone back to iCloud
-            // without a new epoch): for the upgrade waiting on it, that answer is the move. The shared policy is left
-            // as it is (the sim twins read it); it sees the epoch as one ahead of the phone's.
-            state.newestEpoch = epoch - 1
-        }
+            leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link))
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
@@ -133,13 +128,11 @@ final class TransportFollower {
         return await execute(commands, next: next, link: link, input: input, host: host)
     }
 
-    /// A same-epoch `transport_switched{relay}` on iCloud while an upgrade waits for its answer (relay client Phase 3b
-    /// Task 19).
-    private static func answersUpgrade(_ input: FollowerInput, link: LinkRecord, newestEpoch: UInt32) -> Bool {
-        guard case let .switched(.relay, epoch, _, _, _, _, _) = input, epoch == newestEpoch, epoch > 0,
-              (link.transport ?? .cloudKit) == .cloudKit, let upgrade = link.relayUpgrade, upgrade.isPending,
-              upgrade.step == .requested else { return false }
-        return true
+    /// An upgrade's `transport_switch{relay}` waits for its answer (relay client Phase 3b Task 19): the policy then
+    /// takes a same-epoch `transport_switched{relay}` on iCloud as the move (`FollowerState.relaySwitchRequested`).
+    private static func upgradeRequested(_ link: LinkRecord) -> Bool {
+        guard let upgrade = link.relayUpgrade else { return false }
+        return upgrade.isPending && upgrade.step == .requested
     }
 
     /// Asked only when the input could lead to the relay (the policy reads it nowhere else).

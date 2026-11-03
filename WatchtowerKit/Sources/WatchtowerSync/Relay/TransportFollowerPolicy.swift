@@ -25,6 +25,11 @@ public struct FollowerState: Equatable, Sendable {
     public var relayUnreachableSince: Date?
     /// The last CloudKit mailbox poll of the current relay outage (rule 12).
     public var otherMailboxPolledAt: Date?
+    /// This phone's `transport_switch{relay}` waits for the hub's answer while it is on iCloud (the app's upgrade at
+    /// `.requested`). A `transport_switched{relay}` in the phone's own epoch is then that answer: the hub already runs on
+    /// the relay in that epoch (a lapse moved the phone back to iCloud without a new one), and the phone moves as for a
+    /// newer epoch.
+    public var relaySwitchRequested: Bool
 
     public init(
         route: TransportKind,
@@ -32,7 +37,8 @@ public struct FollowerState: Equatable, Sendable {
         canUseRelay: RelayUse,
         leftTransport: TransportKind? = nil,
         relayUnreachableSince: Date? = nil,
-        otherMailboxPolledAt: Date? = nil
+        otherMailboxPolledAt: Date? = nil,
+        relaySwitchRequested: Bool = false
     ) {
         self.route = route
         self.newestEpoch = newestEpoch
@@ -40,6 +46,7 @@ public struct FollowerState: Equatable, Sendable {
         self.leftTransport = leftTransport
         self.relayUnreachableSince = relayUnreachableSince
         self.otherMailboxPolledAt = otherMailboxPolledAt
+        self.relaySwitchRequested = relaySwitchRequested
     }
 }
 
@@ -100,7 +107,9 @@ public enum TransportFollowerPolicy {
                 // Go `handleSwitch`, `target == current`: the hub's answer so the phone stops waiting.
                 return (state, [.requestAnswered, .markHandled(controlID: controlID)])
             }
-            guard epoch > state.newestEpoch else { return (state, [.markHandled(controlID: controlID)]) }
+            guard epoch > state.newestEpoch || answersRelayRequest(state, target: target, epoch: epoch) else {
+                return (state, [.markHandled(controlID: controlID)])
+            }
             if target == .relay, state.canUseRelay != .yes {
                 return state.canUseRelay == .no ? withoutHub(state, controlID: controlID, now: now) : (state, [])
             }
@@ -125,6 +134,12 @@ public enum TransportFollowerPolicy {
             if next.leftTransport == kind { next.leftTransport = nil }
             return (next, [])
         }
+    }
+
+    /// A same-epoch `transport_switched{relay}` on iCloud while the phone's own relay request waits: the hub's answer
+    /// that it already runs there (`FollowerState.relaySwitchRequested`), followed as a newer epoch.
+    private static func answersRelayRequest(_ state: FollowerState, target: TransportKind, epoch: UInt32) -> Bool {
+        state.relaySwitchRequested && target == .relay && state.route == .cloudKit && epoch == state.newestEpoch && epoch > 0
     }
 
     /// Adopts a newer epoch on `target`: move, resend there, confirm the epoch, drain the old mailbox (rule 13, 15).

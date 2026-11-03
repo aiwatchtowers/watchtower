@@ -108,8 +108,11 @@ actor SimPhone {
     init(_ cfg: SimPhoneConfig) {
         self.cfg = cfg
         self.id = cfg.id
+        // `relaySwitchRequested` stays false: the Go phone emulator these twins mirror has no upgrade from an iCloud
+        // link, so a same-epoch `transport_switched{relay}` is only handled here.
         self.follower = FollowerState(
-            route: TransportKind(cfg.current), newestEpoch: 1, canUseRelay: cfg.mailbox[.relay] != nil ? .yes : .no)
+            route: TransportKind(cfg.current), newestEpoch: 1, canUseRelay: cfg.mailbox[.relay] != nil ? .yes : .no,
+            relaySwitchRequested: false)
     }
 
     // MARK: - State
