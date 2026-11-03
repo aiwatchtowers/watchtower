@@ -353,7 +353,7 @@ final class MeetingReminderCenterTests: XCTestCase {
 
     func testPollFiresPushOnceAndSetsBanner() throws {
         let pool = try makePool()
-        let base = Date()
+        let base = Self.wholeSecondNow()
         let event = makeEvent(id: "evt", title: "Standup", start: base.addingTimeInterval(3 * 60))
         try insertEvent(pool, event: event)
 
