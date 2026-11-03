@@ -2,13 +2,13 @@
 
 **Spec:** [2026-11-03-inbox-builder-a-blocks-look-design.md](../specs/2026-11-03-inbox-builder-a-blocks-look-design.md)
 **Umbrella:** [2026-11-02-inbox-builder-design.md](../specs/2026-11-02-inbox-builder-design.md) (board #1400).
-**Status:** for owner review together with the spec. Tasks 6 (the `preview` half) and 12 (the Dry run button) wait on the spec's Q1; nothing in this plan adds a `target` action kind (Q2).
+**Status:** for owner review together with the spec. The spec's Q1 and Q2 are answered in ask #445: the owner preview CLI and Dry run button are in (Tasks 6, 11, 12), and the `target` action kind is in (Tasks 2, 14, 15).
 
 ## Execution rules
 
-- Each task runs in its own worktree and branch, merged by the controller into `feature/inbox-builder-a`; never two implementers in one tree. Tasks whose `Depends on` are all merged may run in parallel lanes: the Go lane (Tasks 2–9) and the Swift lane (Tasks 1, 10–13) are independent until Task 10.
-- **Owner checkpoint after Task 1:** the controller files an ask with the Task 1 shots. Tasks 10–13 (Swift wiring) start only after the owner's answer; Go Tasks 2–9 do not wait.
-- Inner loop only, per CLAUDE.md: `go test ./internal/<pkg>` for the touched package(s), `make test-swift FILTER=<Class>`, `make kit-test FILTER=<Class>`, `make lint-diff`. The full gate (`make test`, `make test-swift`, `make lint-all`) runs once after Task 9 (Go phase), once after Task 13 (Swift phase), and before the PR to main — by the controller, never per task.
+- Each task runs in its own worktree and branch, merged by the controller into `feature/inbox-builder-a`; never two implementers in one tree. Tasks whose `Depends on` are all merged may run in parallel lanes: the Go lane (Tasks 2–9, 14) and the Swift lane (Tasks 1, 10–13, 15) are independent until Task 10.
+- **Owner checkpoint after Task 1:** the controller files an ask with the Task 1 shots. Tasks 10–13 and 15 (Swift wiring) start only after the owner's answer; Go Tasks 2–9 and 14 do not wait.
+- Inner loop only, per CLAUDE.md: `go test ./internal/<pkg>` for the touched package(s), `make test-swift FILTER=<Class>`, `make kit-test FILTER=<Class>`, `make lint-diff`. The full gate (`make test`, `make test-swift`, `make lint-all`) runs once after Tasks 9 and 14 (Go phase), once after Tasks 13 and 15 (Swift phase), and before the PR to main — by the controller, never per task.
 - Each implementer self-reviews against `docs/review/review-rules.md` (§§ 6–9 and, for Swift, "Swift / Desktop conventions") before hand-back; the independent review uses the same checklist.
 - Inventory: a task that changes an AUTO-* behaviour edits `docs/inventory/automations.md` (Observable, guards, Changelog) in the same commit, exactly as listed in the spec's "Inventory contracts touched". No guard test is weakened or renamed.
 - Sample data in tests, fixtures and shots: `acme`, `example.com`, "colleague A". No live data.
@@ -20,7 +20,7 @@
 
 Files:
 - new `internal/automations/blocks/testdata/blocks_cases.json` — the shared fixture (spec "Test strategy"): `valid[]` `{name, input, canonical, plain_text, actions, content_hash}` (`content_hash` may be `""` here; Task 2 fills it), `invalid[]` `{name, input, built_in, error}` with the spec's exact messages, `unsupported[]` `{name, document, version}`. Every block type and every optional field appears in at least one valid case.
-- new `WatchtowerKit/Sources/WatchtowerDesign/ArtifactBlocks.swift` — `ArtifactDocument`, `ArtifactBlock`, `ArtifactListRow`, `ArtifactTableColumn`, `ArtifactTableCell`, `ArtifactMetric`, `ArtifactPersonLine`, `ArtifactBadge`, `ArtifactTone`, `ArtifactAction`, `ArtifactActionKind`, `ArtifactRef`, `ArtifactRefKind`; `enum ArtifactDecodeResult { case none, document(ArtifactDocument), unsupported(version: Int), unreadable }`; `static func decode(_ json: String) -> ArtifactDecodeResult`; `func flattenedActions(cardActions: [ArtifactAction]) -> [ArtifactAction]`; `var refs: [ArtifactRef]`.
+- new `WatchtowerKit/Sources/WatchtowerDesign/ArtifactBlocks.swift` — `ArtifactDocument`, `ArtifactBlock`, `ArtifactListRow`, `ArtifactTableColumn`, `ArtifactTableCell`, `ArtifactMetric`, `ArtifactPersonLine`, `ArtifactBadge`, `ArtifactTone`, `ArtifactAction`, `ArtifactActionKind` (`open`, `chat`, `agent`, `reply`, `target`), `ArtifactTargetAction` (`title`, `intent`, `parent`), `ArtifactRef`, `ArtifactRefKind`; `enum ArtifactDecodeResult { case none, document(ArtifactDocument), unsupported(version: Int), unreadable }`; `static func decode(_ json: String) -> ArtifactDecodeResult`; `func flattenedActions(cardActions: [ArtifactAction]) -> [ArtifactAction]`; `var refs: [ArtifactRef]`.
 - `WatchtowerKit/Sources/WatchtowerDesign/Tone.swift` — `static func artifact(_ tone: ArtifactTone) -> Color`.
 - new `WatchtowerDesktop/Sources/DesignKit/Artifacts/` — `ArtifactView`, one view per block (`ArtifactHeadingView`, `ArtifactTextView`, `ArtifactListView`, `ArtifactTableView`, `ArtifactPersonView`, `ArtifactMetricsView`, `ArtifactLinkView`, `ArtifactActionsView`), `ArtifactEnvironment` (`markdown`, `avatar`, `onAction`, `refHooks`) as an `EnvironmentValues` entry, `ArtifactRefHooks`, `enum ArtifactRenderMode { case inbox, preview }`.
 - new `WatchtowerDesktop/Sources/Views/Automations/AutomationLookPane.swift` — the Look pane as a view over a plain value `AutomationLookPaneContent` (state enum mirroring the spec's table: `noInboxOutput`, `empty`, `running(previous:)`, `failed(message:steps:)`, `noCard(tokens:)`, `preview(cards:selected:tokens:at:)`, `stale(cards:selected:)`, `stopped(cards:)`), plus the footer line view `AutomationLLMStepWarning`. No model, no CLI yet: Task 12 feeds it.
@@ -30,7 +30,7 @@ Files:
 
 Steps: write the fixture from the spec; decoder over it; renderer from kit parts only (no hex, no `Divider()` between rows, colours through `Tone.artifact`); Look pane on fixture content; shots; `make desktop-shots DESKTOP_SHOTS=<dir>` and attach the PNGs to the hand-back.
 
-Tests: every `valid[].canonical` decodes to `.document`; every `unsupported[]` to `.unsupported(version)`; `""` → `.none`; malformed JSON, a known `v` with a missing required field, a block missing `type` → `.unreadable`; `flattenedActions` count equals each case's `actions`; `refs` order; zero-row list and zero-row table decode; `Tone.artifact` covers all six. `DesignShotsTests` renders every new shot (names unique).
+Tests: every `valid[].canonical` decodes to `.document`; every `unsupported[]` to `.unsupported(version)`; `""` → `.none`; malformed JSON, a known `v` with a missing required field, a block missing `type` → `.unreadable`; `flattenedActions` count equals each case's `actions`; a `target` action decodes with and without `intent`/`parent`; `refs` order; zero-row list and zero-row table decode; `Tone.artifact` covers all six. `DesignShotsTests` renders every new shot (names unique).
 
 Checks: `make kit-test FILTER=ArtifactBlocksTests`, `make test-swift FILTER=DesignShotsTests`, `make lint-diff`.
 
@@ -38,15 +38,16 @@ Checks: `make kit-test FILTER=ArtifactBlocksTests`, `make test-swift FILTER=Desi
 
 **Depends on:** none (reads the fixture Task 1 writes; if Task 2 starts first it creates the file and Task 1 extends it — one owner per merge, the controller resolves). **Lane:** Go.
 
-Files: new `internal/automations/blocks/blocks.go`, `validate.go`, `plaintext.go`, `limits.go`, `blocks_test.go`, `fixture_test.go`.
+Files: new `internal/automations/blocks/blocks.go`, `validate.go`, `actions.go`, `plaintext.go`, `limits.go`, `blocks_test.go`, `fixture_test.go`; `internal/db/automation_runs.go` (`InboxActionTarget`, `InboxTargetAction{Title, Intent string; Parent int64}` with JSON `title`/`intent,omitempty`/`parent,omitempty`, `InboxAction.Target`).
 
 Interfaces:
 - `type Document struct { V int; Blocks []Block }` with canonical JSON marshalling (fixed key order, defaults written).
-- `func Validate(fn string, v any, opts Options) (Document, error)` — `v` is the goja-exported value; `type Options struct { BuiltIn bool }` (gates `action`/`reminder` refs). Errors are `automations` `ValidationError`-shaped through a small `ErrorFunc` the caller passes, or a typed `*blocks.Error{Path, Msg}` the SDK maps — implementer's choice, messages exactly as the fixture.
+- `func Validate(fn string, v any, opts Options) (Document, error)` — `v` is the goja-exported value; `type Options struct { BuiltIn bool; AllowKind func(kind string) error }` (`BuiltIn` gates `action`/`reminder` refs; `AllowKind` is the SDK's permission check for `reply` → `inbox:reply` and `target` → `outputs: [target]`).
+- `func ValidateAction(fn, field string, i int, v any, opts Options) (db.InboxAction, error)` — the one action grammar (moved from `sdk_output_card.go`'s `inboxAction`, plus the `target` kind with the spec's fields and messages); used for card actions and block actions alike. Errors are `automations` `ValidationError`-shaped through a small `ErrorFunc` the caller passes, or a typed `*blocks.Error{Path, Msg}` the SDK maps — implementer's choice, messages exactly as the fixture.
 - `func (Document) Canonical() ([]byte, error)`; `func PlainText(Document, maxBytes int) string`; `func ContentHash(title, body string, doc *Document, priority, link string, actions []db.InboxAction) string`; `func FlattenActions(card []db.InboxAction, doc *Document) []db.InboxAction`; `func Decode(stored string) (*Document, error)` (for the press path).
 - Limits as named constants: `MaxBlocks = 40`, `MaxRows = 500`, `MaxActions = 50`, `MaxBlocksBytes = 128 * 1024`, `MaxTextBytes = 16 * 1024`, and the per-field limits of the spec.
 
-Tests: the whole fixture (valid → canonical/plain text/actions/hash, which this task writes into the fixture's `content_hash`; invalid → exact message); each limit at N and N+1; degenerate inputs from the spec's test strategy; canonical bytes stable across input key orders; `PlainText` clipping on a rune boundary; `ContentHash` changes with each hashed field and not with Go map order; a fixture-coverage test (every block type and optional field present in a valid case).
+Tests: the existing card-action tests (`sdk_output_card_test.go`) pass unchanged against the moved grammar; `target` field rules (title empty/201 chars, intent 1001 chars, parent 0/-1/"x", unknown key, `data` on a target); `AllowKind` refusal surfaces as the caller's error; the whole fixture (valid → canonical/plain text/actions/hash, which this task writes into the fixture's `content_hash`; invalid → exact message); each limit at N and N+1; degenerate inputs from the spec's test strategy; canonical bytes stable across input key orders; `PlainText` clipping on a rune boundary; `ContentHash` changes with each hashed field and not with Go map order; a fixture-coverage test (every block type and optional field present in a valid case).
 
 Checks: `go test ./internal/automations/blocks`, `make lint-diff`.
 
@@ -84,7 +85,7 @@ Checks: `go test ./internal/automations -run 'Recipe|ApprovalHash|Auto05|Rescan'
 
 **Depends on:** Tasks 2, 3, 4. **Lane:** Go.
 
-Files: `internal/automations/sdk_output.go`, `sdk_output_card.go`, `commit.go`, `executor_run.go` (passes removals into `RunCommit`), `limits.go`, new `sdk_output_blocks_test.go`, `sdk_test.go`.
+Files: `internal/automations/sdk_output.go`, `sdk_output_card.go` (card actions through `blocks.ValidateAction`; `AllowKind` from the manifest: `AllowInboxReply`, and `AllowOutput("target")` for a target action), `commit.go`, `executor_run.go` (passes removals into `RunCommit`), `limits.go`, new `sdk_output_blocks_test.go`, `sdk_test.go`.
 
 Interfaces:
 - `outputOpts` gains `blocks, key bool` (inbox only); `checkOutputFields` admits `blocks`, `key`, and registered hook fields.
@@ -93,13 +94,13 @@ Interfaces:
 - `output.remove({key})` registered on the output module, gated by `outputs: [inbox]` and `artifacts: living`; journaled as an output step; `dry_run` in a dry run.
 - `blocks` → `blocks.Validate(fn, v, blocks.Options{BuiltIn: env.Automation.Origin == builtin})`, store canonical JSON, `Body = blocks.PlainText(doc, MaxOutputBodyBytes)`, `ContentHash` for every inbox output.
 
-Tests: blocks in feed and living recipes; `body` + `blocks` refused; key required in living / refused in feed with the spec's messages; `folder` refused without a hook, passed to a registered test hook with the raw value; unknown field still `unknown field`; inbox-then-remove and remove-then-inbox of one key in a run; replay of a resumed run rebuilds the same buffer (`TestAuto08_ResumeAtAskWait` stays green); `TestOutput_RemoveDryRun`; `TestAuto12_DryRunWritesNoActionsOutputsOrState` green with blocks; an `action` ref from a personal recipe refused, from a built-in accepted; a Reply action inside a block needs `inbox:reply`.
+Tests: blocks in feed and living recipes; `body` + `blocks` refused; key required in living / refused in feed with the spec's messages; `folder` refused without a hook, passed to a registered test hook with the raw value; unknown field still `unknown field`; inbox-then-remove and remove-then-inbox of one key in a run; replay of a resumed run rebuilds the same buffer (`TestAuto08_ResumeAtAskWait` stays green); `TestOutput_RemoveDryRun`; `TestAuto12_DryRunWritesNoActionsOutputsOrState` green with blocks; an `action` ref from a personal recipe refused, from a built-in accepted; a Reply action inside a block needs `inbox:reply`; `TestOutput_TargetActionNeedsTargetOutput` (card-level and in a list row, `PermissionDenied` without `outputs: [target]`).
 
 Checks: `go test ./internal/automations`, `make lint-diff`.
 
 ## Task 6 — Dry-run results carry blocks; the owner preview CLI
 
-**Depends on:** Task 5. **Lane:** Go. The `preview` half waits on Q1; if the owner picks (b) or (c), drop it and its AUTO-06/AUTO-12 lines.
+**Depends on:** Task 5. **Lane:** Go. The `preview` CLI is approved in ask #445 (AUTO-06/AUTO-12 amendment).
 
 Files: `internal/automations/authoring/draft.go` (`DraftOutput` gains `Blocks json.RawMessage` — `null` when none, `Key string`, `ContentHash string`; never a nil slice), `draft_test.go`; new `cmd/automations_preview.go`, `cmd/automations_preview_test.go`; `cmd/automations.go` (register); export from `authoring` one function the CLI shares with `draft_automation`, e.g. `func EvaluateDraft(ctx context.Context, d Deps, text string, target DraftTarget) (*DraftResult, error)` — the D16 refusal stays on the chat path only.
 
@@ -139,7 +140,7 @@ Checks: `go test ./internal/automations -run LLMCallSites`, `go test ./cmd -run 
 
 Files: `internal/skills/shipped/create-automation.md`; its examples test (`internal/automations/authoring/skill_examples_test.go` or the skills package's own); a new template only if it earns its place (no).
 
-Content: the `output.inbox` row of the SDK table with `blocks`/`key`/`folder` (folder: "not available yet" until B), a compact block reference (types, required fields, tones, limits), `artifacts: living` with `concurrency: 1` and `output.remove`, "Designing the look": ask what the owner wants to see, never name blocks to the owner, emit blocks from the script, call `draft_automation` after every look change before answering, say when a change adds an `llm()` step. One worked example: a living "threads waiting for me" list with tones and a Reply action (sample data only).
+Content: the `output.inbox` row of the SDK table with `blocks`/`key`/`folder` (folder: "not available yet" until B), the `target` button (`{label, target: {title, intent?, parent?}}`, needs `outputs: [target]`, the owner approves the task after pressing), a compact block reference (types, required fields, tones, limits), `artifacts: living` with `concurrency: 1` and `output.remove`, "Designing the look": ask what the owner wants to see, never name blocks to the owner, emit blocks from the script, call `draft_automation` after every look change before answering, say when a change adds an `llm()` step. One worked example: a living "threads waiting for me" list with tones and a Reply action (sample data only).
 
 Tests: every js block in the skill parses and dry-runs in the examples test; the example's `output.inbox` passes `blocks.Validate`.
 
@@ -187,11 +188,33 @@ Tests: the Kit decoder accepts every Go-canonical document of the final fixture;
 
 Checks: `make kit-test FILTER=ArtifactBlocksTests`, `make test-swift FILTER=ArtifactFixtureParityTests`, `make lint-diff`.
 
-## Task 14 — Guide, feature note, CLAUDE.md
+## Task 14 — `create_target` from an Inbox button: inbox surface and `parent_id`
 
-**Depends on:** Tasks 1–13. **Lane:** docs.
+**Depends on:** Task 2. **Lane:** Go.
 
-Files: `docs/guide/` — the automations page that covers the editor and Inbox cards (find it from `docs/guide/README.md`), following `docs/guide/WRITING.md`: the Look step, saying in words how the card should look, the preview and its states, Dry run (if Q1 = a), living cards ("updated in place"), the AI-step warning; a Learn card only if WRITING.md's rules call for one. New `docs/features/inbox-builder-a.md` (or a section in `docs/features/automations.md`, whichever the umbrella's other sub-projects use — check with the controller): block schema pointer, storage, living rule, press address, the B seams, v1 limits (flat blocks, no image URLs, 50 outputs per run, built-in primitives preview as placeholders, no `target` kind). One feature line in `CLAUDE.md`. `docs/inventory/automations.md` Changelog line for the whole sub-project.
+Files: `internal/tools/targets.go` (+ test), `internal/tools/registry.go` (`Tool.ValidateBinding`, called by `Propose` after `Validate`), `cmd/actions_registry.go` and its pin test, `cmd/actions_propose_test.go`; `docs/inventory/automations.md` (AUTO-02), `docs/inventory/agent-actions.md` and `docs/inventory/targets.md` (Changelog lines, TGT-BRIEF-01's surface sentence).
+
+Interfaces: `createTargetArgs.ParentID int64` (JSON `parent_id`, omitempty); `create_target.Surfaces` += `tools.InboxSurface`; `Tool.ValidateBinding func(b Binding, raw json.RawMessage) error` — `create_target` refuses `parent_id` unless `b.Surface == InboxSurface`; parent checks (exists, `project_id IS NULL`, not `done`/`dismissed`) in `Validate` and again in `Execute`; the child takes the parent's `level`, `period_start`, `period_end` and `parent_id`.
+
+Tests: `TestCreateTarget_ParentIDOnlyOnInbox` (main, reaction, automation refused with the spec's message, no row); inbox with a valid parent → one pending row, `Execute` after Approve creates the child under it; parent missing / done / dismissed / on a workbench board refused at propose; parent closed between propose and apply → apply `failed`, no target (AGENT-05 claim still once); `TestAuto02_TargetButtonOnlyProposes` (`actions propose --tool create_target --surface inbox --context-type automation_output --context-id 7:2` without `--approve` → one pending row with that context, zero targets); under an agent marker refused (AGENT-07, existing guard extended to this tool); trust `execute` on `main` does not auto-execute an inbox proposal; `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` updated for the new surface (pin extended, no assertion relaxed); top-level `create_target` on `main` unchanged (existing tests green).
+
+Checks: `go test ./internal/tools`, `go test ./cmd -run 'TestActionsPropose|TestBuildToolRegistry|TestAuto02'`, `make lint-diff`.
+
+## Task 15 — The target button on the Desktop
+
+**Depends on:** Tasks 10, 14. **Lane:** Swift.
+
+Files: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxCardAction.swift` (target kind: build `actions propose` args from the drawn action — `text`, `intent`, `parent_id`, `reason` naming the card and automation —, context `automation_output` / `<output id>:<index>`), new `WatchtowerCore/Services/Inbox/InboxTargetButtonState.swift` (pure: proposals for this context → `pressable | waiting(actionID) | created(targetID) | failed(message)`), a query over `agent_actions` by context in `Database/Queries/` (the existing agent-action queries file), `Sources/Views/Inbox/InboxReadingPane.swift` (the state per target action through `ArtifactEnvironment`), `DesignKit/Artifacts/` (a target button's label, symbol and state rendering — states come in as values; DesignKit reads no database); tests `Tests/Core/InboxTargetButtonStateTests.swift`, `Tests/Core/InboxCardActionTests.swift` (or the existing action-strip tests), a shot `artifact-target-button-states` in `DesignShotCatalog`.
+
+Tests: each of the five states of the spec's table from `agent_actions` rows (none, pending, applied, failed, rejected/expired/dismissed → pressable); a pending row whose stored args differ from the drawn action (a living card rewritten) does not lock the new button; the args JSON equals the drawn action (title, intent, parent) and the reason names the card; a non-zero propose exit keeps the button pressable and shows the stderr reason (no state cleared before success, review rules error handling); a press in `.preview` mode does nothing; navigating away while a propose runs and coming back shows its result (the press lives in the Inbox center, not the view).
+
+Checks: `make test-swift FILTER='InboxTargetButtonStateTests|InboxCardActionTests|DesignShotsTests'`, `make lint-diff`.
+
+## Task 16 — Guide, feature note, CLAUDE.md
+
+**Depends on:** Tasks 1–15. **Lane:** docs.
+
+Files: `docs/guide/` — the automations page that covers the editor and Inbox cards (find it from `docs/guide/README.md`), following `docs/guide/WRITING.md`: the Look step, saying in words how the card should look, the preview and its states, Dry run, the "make a task" button and its approval, living cards ("updated in place"), the AI-step warning; a Learn card only if WRITING.md's rules call for one. New `docs/features/inbox-builder-a.md` (or a section in `docs/features/automations.md`, whichever the umbrella's other sub-projects use — check with the controller): block schema pointer, storage, living rule, press address, the B seams, v1 limits (flat blocks, no image URLs, 50 outputs per run, built-in primitives preview as placeholders). One feature line in `CLAUDE.md`. `docs/inventory/automations.md` Changelog line for the whole sub-project.
 
 Checks: links resolve; `make lint-diff`; the controller then runs the full gate.
 
@@ -205,8 +228,9 @@ Checks: links resolve; `make lint-diff`; the controller then runs the full gate.
 | `artifacts:` and the serial-run rule | 4 |
 | Storage, living upsert, read state | 3, 10 |
 | Reply presses | 7, 10 |
+| `target` action kind (ask #445) | 2, 5, 14, 15 |
 | Swift model and renderer | 1, 10, 13 |
-| Look step, preview, states | 1, 6, 11, 12 |
+| Look step, preview, states, owner Dry run (ask #445) | 1, 6, 11, 12 |
 | AI-step warning | 8, 12 |
-| Inventory | 3, 4, 6, 7, 14 |
+| Inventory | 3, 4, 6, 7, 14, 16 |
 | Contract with B | 5 (folder hook), 1 (ref hooks, `refs`), 3 (removal), 12 (editor entry) |

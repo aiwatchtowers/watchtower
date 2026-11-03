@@ -1,6 +1,6 @@
 # Inbox builder A — blocks and the Look step (design)
 
-**Umbrella:** [2026-11-02-inbox-builder-design.md](2026-11-02-inbox-builder-design.md) (board #1400, approved). **Plan:** [2026-11-03-inbox-builder-a-blocks-look.md](../plans/2026-11-03-inbox-builder-a-blocks-look.md). **Status:** design for owner review. The umbrella's owner decisions hold; this spec refines only what the umbrella marks as the agent's call, and lists anything in the umbrella that the code does not support under **Open questions for the owner**.
+**Umbrella:** [2026-11-02-inbox-builder-design.md](2026-11-02-inbox-builder-design.md) (board #1400, approved). **Plan:** [2026-11-03-inbox-builder-a-blocks-look.md](../plans/2026-11-03-inbox-builder-a-blocks-look.md). **Status:** design for owner review. The umbrella's owner decisions hold; this spec refines only what the umbrella marks as the agent's call. Its two open questions were answered in ask #445 (owner Dry run button; a `target` action kind) and are recorded under **Decisions**.
 
 **Mockups** (sample data only; the native DesignShotCatalog shots of the same states are plan Task 1 and are what the owner checks before the rest is built):
 
@@ -23,7 +23,7 @@ An automation's Inbox card today is a title, a markdown body, a link and up to f
 ## Goals
 
 1. A versioned block document, the v1 block set, closed field lists and caps, validated in Go with readable errors; an unknown block refuses the output.
-2. `output.inbox({title, blocks, key?, folder?, priority?, link?, actions?})`: A owns `blocks` and `key`; `folder` is a reserved seam that sub-project B fills.
+2. `output.inbox({title, blocks, key?, folder?, priority?, link?, actions?})`: A owns `blocks` and `key`; `folder` is a reserved seam that sub-project B fills. Actions gain a `target` kind whose press proposes a task (ask #445).
 3. Living artifacts: `artifacts: living` in the recipe, one artifact per `(automation, key)`, upserted in the run's commit transaction; read state survives an identical rewrite; `output.remove({key})` deletes one; the validator requires `concurrency: 1`.
 4. A Swift model in the Kit's `WatchtowerDesign` and a renderer in DesignKit; today's Inbox reading pane draws blocks; a card without blocks keeps its markdown body as one text block.
 5. The Look step in the automation editor: a preview pane rendering a dry run's cards, re-rendered after each turn that dry-runs the draft, stale when the text moved on, an owner **Dry run** button, **Save Look** through the normal save and confirmation, and a warning before saving when the change adds an `llm()` step.
@@ -56,7 +56,7 @@ The script passes `blocks` as an array. Go stores the **document**:
 
 ### Actions
 
-A block action has exactly the grammar of today's card action (`internal/automations/sdk_output_card.go`): `{label, open | chat | agent: {task, workbench?} | reply, data?, primary?}`; `reply` needs `inbox:reply` (`PermissionDenied` otherwise). There is no `create target` kind — see **Open questions**, Q2.
+A block action has exactly the grammar of a card action (`internal/automations/sdk_output_card.go`), which A extends by one kind: `{label, open | chat | agent: {task, workbench?} | reply | target: {title, intent?, parent?}, data?, primary?}`; `reply` needs `inbox:reply` and `target` needs `outputs: [target]` (`PermissionDenied` otherwise). The grammar moves into `internal/automations/blocks` (`blocks.ValidateAction`) so the card's `actions` and the block actions share one validator; the permission checks reach it through a callback (`Options.AllowKind`), so the leaf package never imports `automations`. The new kind is specified under **The `target` action** below.
 
 **Press address.** Every action of a card has one index in the card's **flattened action list**: the card's own `actions` first (0…3), then each block action in document order (a list row's actions in row order, an `actions` block's actions in order). `automations reply --output <id> --action <index>` and the Desktop use that index. Go `blocks.FlattenActions` and Swift `ArtifactDocument.flattenedActions(cardActions:)` are pinned to the same order by the shared fixture. The card stays **one press per card** (`pressed_at`), as today.
 
@@ -104,6 +104,7 @@ Each refusal is a `ValidationError` thrown into the script (uncaught → the run
 - `key` — a living artifact's key: a string 1…200 characters without control characters. It is required when the recipe says `artifacts: living` (`output.inbox(): key is required — this automation keeps living artifacts`) and refused otherwise (`output.inbox(): key is only for living artifacts; add "artifacts: living" to the recipe`).
 - `folder` — reserved for sub-project B through a field hook (below). Until B registers it: `output.inbox(): folder is not available yet`.
 - `output.remove({key})` — new, gated by `outputs: [inbox]` and `artifacts: living`; buffered like any output and committed only with `succeeded` (AUTO-04). Two writes of one key in a run: the later one wins in the buffer (an `inbox` after a `remove` re-creates, a `remove` after an `inbox` deletes) *(agent's call)*. Removing a key that does not exist is a no-op at commit. A dry run journals it `dry_run` and removes nothing (AUTO-12).
+- `actions` (the card's own, at most 4) and every block action may use the `target` kind (below).
 - `output.report` is unchanged: no blocks, no key. `output.briefing` is unchanged.
 - The content hash of an output is `blocks.ContentHash` = SHA-256 over the canonical JSON of `{title, body, blocks, priority, link, actions}` (blocks as the stored document, `null` when none). It is computed for every inbox output, feed ones too.
 
@@ -117,6 +118,50 @@ A new optional frontmatter key `artifacts: feed | living` (default `feed`) *(umb
 - `artifacts: living` requires `outputs` to contain `inbox` and `concurrency: 1`. The parser refuses otherwise: `concurrency: an automation with living artifacts runs one at a time; set concurrency: 1` and `artifacts: living needs outputs: [inbox]`.
 - The rule lives in one function, `automations.serialRunReasons(r *Recipe) []string`, so sub-project C adds the raw-window reader to the same check.
 - `validate --json` `fields` gains `artifacts` (`"feed"` or `"living"`), so the draft column shows it with the other hashed fields and the confirmation sheet lists a change of it (D26).
+
+### The `target` action (ask #445)
+
+A button that turns a card or a row into a task, through the same approval path as every other proposal *(owner, ask #445)*.
+
+**Recipe side.** `{label, target: {title, intent?, parent?}}`:
+
+| Field | Rule | Message on refusal |
+|---|---|---|
+| `title` | required string, 1–200 characters after trimming (`create_target`'s `text` limit) | `output.inbox(): actions[1].target.title must be a non-empty string of at most 200 characters` |
+| `intent` | optional string, at most 1000 characters | `… target.intent is 1204 characters; the limit is 1000` |
+| `parent` | optional integer > 0, a target id | `… target.parent must be a target id` |
+| other keys | refused | `… target: unknown field "due"` |
+| manifest | `outputs` must contain `target` (it is already in `approval_hash`) | `PermissionDenied`: `output.inbox(): a target action needs outputs: [target]` |
+
+`data` is refused on a target action, as on every kind but `reply`. Go stores it as `db.InboxAction{Kind: "target", Target: &db.InboxTargetAction{Title, Intent, Parent}}` (new constant `db.InboxActionTarget`); the shared fixture pins it. Nothing is checked against the database when the run writes the card: the parent can be closed or deleted by the time the owner presses, so the check is at propose and again at apply.
+
+**The press.** The press does not create anything. The Desktop runs:
+
+```
+watchtower actions propose --tool create_target --surface inbox \
+  --context-type automation_output --context-id <output id>:<flattened index> \
+  --args '{"text": <title>, "intent": <intent>, "parent_id": <parent>, "reason": "From the Inbox card “<card title>” of <automation name>"}' --json
+```
+
+with no `--approve`: one pending `agent_actions` row, which the owner approves or rejects in the approval card like any other proposal (today in the Inbox; after sub-project B in **Needs approval**). The args are built from the action the Desktop drew, read from the stored row, so the proposal is exactly what the owner saw; the approval card shows the title, the intent and the parent's own title again before anything is written. `actions propose` already refuses under every agent marker (AGENT-07) and accepts only tools on the `inbox` surface.
+
+**Registry changes** (`internal/tools/targets.go`, `cmd/actions_registry.go`):
+
+- `create_target` gains the `inbox` surface. The inbox surface stays no trust place (`trustSurfaceErr`, `TrustSurfaces`): an inbox `create_target` is never auto-executed, it always waits for Approve.
+- `create_target` gains an optional `parent_id` (integer > 0). It is accepted **only on the `inbox` surface**, through a new binding-aware check on the tool (`Tool.ValidateBinding func(b Binding, raw json.RawMessage) error`, called by `Registry.Propose` after `Validate`): on `main`, `reaction` and `automation` a `parent_id` is refused with `parent_id is only for an Inbox card's button`, so the main chat's "top-level task only" contract (TGT-BRIEF-01 note in `docs/inventory/targets.md`) does not widen. At propose and again in `Execute`, the parent must exist, be a personal target (`project_id IS NULL`) and not be `done` or `dismissed` (`parent_id: task #N is closed` / `… does not exist`); the new task is created as its child with the parent's level and period, `source_type = 'chat'`, `source_id = 'action:<id>'` as today.
+- The proposal's context (`automation_output`, `<output id>:<index>`) is stored on the row; it is how the Desktop finds the button's state.
+
+**The Desktop button** (`InboxCardAction`, the renderer's `onAction`): a target button draws `.kitSecondary` with an SF Symbol `checklist` and its label. Its state is read from `agent_actions` by context at render time:
+
+| Proposal for this button | Button |
+|---|---|
+| none, or the last one rejected / expired / dismissed | pressable |
+| pending | disabled, "Waiting for approval" (opens the approval card) |
+| applied | "Task created" — opens the new target |
+| failed | pressable again, with the error line the approval card shows |
+| the propose call itself failed (non-zero exit) | stays pressable, `WriteErrorBanner` with the stderr reason, nothing cleared before success |
+
+A press while a proposal for the same button is pending is not offered. In `.preview` mode the button is drawn disabled like every other one. A living card whose content changed starts with a fresh button only if the action itself changed (the context names the output and the index; the Desktop shows a stale pending proposal's state only when its stored args equal the drawn action's).
 
 ## Storage
 
@@ -192,7 +237,7 @@ The footer (Save, the shell warning, the #559 warning and the new AI-step warnin
 The preview is a dry run in memory of the exact text on screen (the umbrella: "the preview is a dry run, not a second renderer"). Two producers write the same `DraftResult` shape:
 
 1. **The editor chat.** `draft_automation` on the `automation_editor` surface already caches each result per conversation (`automation_draft_cache`). The `create-automation` skill is told: after any change to the look, call `draft_automation` before answering. `DraftOutput` gains `blocks` (the document, or `null`), `key` (`""` for feed) and `content_hash`. So "re-render after each look-changing turn" = the newest cache entry whose `recipe_text` equals the text on screen.
-2. **The owner's Dry run button** — `watchtower automations preview --stdin --json [--slug S] [--workbench N] [--builtin ID]`: the same evaluation as `draft_automation` (validate, then `DryRunInMemory` with the draft bounds), result on stdout, nothing written, refused under every agent marker (owner-only, like the dry run of an unconfirmed recipe, ask #271). Its tokens are the owner's spend on the owner's press. This is a new dry-run path — **Q1** below. The result is kept in `AutomationEditorCenter` per editor key.
+2. **The owner's Dry run button** — `watchtower automations preview --stdin --json [--slug S] [--workbench N] [--builtin ID]`: the same evaluation as `draft_automation` (validate, then `DryRunInMemory` with the draft bounds), result on stdout, nothing written, refused under every agent marker (owner-only, like the dry run of an unconfirmed recipe, ask #271). Its tokens are the owner's spend on the owner's press. This new dry-run path is approved in ask #445 (AUTO-06/AUTO-12 amendment). The result is kept in `AutomationEditorCenter` per editor key.
 
 The pane shows whichever of the two is newer for the text on screen.
 
@@ -225,14 +270,16 @@ The phone does not show automation cards today (no reader in `WatchtowerMobile` 
 
 ## Inventory contracts touched
 
-The AUTO-* changes for `blocks`/`folder`/`key`, removal by key, the row `ref` and `concurrency: 1` for living outputs are approved (ask #961). Exactly these entries change, each in the same commit as its code:
+The AUTO-* changes for `blocks`/`folder`/`key`, removal by key, the row `ref` and `concurrency: 1` for living outputs are approved (ask #961); the owner preview path (AUTO-06/AUTO-12) and the `target` action kind (AUTO-02) are approved in ask #445. Exactly these entries change, each in the same commit as its code:
+
+- **AUTO-02** — an Inbox card may carry a `target` button; its press proposes `create_target` through `Registry.Propose` on the `inbox` surface and nothing is written until the owner's Approve; a target action needs `outputs: [target]`. New guards: `TestOutput_TargetActionNeedsTargetOutput`, `TestAuto02_TargetButtonOnlyProposes` (`cmd`: a press records one pending row, no target), `TestCreateTarget_ParentIDOnlyOnInbox`.
 
 - **AUTO-04** — the commit also upserts living outputs by `(automation_id, output_key)` and applies `output.remove`; every other terminal status leaves living rows byte-identical too. New guards: `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess`.
 - **AUTO-05** — `artifacts: living` requires `concurrency: 1` (parse error otherwise). New guard: `TestAuto05_LivingArtifactsNeedConcurrencyOne`.
 - **AUTO-06** — `artifacts` is in `approval_hash` (absent for feed, so existing hashes are unchanged); a reply press with a stale `--content-hash` is refused; the owner preview CLI refuses under every agent marker. New guards: `TestApprovalHash_ArtifactsIsHashed`, `TestApprovalHash_GoldenCanonicalBytes` unchanged, `TestAutomationsCLI_PreviewRefusedUnderAgentMarkers`, `TestAutomationsCLI_ReplyRefusedWhenCardChanged`.
 - **AUTO-12** — the owner preview (`automations preview`) is a dry run in memory like `draft_automation`: no row of any table, `output.remove` journals `dry_run`. New guards: `TestAutomationsCLI_PreviewWritesNoRows`, `TestOutput_RemoveDryRun`.
 
-The `automations preview` lines in AUTO-06 and AUTO-12 wait on Q1. No other inventory file changes in A (the `ref` kinds' native actions and their contracts are B's).
+Outside `automations.md`: `docs/inventory/agent-actions.md` and `docs/inventory/targets.md` get a Changelog line each (ask #445) — `create_target` is on the `inbox` surface (never trusted, AGENT-01/AGENT-07 hold) and takes `parent_id` there only; the TGT-BRIEF-01 sentence that lists `create_target`'s surfaces is updated, its contract (the main chat creates top-level tasks only) unchanged, and `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` pins the new surface. The `ref` kinds' native actions and their contracts are B's.
 
 ## Test strategy
 
@@ -240,8 +287,9 @@ The `automations preview` lines in AUTO-06 and AUTO-12 wait on Q1. No other inve
 - **Go** `internal/automations/blocks`: every rule and cap at the limit and one past it; degenerate inputs — `blocks: []` (valid, an empty document draws nothing but the title), a list with zero rows (valid, `empty` text), a table with zero rows, `null` where an object is expected, a number where a string is expected, NaN/Infinity in a value, a 200-row list with a ref on each, a document at exactly `MaxBlocksBytes`; canonical output stable under key order; plain text clipped on a rune boundary.
 - **Go** `internal/db`: upsert keeps `id`/`created_at`; same hash keeps read/done/dismissed/press; changed hash clears them and moves `changed_at`; removal of a missing key; feed rows untouched; a failed run commits nothing (AUTO-04); the partial unique index refuses a second row per key on a raw insert; migration on a database with existing outputs backfills `written_at`/`changed_at`.
 - **Go** `internal/automations`: `output.inbox` with blocks/key in feed/living recipes; `body`+`blocks` refused; `folder` refused without a hook and passed to a registered hook; `output.remove` ordering in the buffer; dry run journals `dry_run`; `artifacts` parse and hash rules; `LLMCallSites` over comments, strings, template text and `x.llm(`.
-- **Go** `cmd`: `preview --stdin --json` pinned keys, refusal under every marker, no rows written; `reply --content-hash` match / mismatch / absent; `validate --json` `adds_llm` and `fields.artifacts`.
-- **Swift**: Kit decoder over the fixture (four decode states); `AutomationLookPreviewModel` every state and transitions (empty → running → preview; preview → stale after an edit; stale → preview after the chat's next draft; running → navigate away → back keeps the run — review rules lifecycle); `AutomationEditorCenter` step memory and preview result per key; the reading pane's choice of blocks / markdown / unsupported / unreadable; `InboxCardAction` passes the flattened index and the content hash.
+- **Go** `target` kind: every field rule and message; `outputs: [target]` missing → `PermissionDenied`; `data` on a target refused; `create_target` with `parent_id` on `main`/`reaction`/`automation` refused, on `inbox` accepted; parent missing, done, dismissed or on a workbench board refused at propose and, when it closed meanwhile, at apply (the row lands `failed`, no target); applied child has the parent's level and period; an inbox `create_target` is never auto-executed whatever trust `main` has.
+- **Go** `cmd`: `actions propose --tool create_target --surface inbox` without `--approve` records one pending row with the context and creates no target; `preview --stdin --json` pinned keys, refusal under every marker, no rows written; `reply --content-hash` match / mismatch / absent; `validate --json` `adds_llm` and `fields.artifacts`.
+- **Swift**: Kit decoder over the fixture (four decode states); `AutomationLookPreviewModel` every state and transitions (empty → running → preview; preview → stale after an edit; stale → preview after the chat's next draft; running → navigate away → back keeps the run — review rules lifecycle); `AutomationEditorCenter` step memory and preview result per key; the reading pane's choice of blocks / markdown / unsupported / unreadable; `InboxCardAction` passes the flattened index and the content hash; the target button's five states from `agent_actions` rows, its args built from the drawn action, a failed propose keeping the button pressable with the error.
 - **Shots**: every state in the table above plus the blocks gallery and the Inbox card states, in light and dark, registered in `DesignShotCatalog` (plan Task 1).
 
 ## Decisions
@@ -263,6 +311,9 @@ The `automations preview` lines in AUTO-06 and AUTO-12 wait on Q1. No other inve
 - Preview from the newest of the chat's cached draft and the owner's own Dry run, matched to the exact text on screen — agent's call.
 - The AI-step warning is a footer line driven by a Go `adds_llm` flag, lexical call-site count — agent's call.
 - HTML mockups now, native DesignShotCatalog shots as plan Task 1 for the owner to check before the rest is built — agent's call.
+- The Look step has an owner **Dry run** button over `watchtower automations preview --stdin` (owner-only in-memory dry run, refused under every agent marker); AUTO-06/AUTO-12 amended — ask #445.
+- A `target` action kind `{title, intent?, parent?}`: the press proposes `create_target` on the `inbox` surface and waits for Approve like any proposal; `parent_id` only on the inbox surface; AUTO-02 amended — ask #445.
+- A target button's state comes from its proposal (`context_type = 'automation_output'`, `context_id = '<output>:<index>'`), nothing is stored on the output row — agent's call.
 - The v1 block set, script emits blocks directly, living upsert and read-state rule, `concurrency: 1` for living — umbrella (agent's calls approved with it); AUTO-* changes — ask #961.
 
 ## Contract with sub-project B
@@ -271,7 +322,7 @@ A ships these seams; B builds on them and changes none of A's semantics without 
 
 1. **`folder` field.** `(*automations.OutputMod).RegisterInboxField(name string, fn InboxFieldFunc)` with `type InboxFieldFunc func(env *Env, fn string, v any, o *db.AutomationOutput) error`. `output.inbox` passes a field it does not own to a registered hook; without one, `folder` is refused (`output.inbox(): folder is not available yet`) and any other unknown field stays `unknown field`. B adds the folder column(s) and migration, the `db.AutomationOutput` field, its write in `commitRunTx` (on a living upsert too), the dry-run/`DraftOutput` field and the Swift reads. A adds no folder column.
 2. **Row `ref`.** A validates `{kind, id}` (kinds above; `action`/`reminder` built-in only), stores it in the canonical document and decodes it to `ArtifactRef`. B owns everything a ref does.
-3. **Ref hooks** in DesignKit, `ArtifactRefHooks` (in `ArtifactEnvironment`): `isOpen: (ArtifactRef) -> Bool` — false hides the row (default true); `nativeActions: (ArtifactRef, ArtifactRenderMode) -> AnyView?` — drawn at the row's trailing edge, disabled by B in `.preview` (default nil); `nativeKinds: (ArtifactRef) -> Set<ArtifactActionKind>` — the recipe's row actions of these kinds are not drawn (default empty). A row hidden by `isOpen` is left out of the list's count and, when every row is hidden, the list shows its `empty` text. A list row with a `ref` of kind `action` must be drawn by B with the record's own text next to Approve (A forbids such refs from non-built-in recipes; B must not widen that).
+3. **Ref hooks** in DesignKit, `ArtifactRefHooks` (in `ArtifactEnvironment`): `isOpen: (ArtifactRef) -> Bool` — false hides the row (default true); `nativeActions: (ArtifactRef, ArtifactRenderMode) -> AnyView?` — drawn at the row's trailing edge, disabled by B in `.preview` (default nil); `nativeKinds: (ArtifactRef) -> Set<ArtifactActionKind>` — the recipe's row actions of these kinds are not drawn (default empty). The rule is by kind, so it covers both cases the umbrella names: B's Waiting for me rows have a native Reply (ask #445, B's b1), so B returns `.reply` for an `inbox_item` ref and the recipe's `reply` action (which triggers the automation's own reply run, a different thing) is not drawn on that row; a `track` ref has a native Make a Task, so B returns `.target` for it. A row hidden by `isOpen` is left out of the list's count and, when every row is hidden, the list shows its `empty` text. A list row with a `ref` of kind `action` must be drawn by B with the record's own text next to Approve (A forbids such refs from non-built-in recipes; B must not widen that).
 4. **Counting.** `ArtifactDocument.refs` returns every row ref in document order, for B's folder count of open rows.
 5. **Removal by key.** `output.remove({key})` and its commit semantics are A's; B's `needs-approval` recipe uses them (`action:<id>`, `reminder:<id>` keys).
 6. **Editor entry.** `AppState.openAutomationEditor(_:step:)` with `AutomationEditorStep.look` for B's "Edit the look…", `.collects` for "Edit what it collects…", `.schedule` for "Schedule…".
@@ -279,11 +330,4 @@ A ships these seams; B builds on them and changes none of A's semantics without 
 
 ## Open questions for the owner
 
-**Q1. The Look step's own Dry run button needs a new owner-only dry-run path.** The preview can come only from the chat (`draft_automation`), which costs a chat turn per refresh. A button needs `watchtower automations preview --stdin` — an in-memory dry run of the text on screen, writing nothing, refused under every agent marker, spending real model tokens when the recipe calls `llm()`. That is one more caller in AUTO-06/AUTO-12, not covered by ask #961.
-- (a) Add the CLI and the button, with the AUTO-06/AUTO-12 amendment above. **Recommended**: the owner sees the look without typing, and the path is exactly `draft_automation`'s, owner-only.
-- (b) No button: the preview comes only from the chat's dry runs; the empty state says "Ask the chat to try it".
-- (c) The button sends a fixed message to the editor chat ("Dry-run the draft") — no new path, but a model turn per press.
-
-**Q2. "Create target" is not an existing action kind.** The umbrella lists the actions block's kinds as "open, reply, chat, agent, create target — the existing `output.inbox` action kinds"; the code has only open, chat, agent and reply (`db.InboxActionLink|Chat|Agent|Reply`). A `target` button would be a new write path (a `create_target` proposal on press).
-- (a) v1 without it: an `agent` action ("make a task of this") covers the case, and B's native track rows keep **Make a Task**. **Recommended.**
-- (b) Add a `target` kind in A that proposes `create_target` through the registry on the owner's press (AUTO-02 amendment, new ask).
+None. Q1 (owner Dry run button) and Q2 (`target` action kind) were answered in ask #445; see **Decisions**.
