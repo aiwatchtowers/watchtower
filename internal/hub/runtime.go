@@ -340,7 +340,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	ac := actions.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
-		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
+		Nudge: func(kinds []string) { pub.PublishNow(toKinds(kinds)...) },
 		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos, Contact: h.noteContact, Latency: h.lat,
 	}
 	if o.Desktop != nil {

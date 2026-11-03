@@ -170,6 +170,7 @@ type Publisher struct {
 	dirty       map[Kind]bool
 	firstDirty  time.Time // monotonic, first PublishSoon of the dirty set
 	lastDirty   time.Time // monotonic, latest PublishSoon
+	nowDirty    time.Time // monotonic, first PublishNow of the dirty set (zero: none)
 	lastPublish time.Time
 	// resignal holds the alert keys Resignal asked to signal on CloudKit,
 	// kept until a cycle saved the alert with its signal or found it gone.
@@ -206,19 +207,31 @@ func realTimer(d time.Duration) (<-chan time.Time, func()) {
 
 // PublishSoon marks kinds dirty: Run diffs them Debounce after the last call,
 // and never later than MaxDebounceWait after the first one of the burst.
-func (p *Publisher) PublishSoon(kinds ...Kind) {
+func (p *Publisher) PublishSoon(kinds ...Kind) { p.markDirty(false, kinds) }
+
+// PublishNow marks kinds dirty for an applied phone action: the dirty set is
+// due at once instead of after the debounce, so a steady stream of actions
+// is not held to MaxDebounceWait. Bursts still coalesce: a kind written less
+// than the spacing ago is not read again before the spacing allows (Cycle's
+// Deferred), so each kind is saved at most once per spacing.
+func (p *Publisher) PublishNow(kinds ...Kind) { p.markDirty(true, kinds) }
+
+func (p *Publisher) markDirty(now bool, kinds []Kind) {
 	if len(kinds) == 0 {
 		return
 	}
-	now := p.mono()
+	at := p.mono()
 	p.mu.Lock()
 	if len(p.dirty) == 0 {
-		p.firstDirty = now
+		p.firstDirty = at
 	}
 	for _, k := range kinds {
 		p.dirty[k] = true
 	}
-	p.lastDirty = now
+	p.lastDirty = at
+	if now && p.nowDirty.IsZero() {
+		p.nowDirty = at
+	}
 	p.mu.Unlock()
 	select {
 	case p.wake <- struct{}{}:
@@ -302,6 +315,9 @@ func (p *Publisher) debounceDue() (time.Time, bool) {
 	if limit := p.firstDirty.Add(MaxDebounceWait); limit.Before(due) {
 		due = limit
 	}
+	if !p.nowDirty.IsZero() {
+		due = p.nowDirty // an applied action's nudge: due at once
+	}
 	return due, true
 }
 
@@ -314,6 +330,7 @@ func (p *Publisher) takeDirty() []Kind {
 		out = append(out, k)
 	}
 	clear(p.dirty)
+	p.nowDirty = time.Time{}
 	return out
 }
 
