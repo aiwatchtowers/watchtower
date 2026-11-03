@@ -222,7 +222,14 @@ and a waiting run resumes only into a free running slot
 `state`, a post per day) must never see two of itself; the global bound keeps
 a burst of schedules from loading the machine.
 
+A recipe that keeps living artifacts (`artifacts: living`, Inbox builder A,
+ask #961) must declare `concurrency: 1`: the parser refuses any other value
+("concurrency: an automation with living artifacts runs one at a time; set
+concurrency: 1"), so two runs never upsert one key at once. The serial-run
+reasons live in one function, `automations.serialRunReasons`.
+
 **Test guards:**
+- `internal/automations/recipe_test.go` — `TestAuto05_LivingArtifactsNeedConcurrencyOne`
 - `internal/db/automation_runs_test.go` — `TestAuto05_OneActiveRunPerAutomation`, `TestAuto05_ConcurrencyN`, `TestAuto05_ConcurrentClaimsOneWinner` (8 goroutines on a file DB), `TestClaimWithin_HonoursTheGlobalRunningBound`, `TestResumeIfSlot_WaitsForAFreeRunningSlot`
 - `internal/automations/executor_test.go` — `TestAuto05_OneActiveRunPerAutomation`, `TestExecutor_MaxConcurrentRuns`, `TestExecutor_ReadyWaitsGetFreedSlotsBeforeQueuedRuns`, `TestWaiter_ResumeWaitsForAFreeSlot`
 
@@ -243,8 +250,10 @@ does not touch that run, and the next rescan makes the automation
 non-runnable when `approval_hash` changed. `approval_hash` covers the script,
 permissions, outputs, scope, the trigger (without a button's cosmetic label;
 its `confirm` counts), the `missed` policy, the budget (tokens and minutes)
-and `concurrency` (ask #294), so a schedule, missed-policy, budget or
-concurrency edit waits for the owner like a script edit; a name, `summary`, description
+and `concurrency` (ask #294), and `artifacts` when it is `living` (absent
+for feed, so every feed recipe's hash is unchanged; ask #961), so a schedule,
+missed-policy, budget, concurrency or feed → living edit waits for the owner
+like a script edit; a name, `summary`, description
 or button-label edit does not (`summary` since 2026-10-24). A recipe new to the index, or
 changed outside an owner save, is indexed unconfirmed (an insert never sets
 `confirmed_hash`/`enabled`; an upsert never touches them). `confirmed_hash`
@@ -331,6 +340,7 @@ code or permissions the owner did not see.
 
 - C3 watch recipes (board #801, spec §6.3/§8): `internal/automations/recipe_test.go` — `TestParseRecipe_SyncTriggerBuiltinOnly`, `TestParseRecipe_PersonalWatchRecipeParses`, `TestParseRecipe_WatchShapeRefusals`, `TestApprovalHash_TrackScanIsHashed`; `internal/automations/manifest_test.go` — `TestCapabilityForPrimitive_TrackScanIsPersonal`; `internal/automations/sdk_builtin_test.go` — `TestExecutor_PollNeverClaimsWatchRecipeRuns`, `TestExecutor_InlineRunsWatchRecipeOnlyWhenEnabled`, `TestAuto06_InlineRefusesUnconfirmedWatchRecipe` (Task 3); `internal/automations/builtin/watchslot_test.go` — `TestWatchSlot_RunsConfirmedEnabledRecipes`, `TestWatchSlot_HandEditedRecipeStopsTheScan`, `TestWatchSlot_DeletedRecipeLeavesTrackUnbound`, `TestWatchSlot_InstructionMirroredToTrack`; `internal/automations/builtin/runner_test.go` — `TestRunSyncInline_OffOrUnconfirmedWritesNothing`; `internal/automations/builtin/capture_test.go` — `TestCapturePrompts_RefusesUnconfirmed` (Task 8); `cmd/tracks_test.go` — `TestTracksCreate_WritesConfirmedWatch`, `TestTracksCreate_UnderAgentLeavesUnconfirmed`, `TestTracksStart_RefusedUnderAgentMarkers`, `TestTracksInstruction_RewritesAndConfirms`, `TestTracksInstruction_RefusesEditedRecipe`, `TestTracksGenerate_RefusedForUnconfirmedCopy`, `TestTracksScan_BoundUnconfirmedRecipeNeverScanned` (Task 11); `cmd/builtin_upgrade_test.go` — `TestAuto06_UpgradeConfirmsOnlyRenderedWatchRecipes`, `TestCustomTracksUpgrade_DismissedStaysUnbound` (Task 12)
 
+- 2026-11-03 (Inbox builder A, `artifacts`): `internal/automations/recipe_test.go` — `TestApprovalHash_ArtifactsIsHashed`; `internal/automations/indexer_test.go` — the `artifacts` case of `TestAuto06_ScheduleBudgetEditNeedsConfirmation`
 - 2026-10-21 (Inbox Reply): `internal/automations/indexer_test.go` — `TestApprovalHash_InboxReplyIsHashed`; `internal/automations/sdk_output_card_test.go` — `TestOutput_ReplyActionNeedsInboxReply`; `cmd/automations_reply_test.go` — `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`; `internal/automations/executor_test.go` — `TestExecutor_ReplyRunWithoutCapabilityFails`
 
 **Locked since:** 2026-10-14
@@ -671,6 +681,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-03 (board #1400, Inbox builder A Task 4, **owner approved in ask #961**): **AUTO-05 extended** — `artifacts: living` requires `concurrency: 1` and `outputs: [inbox]` (parse errors otherwise; one rule function, `serialRunReasons`). **AUTO-06 extended** — `artifacts` is in `approval_hash`, written to the canonical form only when `living`, so feed recipes hash as before (`TestApprovalHash_GoldenCanonicalBytes` unchanged); `ApprovalFields` and `validate --json` `fields` carry `artifacts` so the confirming screen lists it. Strengthening, no guard relaxed. Guards added: `TestAuto05_LivingArtifactsNeedConcurrencyOne`, `TestApprovalHash_ArtifactsIsHashed`, the `artifacts` case of `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.
 - 2026-10-28 (board #1194, **AUTO-06 amended, owner approved in ask #692**): quick run gains a third origin, the iPhone (`QuickRunCenter.runFromPhone` through `AutomationRunHandler`), for workbench recipes only; the not-runnable states refuse as on the Mac, and a `confirm: true` recipe needs the phone's own confirmation, carried as `confirmed: true` and checked by the hub. No guard relaxed (`testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun` unchanged). Guards added: `AutomationRunHandlerTests.testAConfirmRecipeRunsOnlyWhenThePhoneConfirmedIt`, `testARecipeThatCannotRunIsRefusedWithItsReason`.
 - 2026-10-25 (board #606, ask #567): **AUTO-08 amended** — a run is also bounded by the read budget (READ-01, key `run:<id>`, `mcp()` counts as a call); reaching it is a catchable `ValidationError`, not an interrupt; an `agent()` CLI child keeps its own counter under the same key. Strengthening, no guard relaxed. Guards added: `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes`.
 - 2026-10-23 (board #801, C2 final review fix batch 1): **AUTO-08 strengthened** — a runaway-disabled built-in stays off until the owner turns it on (the slot runner, Run Now and `automations run` check `disabled_reason`; the built-in sync's mirror never turns such a row on; only the owner's `features enable` — the card's Turn On — clears it, and not under AI-agent markers), and a CLI inline built-in run (a running `manual` run) is swept at daemon start only past its deadline, as a live CLI dry run is. No guard relaxed. Guards added: `TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives`, `TestSetBuiltinEnabled_NeverTurnsOnARunawayStop`, `TestRunner_RunawayStoppedBuiltinStaysOff`, `TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn`.

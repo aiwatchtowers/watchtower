@@ -1107,10 +1107,14 @@ func TestAutomationsCLI_ValidateJSONFields(t *testing.T) {
 			path := writeRecipe(t, t.TempDir(), "acme", recipe(c.trigger))
 			v := runAutomationsJSON(t, "validate", path)
 			require.Equal(t, true, v["ok"], "%v", v["errors"])
-			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2",
+			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2", "artifacts": "feed",
 				"budget": map[string]any{"tokens": float64(50000), "minutes": float64(3)}}, v["fields"])
 		})
 	}
+	living := "---\nname: Acme\ntrigger:\n  manual: true\noutputs: [inbox]\nartifacts: living\n---\n```js\nreturn 1\n```\n"
+	lv := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", living))
+	require.Equal(t, true, lv["ok"], "%v", lv["errors"])
+	assert.Equal(t, "living", lv["fields"].(map[string]any)["artifacts"])
 	bad := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", "broken"))
 	assert.Equal(t, map[string]any{}, bad["fields"])
 }
