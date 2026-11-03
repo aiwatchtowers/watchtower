@@ -283,6 +283,24 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertTrue(backend.writes.isEmpty)
     }
 
+    /// The adoption's probe (go hub plan 3 Task 22): reads, never creates.
+    func testTheExistingHubIdentityIsReadOnly() throws {
+        let backend = FakeKeychainBackend()
+        let store = KeychainHubKeyStore(backend: backend)
+        XCTAssertNil(try store.existingHubIdentity(hubID: "hub-1"), "none: nil")
+        XCTAssertTrue(backend.writes.isEmpty, "nothing created")
+        let created = try store.hubIdentity(hubID: "hub-1").keys
+        let found = try XCTUnwrap(try store.existingHubIdentity(hubID: "hub-1"))
+        XCTAssertEqual(found.signing.rawRepresentation, created.signing.rawRepresentation)
+
+        let partial = FakeKeychainBackend()
+        partial.plant("hubid.hub-2.kx", Curve25519.KeyAgreement.PrivateKey().rawRepresentation)
+        XCTAssertThrowsError(try KeychainHubKeyStore(backend: partial).existingHubIdentity(hubID: "hub-2")) {
+            guard case .corrupt = $0 as? KeyStoreError else { return XCTFail("\($0)") }
+        }
+        XCTAssertTrue(partial.writes.isEmpty)
+    }
+
     func testHubIdentityLockedSurfacesLocked() throws {
         let backend = FakeKeychainBackend()
         backend.failReads(.locked)

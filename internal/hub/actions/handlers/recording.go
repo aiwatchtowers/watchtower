@@ -11,14 +11,14 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/policy"
 )
 
 // Recording intake (Go hub spec §8 p. 4a, the Swift RelayProcessor's
 // ingestUpload): the hub opens a phone's recording upload into the
 // recordings dir only while Desktop, the transcriber, is running.
 const (
-	reasonNotSupported = "not_supported"
-	reasonWrongHub     = "wrong_hub"
+	reasonWrongHub = "wrong_hub"
 
 	// MaxRecordingAssetBytes is the phone's own cap (RecordingUploader's
 	// maximumAssetBytes): a larger asset is refused before it is downloaded.
@@ -30,6 +30,10 @@ const (
 	NotSupportedMessage  = "This host can't transcribe recordings. Your recording stays on your phone."
 	HeldMessage          = "Your Mac's transcriber isn't running. The recording waits on your phone."
 	recordingWriteFailed = "Your Mac could not save this recording."
+	// PolicyBlockedMessage answers an upload while the organization's
+	// MobileSync policy is workbench_only (#608): a phone recording is no
+	// workbench data. The Swift hub's MobileSyncPolicyError text.
+	PolicyBlockedMessage = "Your Mac could not save this recording: blocked by your organization's policy: phone recordings are not synced to this Mac"
 )
 
 // uploadIDRE keeps an upload id usable as a file name: the phone's UUID, with
@@ -52,15 +56,20 @@ func recFailed(reason, message string) RecordingOutcome {
 }
 
 // IntakeRecording applies one upload. No plaintext audio is written without
-// a transcriber to take it: a host that never had a Desktop heartbeat answers
-// the final failed(not_supported), one whose Desktop went quiet answers held
-// and writes nothing. Otherwise the asset is size-checked, downloaded,
-// decrypted by chunk into <recordings dir>/<upload_id>.m4a (0600) and queued.
-// A failure leaves no file; a retried upload that is queued already is
-// answered received again. Nothing here logs a name, a path or a key.
+// a transcriber to take it: with the owner's recording switch off (by
+// default off on a host that never had a Desktop heartbeat, protocol §9) it
+// answers the final failed(not_supported); with it on, a host whose Desktop
+// went quiet answers held and writes nothing. Otherwise the asset is
+// size-checked, downloaded, decrypted by chunk into
+// <recordings dir>/<upload_id>.m4a (0600) and queued. A failure leaves no
+// file; a retried upload that is queued already is answered received again.
+// Under the organization's MobileSync = workbench_only (Deps.Policy) every
+// upload, a retry of one received already included, is refused write_failed
+// and nothing is written (#608; ask #969 Q4 kept this Go order). Nothing
+// here logs a name, a path or a key.
 func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) RecordingOutcome {
 	if h.d.Store == nil || h.d.RecordingsDir == "" {
-		return recFailed(reasonNotSupported, NotSupportedMessage)
+		return recFailed(actions.ReasonNotSupported, NotSupportedMessage)
 	}
 	if in.TargetHub != nil && *in.TargetHub != in.ThisHub {
 		return recFailed(reasonWrongHub, "This recording was addressed to another Mac.")
@@ -68,13 +77,26 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 	if !uploadIDRE.MatchString(in.UploadID) {
 		return recFailed(reasonInvalidParams, "This recording has no usable id.")
 	}
-	fresh, seen, err := h.d.Store.DesktopHost(h.d.Clock())
+	// MobileSync = workbench_only (#608): a phone recording is not workbench
+	// data. Every upload is refused before anything else is read, downloaded
+	// or written, a retry of one received already included (ask #969 Q4: the
+	// owner kept the Go order, not the Swift hub's check after the
+	// exactly-once ledger).
+	if h.d.Policy != nil && h.d.Policy() != policy.MobileAllowed {
+		return recFailed(reasonWriteFailed, PolicyBlockedMessage)
+	}
+	on, _, err := h.d.Store.Recordings()
+	if err != nil {
+		log.Printf("hub recording: recording switch unreadable")
+		return recFailed(reasonWriteFailed, recordingWriteFailed)
+	}
+	if !on {
+		return recFailed(actions.ReasonNotSupported, NotSupportedMessage)
+	}
+	fresh, _, err := h.d.Store.DesktopHost(h.d.Clock())
 	if err != nil {
 		log.Printf("hub recording: desktop heartbeat unreadable")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
-	}
-	if !seen {
-		return recFailed(reasonNotSupported, NotSupportedMessage)
 	}
 	if !fresh {
 		return RecordingOutcome{Status: wire.StatusHeld, Message: HeldMessage}
@@ -100,6 +122,14 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
 	}
 	sealed := filepath.Join(h.d.RecordingsDir, "."+in.UploadID+".sealed")
+	// The Mac's side first: a recordings dir it cannot write is
+	// write_failed, never the phone's missing audio.
+	f, err := os.OpenFile(sealed, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		log.Printf("hub recording: recordings dir not writable")
+		return recFailed(reasonWriteFailed, recordingWriteFailed)
+	}
+	_ = f.Close()
 	defer func() { _ = os.Remove(sealed) }()
 	if err := in.Download(ctx, sealed); err != nil {
 		return recFailed(reasonNotFound, MissingAudioMessage)
@@ -122,10 +152,13 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 		log.Printf("hub recording: audio not written")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
 	}
-	if err := h.d.Store.QueueRecording(in.UploadID, in.Device.String(), h.d.Clock()); err != nil {
+	if err := h.d.Store.QueueRecordingFrom(in.UploadID, in.Device.String(), in.Origin, h.d.Clock()); err != nil {
 		_ = os.Remove(audio)
 		log.Print("hub recording: job not queued")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
+	}
+	if h.d.RecordingQueued != nil {
+		h.d.RecordingQueued(in.UploadID)
 	}
 	return RecordingOutcome{Status: wire.StatusReceived}
 }

@@ -252,6 +252,13 @@ Script settings and its stand config:
 
 Task 12's run against the stand at `3a99bd7`: 44 passed, 20 skipped, 0 failed. Task 17's run at `bcca870` (Phase 3): 46 passed, 24 skipped, 0 failed.
 
+**Two Kit ↔ Go hub harnesses (since Phase 3b's merge of `feature/go-hub`).** They check different things and both stay; 3b attempts no merge of the two (R15's cost).
+
+- `scripts/relay-interop.sh KIT=1` + `GoHubInteropTests` (Go hub Phase 2 Task 12, env `WT_HUB_INTEROP_DIR`): the built CLI as a live headless hub, with the typing and session grants.
+- `scripts/relay-interop-kit-hub.sh` + `internal/hub/interop_kit_test.go` + `KitGoHubInteropTests` (Phase 3a Task 13, env `WT_GO_HUB_INTEROP_DIR`): the Kit's link pieces, vouch, Try Again, ordered actions and unlink.
+
+The environment variables do not collide, and `TestInterop_KitPhone` skips without `-kit-dir`, so the first runner's `-run '^TestInterop_'` passes over it.
+
 ### CI mode of the interop scripts
 
 There is no relay CI job: the owner dropped it on 2026-11-02 (spec §12 p. 4; the Swift part is being rewritten in Go). The two Kit interop scripts stay as local entry points, run by hand, and keep a non-interactive CI mode:
@@ -268,7 +275,7 @@ RELAY_INTEROP_CI=1 WATCHTOWER_CHECKOUT=<watchtower checkout> bash <watchtower ch
 - **`WATCHTOWER_CHECKOUT`** is the Watchtower checkout to test. It defaults to the script's own repo, and must hold a `Makefile` and `WatchtowerKit/`, otherwise the script refuses.
 - **`RELAY_INTEROP_CI=1`.** Non-interactive: stdin is `/dev/null` and the scripts never prompt. The tests' output goes to stderr when the run ends. The last line of stdout, printed exactly once and also on failure or refusal, is `relay-interop: passed=N skipped=M failed=K`. The counts come from the runners' own output (XCTest's `Executed N tests, with S tests skipped and K failures` for the total, with the `Test Case '...' failed` lines as the failed tests because K counts assertions, and `go test -v`'s top-level `--- PASS/SKIP/FAIL` lines). The exit code is non-zero on any failure, and 1 when no test passed or failed, even if some were skipped (every interop test skips without the stand's URL). A run that fails without a failing test (a build error, a timeout) has `failed=0` and a non-zero exit.
 - **Cleanup.** The stand, the Go test and the Kit run each have a process group; all are killed and waited for on every exit path, as without CI mode. After a SIGINT or SIGTERM (a cancelled or timed-out run) the output so far is still shown on stderr and counted, and the summary line is still printed. Give an unattended run a timeout.
-- **Tests.** `scripts/tests/test-relay-interop-kit.sh` and `scripts/tests/test-relay-interop-kit-hub.sh` run the scripts against stubs (`make test-scripts`).
+- **Tests.** `scripts/tests/test-relay-interop-kit-ci.sh` and `scripts/tests/test-relay-interop-kit-hub.sh` run the scripts against stubs (`make test-scripts`).
 
 ## Phase 3a — the phone app uses it (2026-11-02, board #1241, #1242, #1247)
 

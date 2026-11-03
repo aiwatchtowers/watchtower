@@ -187,6 +187,36 @@ func TestGitRefresherASessionStateChangeRefreshesAtMostOncePer30Seconds(t *testi
 	}
 }
 
+// twin of HubRunnerWakeTests.testGitRefresherFallsBackToIdleAfterAFailedListing:
+// a pass whose listing fails waits idle, not the deferred request's time
+// again (by then in the past: a hot loop).
+func TestGitRefresherFallsBackToIdleAfterAFailedListing(t *testing.T) {
+	r := newGitRig(t)
+	wb := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	g := r.refresher(GitTiming{})
+	ctx := context.Background()
+	g.RefreshDue(ctx)
+	g.c.nextWait(r.clock(), StandardGitTiming.Idle)
+
+	r.advance(22 * time.Second)
+	g.SessionStateChanged(wb)
+	g.RefreshDue(ctx)
+	if w := g.c.nextWait(r.clock(), StandardGitTiming.Idle); w != 8*time.Second {
+		t.Fatalf("the loop waits for the deferred run: %v, want 8s", w)
+	}
+
+	r.advance(8 * time.Second)
+	failing, cancel := context.WithCancel(ctx)
+	cancel() // the listing's read fails
+	if got := g.RefreshDue(failing); len(got) != 0 {
+		t.Fatalf("a failed listing read %v", got)
+	}
+	r.advance(time.Second)
+	if w := g.c.nextWait(r.clock(), StandardGitTiming.Idle); w != StandardGitTiming.Idle {
+		t.Fatalf("after a failed listing the loop waits %v, want idle", w)
+	}
+}
+
 func TestGitRefresherForgetsAWorkbenchThatLeftAndRestoresACutPass(t *testing.T) {
 	r := newGitRig(t)
 	a := insertWorkbench(t, r.d, "a", "/tmp/a")

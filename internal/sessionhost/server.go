@@ -71,6 +71,9 @@ type Options struct {
 	afterReap func()
 	// checkTimeout replaces CheckTimeout (tests only).
 	checkTimeout time.Duration
+	// inPause runs inside a delivery's pause, after its settle sleep and
+	// before the re-check (tests only: the owner typing during the pause).
+	inPause func()
 }
 
 // Server owns hosted sessions and serves clients over a listener.

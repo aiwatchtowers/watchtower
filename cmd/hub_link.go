@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,8 +15,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/adopt"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
 )
@@ -47,6 +51,21 @@ type hubPhoneJSON struct {
 	Ordered              bool   `json:"ordered"`
 	LastAppliedActionSeq uint64 `json:"last_applied_action_seq"`
 	Transport            string `json:"transport"`
+	// The indicators below are null when not known: the read behind them
+	// failed (a warning on stderr; the phones are still listed).
+	//
+	// Paying is whether the relay lists the phone as paying; null unless
+	// the hub runs on the relay and knows the account state.
+	Paying *bool `json:"paying"`
+	// Undelivered is what this Mac's side holds of the phone's actions: the
+	// held ones, plus one for an open gap (a resend asked for).
+	Undelivered *int `json:"undelivered"`
+	// MailboxFull: the phone's relay mailbox refused the hub's write as over
+	// quota (the status file's mailbox_full_phones).
+	MailboxFull *bool `json:"mailbox_full"`
+	// Alerts is the outcome class of the phone's last settled alert push in
+	// the last 7 days, "" for none.
+	Alerts *string `json:"alerts"`
 }
 
 // hubUnlinkJSON is `hub unlink --json` (pinned keys).
@@ -128,9 +147,20 @@ func init() {
 	}
 }
 
+// hubRelayOriginRemedy is `hub status`'s line for a live hub with no relay
+// origin.
+const hubRelayOriginRemedy = "Set the relay: watchtower config set hub.relay_origin <origin>"
+
+// hubNoICloudLine is `hub status`'s line for a hub paused because CloudKit,
+// its active transport, has no usable iCloud account.
+const hubNoICloudLine = "No usable iCloud account on this Mac: Mobile is paused and goes on by itself once iCloud is available."
+
+// runHubStatus prints the hub's status; an off hub shows the reason the
+// daemon's would stay off before writing a status, and the facts the
+// sidecar holds (the adoption, the identity store, the last switch).
 func runHubStatus(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
-	dir, err := hubDir()
+	dir, mode, host, err := hub.Dir(hostProbe())
 	if err != nil {
 		return err
 	}
@@ -138,9 +168,13 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if s.State == hub.StateOff && !hubTestWorkspaceOK() {
-		s.Reason = hub.ReasonNotTestWorkspace
+	if s.State == hub.StateOff {
+		if r := hubOffReason(dir, mode, host); r != "" {
+			s.Reason = r
+		}
+		hub.FillOffFacts(&s, dir, host == hostkind.Desktop && mode == hub.ModeLive)
 	}
+	s.Host, s.Mode = string(host), string(mode)
 	line := "hub: " + s.State
 	if s.Reason != "" {
 		line += " (" + s.Reason + ")"
@@ -148,7 +182,53 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if s.State == hub.StateRunning {
 		line += fmt.Sprintf(", %s, %d phone(s)", s.Transport, s.Phones)
 	}
-	return hubPrint(cmd, asJSON, s, line)
+	rec, err := hubRecordingsValue(dir)
+	if err != nil {
+		return err
+	}
+	line += ", recordings " + rec
+	// The recordings an adoption kept on the Mac (in the transcriber's
+	// folder on a desktop host). Never fails the status.
+	var kept *adopt.KeptRecordings
+	if keptRec, err := hubRecordingsDir(dir); err == nil {
+		kept = hubKeptRecordings(cmd, dir, keptRec)
+	}
+	if kept != nil {
+		line += fmt.Sprintf(", %d recording(s) kept in %s", kept.Count, kept.Dir)
+	}
+	if mode == hub.ModeLive && s.Reason == hub.ReasonNoRelayOrigin {
+		line += "\n" + hubRelayOriginRemedy
+	}
+	if s.State == hub.StatePaused && s.Reason == hub.ReasonNoICloud {
+		line += "\n" + hubNoICloudLine
+	}
+	out := hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir), Transcriber: hubTranscriberSeen(dir)}
+	return hubPrint(cmd, asJSON, out, line)
+}
+
+// hubStatusJSON is `hub status --json`: the runtime's status plus the
+// recording switch, the recordings an adoption kept and the name phones show
+// for the hub (additive keys; kept_recordings absent at count 0).
+type hubStatusJSON struct {
+	hub.Status
+	Recordings     string                `json:"recordings"`
+	KeptRecordings *adopt.KeptRecordings `json:"kept_recordings,omitempty"`
+	Name           string                `json:"name"`
+	// Transcriber: a Desktop transcriber ever sent a heartbeat (recordings
+	// can be turned on); false before one did or with no sidecar.
+	Transcriber bool `json:"transcriber"`
+}
+
+// hubTranscriberSeen reads whether a Desktop heartbeat ever arrived; any
+// failure reads as no.
+func hubTranscriberSeen(dir string) bool {
+	st, err := state.OpenReadOnly(dir)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = st.Close() }()
+	_, seen, err := st.DesktopHost(time.Now())
+	return err == nil && seen
 }
 
 func runHubPhones(cmd *cobra.Command, _ []string) error {
@@ -165,13 +245,13 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 		return err
 	default:
 		devices, err := st.Devices()
-		_ = st.Close()
-		if err != nil {
+		active, _, aerr := st.Meta(switcher.MetaTransport)
+		if err := errors.Join(err, aerr); err != nil {
+			_ = st.Close()
 			return err
 		}
-		for _, d := range devices {
-			out = append(out, hubPhone(d))
-		}
+		out = hubPhoneRows(cmd, st, dir, devices, active)
+		_ = st.Close()
 	}
 	if asJSON {
 		return hubPrint(cmd, true, out, "")
@@ -188,12 +268,72 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// hubPhone is a linked devices row as `hub phones` shows it; a phone that
-// came over the relay has its relay device id, one adopted from the Swift
-// hub's sidecar does not.
-func hubPhone(d state.Device) hubPhoneJSON {
+// hubPhoneRows is the devices as `hub phones` lists them, with the
+// indicators. A failed read of the alert ledger, the status file or a
+// phone's held actions leaves those indicators null with one warning on
+// stderr; the phones are listed either way.
+func hubPhoneRows(cmd *cobra.Command, st *state.Store, dir string, devices []state.Device, active string) []hubPhoneJSON {
+	warn := func(what string, err error) {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "hub phones: %s unreadable (%v): shown as unknown\n", what, err)
+	}
+	alerts, aerr := st.LastAlertOutcomes(time.Now().Add(-hub.AlertOutcomeWindow))
+	if aerr != nil {
+		warn("the alert outcomes", aerr)
+	}
+	status, serr := hub.ReadStatus(dir)
+	if serr != nil {
+		warn("the hub status", serr)
+	}
+	onRelay := serr == nil && (status.State == hub.StateRunning || status.State == hub.StatePaused) &&
+		status.Transport == wire.TransportRelay && status.PayingPhones != nil
+	heldWarned := false
+	out := make([]hubPhoneJSON, 0, len(devices))
+	for _, d := range devices {
+		p := hubPhone(d, active)
+		if n, err := st.HeldCount(d.ID); err == nil {
+			if d.ResendRequestedFrom > 0 {
+				n++ // the open gap
+			}
+			p.Undelivered = &n
+		} else if !heldWarned {
+			heldWarned = true
+			warn("the held actions", err)
+		}
+		if onRelay {
+			paying := slices.Contains(status.PayingPhones, d.ID)
+			p.Paying = &paying
+		}
+		if serr == nil {
+			full := slices.Contains(status.MailboxFullPhones, d.ID)
+			p.MailboxFull = &full
+		}
+		if aerr == nil {
+			a := alerts[d.ID]
+			p.Alerts = &a
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// hubPhoneTransportPending is `hub phones`' transport for a phone linked over
+// the relay that the relay has not yet listed as holding the hub in a slot
+// (no vouch_hub + promote_pairing seen yet).
+const hubPhoneTransportPending = "pending"
+
+// hubPhone is a linked devices row as `hub phones` shows it, with the
+// transport the phone is on as the hub knows it: a phone that came over the
+// relay has its relay device id (pending until the relay admitted the hub
+// for it), one adopted from the Swift hub's sidecar or linked over CloudKit
+// does not and is on CloudKit. An admitted relay phone of a hub with two
+// transports (active = hub_meta.transport, "" elsewhere) follows the hub's
+// switch: it is on CloudKit while the hub is.
+func hubPhone(d state.Device, active string) hubPhoneJSON {
 	tr := wire.TransportCloudKit
-	if d.RelayDeviceID != "" {
+	switch {
+	case d.RelayDeviceID != "" && d.RelayAdmittedAt.IsZero():
+		tr = hubPhoneTransportPending
+	case d.RelayDeviceID != "" && active != wire.TransportCloudKit:
 		tr = wire.TransportRelay
 	}
 	return hubPhoneJSON{
@@ -282,19 +422,7 @@ func runHubSetEnabled(on bool) func(*cobra.Command, []string) error {
 			return err
 		}
 		asJSON, _ := cmd.Flags().GetBool("json")
-		op := hub.OpDisable
-		if on {
-			op = hub.OpEnable
-		}
-		_, err := hubWrite(hub.ControlRequest{Op: op},
-			func(_ string, st *state.Store) (hub.ControlAnswer, error) {
-				// The running hub's own rule: on is refused while the policy is off.
-				if on && policy.MobileSync() == policy.MobileOff {
-					return hub.ControlAnswer{Error: hub.ErrClassPolicyOff}, nil
-				}
-				return hub.ControlAnswer{OK: true}, st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on)))
-			})
-		if err != nil {
+		if err := setHubEnabled(on); err != nil {
 			return err
 		}
 		line := "hub turned off"
@@ -305,6 +433,25 @@ func runHubSetEnabled(on bool) func(*cobra.Command, []string) error {
 	}
 }
 
+// setHubEnabled writes hub_meta.enabled through hubWrite (`hub enable|disable`
+// and `service install`); on a headless host it creates the live hub dir.
+// The caller has already refused an agent marker.
+func setHubEnabled(on bool) error {
+	op := hub.OpDisable
+	if on {
+		op = hub.OpEnable
+	}
+	_, err := hubWrite(hub.ControlRequest{Op: op},
+		func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+			// The running hub's own rule: on is refused while the policy is off.
+			if on && policy.MobileSync() == policy.MobileOff {
+				return hub.ControlAnswer{Error: hub.ErrClassPolicyOff}, nil
+			}
+			return hub.ControlAnswer{OK: true}, st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on)))
+		})
+	return err
+}
+
 func boolInt(b bool) int {
 	if b {
 		return 1
@@ -312,30 +459,44 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// runHubPair is `hub pair --json --stream`: one connection to the running
-// hub for the whole pairing, so the confirm is checked against the code this
-// stream showed. The terminal QR and its [y/N] prompt are phase 2.
+// hubPairDial opens the pairing stream: one connection to the running hub
+// for the whole pairing, so the confirm is checked against the code this
+// stream showed.
+func hubPairDial() (*hub.ControlClient, error) {
+	dir, err := hubDir()
+	if err != nil {
+		return nil, err
+	}
+	c, err := hub.Dial(dir)
+	if err != nil {
+		return nil, errors.New("the hub is not running")
+	}
+	if err := c.Send(hub.ControlRequest{Op: hub.OpPair}); err != nil {
+		_ = c.Close()
+		return nil, errors.New("the hub is not running")
+	}
+	return c, nil
+}
+
+// runHubPair is `hub pair --json --stream` for scripts and the Desktop, or,
+// with neither flag, the terminal flow (runHubPairTTY).
 func runHubPair(cmd *cobra.Command, _ []string) error {
 	if err := refuseUnderAgent(hubPairVerb); err != nil {
 		return err
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	stream, _ := cmd.Flags().GetBool("stream")
-	if !asJSON || !stream {
-		return errors.New("only `hub pair --json --stream` is available in this phase")
+	if !asJSON && !stream {
+		return runHubPairTTY(cmd)
 	}
-	dir, err := hubDir()
+	if !asJSON || !stream {
+		return usageError("hub pair takes --json and --stream together")
+	}
+	c, err := hubPairDial()
 	if err != nil {
 		return err
 	}
-	c, err := hub.Dial(dir)
-	if err != nil {
-		return errors.New("the hub is not running")
-	}
 	defer func() { _ = c.Close() }()
-	if err := c.Send(hub.ControlRequest{Op: hub.OpPair}); err != nil {
-		return errors.New("the hub is not running")
-	}
 	in := bufio.NewScanner(cmd.InOrStdin())
 	var device string // the phone whose code was shown, once a sas came
 	for {

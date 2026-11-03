@@ -139,7 +139,7 @@ The phone's replica keeps each row's plain `kind` and record name in the clear o
 ### 4.8 Alerts
 
 - **CloudKit (built).** An `ask_alert` slice record is sealed as class `alert` under `K_alert` (the only key the phone's notification extension holds, readable after first unlock). When an alert first reaches the zone the hub also writes a payload-free `WatchtowerSignal` named `sig-<wire name of the alert>`, deleted with the alert; a private-scope query subscription fires on its creation, and the extension fetches and opens the alert (`AlertOpener.open(wireName:envelope:)`). A republish gets no new signal. A `shared`-scope phone has no subscription and posts alerts locally after each fetch.
-- **Hosted relay (Proposed, not built; source: RC §10, owner-approved in that spec, ask #799; it changes only together with that spec).** The hub calls `send_alert` per paying phone with the sealed `ask_alert` envelope inline (relay design: ≤ ~3.5 KB); the extension opens it with the same `AlertOpener` under the fixed wire name **`alert-push`** in the AAD, no network. Reason: the relay pushes the envelope itself, so there is no record to fetch and no per-record wire name to bind. Neither side builds this yet.
+- **Hosted relay (hub half built (phase 4); the phone half Proposed; source: RC §10, owner-approved in that spec, ask #799; it changes only together with that spec).** The hub calls `send_alert` per paying phone with the sealed `ask_alert` envelope inline (at most 3021 bytes, `secure.AlertPushMaxEnvelope`: the relay's 4096-byte APNs payload less the 67-byte body, base64; the frame is padded to the 1 KiB bucket, a 1172-byte envelope, after clipping body, then title, then workbench name in the push only); the extension opens it with the same `AlertOpener` under the fixed wire name **`alert-push`** in the AAD, no network. Reason: the relay pushes the envelope itself, so there is no record to fetch and no per-record wire name to bind. The Go hub builds and sends it (`secure.Sealer.AlertPush`, `internal/hub/alerts`; Go hub plan 4); the phone's `register_push` and the inline NSE path are the relay client spec's Phase 4.
 
 ### 4.9 Local sealing on the hub
 
@@ -194,7 +194,7 @@ Fixture: `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` `device_gra
 
 ### 5.5 The phone's `device` record
 
-`device-<DEVICE_ID>` (`relayToHub`) carries `DevicePayload` = `{device_id, name, model, app_version, scope, user_record_name, link_nonce?, unlinked?, typing_requested, start_sessions, permissions_requested? (true or absent), seen_at?, updated_at}`. It states what the phone asks for; it never grants anything. `start_sessions` is mirrored into `start_sessions_allowed`; `typing_requested` and `permissions_requested` show the owner a request to allow. `unlinked: true` is the phone's own unlink. The Go hub does not read `device` records yet (Swift hub only).
+`device-<DEVICE_ID>` (`relayToHub`) carries `DevicePayload` = `{device_id, name, model, app_version, scope, user_record_name, link_nonce?, unlinked?, typing_requested, start_sessions, permissions_requested? (true or absent), seen_at?, updated_at}`. It states what the phone asks for; it never grants anything. `start_sessions` is mirrored into `start_sessions_allowed`; `typing_requested` and `permissions_requested` show the owner a request to allow. `unlinked: true` is the phone's own unlink. The Go hub reads `device` records in the CloudKit `RelayZone` (the link's scope checked first, as the Swift hub does); on the hosted relay it does not read them yet.
 
 ### 5.6 Unlink and revoke
 
@@ -379,7 +379,7 @@ Plain name `c-<uuid>`, frame kind `control`, sealed like an action in the sender
 |---|---|---|---|
 | `resend_from` | hub → phone | `seq` | Go hub writes |
 | `skip_to` | phone → hub | `seq` | Go hub reads; phone Proposed |
-| `epoch_ack` | phone → hub | `epoch` (newest hub epoch the phone holds; never lowered) | Go hub records it; retirement Proposed (sim rule 14) |
+| `epoch_ack` | phone → hub | `epoch` (newest hub epoch the phone holds; never lowered) | Go hub records it; an old epoch retires once every phone acked a newer one and no held action is sealed in it, 7 days at most (sim rule 14, ask #843; Go hub phase 3 Task 20) |
 | `transport_switch` | phone → hub | `target` (`relay`\|`cloudkit`), `reason?` | Go hub answers `transport_switch_rejected` "not supported yet" until the switch is built |
 | `transport_switched` | hub → phone | `target, epoch, by, at, keybox` (the new epoch's keybox) | Proposed |
 | `transport_switch_rejected` | hub → phone | `reason`, `retry_after_s` | Go hub writes |
@@ -494,7 +494,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 |---|---|---|
 | `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` (`device_grant`, `link_payload`, `device_hello`, `encoding`) | Kit `HubContractFixtureTests`; Go `internal/hub/wire` `TestHubContractFixture`, `TestParseLinkURL_Refusals` | §5.1, §5.4, §6.1, §8 (ignore unknown keys; the Kit reads v3 and v4) |
 | `WatchtowerKit/Tests/Fixtures/e2e/{kdf,envelope,asset,padding,hpke-envelope,hpke-rfc9180-a21}.json`, regenerated only by `make e2e-vectors` (`WT_E2E_REGENERATE=1`) | Kit `E2EKeyDerivationTests`, `EnvelopeTests`, `ChunkedAssetCipherTests`, `E2EPaddingVectorTests`, `HPKEEnvelopeVectorTests`, `HPKEVectorTests`; Go `internal/hub/secure` `TestKitVectors_KDF/_Padding/_Asset/_Envelope` | §4.2–§4.5, §5.3 (relay keys, record names, device id, SAS v2, link-code tag, padding, asset frames, envelope header and body bytes; randomized signatures and HPKE verified/opened) |
-| `internal/hub/secure/testdata/go-sealed.json` (written by `go test ./internal/hub/secure -run TestWriteGoSealed -update`) | Kit `GoSealedEnvelopeTests` | §4.3 the other direction: Go-sealed `data`, `alert`, `keybox`, `relayToPhone` open in the Kit |
+| `internal/hub/secure/testdata/go-sealed.json` (written by `go test ./internal/hub/secure -run TestWriteGoSealed -update`) | Kit `GoSealedEnvelopeTests` | §4.3 the other direction: Go-sealed `data`, `alert`, `keybox`, `relayToPhone` and the relay push `alertPush` (wire name `alert-push`, `AlertOpener`) open in the Kit |
 | `internal/hub/identity/testdata/swift-keyring.json` | Desktop `HubKeyringVectorTests` (writes); Go `TestKeyring_OpensSwiftSealedKeys`, `TestKeyring_SealsWhatSwiftFormatReads` | §4.9 hub keys at rest, so an adopted hub keeps every link |
 | `WatchtowerKit/Tests/Fixtures/permissions/allow_block_cases.json` | Kit `PermissionAllowRuleTests`; Go `TestAllowBlockSharedCases` | §7.2 `permission_answer` → `answer_on_mac` (PROJ-21) |
 | `WatchtowerKit/Tests/Fixtures/workbench/*.json` | Kit `WorkbenchMirrorFixtureTests`, `OwnerAskDecodingTests`, `WorkbenchTargetTests`; Desktop slice tests; Go `slices/sources` tests (keys and literal types) | §6.2 workbench kinds' payload shape |
@@ -509,7 +509,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 2. Phone ordered path: `action_seq`, `a-` names, outbox states, echo deletes, `skip_to`, surfacing undelivered actions, `epoch_ack` (RC §5) — the Go hub already runs its half.
 3. Hosted relay transport on the phone (RC §7) and `vouch_hub` on the relay and phone (relay ask #805).
 4. Transport switch: `transport_switched`, `hub_on_relay`, old-epoch retention (sim rules 8–16).
-5. Relay alerts: `send_alert` with the envelope opened under `alert-push` (RC §10).
+5. Relay alerts: `send_alert` with the envelope opened under `alert-push` (RC §10) — hub half built (phase 4); the phone's `register_push` and inline NSE open remain.
 6. Conditional mailbox writes on CloudKit through the bridge (RC §3, Go hub design §6.2).
 7. Headless pairing in the terminal (`watchtower hub pair`).
 8. The owner's recording switch published as `capabilities.recordings` in the heartbeat, the upload echo's `reason`, `ActionReason.not_supported`, and the held-upload expiry (§7.7, §9).

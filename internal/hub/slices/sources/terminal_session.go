@@ -49,11 +49,39 @@ type ReportSummary struct {
 // TerminalSessionOptions wires the terminal_session source. Liveness (nil =
 // nothing live) is read once per Items; ReportSummary (nil = none) is the
 // summary runner's last good summary of (workbench, session); Now (nil =
-// time.Now) the time a background agent count is judged at (#411).
+// time.Now) the time a background agent count is judged at (#411). View
+// (nil = none) is what the Desktop reported it shows (desktop_view): the
+// sessions waiting in its Undo batch (PROJ-17), never published, and the
+// sessions whose background count it shows over (#411), published as the
+// Mac shows them; read once per Items.
 type TerminalSessionOptions struct {
 	Liveness      func() Liveness
 	ReportSummary func(workbenchID, sessionID int64) (ReportSummary, bool)
 	Now           func() time.Time
+	View          func() (hidden map[int64]bool, displayOver map[int64]ShownOver)
+}
+
+// ShownOver is a background count the Desktop shows over (the Swift
+// ShownOverCount): the run it was judged for (zero = the session was not
+// live) and the count's agent_background_at stamp ("" = none). It applies
+// only while the row still holds that run and that report, so a newer report
+// or another run is agents working again.
+type ShownOver struct {
+	Run        time.Time
+	ReportedAt string
+}
+
+// holds reports whether the row (its live run, when live, and its report
+// stamp) is the one the count was judged for. Runs compare at the agent-state
+// stamp's millisecond precision.
+func (o ShownOver) holds(run time.Time, live bool, reportedAt *string) bool {
+	if live != !o.Run.IsZero() || (live && db.AgentStateStamp(run) != db.AgentStateStamp(o.Run)) {
+		return false
+	}
+	if reportedAt == nil {
+		return o.ReportedAt == ""
+	}
+	return *reportedAt == o.ReportedAt
 }
 
 // TerminalSessionSource is the `terminal_session` slice (mobile POC spec
@@ -64,13 +92,9 @@ type TerminalSessionOptions struct {
 // sessionstate.Resolve gives (SessionStatePresentation); the caption carries
 // no age, so a record does not change every minute. claude_session_id,
 // folder_path and the raw hook columns are never published. Wire shape: the
-// Kit mirror WatchtowerKit.TerminalSessionState.
-//
-// Known divergences from the Swift slice: the Desktop's Undo batch
-// (hiddenIDs, PROJ-17) and its "shown over" background counts (displayOver,
-// #411 §10) are Desktop memory the Go hub cannot read, so a session waiting
-// for Undo is still published and a count the Mac shows over after two
-// failed probes still reads as agents working.
+// Kit mirror WatchtowerKit.TerminalSessionState. A session in the Desktop's
+// Undo batch is left out (before the window, as the Swift slice), and a
+// count the Desktop shows over resolves as over (TerminalSessionOptions.View).
 type TerminalSessionSource struct {
 	d *db.DB
 	o TerminalSessionOptions
@@ -84,6 +108,9 @@ func TerminalSessions(d *db.DB, o TerminalSessionOptions) *TerminalSessionSource
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	if o.View == nil {
+		o.View = func() (map[int64]bool, map[int64]ShownOver) { return nil, nil }
 	}
 	return &TerminalSessionSource{d: d, o: o}
 }
@@ -242,6 +269,7 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 		workbenches[r.id] = true
 	}
 	live := s.o.Liveness()
+	hidden, over := s.o.View()
 	now := s.o.Now()
 	seen := map[int64]int{}
 	var out []publishedSession
@@ -270,7 +298,7 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks); err != nil {
 			return err
 		}
-		if !workbenches[p.workbenchID] {
+		if !workbenches[p.workbenchID] || hidden[p.id] {
 			return nil
 		}
 		start, isLive := live.Runs[p.id]
@@ -282,6 +310,9 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		p.agent, _ = agentkind.Parse(kind)
 		p.targetID = nullInt(target)
 		row.ID, row.Kind = p.id, kind
+		if so, ok := over[p.id]; ok {
+			row.DisplayOver = so.holds(start, isLive, row.AgentBackgroundAt)
+		}
 		if isLive {
 			row.RunStartedAt = db.AgentStateStamp(start)
 		}

@@ -349,6 +349,31 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertEqual(a.comments[2].heading, "Title", "no where, no chapter: the first heading")
     }
 
+    /// The shared anchor fixture's spec-review case: a loop finding quoting
+    /// raw markdown is placed where the rendered text has it, with the
+    /// fixture's context. The Go hub's phone answer pins the same case
+    /// (`TestSpecReviewAnswerCarriesContextLikeDesktop`).
+    func testLoopCommentCarriesTheSharedFixturesContext() throws {
+        let fixture = try XCTUnwrap(
+            try CommentAnchorFixtures.load().cases.first { $0.name == "spec_review_comment_on_a_rendered_list_item" }
+        )
+        let ledger = try JSONDecoder().decode([SpecReviewLedgerEntry].self, from: Data("""
+        [{"key":"bs:1","text":"No rollback","where":{"heading":"## Steps","quote":"Copy the **users** table"},
+          "reply":{"reply":"disagree","note":"later"},"verdict":"disputed","verdict_note":"needed now","settled":2}]
+        """.utf8))
+        let marks = ["bs:1": SpecReviewMark(key: "bs:1", state: .comment)]
+        let a = SpecReviewAnswer.build(result: nil, marks: marks, loop: ledger, verdict: .changes, snapshot: fixture.markdown)
+        XCTAssertEqual(a.comments.count, 1)
+        XCTAssertEqual(
+            CommentAnchorFixtures.Anchor(
+                quote: a.comments[0].quote, prefix: a.comments[0].prefix,
+                suffix: a.comments[0].suffix, heading: a.comments[0].heading
+            ),
+            fixture.anchor
+        )
+        XCTAssertEqual(a.comments[0].body, "Reviewer is right: No rollback — needed now")
+    }
+
     func testLoopBodyDropsTheAuthorsReasonCopiedAsTheVerdictNote() throws {
         let entries = try JSONDecoder().decode([SpecReviewLedgerEntry].self, from: Data("""
         [{"key":"a","text":"t","note":"","reply":{"reply":"disagree","note":"no"},"verdict":"unsettled","verdict_note":"no"},

@@ -2052,3 +2052,152 @@ func TestProj11_LateHookOfThePreviousRunWritesNoCwd(t *testing.T) {
 		t.Fatalf("cwd = %q at %v, want /new at %v", s.Path, s.At, t0)
 	}
 }
+
+// terminalSessionColumns reads every column of a row but id and the creation
+// stamps, keyed by name, for comparing two rows.
+func terminalSessionColumns(t *testing.T, d *DB, id int64) map[string]any {
+	t.Helper()
+	rows, err := d.Query(`SELECT * FROM terminal_sessions WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rows.Next() {
+		t.Fatalf("row %d missing", id)
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]any{}
+	for i, c := range cols {
+		switch c {
+		case "id", "created_at", "last_active_at":
+			continue
+		}
+		if b, ok := vals[i].([]byte); ok {
+			vals[i] = string(b)
+		}
+		out[c] = vals[i]
+	}
+	return out
+}
+
+// The Go insert writes the same row as the Desktop's
+// TerminalSessionQueries.create (its SQL copied here verbatim), for a target
+// row in a worktree and for a codex row with every optional column NULL.
+func TestCreateTerminalSessionMatchesDesktopColumns(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	res, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, project_id) VALUES ('Ship it', '2026-01-01', '2026-12-31', ?)`, wb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _ := res.LastInsertId()
+	run := insertAutomationRunForTest(t, d)
+	const desktopInsert = `INSERT INTO terminal_sessions
+                    (project_id, kind, title, target_id, folder_path, claude_session_id,
+                     worktree_branch, worktree_base, automation_run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	for _, c := range []struct {
+		name    string
+		n       NewTerminalSession
+		desktop []any
+	}{
+		{"claude in a worktree", NewTerminalSession{
+			WorkbenchID: wb, Kind: "claude", Title: "Ship it", TargetID: target, FolderPath: "/repo/.claude/worktrees/a",
+			ClaudeSessionID: "uuid-a", WorktreeBranch: "wt/a", WorktreeBase: "abc", AutomationRunID: run,
+		}, []any{wb, "claude", "Ship it", target, "/repo/.claude/worktrees/a", "uuid-a", "wt/a", "abc", run}},
+		{"codex in the folder", NewTerminalSession{
+			WorkbenchID: wb, Kind: "codex", Title: "New session · 09:30", FolderPath: "/repo",
+		}, []any{wb, "codex", "New session · 09:30", nil, "/repo", nil, nil, nil, nil}},
+	} {
+		goID, err := d.CreateTerminalSession(t.Context(), c.n)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		res, err := d.Exec(desktopInsert, c.desktop...)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		swiftID, _ := res.LastInsertId()
+		got, want := terminalSessionColumns(t, d, goID), terminalSessionColumns(t, d, swiftID)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s:\n go    %v\n swift %v", c.name, got, want)
+		}
+	}
+	if _, err := d.CreateTerminalSession(t.Context(), NewTerminalSession{WorkbenchID: wb, Kind: "claude", Title: "x", FolderPath: "/repo"}); !errors.Is(err, ErrMissingClaudeSessionID) {
+		t.Fatalf("a claude row without its id: %v", err)
+	}
+}
+
+func insertAutomationRunForTest(t *testing.T, d *DB) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aid, _ := res.LastInsertId()
+	res, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'manual', 'running')`, aid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+func TestPlaceTerminalSessionMovesTheRowAndRestampsIt(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	id, err := d.CreateTerminalSession(t.Context(), NewTerminalSession{WorkbenchID: wb, Kind: "codex", Title: "s", FolderPath: "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE terminal_sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PlaceTerminalSession(t.Context(), id, "/repo/.claude/worktrees/s", "wt/s", "abc"); err != nil {
+		t.Fatal(err)
+	}
+	var folder, branch, base, created string
+	if err := d.QueryRow(`SELECT folder_path, worktree_branch, worktree_base, created_at FROM terminal_sessions WHERE id = ?`, id).
+		Scan(&folder, &branch, &base, &created); err != nil {
+		t.Fatal(err)
+	}
+	if folder != "/repo/.claude/worktrees/s" || branch != "wt/s" || base != "abc" || created == "2000-01-01T00:00:00Z" {
+		t.Fatalf("placed row %q %q %q %q", folder, branch, base, created)
+	}
+	if err := d.PlaceTerminalSession(t.Context(), id+100, "/x", "wt/x", ""); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("a gone row: %v", err)
+	}
+}
+
+func TestSetTerminalSessionLaunchErrorIsAFailedWaiting(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, wb, "claude", "uuid-l")
+	at := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	long := strings.Repeat("é", 70)
+	if err := d.SetTerminalSessionLaunchError(t.Context(), id, long, at); err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AgentState.String != "waiting" || s.AgentFailure == nil || s.AgentFailure.At != AgentStateStamp(at) ||
+		s.AgentFailure.Error != strings.Repeat("é", 60) || !s.AgentStateAt.Equal(at) {
+		t.Fatalf("row %+v failure %+v", s, s.AgentFailure)
+	}
+	if err := d.SetTerminalSessionLaunchError(t.Context(), id+100, "x", at); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("a gone row: %v", err)
+	}
+}

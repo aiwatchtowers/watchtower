@@ -305,6 +305,10 @@ final class WorkbenchesViewModel {
     /// waits for it, so a row whose run the host still holds is adopted,
     /// not relaunched beside it.
     @ObservationIgnored var hostReattach: Task<Void, Never>?
+    /// The v1-host restart's list (`HostRestartList`, go hub spec §8 p. 4b),
+    /// read by the reattach and the attachment sweep; nil (tests, unless
+    /// they set one) = no list.
+    @ObservationIgnored var hostRestartListURL: URL?
     /// Projects an `openMostRecentSession` is running for, and targets a
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []
@@ -325,6 +329,14 @@ final class WorkbenchesViewModel {
     /// makes the worktree: the pane shows "Starting…" instead of a Resume
     /// button until the launch.
     var preparingSessions: Set<Int64> = []
+    /// Set (by AppState): new workbench agent sessions start in Go —
+    /// `workbench session start`, then the pane attaches to the run Go
+    /// launched (Go hub 3 Task 8, `startInGo`). Unset (no CLI), the Swift
+    /// launch path starts them.
+    @ObservationIgnored var goSessionStart: GoSessionStartWait?
+    /// Per workbench, how many Go starts began: a start's place notice
+    /// replaces `startNotice` only while no later start of it began.
+    @ObservationIgnored var goStartSerials: [Int64: Int] = [:]
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]
@@ -354,6 +366,7 @@ final class WorkbenchesViewModel {
         didSet {
             if oldValue.ids != pendingDeletes.ids {
                 onPendingDeletesChanged?(pendingDeletes.ids)
+                onHiddenSessionsChanged?(pendingDeletes.ids)
                 cleanupKeptNotices = cleanupKeptNotices.filter { pendingDeletes.ids.contains($0.key) }
             }
         }
@@ -361,6 +374,8 @@ final class WorkbenchesViewModel {
     /// The hidden ids changed (MobileHub: the `terminal_session` slice
     /// leaves them out until Undo or the commit).
     @ObservationIgnored var onPendingDeletesChanged: ((Set<Int64>) -> Void)?
+    /// The same change for the Go hub's `desktop_view` (`HubCenter.follow`).
+    @ObservationIgnored var onHiddenSessionsChanged: ((Set<Int64>) -> Void)?
     /// Waits out the Undo window, then commits the batch; re-armed by every
     /// delete, cancelled by Undo and the quit commit.
     @ObservationIgnored var deleteCommitTask: Task<Void, Never>?

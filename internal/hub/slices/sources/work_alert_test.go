@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -51,6 +52,7 @@ type alertRig struct {
 	now       time.Time
 	live      map[int64]bool
 	hidden    map[int64]bool
+	over      map[int64]ShownOver
 	started   time.Time
 	enabledAt time.Time
 	kr        *identity.Keyring
@@ -125,27 +127,23 @@ func (r *alertRig) source() slices.Source {
 			}
 			return l
 		},
-		Hidden: func() map[int64]bool {
+		View: func() (map[int64]bool, map[int64]ShownOver) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			out := map[int64]bool{}
-			for k, v := range r.hidden {
-				out[k] = v
-			}
-			return out
+			return maps.Clone(r.hidden), maps.Clone(r.over)
 		},
 	})
 }
 
-func (r *alertRig) alerts() []workAlertPayload {
+func (r *alertRig) alerts() []secure.WorkAlertFields {
 	r.t.Helper()
 	items, err := r.source().Items(context.Background())
 	if err != nil {
 		r.t.Fatalf("Items: %v", err)
 	}
-	out := []workAlertPayload{}
+	out := []secure.WorkAlertFields{}
 	for _, it := range items {
-		var p workAlertPayload
+		var p secure.WorkAlertFields
 		if err := json.Unmarshal(it.Payload, &p); err != nil {
 			r.t.Fatal(err)
 		}
@@ -510,6 +508,56 @@ func TestWorkAlertASessionInTheUndoBatchNeverAlerts(t *testing.T) {
 	}
 }
 
+// A hidden session takes no slot of the 50-per-workbench window (as
+// WorkAlertSlice reads TerminalSessionSlice.publishedSessions): the 51st
+// newest session's stop still alerts when one newer session is hidden.
+func TestWorkAlertAHiddenSessionTakesNoWindowSlot(t *testing.T) {
+	r := newAlertRig(t)
+	project := r.workbench("acme")
+	oldest := r.session(project)
+	r.setState(oldest, "", r.clock().Add(-2*time.Minute), true, "")
+	execID(t, r.d, `UPDATE terminal_sessions SET last_active_at = '2020-01-01T00:00:00Z' WHERE id = ?`, oldest)
+	var hidden int64
+	for i := 0; i < newestSessionsPerWorkbench; i++ {
+		hidden = r.session(project)
+	}
+	if got := r.alerts(); len(got) != 0 {
+		t.Fatalf("the 51st session alerted outside the window: %+v", got)
+	}
+	r.mu.Lock()
+	r.hidden = map[int64]bool{hidden: true}
+	r.mu.Unlock()
+	got := r.alerts()
+	if len(got) != 1 || *got[0].SessionID != oldest || got[0].Body != "Finished" {
+		t.Fatalf("with one newer session hidden: %+v", got)
+	}
+}
+
+// A background count the Desktop shows over reads stopped, so its stop
+// alerts as WorkAlertSlice does; a newer report is agents working again.
+func TestWorkAlertAShownOverCountAlertsAsStopped(t *testing.T) {
+	r := newAlertRig(t)
+	s := r.session(r.workbench("acme"))
+	r.setLive(s)
+	r.setState(s, "waiting", r.clock().Add(-time.Minute), false, "")
+	reported := db.AgentStateStamp(r.clock().Add(-time.Minute))
+	execID(t, r.d, `UPDATE terminal_sessions SET agent_background = 2, agent_background_at = ? WHERE id = ?`, reported, s)
+	if got := r.alerts(); len(got) != 0 {
+		t.Fatalf("agents working alerted: %+v", got)
+	}
+	r.mu.Lock()
+	r.over = map[int64]ShownOver{s: {Run: r.started, ReportedAt: reported}}
+	r.mu.Unlock()
+	if got := r.alerts(); len(got) != 1 || got[0].Event != eventSessionStopped {
+		t.Fatalf("shown over: %+v", got)
+	}
+	newer := db.AgentStateStamp(r.clock().Add(-30 * time.Second))
+	execID(t, r.d, `UPDATE terminal_sessions SET agent_background_at = ? WHERE id = ?`, newer, s)
+	if got := r.alerts(); len(got) != 0 {
+		t.Fatalf("a newer report than the one shown over alerted: %+v", got)
+	}
+}
+
 // ---- one stop, one push ----
 
 func TestWorkAlertAWaitingOnAskSessionPushesOnlyTheAsk(t *testing.T) {
@@ -578,7 +626,7 @@ func TestWorkAlertFinishedAndFailed(t *testing.T) {
 	failed := r.session(project)
 	r.setLive(failed)
 	r.setState(failed, "waiting", r.clock().Add(-time.Minute), false, "rate_limit")
-	got := map[int64]workAlertPayload{}
+	got := map[int64]secure.WorkAlertFields{}
 	for _, a := range r.alerts() {
 		got[*a.SessionID] = a
 	}
@@ -749,6 +797,75 @@ func TestWorkAlertSurvivesARotation(t *testing.T) {
 	}
 }
 
+// wipe is the CloudKit reset (state.WipeSyncState) at the rig's now, as the
+// runtime runs it after an iCloud account change.
+func (r *alertRig) wipe() {
+	r.t.Helper()
+	if err := r.st.WipeSyncState(context.Background(), r.clock().Add(-WorkAlertLifetime)); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// twin of WorkAlertSliceTests.testAnAccountResetRaisesNoAlertForPushedWork
+func TestWorkAlertAnAccountResetRaisesNoAlertForPushedWork(t *testing.T) {
+	r := newAlertRig(t)
+	project := r.workbench("acme")
+	r.ask(askSpec{project: project})
+	p := r.publisher()
+	r.cycle(p)
+	r.wipe()
+	before := len(r.savedAlerts())
+	r.advance(time.Second)
+	r.cycle(p)
+	if got := len(r.savedAlerts()); got != before {
+		t.Fatalf("the new zone got %d alerts for an old ask", got-before)
+	}
+	// The positive control: an ask filed after the reset still alerts.
+	r.advance(10 * time.Second)
+	fresh := r.ask(askSpec{project: project})
+	r.cycle(p)
+	if got := r.savedAlerts()[before:]; !equalStrings(got, []string{"ask_alert-" + askKey(fresh)}) {
+		t.Fatalf("after the reset: %v", got)
+	}
+}
+
+// twin of WorkAlertSliceTests.testAnAlertNeverConfirmedPublishedIsRaisedAfterAReset
+func TestWorkAlertAnAlertNeverConfirmedPublishedIsRaisedAfterAReset(t *testing.T) {
+	r := newAlertRig(t)
+	id := r.ask(askSpec{project: r.workbench("acme")})
+	// Pushed, but no save ever recorded its hash.
+	if got := r.keys(); !equalStrings(got, []string{askKey(id)}) {
+		t.Fatalf("alerts %v", got)
+	}
+	if h, err := r.st.SliceHashes(string(slices.KindAskAlert)); err != nil || len(h) != 0 {
+		t.Fatalf("hashes %v, %v", h, err)
+	}
+	r.wipe()
+	r.cycle(r.publisher())
+	if got := r.savedAlerts(); !equalStrings(got, []string{"ask_alert-" + askKey(id)}) {
+		t.Fatalf("saved %v", got)
+	}
+}
+
+// twin of WorkAlertSliceTests.testAnExpiredAlertOfAnOpenAskIsNotRaisedAgainAfterAReset
+func TestWorkAlertAnExpiredAlertOfAnOpenAskIsNotRaisedAgainAfterAReset(t *testing.T) {
+	r := newAlertRig(t)
+	id := r.ask(askSpec{project: r.workbench("acme")})
+	p := r.publisher()
+	r.cycle(p)
+	r.advance(WorkAlertLifetime + time.Second)
+	r.cycle(p)
+	if h, err := r.st.SliceHashes(string(slices.KindAskAlert)); err != nil || len(h) != 0 {
+		t.Fatalf("the expired record is still in the zone: %v, %v", h, err)
+	}
+	r.wipe()
+	r.advance(time.Second)
+	r.cycle(p)
+	if got := r.savedAlerts(); !equalStrings(got, []string{"ask_alert-" + askKey(id)}) {
+		t.Fatalf("alerted once, ever: %v", got)
+	}
+}
+
 // ---- payload ----
 
 func TestWorkAlertThePayloadIsCappedAndTitled(t *testing.T) {
@@ -772,7 +889,7 @@ func TestWorkAlertThePayloadIsCappedAndTitled(t *testing.T) {
 	if got := strings.Join(keysOf(raw), ","); got != "ask_id,body,event,key,quick,session_id,title,workbench_id,workbench_name" {
 		t.Fatalf("keys %s", got)
 	}
-	var p workAlertPayload
+	var p secure.WorkAlertFields
 	_ = json.Unmarshal(items[0].Payload, &p)
 	if uniseg.GraphemeClusterCount(p.WorkbenchName) != 60 ||
 		p.Title != strings.Repeat("w", 59)+"… · "+strings.Repeat("s", 59)+"…" ||
