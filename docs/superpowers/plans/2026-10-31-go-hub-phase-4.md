@@ -127,7 +127,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 | 24 | Phone combo: two phones with full mailboxes | "<phone name>'s Relay mailbox is full." in each of the two phone rows, each naming its phone | `PhoneRow.mailboxLine` (per phone) | Mobile › Phone › Two mailboxes full | `mobileSettingsTwoMailboxesFull` | 8 |
 | 25 | Settings → Mobile, narrow width | rows 16, 22 and 24 together at 480 pt | all Task 8 fields | Mobile › Narrow | `mobileSettingsIndicatorsNarrow` | 8 |
 | 26 | Settings → Mobile: entry row | "Diagnostics" | `MobileDiagnosticsModel.entryTitle` | Mobile › Diagnostics row | `mobileDiagnosticsEntry` | 9 |
-| 27 | Diagnostics: rows | caption "Content-free timings kept on this Mac only."; transports "Relay", "iCloud"; durations "38 ms" / "2.1 s" | `state = .rows`, `caption` | Diagnostics › Rows | `mobileDiagnosticsRows` | 9 |
+| 27 | Diagnostics: rows | caption "Content-free timings kept on this Mac only."; transports "Relay", "iCloud"; durations "38 ms" / "2.1 s"; labels "p50", "p90", "<N> samples" (`1 sample`) | `state = .rows`, `caption` | Diagnostics › Rows | `mobileDiagnosticsRows` | 9 |
 | 28 | Diagnostics: step read → applied | "Phone action read → applied" | `Row.stepLabel` | Diagnostics › Rows | `mobileDiagnosticsRows` | 9 |
 | 29 | Diagnostics: step applied → saved | "Applied → slice saved" | `Row.stepLabel` | Diagnostics › Rows | `mobileDiagnosticsRows` | 9 |
 | 30 | Diagnostics: step read → saved (`read_saved`) | "Phone action read → slice saved" | `Row.stepLabel` | Diagnostics › Rows | `mobileDiagnosticsRows` | 9 |
@@ -416,7 +416,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   ```swift
   @MainActor @Observable final class MobileDiagnosticsModel {
       enum State: Equatable { case loading, empty, rows([Row]), error(String) }
-      struct Row: Equatable, Identifiable { let stepLabel: String /* "Phone action read → applied" | "Applied → slice saved" | "Phone action read → slice saved" */; let transportLabel: String /* "Relay" | "iCloud" */; let p50: String; let p90: String; let samples: String }
+      struct Row: Equatable, Identifiable { let stepLabel: String /* "Phone action read → applied" | "Applied → slice saved" | "Phone action read → slice saved" */; let transportLabel: String /* "Relay" | "iCloud" */; let p50: String /* "p50 38 ms" */; let p90: String /* "p90 120 ms" */; let samples: String /* "<N> samples" | "1 sample" */ }
       var isRefreshing: Bool
       var overGoalLine: String? // relay p50 of read_saved (per-action total) ≥ 500 ms → "This Mac's part alone is over the 500 ms goal."
       var overflowLine: String? // push_overflow_expired > 0 → "N alerts were dropped because too many were waiting." (singular for 1)
