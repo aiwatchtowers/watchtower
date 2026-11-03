@@ -51,7 +51,7 @@ To stop loading, run `watchtower config set sync.backfill_days 0`. Running ones 
 
 ## When AI reaches its quota
 
-With provider fallback enabled, history fetching continues while the AI step
+With a [reserve AI provider](ai-providers-and-cost.md#a-reserve-provider-for-quota-limits) enabled, history fetching continues while the AI step
 waits for an available provider. The history position stays at the unfinished
 chunk; the next cycle resumes its missing AI steps, including after a restart.
 Already saved results remain saved. A quota wait does not count toward skipping
