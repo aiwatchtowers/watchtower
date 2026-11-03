@@ -183,6 +183,15 @@ type Transport interface {
 
 // The optional capabilities below are type-asserted by callers.
 
+// Alerts is the capability of a transport that pushes alerts itself (the
+// hosted relay's send_alert). The only bytes it hands the relay are a
+// secure.Push the Sealer built; an unsealed Push is refused with
+// secure.ErrUnsealed before any I/O. A transport without it (CloudKit, where
+// the hub writes signals instead) is never asked to push.
+type Alerts interface {
+	SendAlert(ctx context.Context, phoneRelayID string, p secure.Push) error
+}
+
 // SharedMailbox names the zone a phone's mailbox lives in. On CloudKit every
 // phone of a hub shares the one RelayZone (records are routed by sender); on
 // the hosted relay each phone has its own MailboxZone.

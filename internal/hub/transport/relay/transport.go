@@ -113,6 +113,7 @@ type Transport struct {
 var (
 	_ transport.Transport     = (*Transport)(nil)
 	_ transport.SharedMailbox = (*Transport)(nil)
+	_ transport.Alerts        = (*Transport)(nil)
 )
 
 // New returns a transport over c; Connect starts its live events.
@@ -606,6 +607,30 @@ func (t *Transport) Delete(ctx context.Context, zone string, items []transport.D
 		out[i] = transport.Outcome{Conflict: stored(c.Current)}
 	}
 	return out, nil
+}
+
+// SendAlert implements transport.Alerts: one send_alert of p's envelope to
+// the phone with relay device id phoneRelayID, nothing else in the request.
+// It refuses a Push the Sealer did not build with secure.ErrUnsealed before
+// any I/O. A nil error is the relay's Ok (accepted, not delivered). The
+// errors are mapAlertError's (transport.ErrNoPushToken, ErrPushOff, then
+// MapError's classes); RetryAfter reads a RATE_LIMITED wait.
+func (t *Transport) SendAlert(ctx context.Context, phoneRelayID string, p secure.Push) error {
+	if !p.Sealed() {
+		return fmt.Errorf("relay: send_alert: %w", secure.ErrUnsealed)
+	}
+	if phoneRelayID == "" {
+		return errors.New("relay: send_alert: no phone device id")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := t.c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_SendAlert{SendAlert: &relayv1.SendAlert{
+		PhoneDeviceId: phoneRelayID, Envelope: p.Envelope(),
+	}}}); err != nil {
+		return fmt.Errorf("relay: send_alert: %w", t.noteError(mapAlertError(err)))
+	}
+	return nil
 }
 
 // stored maps a relay record (nil stays nil). ServerAt is the writer's

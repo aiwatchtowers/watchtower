@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/client"
@@ -86,4 +87,36 @@ func classOf(code relayv1.ErrorCode) error {
 	default:
 		return nil
 	}
+}
+
+// pushOffMessage is the relay's message for send_alert with no push provider
+// configured (ops.ts ERRORS.not_implemented, push.ts alertSender), the only
+// push-configuration signal it gives.
+const pushOffMessage = "not implemented"
+
+// mapAlertError is MapError for send_alert only: NOT_FOUND is a phone with no
+// push token (transport.ErrNoPushToken) and UNSPECIFIED "not implemented" a
+// relay with pushes off (transport.ErrPushOff). Every other answer, on this op
+// as on the others, goes through MapError.
+func mapAlertError(err error) error {
+	var pe *client.Error
+	if errors.As(err, &pe) {
+		switch code := pe.E.GetCode(); {
+		case code == relayv1.ErrorCode_ERROR_CODE_NOT_FOUND:
+			return fmt.Errorf("%w: %w", transport.ErrNoPushToken, err)
+		case code == relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED && pe.E.GetMessage() == pushOffMessage:
+			return fmt.Errorf("%w: %w", transport.ErrPushOff, err)
+		}
+	}
+	return MapError(err)
+}
+
+// RetryAfter is the wait a relay error asks for (Error.retry_after_s, sent
+// with RATE_LIMITED), 0 when err carries none.
+func RetryAfter(err error) time.Duration {
+	var pe *client.Error
+	if !errors.As(err, &pe) || pe.E.RetryAfterS == nil {
+		return 0
+	}
+	return time.Duration(pe.E.GetRetryAfterS()) * time.Second
 }
