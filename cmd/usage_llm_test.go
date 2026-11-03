@@ -166,8 +166,8 @@ func TestUsageLLM_JSONKeysPinned(t *testing.T) {
 	var autoRows []json.RawMessage
 	require.NoError(t, json.Unmarshal(own["rows"], &autoRows))
 	require.Len(t, autoRows, 1)
-	assert.Equal(t, []string{"automation_id", "calls", "cost_is_estimate", "cost_is_lower_bound", "cost_usd", "input",
-		"name", "output", "runs"},
+	assert.Equal(t, []string{"automation_id", "cache_read", "cache_write", "calls", "cost_is_estimate",
+		"cost_is_lower_bound", "cost_usd", "input", "name", "output", "runs"},
 		usageKeys(t, autoRows[0]))
 	var ledgerSince string
 	require.NoError(t, json.Unmarshal(top["ledger_since"], &ledgerSince))
@@ -461,4 +461,38 @@ func TestUsageLLM_RejectsUnknownPeriod(t *testing.T) {
 	err := rootCmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "today, 7d or 30d")
+}
+
+// An automation row carries the same token split as its section's total, so
+// the rows add up to the header (#916); untagged counts only Watchtower's
+// own calls with no purpose, never chat turns or automations.
+func TestUsageLLM_AutomationRowsCarryCacheAndUntaggedIsWatchtowerOnly(t *testing.T) {
+	database, _ := usageLLMEnv(t)
+	aid := seedUsageAutomation(t, database, "mine", "Mine", "owner")
+	require.NoError(t, database.InsertLLMCalls([]llmusage.Call{
+		withAutomation(usageCall("a1", "watchtower", "automation.llm", "daemon", "haiku", 0.1), aid, 1),
+		withAutomation(usageCall("a2", "watchtower", "", "daemon", "sonnet", 0.1), aid, 1),
+		usageCall("w1", "watchtower", "", "cli:jira boards", "haiku", 0.1),
+		usageCall("c1", "chat", "", "ai session", "opus", 1),
+		usageCall("h1", "workbench", "", "cli:workbench", "opus", 1),
+	}))
+	rep := usageLLMJSON(t)
+
+	require.Len(t, rep.OwnAutomations.Rows, 1)
+	row := rep.OwnAutomations.Rows[0]
+	tot := rep.OwnAutomations.Totals
+	assert.Equal(t, int64(2*1000), row.CacheRead)
+	assert.Equal(t, int64(2*15), row.CacheWrite)
+	assert.Equal(t, tot.Input+tot.CacheRead+tot.CacheWrite+tot.Output,
+		row.Input+row.CacheRead+row.CacheWrite+row.Output, "the one row is the whole section")
+
+	assert.Equal(t, int64(1), rep.Watchtower.Totals.UntaggedCalls)
+	assert.Equal(t, int64(0), rep.OwnAutomations.Totals.UntaggedCalls, "an automation is named by its row")
+	assert.Equal(t, int64(0), rep.Chats.UntaggedCalls, "chat turns carry no purpose by design")
+	assert.Equal(t, int64(0), rep.Workbenches.Helpers.UntaggedCalls)
+	assert.Equal(t, int64(1), rep.PageTotal.UntaggedCalls, "the page total's untagged calls are Watchtower's")
+
+	var text bytes.Buffer
+	require.NoError(t, printUsageLLM(&text, rep))
+	assert.Regexp(t, `Mine\s+1\s+2\s+2330\s+100\s`, text.String(), "the text row's tokens include the cache")
 }

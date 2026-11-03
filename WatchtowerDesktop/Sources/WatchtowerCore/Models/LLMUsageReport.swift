@@ -220,6 +220,8 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
     package var runs: Int64
     package var calls: Int64
     package var input: Int64
+    package var cacheRead: Int64
+    package var cacheWrite: Int64
     package var output: Int64
     package var costUSD: Double?
     package var costIsEstimate: Bool
@@ -234,6 +236,8 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
         runs: Int64,
         calls: Int64,
         input: Int64 = 0,
+        cacheRead: Int64 = 0,
+        cacheWrite: Int64 = 0,
         output: Int64 = 0,
         costUSD: Double? = nil,
         costIsEstimate: Bool = false,
@@ -244,17 +248,21 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
         self.runs = runs
         self.calls = calls
         self.input = input
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
         self.output = output
         self.costUSD = costUSD
         self.costIsEstimate = costIsEstimate
         self.costIsLowerBound = costIsLowerBound
     }
-    package var tokens: Int64 { input + output }
+
+    /// The same sum as a process row's and a section total's.
+    package var tokens: Int64 { input + cacheRead + cacheWrite + output }
 
     enum CodingKeys: String, CodingKey {
         case name, runs, calls, input, output
         case automationID = "automation_id", costUSD = "cost_usd", costIsEstimate = "cost_is_estimate"
-        case costIsLowerBound = "cost_is_lower_bound"
+        case costIsLowerBound = "cost_is_lower_bound", cacheRead = "cache_read", cacheWrite = "cache_write"
     }
 
     package init(from decoder: Decoder) throws {
@@ -264,6 +272,9 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
         runs = try c.decode(Int64.self, forKey: .runs)
         calls = try c.decode(Int64.self, forKey: .calls)
         input = try c.decode(Int64.self, forKey: .input)
+        // Absent from a CLI older than the keys: 0.
+        cacheRead = try c.decodeIfPresent(Int64.self, forKey: .cacheRead) ?? 0
+        cacheWrite = try c.decodeIfPresent(Int64.self, forKey: .cacheWrite) ?? 0
         output = try c.decode(Int64.self, forKey: .output)
         costUSD = try c.decodeIfPresent(Double.self, forKey: .costUSD)
         costIsEstimate = try c.decodeIfPresent(Bool.self, forKey: .costIsEstimate) ?? false

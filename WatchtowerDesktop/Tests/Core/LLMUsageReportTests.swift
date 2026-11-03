@@ -153,6 +153,50 @@ final class LLMUsageReportTests: XCTestCase {
         ])
     }
 
+    /// An automation row's Tokens is the same sum as a process row's and as
+    /// the section header's, cache included (#916).
+    func testAutomationRowTokensIncludeTheCacheAndAddUpToTheHeader() throws {
+        let automations = try report().ownAutomations
+        let weekly = try XCTUnwrap(automations.rows.first { $0.automationID == 7 })
+        XCTAssertEqual(weekly.cacheRead, 400_000)
+        XCTAssertEqual(weekly.cacheWrite, 20000)
+        XCTAssertEqual(weekly.tokens, 37000 + 400_000 + 20000 + 3000)
+        XCTAssertEqual(automations.rows.map(\.tokens).reduce(0, +), automations.totals.tokens)
+    }
+
+    /// A CLI older than #916 sends no cache keys on automation rows.
+    func testAutomationRowWithoutCacheKeysDecodes() throws {
+        let json = #"{"automation_id":1,"name":"A","runs":1,"calls":1,"input":10,"output":5,"cost_usd":null}"#
+        let row = try JSONDecoder().decode(LLMUsageAutomationRow.self, from: Data(json.utf8))
+        XCTAssertEqual(row.cacheRead, 0)
+        XCTAssertEqual(row.cacheWrite, 0)
+        XCTAssertEqual(row.tokens, 15)
+    }
+
+    /// The top card is the page total: the three sections it names add up to it.
+    func testTotalsCardIsThePageTotal() throws {
+        let rep = try report()
+        let card = LLMUsagePresentation.totalsCard(rep)
+        XCTAssertEqual(card, rep.pageTotal)
+        let parts = [rep.watchtower.totals, rep.ownAutomations.totals, rep.chats]
+        XCTAssertEqual(card.calls, parts.map(\.calls).reduce(0, +))
+        XCTAssertEqual(card.tokens, parts.map(\.tokens).reduce(0, +))
+        XCTAssertEqual(card.noPriceCalls, parts.map(\.noPriceCalls).reduce(0, +))
+        XCTAssertEqual(LLMUsagePresentation.totalsScope, "Watchtower, your automations and chats · workbenches not included")
+        XCTAssertEqual(LLMUsagePresentation.gaps(card), [
+            .init(text: "12 calls with estimated usage", isWarning: false),
+            .init(text: "31 calls without a price (Codex/Ollama)", isWarning: false),
+            .init(text: "3 untagged calls", isWarning: true)
+        ])
+    }
+
+    func testSectionSummary() throws {
+        let rep = try report()
+        XCTAssertEqual(LLMUsagePresentation.sectionSummary(rep.watchtower.totals), "10 M tokens · ≥ $41.20")
+        XCTAssertEqual(LLMUsagePresentation.sectionSummary(rep.ownAutomations.totals), "5.2 M tokens · ≥ $22.40")
+        XCTAssertEqual(LLMUsagePresentation.sectionSummary(.zero), "0 tokens · —")
+    }
+
     func testAutomationsSortByCost() throws {
         let sorted = LLMUsagePresentation.sorted(try report().ownAutomations.rows)
         XCTAssertEqual(sorted.map(\.name), ["Triage new tracker issues", "Weekly to-do"])

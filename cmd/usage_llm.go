@@ -90,6 +90,8 @@ type usageLLMAutomationRow struct {
 	Runs             int64    `json:"runs"`
 	Calls            int64    `json:"calls"`
 	Input            int64    `json:"input"`
+	CacheRead        int64    `json:"cache_read"`
+	CacheWrite       int64    `json:"cache_write"`
 	Output           int64    `json:"output"`
 	CostUSD          *float64 `json:"cost_usd"`
 	CostIsEstimate   bool     `json:"cost_is_estimate"`
@@ -119,7 +121,10 @@ type usageLLMReport struct {
 	} `json:"workbenches"`
 }
 
-// usageAcc accumulates calls into a total.
+// usageAcc accumulates calls into a total. addGroup leaves untagged alone:
+// only a Watchtower call with no purpose is untagged (assembleUsageLLMReport
+// counts it); a chat turn carries no purpose by design and an owner
+// automation's call is named by its automation row.
 type usageAcc struct {
 	calls, errors, estimated, noPrice, untagged int64
 	input, cacheRead, cacheWrite, output        int64
@@ -132,9 +137,6 @@ func (a *usageAcc) addGroup(g db.LLMUsageGroup) {
 	a.errors += g.Errors
 	a.estimated += g.Estimated
 	a.noPrice += g.NoPrice
-	if g.Purpose == "" {
-		a.untagged += g.Calls
-	}
 	a.input += g.Input
 	a.cacheRead += g.CacheRead
 	a.cacheWrite += g.CacheWrite
@@ -538,6 +540,9 @@ func assembleUsageLLMReport(period string, src usageLLMSources) usageLLMReport {
 			helpers.addGroup(g)
 		default:
 			watchtower.addGroup(g)
+			if g.Purpose == "" {
+				watchtower.untagged += g.Calls
+			}
 			key := [2]string{g.Purpose, g.Process}
 			p := purposes[key]
 			if p == nil {
@@ -636,7 +641,8 @@ func usageAutomationRows(autos map[int64]*usageAutomationAcc, runs map[int64]map
 		costs[a.id] = a.acc.cost
 		rows = append(rows, usageLLMAutomationRow{
 			AutomationID: a.id, Name: name, Runs: int64(len(runs[a.id])), Calls: a.acc.calls,
-			Input: a.acc.input, Output: a.acc.output, CostUSD: a.acc.costPtr(), CostIsEstimate: a.acc.estCost > 0,
+			Input: a.acc.input, CacheRead: a.acc.cacheRead, CacheWrite: a.acc.cacheWrite, Output: a.acc.output,
+			CostUSD: a.acc.costPtr(), CostIsEstimate: a.acc.estCost > 0,
 			CostIsLowerBound: a.acc.noPrice > 0,
 		})
 	}
@@ -718,9 +724,10 @@ func printUsageLLM(w io.Writer, rep usageLLMReport) error {
 	if len(rep.OwnAutomations.Rows) > 0 {
 		fmt.Fprintln(w)
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "AUTOMATION\tRUNS\tCALLS\tINPUT\tOUTPUT\tCOST")
+		fmt.Fprintln(tw, "AUTOMATION\tRUNS\tCALLS\tTOKENS\tOUTPUT\tCOST")
 		for _, r := range rep.OwnAutomations.Rows {
-			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\n", r.Name, r.Runs, r.Calls, r.Input, r.Output,
+			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\n", r.Name, r.Runs, r.Calls,
+				r.Input+r.CacheRead+r.CacheWrite+r.Output, r.Output,
 				usageCostText(r.CostUSD, r.CostIsEstimate, r.CostIsLowerBound))
 		}
 		return tw.Flush()
