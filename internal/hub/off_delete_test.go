@@ -3,10 +3,13 @@ package hub
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/policy/policytest"
@@ -98,6 +101,112 @@ func TestOwnerOffThenOnNeedsAFreshPairing(t *testing.T) {
 	if s := r.rec.last(); s.HubID != hubID || s.Phones != 0 {
 		t.Fatalf("after off and on: hub %q (was %q), %d phones", s.HubID, hubID, s.Phones)
 	}
+}
+
+// offPhoneDir is a hub dir with a hub identity, the switch written as
+// enabled, one linked phone and one phone waiting for the owner.
+func offPhoneDir(t *testing.T, enabled string) string {
+	t.Helper()
+	dir := shortDir(t)
+	id, err := identity.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (identity.FileStore{Path: filepath.Join(dir, identity.FileName)}).Save(id); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != "" {
+		setMeta(t, dir, state.MetaEnabled, enabled)
+	}
+	linkPhoneDirectly(t, dir)
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	key := make([]byte, 32)
+	if err := st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO pending_devices (device_id, name, signing_key, agreement_key, link_nonce, sas,
+			received_at, confirm_nonce) VALUES ('00000000-0000-0000-0000-0000000000AA', 'Phone B', ?, ?, 'n', '1234', ?, ?)`,
+			key, key, float64(time.Now().Unix()), key)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// offPhonesLeft counts the linked phones and the waiting ones in dir.
+func offPhonesLeft(t *testing.T, st *state.Store) (linked, waiting int) {
+	t.Helper()
+	devices, err := st.Devices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := link.NewCenter(link.Config{Store: st}).PendingLinks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(devices), len(pending)
+}
+
+// TestOwnerOffUnlinksWhileNoHubRuns: an off taken while no hub ran (the
+// reconcile path) unlinks the linked phone and refuses the waiting one.
+func TestOwnerOffUnlinksWhileNoHubRuns(t *testing.T) {
+	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+	dir := offPhoneDir(t, "0")
+	r := newRig(t, dir)
+	r.start(r.options())
+	r.waitState(StateOff, ReasonDisabled)
+	eventually(t, 10*time.Second, "no phones", func() bool { return r.rec.last().Phones == 0 })
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if linked, waiting := offPhonesLeft(t, st); linked != 0 || waiting != 0 {
+		t.Fatalf("after the off: %d linked, %d waiting", linked, waiting)
+	}
+}
+
+// TestUnlinkForOffNeedsTheSwitchWrittenOff: unlinkForOff reads the switch
+// again under offlineMu, so an enable that lands after reconcile's read (or
+// a switch never written) keeps the phones.
+func TestUnlinkForOffNeedsTheSwitchWrittenOff(t *testing.T) {
+	for _, enabled := range []string{"1", ""} {
+		dir := offPhoneDir(t, enabled)
+		st, err := state.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := &supervisor{o: Options{Dir: dir}.withDefaults(), st: st}
+		s.unlinkForOff()
+		if linked, waiting := offPhonesLeft(t, st); linked != 1 || waiting != 1 {
+			t.Fatalf("switch %q: %d linked, %d waiting", enabled, linked, waiting)
+		}
+		_ = st.Close()
+	}
+}
+
+// TestOwnerOffThenOnPairsAgain: after the owner's off a phone pairs again
+// end to end (pair, hello, SAS, confirm), and the hub links it.
+func TestOwnerOffThenOnPairsAgain(t *testing.T) {
+	r, _ := ownerOffRig(t)
+	disableHub(t, r.dir)
+	r.waitState(StateOff, ReasonDisabled)
+	eventually(t, 10*time.Second, "no phones", func() bool { return r.rec.last().Phones == 0 })
+	switchHub(t, r.dir, OpEnable)
+	r.waitState(StateRunning, "")
+	c, err := Dial(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	pairOverMemfake(t, r, c, r.rec.last().RelayDeviceID) // its keys are in the pair zone
+	eventually(t, 10*time.Second, "the new phone linked", func() bool { return r.rec.last().Phones == 1 })
 }
 
 // TestOwnerOffRetriesAFailedDelete: a wipe that fails reads failed in

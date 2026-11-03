@@ -657,12 +657,16 @@ func (s *supervisor) offlineLink(r ControlRequest) ControlAnswer {
 }
 
 // setEnabled flips hub_meta.enabled; turning it on is refused while the
-// policy is off (the setting is not written).
+// policy is off (the setting is not written). The write holds offlineMu, so
+// it never lands in the middle of the off's unlinking (unlinkForOff).
 func (s *supervisor) setEnabled(on bool) ControlAnswer {
 	if on && s.o.mobileSync() == policy.MobileOff {
 		return ControlAnswer{Error: ErrClassPolicyOff}
 	}
-	if err := s.st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on))); err != nil {
+	s.offlineMu.Lock()
+	err := s.st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on)))
+	s.offlineMu.Unlock()
+	if err != nil {
 		return ControlAnswer{Error: ErrClassFailed}
 	}
 	s.poke()

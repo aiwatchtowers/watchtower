@@ -64,11 +64,19 @@ func (s *supervisor) ownerOff() {
 // for the owner while the owner's switch is off (ask #956), through
 // `hub unlink`'s offline path on the supervisor's store. Run at every
 // reconcile while no hub runs: a no-op once nothing is linked, and it also
-// covers an off taken while the hub was not running. A failure is logged
-// once per streak and retried at the next reconcile.
+// covers an off taken while the hub was not running. Only a switch written
+// off counts ("0": `hub disable`, or an adoption of a Swift hub left off); a
+// sidecar whose switch was never written is not an off. The switch is read
+// again under offlineMu, which setEnabled also holds, so an enable that
+// lands after reconcile's read never loses its phones. A phone that fails is
+// skipped and the rest are still unlinked; the failures are logged once per
+// streak and retried at the next reconcile.
 func (s *supervisor) unlinkForOff() {
 	s.offlineMu.Lock()
 	defer s.offlineMu.Unlock()
+	if v, _, err := s.st.Meta(state.MetaEnabled); err != nil || v != "0" {
+		return
+	}
 	devices, err := s.st.Devices()
 	var pending []link.Pending
 	if err == nil {
@@ -81,13 +89,18 @@ func (s *supervisor) unlinkForOff() {
 	for _, p := range pending {
 		ids = append(ids, p.DeviceID)
 	}
+	unlinked := 0
 	for _, id := range ids {
-		if err != nil {
-			break
+		// ErrNoDevice: already gone (a waiting phone refused or expired meanwhile).
+		switch uerr := UnlinkOffline(s.o.Dir, s.st, id, s.o.Clock); {
+		case uerr == nil:
+			unlinked++
+		case !errors.Is(uerr, state.ErrNoDevice):
+			err = errors.Join(err, uerr)
 		}
-		if uerr := UnlinkOffline(s.o.Dir, s.st, id, s.o.Clock); uerr != nil && !errors.Is(uerr, state.ErrNoDevice) {
-			err = uerr
-		}
+	}
+	if unlinked > 0 {
+		log.Printf("hub: off: %d phone(s) unlinked or refused", unlinked)
 	}
 	if err != nil {
 		if !s.offUnlinkLogged {
@@ -97,9 +110,6 @@ func (s *supervisor) unlinkForOff() {
 		return
 	}
 	s.offUnlinkLogged = false
-	if len(devices) > 0 {
-		log.Printf("hub: off: %d phone(s) unlinked", len(devices))
-	}
 }
 
 // retryOffWipe is the stopped retry while the owner's switch is off: what
