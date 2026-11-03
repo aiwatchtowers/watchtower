@@ -12,12 +12,29 @@ package struct ChatRoutingStatus: Decodable, Equatable, Sendable {
             case nextProbeAt = "next_probe_at"
         }
     }
+    package struct Application: Decodable, Equatable, Sendable {
+        package let identity: String
+        package let revision: String
+        package let preferredProvider: String
+        package let savedVersion: String
+        package let error: String?
+        enum CodingKeys: String, CodingKey {
+            case identity, revision, error
+            case preferredProvider = "preferred_provider"
+            case savedVersion = "saved_version"
+        }
+    }
+    package var application: Application?
+    package var savedVersion: String?
+    package var applicationError: String?
     package let preferredProvider: String
     package let enabled: Bool
     package let revision: String
     package let providers: [Provider]
     enum CodingKeys: String, CodingKey {
-        case enabled, revision, providers
+        case enabled, revision, providers, application
+        case applicationError = "application_error"
+        case savedVersion = "saved_version"
         case preferredProvider = "preferred_provider"
     }
     package static func parse(_ data: Data) throws -> Self {

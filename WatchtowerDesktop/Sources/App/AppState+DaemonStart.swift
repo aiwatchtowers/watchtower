@@ -2,6 +2,14 @@ import Foundation
 import WatchtowerCore
 
 extension AppState {
+    /// Bind status-loss reporting only once Settings actually creates its
+    /// shared service; unrelated daemon observations never read configuration.
+    func makeSharedConfig() -> ConfigService {
+        let service = ConfigService()
+        observedRoutingApplication = service.routingApplication
+        return service
+    }
+
     /// The daemon start chain's last item, for tests to await.
     var daemonStartChain: Task<Void, Never>? { daemonStartQueue.tail }
 

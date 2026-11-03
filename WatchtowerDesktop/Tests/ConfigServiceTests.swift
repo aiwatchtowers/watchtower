@@ -1059,3 +1059,121 @@ struct ConfigServiceTests {
         #expect(svc.hasUnsavedEdits)
     }
 }
+
+extension ConfigServiceTests {
+    @Test("Apply and Retry read latest saved metadata without rewriting a newer Save")
+    func routingApplyReadsLatestSaved() async throws {
+        let path = makeTempConfig("ai: {provider: claude}")
+        var revision = "first"
+        let service = ConfigService(configPath: path) {
+            try ChatRoutingStatus.parse(Data("""
+                {"revision":"\(revision)","saved_version":"current-file","preferred_provider":"codex",
+                 "enabled":true,"providers":[],"application":{"identity":"current-run",
+                 "revision":"\(revision)","saved_version":"current-file","preferred_provider":"codex"}}
+                """.utf8))
+        }
+        service.selectAIProvider("codex")
+        try service.save()
+        #expect(service.routingApplication.phase == .applying)
+        #expect(!service.hasUnsavedEdits)
+        let before = try Data(contentsOf: URL(fileURLWithPath: path))
+        revision = "newer-save"
+        await service.applySavedRouting()
+        #expect(service.routingApplication.phase == .applied)
+        #expect(service.routingApplication.savedRevision == "newer-save")
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == before)
+        #expect(!service.hasUnsavedEdits)
+    }
+}
+
+extension ConfigServiceTests {
+    @Test("A separate save failure does not strand saved routing in Applying")
+    func routingApplyCompletesAfterExtraSaveFailure() async throws {
+        let path = makeTempConfig("ai: {provider: claude}")
+        var reads = 0
+        let service = ConfigService(configPath: path) {
+            reads += 1
+            return try ChatRoutingStatus.parse(Data("""
+                {"revision":"saved","saved_version":"current","preferred_provider":"claude",
+                 "enabled":false,"providers":[],"application":{"identity":"run","revision":"saved",
+                 "saved_version":"current","preferred_provider":"claude"}}
+                """.utf8))
+        }
+        do {
+            try await service.saveAndApply { throw CocoaError(.fileWriteNoPermission) }
+            Issue.record("The independent save error must remain visible")
+        } catch {
+            #expect((error as NSError).code == CocoaError.fileWriteNoPermission.rawValue)
+        }
+        #expect(reads == 1)
+        #expect(service.routingApplication.phase == .applied)
+        #expect(!service.hasUnsavedEdits)
+    }
+}
+
+extension ConfigServiceTests {
+    @Test("Reloading a different workspace rejects an older pending acknowledgement")
+    func workspaceReloadInvalidatesPendingRoutingAck() async throws {
+        let path = makeTempConfig("active_workspace: first\nai: {provider: claude}")
+        var pending: CheckedContinuation<ChatRoutingStatus, Never>?
+        let service = ConfigService(configPath: path) {
+            await withCheckedContinuation { pending = $0 }
+        }
+        let task = Task { await service.applySavedRouting() }
+        while pending == nil { await Task.yield() }
+        try "active_workspace: second\nai: {provider: claude}".write(toFile: path, atomically: true, encoding: .utf8)
+        service.reload()
+        let old = try ChatRoutingStatus.parse(Data("""
+            {"revision":"old","saved_version":"old","preferred_provider":"claude","enabled":false,"providers":[],
+             "application":{"identity":"old-run","revision":"old","saved_version":"old","preferred_provider":"claude"}}
+            """.utf8))
+        pending?.resume(returning: old)
+        await task.value
+        #expect(service.activeWorkspace == "second")
+        #expect(service.routingApplication.phase == .failed)
+        #expect(service.routingApplication.confirmed == nil)
+        #expect(service.routingApplication.savedRevision == nil)
+    }
+}
+
+extension ConfigServiceTests {
+    @Test("Same-workspace Reload revokes old applied and pending acknowledgements")
+    func sameWorkspaceReloadRejectsOldAppliedAndPendingAck() async throws {
+        func status(_ revision: String, _ provider: String) throws -> ChatRoutingStatus {
+            try ChatRoutingStatus.parse(Data("""
+                {"revision":"\(revision)","saved_version":"\(revision)","preferred_provider":"\(provider)",
+                 "enabled":false,"providers":[],"application":{"identity":"run","revision":"\(revision)",
+                 "saved_version":"\(revision)","preferred_provider":"\(provider)"}}
+                """.utf8))
+        }
+        let path = makeTempConfig("active_workspace: first\nai: {provider: claude}")
+        let old = try status("A", "claude")
+        var current = old
+        var block = false
+        var pending: CheckedContinuation<ChatRoutingStatus, Never>?
+        let service = ConfigService(configPath: path) {
+            if block { return await withCheckedContinuation { pending = $0 } }
+            return current
+        }
+        await service.applySavedRouting()
+        #expect(service.routingApplication.phase == .applied)
+        block = true
+        let task = Task { await service.applySavedRouting() }
+        while pending == nil { await Task.yield() }
+        let saved = "active_workspace: first\nai: {provider: codex}"
+        try saved.write(toFile: path, atomically: true, encoding: .utf8)
+        service.reload()
+        #expect(service.routingApplication.phase == .failed)
+        #expect(service.aiProvider == "codex")
+        pending?.resume(returning: old)
+        await task.value
+        #expect(service.routingApplication.phase == .failed)
+        #expect(service.routingApplication.confirmed == nil)
+        block = false
+        current = try status("B", "codex")
+        await service.applySavedRouting()
+        #expect(service.routingApplication.phase == .applied)
+        #expect(service.routingApplication.savedRevision == "B")
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == saved)
+    }
+}

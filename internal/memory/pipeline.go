@@ -1101,3 +1101,6 @@ var linkLabelReplacer = strings.NewReplacer("[[", "", "]]", "", "|", "/", "\n", 
 func linkLabel(title string) string {
 	return linkLabelReplacer.Replace(title)
 }
+
+// SetGenerator configures the job-bound generator before the pipeline runs.
+func (p *Pipeline) SetGenerator(gen digest.Generator) { p.generator = gen }

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Shared bottom bar for Settings tabs that edit config.yaml. Owns the
 /// transient save/parse error display so every tab that saves shows errors
@@ -13,25 +14,23 @@ struct ConfigSaveBar: View {
     /// instead of a second, separate control.
     var extraSave: (() async throws -> Void)?
     @State private var saveError: String?
-    @State private var showSaved = false
     @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 0) {
-            Divider()
             if let error = config.parseError {
                 errorRow("Parse error: \(error)")
             }
             if let error = saveError {
                 errorRow(error)
             }
+            ProviderRoutingApplicationStatus(model: config.routingApplication) {
+                Task { await config.applySavedRouting() }
+            }
             HStack {
                 Button("Open in Editor") { config.openInEditor() }
                 Button("Reveal in Finder") { config.revealInFinder() }
                 Spacer()
-                if showSaved {
-                    Text("Saved").foregroundStyle(.green).transition(.opacity)
-                }
                 Button("Reload") {
                     config.reload()
                     saveError = nil
@@ -48,11 +47,11 @@ struct ConfigSaveBar: View {
                     }
                 }
                 .keyboardShortcut("s", modifiers: .command)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.kitPrimary)
                 .disabled(isSaving)
             }
             .padding(.horizontal)
-            .padding(.vertical, 10)
+            .padding(.vertical, Spacing.regular)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -60,27 +59,50 @@ struct ConfigSaveBar: View {
     private func errorRow(_ text: String) -> some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.red)
+            .foregroundStyle(Tone.error)
             .lineLimit(3)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal)
-            .padding(.top, 6)
+            .padding(.top, Spacing.small)
     }
 
     private func save() async {
         isSaving = true
         defer { isSaving = false }
         do {
-            try config.save()
-            try await extraSave?()
+            try await config.saveAndApply(extraSave: extraSave)
             saveError = nil
-            withAnimation { showSaved = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                withAnimation { showSaved = false }
-            }
         } catch {
             saveError = error.localizedDescription
         }
+    }
+}
+
+/// The actual saved/applying/applied/error presentation shared by Settings and
+/// design-shot fixtures. Retry applies current saved state through its owner.
+struct ProviderRoutingApplicationStatus: View {
+    let model: ProviderRoutingApplication
+    var retry: () -> Void
+
+    var body: some View {
+        if let copy = model.copy {
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text(copy.title).font(.caption).foregroundStyle(copy.emphasis == .error ? Tone.error : Color.secondary)
+                    Text(copy.detail).font(.caption).foregroundStyle(Color.secondary)
+                    if let text = model.confirmationText {
+                        Text(text).font(.caption).foregroundStyle(Color.secondary)
+                    }
+                    if let diagnostic = model.diagnostic {
+                        Text(diagnostic).font(.caption).foregroundStyle(Tone.error).textSelection(.enabled)
+                    }
+                    if let action = copy.action {
+                        Button(action, action: retry).buttonStyle(.kitSecondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.top, Spacing.regular)
+            }
     }
 }

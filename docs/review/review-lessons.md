@@ -2652,3 +2652,12 @@ Entry format:
 - weak-dimension: composition coverage across ready-before-turn and typed-error-before-stream-EOF boundaries; presentation tests also encoded the unsupported quota inference. External diff transmission remained unavailable after automatic approval rejection; toolkit APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source and reported scoped validation without rerunning checks. [7]
 - rule-gap: no new binding rule needed; the swallowed-error rule explicitly makes the eager-write failure a blocker, and approved reason-code/partial/action contracts cover the other defects. Native capability ask remains open and its strict guard is outside these fixes.
 - outcome: TBD
+
+## 2026-11-03 — provider-fallback configuration apply (#1492, Task 10) — verdict: approve
+
+- contested: a confirm-then-read identity callback is checked twice around acknowledgement reading. One legitimate daemon replacement either receives a fresh kernel identity confirmation on the second check or is rejected. A counterexample requiring repeated identity-file reversal is not supported by the exclusive workspace lock and watcher-join-before-PID-removal lifecycle. [6/8]
+- false-positive: the test lane's 8/10 quality score is not a severity-8 coverage finding. Direct provider-map clone mutation and disk-write-failure metadata-read assertions remain optional strengthening; source inspection found the clone and successful-write gate in place. [7]
+- miss: none established. Held real SDK execution and a mechanically failing dispatcher overlay exercise generation retention across multiple calls; real database receipts exercise optional routing capabilities across enable/disable, beyond isolated boolean tests. [6/7]
+- weak-dimension: independent tooling breadth remained limited: automatic approval rejected external diff transmission and specialist APIs were unavailable. Three built-in lanes supplied independent evidence; judge verified source and reported checks without rerunning them. [7]
+- rule-gap: no new rule needed. Distinguish successful runtime publication from successful acknowledgement, and inspect identity races against the supported writer lifecycle before promoting hypothetical interleavings to defects. Native capability approval and later Settings/integration tasks remain outside this leaf.
+- outcome: TBD

@@ -521,3 +521,27 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertTrue(gone, "a dead session holds nothing")
     }
 }
+
+extension ChatSessionPoolTests {
+    func testRoutingRevisionRetiresBothProvidersAfterTurnAndPreservesFIFO() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id, provider: "codex"))
+                .startTurn(turn("t\(id)", row: try assistantRow()))
+        }
+        let fourth = pool.session(for: 4, config: config(4, provider: "codex"))
+        fourth.startTurn(turn("t4", row: try assistantRow()))
+        let fifth = pool.session(for: 5, config: config(5))
+        fifth.startTurn(turn("t5", row: try assistantRow()))
+        pool.retireRoutingSessions()
+        XCTAssertTrue(fourth.isPending)
+        XCTAssertTrue(fifth.isPending)
+        XCTAssertTrue(fakes.allSatisfy { !$0.terminated && !$0.hasExited })
+        XCTAssertEqual(fakes.count, 3, "Apply starts no replacement while active turns run")
+        fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
+        let admitted = await waitForCondition { self.fakes.count == 4 && !fourth.isPending }
+        XCTAssertTrue(admitted)
+        XCTAssertTrue(fifth.isPending, "pending FIFO order survives revision publication")
+        XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
+        XCTAssertEqual(fakes[0].turns.count, 1, "the started turn was never replayed")
+    }
+}

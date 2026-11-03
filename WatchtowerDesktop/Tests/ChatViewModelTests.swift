@@ -1829,3 +1829,63 @@ extension ChatViewModelTests {
         }
     }
 }
+
+extension ChatViewModelTests {
+    func testNewAutomaticContextReadsCurrentPreferenceWithoutChangingBusyHost() async throws {
+        var preferred = AIProvider.claude
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude,
+                               preferredProviderSource: { preferred }, defaults: defaults)
+        _ = await vm.newConversation()
+        await vm.send(text: "Keep the first turn running")
+        let old = try lastFake()
+        preferred = .codex
+        XCTAssertFalse(old.terminated)
+        XCTAssertFalse(old.hasExited)
+        _ = await vm.newConversation()
+        XCTAssertEqual(vm.selectedProvider, .codex)
+        XCTAssertTrue(vm.automaticRouting)
+        XCTAssertFalse(old.terminated, "new preference never cuts an active host")
+        await vm.send(text: "A new conversation")
+        let spawned = await waitForCondition { self.fakes.count == 2 }
+        XCTAssertTrue(spawned)
+        XCTAssertNil(try lastFake().argument(after: "--provider"))
+        XCTAssertEqual(old.turns.count, 1)
+    }
+}
+
+private actor RoutingRevisionSequenceRunner: CLIRunnerProtocol {
+    private var revisions: [String?]
+    init(_ revisions: [String?]) { self.revisions = revisions }
+    func run(args: [String]) async throws -> Data {
+        guard !revisions.isEmpty else { throw CocoaError(.fileReadUnknown) }
+        guard let revision = revisions.removeFirst() else { throw CancellationError() }
+        return Data("""
+            {"preferred_provider":"claude","enabled":false,"revision":"\(revision)","providers":[]}
+            """.utf8)
+    }
+}
+
+extension ChatViewModelTests {
+    func testRoutingStatusFirstObservationPreservesWarmHostAndErrorsKeepRevisionBaseline() async throws {
+        let runner = RoutingRevisionSequenceRunner(["A", "A", nil, "B"])
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, cliRunner: runner, defaults: defaults)
+        let created = await vm.newConversation()
+        let id = try XCTUnwrap(created)
+        let host = try XCTUnwrap(pool.client(for: id))
+        let process = try lastFake()
+        vm.draft = "Retain the unsent draft"
+        await vm.refreshRoutingStatus()
+        XCTAssertTrue(pool.client(for: id) === host, "first metadata observation proves no configuration transition")
+        XCTAssertTrue(host.isAlive)
+        XCTAssertFalse(process.terminated)
+        await vm.refreshRoutingStatus()
+        XCTAssertTrue(pool.client(for: id) === host, "unchanged metadata keeps a warm host")
+        await vm.refreshRoutingStatus()
+        XCTAssertNotNil(vm.routingStatusError)
+        XCTAssertTrue(pool.client(for: id) === host, "a metadata read failure never retires a host")
+        await vm.refreshRoutingStatus()
+        XCTAssertNil(pool.client(for: id), "A → error → B still proves a real routing transition")
+        XCTAssertFalse(host.isAlive)
+        XCTAssertEqual(vm.draft, "Retain the unsent draft")
+    }
+}

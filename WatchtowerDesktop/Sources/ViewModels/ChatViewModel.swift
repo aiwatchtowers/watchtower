@@ -76,7 +76,9 @@ final class ChatViewModel {
     }
     private(set) var selectedProvider: AIProvider
     private(set) var automaticRouting = true
-    private let preferredProvider: AIProvider
+    private var configuredPreferred: AIProvider
+    @ObservationIgnored private let preferredProviderSource: (() -> AIProvider)?
+    private var preferredProvider: AIProvider { preferredProviderSource?() ?? configuredPreferred }
     private(set) var isChangingRouting = false
     private(set) var reviewedActionIDs: [Int64] = []
     private(set) var reviewedMessageID: Int64?
@@ -86,6 +88,7 @@ final class ChatViewModel {
     private(set) var routingStatus: ChatRoutingStatus?
     private(set) var routingStatusError: String?
     private var readingRoutingStatus = false
+    @ObservationIgnored private var lastRoutingRevision: String?
 
     var routingPresentation: ChatRoutingPresentation? {
         let provider = automaticRouting ? preferredProvider : selectedProvider
@@ -107,7 +110,13 @@ final class ChatViewModel {
         defer { readingRoutingStatus = false }
         do {
             let data = try await cliRunner.run(args: ["ai", "routing-status"], timeout: 5)
-            routingStatus = try ChatRoutingStatus.parse(data)
+            let status = try ChatRoutingStatus.parse(data)
+            if let previous = lastRoutingRevision, previous != status.revision { pool.retireRoutingSessions() }
+            lastRoutingRevision = status.revision
+            routingStatus = status
+            if let provider = AIProvider(rawValue: routingStatus?.preferredProvider ?? "") {
+                configuredPreferred = provider
+            }
             routingStatusError = nil
         } catch {
             routingStatus = nil
@@ -264,6 +273,7 @@ final class ChatViewModel {
         pool: ChatSessionPool,
         provider: AIProvider = .claude,
         cliRunner: CLIRunnerProtocol? = nil,
+        preferredProviderSource: (() -> AIProvider)? = nil,
         defaults: UserDefaults = .standard,
         attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
         makeTurnID: @escaping () -> String = { UUID().uuidString }
@@ -272,7 +282,8 @@ final class ChatViewModel {
         self.dbManager = dbManager
         self.pool = pool
         self.selectedProvider = provider
-        self.preferredProvider = provider
+        self.configuredPreferred = provider
+        self.preferredProviderSource = preferredProviderSource
         self.cliRunner = cliRunner
         self.makeTurnID = makeTurnID
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)

@@ -66,7 +66,7 @@ func (p *Pipeline) backfillMailbox(ctx context.Context, mb mailbox, from, to tim
 	if saved > 0 && saved < floor {
 		floor = saved
 	}
-	start, err := p.backfillExtractionStart(mb.source, mb.id, from, to, fmt.Sprint(floor))
+	start, err := p.backfillExtractionStart(mb.source, mb.id, from, to, fmt.Sprint(floor), ctx)
 	if err != nil {
 		return from, false, err
 	}
@@ -125,7 +125,7 @@ func (p *Pipeline) BackfillJira(ctx context.Context, accountID int64, from, to t
 			floor = saved
 		}
 	}
-	floor, err = p.backfillExtractionStart("jira", accountID, from, to, floor)
+	floor, err = p.backfillExtractionStart("jira", accountID, from, to, floor, ctx)
 	if err != nil {
 		return from, false, err
 	}
