@@ -128,7 +128,7 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 		log.Printf("hub recording: audio not written")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
 	}
-	if err := h.d.Store.QueueRecording(in.UploadID, in.Device.String(), h.d.Clock()); err != nil {
+	if err := h.d.Store.QueueRecordingFrom(in.UploadID, in.Device.String(), in.Origin, h.d.Clock()); err != nil {
 		_ = os.Remove(audio)
 		log.Print("hub recording: job not queued")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)

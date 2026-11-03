@@ -239,6 +239,41 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         XCTAssertEqual(finishes.map(\.1), [7], "the transcript id from the save envelope")
     }
 
+    /// The Go hub's queue observes the real recorder beside the Swift hub's
+    /// `PhoneRecordingJobs` closures: both hear every phase and the saved
+    /// transcript; the ingest's reservation is found by its upload id until
+    /// the save drops it.
+    func testJobObserversAndTheSwiftHubClosuresBothHearTheJob() async throws {
+        let source = try makeDummyPhoneAudioFile()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = try makeCenter(runner: runner, decode: stubDecode(sampleCount: 19_200),
+                                    texts: Array(repeating: "word", count: 12))
+        let finished = expectation(description: "both heard the save")
+        finished.expectedFulfillmentCount = 2
+        var closurePhases = 0
+        var observerPhases = 0
+        var saved: [String: Int64] = [:]
+        center.onJobPhase = { _, _ in closurePhases += 1 }
+        center.onJobFinished = { _, id in saved["closure"] = id; finished.fulfill() }
+        let token = center.addJobObserver(.init(
+            phase: { _, _ in observerPhases += 1 },
+            finished: { _, id in saved["observer"] = id; finished.fulfill() }
+        ))
+        defer { center.removeJobObserver(token) }
+
+        let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Note",
+                                                             uploadID: "up-1", config: threeWindowConfig())
+        XCTAssertEqual(try center.phoneRecording(forUpload: "up-1"), ingested, "the reservation keeps the upload id")
+        XCTAssertNil(try center.phoneRecording(forUpload: "up-2"))
+        await fulfillment(of: [finished], timeout: 10)
+
+        XCTAssertEqual(saved, ["closure": 7, "observer": 7])
+        XCTAssertGreaterThan(observerPhases, 0)
+        XCTAssertEqual(observerPhases, closurePhases)
+        XCTAssertNil(try center.phoneRecording(forUpload: "up-1"), "saved: no pending reservation left")
+    }
+
     // MARK: - Review focus 5: the Mac is capturing its own meeting
 
     /// A phone upload arriving mid-capture queues behind it: the capture is

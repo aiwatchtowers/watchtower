@@ -107,6 +107,61 @@ func TestHubRecordingClaimFinishJSONKeys(t *testing.T) {
 	assert.EqualValues(t, 42, m["transcript_id"])
 }
 
+// TestHubRecordingListJSONKeys: `hub recording list --json` is {ready, jobs},
+// jobs an array of {upload_id, status, phase, percent, audio_path, event_id,
+// started_at, error_class}
+// (pinned, Desktop's start
+// read); no sidecar yet is an empty array; refused under an agent marker
+// (the paths lead to plaintext audio).
+func TestHubRecordingListJSONKeys(t *testing.T) {
+	dir := hubTestDir(t)
+	out, err := runHub(t, "recording", "list", "--json")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"ready":false,"jobs":[]}`, out, "no sidecar yet is not an empty queue")
+
+	queueJob(t, dir, "u-1")
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	started := time.Unix(1_800_000_000, 0)
+	require.NoError(t, st.QueueRecordingFrom("u-2", "aabb", state.RecordingOrigin{EventID: "evt-1", StartedAt: started}, time.Now()))
+	require.NoError(t, st.Close())
+	_, err = runHub(t, "recording", "claim", "--upload", "u-2")
+	require.NoError(t, err)
+	_, err = runHub(t, "recording", "progress", "--upload", "u-2", "--phase", "transcribing", "--percent", "40")
+	require.NoError(t, err)
+	out, err = runHub(t, "recording", "list", "--json")
+	require.NoError(t, err)
+	var answer struct {
+		Ready bool             `json:"ready"`
+		Jobs  []map[string]any `json:"jobs"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &answer), out)
+	assert.ElementsMatch(t, []string{"ready", "jobs"}, hubKeysOf(decodeKeys(t, out)))
+	assert.True(t, answer.Ready)
+	rows := answer.Jobs
+	require.Len(t, rows, 2)
+	byID := map[string]map[string]any{}
+	for _, r := range rows {
+		assert.ElementsMatch(t, []string{"upload_id", "status", "phase", "percent", "audio_path", "event_id", "started_at", "error_class"}, hubKeysOf(r))
+		byID[r["upload_id"].(string)] = r
+	}
+	assert.Equal(t, "queued", byID["u-1"]["status"])
+	assert.Equal(t, "", byID["u-1"]["phase"])
+	assert.Nil(t, byID["u-1"]["percent"])
+	assert.Equal(t, filepath.Join(dir, "recordings", "u-1.m4a"), byID["u-1"]["audio_path"])
+	assert.Equal(t, "claimed", byID["u-2"]["status"])
+	assert.Equal(t, "transcribing", byID["u-2"]["phase"])
+	assert.EqualValues(t, 40, byID["u-2"]["percent"])
+	assert.Equal(t, "", byID["u-1"]["event_id"])
+	assert.Nil(t, byID["u-1"]["started_at"])
+	assert.Equal(t, "evt-1", byID["u-2"]["event_id"])
+	assert.EqualValues(t, 1_800_000_000, byID["u-2"]["started_at"])
+
+	t.Setenv(agentEnvMarkers[0], "1")
+	_, err = runHub(t, "recording", "list", "--json")
+	assert.Error(t, err)
+}
+
 // TestHubRecordingProgressJSONKeys: `hub recording progress --json` pins
 // {upload_id, status, phase, percent}; percent is null outside transcribing.
 func TestHubRecordingProgressJSONKeys(t *testing.T) {

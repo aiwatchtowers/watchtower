@@ -383,6 +383,7 @@ final class AppState {
     private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
+    @ObservationIgnored private(set) var phoneRecordingQueue: PhoneRecordingQueue? // `replacePhoneRecordingQueue`
     /// Every line the app types into a workbench session's prompt — an
     /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
     /// one queue per session (PROJ-12).
@@ -1867,7 +1868,7 @@ final class AppState {
         ownerPresenceCenter?.start()
         ownerAwayCenter.start()
         chatQuestionEscalator?.start()
-        replaceHubCenter(cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        replaceHubCenter(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
             vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
         }
@@ -1886,10 +1887,11 @@ final class AppState {
 
     /// The Go hub's center for a rebuilt workbench state, the previous one stopped.
     private func replaceHubCenter(
-        cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
+        dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
     ) {
         hubCenter?.stop()
         hubCenter = makeHubCenter(cliRunner)
+        phoneRecordingQueue = replacePhoneRecordingQueue(phoneRecordingQueue, hub: hubCenter, dbPool: dbPool, cliRunner: cliRunner)
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.start()
     }
@@ -1908,6 +1910,7 @@ final class AppState {
     /// The app quits: no more heartbeats, so the hub's view goes stale.
     func stopHubCenterForQuit() {
         hubCenter?.stop()
+        phoneRecordingQueue?.stop()
     }
 
     /// Agent analytics (#298): the previous center stopped, a new one built.
