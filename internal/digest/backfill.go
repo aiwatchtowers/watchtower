@@ -48,8 +48,13 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 }
 
 // RunBackfillWindowChannels is RunBackfillWindow limited to channels
-// (namespaced ids): the others' messages in the chunk are left as they are.
-// An empty list digests nothing and is complete.
+// (namespaced ids): the others' messages in the window are left as they are.
+// The caller has already cut every digest's period out of (from, to] (`slack
+// backfill`, internal/slackbackfill), so a digest ending inside the window
+// does not move a channel's start: each channel loads (from, to] — a message
+// on `from` belongs to the digest ending there — and a call's passes advance
+// on what the call itself considered. An empty list digests nothing and is
+// complete.
 func (p *Pipeline) RunBackfillWindowChannels(ctx context.Context, slackAccountID int64, from, to float64, channels []string) (BackfillWindowResult, *Usage, error) {
 	if len(channels) == 0 {
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
@@ -203,9 +208,12 @@ func (p *Pipeline) backfillWindows(slackAccountID int64, from, to, fastForwardTS
 		if b.failed[c.ChannelID] || (b.only != nil && !b.only[c.ChannelID]) {
 			continue
 		}
-		since := max(from, c.LastDigestInRange, b.considered[c.ChannelID], fastForwardTS)
+		since := max(from, b.considered[c.ChannelID], fastForwardTS)
+		if b.only == nil {
+			since = max(since, c.LastDigestInRange)
+		}
 		if c.NewestInRange > since {
-			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since})
+			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since, afterSince: b.only != nil})
 		}
 	}
 	if len(windows) == 0 {

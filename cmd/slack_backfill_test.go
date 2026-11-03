@@ -9,34 +9,14 @@ import (
 	"path/filepath"
 	gosync "sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackbackfill"
 )
-
-func TestSlackBackfillRange(t *testing.T) {
-	now := time.Date(2026, 3, 20, 10, 0, 0, 0, time.Local)
-	floor, upper, err := slackBackfillRange("2026-03-10", "2026-03-14", now)
-	require.NoError(t, err)
-	assert.Equal(t, time.Date(2026, 3, 10, 0, 0, 0, 0, time.Local), floor)
-	assert.Equal(t, time.Date(2026, 3, 15, 0, 0, 0, 0, time.Local), upper, "--to is included")
-
-	for _, c := range [][2]string{
-		{"2026-03-14", "2026-03-10"}, // reversed
-		{"2026-03-10", "2026-03-21"}, // future
-		{"2026-01-01", "2026-03-01"}, // too long
-		{"03/10/2026", "2026-03-14"}, // bad format
-	} {
-		_, _, err := slackBackfillRange(c[0], c[1], now)
-		assert.Error(t, err, c)
-	}
-	_, _, err = slackBackfillRange("2026-02-17", "2026-03-19", now)
-	assert.NoError(t, err, "31 days is allowed")
-}
 
 // slackBackfillEnv is a workspace with digests off and Slack account #1 on
 // rowTeamID (the legacy workspace row names T_HOME), its token pointed at a
@@ -187,8 +167,16 @@ func TestSlackBackfill_RefusesDuringAPurge(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = runSlackBackfillCmd("--account", "1", "--from", "2026-03-10", "--to", "2026-03-12")
-	require.ErrorIs(t, err, errLoginDuringPurge)
+	require.ErrorIs(t, err, slackbackfill.ErrPurgeRunning)
+	assert.Contains(t, err.Error(), "run the backfill again once it finishes")
 	assert.Empty(t, *queries)
+}
+
+func TestSlackBackfill_UnknownAccountIsNotFound(t *testing.T) {
+	slackBackfillEnv(t, "T_HOME")
+	_, err := runSlackBackfillCmd("--account", "9", "--from", "2026-03-10", "--to", "2026-03-12")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "slack account 9 not found")
 }
 
 // The row is on the home team but the token file names another one (a

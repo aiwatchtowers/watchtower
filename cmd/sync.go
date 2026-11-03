@@ -935,17 +935,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// whether it was wired here.
 	gen, cleanupPool := cliPooledGenerator(cfg)
 	defer cleanupPool()
-	tracksPipe := tracks.New(database, cfg, gen, logger)
-	tracksPipe.SetPromptStore(prompts.New(database, nil))
-	pipe := digest.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-	pipe.TrackLinker = tracksPipe
 	// One shared detector across both pipelines, so the known-project-key set
 	// is loaded once rather than once per pipeline.
-	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
-		pipe.SetJiraKeyDetector(det)
-		tracksPipe.SetJiraKeyDetector(det)
-	}
+	pipe, tracksPipe := newLinkedDigestPipeline(cfg, database, gen, logger, newIssueKeyDetector(cfg, database, logger))
 	d.SetDigestPipeline(pipe)
 	d.SetTracksPipeline(tracksPipe)
 	peoplePipe := guide.New(database, cfg, gen, logger)
@@ -1297,6 +1289,22 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 	registerConfluenceMedia(d.MediaPipeline(), database, fetchers, logger)
 }
 
+// newLinkedDigestPipeline is the digest pipeline every sync path runs: the
+// prompt store, the tracks pipeline linked between channel digests and
+// rollups, and det (nil when no tracker is connected) shared by both.
+func newLinkedDigestPipeline(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger, det *issuekey.KeyDetector) (*digest.Pipeline, *tracks.Pipeline) {
+	tracksPipe := tracks.New(database, cfg, gen, logger)
+	tracksPipe.SetPromptStore(prompts.New(database, nil))
+	pipe := digest.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
+	pipe.TrackLinker = tracksPipe
+	if det != nil {
+		pipe.SetJiraKeyDetector(det)
+		tracksPipe.SetJiraKeyDetector(det)
+	}
+	return pipe, tracksPipe
+}
+
 // newIssueKeyDetector is issuekey.NewKeyDetectorIfEnabled with the detector's
 // logger moved onto the sync command's stream (its default is os.Stderr, which
 // is daemon.log for a detached child). Returns a nil *issuekey.KeyDetector when
@@ -1569,15 +1577,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	// Digests (with tracks linked between channel digests and rollups)
 	fmt.Fprintln(out)
 	digestSpinner := ui.NewSpinner(out, "Generating digests...")
-	pipe := digest.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-	tracksPipe := tracks.New(database, cfg, gen, logger)
-	tracksPipe.SetPromptStore(prompts.New(database, nil))
-	pipe.TrackLinker = tracksPipe
-	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
-		pipe.SetJiraKeyDetector(det)
-		tracksPipe.SetJiraKeyDetector(det)
-	}
+	pipe, _ := newLinkedDigestPipeline(cfg, database, gen, logger, newIssueKeyDetector(cfg, database, logger))
 	pipe.OnProgress = func(done, total int, status string) {
 		digestSpinner.UpdateProgress(done, total, status)
 	}

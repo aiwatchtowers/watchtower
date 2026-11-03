@@ -25,6 +25,22 @@ func TestSlackSearchRange(t *testing.T) {
 	assert.Equal(t, "2026-09-23", before)
 }
 
+// BackfillSearchDays names the same days slackSearchRange sends, as UTC
+// midnights, whatever zone the bounds are in.
+func TestBackfillSearchDays_MatchesTheSearchRange(t *testing.T) {
+	la, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	// Local midnights in Los Angeles are 07:00 or 08:00 UTC.
+	from := time.Date(2026, 3, 10, 0, 0, 0, 0, la)
+	to := time.Date(2026, 3, 12, 0, 0, 0, 0, la)
+	first, last := BackfillSearchDays(from, to)
+	assert.Equal(t, time.Date(2026, 3, 9, 0, 0, 0, 0, time.UTC), first)
+	assert.Equal(t, time.Date(2026, 3, 13, 0, 0, 0, 0, time.UTC), last)
+	after, before := slackSearchRange(from, to)
+	assert.Equal(t, first.Format("2006-01-02"), after)
+	assert.Equal(t, last.Format("2006-01-02"), before)
+}
+
 // oneMatchSearch answers search.messages with one match on one page and
 // records every query it was sent.
 func oneMatchSearch(queries *[]string, mu *gosync.Mutex) http.HandlerFunc {

@@ -502,6 +502,18 @@ func (p *Pipeline) RunRollups(ctx context.Context) error {
 type channelWindow struct {
 	channelID string
 	since     float64
+	// afterSince loads (since, to] instead of [since, to]: the message on
+	// since belongs to the digest that ends there (RunBackfillWindowChannels).
+	afterSince bool
+}
+
+// loadFrom is the first ts_unix the window loads. ts_unix holds whole
+// seconds, so since+1 excludes exactly the messages on since.
+func (w channelWindow) loadFrom() float64 {
+	if w.afterSince {
+		return w.since + 1
+	}
+	return w.since
 }
 
 // RunChannelDigests generates digests for every channel holding messages its
@@ -556,7 +568,7 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 // offered again with its undigested messages still inside the window — no
 // other channel's success can move it past them.
 func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, error) {
-	firstRunSince := p.initialHistorySince(nowUnix)
+	firstRunSince := p.InitialHistorySince(nowUnix)
 	fastForwardTS, err := p.db.GetDigestFastForwardTS()
 	if err != nil {
 		p.logger.Printf("digest: reading fast-forward ts: %v", err)
@@ -677,10 +689,10 @@ func channelDigestSince(c db.ChannelDigestCandidate, firstRunSince, fastForwardT
 	return since
 }
 
-// initialHistorySince is the window start a channel that has never been
+// InitialHistorySince is the window start a channel that has never been
 // digested falls back to: initial_history_days before now (set during
 // onboarding).
-func (p *Pipeline) initialHistorySince(nowUnix float64) float64 {
+func (p *Pipeline) InitialHistorySince(nowUnix float64) float64 {
 	days := p.cfg.Sync.InitialHistoryDays
 	if days <= 0 {
 		days = config.DefaultInitialHistDays
@@ -918,7 +930,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 // everything. Both are the one condition advancesWindow states, and both take
 // the over-cap reload below.
 func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) (msgs []db.Message, consideredFloor float64, err error) {
-	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.DefaultTimeRangeLimit)
+	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.loadFrom(), nowUnix, db.DefaultTimeRangeLimit)
 	if err != nil || len(msgs) < db.DefaultTimeRangeLimit {
 		return msgs, 0, err
 	}
@@ -947,7 +959,7 @@ func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) (msgs []
 // a silent stall is the worse of the two failures. The ideas pipeline makes the
 // same call at its own boundary.
 func (p *Pipeline) loadOpeningSecondOverCap(w channelWindow, nowUnix float64) ([]db.Message, float64, error) {
-	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.BoundarySecondRowLimit)
+	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.loadFrom(), nowUnix, db.BoundarySecondRowLimit)
 	if err != nil {
 		return nil, 0, err
 	}

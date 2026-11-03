@@ -549,17 +549,100 @@ func (db *DB) ChannelsWithMessagesInRange(slackAccountID int64, from, to float64
 	return candidates, nil
 }
 
-// ChannelDigestOverlaps reports whether a channel digest of channelID covers
-// any part of (from, to].
-func (db *DB) ChannelDigestOverlaps(channelID string, from, to float64) (bool, error) {
-	var has bool
-	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM digests
-		WHERE type = 'channel' AND channel_id = ? AND period_from < ? AND period_to > ?)`,
-		channelID, to, from).Scan(&has)
+// ChannelDigestPeriod is one channel digest's id and its period
+// (From, To], the messages it was written from.
+type ChannelDigestPeriod struct {
+	ID        int64
+	ChannelID string
+	From, To  float64
+}
+
+// ChannelDigestsOverlapping returns every channel digest of the Slack
+// account's channels (namespaced ids, see ChannelsWithMessagesInRange) whose
+// period (period_from, period_to] overlaps (from, to], ordered by channel and
+// period_from.
+func (db *DB) ChannelDigestsOverlapping(slackAccountID int64, from, to float64) ([]ChannelDigestPeriod, error) {
+	prefix := strconv.FormatInt(slackAccountID, 10) + ":"
+	rows, err := db.Query(`SELECT id, channel_id, period_from, period_to FROM digests
+		WHERE type = 'channel' AND period_from < ? AND period_to > ?
+		  AND substr(channel_id, 1, ?) = ?
+		ORDER BY channel_id, period_from`, to, from, len(prefix), prefix)
 	if err != nil {
-		return false, fmt.Errorf("checking digests of channel %s: %w", channelID, err)
+		return nil, fmt.Errorf("querying channel digests in range: %w", err)
 	}
-	return has, nil
+	defer rows.Close()
+	var out []ChannelDigestPeriod
+	for rows.Next() {
+		var d ChannelDigestPeriod
+		if err := rows.Scan(&d.ID, &d.ChannelID, &d.From, &d.To); err != nil {
+			return nil, fmt.Errorf("querying channel digests in range: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("querying channel digests in range: %w", err)
+	}
+	return out, nil
+}
+
+// ChannelMessageTimesInRange returns, per channel of the Slack account, the
+// ts_unix of each of its messages in (from, to], ascending.
+func (db *DB) ChannelMessageTimesInRange(slackAccountID int64, from, to float64) (map[string][]float64, error) {
+	prefix := strconv.FormatInt(slackAccountID, 10) + ":"
+	rows, err := db.Query(`SELECT channel_id, ts_unix FROM messages
+		WHERE ts_unix > ? AND ts_unix <= ? AND substr(channel_id, 1, ?) = ?
+		ORDER BY channel_id, ts_unix`, from, to, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("querying message times in range: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]float64{}
+	for rows.Next() {
+		var ch string
+		var ts float64
+		if err := rows.Scan(&ch, &ts); err != nil {
+			return nil, fmt.Errorf("querying message times in range: %w", err)
+		}
+		out[ch] = append(out[ch], ts)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("querying message times in range: %w", err)
+	}
+	return out, nil
+}
+
+// ChannelForwardMarks returns, for each channel of the Slack account that
+// has one, the high-water mark the forward digest starts after: the later of
+// its newest channel digest's period_to and channels.digest_considered_ts
+// (the mark ChannelsWithUndigestedMessages compares against). A channel with
+// neither is absent; the forward digest starts it at the first-run lookback.
+func (db *DB) ChannelForwardMarks(slackAccountID int64) (map[string]float64, error) {
+	prefix := strconv.FormatInt(slackAccountID, 10) + ":"
+	rows, err := db.Query(`SELECT channel_id, MAX(mark) FROM (
+			SELECT channel_id, MAX(period_to) AS mark FROM digests
+			WHERE type = 'channel' AND substr(channel_id, 1, ?) = ?
+			GROUP BY channel_id
+			UNION ALL
+			SELECT id, digest_considered_ts FROM channels
+			WHERE digest_considered_ts > 0 AND substr(id, 1, ?) = ?
+		) GROUP BY channel_id`, len(prefix), prefix, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("querying channel forward marks: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var ch string
+		var mark float64
+		if err := rows.Scan(&ch, &mark); err != nil {
+			return nil, fmt.Errorf("querying channel forward marks: %w", err)
+		}
+		out[ch] = mark
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("querying channel forward marks: %w", err)
+	}
+	return out, nil
 }
 
 // GetDigestDecisionsForChannel returns individual decisions from digests

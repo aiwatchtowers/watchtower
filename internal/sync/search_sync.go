@@ -195,7 +195,20 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 // widened by a day to keep both edge days inside; the overlap is harmless
 // (messages upsert).
 func slackSearchRange(from, to time.Time) (after, before string) {
-	return from.UTC().AddDate(0, 0, -1).Format(searchDateFormat), to.UTC().AddDate(0, 0, 1).Format(searchDateFormat)
+	first, last := BackfillSearchDays(from, to)
+	return first.Format(searchDateFormat), last.Format(searchDateFormat)
+}
+
+// BackfillSearchDays is the UTC midnight of the "after:" day and of the
+// "before:" day BackfillSearch sends for [from, to). The search may store
+// messages of any UTC day from first to last, both included (the operators
+// are day-granular, and Slack may read them in the user's own zone), so a
+// caller that must know what the search can have stored takes this whole
+// span (`slack backfill` freezes its coverage over it).
+func BackfillSearchDays(from, to time.Time) (first, last time.Time) {
+	first = from.UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	last = to.UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
+	return first, last
 }
 
 // ErrBackfillIncomplete is BackfillSearch's error when Slack's search did not
