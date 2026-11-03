@@ -164,8 +164,11 @@ type ControlAnswer struct {
 	State   string `json:"state,omitempty"`
 	// ViewNeeded on a desktop heartbeat's answer: the hub holds no current
 	// desktop_view (never sent, or dropped while the heartbeat was stale).
-	ViewNeeded bool   `json:"view_needed,omitempty"`
-	Pair       string `json:"pair,omitempty"`
+	ViewNeeded bool `json:"view_needed,omitempty"`
+	// PhoneContactAt (desktop_heartbeat, a running hub only): when a phone
+	// was last in touch — the Desktop's keep-awake input (Task 23).
+	PhoneContactAt *time.Time `json:"phone_contact_at,omitempty"`
+	Pair           string     `json:"pair,omitempty"`
 }
 
 // serveControl listens on <dir>/hub.sock until the returned stop is called
@@ -437,7 +440,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 func opClass(op string) string {
 	for _, known := range []string{OpUnlink, OpAllow, OpName, OpEnable, OpDisable, OpPair, OpConfirm,
 		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish, OpRecordings,
-		OpDesktopView, OpRecordingProgress, OpDesktopWatch, OpConfirmDeleted} {
+		OpDesktopView, OpRecordingProgress, OpDesktopWatch, OpConfirmDeleted, OpRecordingDiscard} {
 		if op == known {
 			return known
 		}
@@ -475,13 +478,15 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		}
 		s.recordingsChanged() // the first beat turns the default switch on
 		s.poke()
-		return ControlAnswer{OK: true, At: &now, ViewNeeded: s.desktopBeat(now, wasFresh)}
+		return ControlAnswer{OK: true, At: &now, ViewNeeded: s.desktopBeat(now, wasFresh), PhoneContactAt: s.phoneContactAt()}
 	case OpRecordingClaim, OpRecordingFinish:
 		return s.recordingJob(r)
 	case OpRecordings:
 		return s.setRecordings(r.On)
 	case OpRecordingProgress:
 		return s.recordingProgress(r)
+	case OpRecordingDiscard:
+		return s.recordingDiscard(r)
 	case OpDesktopView:
 		if len(r.Hidden) > MaxViewIDs || len(r.DisplayOver) > MaxViewIDs {
 			return ControlAnswer{Error: ErrClassTooManyIDs}
@@ -652,12 +657,16 @@ func (s *supervisor) offlineLink(r ControlRequest) ControlAnswer {
 }
 
 // setEnabled flips hub_meta.enabled; turning it on is refused while the
-// policy is off (the setting is not written).
+// policy is off (the setting is not written). The write holds offlineMu, so
+// it never lands in the middle of the off's unlinking (unlinkForOff).
 func (s *supervisor) setEnabled(on bool) ControlAnswer {
 	if on && s.o.mobileSync() == policy.MobileOff {
 		return ControlAnswer{Error: ErrClassPolicyOff}
 	}
-	if err := s.st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on))); err != nil {
+	s.offlineMu.Lock()
+	err := s.st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on)))
+	s.offlineMu.Unlock()
+	if err != nil {
 		return ControlAnswer{Error: ErrClassFailed}
 	}
 	s.poke()

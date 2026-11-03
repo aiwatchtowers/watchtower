@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
 
@@ -260,5 +261,32 @@ func TestRecordingUploadWithoutAnIntakeStaysPending(t *testing.T) {
 	w.sync(w.phone)
 	if _, ok := w.phone.UploadEchoes["u1"]; ok {
 		t.Fatal("an echo without an intake")
+	}
+}
+
+// Sim rule 16: an upload from a lapsed phone, or one sent before its last
+// lapse, is never left unanswered: it gets the final failed echo, under
+// which the phone keeps its audio and may send it again (protocol §7.7);
+// the intake never runs.
+func TestASkippedRecordingUploadIsAnsweredFailed(t *testing.T) {
+	for name, sw := range map[string]*fakeSwitch{
+		"lapsed":  {active: transport.KindRelay, lapsed: true},
+		"skipped": {active: transport.KindRelay, skipped: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newUploadWorld(t)
+			w.withSwitch(sw)
+			w.next = RecordingOutcome{Status: wire.StatusReceived}
+			id := w.phone.ID()
+			w.upload("u1", &id)
+			w.pass()
+			e := w.echo("u1")
+			if e["status"] != "failed" || e["error_message"] != notDeliveredUploadMessage || e["reason"] != reasonNotDelivered {
+				t.Fatalf("echo %v", e)
+			}
+			if len(w.calls) != 0 {
+				t.Fatal("the intake ran for a skipped upload")
+			}
+		})
 	}
 }

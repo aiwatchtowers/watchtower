@@ -388,8 +388,35 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "workspaceSwitcherWaitLine-narrow", size: NSSize(width: 220, height: 190)) {
                 HostRestartShotFixtures.waitLines()
+            },
+            DesignShot(name: "mobileAdoptionLoading", size: NSSize(width: 640, height: 130)) {
+                HubAdoptionShotFixtures.screen(.checking)
+            },
+            DesignShot(name: "mobileAdoptionLoading-narrow", size: NSSize(width: 320, height: 130)) {
+                HubAdoptionShotFixtures.screen(.checking)
+            },
+            DesignShot(name: "mobileHandOverInProgress", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.inProgress(step: "rename"))
+            },
+            DesignShot(name: "mobileHandOverInProgress-narrow", size: NSSize(width: 320, height: 150)) {
+                HubAdoptionShotFixtures.screen(.inProgress(step: "rename"))
+            },
+            DesignShot(name: "mobileAdoptionFailed", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
+            },
+            DesignShot(name: "mobileAdoptionFailed-noKeys", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "no_keys"))
+            },
+            DesignShot(name: "mobileAdoptionFailed-narrow", size: NSSize(width: 320, height: 200)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
             }
-        ] + CleanupShotFixtures.Frame.allCases.map { frame in
+        ] + MobileSettingsShotFixtures.Frame.allCases.map { frame in
+            // Settings → Mobile over `watchtower hub …` (go hub phase 3 Task 23), mockup §1–§9.
+            DesignShot(name: frame.name, size: frame.size) { MobileSettingsShotFixtures.screen(frame) }
+        } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
+            // The pairing sheet over `hub pair --json --stream`, mockup §11–§13.
+            DesignShot(name: shot.rawValue, size: NSSize(width: 380, height: 400)) { MobileSettingsShotFixtures.pairing(shot) }
+        } + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
                 CleanupShotFixtures.screen(frame)

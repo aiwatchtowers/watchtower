@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -256,6 +257,22 @@ func (p *Processor) readHeldEchoes(ctx context.Context, b mailbox, due map[strin
 	}
 }
 
+// uploadNotDelivered: b's phone is lapsed on this transport, or the upload
+// (stamped at, zero for a held retry) was sent before its last lapse (sim
+// rule 16). A switcher read that fails counts as not lapsed: the intake
+// then answers as usual.
+func (p *Processor) uploadNotDelivered(b mailbox, at time.Time) bool {
+	if p.cfg.Switch == nil {
+		return false
+	}
+	k, device := p.cfg.Transport.Kind(), b.id.String()
+	if lapsed, err := p.cfg.Switch.Lapsed(k, device, 0); err == nil && lapsed {
+		return true
+	}
+	skipped, err := p.cfg.Switch.Skipped(k, device, 0, at)
+	return err == nil && skipped
+}
+
 // heldOutcome is held_uploads.outcome for a final answer.
 func heldOutcome(o Outcome) string {
 	switch {
@@ -316,6 +333,11 @@ func (p *Processor) settleUpload(ctx context.Context, h *heldUpload, ps *pass, r
 		out = failed(reasonWrongHub, wrongHubMessage)
 	case held && p.cfg.Clock().Sub(heldAt) >= state.HeldUploadMaxAge:
 		out = failed(reasonExpired, expiredUploadMessage)
+	case p.uploadNotDelivered(b, h.r.at):
+		// Sim rule 16: never left unanswered. A failed echo keeps the
+		// phone's audio, and Retry sends it again (protocol §7.7); over
+		// CloudKit when the relay refuses the echo (the switcher owes it).
+		out = failed(reasonNotDelivered, notDeliveredUploadMessage)
 	default:
 		var desc *secure.AssetDescriptor
 		if d := h.o.Frame.Asset; d != nil {

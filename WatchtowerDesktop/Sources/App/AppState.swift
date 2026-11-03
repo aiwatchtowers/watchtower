@@ -374,16 +374,17 @@ final class AppState {
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// The Go hub over its control socket (heartbeat, view inputs, status;
     /// go hub plan 3 Task 14); none under XCTest.
-    private(set) var hubCenter: HubCenter?
-    /// The one-time restart of sessions from a v1 session host (go hub spec
-    /// §8 p. 4b): its notice above every tab and the other workspaces' wait
-    /// lines. Made once per app run by `startHostRestart`. The hub's adoption
-    /// awaits its `waitUntilSettled()` (go hub plan 3 order: migrate →
-    /// compact → restart step → adoption → daemon's hub).
+    var hubCenter: HubCenter? // set by replaceHubCenter (AppState+MobileSettings)
+    /// The one-time v1-host restart (go hub spec §8 p. 4b), made by `startHostRestart`; the
+    /// adoption awaits its `waitUntilSettled()` (order: migrate → compact → restart → adoption).
     private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
-    @ObservationIgnored private(set) var phoneRecordingQueue: PhoneRecordingQueue? // `replacePhoneRecordingQueue`
+    /// Phone recordings on the Go hub (go hub plan 3 Task 17); set by
+    /// `replaceHubCenter` through `replacePhoneRecordingQueue`.
+    @ObservationIgnored var phoneRecordingQueue: PhoneRecordingQueue?
+    /// "Keep this Mac awake for the iPhone" over the Go hub (Task 23).
+    @ObservationIgnored var hubKeepAwake: HubKeepAwake?
     /// Every line the app types into a workbench session's prompt — an
     /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
     /// one queue per session (PROJ-12).
@@ -438,6 +439,11 @@ final class AppState {
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored var mobileHubStorage: MobileHubStorage?
     @ObservationIgnored var mobileHubPool: DatabasePool?
+    var hubAdoption: HubAdoptionDriver? // Mobile's hand-over to the Go hub (`startHubAdoption`)
+    /// The Swift hub never starts (never two hubs); false under XCTest only, until go hub plan 3 Task 24.
+    @ObservationIgnored var swiftHubRetired =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil && NSClassFromString("XCTestCase") == nil
+    @ObservationIgnored var hubAdoptionDeps: HubAdoptionDeps? // the hand-over's runner and keys; nil: the live ones
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
@@ -1877,23 +1883,12 @@ final class AppState {
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
         Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
-        initMobileHub(dbPool: dbPool)
+        startMobile(dbPool: dbPool) // after the restart step, which the hand-over awaits
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {
             automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)
         }
         syncAutomationSessionCenter()
-    }
-
-    /// The Go hub's center for a rebuilt workbench state, the previous one stopped.
-    private func replaceHubCenter(
-        dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
-    ) {
-        hubCenter?.stop()
-        hubCenter = makeHubCenter(cliRunner)
-        phoneRecordingQueue = replacePhoneRecordingQueue(phoneRecordingQueue, hub: hubCenter, dbPool: dbPool, cliRunner: cliRunner)
-        hubCenter?.follow(workbenches: vm, agentStates: agentStates)
-        hubCenter?.start()
     }
 
     /// Makes the v1-host restart step once per app run (a setup re-run that
@@ -1905,12 +1900,6 @@ final class AppState {
         let step = HostRestartStep(center: terminalCenter) { [weak self] in self?.workbenchesViewModel }
         hostRestart = step
         Task { await step.runIfNeeded() }
-    }
-
-    /// The app quits: no more heartbeats, so the hub's view goes stale.
-    func stopHubCenterForQuit() {
-        hubCenter?.stop()
-        phoneRecordingQueue?.stop()
     }
 
     /// Agent analytics (#298): the previous center stopped, a new one built.

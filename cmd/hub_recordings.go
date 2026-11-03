@@ -19,6 +19,9 @@ const hubRecordingsVerb = "turn phone recordings on or off"
 type hubRecordingsJSON struct {
 	Recordings string `json:"recordings"`
 	Stored     bool   `json:"stored"`
+	// Error is a refused switch's class with --json (no_transcriber): the
+	// line then carries the switch as it stays, stored false, exit 0.
+	Error string `json:"error,omitempty"`
 }
 
 func init() {
@@ -49,6 +52,17 @@ func runHubRecordings(cmd *cobra.Command, args []string) error {
 		}
 		return hub.ControlAnswer{OK: true, Recordings: args[0]}, nil
 	})
+	if asJSON && errors.Is(err, state.ErrNoTranscriber) {
+		dir, derr := hubDir()
+		if derr != nil {
+			return derr
+		}
+		current, verr := hubRecordingsValue(dir)
+		if verr != nil {
+			return verr
+		}
+		return hubPrint(cmd, true, hubRecordingsJSON{Recordings: current, Error: hub.ErrClassNoTranscriber}, "")
+	}
 	if err != nil {
 		return err
 	}

@@ -88,6 +88,8 @@ var sidecarColumns = map[string]string{
 	"link_refusals.agreement_key": classPublicKey,
 
 	"hub_epochs.sealed_keys": classSealed,
+	"hub_epochs.reason":      classEnum, // why the epoch began (00010)
+	// hub_epochs.retire_after is REAL, a timestamp (not text, so not listed).
 
 	"pending_devices.device_id":        classID,
 	"pending_devices.name":             classLabel,

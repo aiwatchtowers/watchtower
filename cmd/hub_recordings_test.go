@@ -60,6 +60,18 @@ func TestRecordingsOnRefusedWithoutATranscriber(t *testing.T) {
 	on, stored := recordingsOf(t, dir)
 	assert.False(t, on)
 	assert.False(t, stored, "nothing stored")
+
+	// --json: the refusal is a structured class on stdout (Settings → Mobile reads it).
+	out, err := runHub(t, "recordings", "on", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.ElementsMatch(t, []string{"recordings", "stored", "error"}, hubKeysOf(m))
+	assert.Equal(t, "no_transcriber", m["error"])
+	assert.Equal(t, "off", m["recordings"])
+	assert.Equal(t, false, m["stored"])
+	on, stored = recordingsOf(t, dir)
+	assert.False(t, on)
+	assert.False(t, stored, "nothing stored")
 }
 
 func TestHubRecordingsRefusedUnderAnAgentMarker(t *testing.T) {

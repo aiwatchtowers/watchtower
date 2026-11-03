@@ -761,6 +761,8 @@ private final class FlakyHubKeyStore: HubKeyStore, @unchecked Sendable {
         return (keys, false)
     }
 
+    func existingHubIdentity(hubID: String) throws -> HubIdentityKeys? { try hubIdentity(hubID: hubID).keys }
+
     func deleteHubIdentity(hubID: String) throws {
         lock.withLock { deleteCount += 1 }
     }

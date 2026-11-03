@@ -642,6 +642,35 @@ func TestMemfake_EventsNeverDropped(t *testing.T) {
 	}
 }
 
+// RefuseWrites refuses the hub's saves and the phone's writes into one zone
+// (an item's Refused, Write's error) until cleared; deletes go on.
+func TestMemfake_RefuseWritesPerZone(t *testing.T) {
+	eachKind(t, func(t *testing.T, f *Fake, s *secure.Sealer) {
+		rec := seal(t, s, "target-1", `{"v":1}`)
+		if o := saveOne(t, f, rec, absent); !o.Saved {
+			t.Fatalf("save: %+v", o)
+		}
+		f.RefuseWrites(zone, transport.ErrEntitlementInactive)
+		if o := saveOne(t, f, seal(t, s, "target-2", `{"v":1}`), absent); o.Saved || !errors.Is(o.Refused, transport.ErrEntitlementInactive) {
+			t.Fatalf("save while refused: %+v", o)
+		}
+		if _, err := f.Write(zone, "phone-record", []byte{1}, absent); !errors.Is(err, transport.ErrEntitlementInactive) {
+			t.Fatalf("write while refused: %v", err)
+		}
+		if _, err := f.Write("other-zone", "phone-record", []byte{1}, absent); err != nil {
+			t.Fatalf("another zone refused: %v", err)
+		}
+		del, err := f.Delete(context.Background(), zone, []transport.DeleteItem{{Name: rec.WireName()}})
+		if err != nil || !del[0].Saved {
+			t.Fatalf("delete while refused: %+v %v", del, err)
+		}
+		f.RefuseWrites(zone, nil)
+		if o := saveOne(t, f, seal(t, s, "target-2", `{"v":1}`), absent); !o.Saved {
+			t.Fatalf("save after clearing: %+v", o)
+		}
+	})
+}
+
 func TestZoneNames(t *testing.T) {
 	if transport.DataZone("H") != "data/H" || transport.MailboxZone("H", "P") != "relay/H/P" || transport.PairZone("S") != "pair/S" {
 		t.Error("zone names drifted from the relay proto README")

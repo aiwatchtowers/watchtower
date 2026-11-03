@@ -76,6 +76,10 @@ struct MobileHubStorage {
     /// sidecar is its persisted wire → plain name map (F19). Lifecycle calls stay on `transport`. nil exactly when
     /// `keyring` is: then nothing is published, never in the clear.
     var secure: SecureTransport?
+    /// Closes the storage's database files (`transport.db` and the sidecar),
+    /// so the Go hub's adoption finds no open handle (go hub plan 3
+    /// Task 22); a stub storage has nothing to close.
+    var close: () throws -> Void = {}
 
     /// A stub storage (tests): no CloudKit, and a hub identity in an in-memory keychain.
     static func stub(transport: any HubTransport, sidecar: HubSyncState) throws -> Self {
@@ -113,18 +117,20 @@ struct MobileHubStorage {
     /// CloudKitTransport on those zones; the shares are of the same zones.
     /// A `MOVED` note from a newer Watchtower (`MobileHubMovedGuard`) throws
     /// `Moved` before anything in `dir` is created or opened, and before any
-    /// Keychain item is read: this app no longer runs the hub.
-    static func live(directory dir: URL = directory()) throws -> Self {
+    /// Keychain item is read: this app no longer runs the hub. `withKeys`
+    /// false (the POLICY-03 wipe before the Go hub's hand-over) reads and
+    /// creates no Keychain item at all: no keyring, nothing sealed.
+    static func live(directory dir: URL = directory(), withKeys: Bool = true) throws -> Self {
         guard !MobileHubMovedGuard.isMoved(mobileHubDir: dir) else { throw MobileHubMovedGuard.Moved() }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         let hubID = try sidecar.ensureHubID()
         let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
-        let keyring = CloudKitTransport.entitlementPresent()
+        let keyring = withKeys && CloudKitTransport.entitlementPresent()
             ? try HubKeyring(hubID: hubID, sidecar: sidecar, store: KeychainHubKeyStore(backend: SecItemKeychainBackend()))
             : nil
         let transport = CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub)
-        return Self(
+        var storage = Self(
             transport: transport,
             sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true),
@@ -134,6 +140,11 @@ struct MobileHubStorage {
             keyring: keyring,
             secure: keyring.map { sealing(transport, keyring: $0, sidecar: sidecar) }
         )
+        storage.close = {
+            try store.close()
+            try sidecar.queue.close()
+        }
+        return storage
     }
 
     /// Unsigned dev builds lack the iCloud and push entitlements: no-op.

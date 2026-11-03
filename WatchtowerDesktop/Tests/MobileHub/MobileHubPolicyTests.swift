@@ -194,4 +194,107 @@ final class MobileHubPolicyTests: XCTestCase {
         XCTAssertNil(appState.mobileHub)
         XCTAssertEqual(transport.starts, 0)
     }
+
+    // MARK: - Production branch (the Swift hub retired, go hub plan 3 Task 22)
+
+    /// The app run as shipped: a Swift state waits for the hand-over, the
+    /// owner's toggle is on and `MobileSync = off`. The Swift hub is built
+    /// only to be disabled (what it published is removed), never started;
+    /// the toggle is kept.
+    func testRetiredOffWipesAPendingSwiftStateAndKeepsSetting() async throws {
+        let box = RawBox()
+        box.raw = ["MobileSync": "off"]
+        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
+        let transport = StubHubTransport()
+        let appState = try makeAppState(box, transport: transport, initialize: false)
+        defer { stopAll(appState) }
+        let adoption = retire(appState)
+        appState.managedPolicy.refresh()
+        runInitWorkbenches(appState)
+        let result = try await XCTUnwrap(appState.hubAdoption).run()
+
+        XCTAssertEqual(result, .failed(reason: "no_keys"), "the stub has no keys: the hand-over stops there")
+        await awaitHubCondition("the Swift hub's zones are deleted") { transport.zoneDeletes > 0 }
+        XCTAssertEqual(transport.starts, 0, "built only to wipe, never started")
+        XCTAssertFalse(appState.isMobileSyncEnabled)
+        XCTAssertTrue(defaults.bool(forKey: Constants.mobileSyncEnabledKey), "the owner's toggle is untouched")
+        XCTAssertEqual(adoption.applied, [], "nothing adopted")
+    }
+
+    /// Missing keys and a policy-off wipe: the wipe holds no keyring (it can
+    /// neither create nor repair the identity), the zones are still deleted,
+    /// and the hand-over's read-only probe still finds no keys.
+    func testRetiredWipeNeverCreatesOrRepairsKeys() async throws {
+        let box = RawBox()
+        box.raw = ["MobileSync": "off"]
+        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
+        let transport = StubHubTransport()
+        let appState = try makeAppState(box, transport: transport, initialize: false)
+        defer { stopAll(appState) }
+        let log = AdoptionLog()
+        let keys = FakeHubKeyStore(log: log)
+        _ = retire(appState, keys: keys)
+        let sidecar = try XCTUnwrap(self.sidecar)
+        appState.makeMobileHubStorage = { MobileHubStorage(transport: transport, sidecar: sidecar) } // no keyring
+        appState.managedPolicy.refresh()
+        runInitWorkbenches(appState)
+        let result = try await XCTUnwrap(appState.hubAdoption).run()
+
+        await awaitHubCondition("the zones are deleted without keys") { transport.zoneDeletes > 0 }
+        XCTAssertNil(appState.mobileHubStorage?.keyring, "the wipe's storage holds no keyring")
+        XCTAssertNil(appState.mobileHubStorage?.secure)
+        XCTAssertEqual(keys.creations, 0, "no identity created")
+        XCTAssertFalse(keys.has("hub-acme"))
+        XCTAssertEqual(result, .failed(reason: "no_keys"), "the probe still says no_keys")
+    }
+
+    /// The same run, the profile removed: loosening never starts the Swift
+    /// hub (the Go hub owns Mobile); with the toggle off nothing is built.
+    func testRetiredLooseningNeverStartsTheSwiftHub() async throws {
+        let box = RawBox()
+        box.raw = ["MobileSync": "off"]
+        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
+        let transport = StubHubTransport()
+        let appState = try makeAppState(box, transport: transport, initialize: false)
+        defer { stopAll(appState) }
+        _ = retire(appState)
+        appState.managedPolicy.refresh()
+        runInitWorkbenches(appState)
+        _ = try await XCTUnwrap(appState.hubAdoption).run()
+
+        box.raw = [:]
+        appState.managedPolicy.refresh()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(transport.starts, 0, "loosening never turns the Swift hub on")
+        XCTAssertNotEqual(appState.mobileHub?.status, .running)
+        XCTAssertTrue(defaults.bool(forKey: Constants.mobileSyncEnabledKey))
+    }
+
+    func testRetiredWithTheToggleOffNothingIsBuilt() async throws {
+        let box = RawBox()
+        box.raw = ["MobileSync": "off"]
+        let transport = StubHubTransport()
+        let appState = try makeAppState(box, transport: transport, initialize: false)
+        defer { stopAll(appState) }
+        _ = retire(appState)
+        appState.managedPolicy.refresh()
+        runInitWorkbenches(appState)
+        _ = try await XCTUnwrap(appState.hubAdoption).run()
+        box.raw = [:]
+        appState.managedPolicy.refresh()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(appState.mobileHub, "toggle off: nothing wiped, nothing built")
+        XCTAssertEqual(transport.starts + transport.zoneDeletes, 0)
+    }
+
+    /// The production setting: the Swift hub retired, the hand-over over a
+    /// fake Go hub that reports a Swift state waiting (no keys in the stub).
+    private func retire(_ appState: AppState, keys: FakeHubKeyStore? = nil) -> FakeAdoptHub {
+        let log = AdoptionLog()
+        let adoption = FakeAdoptHub(log: log)
+        adoption.state = .init(hubID: "hub-acme", swiftState: "present")
+        appState.swiftHubRetired = true
+        appState.hubAdoptionDeps = HubAdoptionDeps(runner: adoption, keyStore: keys ?? FakeHubKeyStore(log: log))
+        return adoption
+    }
 }

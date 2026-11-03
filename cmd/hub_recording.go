@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"runtime"
 	"strconv"
 	"time"
@@ -14,6 +13,7 @@ import (
 
 	"watchtower/internal/hub"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 )
@@ -112,7 +112,7 @@ func init() {
 	progress.Flags().Bool("json", false, "print JSON")
 	list := &cobra.Command{Use: "list", Short: "List the phone recording jobs", Args: cobra.NoArgs, RunE: runHubRecordingList}
 	list.Flags().Bool("json", false, "print JSON")
-	recording.AddCommand(claim, finish, progress, list)
+	recording.AddCommand(claim, finish, progress, list, newHubRecordingDiscardCmd())
 	hubCmd.AddCommand(desktop, recording)
 }
 
@@ -136,10 +136,12 @@ func runHubDesktopHeartbeat(cmd *cobra.Command, _ []string) error {
 	if hubGOOS != "darwin" {
 		return errors.New("there is no Watchtower app on Linux")
 	}
-	// Only a test-mode hub has a Desktop beside it: a live hub runs on a
-	// headless host, where nothing may claim to be the app.
-	if os.Getenv(hubDirEnv) == "" {
-		return fmt.Errorf("%s is not set: the Desktop heartbeat goes to a test-mode hub only", hubDirEnv)
+	// A Desktop runs beside a test-mode hub or a desktop host's live hub;
+	// on a headless host nothing may claim to be the app.
+	if _, mode, host, err := hub.Dir(hostProbe()); err != nil {
+		return err
+	} else if mode != hub.ModeTest && host != hostkind.Desktop {
+		return fmt.Errorf("there is no Watchtower app on this host: the Desktop heartbeat goes to a desktop host's hub (or a test-mode one, %s)", hubDirEnv)
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
@@ -191,7 +193,11 @@ func runHubRecordingClaim(cmd *cobra.Command, _ []string) error {
 	}
 	path := a.AudioPath // a running hub names it
 	if path == "" {
-		path = handlers.RecordingAudioPath(handlers.RecordingsDirUnder(dir), a.UploadID)
+		recordings, err := hubRecordingsDir(dir)
+		if err != nil {
+			return err
+		}
+		path = handlers.RecordingAudioPath(recordings, a.UploadID)
 	}
 	return hubPrint(cmd, asJSON, hubClaimJSON{UploadID: a.UploadID, AudioPath: path, Status: a.Status},
 		"claimed "+a.UploadID+": "+path)
@@ -282,7 +288,10 @@ func runHubRecordingList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	recordings := handlers.RecordingsDirUnder(dir)
+	recordings, err := hubRecordingsDir(dir)
+	if err != nil {
+		return err
+	}
 	rows := make([]hubListJSON, 0, len(jobs))
 	for _, j := range jobs {
 		row := hubListJSON{UploadID: j.UploadID, Status: j.Status, Phase: j.Phase, Percent: j.Percent,

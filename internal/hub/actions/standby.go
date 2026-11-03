@@ -32,11 +32,38 @@ func (p *Processor) standby() bool {
 	return p.cfg.Switch != nil && !p.cfg.Switch.IsActive(p.cfg.Transport.Kind())
 }
 
+// lapsed reports whether b's phone is lapsed on this transport now (sim
+// rule 16, Switch.Lapsed); seq is the ordered action being read, or 0.
+func (p *Processor) lapsed(b mailbox, seq uint64) (bool, error) {
+	if p.cfg.Switch == nil {
+		return false, nil
+	}
+	return p.cfg.Switch.Lapsed(p.cfg.Transport.Kind(), b.id.String(), seq)
+}
+
+// orderedSeq is an opened action's action_seq when it binds to its record
+// as an ordered action, else 0.
+func orderedSeq(b mailbox, o secure.Opened) uint64 {
+	var a wire.ActionRequest
+	if o.Frame.Kind != kindAction || !decodes(o.Frame.Payload, &a) {
+		return 0
+	}
+	seq, _, ok := bindAction(b, o, a)
+	if !ok {
+		return 0
+	}
+	return seq
+}
+
 // drainHeldActive drains b's held actions and retries its held uploads,
-// on the active transport only: on standby nothing is applied.
+// on the active transport only and never for a lapsed phone: on standby
+// nothing is applied.
 func (p *Processor) drainHeldActive(ctx context.Context, b mailbox, ps *pass) error {
 	if p.standby() {
 		return nil
+	}
+	if lapsed, err := p.lapsed(b, 0); err != nil || lapsed {
+		return err
 	}
 	if err := p.drainHeld(ctx, b, ps); err != nil {
 		return err

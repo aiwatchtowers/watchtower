@@ -131,7 +131,9 @@ const (
 )
 
 // Control is a server control event; Detail is the kind's detail (a device id,
-// a pairing slot id, or empty).
+// a pairing slot id, or empty). An EntitlementExpired sent to the Mac names
+// the lapsed phone's relay device id there (ruling R31); the switcher acts
+// on it as on that phone's transport_switch (relay sim rule 16).
 type Control struct {
 	Kind   ControlKind
 	Detail string

@@ -120,7 +120,7 @@ func TestHubAdoptJSONKeys(t *testing.T) {
 
 func TestAdoptIsRefusedUnderAnAgentMarker(t *testing.T) {
 	for _, marker := range agentEnvMarkers {
-		for _, args := range [][]string{{"--settings-stdin"}, {"--status", "--json"}, {"--keys-stdin", "--json"}, {"--confirm-deleted", "--json"}} {
+		for _, args := range [][]string{{"--settings-stdin"}, {"--status", "--json"}, {"--keys-stdin", "--json"}, {"--confirm-deleted", "--json"}, {"--set-aside", "--json"}} {
 			t.Run(marker+"/"+args[0], func(t *testing.T) {
 				dir := hubTestDir(t)
 				mobile := swiftMobileHub(t, dir)
@@ -314,4 +314,51 @@ func TestKeysStdinAndSettingsStdinAreSeparateCalls(t *testing.T) {
 	}
 	_, err := os.Stat(filepath.Join(dir, state.FileName))
 	assert.True(t, os.IsNotExist(err), "nothing adopted")
+}
+
+// --set-aside (no_keys' way out): MOVED written, the Swift files kept in a
+// set-aside folder, nothing imported; the status then has nothing to adopt.
+func TestHubAdoptSetAside(t *testing.T) {
+	dir := hubTestDir(t)
+	mobile := swiftMobileHub(t, dir)
+
+	out, err := runHub(t, "adopt", "--set-aside", "--json", "--mobile-hub", mobile)
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.ElementsMatch(t, []string{"set_aside"}, hubKeysOf(m))
+	assert.Equal(t, "done", m["set_aside"])
+
+	_, err = os.Stat(filepath.Join(mobile, state.FileName))
+	assert.True(t, os.IsNotExist(err), "the Swift sidecar is no longer where the hub looks")
+	asides, err := filepath.Glob(filepath.Join(mobile, "set-aside-*", state.FileName))
+	require.NoError(t, err)
+	assert.Len(t, asides, 1, "kept, not deleted")
+	note, err := os.ReadFile(filepath.Join(mobile, adopt.MovedName))
+	require.NoError(t, err)
+	assert.Equal(t, "hub_impl=go\nmoved_to="+dir+"\n", string(note))
+	_, err = os.Stat(filepath.Join(dir, state.FileName))
+	assert.True(t, os.IsNotExist(err), "nothing imported")
+
+	out, err = runHub(t, "adopt", "--status", "--json", "--mobile-hub", mobile)
+	require.NoError(t, err)
+	m = decodeKeys(t, out)
+	assert.Equal(t, "absent", m["swift_state"])
+	assert.Equal(t, "", m["step"])
+
+	out, err = runHub(t, "adopt", "--set-aside", "--json", "--mobile-hub", mobile)
+	require.NoError(t, err, "again: nothing left, no error")
+	assert.Equal(t, "done", decodeKeys(t, out)["set_aside"])
+}
+
+// Once an adoption began, the Swift state is never set aside.
+func TestHubAdoptSetAsideRefusedOnceAdoptionStarted(t *testing.T) {
+	dir := hubTestDir(t)
+	mobile := swiftMobileHub(t, dir)
+	withStdin(t, adoptSettings)
+	_, err := runHub(t, "adopt", "--settings-stdin", "--json", "--mobile-hub", mobile)
+	require.NoError(t, err)
+
+	out, err := runHub(t, "adopt", "--set-aside", "--json", "--mobile-hub", mobile)
+	require.Error(t, err)
+	assert.Equal(t, adopt.ClassAdoptionStarted, decodeKeys(t, out)["set_aside"])
 }

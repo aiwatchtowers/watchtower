@@ -41,6 +41,46 @@ extension MeetingRecorderCenter {
         return try store.savedTranscriptID(audioPath: audioURL.path)
     }
 
+    /// Ingests a recording made on the phone (AAC `.m4a`, mic only) and
+    /// enqueues it for transcription straight away — a phone recording is
+    /// transcribed automatically, so it never passes through the opt-in
+    /// `recoverable` list. The job queues behind whatever runs and, like any
+    /// job, never claims the engine while the Mac is capturing (the
+    /// single-engine invariant). `eventID` links the transcript and scopes
+    /// voice matching to the event's attendees.
+    ///
+    /// The name is reserved on the main actor, the same actor `startRecording`
+    /// picks and reserves its `.caf` name on without suspending, so ingests and
+    /// a Desktop capture of the same second never share a stem (the exclusive
+    /// create also guards writers off this actor); only the copy runs off it.
+    /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`
+    /// report under — without awaiting the job. Throws when the source is not
+    /// an audio recording (`PhoneIngestError.notAudio`) or cannot be read
+    /// (`PhoneIngestError.unreadable`), or the reservation or the
+    /// copy fails (nothing is enqueued and nothing is left behind).
+    @discardableResult
+    func ingestPhoneRecording(
+        audioURL sourceURL: URL,
+        eventID: String?,
+        title: String?,
+        uploadID: String? = nil,
+        onReserved: ((URL) -> Void)? = nil,
+        config: TranscriptionConfig
+    ) async throws -> URL {
+        let isAudio = try await Task.detached { try await Self.isAudioRecording(sourceURL) }.value
+        guard isAudio else { throw PhoneIngestError.notAudio }
+        guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
+        let isPrivate = config.privateByDefault // no per-recording choice on the phone
+        let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate, uploadID: uploadID,
+                                                            in: recordingsDirectory, store: store, date: clock())
+        onReserved?(audioURL) // before the job can report anything under it
+        try await Task.detached {
+            try await Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)
+        }.value
+        enqueuePhoneJob(audioURL: audioURL, eventID: eventID, title: title, isPrivate: isPrivate, config: config)
+        return audioURL
+    }
+
     /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by inserting
     /// its `pending_transcripts` row EXCLUSIVELY (`PendingTranscriptStore.reserve`):
     /// when a concurrent reserver took the name first, the insert does

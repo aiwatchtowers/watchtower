@@ -51,6 +51,7 @@ var knownNonLLMExec = map[string]string{
 	"extract.(*helperOCR).run":           "the Vision OCR helper",
 	"extract.runCodesign":                "codesign --verify of the OCR helper",
 	"gitbin.run":                         "git",
+	"hub.bridgeLauncher":                 "starts the CloudKit bridge helper (WatchtowerCloudBridge.app, no model call)",
 	"media.runSips":                      "sips image conversion",
 	"oauthpage.openURL":                  "/usr/bin/open of an OAuth page",
 	"ownerconfirm.codesign":              "codesign of the Desktop app",

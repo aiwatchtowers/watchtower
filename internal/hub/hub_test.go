@@ -435,6 +435,10 @@ func TestPolicy03_OffStopsHubKeepsSetting(t *testing.T) {
 			t.Fatalf("slice state of %s kept after the wipe: %v %v", k, h, err)
 		}
 	}
+	// The policy's off is not the owner's (ask #956): the phones stay linked.
+	if devices, err := st.Devices(); err != nil || len(devices) != 1 {
+		t.Fatalf("the policy's off unlinked the phone: %v %v", devices, err)
+	}
 }
 
 // TestPolicy03_LooseningDoesNotStartHubWhenSettingOff is the Go twin of
@@ -935,6 +939,56 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 		t.Fatalf("status: %+v", status)
 	}
 
+	lp, qr, sas, phone := pairOverMemfake(t, r, c, status.RelayDeviceID)
+	if name != "" && lp.MacName != name {
+		t.Fatal("the link code does not carry the hub's new name")
+	}
+
+	for want := uint64(1); want <= 2; want++ {
+		seq, err := phone.Act("probe")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seq != want {
+			t.Fatalf("action_seq %d, want %d", seq, want)
+		}
+	}
+	eventually(t, 15*time.Second, "applied echoes for a1..a2", func() bool {
+		if _, err := phone.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		return phone.Echoes[1].Status == wire.StatusApplied && phone.Echoes[2].Status == wire.StatusApplied
+	})
+
+	data := transport.DataZone(status.RelayDeviceID)
+	eventually(t, 15*time.Second, "the device_grant in the data zone", func() bool {
+		kb, ok, err := phone.ReadKeybox(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok && kb.Grant.Linked && kb.Grant.OrderedActions != nil && *kb.Grant.OrderedActions == 1 &&
+			slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay})
+	})
+	eventually(t, 5*time.Second, "one phone in the status", func() bool {
+		s, err := ReadStatus(dir)
+		return err == nil && s.Phones == 1
+	})
+
+	for i, f := range r.fake.Frames() {
+		for _, marker := range []string{"Test Phone", "iPhone18,1", `"device_grant"`, `"probe"`} {
+			if bytes.Contains(f, []byte(marker)) {
+				t.Fatalf("frame %d carries %q in the clear", i, marker)
+			}
+		}
+	}
+	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code, phone: phone, rig: r, dir: dir}
+}
+
+// pairOverMemfake pairs a new emulated phone with the running hub through
+// the control socket c (pair, hello, SAS, confirm) until its keys are in the
+// pair zone.
+func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID string) (wire.LinkPayload, ControlAnswer, ControlAnswer, *hubtest.Phone) {
+	t.Helper()
 	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
 		t.Fatal(err)
 	}
@@ -958,11 +1012,8 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lp.RelayDeviceID != status.RelayDeviceID || !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
+	if lp.RelayDeviceID != relayDeviceID || !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
 		t.Fatalf("link code relay identity: %+v", lp)
-	}
-	if name != "" && lp.MacName != name {
-		t.Fatal("the link code does not carry the hub's new name")
 	}
 	phone, err := hubtest.FromLink(lp, r.fake, nil)
 	if err != nil {
@@ -1006,43 +1057,5 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 		}
 		return ok && kb.Keys != nil
 	})
-
-	for want := uint64(1); want <= 2; want++ {
-		seq, err := phone.Act("probe")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if seq != want {
-			t.Fatalf("action_seq %d, want %d", seq, want)
-		}
-	}
-	eventually(t, 15*time.Second, "applied echoes for a1..a2", func() bool {
-		if _, err := phone.Sync(); err != nil {
-			t.Fatal(err)
-		}
-		return phone.Echoes[1].Status == wire.StatusApplied && phone.Echoes[2].Status == wire.StatusApplied
-	})
-
-	data := transport.DataZone(status.RelayDeviceID)
-	eventually(t, 15*time.Second, "the device_grant in the data zone", func() bool {
-		kb, ok, err := phone.ReadKeybox(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return ok && kb.Grant.Linked && kb.Grant.OrderedActions != nil && *kb.Grant.OrderedActions == 1 &&
-			slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay})
-	})
-	eventually(t, 5*time.Second, "one phone in the status", func() bool {
-		s, err := ReadStatus(dir)
-		return err == nil && s.Phones == 1
-	})
-
-	for i, f := range r.fake.Frames() {
-		for _, marker := range []string{"Test Phone", "iPhone18,1", `"device_grant"`, `"probe"`} {
-			if bytes.Contains(f, []byte(marker)) {
-				t.Fatalf("frame %d carries %q in the clear", i, marker)
-			}
-		}
-	}
-	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code, phone: phone, rig: r, dir: dir}
+	return lp, qr, sas, phone
 }

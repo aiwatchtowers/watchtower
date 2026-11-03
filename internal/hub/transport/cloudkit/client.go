@@ -75,6 +75,8 @@ type Client struct {
 	nextID    uint64
 	pending   []transport.Event
 	pumping   bool
+	// throttledSince: CloudKit has rate-limited every answer since (zero = not now; throttle.go).
+	throttledSince time.Time
 }
 
 var (
@@ -410,9 +412,12 @@ func (c *Client) fillOutcomes(resp *bridgepb.Response, index []int, zones []zone
 	if got == nil || len(got.GetItems()) != len(index) {
 		return fmt.Errorf("outcomes do not match the request: %w", errUnexpected)
 	}
+	limited := false
+	defer func() { c.noteRate(limited) }()
 	for k, o := range got.GetItems() {
 		i := index[k]
 		z := zones[i]
+		limited = limited || rateLimited(o.GetRefusedClass())
 		switch {
 		case o.GetRefusedClass() != "":
 			out[i] = transport.Outcome{Refused: classError(o.GetRefusedClass(), z.mailbox)}

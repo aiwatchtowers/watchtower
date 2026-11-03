@@ -14,10 +14,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/hub"
-	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/adopt"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
 )
@@ -134,25 +135,24 @@ func init() {
 // origin.
 const hubRelayOriginRemedy = "Set the relay: watchtower config set hub.relay_origin <origin>"
 
-// runHubStatus prints the hub's status. A desktop host's is off,
-// desktop_host (no live hub there); an off hub shows the reason the daemon's
-// would stay off before writing a status.
+// runHubStatus prints the hub's status; an off hub shows the reason the
+// daemon's would stay off before writing a status, and the facts the
+// sidecar holds (the adoption, the identity store, the last switch).
 func runHubStatus(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	dir, mode, host, err := hub.Dir(hostProbe())
-	var s hub.Status
-	switch {
-	case errors.Is(err, hub.ErrDesktopHost):
-		s = hub.Status{State: hub.StateOff, Reason: hub.ReasonDesktopHost}
-	case err != nil:
+	if err != nil {
 		return err
-	default:
-		if s, err = hub.ReadStatus(dir); err != nil {
-			return err
-		}
-		if r := hubOffReason(mode); s.State == hub.StateOff && r != "" {
+	}
+	s, err := hub.ReadStatus(dir)
+	if err != nil {
+		return err
+	}
+	if s.State == hub.StateOff {
+		if r := hubOffReason(dir, mode, host); r != "" {
 			s.Reason = r
 		}
+		hub.FillOffFacts(&s, dir, host == hostkind.Desktop && mode == hub.ModeLive)
 	}
 	s.Host, s.Mode = string(host), string(mode)
 	line := "hub: " + s.State
@@ -162,22 +162,16 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if s.State == hub.StateRunning {
 		line += fmt.Sprintf(", %s, %d phone(s)", s.Transport, s.Phones)
 	}
-	rec := state.RecordingsOff // a desktop host has no hub dir here
-	if dir != "" {
-		if rec, err = hubRecordingsValue(dir); err != nil {
-			return err
-		}
+	rec, err := hubRecordingsValue(dir)
+	if err != nil {
+		return err
 	}
 	line += ", recordings " + rec
-	// The recordings an adoption kept on the Mac: the hub dir's, or on a
-	// desktop host the live dir an adoption fills. Never fails the status.
-	keptDir, keptRec := dir, handlers.RecordingsDirUnder(dir)
+	// The recordings an adoption kept on the Mac (in the transcriber's
+	// folder on a desktop host). Never fails the status.
 	var kept *adopt.KeptRecordings
-	if dir == "" {
-		keptDir, keptRec, err = hubAdoptDirs()
-	}
-	if err == nil {
-		kept = hubKeptRecordings(cmd, keptDir, keptRec)
+	if keptRec, err := hubRecordingsDir(dir); err == nil {
+		kept = hubKeptRecordings(cmd, dir, keptRec)
 	}
 	if kept != nil {
 		line += fmt.Sprintf(", %d recording(s) kept in %s", kept.Count, kept.Dir)
@@ -185,16 +179,33 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if mode == hub.ModeLive && s.Reason == hub.ReasonNoRelayOrigin {
 		line += "\n" + hubRelayOriginRemedy
 	}
-	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept}, line)
+	out := hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir), Transcriber: hubTranscriberSeen(dir)}
+	return hubPrint(cmd, asJSON, out, line)
 }
 
 // hubStatusJSON is `hub status --json`: the runtime's status plus the
-// recording switch and the recordings an adoption kept (additive keys;
-// kept_recordings absent at count 0).
+// recording switch, the recordings an adoption kept and the name phones show
+// for the hub (additive keys; kept_recordings absent at count 0).
 type hubStatusJSON struct {
 	hub.Status
 	Recordings     string                `json:"recordings"`
 	KeptRecordings *adopt.KeptRecordings `json:"kept_recordings,omitempty"`
+	Name           string                `json:"name"`
+	// Transcriber: a Desktop transcriber ever sent a heartbeat (recordings
+	// can be turned on); false before one did or with no sidecar.
+	Transcriber bool `json:"transcriber"`
+}
+
+// hubTranscriberSeen reads whether a Desktop heartbeat ever arrived; any
+// failure reads as no.
+func hubTranscriberSeen(dir string) bool {
+	st, err := state.OpenReadOnly(dir)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = st.Close() }()
+	_, seen, err := st.DesktopHost(time.Now())
+	return err == nil && seen
 }
 
 func runHubPhones(cmd *cobra.Command, _ []string) error {
@@ -211,12 +222,13 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 		return err
 	default:
 		devices, err := st.Devices()
+		active, _, aerr := st.Meta(switcher.MetaTransport)
 		_ = st.Close()
-		if err != nil {
+		if err := errors.Join(err, aerr); err != nil {
 			return err
 		}
 		for _, d := range devices {
-			out = append(out, hubPhone(d))
+			out = append(out, hubPhone(d, active))
 		}
 	}
 	if asJSON {
@@ -239,17 +251,20 @@ func runHubPhones(cmd *cobra.Command, _ []string) error {
 // (no vouch_hub + promote_pairing seen yet).
 const hubPhoneTransportPending = "pending"
 
-// hubPhone is a linked devices row as `hub phones` shows it; a phone that
-// came over the relay has its relay device id (relay once the relay admitted
-// the hub for it, pending before), one adopted from the Swift hub's sidecar
-// does not.
-func hubPhone(d state.Device) hubPhoneJSON {
+// hubPhone is a linked devices row as `hub phones` shows it, with the
+// transport the phone is on as the hub knows it: a phone that came over the
+// relay has its relay device id (pending until the relay admitted the hub
+// for it), one adopted from the Swift hub's sidecar or linked over CloudKit
+// does not and is on CloudKit. An admitted relay phone of a hub with two
+// transports (active = hub_meta.transport, "" elsewhere) follows the hub's
+// switch: it is on CloudKit while the hub is.
+func hubPhone(d state.Device, active string) hubPhoneJSON {
 	tr := wire.TransportCloudKit
 	switch {
-	case d.RelayDeviceID != "" && !d.RelayAdmittedAt.IsZero():
-		tr = wire.TransportRelay
-	case d.RelayDeviceID != "":
+	case d.RelayDeviceID != "" && d.RelayAdmittedAt.IsZero():
 		tr = hubPhoneTransportPending
+	case d.RelayDeviceID != "" && active != wire.TransportCloudKit:
+		tr = wire.TransportRelay
 	}
 	return hubPhoneJSON{
 		DeviceID: d.ID, Name: d.Name, Scope: d.Scope, LinkedAt: d.LinkedAt.UTC().Format(time.RFC3339),

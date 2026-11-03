@@ -76,6 +76,10 @@ type Processor struct {
 	// staleSeen is the record versions answered on standby (standby.go):
 	// zone and wire name → RecordSeq; guarded by mu.
 	staleSeen map[string]uint64
+	// oldSeen is the record versions answered resend_from for an epoch the
+	// hub no longer holds (epoch.go): zone and wire name → RecordSeq;
+	// guarded by mu.
+	oldSeen map[string]uint64
 }
 
 // SetPaused pauses the processor (spec §7.3, a headless hub with no paying
@@ -261,6 +265,9 @@ type pass struct {
 	report PassReport
 	budget int
 	nudges []string
+	// resent is the phones asked resend_from this pass for an action in an
+	// epoch the hub no longer holds (epoch.go): one ask per phone per pass.
+	resent map[secure.ID]bool
 }
 
 // Pass reads every linked phone's mailbox from its stored change token,
@@ -423,6 +430,9 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		if !droppable(err) {
 			return err
 		}
+		if errors.Is(err, secure.ErrEpochNotAccepted) {
+			return p.oldEpochAction(ctx, b, rec, ps)
+		}
 		if errors.Is(err, secure.ErrWrongClass) && !b.shared { // the hub's own records come back through the feed
 			o, err := p.cfg.Opener.OwnEcho(b.zone, rec.Name, rec.Envelope)
 			if err != nil {
@@ -456,17 +466,25 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		if p.onStandby(ctx, b, rec, opened) {
 			return nil
 		}
+	} else if opened.Frame.Kind == kindAction {
+		// Sim rule 16: a lapsed phone's action is left to it (it was told
+		// hub_on_relay over CloudKit). One sent before its last lapse is
+		// answered expired by apply; an upload is answered failed by
+		// settleUpload, so the phone keeps the audio.
+		if lapsed, err := p.lapsed(b, orderedSeq(b, opened)); err != nil || lapsed {
+			return err
+		}
 	}
 	switch opened.Frame.Kind {
 	case kindAction:
 		ps.report.Read++
-		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, ps)
+		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, ps)
 	case kindControl:
 		ps.report.Read++
 		err = p.phoneControl(ctx, b, rec, opened, ps)
 	case kindRecordingUpload:
 		ps.report.Read++
-		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, rec.AttachmentID, ps)
+		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, rec.AttachmentID, ps)
 	case kindDevice:
 		if !b.shared {
 			return nil // the relay path reads no device records (phase 1 handling)

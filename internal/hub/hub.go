@@ -8,9 +8,11 @@
 // spec §14 row 1) is FromEnv: WATCHTOWER_HUB_DIR (absolute, never the Swift
 // hub's MobileHub dir), WATCHTOWER_RELAY_ORIGIN, and
 // WATCHTOWER_HUB_TEST_WORKSPACE naming the daemon's own active workspace,
-// which must be a hubtest-* one. Its live mode (phase 2, spec §7.3) runs in
-// DefaultDir on a headless host only (hostkind), never beside the Swift hub
-// on a Mac with the app (§12.1). Every hub runs relay-only.
+// which must be a hubtest-* one. Its live mode runs in DefaultDir: on a
+// headless host relay-only (phase 2, spec §7.3); on a desktop host (phase 3,
+// desktop.go) on CloudKit and the relay behind the switcher, and never
+// beside the Swift hub's state (§12.1): Run holds it off, without the lock
+// or a sidecar, until the adoption finished.
 //
 // One hub per state dir: Run holds <dir>/hub.lock from before it opens the
 // sidecar until it returns, so a second Run (or a CLI writing directly)
@@ -80,6 +82,8 @@ const (
 	controlWriteTimeout = 5 * time.Second
 	// startBackoffMax caps the wait between failed hub starts.
 	startBackoffMax = time.Minute
+	// wipeRetry spaces a desktop host's stopped policy wipes.
+	wipeRetry = time.Minute
 )
 
 // Why the hub does not start.
@@ -112,8 +116,6 @@ func Refusal(err error) string {
 		return "swift_hub_dir"
 	case errors.Is(err, ErrNoRelayOrigin):
 		return ReasonNoRelayOrigin
-	case errors.Is(err, ErrDesktopHost):
-		return ReasonDesktopHost
 	case errors.Is(err, ErrHubDisabled):
 		return ReasonDisabled
 	case errors.Is(err, ErrPolicyOff):
@@ -152,6 +154,13 @@ type Options struct {
 	// a hub started without Resolve).
 	Mode Mode
 	Host hostkind.Kind
+	// Transports is what a desktop host's hub runs and announces to phones
+	// (["cloudkit","relay"], or ["cloudkit"] with no relay origin); nil = the
+	// hosted relay alone (a headless host, the test mode).
+	Transports []string
+	// Desktop is a desktop host's live mode (resolveDesktop): the gate, the
+	// identity store and the CloudKit bridge. nil on every other hub.
+	Desktop *Desktop
 	// RelayOnlyRules turns on spec §7.3's rules of a headless hub (the live
 	// mode sets it; FromEnv's test mode leaves it off): with no paying phone
 	// in the account state the hub pauses — it publishes nothing, applies no
@@ -328,29 +337,56 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	s := &supervisor{o: o, run: newRunID(), wake: make(chan struct{}, 1), pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{}}
+	for {
+		if o.Desktop != nil && !s.awaitDesktop(ctx) {
+			// Never two hubs: no lock was taken and no sidecar opened.
+			s.setStatus(Status{State: StateOff})
+			return nil
+		}
+		regate, err := s.runLocked(ctx)
+		if !regate {
+			return err
+		}
+		// A desktop host's Swift state waits for its adoption again: the
+		// lock and the sidecar are let go (the adoption needs them).
+	}
+}
+
+// runLocked is Run with the hub lock: the store, the control socket and the
+// reconcile loop until ctx ends (nil), or until a desktop host's gate closes
+// again (regate true: the hub, the socket, the sidecar and the lock are let
+// go first).
+func (s *supervisor) runLocked(ctx context.Context) (regate bool, err error) {
+	o := s.o
 	lock, err := s.acquire(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	defer func() { _ = lock.Release() }()
 	s.locked = true
+	defer func() { s.locked = false }()
 	st, err := o.openStore(o.Dir)
+	// Opening the sidecar re-points this process's dblock.jsonl sink: the
+	// daemon's stays its database's.
+	keepLockMetrics(o.DB)
 	if err != nil {
 		s.setStatus(Status{State: StateOff, Reason: ReasonSidecarUnreadable})
 		log.Printf("hub: off (%s)", ReasonSidecarUnreadable)
-		return fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+		return false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
 	}
 	defer func() { _ = st.Close() }()
 	s.st = st
 	if err := s.markImpl(); err != nil {
 		s.setStatus(Status{State: StateOff, Reason: ReasonSidecarUnreadable})
 		log.Printf("hub: off (%s)", ReasonSidecarUnreadable)
-		return fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+		return false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
 	}
-	stopControl := s.serveControl(ctx)
+	cctx, cancelControl := context.WithCancel(ctx)
+	defer cancelControl()
+	stopControl := s.serveControl(cctx)
 	defer stopControl()
 	defer s.stopStaleCheck()
 	defer s.setStatus(Status{State: StateOff})
@@ -358,11 +394,16 @@ func Run(ctx context.Context, o Options) error {
 	tick := time.NewTicker(o.checkEvery)
 	defer tick.Stop()
 	for {
+		if s.desktopRegate() {
+			s.stopHub(nil)
+			log.Printf("hub: off (%s): a Swift hub's state waits for its adoption", ReasonAwaitingAdoption)
+			return true, nil
+		}
 		s.reconcile(ctx)
 		select {
 		case <-ctx.Done():
 			s.stopHub(nil)
-			return nil
+			return false, nil
 		case <-s.wake:
 		case <-tick.C:
 		case <-o.CycleTick:
@@ -392,6 +433,30 @@ type supervisor struct {
 	nextStart time.Time
 	backoff   time.Duration
 	failure   string
+	// held is why a desktop host's hub waits to start ("" = it does not):
+	// a v1 session host answers. laterLogged: the later MobileHub/ line was
+	// logged.
+	held        string
+	laterLogged bool
+	// nextWipe: a desktop host's stopped policy wipe (which starts the
+	// bridge) is not tried again before it.
+	nextWipe time.Time
+	// The owner's off wipe (off_delete.go): its last try, whether it left
+	// published records, and when the stopped retry may run again.
+	offDeleteAt     time.Time
+	offDeleteFailed bool
+	nextOffWipe     time.Time
+	// offWipeBackoff: the wait before the next stopped retry, doubling while
+	// tries leave records (offWipeRetry .. offWipeMaxBackoff); readLogged:
+	// a failed read of what is left was logged in this streak.
+	offWipeBackoff    time.Duration
+	offWipeReadLogged bool
+	// offUnlinkLogged: a failed unlink of the phones at the owner's off was
+	// logged in this streak (unlinkForOff).
+	offUnlinkLogged bool
+	// v1 is the last v1 session-host probe's answer (v1Known: probed in
+	// this daemon cycle; the cycle's tick forgets it).
+	v1, v1Known bool
 
 	statusMu sync.Mutex
 	status   Status
@@ -487,7 +552,9 @@ func (s *supervisor) reconcile(ctx context.Context) {
 		switch {
 		case mode == policy.MobileOff:
 			// Also while paused: deleting published data is the safe direction.
-			s.stopHub(func(slices.Kind) bool { return false })
+			s.stopHub(keepNothing)
+		case !on:
+			s.ownerOff()
 		case mode == policy.MobileWorkbenchOnly && h.mode != mode:
 			s.stopHub(workbenchOnly)
 		default:
@@ -497,14 +564,27 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	if s.hub == nil && on && mode == policy.MobileOff {
 		s.wipeStopped(ctx)
 	}
+	if s.hub == nil && !on {
+		s.unlinkForOff() // ask #956: the owner's off unlinks the phones
+	}
+	if s.hub == nil && !on && mode != policy.MobileOff && !time.Now().Before(s.nextOffWipe) {
+		s.retryOffWipe(ctx)
+	}
+	if !want || s.hub != nil {
+		s.held = ""
+	}
+	s.laterMobileHub()
 	if want && s.hub == nil && !time.Now().Before(s.nextStart) {
-		s.startHub(ctx, mode, name)
+		if s.held = s.desktopHold(ctx); s.held == "" {
+			s.startHub(ctx, mode, name)
+		}
 	}
 	s.refreshStatus(mode, on)
 }
 
 // cycle is the daemon cycle's tick: the running hub does its housekeeping.
 func (s *supervisor) cycle() {
+	s.v1Known = false
 	if h := s.hub; h != nil {
 		h.kick(h.houseKick)
 	}
@@ -552,6 +632,15 @@ func (s *supervisor) wipeStopped(ctx context.Context) {
 		return
 	}
 	if len(published) == 0 {
+		return
+	}
+	if s.o.Desktop != nil {
+		// A bridge is started for it: not more often than wipeRetry.
+		if time.Now().Before(s.nextWipe) {
+			return
+		}
+		s.nextWipe = time.Now().Add(wipeRetry)
+		s.wipeStoppedDesktop(ctx, published)
 		return
 	}
 	id, err := loadIdentity(s.o.Dir)
@@ -605,11 +694,18 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		log.Printf("hub: reading the status facts failed (%s)", errClass(err))
 	}
 	st.Impl, st.HubID, st.Phones = impl, hubID, len(devices)
+	var err error
+	if st.Adoption, st.Identity, st.SwitchedAt, st.SwitchedBy, err = statusFacts(s.st, s.o.Desktop != nil); err != nil {
+		log.Printf("hub: reading the status facts failed (%s)", errClass(err))
+	}
 	switch h := s.hub; {
 	case mode == policy.MobileOff:
 		st.Reason = ReasonPolicyOff
 	case !on:
 		st.Reason = ReasonDisabled
+		st.OffDelete = s.offDeleteStatus()
+	case h == nil && s.held != "":
+		st.Reason = s.held
 	case h == nil && s.failure == ReasonSidecarUnreadable:
 		st.Reason = s.failure
 	case h == nil:
@@ -620,6 +716,8 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 			st.State = StatePaused
 		}
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())
+		st.Bridge = h.bridgeState()
+		st.CloudKit = h.cloudKitStatus()
 	}
 	s.setStatus(st)
 }
@@ -629,6 +727,10 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 // sees every one (after the file, so a reader that saw it reads it there).
 func (s *supervisor) setStatus(st Status) {
 	st.Dir, st.Host, st.Mode = s.o.Dir, string(s.o.Host), string(s.o.Mode)
+	if d := s.o.Desktop; d != nil && st.Bridge == "" && !d.hasBridge() {
+		st.Bridge = BridgeUnavailable // also while the hub is off
+	}
+	st.CloudKit.Signed = s.o.Desktop != nil && signedBuild(st)
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	if st == s.status {

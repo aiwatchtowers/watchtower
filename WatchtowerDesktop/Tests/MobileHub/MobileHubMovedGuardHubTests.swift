@@ -83,21 +83,19 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
         appState.workbenchesViewModel?.asks.stop()
     }
 
+    /// The moved line and its title are the guard's, the view holds no copy
+    /// (go hub plan 3 Task 23 moved them out of the deleted
+    /// `MobileSettingsViewModel`): one row, no toggle.
     func testMovedMessageIsDefinedInTheModel() throws {
-        let host = FakeMobileSettingsHost(enabled: true)
-        host.isMobileHubMoved = true
-        let model = MobileSettingsViewModel(host: host, entitlementPresent: true)
+        XCTAssertEqual(MobileHubMovedGuard.message, "Mobile is run by a newer Watchtower")
+        XCTAssertEqual(MobileHubMovedGuard.sectionTitle, "iPhone")
 
-        XCTAssertEqual(model.state, .movedToNewerApp(message: "Mobile is run by a newer Watchtower"))
-        XCTAssertEqual(MobileSettingsViewModel.movedSectionTitle, "iPhone")
-
-        let view = MobileSettingsView(model: model)
+        let view = MobileMovedView(title: MobileHubMovedGuard.sectionTitle, message: MobileHubMovedGuard.message)
         XCTAssertNoThrow(try view.inspect().find(text: "Mobile is run by a newer Watchtower"))
         XCTAssertNoThrow(try view.inspect().find(text: "iPhone"))
         XCTAssertThrowsError(try view.inspect().find(ViewType.Toggle.self), "no toggle once Mobile moved")
-        XCTAssertThrowsError(try view.inspect().find(text: "Sync with iPhone"))
 
-        // The view takes the text from the model; it holds no copy of its own.
+        // The view takes the text from the guard; it holds no copy of its own.
         let desktopRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -128,8 +126,6 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
         XCTAssertNil(appState.mobileHub)
         XCTAssertNil(appState.mobileHubInitError, "moved is not an error")
         XCTAssertTrue(appState.isMobileHubMoved)
-        XCTAssertEqual(MobileSettingsViewModel(host: appState, entitlementPresent: true).state,
-                       .movedToNewerApp(message: MobileHubMovedGuard.message))
 
         // Turning it off still goes through.
         appState.setMobileSyncEnabled(false)
@@ -227,26 +223,6 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
         XCTAssertNil(appState.mobileHub, "the rebuilt hub is not started")
     }
 
-    /// Moved with a hub still present: the Settings model polls nothing.
-    func testMovedSettingsPollNothing() async throws {
-        let fixture = try MobileSettingsFixture()
-        await fixture.startHub()
-        fixture.host.isMobileHubMoved = true
-        final class Counter: @unchecked Sendable { var sleeps = 0 }
-        let counter = Counter()
-        let model = MobileSettingsViewModel(host: fixture.host, entitlementPresent: true) { _ in
-            counter.sleeps += 1
-            withUnsafeCurrentTask { $0?.cancel() } // a loop that ran ends after one pass
-        }
-
-        await model.refresh()
-        XCTAssertNil(model.account, "no iCloud probe while moved")
-        await model.windowVisibility(true)
-        XCTAssertEqual(counter.sleeps, 0, "no polling loop while moved")
-        XCTAssertNil(model.account)
-        await fixture.tearDown()
-    }
-
     func testANoteWithoutTheImplLineIsIgnored() async throws {
         try writeNote("moved_to=/var/empty/.hub\n")
         try assertTodaysBehaviour()
@@ -265,9 +241,6 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
         XCTAssertEqual(builds, 1)
         XCTAssertNotNil(appState.mobileHub)
         XCTAssertFalse(appState.isMobileHubMoved)
-        let model = MobileSettingsViewModel(host: appState, entitlementPresent: true)
-        XCTAssertEqual(model.state, .regular)
-        XCTAssertNoThrow(try MobileSettingsView(model: model).inspect().find(ViewType.Toggle.self))
     }
 }
 
