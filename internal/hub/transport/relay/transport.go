@@ -84,6 +84,9 @@ type Options struct {
 	// timeout). Relay ops go through the relay client's own HTTP client. The
 	// transport uses a copy with its own redirect rule (see checkRedirect).
 	HTTP *http.Client
+	// Connects (nil = none) sees the relay client's connects when the client
+	// was built over its HTTPClient (OnConnected).
+	Connects *ConnectWatch
 	// MaxAttachmentBytes caps one download (0 = MaxAttachmentBytes).
 	MaxAttachmentBytes int64
 }
@@ -105,6 +108,7 @@ type Transport struct {
 	conn       *client.Conn
 	closed     bool
 	account    *relayv1.AccountState
+	readers    []string // the last set_hub_readers the relay accepted (nil = none yet)
 	refreshing bool
 	refreshDue bool
 	// accountKnown: account is a read the relay answered (false before the

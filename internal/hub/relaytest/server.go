@@ -381,6 +381,22 @@ func (s *Server) Push(t testing.TB, ev *relayv1.Event) {
 	s.parkLocked(s.lastDevice, []frame{f})
 }
 
+// DropSockets closes every live WebSocket at once (the connection lost from
+// the clients' side): each client connects again and resubscribes.
+func (s *Server) DropSockets() {
+	s.mu.Lock()
+	var live []*conn
+	for _, c := range s.conns {
+		if !c.closed {
+			live = append(live, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range live {
+		_ = c.ws.CloseNow()
+	}
+}
+
 // SetPaying sets whether phone's account pays (a phone pays until told
 // otherwise). Turning it off sends Control{ENTITLEMENT_EXPIRED, detail: the
 // phone's device id} to every hub the phone holds in a slot.

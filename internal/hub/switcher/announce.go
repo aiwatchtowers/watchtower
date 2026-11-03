@@ -275,6 +275,9 @@ func (s *Switcher) announce(r switchRecord) error {
 		p.ResumeFor(pauseReason) // on standby now: it seals nothing in the new epoch
 	}
 	log.Printf("hub: transport switched from %s to %s (epoch %d, %d notices queued)", r.From, r.Target, r.Epoch, queued)
+	if s.c.OnSwitched != nil {
+		s.c.OnSwitched(r.Target)
+	}
 	return nil
 }
 
