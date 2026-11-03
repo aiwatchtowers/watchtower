@@ -220,3 +220,55 @@ func TestNewerOpenButtonProposal_AndClaimViolation(t *testing.T) {
 	assert.Equal(t, "failed", row.Status)
 	assert.Equal(t, "boom", row.Error)
 }
+
+// An apply that crashed after its insert, then the owner's --force reclaim
+// (executing → failed) before the re-claim: a press in that gap sees the
+// task of the failed row and is refused, so the button never gets a second
+// task.
+func TestInsertInboxButtonProposal_TaskOfCrashedApplyLocks(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.InsertInboxButtonProposal(buttonRow("7:0:abc"))
+	require.NoError(t, err)
+	ok, err := d.TransitionAgentAction(id, []string{"pending"}, "executing", "", "")
+	require.NoError(t, err)
+	require.True(t, ok)
+	targetID, _, err := d.CreateTargetForAction(Target{Text: "x", Status: "todo", Priority: "medium", Ownership: "mine"}, id)
+	require.NoError(t, err)
+
+	_, err = d.InsertInboxButtonProposal(buttonRow("7:0:abc"))
+	var open *ErrButtonHasOpenProposal
+	require.ErrorAs(t, err, &open, "executing is open")
+
+	ok, err = d.TransitionAgentAction(id, []string{"executing"}, "failed", "", "reclaimed after an interrupted apply")
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, err = d.InsertInboxButtonProposal(buttonRow("7:0:abc"))
+	var exists *ErrButtonTaskExists
+	require.ErrorAs(t, err, &exists, "the failed row's task still locks the button")
+	assert.Equal(t, id, exists.ID)
+	assert.Equal(t, targetID, exists.TargetID)
+}
+
+// The index is the backstop when checkButtonFree is bypassed: a second open
+// row of one context fails on idx_agent_actions_open_context, with
+// SQLITE_CONSTRAINT_UNIQUE.
+func TestAgent05_OpenContextIndexBackstop(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.InsertAgentAction(buttonRow("7:0:abc"))
+	require.NoError(t, err)
+	for _, status := range []string{"pending", "approved", "executing"} {
+		row := buttonRow("7:0:abc")
+		row.Status = status
+		_, err = d.InsertAgentAction(row)
+		require.Error(t, err, status)
+		assert.True(t, isOpenContextViolation(err), "%s: %v", status, err)
+	}
+	for _, status := range []string{"rejected", "applied", "failed"} {
+		row := buttonRow("7:0:abc")
+		row.Status = status
+		_, err = d.InsertAgentAction(row)
+		require.NoError(t, err, "%s is not open", status)
+	}
+	assert.False(t, isOpenContextViolation(errors.New("UNIQUE constraint failed: agent_actions.context_type, agent_actions.context_id")),
+		"a bare string is not the engine's constraint error")
+}

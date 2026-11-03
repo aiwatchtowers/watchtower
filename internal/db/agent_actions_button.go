@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"watchtower/internal/sqlcipher"
 )
 
 // InboxButtonContextType is the context of a proposal made by an Inbox card's
@@ -39,12 +41,14 @@ func (e *ErrButtonNewerProposalOpen) Error() string {
 	return fmt.Sprintf("A newer proposal for this button is open (#%d)", e.ID)
 }
 
-// isOpenContextViolation reports a unique violation of
-// idx_agent_actions_open_context. SQLite names a partial index's columns,
-// not the index, and no other unique constraint covers these two columns.
+// isOpenContextViolation reports a unique violation
+// (SQLITE_CONSTRAINT_UNIQUE) of idx_agent_actions_open_context. SQLite names
+// a partial index's columns, not the index, in the message; no other unique
+// constraint covers these two columns.
 func isOpenContextViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(),
-		"UNIQUE constraint failed: agent_actions.context_type, agent_actions.context_id")
+	var se sqlcipher.Error
+	return errors.As(err, &se) && se.ExtendedCode == sqlcipher.ErrConstraintUnique &&
+		strings.Contains(err.Error(), "agent_actions.context_type, agent_actions.context_id")
 }
 
 type rowQuerier interface {
@@ -122,7 +126,10 @@ func (db *DB) InsertInboxButtonProposal(a AgentAction) (int64, error) {
 }
 
 // checkButtonFree is InsertInboxButtonProposal's check, inside its write
-// transaction.
+// transaction. The task check looks at every proposal of the button, not
+// only `applied` ones: an apply that crashed after its insert leaves the
+// task behind a `failed` (reclaimed) or `executing` row, and a press in that
+// gap must not start a second task for the same button.
 func checkButtonFree(tx *sql.Tx, ctxType, ctxID string) error {
 	open, err := openButtonProposal(tx, ctxType, ctxID, 0)
 	if err != nil {
@@ -134,13 +141,13 @@ func checkButtonFree(tx *sql.Tx, ctxType, ctxID string) error {
 	var actionID, targetID int64
 	err = tx.QueryRow(`SELECT a.id, t.id FROM agent_actions a
 		JOIN targets t ON t.source_type = 'chat' AND t.source_id = 'action:' || a.id
-		WHERE a.context_type = ? AND a.context_id = ? AND a.status = 'applied'
+		WHERE a.context_type = ? AND a.context_id = ?
 		ORDER BY a.id DESC LIMIT 1`, ctxType, ctxID).Scan(&actionID, &targetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("reading the applied proposal of %s %s: %w", ctxType, ctxID, err)
+		return fmt.Errorf("reading the task of %s %s: %w", ctxType, ctxID, err)
 	}
 	return &ErrButtonTaskExists{ID: actionID, TargetID: targetID}
 }
