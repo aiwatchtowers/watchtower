@@ -122,7 +122,7 @@ func TestScheduledPeopleRetryRestartKeepsWindowAndCommittedUsers(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 	require.Equal(t, 1, second.calls)
-	require.Equal(t, started, resumed.RunStartedAt)
+	require.True(t, started.Equal(resumed.RunStartedAt), "restart preserves the original claim instant across JSON timezone normalization")
 	require.NoError(t, database.QueryRow("SELECT count(*) FROM people_cards WHERE period_from=? AND period_to=?", from, to).Scan(&count))
 	require.Equal(t, 11, count)
 	// Crash after the final card but before the daemon's success stamp/ack:
