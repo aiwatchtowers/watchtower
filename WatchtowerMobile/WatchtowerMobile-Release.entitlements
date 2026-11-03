@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Release entitlements (project.yml configs.Release): WatchtowerMobile.entitlements without the App Attest
+	     key. Phase 4 adds the App Attest environment key (production) here; enabling App Attest
+	     on the App ID is the owner's portal step then. Keep every other key in step with the Debug file. -->
+	<!-- Must match WatchtowerCloud.containerID exactly: the phone syncs this container. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.aiwatchtowers.watchtower</string>
+	</array>
+	<!-- CloudKit is the only iCloud service used (CKSyncEngine transport). -->
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- Pushes wake the sync engine and deliver ask alerts; App Store export rewrites this to production. -->
+	<key>aps-environment</key>
+	<string>development</string>
+	<!-- The replica and outbox live in the group container so the notification extensions can read them. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.aiwatchtowers.watchtower.mobile</string>
+	</array>
+	<!-- E2E keys (mobile E2E spec §2.6, F20): the app's private Keychain group FIRST, so it is also the
+	     default group; the alerts group (K_alert and the hub's public signing key, shared with the
+	     NotifyService extension) SECOND, never first. Never a hardcoded team prefix. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile</string>
+		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts</string>
+	</array>
+</dict>
+</plist>

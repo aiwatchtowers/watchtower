@@ -8,11 +8,16 @@ import WatchtowerSync
 /// (`relay/<mac>/<phone>`). Server pages are buffered into `TransportStore` (R5), so consumers
 /// keep local change tokens, compaction and the asset stash. Plain `save`/`delete` queue durably
 /// and go out on a flush; `ConditionalTransport` calls go straight to the relay after the queue
-/// (R8). Mirrors the Go hub's `internal/hub/transport/relay` (same relay commit).
+/// (R8). Mirrors the Go hub's `internal/hub/transport/relay` (same relay commit). In
+/// `.pairing(slot:)` mode both lanes are `pair/<slot>` (R3 of Phase 3; `HostedRelayTransportMode`).
 ///
 /// After an App Attest `.notSupported`/`.updateRequired` the transport is stopped until
 /// `start()`: no login, register or request; queued writes stay queued. After `.retryLater`
 /// every call answers without the attestor or the network until the deadline.
+///
+/// The socket is the device's one `HostedRelaySession` (R2): `init(session:…)` shares it with
+/// every other relay object of the process, and account-level signals go to `session.events`;
+/// `init(client:…)` builds a private session whose account-level signals are also `relayEvents`.
 public actor HostedRelayTransport: LiveTransport, ConditionalTransport, CompactingTransport {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     /// How long a resync the relay refused partway waits before it starts again (`start()` ends
@@ -24,19 +29,29 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     static let eventBuffer = 256
 
     let client: HostedRelayClient
+    let session: HostedRelaySession
     let store: TransportStore
     let energy: EnergyCounter?
     let maxAttachmentBytes: Int64
     let clock: any RelayClock
+    nonisolated let mode: HostedRelayTransportMode
     nonisolated let dataZone: String
     nonisolated let mailboxZone: String
 
-    /// Relay-only signals (R11), for one reader.
+    /// Relay-only signals (R11), for one reader: `.forbidden(zone:)` and `.reachable`, plus the
+    /// account-level ones when the session is private (`init(client:…)`).
     nonisolated public let relayEvents: AsyncStream<HostedRelayEvent>
     let relayEventSink: AsyncStream<HostedRelayEvent>.Continuation
 
-    var connection: HostedRelayConnection?
-    var socketReader: Task<Void, Never>?
+    /// This transport's owner identity on the session; kept alive by the deinit's detach.
+    let owner = SessionOwner()
+    /// Attached to the session (its socket wanted); cleared by `stop()` and by a `.stopped` socket.
+    var attached = false
+    /// Counts this transport's attaches: a `.stopped` routed to an earlier one is stale.
+    var attachGeneration = 0
+    /// The relay zones the socket refused for the current attach (the session dropped them from its union):
+    /// subscribed again after the next successful pull of their lane (`resubscribeIfRefused`).
+    var refusedZones: Set<String> = []
     /// Set by an App Attest `.notSupported`/`.updateRequired`; cleared by `start()`.
     var stoppedBy: HostedRelayAttestError?
     /// Set by an App Attest `.retryLater`; cleared by `start()` and by an op that reached the relay.
@@ -65,6 +80,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// another Mac throws `TransportStoreError.boundToAnotherRoute` before any request.
     /// `maxAttachmentBytes`: the largest attachment a pull downloads (the relay's default cap,
     /// Go `MaxAttachmentBytes`).
+    /// With a private session: the socket is this transport's alone (Phase 2's shape).
     public init(
         client: HostedRelayClient,
         store: TransportStore,
@@ -72,21 +88,65 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         energy: EnergyCounter? = nil,
         maxAttachmentBytes: Int64 = 100 << 20
     ) throws {
+        let events = AsyncStream.makeStream(of: HostedRelayEvent.self, bufferingPolicy: .bufferingNewest(Self.eventBuffer))
+        try self.init(
+            session: HostedRelaySession(client: client, mirror: events.continuation), events: events, store: store,
+            macDeviceID: macDeviceID, mode: .hub, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
+    }
+
+    /// On the device's shared `session` (R2): its socket carries this transport's zones.
+    /// `mode` `.pairing(slot:)`: both lanes are `pair/<slot>` (R3), on the same store binding (the
+    /// Mac), so after `promote_pairing` a `.hub` transport goes on with the same store; a lane whose
+    /// relay zone changed starts the new zone from 0 (`TransportStore.adoptRelayZones`: a hello
+    /// still queued for a pair zone is dropped; writes queued for another old zone throw
+    /// `TransportStoreError.queuedWritesForAnotherZone` before any request).
+    public init(
+        session: HostedRelaySession,
+        store: TransportStore,
+        macDeviceID: String,
+        mode: HostedRelayTransportMode = .hub,
+        energy: EnergyCounter? = nil,
+        maxAttachmentBytes: Int64 = 100 << 20
+    ) throws {
+        try self.init(
+            session: session,
+            events: AsyncStream.makeStream(of: HostedRelayEvent.self, bufferingPolicy: .bufferingNewest(Self.eventBuffer)),
+            store: store, macDeviceID: macDeviceID, mode: mode, energy: energy, maxAttachmentBytes: maxAttachmentBytes)
+    }
+
+    private init(
+        session: HostedRelaySession,
+        events: (stream: AsyncStream<HostedRelayEvent>, continuation: AsyncStream<HostedRelayEvent>.Continuation),
+        store: TransportStore,
+        macDeviceID: String,
+        mode: HostedRelayTransportMode,
+        energy: EnergyCounter?,
+        maxAttachmentBytes: Int64
+    ) throws {
+        let zones: (data: String, mailbox: String)
+        switch mode {
+        case .hub:
+            zones = (HostedRelayZones.data(mac: macDeviceID), HostedRelayZones.mailbox(mac: macDeviceID, phone: session.client.deviceID))
+        case .pairing(let slot):
+            zones = (HostedRelayZones.pair(slot: slot), HostedRelayZones.pair(slot: slot))
+        }
         _ = try store.adoptRelayBinding(macDeviceID: macDeviceID, hubID: nil)
-        self.client = client
+        try store.adoptRelayZones([.data: zones.data, .relay: zones.mailbox])
+        self.client = session.client
+        self.session = session
         self.store = store
         self.energy = energy
         self.maxAttachmentBytes = maxAttachmentBytes
-        self.clock = client.clock
-        self.dataZone = HostedRelayZones.data(mac: macDeviceID)
-        self.mailboxZone = HostedRelayZones.mailbox(mac: macDeviceID, phone: client.deviceID)
-        (relayEvents, relayEventSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(Self.eventBuffer))
+        self.clock = session.client.clock
+        self.mode = mode
+        (self.dataZone, self.mailboxZone) = zones
+        (relayEvents, relayEventSink) = events
     }
 
     deinit {
         relayEventSink.finish()
-        socketReader?.cancel()
-        if let connection { Task { await connection.close() } }
+        // `owner` rides along, so its identifier is not reused before the detach.
+        Task { [session, owner] in await session.detach(owner: ObjectIdentifier(owner)) }
     }
 
     // MARK: - CloudSyncTransport
@@ -121,7 +181,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         loginNotBefore = nil
         wantsSocket = true
         for zone in CloudZoneID.allCases { resyncHolds[zone] = .distantPast }
-        if connection == nil, await client.accountID == nil {
+        if !attached, await client.accountID == nil {
             do {
                 _ = try await call(nil) { try await self.client.register() }
             } catch {
@@ -138,10 +198,10 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         }
     }
 
-    /// Closes the socket. Queued writes stay queued.
+    /// Detaches from the session (the last owner's detach closes the socket). Queued writes stay queued.
     public func stop() async {
         wantsSocket = false
-        await closeConnection()
+        await detachFromSession()
     }
 
     /// Flushes the plain queue; a stopped flush re-reads its zone.
@@ -197,73 +257,86 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
 
     // MARK: - The socket
 
-    /// A socket event: a zone change is a pull of that zone (R9; the connection sends a
-    /// record-less one per zone after every connect, so a reconnect pulls both), a connect
-    /// reads the account state and flushes the plain queue, controls and refusals go to
-    /// `relayEvents`.
-    func handle(_ event: HostedRelayClientEvent) async {
+    /// A socket event the session routed here: a zone change is a pull of that zone (R9; the
+    /// connection sends a record-less one per zone after every connect, so a reconnect pulls
+    /// both), a connect flushes the plain queue, a refusal goes to `relayEvents`. Controls and the
+    /// account state are the session's (`session.events`).
+    /// `generation`: the attach the event was routed to (nil: the current one).
+    func handle(_ event: HostedRelayClientEvent, generation: Int? = nil) async {
         switch event {
         case .zoneChanged(let zone, _):
-            guard let id = cloudZone(zone) else { return }
+            let lanes = cloudZones(zone)
+            guard !lanes.isEmpty else { return }
             do {
-                try await pullZones([id])
+                try await pullZones(Set(lanes))
             } catch {
-                Self.logger.error("relay pull after a zone event failed, \(Self.kind(id), privacy: .public)")
+                Self.logger.error("relay pull after a zone event failed, \(Self.kind(lanes[0]), privacy: .public)")
             }
         case let .zoneRefused(zone, error):
-            await note(error, zone: cloudZone(zone))
-        case let .control(kind, detail):
-            emit(.control(kind: kind, detail: detail))
+            if generation == nil || generation == attachGeneration { refusedZones.insert(zone) }
+            // A pair zone is both lanes: the refusal is noted once, for the relay lane (the hello's).
+            await note(error, zone: cloudZones(zone).last)
+        case .control:
+            break
         case .connected:
             setReachable(true)
-            await readAccountState()
             // Rows queued while the socket was down go out now (the flush is single-flight).
             await sendNow()
         case .disconnected:
             setReachable(false)
         case .stopped(let error):
-            connection = nil
-            socketReader = nil
-            if error == .unsupportedVersion { wantsSocket = false }
-            await note(error, zone: nil)
+            // A stop of an earlier attach: the current one is still attached.
+            if let generation, generation != attachGeneration { return }
+            // The session detached every owner and reported the stop on `session.events`.
+            attached = false
+            stopped(by: error)
         }
     }
 
-    /// `get_account_state` after a connect: an entitlement that does not pay is reported.
+    /// `get_account_state` (the session reads it after every connect): an entitlement that does
+    /// not pay is reported.
     func readAccountState() async {
         guard held() == nil else { return }
-        do {
-            let state = try await call(nil) { try await self.client.accountState() }
-            let inactive: [Relay_V1_EntitlementKind] = [Relay_V1_EntitlementKind.none, .expired, .revoked]
-            if inactive.contains(state.entitlement.state) { emit(.entitlementInactive) }
-        } catch {
-            Self.logger.error("relay account state failed")
-        }
+        await session.readAccountState()
     }
 
-    /// Dials the socket when `start()` wants one and none is open, unless stopped or held.
+    /// Attaches to the session when `start()` wants the socket, unless stopped or held.
     func connectIfWanted() async {
-        guard wantsSocket, connection == nil, held() == nil else { return }
-        let connection = await client.connect(zones: [dataZone, mailboxZone])
-        guard wantsSocket, self.connection == nil else {
-            await connection.close()
-            return
+        guard wantsSocket, !attached, held() == nil else { return }
+        attached = true
+        attachGeneration += 1
+        refusedZones = []
+        let generation = attachGeneration
+        let id = ObjectIdentifier(owner)
+        await session.attach(owner: id, zones: socketZones) { [weak self] event in
+            await self?.handle(event, generation: generation)
         }
-        self.connection = connection
-        let events = connection.events
-        socketReader = Task { [weak self] in
-            for await event in events {
-                await self?.handle(event)
-            }
-        }
+        // A `stop()` while attaching.
+        if !wantsSocket || !attached { await session.detach(owner: id) }
     }
 
-    func closeConnection() async {
-        socketReader?.cancel()
-        socketReader = nil
-        let connection = connection
-        self.connection = nil
-        await connection?.close()
+    func detachFromSession() async {
+        guard attached else { return }
+        attached = false
+        await session.detach(owner: ObjectIdentifier(owner))
+    }
+
+    /// The relay zones this transport's socket subscribes (one for a pair zone).
+    nonisolated var socketZones: [String] {
+        dataZone == mailboxZone ? [dataZone] : [dataZone, mailboxZone]
+    }
+
+    /// After a successful pull of `zone`'s lane: a relay zone the socket refused for this attach is readable again
+    /// (the HTTPS read passed the same check), so the socket subscribes it again, with no stop and start.
+    func resubscribeIfRefused(_ zone: CloudZoneID) async {
+        guard attached, refusedZones.remove(zoneName(zone)) != nil else { return }
+        Self.logger.info("relay socket: subscribing a refused zone again, \(Self.kind(zone), privacy: .public)")
+        await session.resubscribe(owner: ObjectIdentifier(owner), zones: socketZones)
+    }
+
+    /// The socket of this transport, when attached (the sim's `isLive`).
+    var connection: HostedRelayConnection? {
+        get async { attached ? await session.connection : nil }
     }
 
     // MARK: - Zones
@@ -272,12 +345,14 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         zone == .data ? dataZone : mailboxZone
     }
 
+    /// The lanes reading relay zone `name`, in `CloudZoneID.allCases` order: both for a pair zone.
+    nonisolated func cloudZones(_ name: String) -> [CloudZoneID] {
+        CloudZoneID.allCases.filter { zoneName($0) == name }
+    }
+
+    /// The first lane reading relay zone `name` (in hub mode, the one).
     nonisolated func cloudZone(_ name: String) -> CloudZoneID? {
-        switch name {
-        case dataZone: return .data
-        case mailboxZone: return .relay
-        default: return nil
-        }
+        cloudZones(name).first
     }
 
     /// A zone's kind for logs (never the device ids in its name).
@@ -287,3 +362,6 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
 
     static let forbidden = HostedRelayError.server(code: .forbidden, retryAfter: nil)
 }
+
+/// A transport's identity as a session owner (`HostedRelaySession.attach`).
+final class SessionOwner: Sendable {}

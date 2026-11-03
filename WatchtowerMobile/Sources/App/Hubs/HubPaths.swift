@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerSync
 
 /// Where one hub's files live (multi-hub spec §5.1): the replica under the
 /// app group (the extensions may read it), the transport store and the
@@ -38,8 +39,19 @@ struct HubPaths {
 
     func replicaPath(_ hubID: String) -> String { hubDirectory(hubID).appendingPathComponent("replica.sqlite").path }
 
+    /// The CloudKit transport store (today's file).
     func transportStorePath(_ hubID: String) -> String {
-        localHubDirectory(hubID).appendingPathComponent(AppEnvironment.transportStoreFileName).path
+        transportStorePath(hubID, route: .cloudKit(.private))
+    }
+
+    /// Each route has its own transport store (R12): a store is bound to one route, so a hub that moves between
+    /// CloudKit and the relay keeps both files, each with its own tokens and queue.
+    func transportStorePath(_ hubID: String, route: HubRoute) -> String {
+        let name = switch route {
+        case .cloudKit: AppEnvironment.transportStoreFileName
+        case .hostedRelay: AppEnvironment.relayTransportStoreFileName
+        }
+        return localHubDirectory(hubID).appendingPathComponent(name).path
     }
 
     func recordingsDirectory(_ hubID: String) -> URL {

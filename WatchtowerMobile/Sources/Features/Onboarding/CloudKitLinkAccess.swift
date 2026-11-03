@@ -41,8 +41,8 @@ struct CloudKitLinkAccess: LinkAccess {
 
     func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws {
         switch route {
-        case .hostedRelay: throw UnsupportedRouteError(route: route)
-        case .cloudKit(.private): return
+        // The relay's access is its pairing slot (R19): nothing to join on iCloud.
+        case .hostedRelay, .cloudKit(.private): return
         case let .cloudKit(.shared(ownerName)):
             guard let urls = Self.shareURLs(invitation) else { throw LinkAccessError.invalidInvitation }
             try await acceptShares(urls, ownerName: ownerName, hubID: hubID)
@@ -87,8 +87,8 @@ struct CloudKitLinkAccess: LinkAccess {
     /// leaves the share.
     func leave(route: HubRoute, hubID: String) async throws {
         switch route {
-        case .hostedRelay: throw UnsupportedRouteError(route: route)
-        case .cloudKit(.private): return
+        // The relay's access is its pairing slot (R19): nothing to leave on iCloud.
+        case .hostedRelay, .cloudKit(.private): return
         case let .cloudKit(.shared(ownerName)): try await leaveShares(ownerName: ownerName, hubID: hubID)
         }
     }

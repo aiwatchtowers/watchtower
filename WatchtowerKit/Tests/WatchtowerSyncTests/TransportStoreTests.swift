@@ -724,7 +724,7 @@ extension TransportStoreTests {
         let queue = try DatabaseQueue(path: path)
         defer { try? queue.close() }
         try queue.read { db in
-            for table in ["relay_cursors", "relay_records", "relay_resync_seen", "relay_binding"] {
+            for table in ["relay_cursors", "relay_records", "relay_resync_seen", "relay_binding", "relay_own_attachments"] {
                 XCTAssertTrue(try db.tableExists(table), table)
                 XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)"), 0, table)
             }
@@ -772,6 +772,57 @@ extension TransportStoreTests {
         XCTAssertThrowsError(try store.bufferRelayPage(zone: .data, changed: [relayRecord("b", seq: 4)], deleted: [], newSeq: 4, resync: false))
         try store.failInserts(false)
         XCTAssertEqual(try store.relayCursor(zone: .data), 3, "a page that could not be buffered leaves the cursor")
+    }
+
+    /// The own-attachment ledger (#1469): an upload matches its record name and id only; the newest
+    /// upload of a name replaces the older; a pulled deletion, a resync that no longer finds the
+    /// record, and a wipe drop it.
+    func testTheOwnAttachmentLedgerFollowsTheRecord() throws {
+        let store = try TransportStore.inMemory()
+        try store.noteRelayOwnAttachment("att-1", name: "rec", zone: .relay)
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-1", name: "rec", zone: .relay))
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-1", name: "other", zone: .relay))
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-1", name: "rec", zone: .data))
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-x", name: "rec", zone: .relay))
+
+        try store.noteRelayOwnAttachment("att-2", name: "rec", zone: .relay)
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-1", name: "rec", zone: .relay), "a re-save's upload replaces it")
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-2", name: "rec", zone: .relay))
+
+        try store.bufferRelayPage(zone: .relay, changed: [], deleted: ["rec"], newSeq: 1, resync: false)
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-2", name: "rec", zone: .relay), "a pulled deletion drops it")
+
+        try store.noteRelayOwnAttachment("att-3", name: "kept", zone: .relay)
+        try store.bufferRelayPage(
+            zone: .relay, changed: [relayRecord("kept", seq: 2, zone: .relay)], deleted: [], newSeq: 2, resync: false)
+        try store.beginRelayResync(.relay)
+        XCTAssertEqual(try store.finishRelayResync(.relay), ["kept"])
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-3", name: "kept", zone: .relay), "gone after a resync")
+
+        try store.noteRelayOwnAttachment("att-4", name: "wiped", zone: .relay)
+        try store.wipe()
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-4", name: "wiped", zone: .relay))
+    }
+
+    /// A finished resync also drops the rows of uploads whose save never landed (a name neither the
+    /// server returned nor the send queue holds), and keeps a queued one and a server-held one.
+    func testAFinishedResyncDropsOrphanOwnAttachments() throws {
+        let store = try TransportStore.inMemory()
+        try store.noteRelayOwnAttachment("att-orphan", name: "never-saved", zone: .relay)
+        try store.enqueueSave([relayRecord("queued", seq: 0, zone: .relay)])
+        try store.noteRelayOwnAttachment("att-queued", name: "queued", zone: .relay)
+        try store.noteRelayOwnAttachment("att-held", name: "held", zone: .relay)
+        try store.noteRelayOwnAttachment("att-data", name: "never-saved", zone: .data)
+
+        try store.beginRelayResync(.relay)
+        try store.bufferRelayPage(
+            zone: .relay, changed: [relayRecord("held", seq: 1, zone: .relay)], deleted: [], newSeq: 1, resync: true)
+        XCTAssertEqual(try store.finishRelayResync(.relay), [])
+
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-orphan", name: "never-saved", zone: .relay))
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-queued", name: "queued", zone: .relay))
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-held", name: "held", zone: .relay))
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-data", name: "never-saved", zone: .data), "another lane is left")
     }
 
     /// A finished resync deletes the names the server once returned and this resync did not.
@@ -825,5 +876,35 @@ extension TransportStoreTests {
         try store.beginRelayResync(.data)
         XCTAssertFalse(try store.relayResyncStalled(.data))
         XCTAssertTrue(try store.relayResyncPending(.data))
+    }
+
+    /// A lane's relay zone changing from another non-pair zone with writes queued for it is not
+    /// adopted: the queued writes stay, and the caller wipes deliberately.
+    func testAZoneChangeWithQueuedWritesOutsidePairingThrowsAndKeepsThem() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 0)
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertThrowsError(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-2"])) {
+            XCTAssertEqual($0 as? TransportStoreError, .queuedWritesForAnotherZone)
+        }
+        XCTAssertTrue(try store.isPending(recordName: "device-1", zone: .relay), "the queued write is kept")
+        XCTAssertFalse(try store.relayResyncPending(.relay), "nothing changed")
+        // The same zones again are fine.
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 0)
+    }
+
+    /// Leaving a pair zone drops the hello still queued for it (counted and logged) and
+    /// resyncs the lane from 0.
+    func testLeavingAPairZoneDropsItsQueuedHello() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        XCTAssertEqual(try store.adoptRelayZones([.data: "pair/slot-1", .relay: "pair/slot-1"]), 0)
+        try store.enqueueSave([record("hello-1", zone: .relay)])
+        try store.bufferRelayPage(zone: .relay, changed: [], deleted: [], newSeq: 3, resync: false)
+        XCTAssertEqual(try store.adoptRelayZones([.data: "data/mac-a", .relay: "relay/mac-a/phone-1"]), 1)
+        XCTAssertFalse(try store.isPending(recordName: "hello-1", zone: .relay))
+        XCTAssertEqual(try store.relayCursor(zone: .relay), 0)
+        XCTAssertTrue(try store.relayResyncPending(.relay))
     }
 }

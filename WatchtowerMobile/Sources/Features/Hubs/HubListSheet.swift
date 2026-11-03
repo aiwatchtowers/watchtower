@@ -51,7 +51,7 @@ struct HubListSheet: View {
                     .accessibilityAddTraits(item.isActive ? .isSelected : [])
                 }
             }
-            if MacsView.offersAdd(transportKind: env.transportKind) {
+            if MacsView.offersAdd(backend: env.backend) {
                 Section {
                     Button {
                         choose(.addMac)

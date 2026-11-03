@@ -236,4 +236,20 @@ final class SimModelTests: HostedRelayScenarioCase {
         let released = await world.hub.transport
         XCTAssertEqual(released, .cloudkit)
     }
+
+    /// The hub answers a request for its current transport with `transport_switched` in the same
+    /// epoch (Go `handleSwitch`, `target == h.current`): the phone stops waiting after one pass.
+    func testAskingForTheCurrentTransportIsAnswered() async throws {
+        let world = try await simWorld()
+        let phone = try await world.addPhone(paying: true)
+        await phone.switchTransport(to: .relay)
+        await world.hub.sync()
+        await phone.sync()
+        let pending = await phone.switchPending
+        let transport = await phone.transport
+        let epoch = await phone.epoch
+        XCTAssertFalse(pending, "the answer ended the wait")
+        XCTAssertEqual(transport, .relay)
+        XCTAssertEqual(epoch, 1)
+    }
 }

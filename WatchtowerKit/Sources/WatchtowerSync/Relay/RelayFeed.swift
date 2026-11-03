@@ -20,10 +20,15 @@ public enum DesktopReachability: Equatable, Sendable {
 /// - `recording_upload` echoes → the `RecordingUploadAcking` seam,
 /// - hub `control` records (relay client Phase 1) → `resend_from` to
 ///   `ActionOutbox.resendFrom`, `transport_switch_rejected` logged; both read
-///   once (`handled_controls`) and deleted. `transport_switched`,
-///   `hub_on_relay` and unknown kinds stay in the mailbox for Phase 3
-///   (Ruling 9). One naming another phone or hub is dropped and deleted; the
-///   phone's own controls reflecting back are left for the hub,
+///   once (`handled_controls`) and deleted. `transport_switched` and
+///   `hub_on_relay` go to the transport handler (relay client Phase 3, which
+///   ends Phase 1 Ruling 9): marked handled and deleted only once it returns
+///   true, else left in the mailbox and handed again at every later cycle
+///   of this feed (in memory: after a relaunch the hub's transport marker
+///   leads instead); with no handler set they stay too. Unknown kinds stay in the mailbox. One naming
+///   another phone or hub is dropped and deleted; the phone's own controls
+///   reflecting back are left for the hub. Controls are read whatever path the
+///   actions take (ordered or legacy, contract point 6a),
 /// - `heartbeat` → ignored: the heartbeat lives in DataZone (mobile POC
 ///   spec §4.1), so a relay-zone copy is never trusted for liveness,
 /// - `device` → ignored (the phone's own link record; the Mac consumes it),
@@ -31,7 +36,11 @@ public enum DesktopReachability: Equatable, Sendable {
 ///
 /// Nothing else on the phone may call `changes(in: .relay, …)` — a second
 /// consumer would need its own token and would race this one's routing (the
-/// Plan 2 Task 6 lesson).
+/// Plan 2 Task 6 lesson). The mailbox on the hub's other transport is read
+/// through this feed too (relay client Phase 3 Task 12): `readControls(over:)`
+/// during a relay outage (sim rule 12) and `drainMailbox(over:)` after a switch
+/// (sim rule 15), each a full read of that transport with no token, sharing
+/// this feed's read-once control ledger.
 ///
 /// Token discipline: the token is persisted at batch END, so a mid-batch
 /// throw replays the batch next cycle (all routing is idempotent), while an
@@ -85,6 +94,13 @@ public actor RelayFeed {
     /// — harmless for the hydrate-nudge purpose (a spurious re-hydration is
     /// an idempotent no-op).
     private let onActionApplied: (@Sendable () async -> Void)?
+    /// Called for each well-formed `hub_on_relay` control this phone reads (relay client Phase 3 Task 10: an
+    /// iCloud link to a Mac on Relay ends on a phone that cannot use Relay). The control stays in the mailbox.
+    private let onHubOnRelay: (@Sendable () async -> Void)?
+    /// Decides a `transport_switched` or `hub_on_relay` control (the session's transport follower); true = handled.
+    private var transportHandler: (@Sendable (ControlPayload) async -> Bool)?
+    /// Transport controls the handler has not decided yet, by control id, with their record: handed again each cycle.
+    private var undecided: [String: (control: ControlPayload, record: CloudRecord)] = [:]
     /// When a hub control is marked handled (its id is kept 15 days).
     private let now: @Sendable () -> Date
     private var loopTask: Task<Void, Never>?
@@ -106,6 +122,7 @@ public actor RelayFeed {
         uploads: (any RecordingUploadAcking)? = nil,
         pull: (@Sendable () async throws -> Void)? = nil,
         onActionApplied: (@Sendable () async -> Void)? = nil,
+        onHubOnRelay: (@Sendable () async -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
@@ -114,7 +131,13 @@ public actor RelayFeed {
         self.uploads = uploads
         self.pull = pull
         self.onActionApplied = onActionApplied
+        self.onHubOnRelay = onHubOnRelay
         self.now = now
+    }
+
+    /// Sets (or clears) the transport handler: the session's `TransportFollower`.
+    public func setTransportHandler(_ handler: (@Sendable (ControlPayload) async -> Bool)?) {
+        transportHandler = handler
     }
 
     // MARK: - One cycle
@@ -144,6 +167,8 @@ public actor RelayFeed {
         try await pull?()
         let since = try store.relayToken()
         let batch = try await transport.changes(in: .relay, since: since)
+        // Before the batch: a control the handler left undecided is handed again (the paying check answers now).
+        await deleteRead(try await retryUndecided())
         // Monotonic stale-batch drop, mirroring ReplicaStore.apply — but
         // checked BEFORE routing, because routing has side effects (echo
         // resolution, upload acks) that a replayed stale batch must not
@@ -194,11 +219,12 @@ public actor RelayFeed {
     }
 
     /// Deletes the records this cycle read and settled (Rulings 8/9): one call, one try, never failing the cycle.
-    private func deleteRead(_ items: [ConditionalDelete]) async {
+    /// `target` is the transport they were read on (this feed's own when nil).
+    private func deleteRead(_ items: [ConditionalDelete], over target: SecureTransport? = nil) async {
         guard !items.isEmpty else { return }
         let outcomes: [DeleteOutcome]
         do {
-            outcomes = try await transport.deleteSealed(items)
+            outcomes = try await (target ?? transport).deleteSealed(items)
         } catch {
             logger.warning(
                 "relay deletes failed (\(items.count, privacy: .public) records, left to hygiene): \(error.localizedDescription, privacy: .public)")
@@ -270,12 +296,52 @@ public actor RelayFeed {
         return Routed()
     }
 
+    /// Hands every undecided transport control to the handler again; returns the deletes of the ones it decided.
+    private func retryUndecided() async throws -> [ConditionalDelete] {
+        var deletes: [ConditionalDelete] = []
+        for (id, parked) in undecided {
+            undecided[id] = nil
+            if let delete = try await decideTransport(parked.control, record: parked.record) { deletes.append(delete) }
+        }
+        return deletes
+    }
+
+    /// Which mailbox a control was read in: this feed's own (undecided transport controls are parked and handed again
+    /// each cycle), or another transport's, whose pass hands them to `handler` and leaves an undecided one where it is.
+    private enum Reading {
+        case own
+        case other(handler: SideHandler)
+    }
+
+    /// One `transport_switched` or `hub_on_relay` to the handler: marked handled and its delete returned once it
+    /// decided; else kept for the next cycle (nil).
+    private func decideTransport(
+        _ control: ControlPayload, record: CloudRecord, reading: Reading = .own
+    ) async throws -> ConditionalDelete? {
+        let decided: Bool
+        switch reading {
+        case .own:
+            decided = await transportHandler?(control) ?? false
+            if !decided { undecided[control.id] = (control, record) }
+        case .other(let handler):
+            decided = await handler(control)
+        }
+        guard decided else {
+            if loggedControlKinds.insert(control.kind.rawValue).inserted {
+                logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
+            }
+            return nil
+        }
+        _ = try store.markControlHandled(id: control.id, at: now())
+        return Self.delete(record)
+    }
+
     /// Handles one control record; returns its delete, or nil to leave it in the mailbox.
     ///
     /// Read once: the handled id is checked first and marked only after the handling, so a `resend_from` whose
     /// handling throws (`notLinked`, `noHubID`, a store error) fails the cycle unmarked and the token stays — the
     /// hub writes one per gap, and a lost one would stall the order.
-    private func read(_ control: ControlPayload, record: CloudRecord) async throws -> ConditionalDelete? {
+    private func read(_ control: ControlPayload, record: CloudRecord, reading: Reading = .own) async throws -> ConditionalDelete? {
         // The phone's own controls (`skip_to`) reflect back through the shared zone: the hub reads and deletes them.
         guard record.sealed?.envelopeClass == .relayToPhone else { return nil }
         let ids = await outbox.linkIDs()
@@ -305,13 +371,123 @@ public actor RelayFeed {
             }
             _ = try store.markControlHandled(id: control.id, at: now())
             return Self.delete(record)
+        case .transportSwitched, .hubOnRelay:
+            if try store.isControlHandled(id: control.id) { return Self.delete(record) }
+            // `hub_on_relay` is told to the link flow too (a link that never came alive ends on it).
+            if control.kind == .hubOnRelay { await onHubOnRelay?() }
+            // Marked only after the handler returned: a move it persisted is never lost to a delete.
+            return try await decideTransport(control, record: record, reading: reading)
         default:
-            // `transport_switched`, `hub_on_relay` (Phase 3) and kinds this build does not know: left in the mailbox.
+            // Kinds this build does not know: left in the mailbox.
             if loggedControlKinds.insert(control.kind.rawValue).inserted {
                 logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
             }
             return nil
         }
+    }
+
+    // MARK: - Another transport's mailbox (sim rules 12 and 15)
+
+    /// Decides a `transport_switched` or `hub_on_relay` read on another transport: the session's follower, told
+    /// which transport it was read on; true = handled.
+    public typealias SideHandler = @Sendable (ControlPayload) async -> Bool
+
+    /// What one drain of a left transport's mailbox did (`drainMailbox`).
+    public enum DrainOutcome: Equatable, Sendable {
+        /// Every hub record was handled and everything left was deleted.
+        case drained
+        /// Something stays (a transport control the follower left undecided, a record that changed since it was
+        /// read, one without a known wire name): drained again on a later pass.
+        case incomplete
+        /// The transport refused the deletes (sim rule 16: a lapsed or forbidden relay account).
+        case refused(TransportRefusal)
+    }
+
+    /// Rule 12: one controls-only pass over another transport's mailbox (`side`, already pulled by the caller):
+    /// every `transport_switched` and `hub_on_relay` there goes to `handler`, through the same read-once ledger as
+    /// this feed's own controls, and is deleted there once decided. Nothing else is read, written or deleted, and no
+    /// change token is kept (each pass reads the whole mailbox; the ledger makes it idempotent). Returns how many
+    /// controls it deleted.
+    @discardableResult
+    public func readControls(over side: SecureTransport, handler: @escaping SideHandler) async throws -> Int {
+        var deletes: [ConditionalDelete] = []
+        for record in try await side.relayHygieneScan().opened where record.kind == RelayRecordKind.control.rawValue {
+            guard let control = decode(ControlPayload.self, from: record),
+                  control.kind == .transportSwitched || control.kind == .hubOnRelay else { continue }
+            if let delete = try await read(control, record: record, reading: .other(handler: handler)) {
+                deletes.append(delete)
+            }
+        }
+        await deleteRead(deletes, over: side)
+        return deletes.count
+    }
+
+    /// Rule 15: empties this phone's mailbox on a transport it left (`side`, already pulled by the caller). The hub's
+    /// records this feed never read are handled first, as the feed handles them (echoes settle their rows, controls go
+    /// through the read-once ledger, transport controls to `handler`); then everything that opened is deleted, the
+    /// phone's own leftovers included, except its `device` record when `keepingDeviceRecord` (CloudKit: both hubs'
+    /// cleanup keeps that lane). Nothing is written there: a `resend_from` read there resends on this feed's own
+    /// outbox, never on `side`. A record that does not open (another phone's on a shared CloudKit zone, a hello, or
+    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. A throw (a locked keychain, the
+    /// transport unreachable) leaves the rest for a later pass. An `applied` echo settled here fires
+    /// `onActionApplied` once, after the deletes, as a poll does.
+    public func drainMailbox(
+        over side: SecureTransport, keepingDeviceRecord: Bool = false, handler: @escaping SideHandler
+    ) async throws -> DrainOutcome {
+        let scan = try await side.relayHygieneScan()
+        if !scan.unopenable.isEmpty {
+            logger.notice("left mailbox: \(scan.unopenable.count, privacy: .public) records do not open, skipped")
+        }
+        var deletes: [ConditionalDelete] = []
+        var complete = true
+        var appliedEcho = false
+        for record in scan.opened {
+            if record.sealed?.envelopeClass == .relayToPhone {
+                let handled = try await handleLeft(record, handler: handler)
+                appliedEcho = appliedEcho || handled.appliedEcho
+                guard handled.done else {
+                    complete = false
+                    continue
+                }
+            } else if keepingDeviceRecord, record.kind == RelayRecordKind.device.rawValue {
+                continue
+            }
+            guard let wireName = record.sealed?.wireName else {
+                complete = false
+                continue
+            }
+            deletes.append(ConditionalDelete(recordName: wireName, zone: .relay, expect: record.recordSeq.map { .seq($0) } ?? .none))
+        }
+        defer {
+            if appliedEcho, let onActionApplied { Task { await onActionApplied() } }
+        }
+        guard !deletes.isEmpty else { return complete ? .drained : .incomplete }
+        for outcome in try await side.deleteSealed(deletes) {
+            switch outcome {
+            case .deleted:
+                break
+            case .conflict:
+                complete = false
+            case .refused(let refusal):
+                return .refused(refusal)
+            }
+        }
+        logger.notice("left mailbox: \(deletes.count, privacy: .public) records deleted")
+        return complete ? .drained : .incomplete
+    }
+
+    /// One hub record of a left mailbox, handled as `route` would: `done` is false only for a transport control
+    /// `handler` left undecided (it stays); `appliedEcho` for an `applied` action echo. Controls this build does not
+    /// know are dropped with the mailbox.
+    private func handleLeft(
+        _ record: CloudRecord, handler: @escaping SideHandler
+    ) async throws -> (done: Bool, appliedEcho: Bool) {
+        guard RelayRecordKind(rawValue: record.kind) == .control else {
+            return (true, try await route(record).appliedEcho)
+        }
+        guard let control = decode(ControlPayload.self, from: record) else { return (true, false) }
+        let delete = try await read(control, record: record, reading: .other(handler: handler))
+        return (delete != nil || !(control.kind == .transportSwitched || control.kind == .hubOnRelay), false)
     }
 
     /// The control names `ours`: an absent id names nobody; while ours is unknown it cannot be told apart, so the

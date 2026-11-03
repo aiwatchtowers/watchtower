@@ -4,12 +4,14 @@ import os
 import UIKit
 @_spi(DemoTransport) import WatchtowerSync
 
-/// Which transport a `HubSession` runs on: chosen by `AppEnvironment`'s
-/// live and demo builders, injectable through the designated init for
-/// tests. `.cloudKit` NEVER seeds: a real install starts empty and hydrates
-/// from the user's own zone.
-enum TransportKind: String, Sendable {
-    case cloudKit
+/// What a `HubSession` runs on: a live transport (CloudKit or the hosted
+/// relay, by the hub's route) or the in-memory demo. Chosen by
+/// `AppEnvironment`'s live and demo builders, injectable through the
+/// designated init for tests. `.live` NEVER seeds: a real install starts
+/// empty and hydrates from the user's own zones. (The Kit's
+/// `TransportKind` names the live transport itself.)
+enum SessionBackend: String, Sendable {
+    case live
     case inMemoryDemo
 }
 
@@ -114,6 +116,23 @@ enum HubLinkPresence: Equatable {
     case unknown
 }
 
+/// The transport follower's hooks on a session (relay client Phase 3 Task 11), set by `AppRoot.wire`: the feed's
+/// `transport_switched` / `hub_on_relay` controls and the hydrator's transport marker reach them; with none set,
+/// nothing is decided (false) and the feed keeps the control.
+@MainActor
+final class TransportSignals {
+    var onControl: (@MainActor (ControlPayload) async -> Bool)?
+    var onMarker: (@MainActor (TransportMarker) async -> Bool)?
+
+    func control(_ control: ControlPayload) async -> Bool {
+        await onControl?(control) ?? false
+    }
+
+    func marker(_ marker: TransportMarker) async -> Bool {
+        await onMarker?(marker) ?? false
+    }
+}
+
 /// The handler of the keybox signal (`HubSession.onKeyboxChanged`), set after the hydrator that fires it.
 @MainActor
 private final class KeyboxSignal {
@@ -143,7 +162,7 @@ final class HubSession {
     nonisolated static let placeholderHubID = "00000000-0000-0000-0000-000000000000"
 
     let store: ReplicaStore
-    let transportKind: TransportKind
+    let backend: SessionBackend
     let outbox: ActionOutbox
     /// `session_report_request` on opening a session detail, throttled per
     /// session for the app's lifetime.
@@ -180,6 +199,8 @@ final class HubSession {
     @ObservationIgnored private var backlogObservation: ResilientObservation?
     /// The last flush (and sweep) the session started without waiting for it (`startOutboxWork`).
     @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
+    /// The last `epoch_ack` the session queued after a raised epoch (`keysMerged`), not awaited (tests wait on it).
+    @ObservationIgnored private(set) var epochAckWork: Task<Void, Never>?
     /// How long `shutDown()` waits for the outbox's chain before it goes on; tests shorten it.
     @ObservationIgnored var outboxDrainCap: Duration = .seconds(10)
     /// The phone recorder (record a meeting or a voice note), owned for the
@@ -193,6 +214,8 @@ final class HubSession {
     /// Where this session's link lives, which a silent push names
     /// (`AppEnvironment.handlePush`); nil for the demo.
     let route: HubRoute?
+    /// A `hub_on_relay` control reached this session's mailbox (relay client Phase 3 Task 10).
+    @ObservationIgnored private let hubOnRelay = HubOnRelaySighting()
     /// Recordings a wipe carried over (board #63), outside the replica,
     /// shared by every hub; nil holds nothing.
     @ObservationIgnored let hold: RecordingHold?
@@ -234,6 +257,8 @@ final class HubSession {
         set { keyboxSignal.handler = newValue }
     }
     @ObservationIgnored private let keyboxSignal: KeyboxSignal
+    /// The transport follower's hooks (`AppRoot.wire`): the hub's switch controls and its transport marker.
+    @ObservationIgnored let transportSignals = TransportSignals()
     /// The unlock signal reached the environment (after its own indexing): the link flow reconciles the
     /// keybox's epoch keys with the Keychain (final review Phone I-1).
     @ObservationIgnored var onKeysAvailable: (@MainActor () -> Void)?
@@ -286,6 +311,14 @@ final class HubSession {
     /// `transport` sealing and opening with the phone's keys: every write of
     /// the outbox, the uploader and the link flow goes through it.
     @ObservationIgnored private let secure: SecureTransport
+    /// `secure`'s keys: the hub's other transport is sealed and opened with them (`sealing(_:)`).
+    @ObservationIgnored private let sealKeys: any SecureKeyProvider
+    /// The mailbox on the hub's other transport (relay client Phase 3 Task 12), set by `AppRoot.wire` for a hub with
+    /// both routes; stopped with the session.
+    @ObservationIgnored private(set) var sideReader: SideMailboxReader?
+    /// On route `.relay`: since when this session's fetches find the relay unanswered (nil while it answers), on the
+    /// session's clock: the start of an outage for the side reader's 60 s rule (sim rule 12).
+    @ObservationIgnored private(set) var relayUnansweredSince: Date?
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored let uploader: RecordingUploader
@@ -361,7 +394,7 @@ final class HubSession {
     /// `CloudKitTransport` (none for any other transport). `linkedDevice`
     /// is the saved link (the demo kind is always `DemoSeed.device`). `keys` is the phone's
     /// E2E key material; nil: the demo pairing on the demo kind, none on
-    /// the CloudKit kind. Keys whose store holds no device id yet, or whose
+    /// the live backend. Keys whose store holds no device id yet, or whose
     /// hub id is not a UUID, wire no keys either (F14: the identity is never
     /// created here, only read; nothing is sealed or opened). `seqFloor`
     /// raises the phone's seq allocator above a wiped replica's ceiling.
@@ -384,7 +417,7 @@ final class HubSession {
     init(
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
-        transportKind: TransportKind = .inMemoryDemo,
+        backend: SessionBackend = .inMemoryDemo,
         transportStore: TransportStore? = nil,
         hubID: String = DemoSeed.hubID,
         linkedDevice: LinkedDevice? = nil,
@@ -410,10 +443,10 @@ final class HubSession {
     ) throws {
         // The demo kind picks the fixed demo keys: never over CloudKit.
         precondition(
-            !(transport is any LiveTransport && transportKind == .inMemoryDemo),
+            !(transport is any LiveTransport && backend == .inMemoryDemo),
             "a live transport must not run under the demo kind"
         )
-        let hubLink = try Self.ownHubLink(keys, hubID: hubID, kind: transportKind, transportStore: transportStore)
+        let hubLink = try Self.ownHubLink(keys, hubID: hubID, kind: backend, transportStore: transportStore)
         self.sleep = sleep
         self.now = now
         self.energy = energy
@@ -422,23 +455,24 @@ final class HubSession {
         self.transport = transport
         liveTransport = transport as? any LiveTransport
         self.transportStore = transportStore
-        self.transportKind = transportKind
+        self.backend = backend
         self.hubID = hubID
         self.hold = hold
         self.route = route
         self.defaults = defaults
-        let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
+        let device = backend == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
         // The demo pairing only on the demo path: the demo kind over the in-memory transport.
-        let demoKeys = transportKind == .inMemoryDemo && transport is InMemoryCloudTransport
+        let demoKeys = backend == .inMemoryDemo && transport is InMemoryCloudTransport
         let sealed = try Self.sealedStack(
             transport: transport, replicaPath: replicaPath,
             keys: try keys ?? (demoKeys ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor,
-            observesSuspension: replicaObservesSuspension
+            observesSuspension: replicaObservesSuspension, route: route
         )
         let (store, secure) = (sealed.store, sealed.secure)
         self.store = store
         self.secure = secure
+        sealKeys = sealed.keys
         hasDeviceKeys = sealed.hasDeviceKeys
         self.hubLink = hubLink
 
@@ -449,10 +483,7 @@ final class HubSession {
         let keyboxSignal = KeyboxSignal()
         self.keyboxSignal = keyboxSignal
         // Labelled: a trailing closure would bind to `pull`, the first closure parameter.
-        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: { records in // swiftlint:disable:this trailing_closure
-            guard records.contains(where: { $0.kind == .deviceGrant }) else { return }
-            Task { @MainActor in keyboxSignal.handler?() }
-        })
+        let hydrator = Self.makeHydrator(transport, store, keyboxSignal, transportSignals)
         self.hydrator = hydrator
         // The route decides a queued control's outer bound (the hosted relay's mailbox TTL; none on CloudKit); the
         // session's clock times the 24 h withdrawal.
@@ -489,10 +520,10 @@ final class HubSession {
         if !startsActive {
             recorder.setForeground(false)
         }
-        feed = RelayFeed(transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrateAfterEcho)
+        feed = Self.makeFeed(secure, store, outbox, uploader, hydrateAfterEcho, hubOnRelay)
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
-            secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
+            secure: secure, defaults: defaults, kind: backend, hubID: hubID, device: device,
             route: route, wake: pushWake)
         sharedAlerts = Self.makeSharedAlerts(
             hubID: hubID, route: route, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
@@ -527,6 +558,38 @@ final class HubSession {
 
     /// The poster of a shared-scope hub's work alerts, over this phone's keys for the hub; nil in any other scope or
     /// without keys. A private-scope hub never posts locally: its push subscription delivers.
+    /// The hydrator: a keybox it indexed fires `keyboxSignal`, and the hub's transport marker goes to `signals`.
+    private static func makeHydrator(
+        _ transport: any CloudSyncTransport & Sendable,
+        _ store: ReplicaStore,
+        _ keyboxSignal: KeyboxSignal,
+        _ signals: TransportSignals
+    ) -> ReplicaHydrator {
+        ReplicaHydrator(
+            transport: transport, store: store,
+            onRecordsApplied: { records in
+                guard records.contains(where: { $0.kind == .deviceGrant }) else { return }
+                Task { @MainActor in keyboxSignal.handler?() }
+            },
+            onTransportMarker: { marker in await signals.marker(marker) }
+        )
+    }
+
+    /// The relay feed: echoes, controls, and a `hub_on_relay` noted in `sighting`.
+    private static func makeFeed(
+        _ secure: SecureTransport,
+        _ store: ReplicaStore,
+        _ outbox: ActionOutbox,
+        _ uploader: RecordingUploader,
+        _ hydrate: @escaping @Sendable () async -> Void,
+        _ sighting: HubOnRelaySighting
+    ) -> RelayFeed {
+        RelayFeed(
+            transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrate,
+            onHubOnRelay: sighting.note
+        )
+    }
+
     private static func makeSharedAlerts(
         hubID: String,
         route: HubRoute?,
@@ -551,7 +614,7 @@ final class HubSession {
     private static func makeDeviceSettings(
         secure: SecureTransport,
         defaults: UserDefaults,
-        kind: TransportKind,
+        kind: SessionBackend,
         hubID: String,
         device: LinkedDevice?,
         route: HubRoute?,
@@ -559,7 +622,7 @@ final class HubSession {
     ) -> (DeviceSettings, AlertSubscriptionRegistrar?) {
         let settings = DeviceSettings(
             transport: secure, defaults: defaults,
-            alertDefaults: kind == .cloudKit ? UserDefaults(suiteName: AppEnvironment.appGroupID) : nil,
+            alertDefaults: kind == .live ? UserDefaults(suiteName: AppEnvironment.appGroupID) : nil,
             hubID: hubID
         )
         settings.linkedDevice = device
@@ -571,11 +634,11 @@ final class HubSession {
     /// a process with the app's iCloud entitlement: CloudKit raises an uncatchable exception without it).
     private static func makeAlertRegistrar(
         hubID: String,
-        kind: TransportKind,
+        kind: SessionBackend,
         route: HubRoute?,
         wake: (any PushWake)?
     ) -> AlertSubscriptionRegistrar? {
-        guard kind == .cloudKit, let route, let wake else { return nil }
+        guard kind == .live, let route, let wake else { return nil }
         return AlertSubscriptionRegistrar(hubID: hubID, route: route, wake: wake)
     }
 
@@ -692,6 +755,8 @@ final class HubSession {
         // Before any fetch: the feed's `resend_from` needs both ids (with the device id the init set), or it
         // throws and the feed keeps its token, stalling every later action.
         await outbox.setHubID(hubID)
+        // Before any fetch: the hub's switch controls reach the transport follower.
+        await feed.setTransportHandler { [transportSignals] control in await transportSignals.control(control) }
         // Every flush's outcome, the ones an enqueue or a `resend_from` starts included.
         await outbox.setFlushReportObserver { [weak self] report in
             Task { @MainActor in self?.outboxBacklog.lastFlushStopped = report.stoppedOn != nil }
@@ -703,7 +768,9 @@ final class HubSession {
                 askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter
             )
         )
-        switch transportKind {
+        // A raise this phone has not acknowledged yet (no session was up, or the Keychain was locked).
+        acknowledgeNewestEpoch()
+        switch backend {
         case .inMemoryDemo:
             do {
                 // Each launch builds a new in-memory transport whose change
@@ -727,7 +794,7 @@ final class HubSession {
             } catch {
                 Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
             }
-        case .cloudKit:
+        case .live:
             // A session stopped before its boot ran (a frozen hub, an
             // orphan being cleared) never starts its engine.
             // Nor does a hub without stored link keys (`startsEngine`): its
@@ -971,6 +1038,7 @@ final class HubSession {
         if owed {
             applyOwed = false
         }
+        await noteRelayAnswer()
         if let remoteError {
             lastFetchError = remoteError.localizedDescription
             let what = "\(trigger), \(Self.describe(depth))"
@@ -1069,6 +1137,8 @@ final class HubSession {
         setUploadRetries(active)
         guard active != isActive else { return }
         isActive = active
+        // The other transport's mailbox: looked at on the return, its CloudKit engine stopped on leaving.
+        sideReader?.activeChanged(active)
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
         guard active else {
@@ -1143,11 +1213,39 @@ final class HubSession {
         await readoptHeldIfNeeded()
         await recorder.uploadPending()
         startOutboxWork(sweep: false)
+        acknowledgeNewestEpoch()
+    }
+
+    /// The link flow merged new epoch keys into the Keychain (`AppRoot.keysMerged`): the rows they unlock are
+    /// opened, and when the newest epoch went up an ordered hub gets `epoch_ack` for it (the outbox sends none to a
+    /// hub on today's path, and never one for an epoch it already acknowledged). A locked keychain or a missing
+    /// link leaves it to the next raise.
+    func keysMerged(newestEpochRaised: Bool) {
+        indexStoredRows()
+        guard newestEpochRaised else { return }
+        acknowledgeNewestEpoch()
+    }
+
+    /// Queues `epoch_ack` for the Keychain's newest epoch when it is above the last one acknowledged (the outbox
+    /// decides, and sends none to a hub on today's path). Also when the ordered path turns on (one ack for the link's
+    /// epoch), at boot and after the unlock, so a raise made while no session was up or the Keychain was locked is
+    /// still acknowledged. Kept in `epochAckWork` (tests).
+    private func acknowledgeNewestEpoch() {
+        guard !stopped, linkedDevice != nil else { return }
+        let previous = epochAckWork
+        epochAckWork = Task { [outbox, secure] in
+            await previous?.value
+            do {
+                try await outbox.enqueueEpochAck(epoch: secure.currentEpoch())
+            } catch {
+                Self.logger.warning("epoch_ack not queued: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
-    /// by a fetch does. Rows that still cannot open stay for the next pass. Also the link flow's call once new
-    /// epoch keys joined the Keychain (`AppRoot.keysMerged`).
+    /// by a fetch does. Rows that still cannot open stay for the next pass. Also run once new epoch keys joined
+    /// the Keychain (`keysMerged`).
     func indexStoredRows() {
         do {
             let indexed = try store.indexPending()
@@ -1209,6 +1307,8 @@ final class HubSession {
                   try await !outbox.orderedActions() else { return }
             try await outbox.enableOrderedActions()
             Self.logger.notice("the hub runs ordered actions: the ordered path is on")
+            // The hub takes an ack at or below its epoch as a no-op: from here on its acked epoch matches this phone's.
+            acknowledgeNewestEpoch()
         } catch {
             Self.logger.notice("ordered-actions grant check skipped: \(error.localizedDescription, privacy: .public)")
         }
@@ -1259,6 +1359,107 @@ final class HubSession {
         return sealed
     }
 
+    /// Seals `record` with this hub's keys without sending it (a confirmed Relay link's farewell, which goes
+    /// straight into the mailbox).
+    func seal(_ record: CloudRecord) async throws -> CloudRecord {
+        try await secure.seal(record)
+    }
+
+    /// This session has seen its hub run over Relay (relay client Phase 3 Task 10, R4): a `hub_on_relay` control
+    /// in its mailbox, or the newest transport marker in its data zone (plain kind `transport`, id `marker`) with
+    /// `target: relay`. Rows stored but not opened yet are opened first.
+    func runsOnRelay() -> Bool {
+        if hubOnRelay.seen { return true }
+        indexStoredRows()
+        let store = store
+        do {
+            return try store.reader.read { db in
+                guard let payload = try store.payload(forRecordName: Self.transportMarkerName, from: db) else { return false }
+                return try RelayCoder.makeDecoder().decode(TransportMarkerTarget.self, from: payload).target == TransportKind.relay.rawValue
+            }
+        } catch {
+            Self.logger.warning("transport marker unreadable: \(String(describing: type(of: error)), privacy: .public)")
+            return false
+        }
+    }
+
+    /// The hub's transport marker's plain record name.
+    static let transportMarkerName = TransportMarker.recordName
+
+    /// The transport a route talks over.
+    nonisolated static func transportKind(of route: HubRoute) -> TransportKind {
+        route.cloudKitScope != nil ? .cloudKit : .relay
+    }
+
+    // MARK: - The other transport's mailbox (relay client Phase 3 Task 12)
+
+    /// Takes `reader` as this hub's side mailbox reader and starts it (`AppRoot.wire`).
+    func attach(_ reader: SideMailboxReader) {
+        sideReader = reader
+        reader.start()
+    }
+
+    /// On route `.relay`: `.available` while the relay answered this session's last op (a refusal is an answer);
+    /// nil on any other route or for a transport without a lifecycle.
+    func relayAvailability() async -> CloudAvailability? {
+        guard case .hostedRelay? = route, let liveTransport else { return nil }
+        return await liveTransport.availability()
+    }
+
+    /// After a fetch's reach on route `.relay`: when the relay stopped answering, kept until it answers again.
+    private func noteRelayAnswer() async {
+        guard let availability = await relayAvailability() else { return }
+        if availability == .available {
+            relayUnansweredSince = nil
+        } else if relayUnansweredSince == nil {
+            relayUnansweredSince = now()
+        }
+    }
+
+    /// `inner`, the hub's other transport, sealed and opened with this session's keys and rollback guard.
+    func sealing(_ inner: any CloudSyncTransport & Sendable) -> SecureTransport {
+        SecureTransport(inner: inner, keys: sealKeys, rollback: store)
+    }
+
+    /// Rule 12: the controls in the other transport's mailbox `side`, through this session's feed (`RelayFeed`).
+    func readOtherControls(over side: SecureTransport, handler: @escaping RelayFeed.SideHandler) async throws -> Int {
+        try await feed.readControls(over: side, handler: handler)
+    }
+
+    /// Rule 15: drains the mailbox `side` this phone left, through this session's feed.
+    func drainOtherMailbox(
+        over side: SecureTransport, keepingDeviceRecord: Bool, handler: @escaping RelayFeed.SideHandler
+    ) async throws -> RelayFeed.DrainOutcome {
+        try await feed.drainMailbox(over: side, keepingDeviceRecord: keepingDeviceRecord, handler: handler)
+    }
+
+    /// Opens the keybox a `transport_switched` carries (relay client Phase 3) with this phone's keys for the hub;
+    /// nil when it does not open (logged by error type only: the envelope is a secret).
+    func openSwitchKeybox(_ sealed: Data) async -> Keybox? {
+        guard let deviceID = linkedDevice.flatMap({ UUID(uuidString: $0.deviceID) }) else { return nil }
+        do {
+            return try await secure.openKeybox(sealed: sealed, deviceID: deviceID)
+        } catch {
+            Self.logger.warning("switch keybox does not open: \(String(describing: type(of: error)), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Returns once no fetch of this session runs or waits (a route move replaces the session after them).
+    func waitForFetches() async {
+        _ = await launchFetchTask?.value
+        while let running = runningFetch {
+            _ = await running.task.value
+            if runningFetch?.serial == running.serial { break }
+        }
+        _ = await queuedPushTask?.value
+    }
+
+    /// The one field of the marker the link flow reads.
+    private struct TransportMarkerTarget: Decodable {
+        let target: String?
+    }
+
     /// This phone's keybox as the replica holds it (the epoch keys
     /// included); nil when absent. A locked keychain throws.
     func keybox(deviceID: UUID) throws -> Keybox? {
@@ -1287,8 +1488,9 @@ final class HubSession {
         replicaPath: String,
         keys: PhoneKeys?,
         seqFloor: UInt64,
-        observesSuspension: Bool
-    ) throws -> (store: ReplicaStore, secure: SecureTransport, hasDeviceKeys: Bool) {
+        observesSuspension: Bool,
+        route: HubRoute?
+    ) throws -> (store: ReplicaStore, secure: SecureTransport, keys: any SecureKeyProvider, hasDeviceKeys: Bool) {
         let wired = try deviceKeys(keys)
         let phoneKeys = wired?.keys ?? PhoneKeys.unlinked()
         // The key-less store is in memory: creating its throwaway identity touches no Keychain.
@@ -1298,17 +1500,19 @@ final class HubSession {
             opener: EnvelopeReplicaOpener(hubID: phoneKeys.hubID, deviceID: keyDeviceID, keys: phoneKeys.store),
             observesSuspension: observesSuspension
         )
+        // The tokens belong to one route's transport store (R12): a session on another route reads its own from the
+        // start and sweeps what that full read did not return. A kill mid-move is healed here too.
+        if let route, try store.adoptRoute(transportKind(of: route).rawValue) {
+            logger.notice("the hub's route changed: the replica re-reads it")
+        }
         try persistSeqFloor(seqFloor, in: store)
         let seq = SeqAllocator(
             load: { max(try store.envelopeSeqCeiling(), seqFloor) },
             store: { try store.setEnvelopeSeqCeiling($0) }
         )
-        let secure = SecureTransport(
-            inner: transport,
-            keys: try PhoneKeyProvider(store: phoneKeys.store, hubID: phoneKeys.hubID, seq: seq),
-            rollback: store
-        )
-        return (store, secure, wired != nil)
+        let keys = try PhoneKeyProvider(store: phoneKeys.store, hubID: phoneKeys.hubID, seq: seq)
+        let secure = SecureTransport(inner: transport, keys: keys, rollback: store)
+        return (store, secure, keys, wired != nil)
     }
 
     /// Final review (Phone I-2, Desktop I-1): the floor a wipe carried over is stored in the new replica at
@@ -1331,9 +1535,9 @@ final class HubSession {
     /// pairing): another hub's keys throw. Returns whether the hub's link keys are stored; a hub without them
     /// has its transport store's queue wiped here, before anything could start its engine.
     private static func ownHubLink(
-        _ keys: PhoneKeys?, hubID: String, kind: TransportKind, transportStore: TransportStore?
+        _ keys: PhoneKeys?, hubID: String, kind: SessionBackend, transportStore: TransportStore?
     ) throws -> HubLinkPresence {
-        guard kind == .cloudKit else { return .present }
+        guard kind == .live else { return .present }
         if let keys, keys.hubID != hubID {
             throw HubSessionError.keysOfAnotherHub
         }
@@ -1397,6 +1601,8 @@ final class HubSession {
     /// files.
     func shutDown() async {
         stop()
+        // Its transport stops and its store closes before this session's files are closed or handed on.
+        await sideReader?.stop()
         await bootstrapTask?.value
         // The last outbox pass ends before the transport stops and the caller closes the replica: the session's
         // own pass, then whatever else sits on the outbox's chain (an enqueue's flush, a resend, a withdrawal).
@@ -1524,5 +1730,17 @@ extension PhoneRecording {
     /// and waiting for the Mac's receipt, while it still retries by itself.
     var needsUpload: Bool {
         (state == .waiting || state == .uploading) && !isUploadStuck
+    }
+}
+
+/// Whether a `hub_on_relay` control was read, set from the relay feed's actor.
+final class HubOnRelaySighting: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var seen: Bool { lock.withLock { value } }
+
+    func note() {
+        lock.withLock { value = true }
     }
 }

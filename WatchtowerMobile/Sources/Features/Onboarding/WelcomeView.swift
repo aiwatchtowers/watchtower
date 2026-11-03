@@ -24,6 +24,8 @@ struct OnboardingView: View {
             LinkFailureView(failure: failure)
         case let .linked(macName):
             LinkedView(macName: macName)
+        case .slotsFull:
+            RelaySlotsView { linking.closeSlots() }
         }
     }
 }
@@ -104,11 +106,17 @@ struct WelcomeView: View {
             }
             .card(.plain)
             if let notice = linking.notice {
-                Text(notice.message)
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .card(.plain)
+                VStack(spacing: Spacing.regular) {
+                    Text(notice.message)
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                    if let dismiss = notice.dismissTitle {
+                        Button(dismiss) { linking.dismissNotice() }
+                            .buttonStyle(BannerButtonStyle())
+                    }
+                }
+                .card(.plain)
             }
         }
         .frame(maxWidth: .infinity)

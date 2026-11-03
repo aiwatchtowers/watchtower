@@ -8,12 +8,20 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     private let backend: any KeychainBackend
     private let privateGroup: String?
     private let alertGroup: String?
+    private let now: @Sendable () -> Date
     private let lock = NSLock()
 
-    public init(backend: any KeychainBackend, privateGroup: String?, alertGroup: String?) {
+    /// `now` dates the epoch retention of `saveHubLink`.
+    public init(
+        backend: any KeychainBackend,
+        privateGroup: String?,
+        alertGroup: String?,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.backend = backend
         self.privateGroup = privateGroup
         self.alertGroup = alertGroup
+        self.now = now
     }
 
     private func put(_ data: Data, _ account: String, _ access: KeyAccess, useAlertGroup: Bool = false) throws {
@@ -94,8 +102,8 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         let sizes = [keys.hubSigningKey, keys.hubAgreementKey] + (keys.metaKey.map { [$0] } ?? [])
             + keys.epochs.flatMap { [$0.dataKey, $0.alertKey] }
         guard sizes.allSatisfy({ $0.count == 32 }) else { throw KeyStoreError.corrupt("a hub link key is not 32 bytes") }
-        var trimmed = keys
-        trimmed.epochs = Array(keys.epochs.suffix(HubLinkKeys.maxEpochs))
+        // The NSE's alert material carries the same epochs, so it opens an alert sealed in any kept one.
+        let trimmed = keys.retained(now: now())
         let alert = AlertMaterial(
             epochs: trimmed.epochs.map { EpochKeys(epoch: $0.epoch, dataKey: Data(), alertKey: $0.alertKey) },
             hubSigningKey: keys.hubSigningKey)

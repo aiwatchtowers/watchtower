@@ -275,7 +275,7 @@ struct WatchtowerMobileApp: App {
                 AppDelegate.root = root
                 // Only the live transport has an engine for a push to wake;
                 // the demo path registers for nothing.
-                if root.env.transportKind == .cloudKit {
+                if root.env.backend == .live {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
                 return .ready(root)

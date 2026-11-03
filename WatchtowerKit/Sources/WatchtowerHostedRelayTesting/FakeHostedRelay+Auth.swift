@@ -76,7 +76,7 @@ extension FakeHostedRelay {
     // MARK: - Challenge
 
     /// README "Registration" 1: `REGISTER` answers a stateless nonce valid 5 minutes;
-    /// `LOGIN` (the default) a single-use nonce valid 60 s.
+    /// `LOGIN` (the default) and `VOUCH` a single-use nonce valid 60 s, each good only for its purpose.
     func challenge(_ op: Relay_V1_GetChallenge) throws -> Relay_V1_Response {
         guard !op.deviceID.isEmpty else { throw RelayFailure.unauthenticated }
         var response = Relay_V1_Response()
@@ -87,9 +87,14 @@ extension FakeHostedRelay {
         guard state.devices[op.deviceID] != nil else { throw RelayFailure.unauthenticated }
         let now = now
         let nonce = Self.randomBytes(Self.loginNonceBytes)
-        var nonces = state.loginNonces[op.deviceID, default: [:]].filter { $0.value > now }
+        let vouch = op.purpose == .vouch
+        var nonces = (vouch ? state.vouchNonces : state.loginNonces)[op.deviceID, default: [:]].filter { $0.value > now }
         nonces[nonce] = now.addingTimeInterval(RelayTTL.loginNonce)
-        state.loginNonces[op.deviceID] = nonces
+        if vouch {
+            state.vouchNonces[op.deviceID] = nonces
+        } else {
+            state.loginNonces[op.deviceID] = nonces
+        }
         response.challenge.nonce = nonce
         return response
     }
@@ -177,6 +182,37 @@ extension FakeHostedRelay {
         case nil:
             throw RelayFailure(.attestationRequired, "attestation required")
         }
+    }
+
+    // MARK: - Vouch
+
+    /// README "Vouched hubs" check 3 and 4 (Worker `verifyVouch`): off or exempt, only the `VOUCH`
+    /// nonce is consumed; otherwise an assertion is required, then the nonce (an unused, unexpired
+    /// `VOUCH` nonce of this phone) and the assertion by the stored key over the vouch hash with a
+    /// counter above the stored one (the login counter).
+    func checkVouchAttestation(_ op: Relay_V1_VouchHub, phoneID: String) throws {
+        let failed = RelayFailure(.attestationFailed, "attestation failed")
+        guard attests(phoneID) else {
+            guard consumeVouchNonce(op.nonce, phoneID: phoneID) else { throw failed }
+            return
+        }
+        guard op.hasAttestation, case .appAttestAssertion(let assertion) = op.attestation.kind else {
+            throw RelayFailure(.attestationRequired, "attestation required")
+        }
+        guard consumeVouchNonce(op.nonce, phoneID: phoneID), var device = state.devices[phoneID], let keyID = device.attestKeyID else {
+            throw failed
+        }
+        let hash = RelayAuthMessages.vouchClientDataHash(nonce: op.nonce, hubDeviceID: op.hubDeviceID, authPub: op.authPub, origin: relayOrigin)
+        guard let counter = Self.assertionCounter(assertion.assertion, keyID: keyID, clientDataHash: hash),
+              counter > device.attestCounter
+        else { throw failed }
+        device.attestCounter = counter
+        state.devices[phoneID] = device
+    }
+
+    private func consumeVouchNonce(_ nonce: Data, phoneID: String) -> Bool {
+        guard let expiry = state.vouchNonces[phoneID]?.removeValue(forKey: nonce) else { return false }
+        return now < expiry
     }
 
     // MARK: - Sessions

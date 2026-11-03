@@ -141,4 +141,37 @@ final class OrangeToneTests: XCTestCase {
         XCTAssertTrue(uses.contains { $0.tone == .red && $0.role == .recording })
         XCTAssertFalse(uses.contains { $0.tone == .orange })
     }
+
+    /// Relay client Phase 3 Task 10: the link failures, the finishing and needs-owner rows of Settings → Macs and
+    /// the three-slots screen never draw orange (none of them waits on an ask).
+    @MainActor
+    func testTheRelayLinkingScreensNeverDrawOrange() {
+        let failures: [LinkFailure] = [
+            .expired, .signIn, .cannotShare, .noAnswer, .refused, .updateApp, .updateMac, .iCloud("offline"), .local("disk"),
+            .tooManyMacs, .needsRelay(macName: "build-box"), .relayUnreachable, .macOnRelay(macName: "Work Mac"),
+            .macNotOnRelay(macName: "build-box")
+        ]
+        var uses = failures.flatMap(\.toneUses)
+        let now = Date()
+        let states: [PromotedLink.State] = [.confirmed, .promoteSent, .promoted] + PromotedLink.Reason.allCases.map { .needsOwner($0) }
+        let links = states.enumerated().map { index, state in
+            var link = DemoSeed.Relay.finishingLink(state, now: now)
+            link.link = LinkRecord(
+                hubID: "hub-\(index)", macName: "build-box", scope: .private, ownerName: "", userRecordName: "", nonce: "n",
+                dataShareURL: nil, relayShareURL: nil
+            )
+            return link
+        }
+        for (running, failed) in [(Set<String>(), Set<String>()), (Set(links.map(\.hubID)), []), ([], Set(links.map(\.hubID)))] {
+            uses += MacsModel.finishingRows(links, running: running, failed: failed).flatMap(\.toneUses)
+        }
+        let macs = [DemoSeed.Relay.workMac, DemoSeed.Relay.unknownMac, DemoSeed.Relay.finishingMac]
+        for state in [
+            RelaySlotsState(macs: macs), RelaySlotsState(macs: macs, removing: macs[0]), RelaySlotsState(macs: macs, failed: macs[1])
+        ] {
+            uses += RelaySlotsModel(state: state, links: [], promoted: [DemoSeed.Relay.finishingLink(.confirmed, now: now)]).toneUses
+        }
+        XCTAssertFalse(uses.isEmpty)
+        XCTAssertFalse(uses.contains { $0.tone == .orange }, "\(uses.filter { $0.tone == .orange }.map(\.element))")
+    }
 }

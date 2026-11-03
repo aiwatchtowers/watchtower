@@ -160,11 +160,11 @@ Content the hub keeps at rest in its sidecar is sealed under the wrap key, never
 | `data_share`, `relay_share` (CKShare URLs) | optional (absent: only a same-Apple-ID phone can link) | optional, absent without CloudKit |
 | `transport` (the hub's current one), `transports` (`["cloudkit","relay"]` or `["relay"]`), `relay_device_id`, `relay_auth_pub` | — | present when the hub has a relay identity |
 
-A reader probes `v` first: higher than its own → "newer" (update the app), lower → "older". **Today's phone refuses every v4 code as newer** (pinned by `HubContractFixtureTests.testAV4LinkIsRefusedAsNewerByTodaysPhone`), so a phone cannot link a Go hub until the Kit reads v4 — **Proposed** (RC §8, phone half).
+A reader probes `v` first: higher than its own → "newer" (update the app), lower → "older". The Kit reads v3 and v4 (`LinkPayload.newestReadable` 4; it still issues v3) and refuses v5 and above as newer; a v4 code's `relay_device_id` must equal the base32 SHA-256 of its `relay_auth_pub` (pinned by `HubContractFixtureTests.testV4LinksDecodeOnThisPhone`, which replaced `testAV4LinkIsRefusedAsNewerByTodaysPhone`) — **Implemented** (relay client Phase 3a).
 
 ### 5.2 The hello
 
-The phone creates its identity on first scan, stores the scan's keys, and writes `hello-<DEVICE_ID>` (class `hello`, §4.3) carrying `DeviceHello` = `{device: DevicePayload, signing_key, agreement_key, relay_device_id?}` (keys base64url, 32 bytes). `relay_device_id` is the phone's own relay id, sent only when linking over the relay (Go reads and stores it; the Kit field is **Proposed**: RC §8). The hub tries each kept code's nonce, newest first, and checks that the signature verifies under the enclosed key and that the device id, the header's sender and the record name all hash to that key (D7). A hello that opens under no code or fails a check is dropped unanswered (the phone times out). Caps: 3 confirm nonces per code across all devices (a re-sent unchanged hello draws none), 10 refusals per code on top, 50 refusals held at once.
+The phone creates its identity on first scan, stores the scan's keys, and writes `hello-<DEVICE_ID>` (class `hello`, §4.3) carrying `DeviceHello` = `{device: DevicePayload, signing_key, agreement_key, relay_device_id?}` (keys base64url, 32 bytes). `relay_device_id` is the phone's own relay id, sent only when linking over the relay (Go reads and stores it; the Kit field `DeviceHello.relayDeviceID` exists since relay client Phase 3a, and `hub_contract_cases.json` has the `device_hello` section with `with_relay_id`, `without_relay_id` and `bad_relay_id`). The hub tries each kept code's nonce, newest first, and checks that the signature verifies under the enclosed key and that the device id, the header's sender and the record name all hash to that key (D7). A hello that opens under no code or fails a check is dropped unanswered (the phone times out). Caps: 3 confirm nonces per code across all devices (a re-sent unchanged hello draws none), 10 refusals per code on top, 50 refusals held at once.
 
 ### 5.3 The four-digit code (SAS v2)
 
@@ -492,7 +492,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 
 | Fixture | Read by | Guards |
 |---|---|---|
-| `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` (`device_grant`, `link_payload`, `encoding`) | Kit `HubContractFixtureTests`; Go `internal/hub/wire` `TestHubContractFixture`, `TestParseLinkURL_Refusals` | §5.1, §5.4, §6.1, §8 (ignore unknown keys; today's phone refuses v4) |
+| `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` (`device_grant`, `link_payload`, `device_hello`, `encoding`) | Kit `HubContractFixtureTests`; Go `internal/hub/wire` `TestHubContractFixture`, `TestParseLinkURL_Refusals` | §5.1, §5.4, §6.1, §8 (ignore unknown keys; the Kit reads v3 and v4) |
 | `WatchtowerKit/Tests/Fixtures/e2e/{kdf,envelope,asset,padding,hpke-envelope,hpke-rfc9180-a21}.json`, regenerated only by `make e2e-vectors` (`WT_E2E_REGENERATE=1`) | Kit `E2EKeyDerivationTests`, `EnvelopeTests`, `ChunkedAssetCipherTests`, `E2EPaddingVectorTests`, `HPKEEnvelopeVectorTests`, `HPKEVectorTests`; Go `internal/hub/secure` `TestKitVectors_KDF/_Padding/_Asset/_Envelope` | §4.2–§4.5, §5.3 (relay keys, record names, device id, SAS v2, link-code tag, padding, asset frames, envelope header and body bytes; randomized signatures and HPKE verified/opened) |
 | `internal/hub/secure/testdata/go-sealed.json` (written by `go test ./internal/hub/secure -run TestWriteGoSealed -update`) | Kit `GoSealedEnvelopeTests` | §4.3 the other direction: Go-sealed `data`, `alert`, `keybox`, `relayToPhone` open in the Kit |
 | `internal/hub/identity/testdata/swift-keyring.json` | Desktop `HubKeyringVectorTests` (writes); Go `TestKeyring_OpensSwiftSealedKeys`, `TestKeyring_SealsWhatSwiftFormatReads` | §4.9 hub keys at rest, so an adopted hub keeps every link |
@@ -505,7 +505,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 
 ## 11. Proposed changes in one list
 
-1. Kit reads `LinkPayload` v4 and sends `DeviceHello.relay_device_id` (RC §8) — so a phone can link a Go hub at all.
+1. ~~Kit reads `LinkPayload` v4 and sends `DeviceHello.relay_device_id` (RC §8)~~ — **Done** (relay client Phase 3a): a phone can link a Go hub.
 2. Phone ordered path: `action_seq`, `a-` names, outbox states, echo deletes, `skip_to`, surfacing undelivered actions, `epoch_ack` (RC §5) — the Go hub already runs its half.
 3. Hosted relay transport on the phone (RC §7) and `vouch_hub` on the relay and phone (relay ask #805).
 4. Transport switch: `transport_switched`, `hub_on_relay`, old-epoch retention (sim rules 8–16).
@@ -514,7 +514,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 7. Headless pairing in the terminal (`watchtower hub pair`).
 8. The owner's recording switch published as `capabilities.recordings` in the heartbeat, the upload echo's `reason`, `ActionReason.not_supported`, and the held-upload expiry (§7.7, §9).
 9. The Go hub's remaining kinds: `device` records, the session start/stop/input handlers, `session_report`, `session_chat`, `calendar_event`, `meeting_transcript`, `recording_job` sources.
-10. A shared hello case (`relay_device_id`) in `hub_contract_cases.json` (RC: Phase 3).
+10. ~~A shared hello case (`relay_device_id`) in `hub_contract_cases.json`~~ — **Done** (relay client Phase 3a, `device_hello`).
 
 ## Decisions
 
@@ -555,4 +555,4 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 7. **Hub count.** The phone links up to 4 hubs (`HubRegistry.limit`); a relay subscription holds 3 hub slots. What the phone shows for a 4th hub on the relay is not specified.
 8. **`probe` without a nonce.** The Swift hub answers `failed`/`invalid_params`, the Go hub `applied`. Harmless (today's phone always sends one) but a divergence.
 9. **`not_supported` on the wire.** The Go hub's `failed(not_supported)` exists only in its ledger: the upload echo has no `reason`, and the Kit's `ActionReason` has no `not_supported`. §9 proposes adding both (kept as Proposed after review).
-10. **Shared hello fixture.** Go hub design §12a says the hello's `relay_device_id` is pinned by the shared fixture; `hub_contract_cases.json` has no hello section yet (RC: Phase 3).
+10. ~~**Shared hello fixture.**~~ **Resolved (relay client Phase 3a):** `hub_contract_cases.json` has a `device_hello` section (`with_relay_id`, `without_relay_id`, `bad_relay_id`), read by the Kit's `HubContractFixtureTests` and Go's `TestHubContractFixture`.

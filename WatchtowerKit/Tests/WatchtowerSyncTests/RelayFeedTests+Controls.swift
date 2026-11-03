@@ -192,6 +192,90 @@ extension RelayFeedTests {
         XCTAssertEqual(logged, ["transport_switched", "hub_on_relay", "future_kind"])
     }
 
+    /// Relay client Phase 3 Task 10: a well-formed `hub_on_relay` is told to the link flow (once per read) and stays
+    /// in the mailbox; one for another hub is not told.
+    func testHubOnRelayIsToldAndStaysInTheMailbox() async throws {
+        let told = Counter()
+        let rig = try await OrderedRig.make { await told.bump() }
+        let onRelay = await rig.hub.control(.hubOnRelay)
+        try await rig.hub.writeControl(onRelay)
+
+        _ = try await rig.feed.pollOnce()
+
+        let count = await told.value
+        XCTAssertEqual(count, 1)
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertEqual(mailbox, [try rig.wire(onRelay)], "left for the transport follower")
+        XCTAssertFalse(try rig.store.isControlHandled(id: onRelay.id))
+    }
+
+    /// Relay client Phase 3 (Phase 1 Ruling 9 ends): `transport_switched` and `hub_on_relay` reach the transport
+    /// handler on the ordered and on the legacy path; once it returns true each is marked handled and deleted, and a
+    /// second copy is deleted unread.
+    func testSwitchedAndHubOnRelayReachTheHandler() async throws {
+        for ordered in [true, false] {
+            let rig = try await OrderedRig.make(ordered: ordered)
+            let seen = ControlLog()
+            await rig.feed.setTransportHandler { control in
+                await seen.add(control)
+                return true
+            }
+            let switched = ControlPayload(
+                id: UUID().uuidString, kind: .transportSwitched, deviceID: TestE2E.deviceID.uuidString,
+                hubID: TestE2E.hubID.uuidString, epoch: 2, target: "relay", by: TestE2E.deviceID.uuidString,
+                at: OrderedRig.base, keybox: "sealed-keybox")
+            let onRelay = await rig.hub.control(.hubOnRelay)
+            try await rig.hub.writeControl(switched)
+            try await rig.hub.writeControl(onRelay)
+
+            _ = try await rig.feed.pollOnce()
+
+            let handed = await seen.all
+            XCTAssertEqual(handed.map(\.id), [switched.id, onRelay.id], "ordered: \(ordered)")
+            XCTAssertEqual(handed.first?.keybox, "sealed-keybox", "the keybox reaches the handler")
+            XCTAssertTrue(try rig.store.isControlHandled(id: switched.id))
+            XCTAssertTrue(try rig.store.isControlHandled(id: onRelay.id))
+            let mailbox = try await rig.mailboxNames()
+            XCTAssertTrue(mailbox.isEmpty, "both deleted")
+
+            try await rig.hub.writeControl(switched, expect: .none)
+            _ = try await rig.feed.pollOnce()
+            let again = await seen.all
+            XCTAssertEqual(again.count, 2, "a second copy is not handed again")
+            let afterCopy = try await rig.mailboxNames()
+            XCTAssertTrue(afterCopy.isEmpty)
+        }
+    }
+
+    /// A handler that cannot decide yet (false) leaves the control in the mailbox, unmarked; the next cycle hands it
+    /// again.
+    func testUnhandledSwitchedStaysInTheMailbox() async throws {
+        let rig = try await OrderedRig.make()
+        let answers = ControlLog()
+        await rig.feed.setTransportHandler { control in
+            await answers.add(control)
+            return await answers.all.count > 1
+        }
+        let switched = await rig.hub.control(.transportSwitched)
+        try await rig.hub.writeControl(switched)
+
+        _ = try await rig.feed.pollOnce()
+
+        XCTAssertFalse(try rig.store.isControlHandled(id: switched.id))
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertEqual(mailbox, [try rig.wire(switched)], "left for the next pass")
+        let deletes = await rig.recorder.conditionalDeletes
+        XCTAssertTrue(deletes.isEmpty)
+
+        // The next pass hands it again, though nothing new came: this time it is decided.
+        _ = try await rig.feed.pollOnce()
+        let handed = await answers.all.map(\.id)
+        XCTAssertEqual(handed, [switched.id, switched.id])
+        XCTAssertTrue(try rig.store.isControlHandled(id: switched.id))
+        let after = try await rig.mailboxNames()
+        XCTAssertTrue(after.isEmpty)
+    }
+
     /// The phone's own `skip_to` reflects back through the shared zone: the hub reads and deletes it, never the phone.
     func testThePhonesOwnControlIsLeftForTheHub() async throws {
         let rig = try await OrderedRig.make()
@@ -229,5 +313,109 @@ extension RelayFeedTests {
         _ = try await rig.feed.pollOnce()
         let deletes = await rig.recorder.conditionalDeletes
         XCTAssertEqual(deletes.count, 1, "one try per read")
+    }
+
+    // MARK: - A left transport's mailbox (sim rule 15)
+
+    /// The mailbox on a transport the phone left: the hub's records the feed never read are handled first (the echo
+    /// settles its row, the controls are marked), then everything left is deleted, the phone's own unechoed action
+    /// included. An undecided transport control keeps the drain incomplete and stays; nothing is written there.
+    func testDrainDeletesOwnLeftoversAfterHandlingHubRecords() async throws {
+        let rig = try await OrderedRig.make()
+        _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-41")
+        _ = try await rig.outbox.flush()
+        try await rig.hub.sync() // seq 1 applied: its echo waits unread
+        _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        _ = try await rig.outbox.flush() // seq 2: the phone's own leftover
+        let rejected = await rig.hub.control(.transportSwitchRejected)
+        let switched = await rig.hub.control(.transportSwitched)
+        try await rig.hub.writeControl(rejected)
+        try await rig.hub.writeControl(switched)
+        let saves = await rig.recorder.conditionalSaves.count
+        let log = ControlLog()
+
+        let first = try await rig.feed.drainMailbox(over: rig.phone) { control in
+            await log.add(control)
+            return false
+        }
+
+        XCTAssertEqual(first, .incomplete, "the undecided transport control keeps the mailbox")
+        let left = try await rig.mailboxNames()
+        XCTAssertEqual(left, [try rig.wire(switched)])
+        XCTAssertEqual(try rig.rows().map(\.actionSeq), [2], "seq 1 settled by its echo; seq 2 left to the new route")
+        XCTAssertTrue(try rig.store.isControlHandled(id: rejected.id))
+        XCTAssertFalse(try rig.store.isControlHandled(id: switched.id))
+
+        let second = try await rig.feed.drainMailbox(over: rig.phone) { control in
+            await log.add(control)
+            return true
+        }
+
+        XCTAssertEqual(second, .drained)
+        let drained = try await rig.mailboxNames()
+        XCTAssertTrue(drained.isEmpty)
+        XCTAssertTrue(try rig.store.isControlHandled(id: switched.id))
+        let told = await log.all.map(\.id)
+        XCTAssertEqual(told, [switched.id, switched.id], "only the transport control reaches the follower")
+        let savesAfter = await rig.recorder.conditionalSaves.count
+        XCTAssertEqual(savesAfter, saves, "a drain never writes")
+        XCTAssertEqual(try rig.rows().map(\.actionSeq), [2])
+    }
+
+    /// The owner's ruling on review round 1: on CloudKit the drain keeps the phone's own `device` record (both hubs'
+    /// cleanup keeps that lane); on the relay it goes with the rest (rule 15).
+    func testADrainOnCloudKitKeepsTheDeviceRecord() async throws {
+        for keeping in [true, false] {
+            let rig = try await OrderedRig.make()
+            let device = CloudRecord(
+                recordName: "device-\(TestE2E.deviceID.uuidString)", zone: .relay, kind: RelayRecordKind.device.rawValue,
+                modifiedAt: OrderedRig.base, payload: Data("{}".utf8))
+            try await rig.phone.save([device])
+            _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+            _ = try await rig.outbox.flush()
+            let deviceWire = try rig.phone.wireName(plain: device.recordName, zone: .relay)
+
+            let outcome = try await rig.feed.drainMailbox(over: rig.phone, keepingDeviceRecord: keeping) { _ in true }
+
+            XCTAssertEqual(outcome, .drained, "keeping \(keeping)")
+            let left = try await rig.mailboxNames()
+            XCTAssertEqual(left, keeping ? [deviceWire] : [], "keeping \(keeping)")
+        }
+    }
+
+    /// An `applied` echo the drain settles fires `onActionApplied` once, as a poll does (review round 1, F9).
+    func testADrainFiresOnActionAppliedForASettledEcho() async throws {
+        let fired = expectation(description: "onActionApplied")
+        let count = Counter()
+        let rig = try await OrderedRig.make(onActionApplied: { // swiftlint:disable:this trailing_closure
+            await count.bump()
+            fired.fulfill()
+        })
+        _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-41")
+        _ = try await rig.outbox.flush()
+        try await rig.hub.sync()
+
+        let outcome = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+
+        XCTAssertEqual(outcome, .drained)
+        await fulfillment(of: [fired], timeout: 5)
+        let fires = await count.value
+        XCTAssertEqual(fires, 1)
+    }
+}
+
+private actor Counter {
+    private(set) var value = 0
+
+    func bump() {
+        value += 1
+    }
+}
+
+private actor ControlLog {
+    private(set) var all: [ControlPayload] = []
+
+    func add(_ control: ControlPayload) {
+        all.append(control)
     }
 }
