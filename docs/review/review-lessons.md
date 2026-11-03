@@ -2618,3 +2618,11 @@ Entry format:
 - weak-dimension: composition coverage; restart tests and transaction tests independently passed while the enclosing legacy write remained. External Codex diff transmission was unavailable after automatic approval rejection; specialist APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source and reported check evidence without rerunning checks. [7]
 - rule-gap: no new binding rule needed; the approved retained-progress contract and requirement correctness already cover the floor regression. Full phase gates remain scheduled after Task 8.
 - outcome: TBD
+
+## 2026-11-03 — provider-fallback automation accounting (#1489, Task 7) — verdict: changes-needed
+
+- contested: an observed leaf with zero tokens and Estimated=false is authoritative, not missing usage. The Claude recorder deliberately emits that shape for both parsed zero-usage envelopes and children that never started; replacing it with a submitted-input estimate makes SDK totals disagree with the leaf and fabricates uncertainty after a known no-spend failure. Preserve those facts and estimate genuinely missing usage. [6/8]
+- false-positive: the test lane's 8/10 quality score is not a severity-8 coverage finding. Additional audit linkage/duration assertions, reverse post-proposal quota coverage and cache/multicall coverage remain optional strengthening. Applying the new generateMetered unknown-failure rule to agent's existing carve would exceed the approved Task 7 seam. [6/7]
+- weak-dimension: composition coverage between established recorder semantics and the new attempt adapter; existing recorder tests establish known zeros, but the new SDK tests did not carry them across the hook. External Codex transmission remained unavailable after automatic approval rejection; unavailable toolkit APIs were replaced with built-in lanes. Judge verified source and reported scoped check evidence without rerunning checks. [7]
+- rule-gap: no new binding rule needed; the approved observed-versus-estimated usage boundary and exact attempt accounting already cover this defect. Full phase gates remain scheduled after Task 8.
+- outcome: TBD

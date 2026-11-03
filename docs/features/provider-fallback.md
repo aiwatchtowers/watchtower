@@ -26,7 +26,7 @@ Off and explicit provider/model pins return the original legacy generator.
 Stop/ask guards explicitly use `legacyCLIGenerator`; spec reviewer and generic
 `ai.Provider` clients are unchanged. Chat activation belongs to Task 8. SDK
 sources (`automation.*`) and automation-tagged contexts use the legacy path
-until Task 7 supplies `WithAttemptHook`. Hook `Before` admits each attempt;
+unless the SDK supplies `WithAttemptHook` (Task 7). Hook `Before` admits each attempt;
 `After` receives its result/error and the leaf's recorded facts before reserve
 admission, including estimated usage. Missing leaf facts mean unknown usage,
 never a zero debit. The hook does not record another ledger row.
@@ -154,7 +154,43 @@ Only opt-in routed primitives acquire these receipts; off/pinned paths retain
 their legacy cadence. Built-ins inherit only a covered primitive they actually invoke, without
 replaying a whole recipe. The current Idea finder calls `ideas.RunWith`
 (consolidation), not `RunStreamDigests`; it gains no extraction retry promise
-from that call. The shared router still excludes
-automation contexts until Task 7 installs attempt-budget integration: these
-primitives do not activate Automation SDK routing by themselves. Other pipelines
-are not advertised as durable deferred work.
+from that call. Task 7 supplies attempt-budget integration for SDK calls; the
+receipts themselves do not activate routing or broaden the durable allowlist.
+Other pipelines are not advertised as durable deferred work.
+
+
+## Automation attempt accounting and agent preflight (Task 7)
+
+SDK `llm()` and built-in primitive calls install an attempt meter around their
+isolated no-tools generator calls. Each physical attempt checks the shared token
+remainder, exact active-time deadline and cancellation. Serialized input estimates
+are reserved across concurrent primitive workers, then released as leaf usage or estimates are
+debited. Preferred, reserve and the existing single JSON-schema retry share the
+same run budget and one dense SDK step per call. A legacy generator or primitive
+that never enters routing keeps its aggregate accounting; routed calls do not
+also debit that aggregate. Cooldown/admission refusals create no synthetic leaf.
+
+Leaf facts take precedence over aggregate result usage. Authoritative non-estimated
+zeros remain zero, including parsed zero-usage envelopes and children that never
+started. Missing usage is estimated
+from the submitted system/user input and available partial output, marked
+estimated, and a failed estimate leaves an unknown remainder that blocks further
+model admission. This is a conservative budget rule, not a claim about provider
+billing. SDK `reported_cost_usd` sums only provider-reported cost; estimated
+pricing stays in the leaf ledger. Existing waiting-run replay preserves the
+unknown-usage gate through internal versioned replay metadata; successful estimates
+and validation failures with known usage do not acquire that gate. See
+[automation resume details](automations.md#resume-after-a-restart-2026-10-21-board-795).
+
+For CLI `agent()`, shared known health selects a bound provider/model before the
+child starts; the step name and leaf audit identify that selection. The existing
+MCP binding, proposal-only tools, isolated Codex home, carved budget and process
+group cleanup remain in force. One started tool loop is never retried. Confirmed
+quota records shared health and ends the step, preserving proposals; a later new
+call can select reserve. Runtime B and explicit/off routes retain their behavior.
+
+No whole recipe or primitive is replayed because of quota, and no waiting type or
+durable pipeline guarantee is added. Current built-in primitives run inline at
+slots; `ask()` remains workbench-only, while `track.scan` remains a personal
+`custom_tracks` primitive. The SDK uncertainty metadata does not make these
+recipes resumable.

@@ -37,17 +37,51 @@ func AgentModule(b Backends) Module {
 				req.effective = EffectiveAgentTools(b.Registry, env.Manifest, req.tools, env.DryRun)
 			}
 		}
+		runner := b.Agent
+		var prepareErr error
+		if prepare, ok := runner.(AgentPreparer); ok && reqErr == nil && canPrepareAgent(env, b, req) {
+			var selected AgentRunner
+			selected, prepareErr = prepare.Prepare(env.Ctx, req.tier)
+			if prepareErr == nil {
+				runner = selected
+			}
+		}
 		name := "unavailable"
-		if b.Agent != nil {
-			name = b.Agent.Name()
+		if runner != nil {
+			name = runner.Name()
 		}
 		return env.CallWithReplayKey(StepKindAgent, name, req.stepArgs(), req.replayKey(), func(step *Step) (any, error) {
 			if reqErr != nil {
 				return nil, reqErr
 			}
-			return runAgent(env, b, step, req)
+			if prepareErr != nil {
+				if _, err := authorizeAgent(env, b, step, req); err != nil {
+					return nil, err
+				}
+				return nil, agentError(prepareErr)
+			}
+			selected := b
+			selected.Agent = runner
+			return runAgent(env, selected, step, req)
 		})
 	}}}
+}
+
+// Resolve metadata only for a call that can actually run. Manifest denial and
+// in-memory drafts retain their existing error and no-child behavior.
+func canPrepareAgent(env *Env, b Backends, req agentCall) bool {
+	if env.InMemoryDraft() || b.DB == nil || b.Registry == nil {
+		return false
+	}
+	m, err := manifestOf(env)
+	if err != nil {
+		return false
+	}
+	if _, err = m.AllowCapability("agent", "run", ""); err != nil {
+		return false
+	}
+	_, err = m.AllowLLM(req.tier)
+	return err == nil
 }
 
 // agentCall is one agent() call's arguments and its carved budget.

@@ -68,6 +68,8 @@ type hookKey struct{}
 
 // WithAttemptHook opts an automation call into routing only after its meter can
 // admit/debit every attempt. Other factory users need no hook.
+// A hook may implement RoutingStarted() to distinguish a routed zero-child
+// refusal from a legacy generator that never used the hook.
 func WithAttemptHook(ctx context.Context, h AttemptHook) context.Context {
 	return context.WithValue(ctx, hookKey{}, h)
 }
@@ -119,8 +121,13 @@ func (g *generator) Generate(ctx context.Context, system, user, session string) 
 		ctx, cancel = context.WithTimeout(ctx, g.timeout)
 		defer cancel()
 	}
+	if observer, ok := ctx.Value(hookKey{}).(interface{ RoutingStarted() }); ok {
+		observer.RoutingStarted()
+	}
 	leaves := g.leaves()
-	result, err := g.router.Run(ctx, g.request(ctx, providers.BatchText, leaves), func(ctx context.Context, a Attempt) (Result, error) {
+	req := g.request(ctx, providers.BatchText, leaves)
+	req.InputBytes = len(system) + len(user)
+	result, err := g.router.Run(ctx, req, func(ctx context.Context, a Attempt) (Result, error) {
 		// Isolated attempts never exchange provider-native session identifiers.
 		text, usage, id, err := leaves[a.Provider].Generate(ctx, system, user, "")
 		return Result{Text: text, Usage: usage, SessionID: id}, err
