@@ -197,6 +197,8 @@ type Options struct {
 	// afterFreshRead runs between the heartbeat freshness read and its
 	// caching (nil = none).
 	afterFreshRead func()
+	// started sees each hub runtime once it runs (nil = none).
+	started func(h *hubRuntime)
 }
 
 // staleCheck is the stale check's delay after a Desktop heartbeat.
@@ -522,6 +524,9 @@ func (s *supervisor) startHub(ctx context.Context, mode, name string) {
 	s.hubMu.Lock()
 	s.hub = h
 	s.hubMu.Unlock()
+	if s.o.started != nil {
+		s.o.started(h)
+	}
 	log.Printf("hub: running (hub %s, %s)", h.kr.HubID(), h.tr.Kind())
 }
 
