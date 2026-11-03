@@ -39,7 +39,7 @@ action: hotkey:settings
 done_when: iphone.paired
 -->
 
-1. On the Mac, open Settings → **Mobile** and turn on **Sync with iPhone**. 
+1. On the Mac, open Settings → **Mobile** and turn on **Sync with iPhone**.
 2. Under **Phones**, press **Use Watchtower on iPhone**. A QR code appears for 10 minutes. **New code** makes another.
 3. On the iPhone, tap **Scan the code on your Mac** (or scan with the Camera app) and point it at the code.
 4. The phone shows a four-digit code. Check it matches the code on the Mac, then click **Link** there (**Refuse** cancels).

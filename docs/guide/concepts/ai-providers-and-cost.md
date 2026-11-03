@@ -31,7 +31,7 @@ changed: Switching providers restores their saved models.
 area: setup
 level: power
 kind: tip
-since: next
+since: 0.26.5
 -->
 
 Every AI call is routed to one of two tiers, and each provider has a model per tier.
