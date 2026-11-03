@@ -106,7 +106,7 @@ make app-swap     # finish a deferred swap (see below)
 make app-install  # copy build/Watchtower.app to /Applications (INSTALL_DIR=...)
 ```
 
-Developer notes for each feature are in [docs/features/](docs/features/), and the repo conventions are in [CLAUDE.md](CLAUDE.md).
+To contribute, start with [CONTRIBUTING.md](CONTRIBUTING.md). Developer notes for each feature are in [docs/features/](docs/features/), and the repo conventions are in [CLAUDE.md](CLAUDE.md).
 
 ### Rebuilding while the app runs
 
