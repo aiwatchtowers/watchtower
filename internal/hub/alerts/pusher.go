@@ -110,6 +110,8 @@ type Pusher struct {
 	gen        uint64 // bumped by every Abandon
 	abandoned  string // the last Abandon's reason
 	refreshing bool
+	stopCalled bool
+	stopDone   chan struct{} // closed when the first Stop has finished
 	senders    map[string]*sender
 	tooLarge   map[string]bool // alert keys logged as too large
 
@@ -161,7 +163,7 @@ func New(c Config) *Pusher {
 			return t.C, func() { t.Stop() }
 		}
 	}
-	return &Pusher{c: c, senders: map[string]*sender{}, tooLarge: map[string]bool{}}
+	return &Pusher{c: c, senders: map[string]*sender{}, tooLarge: map[string]bool{}, stopDone: make(chan struct{})}
 }
 
 // Start settles every push left pending by the previous run expired (reason
@@ -205,7 +207,7 @@ func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time
 	p.mu.Lock()
 	ctx, running, gen := p.ctx, p.running, p.gen
 	p.mu.Unlock()
-	if !running {
+	if !running || ctx.Err() != nil {
 		log.Printf("hub alerts: push of %s not queued: the pusher is not running", key)
 		return
 	}
@@ -256,7 +258,7 @@ func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time
 	for _, d := range begun {
 		reason := ""
 		switch {
-		case !p.running:
+		case !p.running || p.ctx.Err() != nil: // stopped, or Start's ctx ended: the senders are gone
 			reason = state.ReasonStopped
 		case p.gen != gen:
 			reason = p.abandoned
@@ -336,6 +338,12 @@ func (p *Pusher) Abandon(reason string) []string {
 // twice.
 func (p *Pusher) Stop() {
 	p.mu.Lock()
+	if p.stopCalled {
+		p.mu.Unlock()
+		<-p.stopDone // a concurrent or later Stop returns when the first is done
+		return
+	}
+	p.stopCalled = true
 	wasRunning := p.running
 	p.running, p.stopped = false, true
 	var queued []item
@@ -344,6 +352,7 @@ func (p *Pusher) Stop() {
 		p.cancel(expiry{state.ReasonStopped})
 	}
 	p.mu.Unlock()
+	defer close(p.stopDone)
 	if !wasRunning {
 		return
 	}
@@ -453,13 +462,11 @@ func (p *Pusher) deliver(ctx context.Context, s *sender, it item) (string, strin
 		}
 		attempts++
 		err := p.c.Send.SendAlert(actx, it.relay, it.push)
-		interrupted, cause := actx.Err() != nil, context.Cause(actx)
+		interrupted := actx.Err() != nil
 		acancel()
 		if err != nil && !relayAnswered(err) {
 			// No relay answer: the request may have reached it.
-			if interrupted && reasonOf(cause) == state.ReasonFreshness {
-				return finish(state.AlertExpired, state.ReasonFreshness)
-			}
+			// That holds for a freshness timeout mid-request too.
 			if interrupted || errors.Is(err, transport.ErrUnavailable) {
 				return finish(state.AlertExpired, state.ReasonInFlight)
 			}

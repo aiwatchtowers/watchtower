@@ -1032,3 +1032,79 @@ func TestSealFailureSettlesWithoutSending(t *testing.T) {
 		t.Fatalf("send_alert %d times", n)
 	}
 }
+
+// Start's ctx ending before Stop: the idle senders are gone, so an Enqueue
+// then queues nothing and leaves no pending row.
+func TestEnqueueAfterStartContextEndsQueuesNothing(t *testing.T) {
+	r := newRig(t, "phone-a")
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := r.p.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.p.Stop)
+	r.enqueue("ask-1")
+	if s := r.next(); s.outcome != state.AlertAccepted {
+		t.Fatalf("settled %v", s)
+	}
+	// Ended between the pending rows and the queue: the rows settle stopped.
+	r.p.beforeQueue = cancel
+	r.enqueue("ask-2")
+	if s := r.next(); s != (settled{"ask-2", "phone-a", "expired", "stopped"}) {
+		t.Fatalf("settled %v; want expired (stopped)", s)
+	}
+	// Ended before the Enqueue: no row at all.
+	r.p.beforeQueue = nil
+	r.enqueue("ask-3")
+	if ok, err := r.st.BeginAlertPush("ask-3", "phone-a", r.clock.Now()); err != nil || !ok {
+		t.Fatalf("ask-3 has a row (Begin = %v, %v)", ok, err)
+	}
+	if n, err := r.st.ExpirePendingAlertPushes(r.clock.Now()); err != nil || n != 1 {
+		t.Fatalf("pending rows %d, %v; want only the test's own", n, err)
+	}
+	if n := r.send.count("relay-phone-a"); n != 1 {
+		t.Fatalf("send_alert %d times; want 1", n)
+	}
+}
+
+// The window ends while a request is in progress, with no relay answer: it
+// may have reached the relay, so it counts as received.
+func TestFreshnessTimeoutMidRequestSettlesInFlight(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.send.block["relay-phone-a"] = true // answers only when its ctx ends
+	r.start()
+	// 50 ms of the window left: the attempt's own deadline ends the call.
+	r.p.Enqueue("ask-1", secure.WorkAlertFields{Event: "ask", Key: "ask-1", Title: "t", Body: "b"},
+		r.clock.Now().Add(-Freshness+50*time.Millisecond))
+	if s := r.next(); s != (settled{"ask-1", "phone-a", "expired", "in_flight"}) {
+		t.Fatalf("settled %v; want expired (in_flight)", s)
+	}
+	if n := r.send.count("relay-phone-a"); n != 1 {
+		t.Fatalf("send_alert %d times; want 1", n)
+	}
+	if rec, err := r.st.ReceivedAlertPushes([]string{"ask-1"}); err != nil || !rec["ask-1"]["phone-a"] {
+		t.Fatalf("received %v, %v", rec, err)
+	}
+}
+
+func TestConcurrentStopWaitsForTheFirst(t *testing.T) {
+	r := newRig(t, "phone-a")
+	gate := make(chan struct{})
+	r.send.hold["relay-phone-a"] = gate // ignores its ctx: the first Stop waits on it
+	r.start()
+	r.enqueue("ask-1")
+	r.call()
+	callCtx := <-r.send.ctxs
+	first := make(chan struct{})
+	go func() { r.p.Stop(); close(first) }()
+	<-callCtx.Done() // the first Stop is in, waiting for the sender
+	second := make(chan struct{})
+	go func() { r.p.Stop(); close(second) }()
+	select {
+	case <-second:
+		t.Fatal("second Stop returned while the first still waits for the sender")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(gate)
+	<-first
+	<-second
+}
