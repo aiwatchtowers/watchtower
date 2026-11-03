@@ -5,6 +5,11 @@ import (
 	"encoding/json"
 )
 
+// RoutingMetadata describes a preflight decision; it never changes text already shown.
+type RoutingMetadata struct {
+	Provider, Model, PreferredProvider, Mode, Reason string
+}
+
 // StreamChunk is one piece of a streamed assistant turn. ToolBoundary marks a
 // tool call interrupting the turn: any text streamed before it was pre-tool
 // reasoning (the "let me check X first" preamble), so a v1 consumer discards
@@ -13,6 +18,7 @@ import (
 // call's start or end — only from a loop whose tool events were switched on
 // (agentloop.Client.EmitToolEvents, used by the protocol-v2 chat session).
 type StreamChunk struct {
+	Routing      *RoutingMetadata
 	Text         string
 	ToolBoundary bool
 	Tool         *ToolEvent

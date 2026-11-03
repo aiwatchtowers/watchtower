@@ -2433,7 +2433,11 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     model                  TEXT,
     project_id             INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL,
     active_leaf_message_id INTEGER,
-    read_at                REAL
+    read_at                REAL,
+    routing_mode           TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')),
+    actual_provider        TEXT NOT NULL DEFAULT '',
+    actual_model           TEXT NOT NULL DEFAULT '',
+    routing_reason         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_project ON chat_conversations(project_id);
 

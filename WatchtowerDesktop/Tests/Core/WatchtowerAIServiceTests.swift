@@ -208,3 +208,24 @@ final class WatchtowerAIServiceTests: XCTestCase {
         guard case .reset = StreamEvent.reset.foldingErrorIntoText else { return XCTFail("expected .reset") }
     }
 }
+
+extension WatchtowerAIServiceTests {
+    func testV1TypedQuotaAndActualRoutingAreNotDiscarded() throws {
+        let service = WatchtowerAIService()
+        var text = "preserved"
+        guard case .failure(let failure) = service.parseLine("""
+            {"type":"error","error":"Quota reached","code":"rate_limit","reason":"quota_exhausted","retryable":false}
+            """, accumulatedText: &text) else { return XCTFail("typed failure was discarded") }
+        XCTAssertEqual(failure.persistenceCode, "quota_exhausted")
+        XCTAssertFalse(EmbeddedChatErrorClassifier.classify(failure).retryable)
+        XCTAssertEqual(text, "preserved")
+        guard case let .routing(provider, model, routing) = service.parseLine("""
+            {"type":"routing","provider":"codex","model":"actual-model","preferred_provider":"claude",
+             "routing_mode":"preferred_reserve","reason":"quota_exhausted"}
+            """, accumulatedText: &text) else { return XCTFail("actual metadata was discarded") }
+        XCTAssertEqual(provider, "codex")
+        XCTAssertEqual(model, "actual-model")
+        XCTAssertEqual(routing?.preferredProvider, "claude")
+        XCTAssertEqual(text, "preserved")
+    }
+}

@@ -2,6 +2,7 @@ package providerrouting
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -186,4 +187,33 @@ func (g *generator) RoutingPreflight(ctx context.Context) error {
 	}
 	leaves := g.leaves()
 	return g.router.Check(ctx, g.request(ctx, providers.BatchText, leaves))
+}
+
+// ContextGenerator delegates to the immutable generator selected by a logical
+// job's context. It adds no source, deadline, retry, attempt hook or usage row.
+// Hosts install the resolver once, before publishing the dispatcher.
+type ContextGenerator struct {
+	resolve func(context.Context) digest.Generator
+}
+
+func NewContextGenerator(resolve func(context.Context) digest.Generator) *ContextGenerator {
+	return &ContextGenerator{resolve: resolve}
+}
+
+// GeneratorForContext also preserves optional capabilities: callers must inspect
+// the selected generation rather than the dispatcher's own method set.
+func (g *ContextGenerator) GeneratorForContext(ctx context.Context) digest.Generator {
+	return g.resolve(ctx)
+}
+
+func (g *ContextGenerator) Generate(ctx context.Context, system, user, session string) (string, *digest.Usage, string, error) {
+	return g.resolve(ctx).Generate(ctx, system, user, session)
+}
+
+func (g *ContextGenerator) GenerateWithImage(ctx context.Context, system, user, path, media string) (string, *digest.Usage, error) {
+	inner, ok := digest.ImageCapable(g.resolve(ctx), ctx)
+	if !ok {
+		return "", nil, fmt.Errorf("provider does not support images")
+	}
+	return inner.GenerateWithImage(ctx, system, user, path, media)
 }

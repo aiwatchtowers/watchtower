@@ -2,6 +2,15 @@ import Foundation
 import WatchtowerCore
 
 extension AppState {
+    /// A new automatic context reads the current saved preference; a running
+    /// host keeps its existing snapshot until its turn finishes.
+    func makeMainChatViewModel(_ db: DatabaseManager) -> ChatViewModel {
+        let currentProvider = { AIProvider.fromConfig(Constants.aiProviderID()) }
+        return ChatViewModel(dbManager: db, pool: ensureChatSessionPool(db),
+                             provider: AIProvider.fromConfig(ConfigService().aiProvider),
+                             cliRunner: ProcessCLIRunner.makeDefault(), preferredProviderSource: currentProvider)
+    }
+
     /// The main chat's two view models: the history list follows the chat's
     /// writes, the landing's first turn becomes the history selection, and
     /// the panel's "Answering" state reads the chat's session pool.

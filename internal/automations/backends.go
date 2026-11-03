@@ -35,6 +35,10 @@ var _ ToolRegistry = (*tools.Registry)(nil)
 // the daemon and the CLI; a module that needs a nil backend throws
 // NotAvailable. Later phases append fields here, never rename one.
 type Backends struct {
+	// ForJob captures all AI dependencies once, before SDK modules are built.
+	// A resumed run retains the existing replay and meter setup.
+	ForJob func(context.Context, Backends) (context.Context, Backends)
+
 	DB        *db.DB
 	Generator digest.Generator
 	Registry  ToolRegistry

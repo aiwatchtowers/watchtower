@@ -71,7 +71,7 @@ func (pg *PooledGenerator) wrappedGenerator() Generator { return pg.inner }
 // GenerateWithImage is the image call of the generator pg wraps (see
 // ImageCapable), run in a worker slot like Generate.
 func (pg *PooledGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, mediaType string) (string, *Usage, error) {
-	inner, ok := ImageCapable(pg.inner)
+	inner, ok := ImageCapable(pg.inner, ctx)
 	if !ok {
 		return "", nil, errNotImageCapable
 	}

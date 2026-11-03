@@ -1599,3 +1599,293 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(finished, [try XCTUnwrap(vm.conversationID)])
     }
 }
+
+extension ChatViewModelTests {
+    func testNewAutomaticChatOmitsPinsAndObservesActualWithoutRecyclingBusyHost() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let id = try XCTUnwrap(created)
+        XCTAssertTrue(vm.automaticRouting)
+        XCTAssertNil(try lastFake().argument(after: "--provider"))
+        XCTAssertNil(try lastFake().argument(after: "--model"))
+        await vm.send(text: "Owner message")
+        let original = try lastFake()
+        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "preferred_reserve", reason: "quota_exhausted")
+        original.emit(.sessionReady(sessionID: nil, provider: "codex", model: "actual-codex", routing: metadata))
+        let observed = await waitForCondition { vm.routingPresentation?.actual?.contains("Codex") == true }
+        XCTAssertTrue(observed)
+        vm.reload()
+        XCTAssertTrue(vm.isBusy)
+        XCTAssertTrue(pool.client(for: id)?.hasLiveProcess == true)
+        XCTAssertEqual(fakes.count, 1)
+        XCTAssertEqual(vm.selectedProvider, .claude, "preference stays separate from the actual backend")
+        await vm.useAutomaticRouting()
+        XCTAssertTrue(vm.isBusy, "manual recovery is refused while a turn is busy")
+        XCTAssertEqual(fakes.count, 1)
+        try await complete(vm, turn: "turn-1", text: "Done")
+        XCTAssertEqual(try lastAssistant(id)?.provider, "codex")
+        XCTAssertEqual(try lastAssistant(id)?.model, "actual-codex")
+        vm.draft = "Keep this unsent"
+        await vm.useAutomaticRouting()
+        XCTAssertEqual(vm.draft, "Keep this unsent")
+        let conv = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: id) }
+        XCTAssertTrue(conv?.isAutomatic == true)
+        XCTAssertNil(conv?.actualProvider)
+        await vm.send(text: "New turn")
+        let replaced = await waitForCondition { self.fakes.count == 2 }
+        XCTAssertTrue(replaced)
+        XCTAssertNil(try lastFake().argument(after: "--provider"))
+    }
+
+    func testHistoricalPinsRemainUntilCombinedAutomaticChoiceAndStartedQuotaNeverResends() async throws {
+        let id = try await dbManager.dbPool.write { db in
+            let id = try TestDatabase.insertChatConversation(db, provider: "codex")
+            try db.execute(sql: "UPDATE chat_conversations SET model = 'historical-model' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let vm = try makeViewModel()
+        vm.select(conversationID: id)
+        XCTAssertFalse(vm.automaticRouting)
+        XCTAssertEqual(vm.selectedModel, "historical-model")
+        XCTAssertEqual(try lastFake().argument(after: "--model"), "historical-model")
+        await vm.send(text: "Do something")
+        let fake = try lastFake()
+        fake.emit(.textDelta(turnID: "turn-1", text: "Partial"))
+        fake.emit(.error(ChatSessionError(turnID: "turn-1", code: .rateLimit, message: "Quota reached", retryable: false,
+                                          reason: "quota_exhausted")))
+        let idle = await waitForCondition { !vm.isBusy }
+        XCTAssertTrue(idle)
+        vm.reload()
+        let message = try XCTUnwrap(vm.thread.last?.message)
+        XCTAssertEqual(message.status, "partial")
+        XCTAssertEqual(message.errorCode, "quota_exhausted")
+        let actionID = try await dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status, result_json)
+                VALUES ('fake_write', '{}', ?, ?, 'applied', '{"ok":true}')
+                """, arguments: [id, message.turnID])
+            return db.lastInsertedRowID
+        }
+        let sent = fake.turns.count
+        vm.reviewActions(messageID: message.id)
+        XCTAssertEqual(vm.reviewedActionIDs, [actionID])
+        await vm.retry(messageID: message.id)
+        await vm.continueStopped(messageID: message.id)
+        await vm.regenerate(messageID: message.id)
+        XCTAssertEqual(fake.turns.count, sent)
+        XCTAssertEqual(vm.selectedModel, "historical-model")
+        await vm.useAutomaticRouting()
+        XCTAssertTrue(vm.automaticRouting)
+        XCTAssertEqual(vm.selectedModel, "")
+        let reloaded = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: id) }
+        XCTAssertNil(reloaded?.provider)
+        XCTAssertNil(reloaded?.model)
+    }
+}
+
+extension ChatViewModelTests {
+    func testManualAutomaticChoiceWaitsForOldHostAndIgnoresLateReady() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let id = try XCTUnwrap(created)
+        let old = try lastFake()
+        let oldDriver = try XCTUnwrap(pool.client(for: id)?.driver)
+        old.exitsOnTerminate = false
+        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "preferred_reserve", reason: "quota_exhausted")
+        // Queue metadata writes on the exact old driver before the reset.
+        oldDriver.apply(.sessionReady(sessionID: nil, provider: "codex", model: "old-model", routing: metadata))
+        vm.draft = "A held draft"
+        let switching = Task { await vm.useAutomaticRouting() }
+        let closing = await waitForCondition { old.sent.contains(.close) }
+        XCTAssertTrue(closing)
+        XCTAssertTrue(vm.isChangingRouting)
+        XCTAssertEqual(fakes.count, 1)
+        old.emit(.sessionReady(sessionID: nil, provider: "codex", model: "late-model", routing: metadata))
+        await vm.send(text: "Blocked while changing")
+        XCTAssertTrue(old.turns.isEmpty)
+        old.exit(status: 0)
+        await switching.value
+        XCTAssertEqual(vm.draft, "A held draft")
+        let cleared = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: id) }
+        XCTAssertTrue(cleared?.isAutomatic == true)
+        XCTAssertNil(cleared?.actualProvider)
+        XCTAssertNil(cleared?.actualModel)
+        await vm.send(text: "A new message after the change")
+        let started = await waitForCondition { self.fakes.count == 2 }
+        XCTAssertTrue(started)
+        XCTAssertTrue(old.hasExited)
+        XCTAssertEqual(try lastFake().turns.count, 1)
+        XCTAssertNil(try lastFake().argument(after: "--provider"))
+    }
+}
+
+extension ChatViewModelTests {
+    func testRealLocalStatusRefreshOffersRecoveryInBothDirectionsAndErrorsStayVisible() async throws {
+        for provider in [AIProvider.claude, .codex] {
+            let preferred = provider.rawValue
+            let reserve = provider == .claude ? "codex" : "claude"
+            let id = try await dbManager.dbPool.write { db in
+                let id = try TestDatabase.insertChatConversation(db)
+                try db.execute(sql: """
+                    UPDATE chat_conversations SET actual_provider = ?, actual_model = ?, routing_reason = 'quota_exhausted' WHERE id = ?
+                    """, arguments: [reserve, "actual-model", id])
+                return id
+            }
+            let runner = FakeCLIRunner(stdout: Data("""
+                {"preferred_provider":"\(preferred)","enabled":true,"revision":"fake-revision",
+                 "providers":[{"provider":"\(preferred)","state":"available"}]}
+                """.utf8))
+            let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: provider, cliRunner: runner, defaults: defaults)
+            vm.select(conversationID: id)
+            XCTAssertEqual(vm.routingPresentation?.preview?.state, .fallback)
+            let count = fakes.count
+            await vm.refreshRoutingStatus()
+            XCTAssertEqual(runner.invocations, [["ai", "routing-status"]])
+            XCTAssertEqual(vm.routingPresentation?.preview?.state, .recovered)
+            XCTAssertTrue(vm.routingPresentation?.canUsePreferred == true)
+            XCTAssertTrue(vm.routingPresentation?.actual?.contains("actual-model") == true)
+            XCTAssertEqual(fakes.count, count)
+            runner.shouldThrow = CancellationError()
+            await vm.refreshRoutingStatus()
+            XCTAssertNotNil(vm.routingStatusError)
+            XCTAssertEqual(vm.routingPresentation?.preview?.state, .fallback)
+            XCTAssertFalse(vm.routingPresentation?.canUsePreferred == true)
+            XCTAssertEqual(fakes.count, count)
+        }
+    }
+}
+
+extension ChatViewModelTests {
+    func testHistoricalActualAfterPreferenceChangeAndReadErrorHasNoQuotaCopy() async throws {
+        for provider in [AIProvider.claude, .codex] {
+            let historical = provider == .claude ? "codex" : "claude"
+            let id = try await dbManager.dbPool.write { db in
+                let id = try TestDatabase.insertChatConversation(db)
+                try db.execute(sql: """
+                    UPDATE chat_conversations SET actual_provider = ?, actual_model = 'historical-model', routing_reason = 'preferred'
+                    WHERE id = ?
+                    """, arguments: [historical, id])
+                return id
+            }
+            let runner = FakeCLIRunner(stdout: Data("""
+                {"preferred_provider":"\(provider.rawValue)","enabled":true,"revision":"saved-revision",
+                 "providers":[{"provider":"\(provider.rawValue)","state":"available"}]}
+                """.utf8))
+            let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: provider, cliRunner: runner, defaults: defaults)
+            vm.select(conversationID: id)
+            XCTAssertNil(vm.routingPresentation?.preview)
+            await vm.refreshRoutingStatus()
+            XCTAssertNil(vm.routingPresentation?.preview)
+            XCTAssertFalse(vm.routingPresentation?.canUsePreferred == true)
+            runner.shouldThrow = CancellationError()
+            await vm.refreshRoutingStatus()
+            XCTAssertNotNil(vm.routingStatusError)
+            XCTAssertNil(vm.routingPresentation?.preview)
+            XCTAssertTrue(vm.routingPresentation?.actual?.contains("historical-model") == true)
+        }
+    }
+
+    func testEagerActualWriteFailureShowsInExistingPersistenceStripAndClearsAfterRepair() async throws {
+        let id = try await dbManager.dbPool.write { db in
+            let id = try TestDatabase.insertChatConversation(db, provider: "claude")
+            try db.execute(sql: """
+                CREATE TRIGGER fail_initial_actual BEFORE UPDATE OF actual_provider ON chat_conversations
+                BEGIN SELECT RAISE(ABORT, 'actual metadata blocked'); END
+                """)
+            return id
+        }
+        let vm = try makeViewModel()
+        vm.select(conversationID: id)
+        let fake = try lastFake()
+        let driver = try XCTUnwrap(pool.client(for: id)?.driver)
+        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
+        fake.emit(.sessionReady(sessionID: nil, provider: "claude", model: "resolved-model", routing: metadata))
+        let observed = await waitForCondition { driver.actualProvider == "claude" }
+        XCTAssertTrue(observed)
+        await driver.writesSettled()
+        XCTAssertNil(vm.liveTurn)
+        XCTAssertTrue(vm.sessionPersistenceError?.contains("actual metadata blocked") == true)
+        XCTAssertNotNil(driver.actualPersistenceError as? DatabaseError, "retain the real SQLite cause")
+        try renderEagerPersistenceFailureIfRequested(vm)
+        try await dbManager.dbPool.write { try $0.execute(sql: "DROP TRIGGER fail_initial_actual") }
+        fake.emit(.sessionReady(sessionID: nil, provider: "claude", model: "repaired-model", routing: metadata))
+        let retried = await waitForCondition { driver.actualModel == "repaired-model" }
+        XCTAssertTrue(retried)
+        await driver.writesSettled()
+        XCTAssertNil(vm.sessionPersistenceError)
+        XCTAssertNil(driver.actualPersistenceError)
+    }
+
+    private func renderEagerPersistenceFailureIfRequested(_ vm: ChatViewModel) throws {
+        guard let path = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"] else { return }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let view = ChatErrorStrip(chatVM: vm).padding(Spacing.page).frame(width: 360).detailBackground()
+        let height = ViewRenderProbe.fittingHeight(view, width: 360)
+        let probe = ViewRenderProbe(size: NSSize(width: 360, height: height))
+        for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            try probe.png(view, appearance).write(to: directory.appendingPathComponent("provider-chat-storage-error-\(suffix).png"))
+        }
+    }
+}
+
+extension ChatViewModelTests {
+    func testNewAutomaticContextReadsCurrentPreferenceWithoutChangingBusyHost() async throws {
+        var preferred = AIProvider.claude
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude,
+                               preferredProviderSource: { preferred }, defaults: defaults)
+        _ = await vm.newConversation()
+        await vm.send(text: "Keep the first turn running")
+        let old = try lastFake()
+        preferred = .codex
+        XCTAssertFalse(old.terminated)
+        XCTAssertFalse(old.hasExited)
+        _ = await vm.newConversation()
+        XCTAssertEqual(vm.selectedProvider, .codex)
+        XCTAssertTrue(vm.automaticRouting)
+        XCTAssertFalse(old.terminated, "new preference never cuts an active host")
+        await vm.send(text: "A new conversation")
+        let spawned = await waitForCondition { self.fakes.count == 2 }
+        XCTAssertTrue(spawned)
+        XCTAssertNil(try lastFake().argument(after: "--provider"))
+        XCTAssertEqual(old.turns.count, 1)
+    }
+}
+
+private actor RoutingRevisionSequenceRunner: CLIRunnerProtocol {
+    private var revisions: [String?]
+    init(_ revisions: [String?]) { self.revisions = revisions }
+    func run(args: [String]) async throws -> Data {
+        guard !revisions.isEmpty else { throw CocoaError(.fileReadUnknown) }
+        guard let revision = revisions.removeFirst() else { throw CancellationError() }
+        return Data("""
+            {"preferred_provider":"claude","enabled":false,"revision":"\(revision)","providers":[]}
+            """.utf8)
+    }
+}
+
+extension ChatViewModelTests {
+    func testRoutingStatusFirstObservationPreservesWarmHostAndErrorsKeepRevisionBaseline() async throws {
+        let runner = RoutingRevisionSequenceRunner(["A", "A", nil, "B"])
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, cliRunner: runner, defaults: defaults)
+        let created = await vm.newConversation()
+        let id = try XCTUnwrap(created)
+        let host = try XCTUnwrap(pool.client(for: id))
+        let process = try lastFake()
+        vm.draft = "Retain the unsent draft"
+        await vm.refreshRoutingStatus()
+        XCTAssertTrue(pool.client(for: id) === host, "first metadata observation proves no configuration transition")
+        XCTAssertTrue(host.isAlive)
+        XCTAssertFalse(process.terminated)
+        await vm.refreshRoutingStatus()
+        XCTAssertTrue(pool.client(for: id) === host, "unchanged metadata keeps a warm host")
+        await vm.refreshRoutingStatus()
+        XCTAssertNotNil(vm.routingStatusError)
+        XCTAssertTrue(pool.client(for: id) === host, "a metadata read failure never retires a host")
+        await vm.refreshRoutingStatus()
+        XCTAssertNil(pool.client(for: id), "A → error → B still proves a real routing transition")
+        XCTAssertFalse(host.isAlive)
+        XCTAssertEqual(vm.draft, "Retain the unsent draft")
+    }
+}

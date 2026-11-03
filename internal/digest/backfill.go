@@ -59,7 +59,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 	defer unlock()
 
 	p.loadCaches()
-	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator)}
+	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator, ctx)}
 	if scope.durable {
 		scope.considered, err = p.db.HistoryBackfillConsidered(slackAccountID, from, to)
 		if err != nil {
@@ -247,7 +247,7 @@ func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int
 			errs = append(errs, err)
 			break
 		}
-		if RoutingEnabled(p.generator) {
+		if RoutingEnabled(p.generator, ctx) {
 			done, err := p.db.HistoryBackfillDailyCompleted(account, from, to, float64(d.Unix()))
 			if err != nil {
 				return err

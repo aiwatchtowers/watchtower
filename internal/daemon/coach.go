@@ -199,7 +199,8 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 			d.logger.Printf("coach: collecting signals: %v (retried tomorrow)", err)
 			return pipelineRunStats{err: err}
 		}
-		p := &coach.Proposer{DB: d.db, Gen: coachGeneratorFactory(d.config), Now: func() time.Time { return now }, Logger: d.logger, Lang: d.config.Digest.Language}
+		gen := d.coachGenerator(ctx)
+		p := &coach.Proposer{DB: d.db, Gen: gen, Now: func() time.Time { return now }, Logger: d.logger, Lang: d.config.Digest.Language}
 		n, usage, err := runCoachProposer(ctx, p, in)
 		stats := pipelineRunStats{items: n, err: err}
 		if usage != nil {
@@ -218,4 +219,14 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		d.logger.Printf("coach: %d written", n)
 		return stats
 	})
+}
+
+// coachGenerator keeps the coach's stdin-only factory while sharing worker
+// admission and the caller's immutable routing inputs with the rest of the job.
+func (d *Daemon) coachGenerator(ctx context.Context) digest.Generator {
+	gen := coachGeneratorFactory(config.RoutingSnapshot(ctx, d.config))
+	if d.aiWorkerPool != nil {
+		gen = digest.WithCallTimeout(digest.NewPooledGenerator(gen, d.aiWorkerPool), digest.DaemonAICallTimeout)
+	}
+	return gen
 }

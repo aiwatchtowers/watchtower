@@ -91,7 +91,7 @@ func (g *timeoutGenerator) wrappedGenerator() Generator { return g.inner }
 // GenerateWithImage is the image call of the generator g wraps (see
 // ImageCapable), bounded and its failures classified like Generate.
 func (g *timeoutGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, mediaType string) (string, *Usage, error) {
-	inner, ok := ImageCapable(g.inner)
+	inner, ok := ImageCapable(g.inner, ctx)
 	if !ok {
 		return "", nil, errNotImageCapable
 	}

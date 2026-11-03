@@ -714,7 +714,7 @@ func (p *Pipeline) runChannelWindows(ctx context.Context, windows []channelWindo
 	batches := p.planChannelBatches(entries)
 
 	total := len(entries)
-	workers := p.cfg.AI.Workers
+	workers := config.RoutingSnapshot(ctx, p.cfg).AI.Workers
 	if workers <= 0 {
 		workers = config.DefaultAIWorkers
 	}
@@ -1140,7 +1140,7 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 	if errs > 0 {
 		allErrors := errors.Join(agg.errors...)
 		var wait interface{ ProviderDeferred() bool }
-		if RoutingEnabled(p.generator) || (errors.As(allErrors, &wait) && wait.ProviderDeferred()) {
+		if RoutingEnabled(p.generator, ctx) || (errors.As(allErrors, &wait) && wait.ProviderDeferred()) {
 			return gen, totalUsage, fmt.Errorf("%d channel digest(s) failed: %w", errs, allErrors)
 		}
 		if gen == 0 {
@@ -1186,7 +1186,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 		}
 	}
 
-	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false); err != nil {
+	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false, ctx); err != nil {
 		p.logger.Printf("digest: error storing digest for channel %s: %v", e.channelID, err)
 		agg.recordError(err)
 		p.markBackfillFailed(err, e.channelID)
@@ -1519,7 +1519,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		return fmt.Errorf("checking existing daily rollup for %s: %w", dayStart.Format("2006-01-02"), err)
 	}
 	if !needed {
-		if p.backfillRollups && RoutingEnabled(p.generator) {
+		if p.backfillRollups && RoutingEnabled(p.generator, ctx) {
 			return p.db.MarkHistoryBackfillDailyExisting(p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo, fromUnix, toUnix)
 		}
 		return nil // nothing new since the last rollup for this day
@@ -1563,7 +1563,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv, true)
+	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv, true, ctx)
 }
 
 // RunWeeklyTrends generates a weekly trends digest from daily rollups.
@@ -1635,7 +1635,7 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv, false)
+	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv, false, ctx)
 }
 
 // RunPeriodSummary generates a summary across all digests in the given time range.
@@ -1817,7 +1817,11 @@ func (p *Pipeline) digestContentChanged(digestType string, from, to float64, sum
 // unread after the upsert — used only by the daily rollup's genuine
 // regeneration path (gated upstream in runDailyRollupForDate), so the owner
 // re-sees a rollup whose content actually changed underneath a prior read.
-func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int, resetReadOnWrite bool) error {
+func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int, resetReadOnWrite bool, contexts ...context.Context) error {
+	ctx := context.Background()
+	if len(contexts) > 0 {
+		ctx = contexts[0]
+	}
 	// Aggregate topics into flat arrays for legacy columns (backward compat).
 	var allTopicTitles []string
 	var allDecisions []Decision
@@ -1876,7 +1880,7 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 
 	var digestID int64
 	var err error
-	if digestType == "daily" && p.backfillRollups && RoutingEnabled(p.generator) {
+	if digestType == "daily" && p.backfillRollups && RoutingEnabled(p.generator, ctx) {
 		digestID, err = p.db.UpsertHistoryBackfillDaily(d, p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo)
 	} else if digestType == "daily" && p.dailyAttemptID != "" {
 		digestID, err = p.db.UpsertDailyDigestAttempt(d, p.dailyAttemptID)
