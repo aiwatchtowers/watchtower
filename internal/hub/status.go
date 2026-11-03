@@ -112,6 +112,44 @@ type Status struct {
 	CloudKit CloudKitStatus `json:"cloudkit"`
 	// OffDelete is the owner's off wipe while the switch is off (off_delete.go).
 	OffDelete OffDeleteStatus `json:"off_delete"`
+	// Relay is the hosted relay's indicators (relayhealth.go), absent when
+	// the hub has no relay.
+	Relay *RelayHealth `json:"relay,omitempty"`
+	// PayingPhones is the linked phones (device ids) the relay lists as
+	// paying; empty unless the active transport is the relay, and null when
+	// it is not known (no hub runs, no account state read yet, or forgotten
+	// after HUB_NOT_VOUCHED): unknown is never "not paying".
+	PayingPhones []string `json:"paying_phones"`
+	// MailboxFullPhones is the linked phones (device ids) whose relay mailbox
+	// refused a write as over quota, each until a write to that phone's
+	// mailbox succeeds or it is unlinked (kept in hub_meta across restarts).
+	MailboxFullPhones []string `json:"mailbox_full_phones"`
+}
+
+// RelayHealth is the hosted relay's indicators in the status (RC §10).
+type RelayHealth struct {
+	// State is connected | connecting (no connection for less than 60 s) |
+	// unavailable (60 s or more); Since (RFC 3339) when it began.
+	State string `json:"state"`
+	Since string `json:"since"`
+	// QuotaHub: the hub's data zone refused a save as over quota; cleared by
+	// its next successful save.
+	QuotaHub bool `json:"quota_hub"`
+	// PushOff: the newest relay answer to send_alert that tells the push
+	// configuration said pushes are off (state.Store.PushOff).
+	PushOff bool `json:"push_off"`
+	// LastSavedAt is the last successful data-zone save (RFC 3339, "" = none
+	// since the hub started).
+	LastSavedAt string `json:"last_saved_at"`
+}
+
+// withLists gives s's mailbox list its empty value, so it shows as [] and
+// compares equal (PayingPhones keeps nil: unknown).
+func (s Status) withLists() Status {
+	if s.MailboxFullPhones == nil {
+		s.MailboxFullPhones = []string{}
+	}
+	return s
 }
 
 // statusFile is the status as the runtime writes it, with its pid so a
@@ -132,16 +170,17 @@ func ReadStatus(dir string) (Status, error) {
 	}
 	f, err := readStatusFile(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Status{State: StateOff, Dir: dir}, nil
+		return Status{State: StateOff, Dir: dir}.withLists(), nil
 	}
 	if err != nil {
 		return Status{}, err
 	}
 	f.Dir = dir
 	if f.State != StateOff && !processAlive(f.PID) {
-		f.State, f.Reason = StateOff, ""
+		// The runtime's live facts went with it.
+		f.State, f.Reason, f.Relay, f.PayingPhones, f.MailboxFullPhones = StateOff, "", nil, nil, nil
 	}
-	return f.Status, nil
+	return f.withLists(), nil
 }
 
 // readStatusFile reads dir's status file as written.

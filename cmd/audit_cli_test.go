@@ -240,6 +240,7 @@ var cliNoContentCommands = map[string]bool{
 	"hub adopt":                        true,
 	"hub allow":                        true,
 	"hub desktop heartbeat":            true,
+	"hub diagnostics":                  true,
 	"hub disable":                      true,
 	"hub keychain-probe":               true,
 	"hub enable":                       true,

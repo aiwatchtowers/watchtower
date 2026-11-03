@@ -131,6 +131,9 @@ type hubRuntime struct {
 	unvouched bool
 	gateMu    sync.Mutex
 	gateHeld  bool
+	// health is the relay's status indicators (relayhealth.go; nil
+	// without a relay).
+	health *relayHealth
 
 	// ctx is the hub's own context (cancelled by stop): the CloudKit share
 	// calls an owner request starts run under it (cloudkit_runtime.go).
@@ -273,6 +276,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	} else if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
+	h.health = newRelayHealth(st, o.Clock, h.relayID, h.relayT())
 	if as, ok := h.relayT().(accountStater); ok {
 		h.acct = &accountReader{read: as.AccountState, vouched: h.relayVouched, clock: o.Clock}
 	}
