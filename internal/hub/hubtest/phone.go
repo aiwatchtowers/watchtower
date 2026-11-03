@@ -812,6 +812,34 @@ type DataRecord struct {
 	Frame              secure.InnerFrame
 }
 
+// OpenAlertPush opens a send_alert envelope as the notification extension
+// does (AlertOpener, wire name alert-push): class alert only, K_alert of its
+// epoch from the data zone's keybox, the hub's signature. No zone read but
+// the keybox.
+func (p *Phone) OpenAlertPush(zone string, env []byte) (secure.InnerFrame, error) {
+	kb, ok, err := p.ReadKeybox(zone)
+	if err != nil {
+		return secure.InnerFrame{}, err
+	}
+	if !ok || kb.Keys == nil {
+		return secure.InnerFrame{}, errors.New("hubtest: no keys in the data zone's keybox")
+	}
+	keys := map[uint32]string{kb.Keys.Epoch: kb.Keys.AlertKey}
+	if kb.Keys.PreviousEpoch != nil && kb.Keys.PreviousAlertKey != nil {
+		keys[*kb.Keys.PreviousEpoch] = *kb.Keys.PreviousAlertKey
+	}
+	_, f, err := secure.OpenSymmetric(env, []secure.EnvelopeClass{secure.ClassAlert},
+		secure.Context{Zone: secure.ZoneData, WireName: secure.AlertPushWireName}, p.cfg.HubSig,
+		func(h secure.Header) ([]byte, error) {
+			k, ok := keys[h.Epoch]
+			if !ok {
+				return nil, fmt.Errorf("hubtest: no alert key for epoch %d", h.Epoch)
+			}
+			return base64.RawURLEncoding.DecodeString(k)
+		})
+	return f, err
+}
+
 // OpenData opens every live hub record of the data zone (slices and alerts)
 // as a phone does: with the keybox's K_data / K_alert of the record's epoch,
 // checking the hub's signature and the wire name (the heartbeat keeps its

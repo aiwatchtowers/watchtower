@@ -36,12 +36,15 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/logcanary"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -193,6 +196,8 @@ func (t *tappedTransport) resyncsOf(zone string) int {
 type interopOpts struct {
 	passEvery, linkEvery time.Duration
 	register             func(*actions.Dispatcher)
+	sources              func(*state.Store) []hubslices.Source
+	away                 platform.Away
 }
 
 // interopHub is one Run on the stand.
@@ -252,6 +257,7 @@ func startHub(t *testing.T, opts interopOpts) *interopHub {
 	o.checkEvery = 100 * time.Millisecond
 	o.lockRetry = 50 * time.Millisecond
 	o.passEvery, o.linkEvery, o.Register = opts.passEvery, opts.linkEvery, opts.register
+	o.Sources, o.away = opts.sources, opts.away
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel, h.done = cancel, make(chan error, 1)
@@ -571,9 +577,11 @@ func waitApplied(t *testing.T, p *hubtest.Phone, wait time.Duration, seqs ...uin
 // phone vouches and promotes, and the relay admits the hub (status running,
 // no reason, one phone), the phone reads its device_grant from the data zone
 // (linkPhone checks each step), the phone is stamped relay_admitted_at and
-// the heartbeat is published.
+// the heartbeat is published. It also runs SendAlertOnTheLocalStandIsPushOff
+// (sendAlertIsPushOff) on the linked phone.
 func TestInterop_VouchedHubLinksAndPublishes(t *testing.T) {
-	h := startHub(t, interopOpts{passEvery: time.Second, linkEvery: time.Second})
+	probe := newAlertProbe(t)
+	h := startHub(t, probe.opts(t, interopOpts{passEvery: time.Second, linkEvery: time.Second}))
 	l := linkPhone(t, h)
 	if len(l.code) != 4 || strings.Trim(l.code, "0123456789") != "" {
 		t.Fatalf("code %q is not four digits", l.code)
@@ -600,6 +608,7 @@ func TestInterop_VouchedHubLinksAndPublishes(t *testing.T) {
 		}
 		return false
 	})
+	t.Run("SendAlertOnTheLocalStandIsPushOff", func(t *testing.T) { probe.sendAlertIsPushOff(t, h, l) })
 }
 
 // TestInterop_ActionsInOrderWithEchoes: a1..a5 with a3 held back; the hub
@@ -797,5 +806,56 @@ func TestInterop_NoPlaintextOnTheWire(t *testing.T) {
 	}
 	if zones[p.Zone()] == 0 || zones[data] == 0 || zones[transport.PairZone(l.slot)] == 0 {
 		t.Fatalf("records read back per zone: %v", zones)
+	}
+}
+
+// alertProbe is a work-alert slice raised by an interop_alert action, and
+// the log it settles into.
+type alertProbe struct {
+	src  *pushSource
+	logs *logcanary.Sink
+}
+
+func newAlertProbe(t *testing.T) *alertProbe {
+	return &alertProbe{src: &pushSource{}, logs: logcanary.Capture(t)}
+}
+
+func (a *alertProbe) opts(t *testing.T, o interopOpts) interopOpts {
+	o.away = alwaysAway{}
+	o.sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{a.src} }
+	o.register = func(d *actions.Dispatcher) {
+		d.Register("interop_alert", func(context.Context, actions.Request) actions.Outcome {
+			a.src.set(t, workAlert("ask-1"))
+			return actions.Outcome{Status: wire.StatusApplied}
+		}, actions.KindOptions{Nudges: []string{string(hubslices.KindAskAlert)}})
+	}
+	return o
+}
+
+// sendAlertIsPushOff (plan 4 Task 5's TestInterop_SendAlertOnTheLocalStandIsPushOff,
+// run inside a link test for the stand's registration limit): the stand has
+// no APNs key, so a work alert's send_alert is answered "not implemented":
+// the push settles push_off after one attempt and is never retried.
+func (a *alertProbe) sendAlertIsPushOff(t *testing.T, h *interopHub, l *linked) {
+	seq, err := l.phone.Act("interop_alert")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitApplied(t, l.phone, stepWait, seq)
+	device := l.phone.ID().String()
+	line := "push of ask-1 to " + device + ": push_off after 1 attempts"
+	eventually(t, stepWait, "the push settled push_off", func() bool { return strings.Contains(a.logs.String(), line) })
+	time.Sleep(2 * time.Second) // a retry would have gone by now
+	if n := strings.Count(a.logs.String(), "push of ask-1 to "); n != 1 {
+		t.Fatalf("%d settles of the push, want one", n)
+	}
+	st, err := state.OpenReadOnly(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	last, err := st.LastAlertOutcomes(time.Now().Add(-time.Hour))
+	if err != nil || last[device] != state.AlertPushOff {
+		t.Fatalf("ledger outcomes %v, %v; want push_off", last, err)
 	}
 }

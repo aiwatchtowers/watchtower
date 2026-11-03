@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -94,6 +96,16 @@ type Config struct {
 	// Latency (nil = none) takes a stamp per kind a cycle saved or deleted
 	// records of (internal/hub/measure), after its state write committed.
 	Latency SaveLatency
+	// OnAlertSaved (nil = none) is called once per alert key, after its
+	// first successful save, while the transport that save went to is the
+	// hosted relay (the alert pusher's Enqueue, spec §12a). On CloudKit the
+	// alert's signal record runs instead; a resave (a changed payload, a
+	// rotation's reseal, a switch's full diff) never calls it. It runs on the
+	// publisher's cycle and must not wait on a push.
+	OnAlertSaved func(key string, fields secure.WorkAlertFields, savedAt time.Time)
+	// Away is the work-alert policy's owner-away input Resignal re-checks
+	// (nil = always away; an error reads as away).
+	Away platform.Away
 }
 
 // SaveLatency is the publisher's side of the latency samples
@@ -159,6 +171,9 @@ type Publisher struct {
 	firstDirty  time.Time // monotonic, first PublishSoon of the dirty set
 	lastDirty   time.Time // monotonic, latest PublishSoon
 	lastPublish time.Time
+	// resignal holds the alert keys Resignal asked to signal on CloudKit,
+	// kept until a cycle saved the alert with its signal or found it gone.
+	resignal map[string]bool
 }
 
 // NewPublisher builds a Publisher over c.
@@ -180,7 +195,7 @@ func NewPublisher(c Config) *Publisher {
 	}
 	return &Publisher{
 		c: c, spacing: spacing, clock: c.Clock, wake: make(chan struct{}, 1), mono: time.Now, timer: realTimer,
-		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{},
+		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{}, resignal: map[string]bool{},
 	}
 }
 
@@ -515,10 +530,14 @@ func (p *Publisher) sourcesOf(k Kind) []Source {
 }
 
 // pushed is a record saved this cycle, recorded once the save succeeded.
-// signal is a new alert's signal record (zero when it has none).
+// signal is a new alert's signal record (zero when it has none); id is the
+// item's id; alert is a new alert's fields for OnAlertSaved (nil when it is
+// not pushed); resignal marks an alert Resignal asked for.
 type pushed struct {
-	name, wire, hash string
-	signal           secure.Record
+	name, wire, hash, id string
+	signal               secure.Record
+	alert                *secure.WorkAlertFields
+	resignal             bool
 }
 
 // publishKind diffs one kind; wrote is true when it saved or deleted a record.
@@ -565,6 +584,14 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		saves   []transport.SaveItem
 		pending []pushed
 	)
+	// A new alert is pushed when its save goes to the relay; the alerts a
+	// switch to CloudKit asked for are signalled there (Resignal).
+	pushAlerts := k == KindAskAlert && p.c.OnAlertSaved != nil &&
+		p.c.Transport != nil && p.c.Transport.Kind() == transport.KindRelay
+	var resignal map[string]bool
+	if k == KindAskAlert {
+		resignal = p.resignalWanted()
+	}
 	for _, it := range items {
 		name, ok := recordName(k, it.ID)
 		if !ok {
@@ -578,7 +605,8 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		}
 		seen[name] = true
 		hash := itemHash(it)
-		if prev, ok := known[name]; ok && prev.Hash == hash {
+		resig := resignal[it.ID]
+		if prev, ok := known[name]; ok && prev.Hash == hash && !resig {
 			continue
 		}
 		rec, err := p.seal(k, name, it)
@@ -587,13 +615,17 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 			p.warnOnce(name, hash, fmt.Sprintf("not sealed (%s), payload %d bytes", errClass(err), len(it.Payload)))
 			continue
 		}
-		pu := pushed{name: name, wire: rec.WireName(), hash: hash}
-		if _, published := known[name]; k == KindAskAlert && !published && p.alertSignals() {
+		pu := pushed{name: name, wire: rec.WireName(), hash: hash, id: it.ID, resignal: resig}
+		_, published := known[name]
+		if k == KindAskAlert && (!published || resig) && p.alertSignals() {
 			if pu.signal, err = p.c.Sealer.Signal(rec); err != nil {
 				rep.Skipped = append(rep.Skipped, name)
 				p.warnOnce(name, hash, "without a signal ("+errClass(err)+")")
 				continue
 			}
+		}
+		if pushAlerts && !published {
+			pu.alert = alertFields(name, it.Payload)
 		}
 		saves = append(saves, transport.SaveItem{Record: rec})
 		pending = append(pending, pu)
@@ -652,7 +684,13 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 			for _, d := range done {
 				delete(p.warned, d.name)
 			}
+			p.alertsSaved(done, at)
 		}
+	}
+	if k == KindAskAlert {
+		// An alert asked for that the slice no longer has resolved before
+		// it was signalled: nothing is left to write for it.
+		p.resignalGone(resignal, items)
 	}
 
 	var gone []string
@@ -810,6 +848,127 @@ func (p *Publisher) saveSignals(ctx context.Context, done []pushed, rep *CycleRe
 		}
 	}
 	return kept, nil
+}
+
+// alertFields reads an alert's payload for its push; an unreadable one is
+// logged (the record name only) and not pushed.
+func alertFields(name string, payload []byte) *secure.WorkAlertFields {
+	var f secure.WorkAlertFields
+	if err := json.Unmarshal(payload, &f); err != nil {
+		log.Printf("hub slices: record %s: alert payload unreadable; not pushed", name)
+		return nil
+	}
+	return &f
+}
+
+// alertsSaved follows the alerts whose save and state write succeeded: a
+// new one saved on the relay goes to OnAlertSaved, and one Resignal asked
+// for is done.
+func (p *Publisher) alertsSaved(done []pushed, at time.Time) {
+	var resignalled []string
+	for _, d := range done {
+		if d.resignal {
+			resignalled = append(resignalled, d.id)
+		}
+		if d.alert != nil {
+			p.c.OnAlertSaved(d.id, *d.alert, at)
+		}
+	}
+	if len(resignalled) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, id := range resignalled {
+		delete(p.resignal, id)
+	}
+}
+
+// resignalWanted is a copy of the alert keys Resignal asked for, on a
+// transport that writes signals; on any other the request is dropped (the
+// hub went back to the relay, which writes no signal).
+func (p *Publisher) resignalWanted() map[string]bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.resignal) == 0 {
+		return nil
+	}
+	if !p.alertSignals() {
+		clear(p.resignal)
+		return nil
+	}
+	out := make(map[string]bool, len(p.resignal))
+	for k := range p.resignal {
+		out[k] = true
+	}
+	return out
+}
+
+// resignalGone drops the keys asked for that the slice no longer has.
+func (p *Publisher) resignalGone(asked map[string]bool, items []Item) {
+	if len(asked) == 0 {
+		return
+	}
+	present := make(map[string]bool, len(items))
+	for _, it := range items {
+		present[it.ID] = true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k := range asked {
+		if !present[k] {
+			delete(p.resignal, k)
+		}
+	}
+}
+
+// Resignal follows a switch to CloudKit that dropped the pushes of keys
+// (spec §12a, review ask #866). With the owner back at the Mac nothing is
+// written. A key every linked phone already received over the relay
+// (ReceivedAlertPushes: accepted, or expired in_flight, which may have
+// reached it) is skipped, since a CloudKit signal fires for every phone of
+// the zone. Every other key still in the work-alert slice has its ask_alert
+// record saved on CloudKit and its signal written as for a first save, once,
+// by the next cycle; a key that resolved meanwhile writes nothing.
+func (p *Publisher) Resignal(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	if p.c.Away != nil {
+		if away, err := p.c.Away.Away(); err == nil && !away {
+			log.Printf("hub slices: %d alerts not signalled on CloudKit: the owner is back at the Mac", len(keys))
+			return
+		}
+	}
+	devices, err := p.c.Store.Devices()
+	if err != nil {
+		log.Printf("hub slices: %d alerts not signalled on CloudKit: devices unreadable (%s)", len(keys), errClass(err))
+		return
+	}
+	received, err := p.c.Store.ReceivedAlertPushes(keys)
+	if err != nil {
+		log.Printf("hub slices: %d alerts not signalled on CloudKit: push ledger unreadable (%s)", len(keys), errClass(err))
+		return
+	}
+	var want []string
+	for _, k := range keys {
+		for _, d := range devices {
+			if !received[k][d.ID] {
+				want = append(want, k)
+				break
+			}
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	p.mu.Lock()
+	for _, k := range want {
+		p.resignal[k] = true
+	}
+	p.mu.Unlock()
+	log.Printf("hub slices: %d alerts signalled on CloudKit after the switch", len(want))
+	p.PublishSoon(KindAskAlert)
 }
 
 // seal builds the sendable record: a device_grant as the phone's keybox, an

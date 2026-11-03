@@ -18,6 +18,7 @@ import (
 
 	"watchtower/docs/guide"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/alerts"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/measure"
@@ -161,6 +162,9 @@ type hubRuntime struct {
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
 	ckAccount transport.Account
+
+	// push is the work-alert pusher (nil without a relay that sends them).
+	push *alerts.Pusher
 }
 
 // loadIdentity reads the hub identity from the hub dir's 0600 file,
@@ -358,9 +362,10 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		}
 		srcs = kept
 	}
+	h.newPusher(sealer)
 	pub = slices.NewPublisher(slices.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: srcs, Clock: o.Clock,
-		OnError: h.observe, Latency: h.lat,
+		OnError: h.observe, Latency: h.lat, OnAlertSaved: h.alertSaved, Away: o.awayInput(),
 		Linked: func() (bool, error) {
 			devices, err := st.Devices()
 			return len(devices) > 0, err
@@ -391,6 +396,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		// Seeded before the publisher's start cycle reads the timeline.
 		h.startWiring(hctx, h.wiring)
 	}
+	h.startPusher(hctx)
 	h.trace("publisher")
 	h.wg.Add(4)
 	go func() {
@@ -449,6 +455,7 @@ func (h *hubRuntime) measureLoop(ctx context.Context) {
 			if err := h.lat.Prune(); err != nil {
 				log.Printf("hub: pruning latency samples failed (%s)", errClass(err))
 			}
+			h.pruneAlertPushes()
 		}
 	}
 }
@@ -719,6 +726,7 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 			// the account state the relay re-read may have new readers.
 			h.pub.PublishSoon(slices.UrgentKinds...)
 			h.kick(h.linkKick)
+			h.pushReconnected()
 		}
 		switch {
 		case strings.HasPrefix(ev.Zone, transport.PairZone("")):
@@ -1064,6 +1072,7 @@ func (h *hubRuntime) forwardPairEvents(ctx context.Context) {
 func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 	h.cancel()
 	h.wg.Wait()
+	h.stopPusher()
 	h.wiring.close()
 	if keep != nil && !h.vouched() {
 		// The data zone is closed to an unvouched hub: the records stay in
