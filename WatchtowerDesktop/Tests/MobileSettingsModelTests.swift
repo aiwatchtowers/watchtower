@@ -830,8 +830,8 @@ final class MobileSettingsModelTests: XCTestCase {
     }
 
     func testUndeliveredSingularPlural() async {
-        XCTAssertEqual(Model.undeliveredLine(1), "On this Mac's side, 1 action from this phone is not applied yet.")
-        XCTAssertEqual(Model.undeliveredLine(3), "On this Mac's side, 3 actions from this phone are not applied yet.")
+        XCTAssertEqual(Model.undeliveredLine(1)?.text, "On this Mac's side, 1 action from this phone is not applied yet.")
+        XCTAssertEqual(Model.undeliveredLine(3)?.text, "On this Mac's side, 3 actions from this phone are not applied yet.")
         XCTAssertNil(Model.undeliveredLine(0))
         let model = await loaded(connected, relayPhone("AAAA0001", "Phone A", undelivered: "1"),
                                  relayPhone("BBBB0002", "Phone B", undelivered: "3"),
@@ -848,7 +848,7 @@ final class MobileSettingsModelTests: XCTestCase {
     /// It is what this Mac's side knows, never the phone's own queue.
     func testUndeliveredLineSaysThisMacsSide() {
         for count in [1, 2, 3, 40] {
-            let line = Model.undeliveredLine(count) ?? ""
+            let line = Model.undeliveredLine(count)?.text ?? ""
             XCTAssertTrue(line.hasPrefix("On this Mac's side, "), line)
             XCTAssertTrue(line.hasSuffix(" not applied yet."), line)
             XCTAssertFalse(line.contains("delivered"), line)
@@ -889,6 +889,8 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertEqual(Model.relayConnectedLine(lastSavedAt: nil, now: t0), "Connected")
         XCTAssertEqual(Model.relayConnectedLine(lastSavedAt: t0.addingTimeInterval(-30), now: t0),
                        "Connected · last change delivered under a minute ago")
+        XCTAssertEqual(Model.ageText(5 * 60 + 10), "5 min")
+        XCTAssertEqual(Model.ageText(59 * 60), "59 min")
         XCTAssertEqual(Model.ageText(3 * 3600), "3 h")
         XCTAssertEqual(Model.ageText(2 * 86_400), "2 d")
         XCTAssertNil(Model.relayConnection(.init(state: "something_newer", since: t0), now: t0))
@@ -922,6 +924,39 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertNil(model.relayConnection, "no relay block: no Relay lines")
         XCTAssertNil(model.relayPushLine)
         XCTAssertNil(model.hubQuotaLine)
+        XCTAssertEqual(model.relayLines, [], "no Relay row")
+    }
+
+    /// An empty or unreadable `since` drops the connection line only: the
+    /// status still reads, the other Relay lines and the phones still show.
+    func testUnreadableSinceDropsOnlyTheConnectionLine() async {
+        for since in ["", "not a time"] {
+            let model = await loaded(
+                MobileHubFixture.relayStatus(state: "unavailable", since: since, quotaHub: true, pushOff: true),
+                relayPhone("AAAA0001", "Phone A", mailboxFull: "true")
+            )
+            XCTAssertNil(model.relayConnection, since)
+            XCTAssertEqual(model.relayLines.map(\.text), [Model.relayPushOff, Model.hubQuotaFull], since)
+            XCTAssertEqual(rows(model).first?.indicatorLines.map(\.text), ["Phone A's Relay mailbox is full."], since)
+        }
+        // A missing key reads the same.
+        let missing = await loaded(#"{"state":"running","transport":"relay","relay":{"state":"connected"}}"#)
+        XCTAssertNil(missing.relayConnection)
+        XCTAssertEqual(missing.relayLines, [])
+    }
+
+    /// The lines the view shows, in order, with no unknown ones.
+    func testLinesInRowOrder() async {
+        let model = await loaded(
+            MobileHubFixture.relayStatus(state: "connecting", since: rfc(t0), quotaHub: true, pushOff: true),
+            relayPhone("AAAA0001", "Phone A", paying: "false", undelivered: "3", mailboxFull: "true", alerts: #""accepted""#),
+            relayPhone("BBBB0002", "Phone B", undelivered: "null", mailboxFull: "null", alerts: "null")
+        )
+        XCTAssertEqual(model.relayLines.map(\.text), [Model.relayConnecting, Model.relayPushOff, Model.hubQuotaFull])
+        XCTAssertEqual(rows(model).map { $0.indicatorLines.map(\.text) }, [
+            ["Phone A's Relay mailbox is full.", Model.updatesLine(name: "Phone A").text, Model.undeliveredLine(3)?.text ?? ""],
+            []
+        ])
     }
 
     func testMailboxLineNamesEachAffectedPhone() async {
@@ -1031,7 +1066,7 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertEqual(model.relayConnection?.text, "Connected · last change delivered under a minute ago")
         XCTAssertEqual(model.relayPushLine?.text, Model.relayPushOff)
         XCTAssertEqual(rows(model).first?.mailboxLine?.text, "Phone A's Relay mailbox is full.")
-        XCTAssertEqual(rows(model).first?.undeliveredLine?.text, Model.undeliveredLine(1))
+        XCTAssertEqual(rows(model).first?.undeliveredLine?.text, Model.undeliveredLine(1)?.text)
     }
 
     // MARK: - Source guards

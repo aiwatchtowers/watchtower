@@ -3,7 +3,8 @@ import Foundation
 /// The RC §10 indicators of Settings → Mobile (go hub plan 4 Task 8,
 /// mockups `docs/design/mockups/go-hub/index.html` §18–§21): the hub's Relay
 /// lines from `hub status` `relay`, and each phone's lines from `hub phones`.
-/// Every line is one fact; any of them can show beside the others.
+/// Every line is one fact; any of them can show beside the others. Each
+/// builder returns the line with its tone (`HubLine`).
 extension MobileSettingsModel {
     // MARK: Hub
 
@@ -39,14 +40,25 @@ extension MobileSettingsModel {
     }
 
     /// The connection line for `relay.state`; nil for a state this version
-    /// does not know.
+    /// does not know and for a `since` that did not read as a time.
     nonisolated static func relayConnection(_ relay: MobileHubCLI.RelayHealth, now: Date) -> HubLine? {
-        switch relay.state {
+        guard let since = relay.since else { return nil }
+        return switch relay.state {
         case "connected": HubLine(text: relayConnectedLine(lastSavedAt: relay.lastSavedAt, now: now), tone: .neutral)
         case "connecting": HubLine(text: relayConnecting, tone: .neutral)
-        case "unavailable": HubLine(text: relayUnavailableLine(since: relay.since, now: now), tone: .warning)
+        case "unavailable": HubLine(text: relayUnavailableLine(since: since, now: now), tone: .warning)
         default: nil
         }
+    }
+
+    /// The hub's Relay lines in their order: connection, notifications, storage.
+    nonisolated static func relayLines(_ relay: MobileHubCLI.RelayHealth?, now: Date) -> [HubLine] {
+        guard let relay else { return [] }
+        return [
+            relayConnection(relay, now: now),
+            relay.pushOff ? HubLine(text: relayPushOff, tone: .warning) : nil,
+            relay.quotaHub ? HubLine(text: hubQuotaFull, tone: .error) : nil
+        ].compactMap { $0 }
     }
 
     // MARK: Phones
@@ -55,22 +67,28 @@ extension MobileSettingsModel {
     nonisolated static let alertAcceptedLine = "Last alert: sent to relay"
 
     /// A phone without a subscription on a hub that runs over Relay.
-    nonisolated static func updatesLine(name: String) -> String {
-        "Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, "
-            + "or subscribe on \(name)."
+    nonisolated static func updatesLine(name: String) -> HubLine {
+        HubLine(
+            text: "Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, "
+                + "or subscribe on \(name).",
+            tone: .warning
+        )
     }
 
     /// What this Mac's side holds of the phone's actions (never the phone's
     /// own queue); nil for none.
-    nonisolated static func undeliveredLine(_ count: Int) -> String? {
-        switch count {
+    nonisolated static func undeliveredLine(_ count: Int) -> HubLine? {
+        let text: String? = switch count {
         case ..<1: nil
         case 1: "On this Mac's side, 1 action from this phone is not applied yet."
         default: "On this Mac's side, \(count) actions from this phone are not applied yet."
         }
+        return text.map { HubLine(text: $0, tone: .warning) }
     }
 
-    nonisolated static func mailboxLine(name: String) -> String { "\(name)'s Relay mailbox is full." }
+    nonisolated static func mailboxLine(name: String) -> HubLine {
+        HubLine(text: "\(name)'s Relay mailbox is full.", tone: .error)
+    }
 
     /// The last alert push's outcome class as the row says it; nil for none
     /// and for the classes the row does not name.
@@ -89,10 +107,17 @@ extension MobileSettingsModel {
     nonisolated static func withIndicators(_ row: PhoneRow, _ phone: MobileHubCLI.Phone, hubTransport: String?) -> PhoneRow {
         var row = row
         let free = phone.paying == false
-        row.updatesLine = free && hubTransport == "relay" ? HubLine(text: updatesLine(name: phone.name), tone: .warning) : nil
-        row.undeliveredLine = phone.undelivered.flatMap(undeliveredLine).map { HubLine(text: $0, tone: .warning) }
-        row.mailboxLine = phone.mailboxFull == true ? HubLine(text: mailboxLine(name: phone.name), tone: .error) : nil
+        row.updatesLine = free && hubTransport == "relay" ? updatesLine(name: phone.name) : nil
+        row.undeliveredLine = phone.undelivered.flatMap(undeliveredLine)
+        row.mailboxLine = phone.mailboxFull == true ? mailboxLine(name: phone.name) : nil
         row.alertsLine = free ? nil : phone.alerts.flatMap(alertsLine)
         return row
+    }
+}
+
+extension MobileSettingsModel.PhoneRow {
+    /// The row's indicator lines in their order, the unknown and absent ones left out.
+    var indicatorLines: [MobileSettingsModel.HubLine] {
+        [mailboxLine, updatesLine, undeliveredLine, alertsLine].compactMap { $0 }
     }
 }

@@ -20,7 +20,6 @@ struct MobileSettingsTab: View {
         .onAppear {
             if model == nil { model = appState.makeMobileSettingsModel() }
         }
-        .onChange(of: appState.hubCenter?.status) { Task { await model?.load() } }
         .onChange(of: appState.hubCenter?.linksChanged) { Task { await model?.load() } }
         .onChange(of: appState.hubCenter?.statusEvents) { Task { await model?.load() } }
         .onChange(of: appState.hubAdoption?.state) { Task { await model?.load() } }
@@ -309,10 +308,9 @@ private struct MobilePhoneRow: View {
                 }
             }
             // Below the name line, so a long one wraps without moving the pill (mockup §21).
-            let indicators = [row.mailboxLine, row.updatesLine, row.undeliveredLine, row.alertsLine]
-            if indicators.contains(where: { $0 != nil }) {
+            if !row.indicatorLines.isEmpty {
                 VStack(alignment: .leading, spacing: Spacing.tight) {
-                    MobileIndicatorLines(lines: indicators)
+                    MobileIndicatorLines(lines: row.indicatorLines)
                 }
             }
             Grid(alignment: .leading, horizontalSpacing: Spacing.medium, verticalSpacing: Spacing.small) {
@@ -559,23 +557,21 @@ private struct MobileRelayRow: View {
     let model: MobileSettingsModel
 
     var body: some View {
-        let lines = [model.relayConnection, model.relayPushLine, model.hubQuotaLine]
-        if lines.contains(where: { $0 != nil }) {
+        if !model.relayLines.isEmpty {
             VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(MobileSettingsModel.relayRowTitle).font(.body)
-                MobileIndicatorLines(lines: lines)
+                SettingRow(title: MobileSettingsModel.relayRowTitle) { EmptyView() }
+                MobileIndicatorLines(lines: model.relayLines)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
 
-/// Indicator lines in their tones, the nil ones left out; each wraps.
+/// Indicator lines in their tones; each wraps.
 private struct MobileIndicatorLines: View {
-    let lines: [MobileSettingsModel.HubLine?]
+    let lines: [MobileSettingsModel.HubLine]
 
     var body: some View {
-        ForEach(Array(lines.compactMap { $0 }.enumerated()), id: \.offset) { _, line in
+        ForEach(lines, id: \.self) { line in
             MobileHubLineText(line: line)
                 .fixedSize(horizontal: false, vertical: true)
         }

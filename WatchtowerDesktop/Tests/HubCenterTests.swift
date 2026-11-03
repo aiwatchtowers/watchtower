@@ -216,21 +216,25 @@ final class HubCenterTests: XCTestCase {
         XCTAssertEqual(center.linksChanged, 2)
     }
 
-    /// Each watch `status` event counts, even one that leaves state and
-    /// reason as they were (only the Relay indicators changed): Settings →
-    /// Mobile reads again on it (go hub plan 4 Task 8). A snapshot does not.
+    /// Every status the center takes in counts — the snapshot and each watch
+    /// `status` event, even one that leaves state and reason as they were
+    /// (only the Relay indicators changed): Settings → Mobile reads again on
+    /// it, its one trigger (go hub plan 4 Task 8).
     func testEachStatusEventBumpsStatusEvents() async {
         let center = makeCenter()
         center.start()
         await waitUntil("the stream is open") { client.watches == 1 }
-        client.emit(.snapshot(HubCenter.Status(state: "running")))
-        await waitUntil("the snapshot") { center.status?.state == "running" }
         XCTAssertEqual(center.statusEvents, 0)
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        await waitUntil("the snapshot") { center.statusEvents == 1 }
         client.emit(.status(HubCenter.Status(state: "running")))
-        await waitUntil("the first status event") { center.statusEvents == 1 }
+        await waitUntil("the first status event") { center.statusEvents == 2 }
         client.emit(.status(HubCenter.Status(state: "running")))
-        await waitUntil("the same state again") { center.statusEvents == 2 }
+        await waitUntil("the same state again") { center.statusEvents == 3 }
         XCTAssertEqual(center.status, HubCenter.Status(state: "running"))
+        client.emit(.switched)
+        await waitUntil("the switch") { center.linksChanged == 1 }
+        XCTAssertEqual(center.statusEvents, 3, "other events do not count")
     }
 
     /// The phone recording queue's two inputs: each snapshot (a rescan) and
@@ -260,6 +264,7 @@ final class HubCenterTests: XCTestCase {
         center.start()
         await waitUntil("the CLI status") { center.status?.reason == "desktop_host" }
         XCTAssertEqual(center.status, HubCenter.Status(state: "off", reason: "desktop_host", host: "desktop", recordings: "off"))
+        XCTAssertEqual(center.statusEvents, 1, "the CLI status counts: Settings → Mobile reads again")
         // More failed beats and reconnects: no second CLI read in the streak, nothing sent.
         await waitUntil("both loops wait") {
             sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 && sleeper.parkedCount(HubCenter.firstBackoff) == 1

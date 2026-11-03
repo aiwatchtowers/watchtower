@@ -42,9 +42,10 @@ final class HubCenter {
     /// Bumped on each `switched` event and each pairing that linked a phone:
     /// what Settings → Mobile reads again on (Task 23).
     private(set) var linksChanged = 0
-    /// Bumped on each watch `status` event: the hub rewrote its status file,
-    /// maybe only its Relay indicators (phase 4 Task 8), which `status` does
-    /// not carry; Settings → Mobile reads again on it.
+    /// Bumped on every status the center takes in: each watch snapshot and
+    /// `status` event (the hub rewrote its status file, maybe only its Relay
+    /// indicators, which `status` does not carry — phase 4 Task 8) and the
+    /// CLI's status when no hub answers. Settings → Mobile reads again on it.
     private(set) var statusEvents = 0
     /// When a phone was last in touch, from the last answered heartbeat;
     /// nil while no hub answers (the keep-awake's input, Task 23).
@@ -213,6 +214,7 @@ final class HubCenter {
         let next = await cliStatus() ?? Self.notRunning
         guard run == epoch, reach == .silent else { return }
         status = next
+        statusEvents += 1
     }
 
     // MARK: - Watch
@@ -231,7 +233,6 @@ final class HubCenter {
                     watchedStatus(next)
                     onWatchConnected?()
                 case let .status(next):
-                    statusEvents += 1
                     watchedStatus(next)
                 case .switched, .pair(kind: "linked", deviceID: _):
                     linksChanged += 1
@@ -250,6 +251,7 @@ final class HubCenter {
     private func watchedStatus(_ next: Status) {
         watched = (next.state, next.reason)
         status = status?.with(state: next.state, reason: next.reason) ?? next
+        statusEvents += 1
         refreshStatus()
     }
 

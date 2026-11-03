@@ -118,6 +118,8 @@ final class MobileSettingsModel {
     private(set) var relayConnection: HubLine?
     private(set) var relayPushLine: HubLine?
     private(set) var hubQuotaLine: HubLine?
+    /// The three above that are set, in the Relay row's order; empty hides the row.
+    private(set) var relayLines: [HubLine] = []
     /// Today's off-delete line while the owner's switch is off.
     private(set) var offDeleteLine: String?
     /// Today's iCloud lines (the Swift hub's tab): the build cannot use
@@ -271,6 +273,7 @@ final class MobileSettingsModel {
         relayConnection = relay.flatMap { Self.relayConnection($0, now: now()) }
         relayPushLine = relay?.pushOff == true ? HubLine(text: Self.relayPushOff, tone: .warning) : nil
         hubQuotaLine = relay?.quotaHub == true ? HubLine(text: Self.hubQuotaFull, tone: .error) : nil
+        relayLines = Self.relayLines(relay, now: now())
         keptRecordings = status.keptRecordings.flatMap { kept in
             kept.count >= 1 ? KeptRecordings(count: kept.count, removeAt: kept.removeAt, dir: URL(fileURLWithPath: kept.dir)) : nil
         }

@@ -150,7 +150,9 @@ struct MobileHubCLI {
     /// data-zone save (minute-rounded; "" = none since the hub started → nil).
     struct RelayHealth: Decodable, Equatable {
         let state: String
-        let since: Date
+        /// nil when it is absent, empty or not an RFC 3339 time: the
+        /// connection line is left out, the rest of the status still reads.
+        let since: Date?
         let quotaHub: Bool
         let pushOff: Bool
         let lastSavedAt: Date?
@@ -162,7 +164,7 @@ struct MobileHubCLI {
             case lastSavedAt = "last_saved_at"
         }
 
-        init(state: String, since: Date, quotaHub: Bool = false, pushOff: Bool = false, lastSavedAt: Date? = nil) {
+        init(state: String, since: Date?, quotaHub: Bool = false, pushOff: Bool = false, lastSavedAt: Date? = nil) {
             self.state = state
             self.since = since
             self.quotaHub = quotaHub
@@ -173,7 +175,7 @@ struct MobileHubCLI {
         init(from decoder: any Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             state = try c.decode(String.self, forKey: .state)
-            since = try c.decode(Date.self, forKey: .since)
+            since = try c.decodeIfPresent(String.self, forKey: .since).flatMap(MobileHubCLI.date)
             quotaHub = try c.decodeIfPresent(Bool.self, forKey: .quotaHub) ?? false
             pushOff = try c.decodeIfPresent(Bool.self, forKey: .pushOff) ?? false
             lastSavedAt = try c.decodeIfPresent(String.self, forKey: .lastSavedAt).flatMap(MobileHubCLI.date)

@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 @testable import WatchtowerDesktop
 
 /// The RC §10 indicator shots of Settings → Mobile (go hub plan 4 Task 8,
@@ -9,19 +9,6 @@ import AppKit
 extension MobileSettingsShotFixtures {
     typealias Relay = MobileHubCLI.RelayHealth
     typealias Phone = MobileHubCLI.Phone
-
-    /// Nil for the Phase 3 frames, which size themselves.
-    nonisolated static func size(indicator frame: Frame) -> NSSize? {
-        switch frame {
-        case .indicatorsNarrow: NSSize(width: 480, height: 860)
-        case .mailboxFull, .freePhoneOnRelay, .twoMailboxesFull: NSSize(width: 640, height: 780)
-        case .relayConnected, .relayConnecting, .relayUnavailable, .pushOff, .quotaHub, .connectedPushOff,
-             .connectingPushOff, .unavailablePushOff, .connectedQuotaHub, .bothQuotas, .hubAllLines, .undeliveredOne,
-             .undeliveredMany, .notificationsMissing, .alertAccepted, .phoneAllLines, .undeliveredNoToken:
-            NSSize(width: 640, height: 580)
-        default: nil
-        }
-    }
 
     /// The hub's status and its phones for an indicator frame.
     static func indicators(_ frame: Frame) -> (MobileHubCLI.Status, [Phone]) {
@@ -42,8 +29,8 @@ extension MobileSettingsShotFixtures {
         case .relayConnected: return connectedRelay
         case .relayConnecting: return Relay(state: "connecting", since: connecting)
         case .relayUnavailable: return Relay(state: "unavailable", since: unavailable)
-        case .pushOff, .connectedPushOff: return relay(pushOff: true)
-        case .quotaHub, .connectedQuotaHub, .bothQuotas: return relay(quotaHub: true)
+        case .connectedPushOff: return relay(pushOff: true)
+        case .connectedQuotaHub, .bothQuotas: return relay(quotaHub: true)
         case .connectingPushOff: return Relay(state: "connecting", since: connecting, pushOff: true)
         case .unavailablePushOff: return Relay(state: "unavailable", since: unavailable, pushOff: true)
         case .hubAllLines: return allHubLines

@@ -15,12 +15,12 @@ enum MobileSettingsShotFixtures {
         case keptRecordings = "kept-recordings"
         case keptRecordingsNarrow = "kept-recordings-narrow"
         // Go hub plan 4 Task 8 (coverage table rows 5–25, mockups §19–§21):
-        // the raw value is the shot's name.
+        // the raw value is the shot's name. Rows 8 and 9 (push off alone,
+        // storage full alone) have no shot: a relay block always has a
+        // connection line, so they show as rows 11 and 14.
         case relayConnected = "mobileSettingsRelayConnected"
         case relayConnecting = "mobileSettingsRelayConnecting"
         case relayUnavailable = "mobileSettingsRelayUnavailable"
-        case pushOff = "mobileSettingsPushOff"
-        case quotaHub = "mobileSettingsQuotaHub"
         case mailboxFull = "mobileSettingsMailboxFull"
         case connectedPushOff = "mobileSettingsConnectedPushOff"
         case connectingPushOff = "mobileSettingsConnectingPushOff"
@@ -56,8 +56,7 @@ enum MobileSettingsShotFixtures {
         }
 
         var size: NSSize {
-            if let indicator = MobileSettingsShotFixtures.size(indicator: self) { return indicator }
-            return switch self {
+            switch self {
             case .narrow: NSSize(width: 380, height: 760)
             case .keptRecordingsNarrow: NSSize(width: 380, height: 900)
             case .loading, .error, .off, .swiftBesideGo: NSSize(width: 640, height: 140)
@@ -65,7 +64,12 @@ enum MobileSettingsShotFixtures {
             case .empty: NSSize(width: 640, height: 460)
             case .keptRecordings: NSSize(width: 640, height: 740)
             case .busy, .phones: NSSize(width: 640, height: 680)
-            default: NSSize(width: 640, height: 640)
+            case .indicatorsNarrow: NSSize(width: 480, height: 860)
+            case .mailboxFull, .freePhoneOnRelay, .twoMailboxesFull: NSSize(width: 640, height: 780)
+            case .relayConnected, .relayConnecting, .relayUnavailable, .connectedPushOff, .connectingPushOff,
+                 .unavailablePushOff, .connectedQuotaHub, .bothQuotas, .hubAllLines, .undeliveredOne, .undeliveredMany,
+                 .notificationsMissing, .alertAccepted, .phoneAllLines, .undeliveredNoToken:
+                NSSize(width: 640, height: 580)
             }
         }
     }
