@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	hubwire "watchtower/internal/hub/wire"
 )
 
 // InMemoryKeySource is the fixed test KeySource over the Kit fixture keys:
@@ -614,6 +616,18 @@ func sealGoVectors(t *testing.T) goSealedFile {
 	boxFrame := InnerFrame{Kind: "device_grant", ID: "device_grant-" + dev.String(), Payload: []byte(`{"grant":{"device_id":"` + dev.String() + `"}}`)}
 	r, err = s.Keybox("DataZone", dev, boxFrame.Payload)
 	add("keybox", ClassKeybox, r, err, boxFrame, "DataZone", fixtureHubID)
+
+	// The relay push: no zone record, the AAD names AlertPushWireName in the
+	// data zone (the Kit's AlertOpener.open(wireName: "alert-push", …)).
+	push := WorkAlertFields{Event: "ask", Key: "ask-42", WorkbenchID: 7, WorkbenchName: "Acme", SessionID: int64p(9),
+		AskID: int64p(42), RequestID: int64p(11), Title: "Acme · Build", Body: "Which database?", Quick: true}
+	pushPayload, err := hubwire.Marshal(push)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.AlertPush(push.Key, push)
+	add("alertPush", ClassAlert, Record{wireName: AlertPushWireName, envelope: p.Envelope()}, err,
+		InnerFrame{Kind: "ask_alert", ID: "ask_alert-" + push.Key, Payload: pushPayload}, "DataZone", fixtureHubID)
 	return out
 }
 

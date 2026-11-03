@@ -135,15 +135,15 @@ func (r *alertRig) source() slices.Source {
 	})
 }
 
-func (r *alertRig) alerts() []workAlertPayload {
+func (r *alertRig) alerts() []secure.WorkAlertFields {
 	r.t.Helper()
 	items, err := r.source().Items(context.Background())
 	if err != nil {
 		r.t.Fatalf("Items: %v", err)
 	}
-	out := []workAlertPayload{}
+	out := []secure.WorkAlertFields{}
 	for _, it := range items {
-		var p workAlertPayload
+		var p secure.WorkAlertFields
 		if err := json.Unmarshal(it.Payload, &p); err != nil {
 			r.t.Fatal(err)
 		}
@@ -626,7 +626,7 @@ func TestWorkAlertFinishedAndFailed(t *testing.T) {
 	failed := r.session(project)
 	r.setLive(failed)
 	r.setState(failed, "waiting", r.clock().Add(-time.Minute), false, "rate_limit")
-	got := map[int64]workAlertPayload{}
+	got := map[int64]secure.WorkAlertFields{}
 	for _, a := range r.alerts() {
 		got[*a.SessionID] = a
 	}
@@ -820,7 +820,7 @@ func TestWorkAlertThePayloadIsCappedAndTitled(t *testing.T) {
 	if got := strings.Join(keysOf(raw), ","); got != "ask_id,body,event,key,quick,session_id,title,workbench_id,workbench_name" {
 		t.Fatalf("keys %s", got)
 	}
-	var p workAlertPayload
+	var p secure.WorkAlertFields
 	_ = json.Unmarshal(items[0].Payload, &p)
 	if uniseg.GraphemeClusterCount(p.WorkbenchName) != 60 ||
 		p.Title != strings.Repeat("w", 59)+"… · "+strings.Repeat("s", 59)+"…" ||
