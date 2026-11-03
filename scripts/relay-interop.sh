@@ -21,7 +21,9 @@
 #
 # Environment: RELAY_INTEROP_PORT (default 8787), RELAY_INTEROP_RUN (a -run
 # regexp, default '^TestInterop_'), RELAY_INTEROP_KEEP=1 keeps the temp dir
-# (wrangler's log and state) for a look after a failure.
+# (wrangler's log and state) for a look after a failure,
+# RELAY_INTEROP_RESTART_PAUSE (seconds, default 0) keeps the stand down that
+# long on a restart.
 #
 # KIT=1 (make relay-interop RELAY=../relay KIT=1; macOS only) runs the Kit
 # phone against a live headless hub instead of the Go tests (Go hub phase 2,
@@ -499,6 +501,7 @@ while :; do
 		RESTART=0
 		echo "relay-interop: restarting the stand (asked by a test)" >&2
 		stop_wrangler
+		sleep "${RELAY_INTEROP_RESTART_PAUSE:-0}"
 		if ! start_wrangler; then
 			echo "relay-interop: the stand did not restart; stopping the tests" >&2
 			rc=1
