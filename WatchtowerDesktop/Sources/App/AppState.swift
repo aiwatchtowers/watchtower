@@ -380,8 +380,8 @@ final class AppState {
     private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
-    /// Phone recordings on the Go hub, claimed, reported and finished over
-    /// its control socket (go hub plan 3 Task 17); with the hub center only.
+    /// Phone recordings on the Go hub (go hub plan 3 Task 17); set by
+    /// `replaceHubCenter` through `replacePhoneRecordingQueue`.
     @ObservationIgnored var phoneRecordingQueue: PhoneRecordingQueue?
     /// "Keep this Mac awake for the iPhone" over the Go hub (Task 23).
     @ObservationIgnored var hubKeepAwake: HubKeepAwake?
@@ -1890,8 +1890,6 @@ final class AppState {
         }
         syncAutomationSessionCenter()
     }
-
-    /// The Go hub's center for a rebuilt workbench state, the previous one stopped.
 
     /// Makes the v1-host restart step once per app run (a setup re-run that
     /// rebuilds the workbenches keeps it; it reads the current ones) and

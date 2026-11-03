@@ -67,14 +67,8 @@ extension AppState {
         agentStates: SessionAgentStateCenter
     ) {
         hubCenter?.stop()
-        phoneRecordingQueue?.stop()
         hubCenter = makeHubCenter(cliRunner)
-        phoneRecordingQueue = hubCenter.map { _ in
-            PhoneRecordingQueue.live(cli: cliRunner, recorder: meetingRecorderCenter, dbPool: dbPool)
-        }
-        phoneRecordingQueue?.start()
-        hubCenter?.onWatchConnected = { [weak queue = phoneRecordingQueue] in queue?.rescan() }
-        hubCenter?.onRecordingQueued = { [weak queue = phoneRecordingQueue] in queue?.recordingQueued($0) }
+        phoneRecordingQueue = replacePhoneRecordingQueue(phoneRecordingQueue, hub: hubCenter, dbPool: dbPool, cliRunner: cliRunner)
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.start()
         hubKeepAwake?.stop()
