@@ -13,8 +13,9 @@ import (
 // the hub's asset dir — the meeting transcripts' segments, and what an
 // adoption copied from the Swift hub — and the slice_assets descriptors an
 // adopted sidecar holds, each with its file's K_asset. The owner's off, an
-// iCloud account change and a hub zone deleted on the server remove both, so no key outlives its link; a plain
-// stop keeps them (the next start's transcript read sweeps its own files).
+// iCloud account change and a hub zone deleted on the server (CloudKit
+// active) remove both, so no key outlives its link; a plain stop keeps them
+// (the next start's transcript read sweeps its own files).
 
 // errAssetDirNotADir: <dir>/assets is a symlink or not a directory; nothing
 // under it is deleted, so a link can never empty its target.

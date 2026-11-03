@@ -448,7 +448,8 @@ privacy page says so.
   CloudKit side (`icloud.go`, hold reason `no_icloud`): CloudKit's processor reads nothing and, while CloudKit is the
   active transport, the publisher publishes nothing and no mailbox pass or share sweep runs. A desktop host on the relay
   goes on publishing there; only CloudKit's mailbox (the switch's standby poll) waits. The next read that finds the
-  account available releases it: one full diff and one pass. An account not read yet holds nothing. While
+  account available releases it: one full diff and one pass. An account not read yet holds nothing (the bridge
+  starts after the hub, so each pass reads it again until a first answer). While
   CloudKit is the active transport the status reads `state: paused`, `reason: no_icloud` (the Swift hub showed itself
   unavailable, "No iCloud account is signed in"): `hub status` adds a line saying so and Settings → Mobile shows
   "Paused until iCloud is available on this Mac. It goes on by itself." above the account's own line. On the relay
@@ -462,6 +463,13 @@ privacy page says so.
   it, the relay buffer survived); the staged assets go (`forgetStagedAssets`) and the resumed full diff republishes
   and restages everything. The exactly-once ledger, the hub id, `enabled_at` and the keys stay. On a desktop host
   whose active transport is the relay only the mailbox token is reset: the published state is the relay's, and a
-  switch to CloudKit republishes under a new epoch anyway. The account change still closes the old user's link
+  switch to CloudKit republishes under a new epoch anyway; a zone recreated there keeps the staged assets too (an
+  account change still removes them). A wipe that fails keeps both held and is retried at each housekeeping run
+  (daemon cycle, `houseEvery`) until it succeeds: released unwiped, the full diff would match the old hashes and
+  publish nothing into the new zone (in memory: a restart in between forgets it). On an account change the wipe runs
+  before the account is read again, and a pass follows at once. The account change still closes the old user's link
   (`link.Center.AccountChanged`). The bridge cannot tell which zone was missing, so a deleted RelayZone alone also
-  republishes the data zone once. No sidecar migration: the tables were all there.
+  republishes the data zone once. The bridge creates the zones lazily (on the first `zoneNotFound`), so the
+  first-ever CloudKit save of a hub — and the first save into a new account's zones — also reads as a recreation and
+  costs one extra full publish (v1 limit; telling a first creation apart needs state the bridge does not keep). No
+  sidecar migration: the tables were all there.

@@ -46,12 +46,14 @@ func (h *hubRuntime) cloudKitProcessor() *actions.Processor {
 // relay side goes on. An account not read yet holds nothing. The release
 // runs one full diff (the publisher's resume) and one pass.
 func (h *hubRuntime) applyICloudHold() {
+	h.ckHoldMu.Lock()
+	defer h.ckHoldMu.Unlock()
+	// Read under ckHoldMu, so a caller holding an older answer never
+	// applies it after a newer one.
 	h.mu.Lock()
 	acct := h.ckAccount
 	h.mu.Unlock()
 	off := acct != "" && acct != transport.AccountAvailable
-	h.ckHoldMu.Lock()
-	defer h.ckHoldMu.Unlock()
 	if off != h.ckHeld {
 		if p := h.cloudKitProcessor(); p != nil {
 			if off {
@@ -67,7 +69,8 @@ func (h *hubRuntime) applyICloudHold() {
 		}
 	}
 	pub := off && h.tr.Kind() == transport.KindCloudKit
-	if pub != h.ckPubHeld && h.pub != nil {
+	paused := pub != h.ckPubHeld.Load()
+	if paused && h.pub != nil {
 		if pub {
 			h.pub.PauseFor(pauseNoICloud)
 		} else {
@@ -75,9 +78,8 @@ func (h *hubRuntime) applyICloudHold() {
 		}
 	}
 	released := h.ckHeld && !off
-	paused := pub != h.ckPubHeld
-	h.ckHeld, h.ckPubHeld = off, pub
-	h.ckPassHeld.Store(pub)
+	h.ckHeld = off
+	h.ckPubHeld.Store(pub)
 	if released {
 		h.kick(h.passKick)
 	}
@@ -88,8 +90,17 @@ func (h *hubRuntime) applyICloudHold() {
 
 // iCloudPaused: the iCloud hold stops the whole hub because CloudKit is the
 // active transport, so the status reads paused (ReasonNoICloud), as the
-// Swift hub showed itself unavailable. On the relay nothing is paused.
-func (h *hubRuntime) iCloudPaused() bool { return h.ckPassHeld.Load() }
+// Swift hub showed itself unavailable, and no pass runs. On the relay
+// nothing is paused.
+func (h *hubRuntime) iCloudPaused() bool { return h.ckPubHeld.Load() }
+
+// ckAccountUnread: the bridge has not answered an account read yet (it
+// starts after the hub; the first read at start can find it down).
+func (h *hubRuntime) ckAccountUnread() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ckAccount == ""
+}
 
 // resetCloudKit is the Swift hub's account and data-zone resets: with
 // CloudKit's processor and the publisher held, what the hub believes is
@@ -100,28 +111,56 @@ func (h *hubRuntime) iCloudPaused() bool { return h.ckPassHeld.Load() }
 // ledger keeps a re-read record from applying twice); a zone deleted on the
 // server keeps it (the relay buffer survived). On a desktop host whose
 // active transport is the relay, the published state is the relay's and
-// stays: a switch to CloudKit republishes under a new epoch anyway.
+// stays (and so do the staged assets it references, unless the account
+// changed): a switch to CloudKit republishes under a new epoch anyway.
+//
+// A wipe that fails keeps both held (ckResetPending) and is retried by
+// retryCloudKitReset each housekeeping run: released unwiped, the full diff
+// would match the old hashes and publish nothing into the new zone. The
+// worker goroutine alone runs both, so the two fields need no lock.
 func (h *hubRuntime) resetCloudKit(ctx context.Context, account bool) {
-	if p := h.cloudKitProcessor(); p != nil {
-		p.PauseFor(pauseCloudKitReset)
-		defer p.ResumeFor(pauseCloudKitReset)
+	if !h.ckResetPending {
+		if p := h.cloudKitProcessor(); p != nil {
+			p.PauseFor(pauseCloudKitReset)
+		}
+		if h.pub != nil {
+			h.pub.PauseFor(pauseCloudKitReset)
+		}
 	}
-	if h.pub != nil {
-		h.pub.PauseFor(pauseCloudKitReset)
-		defer h.pub.ResumeFor(pauseCloudKitReset)
-	}
+	h.ckResetPending = true
+	h.ckResetAccount = h.ckResetAccount || account
+	account = h.ckResetAccount
+	onCloudKit := h.tr.Kind() == transport.KindCloudKit
 	mailbox := transport.SharedMailboxZone(h.relayID)
 	var err error
 	switch {
-	case h.tr.Kind() == transport.KindCloudKit && account:
+	case onCloudKit && account:
 		err = h.st.WipeSyncState(ctx, h.sup.o.Clock().Add(-sources.WorkAlertLifetime), mailbox)
-	case h.tr.Kind() == transport.KindCloudKit:
+	case onCloudKit:
 		err = h.st.WipeSyncState(ctx, h.sup.o.Clock().Add(-sources.WorkAlertLifetime))
 	case account:
 		err = h.st.SetZoneToken(mailbox, 0)
 	}
 	if err != nil {
-		log.Printf("hub: wiping the published state after a CloudKit reset failed (%s)", errClass(err))
+		log.Printf("hub: wiping the published state after a CloudKit reset failed (%s): CloudKit held, retried", errClass(err))
+		return
 	}
-	h.forgetStagedAssets()
+	if onCloudKit || account {
+		h.forgetStagedAssets()
+	}
+	h.ckResetPending, h.ckResetAccount = false, false
+	if p := h.cloudKitProcessor(); p != nil {
+		p.ResumeFor(pauseCloudKitReset)
+	}
+	if h.pub != nil {
+		h.pub.ResumeFor(pauseCloudKitReset)
+	}
+	h.kick(h.passKick) // a rewound mailbox is read again at once
+}
+
+// retryCloudKitReset runs a reset whose wipe failed again (housekeeping).
+func (h *hubRuntime) retryCloudKitReset(ctx context.Context) {
+	if h.ckResetPending {
+		h.resetCloudKit(ctx, false)
+	}
 }

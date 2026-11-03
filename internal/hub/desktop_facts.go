@@ -36,7 +36,8 @@ const metaPhoneContactAt = "phone_contact_at"
 type throttleReporter interface{ ThrottledSince() time.Time }
 
 // refreshCloudKitAccount reads the iCloud account from the bridge (at start,
-// every daemon cycle and on an account change) and holds or releases the
+// each pass until a first answer, every daemon cycle and on an account
+// change) and holds or releases the
 // CloudKit side by it (applyICloudHold); a failed read keeps the last
 // answer.
 func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
