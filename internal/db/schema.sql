@@ -447,6 +447,10 @@ CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
     WHERE notified_at = '' AND due_date != '';
 CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
+-- One task per create_target action id (00174, AGENT-05); 'action:0' is a
+-- registry-less Execute and stays out. A rebuild of targets recreates it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_action_source ON targets(source_id)
+    WHERE source_type = 'chat' AND source_id LIKE 'action:%' AND source_id != 'action:0';
 -- Triggers targets_project_status_rollup_{ai,au,ad} (00085, PROJ-05): when a
 -- project target (project_id set) is inserted, deleted, or changes status /
 -- parent_id / project_id, its parent's status is re-derived from its direct
@@ -2108,6 +2112,10 @@ CREATE TABLE IF NOT EXISTS agent_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
+-- One open proposal per Inbox button (context '<output>:<index>:<action
+-- hash>', 00174, AGENT-05). A rebuild of agent_actions recreates it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_actions_open_context ON agent_actions(context_type, context_id)
+    WHERE context_type = 'automation_output' AND status IN ('pending','approved','executing');
 
 -- Owner's standing trust per (tool, chat surface) (migration 00112): no row
 -- = ask; an execute on one surface (e.g. reaction) never covers another.

@@ -84,7 +84,7 @@ func proposeInboxAction() (int64, error) {
 		ContextID:   ctxID,
 	})
 	if err != nil {
-		return 0, err
+		return 0, buttonStateExit(err)
 	}
 	return rc.ActionID, nil
 }

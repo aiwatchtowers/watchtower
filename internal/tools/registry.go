@@ -168,6 +168,13 @@ type Tool struct {
 	// re-interpreted at apply time. Optional; nil leaves args unchanged.
 	Normalize func(ctx context.Context, d *db.DB, args json.RawMessage) (json.RawMessage, error)
 
+	// ValidateBinding runs the argument checks that depend on where the call
+	// comes from (create_target's parent_id, accepted on the inbox surface
+	// only), in Propose after Validate; a *ValidationError writes no row.
+	// Validate sees no binding, so this is the one place such a rule lives.
+	// Optional.
+	ValidateBinding func(b Binding, raw json.RawMessage) error
+
 	// Scope runs the checks that need the binding — "does this row belong to
 	// the bound workbench" — after Validate in Propose, and again in Apply
 	// before Execute, against the binding rebuilt from the stored row. A
@@ -514,7 +521,7 @@ func (r *Registry) propose(ctx context.Context, name string, args json.RawMessag
 	if err != nil {
 		return Receipt{}, err
 	}
-	id, err := r.db.InsertAgentAction(newProposalRow(t, args, trust, b))
+	id, err := r.insertProposal(newProposalRow(t, args, trust, b))
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -536,6 +543,21 @@ func (r *Registry) propose(ctx context.Context, name string, args json.RawMessag
 		Message: fmt.Sprintf("Proposal #%d recorded (%s). The owner must approve it %s before "+
 			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, t.Name, where),
 	}, nil
+}
+
+// insertProposal records row. An Inbox button's proposal goes through
+// db.InsertInboxButtonProposal, whose one write transaction refuses a second
+// open proposal for the button and one whose task already exists (AGENT-05);
+// its typed refusals come back wrapped.
+func (r *Registry) insertProposal(row db.AgentAction) (int64, error) {
+	if row.ContextType != db.InboxButtonContextType {
+		return r.db.InsertAgentAction(row)
+	}
+	id, err := r.db.InsertInboxButtonProposal(row)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", row.Tool, err)
+	}
+	return id, nil
 }
 
 // Approve moves a pending row to approved, first merging the owner's edit
@@ -643,6 +665,9 @@ func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMess
 	if err := automationBindingGate(b); err != nil {
 		return nil, b, err
 	}
+	if b.ContextType == db.InboxButtonContextType && b.Surface != InboxSurface {
+		return nil, b, &ValidationError{Msg: "an Inbox button's context is valid only on the inbox surface"}
+	}
 	if !visibleOn(t, b.Surface) {
 		// Get is surface-blind: a caller that dispatches by name (a reaction
 		// mapping, a model naming a tool it was never offered) must not reach a
@@ -655,6 +680,11 @@ func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMess
 	args, err = r.prepareProposalArgs(ctx, t, args)
 	if err != nil {
 		return nil, b, err
+	}
+	if t.ValidateBinding != nil {
+		if err := t.ValidateBinding(b, args); err != nil {
+			return nil, b, err
+		}
 	}
 	if reasonOf(args) == "" {
 		return nil, b, &ValidationError{Msg: `"reason" is required: say why you propose this`}
@@ -761,7 +791,9 @@ func (r *Registry) resolveTrust(t *Tool, args json.RawMessage, b Binding) (trust
 	if b.Surface == AutomationSurface {
 		return r.resolveAutomationTrust(t, args, b)
 	}
-	if t.External || t.AlwaysAsk {
+	// The inbox is no trust place (trustSurfaceErr): a stray tool_trust row
+	// for it is never read, so its proposals always wait for Approve.
+	if t.External || t.AlwaysAsk || b.Surface == InboxSurface {
 		return TrustAsk, false, nil
 	}
 	if b.DirectApply {
