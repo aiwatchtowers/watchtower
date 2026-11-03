@@ -31,9 +31,9 @@ const measureActions = 200
 //
 // A Go phone sends measureActions actions one at a time, each waited for
 // until its applied echo is back, then waits HUB_MEASURE_GAP (a Go duration;
-// default none, back to back, which keeps the publisher's trailing debounce
-// open until its MaxDebounceWait); every action nudges a slice whose value
-// it moves. The test logs the hub's relay p50/p90 and sample counts per step —
+// default none, back to back: the nudge after each applied action
+// (PublishNow) is held only by the relay spacing, never by the trailing
+// debounce); every action nudges a slice whose value it moves. The test logs the hub's relay p50/p90 and sample counts per step —
 // the rows `watchtower hub diagnostics --json` shows — and fails only when
 // an action is not applied or no read_saved sample was taken.
 func TestMeasure_HubLatencyOverTheStand(t *testing.T) {

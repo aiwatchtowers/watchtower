@@ -212,7 +212,7 @@ Since 2026-10-12, every record the hub and a phone exchange through CloudKit (an
 
 - Total record count and churn per zone.
 - Coarse sizes (the padding buckets; assets in whole MiB).
-- `modifiedAt` and the timing of every change: a change publishes after a 150 ms debounce (at most 1 s), at least 2 s apart on CloudKit and 150 ms on the relay, with a 60 s full diff as the backstop (`slices.Debounce`, `MaxDebounceWait`, `CloudKitSpacing`, `RelaySpacing`, `FullDiffEvery`), and the heartbeat comes every 15 min (`slices.HeartbeatInterval`).
+- `modifiedAt` and the timing of every change: a change publishes after a 150 ms debounce (at most 1 s; only the kinds an applied phone action nudges publish at once, `PublishNow`, still held by the spacing and by a failed save's retry or the relay's retry-after), at least 2 s apart on CloudKit and 150 ms on the relay, with a 60 s full diff as the backstop (`slices.Debounce`, `MaxDebounceWait`, `CloudKitSpacing`, `RelaySpacing`, `FullDiffEvery`), and the heartbeat comes every 15 min (`slices.HeartbeatInterval`).
 - The hub id (zone names `DataZone-<hub_id>`/`RelayZone-<hub_id>`), the phones' device ids in `keybox-`/`hello-` names, and the fact that a hub exists.
 - The Apple IDs of the owner and the share participants, and APNs tokens.
 - On the hosted relay: that an alert was pushed to a phone and when (`send_alert`), never what — every push envelope is padded to the same 1 KiB bucket (1172 bytes).
@@ -268,7 +268,7 @@ The hub is Go (`internal/hub`, `Run`), started by the daemon. [go-hub.md](go-hub
 
 ### Slices and cadence
 
-`slices.Publisher` hashes each record and saves only changes; a change marks its kinds dirty (nudges after applied actions and from the session-state lane, plus a `data_version` watch for other processes: every 250 ms while a phone was in touch within the last 10 minutes, else every 1 s — `slices.ActivePoll`, `ActiveWindow`, `IdlePoll`). Debounce 150 ms (at most 1 s), at least `CloudKitSpacing` (2 s) between sends on CloudKit and `RelaySpacing` (150 ms) on the relay, `FullDiffEvery` (60 s) as the backstop, the 900 KB guard, the heartbeat every 15 minutes. `MobileSync = workbench_only` keeps only `sources.WorkbenchOnlyKinds`.
+`slices.Publisher` hashes each record and saves only changes; a change marks its kinds dirty (nudges after applied actions and from the session-state lane, plus a `data_version` watch for other processes: every 250 ms while a phone was in touch within the last 10 minutes, else every 1 s — `slices.ActivePoll`, `ActiveWindow`, `IdlePoll`). Debounce 150 ms (at most 1 s; only the kinds an applied action nudges skip it — `PublishNow` — and they are held by the spacing and by a failed save's backoff or the relay's `retry_after_s`), at least `CloudKitSpacing` (2 s) between sends on CloudKit and `RelaySpacing` (150 ms) on the relay, `FullDiffEvery` (60 s) as the backstop, the 900 KB guard, the heartbeat every 15 minutes. `MobileSync = workbench_only` keeps only `sources.WorkbenchOnlyKinds`.
 
 ### Actions and order
 
