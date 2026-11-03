@@ -147,6 +147,13 @@ var sidecarColumns = map[string]string{
 	// Content-free timings (00011): at is REAL and ms INTEGER (not listed).
 	"latency_samples.transport": classEnum,
 	"latency_samples.step":      classEnum,
+
+	// The alert-push ledger (00012): attempts INTEGER, first_at and
+	// settled_at REAL (not listed).
+	"alert_pushes.alert_key": classID, // ask-<id>, perm-<id>, stop-<session>-<ms>
+	"alert_pushes.device_id": classID,
+	"alert_pushes.outcome":   classEnum,
+	"alert_pushes.reason":    classEnum,
 }
 
 // textual reports whether a declared column type may hold text or bytes
