@@ -50,6 +50,13 @@ final class MobileSettingsModel {
         let typingRequested, permissionsRequested, startSessionsGranted: Bool
         /// What the phone asks for and the owner has not allowed yet.
         let requests: [String]
+        /// The RC §10 lines (phase 4 Task 8, `withIndicators`), independent
+        /// of each other: a free phone on a Relay hub, the actions this Mac's
+        /// side has not applied, its relay mailbox full, its last alert.
+        var updatesLine: HubLine?
+        var undeliveredLine: HubLine?
+        var mailboxLine: HubLine?
+        var alertsLine: HubLine?
     }
 
     struct KeptRecordings: Equatable {
@@ -106,6 +113,13 @@ final class MobileSettingsModel {
     private(set) var hubTransport: String?
     private(set) var hubSwitchedLine: String?
     private(set) var hubLine: HubLine?
+    /// The hub's Relay lines (phase 4 Task 8), one fact each, any of them at
+    /// once; nil while the hub has no relay (`hub status` without `relay`).
+    private(set) var relayConnection: HubLine?
+    private(set) var relayPushLine: HubLine?
+    private(set) var hubQuotaLine: HubLine?
+    /// The three above that are set, in the Relay row's order; empty hides the row.
+    private(set) var relayLines: [HubLine] = []
     /// Today's off-delete line while the owner's switch is off.
     private(set) var offDeleteLine: String?
     /// Today's iCloud lines (the Swift hub's tab): the build cannot use
@@ -255,6 +269,11 @@ final class MobileSettingsModel {
         accountLine = running ? status.cloudKit.flatMap { Self.accountLine($0.account) } : nil
         throttledSince = running ? status.cloudKit?.throttledSince : nil
         hubTransport = status.transport
+        let relay = running ? status.relay : nil
+        relayConnection = relay.flatMap { Self.relayConnection($0, now: now()) }
+        relayPushLine = relay?.pushOff == true ? HubLine(text: Self.relayPushOff, tone: .warning) : nil
+        hubQuotaLine = relay?.quotaHub == true ? HubLine(text: Self.hubQuotaFull, tone: .error) : nil
+        relayLines = Self.relayLines(relay, now: now())
         keptRecordings = status.keptRecordings.flatMap { kept in
             kept.count >= 1 ? KeptRecordings(count: kept.count, removeAt: kept.removeAt, dir: URL(fileURLWithPath: kept.dir)) : nil
         }
@@ -274,7 +293,7 @@ final class MobileSettingsModel {
             var requests: [String] = []
             if phone.typingRequested, !phone.typingAllowed { requests.append(Self.typingGrant) }
             if phone.permissionsRequested, !phone.permissionsAllowed { requests.append(Self.permissionsGrant) }
-            return PhoneRow(
+            let row = PhoneRow(
                 id: phone.deviceID, name: phone.name, transportLabel: label, transport: phone.transport, scope: phone.scope,
                 detailLine: ([Self.scopeLabel(phone.scope), Self.linkedText(phone.linkedAt), label, switchedLine])
                     .compactMap { $0 }.joined(separator: " · "),
@@ -283,6 +302,7 @@ final class MobileSettingsModel {
                 typingRequested: phone.typingRequested, permissionsRequested: phone.permissionsRequested,
                 startSessionsGranted: phone.startSessionsGranted, requests: requests
             )
+            return Self.withIndicators(row, phone, hubTransport: status.transport)
         }
     }
 

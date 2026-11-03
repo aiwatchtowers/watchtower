@@ -61,15 +61,25 @@ struct MobileHubCLI {
         /// A Desktop transcriber ever sent the hub a heartbeat (recordings can
         /// go on); true from an older CLI that does not say.
         let transcriber: Bool
+        /// The hosted relay's indicators (phase 4 Task 7); nil when the hub
+        /// has no relay origin.
+        let relay: RelayHealth?
+        /// The linked phones the relay lists as paying; nil = not known
+        /// (never read as "nobody pays").
+        let payingPhones: [String]?
+        /// The linked phones whose relay mailbox refused a write as over quota.
+        let mailboxFullPhones: [String]
 
         enum CodingKeys: String, CodingKey {
-            case state, reason, transport, recordings, name, bridge
+            case state, reason, transport, recordings, name, bridge, relay
             case switchedAt = "switched_at"
             case switchedBy = "switched_by"
             case keptRecordings = "kept_recordings"
             case cloudKit = "cloudkit"
             case offDelete = "off_delete"
             case transcriber
+            case payingPhones = "paying_phones"
+            case mailboxFullPhones = "mailbox_full_phones"
         }
 
         private struct OffDelete: Decodable {
@@ -88,7 +98,10 @@ struct MobileHubCLI {
             keptRecordings: Kept? = nil,
             cloudKit: CloudKit? = nil,
             offDelete: String? = nil,
-            transcriber: Bool = true
+            transcriber: Bool = true,
+            relay: RelayHealth? = nil,
+            payingPhones: [String]? = nil,
+            mailboxFullPhones: [String] = []
         ) {
             self.state = state
             self.reason = reason
@@ -102,6 +115,9 @@ struct MobileHubCLI {
             self.cloudKit = cloudKit
             self.offDelete = offDelete
             self.transcriber = transcriber
+            self.relay = relay
+            self.payingPhones = payingPhones
+            self.mailboxFullPhones = mailboxFullPhones
         }
 
         init(from decoder: any Decoder) throws {
@@ -123,6 +139,46 @@ struct MobileHubCLI {
             let off = try c.decodeIfPresent(OffDelete.self, forKey: .offDelete)?.state
             offDelete = off?.isEmpty == false ? off : nil
             transcriber = try c.decodeIfPresent(Bool.self, forKey: .transcriber) ?? true
+            relay = try c.decodeIfPresent(RelayHealth.self, forKey: .relay)
+            payingPhones = try c.decodeIfPresent([String].self, forKey: .payingPhones)
+            mailboxFullPhones = try c.decodeIfPresent([String].self, forKey: .mailboxFullPhones) ?? []
+        }
+    }
+
+    /// `hub status` `relay` (phase 4 Task 7): the connection's state and
+    /// since when, the hub's storage flag, the push-off line and the last
+    /// data-zone save (minute-rounded; "" = none since the hub started → nil).
+    struct RelayHealth: Decodable, Equatable {
+        let state: String
+        /// nil when it is absent, empty or not an RFC 3339 time: the
+        /// connection line is left out, the rest of the status still reads.
+        let since: Date?
+        let quotaHub: Bool
+        let pushOff: Bool
+        let lastSavedAt: Date?
+
+        enum CodingKeys: String, CodingKey {
+            case state, since
+            case quotaHub = "quota_hub"
+            case pushOff = "push_off"
+            case lastSavedAt = "last_saved_at"
+        }
+
+        init(state: String, since: Date?, quotaHub: Bool = false, pushOff: Bool = false, lastSavedAt: Date? = nil) {
+            self.state = state
+            self.since = since
+            self.quotaHub = quotaHub
+            self.pushOff = pushOff
+            self.lastSavedAt = lastSavedAt
+        }
+
+        init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            state = try c.decode(String.self, forKey: .state)
+            since = try c.decodeIfPresent(String.self, forKey: .since).flatMap(MobileHubCLI.date)
+            quotaHub = try c.decodeIfPresent(Bool.self, forKey: .quotaHub) ?? false
+            pushOff = try c.decodeIfPresent(Bool.self, forKey: .pushOff) ?? false
+            lastSavedAt = try c.decodeIfPresent(String.self, forKey: .lastSavedAt).flatMap(MobileHubCLI.date)
         }
     }
 
@@ -139,9 +195,19 @@ struct MobileHubCLI {
         let startSessionsAllowed: Bool
         let startSessionsGranted: Bool
         let transport: String
+        /// Phase 4 Task 7, each nil when not known (the read behind it
+        /// failed; `paying` also off the relay or before the account state
+        /// is read): the relay lists the phone as paying, its actions this
+        /// Mac's side has not applied, its relay mailbox is full, the outcome
+        /// class of its last alert push ("" = none).
+        let paying: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        let undelivered: Int?
+        let mailboxFull: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        let alerts: String?
 
         enum CodingKeys: String, CodingKey {
-            case name, scope, transport
+            case name, scope, transport, paying, undelivered, alerts
+            case mailboxFull = "mailbox_full"
             case deviceID = "device_id"
             case linkedAt = "linked_at"
             case typingAllowed = "typing_allowed"
@@ -150,6 +216,40 @@ struct MobileHubCLI {
             case permissionsRequested = "permissions_requested"
             case startSessionsAllowed = "start_sessions_allowed"
             case startSessionsGranted = "start_sessions_granted"
+        }
+
+        init(
+            deviceID: String,
+            name: String,
+            scope: String,
+            linkedAt: Date,
+            typingAllowed: Bool,
+            typingRequested: Bool,
+            permissionsAllowed: Bool,
+            permissionsRequested: Bool,
+            startSessionsAllowed: Bool,
+            startSessionsGranted: Bool,
+            transport: String,
+            paying: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+            undelivered: Int? = nil,
+            mailboxFull: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+            alerts: String? = nil
+        ) {
+            self.deviceID = deviceID
+            self.name = name
+            self.scope = scope
+            self.linkedAt = linkedAt
+            self.typingAllowed = typingAllowed
+            self.typingRequested = typingRequested
+            self.permissionsAllowed = permissionsAllowed
+            self.permissionsRequested = permissionsRequested
+            self.startSessionsAllowed = startSessionsAllowed
+            self.startSessionsGranted = startSessionsGranted
+            self.transport = transport
+            self.paying = paying
+            self.undelivered = undelivered
+            self.mailboxFull = mailboxFull
+            self.alerts = alerts
         }
     }
 

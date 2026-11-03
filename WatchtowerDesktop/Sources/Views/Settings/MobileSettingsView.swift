@@ -23,8 +23,8 @@ struct MobileSettingsTab: View {
         .onAppear {
             if model == nil { model = appState.makeMobileSettingsModel() }
         }
-        .onChange(of: appState.hubCenter?.status) { Task { await model?.load() } }
         .onChange(of: appState.hubCenter?.linksChanged) { Task { await model?.load() } }
+        .onChange(of: appState.hubCenter?.statusEvents) { Task { await model?.load() } }
         .onChange(of: appState.hubAdoption?.state) { Task { await model?.load() } }
         .sheet(isPresented: $showsDiagnostics) {
             if let diagnostics {
@@ -235,6 +235,7 @@ private struct MobileHubSection: View {
                     Chip(text: Copy.transportLabel(transport), color: MobileTransportTone.color(transport))
                 }
             }
+            MobileRelayRow(model: model)
             MobileCloudLines(model: model)
             SettingRow(title: Copy.keepAwakeTitle, caption: Copy.keepAwakeCaption) {
                 Toggle(Copy.keepAwakeTitle, isOn: Binding(get: { model.keepAwake }, set: { model.setKeepAwake($0) }))
@@ -322,6 +323,12 @@ private struct MobilePhoneRow: View {
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     lines
                     HStack(spacing: Spacing.regular) { trailing(busy: busy) }
+                }
+            }
+            // Below the name line, so a long one wraps without moving the pill (mockup §21).
+            if !row.indicatorLines.isEmpty {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    MobileIndicatorLines(lines: row.indicatorLines)
                 }
             }
             Grid(alignment: .leading, horizontalSpacing: Spacing.medium, verticalSpacing: Spacing.small) {
@@ -557,5 +564,34 @@ private final class WindowVisibilityView: NSView {
             }
         }
         onChange?(window.occlusionState.contains(.visible))
+    }
+}
+
+// MARK: - Relay indicators (go hub plan 4 Task 8, mockups §18–§21)
+
+/// The hub's Relay row: the connection, the push-off line and the storage
+/// line, each shown on its own; absent while the hub has no relay.
+private struct MobileRelayRow: View {
+    let model: MobileSettingsModel
+
+    var body: some View {
+        if !model.relayLines.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                SettingRow(title: MobileSettingsModel.relayRowTitle) { EmptyView() }
+                MobileIndicatorLines(lines: model.relayLines)
+            }
+        }
+    }
+}
+
+/// Indicator lines in their tones; each wraps.
+private struct MobileIndicatorLines: View {
+    let lines: [MobileSettingsModel.HubLine]
+
+    var body: some View {
+        ForEach(lines, id: \.self) { line in
+            MobileHubLineText(line: line)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

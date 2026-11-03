@@ -86,14 +86,37 @@ enum MobileHubFixture {
         permissions: Bool = false,
         permissionsRequested: Bool = false,
         startAllowed: Bool = false,
-        startGranted: Bool = false
+        startGranted: Bool = false,
+        indicators: String = ""
     ) -> String {
         """
         {"device_id":"\(id)","name":"\(name)","scope":"\(scope)","linked_at":"\(linkedAt)",\
         "typing_allowed":\(typing),"typing_requested":\(typingRequested),\
         "permissions_allowed":\(permissions),"permissions_requested":\(permissionsRequested),\
         "start_sessions_allowed":\(startAllowed),"start_sessions_granted":\(startGranted),\
-        "ordered":false,"last_applied_action_seq":0,"transport":"\(transport)"}
+        "ordered":false,"last_applied_action_seq":0,"transport":"\(transport)"\(indicators)}
+        """
+    }
+
+    /// A phone's phase 4 keys (`hub phones`), each a JSON literal (`null` included).
+    static func indicators(paying: String, undelivered: String, mailboxFull: String, alerts: String) -> String {
+        #","paying":\#(paying),"undelivered":\#(undelivered),"mailbox_full":\#(mailboxFull),"alerts":\#(alerts)"#
+    }
+
+    /// A running Relay hub's status with its `relay` block.
+    static func relayStatus(
+        state: String,
+        since: String,
+        quotaHub: Bool = false,
+        pushOff: Bool = false,
+        lastSavedAt: String = "",
+        paying: String = "[]",
+        mailboxFull: String = "[]"
+    ) -> String {
+        """
+        {"state":"running","reason":"","transport":"relay","recordings":"on","name":"Work Mac",\
+        "relay":{"state":"\(state)","since":"\(since)","quota_hub":\(quotaHub),"push_off":\(pushOff),\
+        "last_saved_at":"\(lastSavedAt)"},"paying_phones":\(paying),"mailbox_full_phones":\(mailboxFull)}
         """
     }
 

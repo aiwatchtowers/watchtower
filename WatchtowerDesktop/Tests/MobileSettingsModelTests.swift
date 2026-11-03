@@ -737,6 +737,338 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertEqual(Model.linkTitle, "Link a phone…")
     }
 
+    // MARK: - Relay indicators (go hub plan 4 Task 8)
+
+    private let t0 = Date(timeIntervalSince1970: 1_793_620_800)
+    private func rfc(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
+
+    private func relayPhone(
+        _ id: String,
+        _ name: String,
+        paying: String = "true",
+        undelivered: String = "0",
+        mailboxFull: String = "false",
+        alerts: String = #""""#
+    ) -> String {
+        MobileHubFixture.phone(id: id, name: name, transport: "relay", indicators: MobileHubFixture.indicators(
+            paying: paying, undelivered: undelivered, mailboxFull: mailboxFull, alerts: alerts
+        ))
+    }
+
+    private func loaded(_ status: String, _ phones: String...) async -> Model {
+        cli.status(status)
+        cli.phones("[" + phones.joined(separator: ",") + "]")
+        let model = makeModel(now: t0)
+        await model.load()
+        return model
+    }
+
+    private var connected: String {
+        MobileHubFixture.relayStatus(state: "connected", since: rfc(t0.addingTimeInterval(-600)), lastSavedAt: rfc(t0.addingTimeInterval(-120)))
+    }
+
+    func testDecodesRelayHealthAndPayingPhones() async throws {
+        let hub = MobileHubCLI(runner: cli)
+        cli.status(MobileHubFixture.relayStatus(
+            state: "connected", since: rfc(t0.addingTimeInterval(-600)), quotaHub: true, pushOff: true,
+            lastSavedAt: rfc(t0.addingTimeInterval(-120)), paying: #"["AAAA0001"]"#, mailboxFull: #"["BBBB0002"]"#
+        ))
+        let status = try await hub.status()
+        XCTAssertEqual(status.relay, MobileHubCLI.RelayHealth(
+            state: "connected", since: t0.addingTimeInterval(-600), quotaHub: true, pushOff: true, lastSavedAt: t0.addingTimeInterval(-120)
+        ))
+        XCTAssertEqual(status.payingPhones, ["AAAA0001"])
+        XCTAssertEqual(status.mailboxFullPhones, ["BBBB0002"])
+
+        // `last_saved_at` "" = no save yet; `paying_phones` null = unknown, never "nobody pays".
+        cli.status(MobileHubFixture.relayStatus(state: "connecting", since: rfc(t0), paying: "null"))
+        let unknown = try await hub.status()
+        XCTAssertNil(unknown.relay?.lastSavedAt)
+        XCTAssertEqual(unknown.relay?.state, "connecting")
+        XCTAssertNil(unknown.payingPhones)
+        // No relay origin: no `relay` block.
+        cli.status(MobileHubFixture.running)
+        let plain = try await hub.status()
+        XCTAssertNil(plain.relay)
+        XCTAssertNil(plain.payingPhones)
+        XCTAssertEqual(plain.mailboxFullPhones, [])
+
+        cli.phones(MobileHubFixture.list(
+            relayPhone("AAAA0001", "Phone A", paying: "false", undelivered: "2", mailboxFull: "true", alerts: #""accepted""#),
+            relayPhone("BBBB0002", "Phone B", paying: "null", undelivered: "null", mailboxFull: "null", alerts: "null"),
+            MobileHubFixture.phoneB
+        ))
+        let phones = try await hub.phones()
+        XCTAssertEqual(phones[0].paying, false)
+        XCTAssertEqual(phones[0].undelivered, 2)
+        XCTAssertEqual(phones[0].mailboxFull, true)
+        XCTAssertEqual(phones[0].alerts, "accepted")
+        for phone in phones.dropFirst() {
+            XCTAssertNil(phone.paying, phone.name)
+            XCTAssertNil(phone.undelivered, phone.name)
+            XCTAssertNil(phone.mailboxFull, phone.name)
+            XCTAssertNil(phone.alerts, phone.name)
+        }
+    }
+
+    func testFreePhoneOnRelayLine() async {
+        let model = await loaded(connected, relayPhone("AAAA0001", "Phone A", paying: "false"),
+                                 relayPhone("BBBB0002", "Phone B", paying: "true"),
+                                 relayPhone("CCCC0003", "Phone C", paying: "null"))
+        let lines = rows(model).map(\.updatesLine)
+        XCTAssertEqual(lines[0], Model.HubLine(
+            text: "Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, "
+                + "or subscribe on Phone A.",
+            tone: .warning
+        ))
+        XCTAssertNil(lines[1], "a paying phone")
+        XCTAssertNil(lines[2], "null is unknown, never free")
+
+        // On CloudKit the hub does not run over Relay: no line.
+        let onCloud = await loaded(MobileHubFixture.running, relayPhone("AAAA0001", "Phone A", paying: "false"))
+        XCTAssertNil(rows(onCloud).first?.updatesLine)
+    }
+
+    func testUndeliveredSingularPlural() async {
+        XCTAssertEqual(Model.undeliveredLine(1)?.text, "On this Mac's side, 1 action from this phone is not applied yet.")
+        XCTAssertEqual(Model.undeliveredLine(3)?.text, "On this Mac's side, 3 actions from this phone are not applied yet.")
+        XCTAssertNil(Model.undeliveredLine(0))
+        let model = await loaded(connected, relayPhone("AAAA0001", "Phone A", undelivered: "1"),
+                                 relayPhone("BBBB0002", "Phone B", undelivered: "3"),
+                                 relayPhone("CCCC0003", "Phone C", undelivered: "0"),
+                                 relayPhone("DDDD0004", "Phone D", undelivered: "null"))
+        XCTAssertEqual(rows(model).map { $0.undeliveredLine?.text }, [
+            "On this Mac's side, 1 action from this phone is not applied yet.",
+            "On this Mac's side, 3 actions from this phone are not applied yet.",
+            nil, nil
+        ])
+        XCTAssertEqual(rows(model)[0].undeliveredLine?.tone, .warning)
+    }
+
+    /// It is what this Mac's side knows, never the phone's own queue.
+    func testUndeliveredLineSaysThisMacsSide() {
+        for count in [1, 2, 3, 40] {
+            let line = Model.undeliveredLine(count)?.text ?? ""
+            XCTAssertTrue(line.hasPrefix("On this Mac's side, "), line)
+            XCTAssertTrue(line.hasSuffix(" not applied yet."), line)
+            XCTAssertFalse(line.contains("delivered"), line)
+            XCTAssertFalse(line.contains("Retry"), line)
+        }
+    }
+
+    func testAcceptedReadsSentToRelay() async {
+        let model = await loaded(connected, relayPhone("AAAA0001", "Phone A", alerts: #""accepted""#))
+        XCTAssertEqual(rows(model).first?.alertsLine, Model.HubLine(text: "Last alert: sent to relay", tone: .neutral))
+    }
+
+    func testNoTokenLine() async {
+        let model = await loaded(connected, relayPhone("AAAA0001", "Phone A", alerts: #""no_token""#),
+                                 relayPhone("BBBB0002", "Phone B", alerts: #""""#),
+                                 relayPhone("CCCC0003", "Phone C", alerts: #""failed""#),
+                                 relayPhone("DDDD0004", "Phone D", alerts: "null"))
+        XCTAssertEqual(rows(model).map(\.alertsLine), [
+            Model.HubLine(text: "Notifications aren't set up on this iPhone. Open Watchtower on it once.", tone: .warning),
+            nil, nil, nil
+        ])
+    }
+
+    func testRelayUnavailableMinutes() async {
+        let model = await loaded(MobileHubFixture.relayStatus(state: "unavailable", since: rfc(t0.addingTimeInterval(-150))))
+        XCTAssertEqual(model.relayConnection, Model.HubLine(
+            text: "Relay unavailable for 2 min. Phones keep their changes and send them when it is back.", tone: .warning
+        ))
+        XCTAssertEqual(Model.relayUnavailableLine(since: t0, now: t0),
+                       "Relay unavailable for 1 min. Phones keep their changes and send them when it is back.")
+    }
+
+    func testRelayConnectingLine() async {
+        let model = await loaded(MobileHubFixture.relayStatus(state: "connecting", since: rfc(t0.addingTimeInterval(-30))))
+        XCTAssertEqual(model.relayConnection, Model.HubLine(text: "Connecting to Relay…", tone: .neutral))
+        let fresh = await loaded(connected)
+        XCTAssertEqual(fresh.relayConnection, Model.HubLine(text: "Connected · last change delivered 2 min ago", tone: .neutral))
+        XCTAssertEqual(Model.relayConnectedLine(lastSavedAt: nil, now: t0), "Connected")
+        XCTAssertEqual(Model.relayConnectedLine(lastSavedAt: t0.addingTimeInterval(-30), now: t0),
+                       "Connected · last change delivered under a minute ago")
+        XCTAssertEqual(Model.ageText(5 * 60 + 10), "5 min")
+        XCTAssertEqual(Model.ageText(59 * 60), "59 min")
+        XCTAssertEqual(Model.ageText(3 * 3600), "3 h")
+        XCTAssertEqual(Model.ageText(2 * 86_400), "2 d")
+        XCTAssertNil(Model.relayConnection(.init(state: "something_newer", since: t0), now: t0))
+        let off = await loaded(#"{"state":"off","reason":"disabled","relay":{"state":"connected","since":"\#(rfc(t0))"}}"#)
+        XCTAssertNil(off.relayConnection, "the hub block is gone while Mobile is off")
+    }
+
+    func testQuotaLines() async {
+        let model = await loaded(
+            MobileHubFixture.relayStatus(state: "connected", since: rfc(t0), quotaHub: true),
+            relayPhone("AAAA0001", "Phone A", mailboxFull: "true")
+        )
+        XCTAssertEqual(model.hubQuotaLine, Model.HubLine(
+            text: "This Mac's Relay storage is full (5 GB). New changes are not sent until older recordings are removed.",
+            tone: .error
+        ))
+        XCTAssertEqual(rows(model).first?.mailboxLine, Model.HubLine(text: "Phone A's Relay mailbox is full.", tone: .error))
+        let cleared = await loaded(connected, relayPhone("AAAA0001", "Phone A", mailboxFull: "null"))
+        XCTAssertNil(cleared.hubQuotaLine)
+        XCTAssertNil(rows(cleared).first?.mailboxLine)
+    }
+
+    func testPushOffLineFollowsRelayHealth() async {
+        let model = await loaded(MobileHubFixture.relayStatus(state: "connected", since: rfc(t0), pushOff: true))
+        XCTAssertEqual(model.relayPushLine, Model.HubLine(text: "Relay has no notifications configured.", tone: .warning))
+        cli.status(connected)
+        await model.load()
+        XCTAssertNil(model.relayPushLine)
+        cli.status(MobileHubFixture.running)
+        await model.load()
+        XCTAssertNil(model.relayConnection, "no relay block: no Relay lines")
+        XCTAssertNil(model.relayPushLine)
+        XCTAssertNil(model.hubQuotaLine)
+        XCTAssertEqual(model.relayLines, [], "no Relay row")
+    }
+
+    /// An empty or unreadable `since` drops the connection line only: the
+    /// status still reads, the other Relay lines and the phones still show.
+    func testUnreadableSinceDropsOnlyTheConnectionLine() async {
+        for since in ["", "not a time"] {
+            let model = await loaded(
+                MobileHubFixture.relayStatus(state: "unavailable", since: since, quotaHub: true, pushOff: true),
+                relayPhone("AAAA0001", "Phone A", mailboxFull: "true")
+            )
+            XCTAssertNil(model.relayConnection, since)
+            XCTAssertEqual(model.relayLines.map(\.text), [Model.relayPushOff, Model.hubQuotaFull], since)
+            XCTAssertEqual(rows(model).first?.indicatorLines.map(\.text), ["Phone A's Relay mailbox is full."], since)
+        }
+        // A missing key reads the same.
+        let missing = await loaded(#"{"state":"running","transport":"relay","relay":{"state":"connected"}}"#)
+        XCTAssertNil(missing.relayConnection)
+        XCTAssertEqual(missing.relayLines, [])
+    }
+
+    /// The lines the view shows, in order, with no unknown ones.
+    func testLinesInRowOrder() async {
+        let model = await loaded(
+            MobileHubFixture.relayStatus(state: "connecting", since: rfc(t0), quotaHub: true, pushOff: true),
+            relayPhone("AAAA0001", "Phone A", paying: "false", undelivered: "3", mailboxFull: "true", alerts: #""accepted""#),
+            relayPhone("BBBB0002", "Phone B", undelivered: "null", mailboxFull: "null", alerts: "null")
+        )
+        XCTAssertEqual(model.relayLines.map(\.text), [Model.relayConnecting, Model.relayPushOff, Model.hubQuotaFull])
+        XCTAssertEqual(rows(model).map { $0.indicatorLines.map(\.text) }, [
+            ["Phone A's Relay mailbox is full.", Model.updatesLine(name: "Phone A").text, Model.undeliveredLine(3)?.text ?? ""],
+            []
+        ])
+    }
+
+    func testMailboxLineNamesEachAffectedPhone() async {
+        let model = await loaded(connected, relayPhone("AAAA0001", "Phone A", mailboxFull: "true"),
+                                 relayPhone("BBBB0002", "Phone B", mailboxFull: "false"),
+                                 relayPhone("CCCC0003", "Phone C", mailboxFull: "true"))
+        XCTAssertEqual(rows(model).map { $0.mailboxLine?.text }, [
+            "Phone A's Relay mailbox is full.", nil, "Phone C's Relay mailbox is full."
+        ])
+    }
+
+    func testNoAlertsLineForAPhoneWithoutSubscription() async {
+        let model = await loaded(connected, relayPhone("AAAA0001", "Phone A", paying: "false", alerts: #""accepted""#),
+                                 relayPhone("BBBB0002", "Phone B", paying: "false", alerts: #""no_token""#),
+                                 relayPhone("CCCC0003", "Phone C", paying: "null", alerts: #""accepted""#))
+        XCTAssertEqual(rows(model).map(\.alertsLine), [nil, nil, Model.HubLine(text: Model.alertAcceptedLine, tone: .neutral)])
+    }
+
+    /// The full product of the independent fields: each line keeps its own
+    /// exact text whatever else is set beside it.
+    func testEveryCoOccurringCombinationShowsEachLine() async {
+        let since = t0.addingTimeInterval(-150)
+        let saved = t0.addingTimeInterval(-120)
+        let connections: [(String, Model.HubLine)] = [
+            ("connected", .init(text: "Connected · last change delivered 2 min ago", tone: .neutral)),
+            ("connecting", .init(text: "Connecting to Relay…", tone: .neutral)),
+            ("unavailable", .init(text: "Relay unavailable for 2 min. Phones keep their changes and send them when it is back.",
+                                  tone: .warning))
+        ]
+        let pushOff = Model.HubLine(text: "Relay has no notifications configured.", tone: .warning)
+        let quota = Model.HubLine(
+            text: "This Mac's Relay storage is full (5 GB). New changes are not sent until older recordings are removed.", tone: .error
+        )
+        let updates = Model.HubLine(
+            text: "Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, "
+                + "or subscribe on Phone A.", tone: .warning
+        )
+        let undelivered: [Int?: String] = [
+            1: "On this Mac's side, 1 action from this phone is not applied yet.",
+            3: "On this Mac's side, 3 actions from this phone are not applied yet."
+        ]
+        let alerts: [String?: Model.HubLine] = [
+            "no_token": .init(text: "Notifications aren't set up on this iPhone. Open Watchtower on it once.", tone: .warning),
+            "accepted": .init(text: "Last alert: sent to relay", tone: .neutral)
+        ]
+        // Null (not known) cases sit beside the values: each gives no line.
+        let payings: [Bool?] = [true, false, nil] // swiftlint:disable:this discouraged_optional_boolean
+        let counts: [Int?] = [0, 1, 3, nil]
+        let mailboxes: [Bool?] = [true, false, nil] // swiftlint:disable:this discouraged_optional_boolean
+        let outcomes: [String?] = ["", "no_token", "accepted", nil]
+        var shown = 0
+        for (state, connection) in connections {
+            for off in [false, true] {
+                for full in [false, true] {
+                    let relay = MobileHubCLI.RelayHealth(state: state, since: since, quotaHub: full, pushOff: off, lastSavedAt: saved)
+                    let status = MobileHubCLI.Status(state: "running", transport: "relay", name: "Work Mac", relay: relay)
+                    var phones: [MobileHubCLI.Phone] = []
+                    for paying in payings {
+                        for count in counts {
+                            for mailbox in mailboxes {
+                                for outcome in outcomes {
+                                    phones.append(MobileHubCLI.Phone(
+                                        deviceID: "P\(phones.count)", name: "Phone A", scope: "shared", linkedAt: t0,
+                                        typingAllowed: false, typingRequested: false, permissionsAllowed: false,
+                                        permissionsRequested: false, startSessionsAllowed: false, startSessionsGranted: false,
+                                        transport: "relay", paying: paying, undelivered: count, mailboxFull: mailbox, alerts: outcome
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                    let model = makeModel(now: t0)
+                    model.present(status: status, phones: phones, jobs: nil)
+                    let what = "\(state) pushOff=\(off) quota=\(full)"
+                    XCTAssertEqual(model.relayConnection, connection, what)
+                    XCTAssertEqual(model.relayPushLine, off ? pushOff : nil, what)
+                    XCTAssertEqual(model.hubQuotaLine, full ? quota : nil, what)
+                    let phoneRows = rows(model)
+                    XCTAssertEqual(phoneRows.count, phones.count)
+                    for (row, phone) in zip(phoneRows, phones) {
+                        let free = phone.paying == false
+                        let rowWhat = "\(what) paying=\(String(describing: phone.paying)) undelivered=\(String(describing: phone.undelivered)) "
+                            + "mailbox=\(String(describing: phone.mailboxFull)) alerts=\(String(describing: phone.alerts))"
+                        XCTAssertEqual(row.updatesLine, free ? updates : nil, rowWhat)
+                        XCTAssertEqual(row.undeliveredLine?.text, undelivered[phone.undelivered], rowWhat)
+                        XCTAssertEqual(row.mailboxLine?.text, phone.mailboxFull == true ? "Phone A's Relay mailbox is full." : nil, rowWhat)
+                        XCTAssertEqual(row.alertsLine, free ? nil : alerts[phone.alerts], rowWhat)
+                        if free { XCTAssertNil(row.alertsLine, "never a Last alert line for a free phone: \(rowWhat)") }
+                        shown += [row.updatesLine, row.undeliveredLine, row.mailboxLine, row.alertsLine].compactMap { $0 }.count
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(shown, 0)
+    }
+
+    /// The hub rewrote its status (a watch `status` event, `HubCenter.statusEvents`):
+    /// the tab reads again and the lines follow, though state and reason stay.
+    func testWatchStatusEventRefreshesLines() async {
+        let model = await loaded(MobileHubFixture.relayStatus(state: "connecting", since: rfc(t0)),
+                                 relayPhone("AAAA0001", "Phone A"))
+        XCTAssertEqual(model.relayConnection?.text, Model.relayConnecting)
+        XCTAssertNil(rows(model).first?.mailboxLine)
+        cli.status(MobileHubFixture.relayStatus(state: "connected", since: rfc(t0), pushOff: true, lastSavedAt: rfc(t0)))
+        cli.phones(MobileHubFixture.list(relayPhone("AAAA0001", "Phone A", undelivered: "1", mailboxFull: "true")))
+        await model.load() // what MobileSettingsTab runs on `statusEvents`
+        XCTAssertEqual(model.relayConnection?.text, "Connected · last change delivered under a minute ago")
+        XCTAssertEqual(model.relayPushLine?.text, Model.relayPushOff)
+        XCTAssertEqual(rows(model).first?.mailboxLine?.text, "Phone A's Relay mailbox is full.")
+        XCTAssertEqual(rows(model).first?.undeliveredLine?.text, Model.undeliveredLine(1)?.text)
+    }
+
     // MARK: - Source guards
 
     func testEveryUIStringLivesInTheModel() throws {
@@ -750,6 +1082,7 @@ final class MobileSettingsModelTests: XCTestCase {
     func testNeverOpensTheSidecar() throws {
         for file in [
             "Sources/ViewModels/MobileSettingsModel.swift", "Sources/ViewModels/MobileSettingsModel+Copy.swift",
+            "Sources/ViewModels/MobileSettingsModel+Indicators.swift",
             "Sources/ViewModels/MobileHubCLI.swift", "Sources/ViewModels/MobilePairingModel.swift",
             "Sources/Views/Settings/MobileSettingsView.swift", "Sources/Views/Settings/MobileLinkSheet.swift",
             "Sources/App/AppState+MobileSettings.swift"

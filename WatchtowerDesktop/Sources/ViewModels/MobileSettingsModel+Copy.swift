@@ -104,9 +104,9 @@ extension MobileSettingsModel {
 
     /// A line's weight: neutral (secondary), warning or error (red, as
     /// today's "Mobile couldn't start").
-    enum LineTone: Equatable { case neutral, warning, error }
+    enum LineTone: Hashable { case neutral, warning, error }
 
-    struct HubLine: Equatable {
+    struct HubLine: Hashable {
         let text: String
         let tone: LineTone
     }
