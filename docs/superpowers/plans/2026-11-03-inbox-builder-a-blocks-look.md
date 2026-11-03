@@ -2,7 +2,7 @@
 
 **Spec:** [2026-11-03-inbox-builder-a-blocks-look-design.md](../specs/2026-11-03-inbox-builder-a-blocks-look-design.md)
 **Umbrella:** [2026-11-02-inbox-builder-design.md](../specs/2026-11-02-inbox-builder-design.md) (board #1400).
-**Status:** for owner review together with the spec. The spec's Q1 and Q2 are answered in ask #445: the owner preview CLI and Dry run button are in (Tasks 6, 11, 12), and the `target` action kind is in (Tasks 2, 14, 15), visible as an approval card only once STRIP-01 is narrowed by B (pending owner ask #451). If #451 is refused, Tasks 14–15 do not run, and Task 2's grammar refuses `target` with "target actions are not available yet".
+**Status:** for owner review together with the spec. The spec's Q1 and Q2 are answered in ask #445: the owner preview CLI and Dry run button are in (Tasks 6, 11, 12), and the `target` action kind is in (Tasks 2, 14, 15), visible as an approval card through B's narrowed STRIP-01, approved in ask #451. The AGENT-05 note (idempotent `create_target` Execute) rides on spec review ask #456.
 
 ## Execution rules
 
@@ -193,11 +193,11 @@ Checks: `make kit-test FILTER=ArtifactBlocksTests`, `make test-swift FILTER=Arti
 
 ## Task 14 — `create_target` from an Inbox button: inbox surface and `parent_id`
 
-**Depends on:** Task 2; ask #451 (STRIP-01 narrowed by B). **Lane:** Go. Not started while #451 is open; dropped if it is refused.
+**Depends on:** Task 2. **Lane:** Go. (Ask #451 approved: STRIP-01 narrowed by B; the AGENT-05 note rides on ask #456.)
 
 Files: `internal/tools/targets.go` (+ test), `internal/tools/registry.go` (`Tool.ValidateBinding`, called by `Propose` after `Validate`), `cmd/actions_registry.go` and its pin test, `cmd/actions_propose_test.go`; `docs/inventory/automations.md` (AUTO-02), `docs/inventory/agent-actions.md` and `docs/inventory/targets.md` (Changelog lines, TGT-BRIEF-01's surface sentence).
 
-Interfaces: `createTargetArgs.ParentID int64` (JSON `parent_id`, omitempty); `create_target.Surfaces` += `tools.InboxSurface`; `Tool.ValidateBinding func(b Binding, raw json.RawMessage) error` — `create_target` refuses `parent_id` unless `b.Surface == InboxSurface`; parent checks (exists, `project_id IS NULL`, not `done`/`dismissed`) in `Validate` and again in `Execute`; `Execute` idempotent per action id — a target with `source_type='chat'` and `source_id='action:<id>'` is returned as the result and nothing is inserted (AGENT-05 note, folded into the owner ask with #451; `docs/inventory/agent-actions.md` AGENT-05 guard list and Changelog); the child takes the parent's `level`, `period_start`, `period_end` and `parent_id`.
+Interfaces: `createTargetArgs.ParentID int64` (JSON `parent_id`, omitempty); `create_target.Surfaces` += `tools.InboxSurface`; `Tool.ValidateBinding func(b Binding, raw json.RawMessage) error` — `create_target` refuses `parent_id` unless `b.Surface == InboxSurface`; parent checks (exists, `project_id IS NULL`, not `done`/`dismissed`) in `Validate` and again in `Execute`; `Execute` idempotent per action id — a target with `source_type='chat'` and `source_id='action:<id>'` is returned as the result and nothing is inserted (AGENT-05 note, ask #456; `docs/inventory/agent-actions.md` AGENT-05 guard list and Changelog); the child takes the parent's `level`, `period_start`, `period_end` and `parent_id`.
 
 Tests: `TestCreateTarget_ParentIDOnlyOnInbox` (main, reaction, automation refused with the spec's message, no row); inbox with a valid parent → one pending row, `Execute` after Approve creates the child under it; parent missing / done / dismissed / on a workbench board refused at propose; parent closed between propose and apply → apply `failed`, no target (AGENT-05 claim still once); `TestAuto02_TargetButtonOnlyProposes` (`actions propose --tool create_target --surface inbox --context-type automation_output --context-id 7:2` without `--approve` → one pending row with that context, zero targets); under an agent marker refused (AGENT-07, existing guard extended to this tool); trust `execute` on `main` does not auto-execute an inbox proposal; `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` updated for the new surface (pin extended, no assertion relaxed); top-level `create_target` on `main` unchanged (existing tests green); `TestAgent05_CreateTargetReclaimDoesNotDuplicate` (applied once, forced back to `executing`, `actions apply --force` → `applied`, same target id, one target row; `executing` before any insert → one new target; existing AGENT-05 guards green).
 
@@ -205,7 +205,7 @@ Checks: `go test ./internal/tools`, `go test ./cmd -run 'TestActionsPropose|Test
 
 ## Task 15 — The target button on the Desktop
 
-**Depends on:** Tasks 10, 14; ask #451 (STRIP-01 narrowed by B). **Lane:** Swift. Not started while #451 is open; dropped if it is refused.
+**Depends on:** Tasks 10, 14, and B's STRIP-01 change landed (approved in ask #451). **Lane:** Swift.
 
 Files: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxCardAction.swift` (target kind: build `actions propose` args from the drawn action — `text`, `intent`, `parent_id`, `reason` naming the card and automation —, context `automation_output` / `<output id>:<index>:<action hash>`), new `WatchtowerCore/Services/Inbox/InboxTargetButtonState.swift` (pure: the newest proposal for `<output>:<index>:<action hash>` → `idle | waiting(actionID) | creating | stuck(actionID, status) | created(targetID) | failed(message)`, with `TargetButtonStuckAfter = 120 s` measured from `decided_at` and an `inFlight` input from the Inbox center's own approve/apply processes, mapping all six `agent_actions` statuses and `dismissed_at` as the spec's table), a query over `agent_actions` by context in `Database/Queries/` (the existing agent-action queries file), `Sources/Views/Inbox/InboxReadingPane.swift` (the state per target action through `ArtifactEnvironment`), `DesignKit/Artifacts/` (a target button's label, symbol and state rendering — states come in as values; DesignKit reads no database); tests `Tests/Core/InboxTargetButtonStateTests.swift`, `Tests/Core/InboxCardActionTests.swift` (or the existing action-strip tests), a shot `artifact-target-button-states` in `DesignShotCatalog`.
 
