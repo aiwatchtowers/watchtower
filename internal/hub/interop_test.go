@@ -679,6 +679,11 @@ func TestInterop_ActionsInOrderWithEchoes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	defer func() {
+		if t.Failed() {
+			dumpOrder(t, h, p, m)
+		}
+	}()
 	waitApplied(t, p, 2*stepWait, 1, 2, 3, 4, 5)
 	resends := 0
 	for _, c := range p.Controls {
