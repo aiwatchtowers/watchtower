@@ -440,6 +440,9 @@ actor KitFollower {
     private(set) var switchedBy: String?
     /// The last `transport_switch_rejected` read.
     private(set) var rejection: ControlPayload?
+    /// This phone's `transport_switch{relay}` waits for its answer (`FollowerState.relaySwitchRequested`, as the app's
+    /// upgrade at `.requested`).
+    private var relayRequested = false
 
     init(phone: ICloudPhone, canUseRelay: RelayUse) async throws {
         self.phone = phone
@@ -475,6 +478,7 @@ actor KitFollower {
 
     private func rejected(_ control: ControlPayload) {
         rejection = control
+        relayRequested = false
     }
 
     /// Outboxes made from now on stamp the real time plus `offset`.
@@ -510,6 +514,7 @@ actor KitFollower {
         let side = try secure(kind)
         let sealed = try await side.seal(try CloudRecordFactory.record(for: control, modifiedAt: Date()))
         _ = try await side.saveSealed([ConditionalSave(record: sealed, expect: .absent)])
+        if target == .relay { relayRequested = true }
     }
 
     /// One feed cycle on the route (and the other mailbox's controls, rule 12) every second until `done`.
@@ -629,7 +634,9 @@ actor KitFollower {
 
     private func decide(_ input: FollowerInput, keybox: Keybox?) async -> Bool {
         guard let epoch = try? phone.newestEpoch() else { return false }
-        let state = FollowerState(route: route, newestEpoch: epoch, canUseRelay: canUseRelay, leftTransport: left)
+        let state = FollowerState(
+            route: route, newestEpoch: epoch, canUseRelay: canUseRelay, leftTransport: left,
+            relaySwitchRequested: relayRequested)
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: Date())
         Self.trace("\(input) on route \(route.rawValue) epoch \(epoch): \(commands)")
         guard !commands.isEmpty else { return false }
@@ -656,6 +663,7 @@ actor KitFollower {
             case .mergeKeybox, .drainMailbox, .pollOtherMailbox: break
             }
         }
+        if move?.to == .relay || commands.contains(.requestAnswered) { relayRequested = false }
         if let move, move.to != route {
             try await moveRoute(to: move.to, resend: resend)
         }

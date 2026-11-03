@@ -388,6 +388,7 @@ final class RelayUpgrader {
 
     /// A `transport_switch_rejected` (read on iCloud by the feed, or on the relay by a pass): ends the waiting upgrade
     /// with its reason, or, for a first `unavailable`, schedules the one automatic new request after `retry_after_s`.
+    /// A reason this build does not know is read as `unavailable`.
     /// true once decided (one with no upgrade waiting for it is decided as nothing to do); false when the row could
     /// not be written (the feed hands it again).
     func rejected(_ control: ControlPayload) async -> Bool {
@@ -402,12 +403,17 @@ final class RelayUpgrader {
         switch control.reason {
         case RelayUpgrade.tooSoon: upgrade.refusal = .tooSoon(retryAt: now().addingTimeInterval(after))
         case RelayUpgrade.notPaying: upgrade.refusal = .notPaying
-        case RelayUpgrade.unavailable where upgrade.askedAgain: upgrade.refusal = .unavailable
-        case RelayUpgrade.unavailable: upgrade.retryAt = now().addingTimeInterval(after)
         case RelayUpgrade.notSupported: upgrade.refusal = .notSupported
         default:
-            Self.logger.notice("transport_switch_rejected with a reason this build does not know: still waiting")
-            return true
+            // `unavailable`, and a reason this build does not know read as one (never left waiting at `.requested`).
+            if control.reason != RelayUpgrade.unavailable {
+                Self.logger.notice("transport_switch_rejected with a reason this build does not know: read as unavailable")
+            }
+            if upgrade.askedAgain {
+                upgrade.refusal = .unavailable
+            } else {
+                upgrade.retryAt = now().addingTimeInterval(after)
+            }
         }
         var next = link
         next.relayUpgrade = upgrade

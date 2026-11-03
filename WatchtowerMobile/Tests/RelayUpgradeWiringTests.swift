@@ -566,6 +566,28 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(after.count, 2, "only one automatic new request")
     }
 
+    func testAnUnknownReasonIsReadAsUnavailable() async throws {
+        let (bed, session) = try await requestedBed()
+
+        try await bed.writeRejection("reason_from_a_newer_hub", retryAfter: 60, on: .cloudKit)
+        await fetch(bed, session)
+        XCTAssertNil(try bed.row()?.link.relayUpgrade?.refusal)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.retryAt, bed.clock.now.addingTimeInterval(60),
+                       "one automatic new request, not left at .requested")
+
+        bed.clock.advance(60)
+        await bed.root.resumeRelayUpgrades()
+        let again = try await switchRequests(bed, session)
+        XCTAssertEqual(again.count, 2, "asked once more")
+
+        try await bed.writeRejection("reason_from_a_newer_hub", retryAfter: 60, on: .cloudKit)
+        await fetch(bed, session)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .unavailable)
+        XCTAssertEqual(
+            RelayUpgradeRefusal.unavailable.message(macName: "Work Mac", now: bed.clock.now),
+            "Work Mac couldn't switch right now. Try again in a minute.")
+    }
+
     func testNotSupportedEndsTheUpgrade() async throws {
         let (bed, session) = try await requestedBed()
 

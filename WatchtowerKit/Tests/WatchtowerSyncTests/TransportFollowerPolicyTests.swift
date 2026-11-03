@@ -77,6 +77,37 @@ final class TransportFollowerPolicyTests: XCTestCase {
             [.markHandled(controlID: "c-1")])
     }
 
+    func testASameEpochRelaySwitchAnswersAPendingRelayRequest() {
+        // The hub already runs on the relay in the phone's epoch (a lapse moved the phone back to iCloud without a new
+        // one): while the phone's relay request waits, that answer is the move, as for a newer epoch.
+        var start = state(route: .cloudKit, epoch: 4)
+        start.relaySwitchRequested = true
+        let (next, commands) = TransportFollowerPolicy.decide(switched(to: .relay, epoch: 4), state: start, now: base)
+        XCTAssertEqual(commands, [
+            .mergeKeybox,
+            .moveRoute(to: .relay, epoch: 4, by: "phone-a", at: base),
+            .resendUnechoedOnNewTransport,
+            .sendEpochAck(4),
+            .drainMailbox(on: .cloudKit),
+            .markHandled(controlID: "c-1")
+        ])
+        XCTAssertEqual(next.route, .relay)
+        XCTAssertEqual(next.newestEpoch, 4)
+        XCTAssertEqual(next.leftTransport, .cloudKit)
+        // Only a relay answer in that epoch moves: an older one, one naming iCloud or one with no request waiting does not.
+        for (input, pending) in [(switched(to: .relay, epoch: 3), true), (switched(to: .cloudKit, epoch: 4), true),
+                                 (switched(to: .relay, epoch: 4), false)] {
+            var other = start
+            other.relaySwitchRequested = pending
+            let decided = TransportFollowerPolicy.decide(input, state: other, now: base).commands
+            XCTAssertFalse(decided.contains(.mergeKeybox), "\(input), pending \(pending)")
+        }
+        // A paying check that has not answered decides nothing yet.
+        var unknown = start
+        unknown.canUseRelay = .unknown
+        XCTAssertEqual(TransportFollowerPolicy.decide(switched(to: .relay, epoch: 4), state: unknown, now: base).commands, [])
+    }
+
     func testSwitchToRelayOnAFreePhoneActsAsHubOnRelay() {
         let start = state(route: .cloudKit, epoch: 2, canUseRelay: .no)
         let (next, commands) = TransportFollowerPolicy.decide(switched(to: .relay, epoch: 3), state: start, now: base)

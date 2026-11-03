@@ -391,6 +391,10 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are
   kept for 7 days (decision 2). `hub_meta.transport` is `cloudkit|relay`.
+- **A phone's relay id from its `device` record** (relay client Phase 3b Task 23, R22). An iCloud-linked phone that
+  upgrades names its `relay_device_id` in its own `device` record with the `relay_auth` key's proof; the hub stores it
+  only when the proof holds and no other phone holds the id, then counts the phone as paying and a reader. See
+  [relay-client.md](relay-client.md), "Phase 3b".
 - **Desktop's watch events** (`desktop_watch`, besides `status`, `recording_queued`, `pair` and `switched`):
   `typing_request` (`device_id`, `name`: a linked phone newly asks to type, once per request; Desktop posts the
   PROJ-16 notice "Allow "<name>" to type into Claude Code sessions?" while the app is in the background),
