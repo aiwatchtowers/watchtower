@@ -164,8 +164,8 @@ func startDesktopHub(t *testing.T, opts interopOpts) *interopHub {
 // stubGroups starts the stand-in bridge processes, each its own process
 // group's leader, and kills whatever group is left.
 type stubGroups struct {
-	mu   sync.Mutex
-	pids []int
+	mu    sync.Mutex
+	procs []*os.Process
 }
 
 func (s *stubGroups) launch(context.Context) (*os.Process, error) {
@@ -175,18 +175,20 @@ func (s *stubGroups) launch(context.Context) (*os.Process, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.pids = append(s.pids, cmd.Process.Pid)
+	s.procs = append(s.procs, cmd.Process)
 	s.mu.Unlock()
 	return cmd.Process, nil
 }
 
-// kill SIGKILLs every group started; the Supervisor already waited for the
-// ones it stopped, so this only sweeps a group a failed test left.
+// kill SIGKILLs every group started and waits for its leader; the
+// Supervisor already reaped the ones it stopped (their Wait answers "already
+// waited", ignored), so this only sweeps a group a failed test left.
 func (s *stubGroups) kill() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, pid := range s.pids {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	for _, p := range s.procs {
+		_ = syscall.Kill(-p.Pid, syscall.SIGKILL)
+		_, _ = p.Wait()
 	}
 }
 
