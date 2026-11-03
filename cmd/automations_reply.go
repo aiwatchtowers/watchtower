@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
-	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 )
 
@@ -118,14 +117,14 @@ func loadReplyTarget(database *db.DB, outputID int64, index int, contentHash str
 	return o, a, nil
 }
 
-// flattenedCardActions is card o's press order (blocks.FlattenActions over
-// its stored document): the index `reply --action` names.
+// flattenedCardActions is card o's press order: the index `reply --action`
+// names, read as the press reads it (db.FlattenStoredInboxActions).
 func flattenedCardActions(o *db.AutomationOutput) ([]db.InboxAction, error) {
-	doc, err := blocks.Decode(o.BlocksJSON)
+	actions, err := db.FlattenStoredInboxActions(o.Actions, o.BlocksJSON)
 	if err != nil {
 		return nil, fmt.Errorf("inbox card %d: %w", o.ID, err)
 	}
-	return blocks.FlattenActions(o.Actions, doc), nil
+	return actions, nil
 }
 
 // requireInboxReply refuses a press when a's confirmed recipe does not hold
