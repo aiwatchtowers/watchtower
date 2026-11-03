@@ -1,5 +1,5 @@
 <h2>A-9. Today's Inbox — cards with blocks, before sub-project B</h2>
-<p class="subtitle">The reading pane draws blocks; a card without blocks keeps its markdown body; a card from a newer Watchtower, or one whose layout cannot be read, shows its plain text with one line saying why.</p>
+<p class="subtitle">The reading pane draws blocks; a card without blocks keeps its markdown body; a card from a newer Watchtower and a card whose layout cannot be read are two separate states; each shows its plain text with one line saying why.</p>
 
 <div class="mockup">
   <div class="mockup-header">Inbox · Automations</div>
@@ -26,12 +26,19 @@
           <h3 style="margin:4px 0 8px">New mail: 4 messages</h3>
           <p style="margin:0">Two invoices from <b>acme</b>, one meeting move, one newsletter.</p>
         </div>
-        <div class="label">Unsupported version / unreadable layout</div>
-        <div style="border:1px solid #8886; border-radius:8px; padding:10px">
-          <small style="color:#c80">This card needs a newer Watchtower.</small> <small>(or: This card's layout can't be read.)</small>
+        <div class="label">Unsupported version — <code>v</code> is newer than this app reads (state <code>.unsupported</code>, shot <code>artifact-inbox-unsupported</code>)</div>
+        <div style="border:1px solid #8886; border-radius:8px; padding:10px; margin-bottom:12px">
+          <small style="color:#c80">This card needs a newer Watchtower.</small>
           <p style="margin:6px 0 0; white-space:pre-line"><small>Release 4.2 — where we are
 - Sign off the checklist — Colleague A [2 days]
 - Pick the rollout window — Colleague B</small></p>
+        </div>
+        <div class="label">Unreadable layout — <code>blocks_json</code> is present but does not decode (state <code>.unreadable</code>, shot <code>artifact-inbox-unreadable</code>); never shown as "no blocks"</div>
+        <div style="border:1px solid #8886; border-radius:8px; padding:10px">
+          <small style="color:#c80">This card's layout can't be read.</small>
+          <p style="margin:6px 0 0; white-space:pre-line"><small>Weekly acme report
+- 12 open issues, 3 blocked
+- Freeze on Thursday</small></p>
         </div>
       </div>
     </div>

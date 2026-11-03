@@ -16,7 +16,7 @@
 | Look step — no Inbox output / dry run made no card | [`a-08-look-no-card.html`](../../design/mockups/inbox-builder/a-08-look-no-card.html) |
 | Look step — dry run stopped at a Quick Connection | [`a-10-look-stopped.html`](../../design/mockups/inbox-builder/a-10-look-stopped.html) |
 | Target button — idle, waiting for approval, creating, stuck (Try again), task created, failed, propose error | [`a-11-target-button.html`](../../design/mockups/inbox-builder/a-11-target-button.html) |
-| Inbox card — living, markdown fallback, unsupported version | [`a-09-inbox-card.html`](../../design/mockups/inbox-builder/a-09-inbox-card.html) |
+| Inbox card — living, markdown fallback, unsupported version, unreadable layout | [`a-09-inbox-card.html`](../../design/mockups/inbox-builder/a-09-inbox-card.html) |
 
 ## Intent
 
