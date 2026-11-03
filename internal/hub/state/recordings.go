@@ -91,9 +91,10 @@ type RecordingJob struct {
 	ErrorClass   string
 	Phase        string // "" until Desktop reported one
 	Percent      *int   // only while transcribing
-	CreatedAt    time.Time
-	ClaimedAt    time.Time
-	FinishedAt   time.Time
+	RecordingOrigin
+	CreatedAt  time.Time
+	ClaimedAt  time.Time
+	FinishedAt time.Time
 }
 
 func realMeta(t time.Time) string { return strconv.FormatFloat(toReal(t), 'f', 3, 64) }
@@ -289,12 +290,42 @@ func (s *Store) HasRecording(uploadID string) (bool, error) {
 	return n > 0, nil
 }
 
+// RecordingOrigin is where a phone recording came from: the calendar event
+// it was recorded for (an opaque calendar id, "" for a voice note) and when
+// it started (zero when the phone did not say). Ids and a time only: the
+// phone's title is content and is never stored; Desktop derives it from the
+// Mac's calendar.
+type RecordingOrigin struct {
+	EventID   string
+	StartedAt time.Time
+}
+
+// recordingEventIDRE is the shape of a stored event id: a calendar id's charset
+// (no spaces, so no free text) and at most 256 bytes; anything else is not an
+// id and is dropped.
+var recordingEventIDRE = regexp.MustCompile(`^[A-Za-z0-9_.:@-]{1,256}$`)
+
+// MaxRecordingEventID caps a stored event id.
+const MaxRecordingEventID = 256
+
 // QueueRecording adds a queued job; a second call for the same upload keeps
 // the first row.
 func (s *Store) QueueRecording(uploadID, deviceID string, now time.Time) error {
+	return s.QueueRecordingFrom(uploadID, deviceID, RecordingOrigin{}, now)
+}
+
+// QueueRecordingFrom is QueueRecording with the recording's origin.
+func (s *Store) QueueRecordingFrom(uploadID, deviceID string, o RecordingOrigin, now time.Time) error {
+	var event, started any
+	if recordingEventIDRE.MatchString(o.EventID) {
+		event = o.EventID
+	}
+	if !o.StartedAt.IsZero() {
+		started = toReal(o.StartedAt)
+	}
 	return s.write(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, created_at)
-			VALUES (?, ?, 'queued', ?)`, uploadID, deviceKey(deviceID), toReal(now))
+		_, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, created_at, event_id, started_at)
+			VALUES (?, ?, 'queued', ?, ?, ?)`, uploadID, deviceKey(deviceID), toReal(now), event, started)
 		if err != nil {
 			return fmt.Errorf("queueing a recording: %w", err)
 		}
@@ -303,20 +334,29 @@ func (s *Store) QueueRecording(uploadID, deviceID string, now time.Time) error {
 }
 
 // ClaimRecording moves a queued job to claimed (Desktop took it). A claimed
-// job claims again unchanged (Desktop restarted); a finished one is
-// ErrJobState.
+// job claims again unchanged (Desktop restarted). A job Desktop itself
+// failed (a DesktopFailureClasses class) claims again with its class, finish
+// and phase cleared: Desktop retries it, or the owner retried the
+// transcription on the Mac (the Swift hub's job went back to queued the same
+// way). Every other finished job — done, hub_moved, an adopted Swift
+// failure — is terminal: ErrJobState (Plan 1b).
 func (s *Store) ClaimRecording(uploadID string, now time.Time) (RecordingJob, error) {
 	err := s.write(func(tx *sql.Tx) error {
 		job, err := recordingJobTx(tx, uploadID)
 		if err != nil {
 			return err
 		}
-		switch job.Status {
-		case RecordingClaimed:
+		switch {
+		case job.Status == RecordingClaimed:
 			return nil
-		case RecordingQueued:
+		case job.Status == RecordingQueued:
 			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ? WHERE upload_id = ?`,
 				toReal(now), uploadID)
+			return err
+		case job.Status == RecordingFailed && DesktopFailureClasses[job.ErrorClass]:
+			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ?, error_class = NULL,
+					finished_at = NULL, phase = NULL, percent = NULL
+				WHERE upload_id = ?`, toReal(now), uploadID)
 			return err
 		}
 		return ErrJobState
@@ -442,19 +482,25 @@ func recordingJobTx(tx *sql.Tx, uploadID string) (RecordingJob, error) {
 	return j, nil
 }
 
-const recordingJobColumns = `upload_id, device_id, status, transcript_id, error_class, phase, percent, created_at, claimed_at, finished_at`
+const recordingJobColumns = `upload_id, device_id, status, transcript_id, error_class, phase, percent, created_at, claimed_at, finished_at,
+	event_id, started_at`
 
 // scanRecordingJob reads one row of recordingJobColumns.
 func scanRecordingJob(r interface{ Scan(...any) error }) (RecordingJob, error) {
 	var (
-		j                 RecordingJob
-		tid, pct          sql.NullInt64
-		class, phase      sql.NullString
-		created           float64
-		claimed, finished sql.NullFloat64
+		j                          RecordingJob
+		tid, pct                   sql.NullInt64
+		class, phase, event        sql.NullString
+		created                    float64
+		claimed, finished, started sql.NullFloat64
 	)
-	if err := r.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &phase, &pct, &created, &claimed, &finished); err != nil {
+	if err := r.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &phase, &pct, &created, &claimed, &finished,
+		&event, &started); err != nil {
 		return RecordingJob{}, err
+	}
+	j.EventID = event.String
+	if started.Valid {
+		j.StartedAt = fromReal(started.Float64)
 	}
 	if tid.Valid {
 		j.TranscriptID = &tid.Int64
@@ -519,6 +565,27 @@ func (j RecordingJob) UpdatedAt() time.Time {
 // fails once, and the recording_job slice shows a fixed text for it.
 const ClassHubMoved = "hub_moved"
 
+// The classes Desktop finishes a phone recording with (Swift
+// PhoneRecordingQueue.FailureClass, a Go↔Swift dual path); the
+// recording_job slice shows a fixed sentence for each. The hub keeps the
+// job's audio (the only copy: the phone deleted its own on received) until
+// the 31-day prune.
+const (
+	ClassNoSpeech            = "no_speech"
+	ClassTranscriptionFailed = "transcription_failed"
+	ClassNotAudio            = "not_audio"
+	ClassUnreadable          = "unreadable"
+	ClassIngestFailed        = "ingest_failed"
+	ClassMissingAudio        = "missing_audio"
+)
+
+// DesktopFailureClasses are the classes above: only a job failed with one of
+// them claims again (ClaimRecording).
+var DesktopFailureClasses = map[string]bool{
+	ClassNoSpeech: true, ClassTranscriptionFailed: true, ClassNotAudio: true,
+	ClassUnreadable: true, ClassIngestFailed: true, ClassMissingAudio: true,
+}
+
 // RecordingJobKeptFor is how long a finished job (and its audio file) is
 // kept: the Swift hub's 31-day rule.
 const RecordingJobKeptFor = 31 * 24 * time.Hour
@@ -551,10 +618,11 @@ func ImportRecordingJobTx(tx *sql.Tx, j RecordingJob) (ok bool, err error) {
 }
 
 // PruneRecordingJobs deletes every finished job that ended at or before
-// olderThan (the Swift hub's 31-day rule: rows only). A hub_moved job's
-// audio, which adoption kept at <recordingsDir>/<upload_id>.m4a, goes with
-// it (a missing file is no error); every other job's audio is Desktop's and
-// is never touched here. The file goes first, so a crash between the two
+// olderThan (the Swift hub's 31-day rule: rows only). The audio the hub
+// kept at <recordingsDir>/<upload_id>.m4a goes with a hub_moved job
+// (adoption) and with a job Desktop failed (DesktopFailureClasses: Desktop
+// keeps the hub's copy on a failure); a missing file is no error. Every
+// other job's audio is Desktop's and is never touched here. The file goes first, so a crash between the two
 // leaves a row the next prune finishes. It returns the rows deleted.
 func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (int, error) {
 	jobs, err := s.finishedJobsBefore(olderThan)
@@ -564,7 +632,7 @@ func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (i
 	n := 0
 	for _, j := range jobs {
 		id := j.id
-		if j.class == ClassHubMoved && recordingsDir != "" && id != "" && filepath.Base(id) == id {
+		if (j.class == ClassHubMoved || DesktopFailureClasses[j.class]) && recordingsDir != "" && id != "" && filepath.Base(id) == id {
 			if err := os.Remove(filepath.Join(recordingsDir, id+".m4a")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return n, fmt.Errorf("removing a recording's audio: %w", err)
 			}

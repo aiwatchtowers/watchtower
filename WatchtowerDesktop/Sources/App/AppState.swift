@@ -375,8 +375,15 @@ final class AppState {
     /// The Go hub over its control socket (heartbeat, view inputs, status;
     /// go hub plan 3 Task 14); none under XCTest.
     private(set) var hubCenter: HubCenter?
+    /// The one-time restart of sessions from a v1 session host (go hub spec
+    /// §8 p. 4b): its notice above every tab and the other workspaces' wait
+    /// lines. Made once per app run by `startHostRestart`. The hub's adoption
+    /// awaits its `waitUntilSettled()` (go hub plan 3 order: migrate →
+    /// compact → restart step → adoption → daemon's hub).
+    private(set) var hostRestart: HostRestartStep?
     /// Builds the hub center for a workbench state (a seam for tests).
     @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
+    @ObservationIgnored private(set) var phoneRecordingQueue: PhoneRecordingQueue? // `replacePhoneRecordingQueue`
     /// Every line the app types into a workbench session's prompt — an
     /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
     /// one queue per session (PROJ-12).
@@ -1861,8 +1868,12 @@ final class AppState {
         ownerPresenceCenter?.start()
         ownerAwayCenter.start()
         chatQuestionEscalator?.start()
-        replaceHubCenter(cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        replaceHubCenter(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
+        }
         vm.startHostReattach()
+        startHostRestart() // after the reattach: it stops what the reattach adopted
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
         Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
@@ -1876,17 +1887,30 @@ final class AppState {
 
     /// The Go hub's center for a rebuilt workbench state, the previous one stopped.
     private func replaceHubCenter(
-        cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
+        dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel, agentStates: SessionAgentStateCenter
     ) {
         hubCenter?.stop()
         hubCenter = makeHubCenter(cliRunner)
+        phoneRecordingQueue = replacePhoneRecordingQueue(phoneRecordingQueue, hub: hubCenter, dbPool: dbPool, cliRunner: cliRunner)
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.start()
+    }
+
+    /// Makes the v1-host restart step once per app run (a setup re-run that
+    /// rebuilds the workbenches keeps it; it reads the current ones) and
+    /// runs its launch check after the reattach. None under XCTest: a test
+    /// builds its own step.
+    private func startHostRestart() {
+        guard hostRestart == nil, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        let step = HostRestartStep(center: terminalCenter) { [weak self] in self?.workbenchesViewModel }
+        hostRestart = step
+        Task { await step.runIfNeeded() }
     }
 
     /// The app quits: no more heartbeats, so the hub's view goes stale.
     func stopHubCenterForQuit() {
         hubCenter?.stop()
+        phoneRecordingQueue?.stop()
     }
 
     /// Agent analytics (#298): the previous center stopped, a new one built.

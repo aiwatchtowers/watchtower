@@ -120,6 +120,52 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 	}
 }
 
+// TestRecordingClaimAnswerCarriesTheAudioPath: Desktop never derives the
+// audio's place itself (it never reads the sidecar): the claim's answer
+// names the file, <recordings dir>/<upload id>.m4a; a finish names none,
+// nor does a hub with no recordings dir.
+func TestRecordingClaimAnswerCarriesTheAudioPath(t *testing.T) {
+	r := newViewRig(t)
+	st, s := r.s.st, r.s
+	s.o.RecordingsDir = filepath.Join(t.TempDir(), "recordings")
+	_ = st.QueueRecording("u1", "AAAAAAAA-0000-4000-8000-000000000001", time.Now())
+	a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u1"}, nil)
+	if !a.OK || a.Status != state.RecordingClaimed || a.AudioPath != filepath.Join(s.o.RecordingsDir, "u1.m4a") {
+		t.Errorf("claim = %+v", a)
+	}
+	tid := int64(3)
+	if a := s.handle(ControlRequest{Op: OpRecordingFinish, Upload: "u1", TranscriptID: &tid}, nil); !a.OK || a.AudioPath != "" {
+		t.Errorf("finish = %+v, want no audio path", a)
+	}
+	s.o.RecordingsDir = ""
+	_ = st.QueueRecording("u2", "AAAAAAAA-0000-4000-8000-000000000001", time.Now())
+	if a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u2"}, nil); !a.OK || a.AudioPath != "" ||
+		a.EventID != "" || a.StartedAt != nil {
+		t.Errorf("claim without a recordings dir or an origin = %+v", a)
+	}
+}
+
+// TestRecordingClaimAnswerCarriesTheOrigin: the claim names the calendar
+// event the phone recorded for and its start, so Desktop links the
+// transcript and derives the phone's title; never the title itself.
+func TestRecordingClaimAnswerCarriesTheOrigin(t *testing.T) {
+	r := newViewRig(t)
+	st, s := r.s.st, r.s
+	started := time.Unix(1_800_000_000, 0)
+	if err := st.QueueRecordingFrom("u1", "AAAAAAAA-0000-4000-8000-000000000001",
+		state.RecordingOrigin{EventID: "evt-1", StartedAt: started}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	a := s.handle(ControlRequest{Op: OpRecordingClaim, Upload: "u1"}, nil)
+	if !a.OK || a.EventID != "evt-1" || a.StartedAt == nil || !a.StartedAt.Equal(started) {
+		t.Errorf("claim = %+v", a)
+	}
+	line, _ := json.Marshal(a)
+	if !bytes.Contains(line, []byte(`"started_at":1800000000`)) {
+		t.Errorf("started_at goes as Unix seconds: %s", line)
+	}
+}
+
 // TestRecordingProgressOverTheSocket: recording_progress stores the phase of
 // a claimed job, answers it and republishes the recording_job slice; a bad
 // progress is a bad request and republishes nothing.

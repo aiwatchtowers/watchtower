@@ -6,6 +6,41 @@ import WatchtowerCore
 /// row, copying the phone's audio in, and the audio check that gates it.
 /// `ingestPhoneRecording` itself lives with the queue it enqueues into.
 extension MeetingRecorderCenter {
+    /// An observer of the job events beside `onJobPhase`/`onJobFinished`
+    /// (the Go hub's phone recording queue), removed by its token: a closure
+    /// chain would lose one when the Swift hub hands its closures back out
+    /// of order.
+    struct JobObserver {
+        let phase: (_ audioURL: URL, _ phase: ProcessingJob.Phase) -> Void
+        let finished: (_ audioURL: URL, _ transcriptID: Int64) -> Void
+    }
+
+    func addJobObserver(_ observer: JobObserver) -> UUID {
+        let token = UUID()
+        jobObservers[token] = observer
+        return token
+    }
+
+    func removeJobObserver(_ token: UUID) {
+        jobObservers[token] = nil
+    }
+
+    /// The recording an ingest reserved for a Go hub upload and has not saved
+    /// yet (its pending row), nil when none: a queue that crashed mid-ingest
+    /// finds it here instead of ingesting the upload twice. Throws when the
+    /// database cannot be read.
+    func phoneRecording(forUpload uploadID: String) throws -> URL? {
+        guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
+        return try store.recording(forUpload: uploadID).map { recordingsDirectory.appendingPathComponent($0) }
+    }
+
+    /// The saved transcript of the phone recording at `audioURL`, nil when
+    /// none was saved. Throws when the database cannot be read.
+    func savedPhoneTranscript(audioURL: URL) throws -> Int64? {
+        guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
+        return try store.savedTranscriptID(audioPath: audioURL.path)
+    }
+
     /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by inserting
     /// its `pending_transcripts` row EXCLUSIVELY (`PendingTranscriptStore.reserve`):
     /// when a concurrent reserver took the name first, the insert does
@@ -23,6 +58,7 @@ extension MeetingRecorderCenter {
         eventID: String?,
         title: String?,
         isPrivate: Bool,
+        uploadID: String? = nil,
         in directory: URL,
         store: PendingTranscriptStore,
         date: Date = Date()
@@ -34,7 +70,7 @@ extension MeetingRecorderCenter {
                 lost.contains($0) || isReserved($0, in: store)
             }
             if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title,
-                                       isPrivate: isPrivate, at: date) {
+                                       isPrivate: isPrivate, uploadID: uploadID, at: date) {
                 return audioURL
             }
             // Lost the race for this name; the next `uniqueRecordingURL` moves past it.
