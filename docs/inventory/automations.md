@@ -128,7 +128,7 @@ wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 
 **Test guards:**
 - `internal/automations/sdk_tool_write_test.go` — `TestAuto02_ToolWriteGoesThroughPropose` (P2: a `tool()` write is one pending `agent_actions` row on the `automation` surface with `context_type='automation_run'`; no target is created before an approval), `TestToolWait_AppliedRejectedFailed`
-- `internal/automations/sdk_output_card_test.go` — `TestOutput_TargetActionNeedsTargetOutput` (a card's target action is a `PermissionDenied` without `outputs: [target]`, nothing buffered)
+- `internal/automations/sdk_output_card_test.go` — `TestOutput_TargetActionNeedsTargetOutput` (a target action — on the card or in a list row of its blocks — is a `PermissionDenied` without `outputs: [target]`, nothing buffered)
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`, `TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable`, `TestWorkbenchAutomation_WritesAreProposals`
 - `internal/tools/registry_automation_test.go` — `TestAgent01_AutomationWriteRecordsProposalOnly`, `TestWorkbenchAutomation_ProposesInItsRunsWorkbench`, `TestWorkbenchAutomation_RowAppliesOnlyWhileItsWorkbenchLives`
 - `internal/tools/automation_reads_test.go` — `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestD23Tools_AutomationSurfaceOnly`
@@ -203,7 +203,11 @@ commit upserts living outputs by `(automation_id, output_key)` (migration
 dismissed and press state; a same-hash rewrite moves only `written_at`) and
 applies `output.remove` (`RunCommit.Removals`, delete by key, a missing key
 is a no-op); every other terminal status leaves living rows byte-identical
-too (Inbox builder A, ask #961).
+too (Inbox builder A, ask #961). The run's buffer keeps one operation per
+living key — the later of `output.inbox({key})` and `output.remove({key})`
+wins — so a commit never writes and removes one key, and the outputs cap
+counts each kept output once; a resumed run's replay rebuilds the same
+buffer.
 
 **Why locked:** A run that dies halfway must be safe to rerun; a half-written
 cursor in `state` would silently skip or repeat work.
@@ -213,6 +217,7 @@ cursor in `state` would silently skip or repeat work.
 - `internal/db/automation_outputs_living_test.go` — `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess` (Inbox builder A)
 - `internal/automations/executor_test.go` — `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed out, over budget, cancelled), `TestAuto04_SucceededCommitsStateAndOutputsAtomically`
 - `internal/automations/sdk_test.go` — `TestState_ReadsCommittedPlusOwnSets`, `TestState_RejectsUnserialisableValues`
+- `internal/automations/sdk_output_blocks_test.go` — `TestAuto04_LivingRunCommitsUpsertAndRemoval`, `TestOutput_RemoveLaterWins`, `TestOutput_OutputsCapCountsKeptOutputs`, `TestAuto08_ResumeRebuildsLivingBuffer` (Inbox builder A: the SDK buffer and the executor's commit of living outputs)
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_BriefingBufferedAndCommittedOnSuccess` (P2: `output.briefing` is buffered like `report` and committed only with `succeeded`)
 - `internal/automations/run_limits_test.go` — `TestAuto04_JournalErrorAfterSuccessStillCommits` (board #562)
 
@@ -605,7 +610,8 @@ change; P5: no `shell()` process, no session, no ask; ask #326: a draft calls
 no Quick Connection)
 
 **Observable:** A dry run makes no `agent_actions` row, no output, no state
-change, starts no session and runs no `shell()`: `output.*` and `state.set`
+change, starts no session and runs no `shell()`: `output.*` (`output.remove`
+included: it removes nothing) and `state.set`
 steps record `status='dry_run'` and nothing is committed; `llm` and read
 tools run for real and their tokens count on the run. The in-memory dry run (`DryRunInMemory`, P3's `draft_automation`)
 writes no row of any table, not even a run row, and does not execute
@@ -633,6 +639,7 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_P2KindsDryRun` (P2: `output.briefing`/`target`/`slack` in a dry run commit nothing and propose nothing)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
+- `internal/automations/sdk_output_blocks_test.go` — `TestOutput_RemoveDryRun`, `TestAuto12_LivingDryRunWritesNothing` (Inbox builder A: a dry-run `output.remove` journals `dry_run`; a living dry run with blocks commits no card and removes nothing)
 - P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_WritesNothing` (a draft whose script calls `output.*`, `state.set` and a write tool writes no row); `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_AgentIsNotRun`, `TestDryRunInMemory_MCPIsNotCalled` (ask #326: a draft's `mcp()` never reaches the caller and stops the draft cleanly), `TestDryRunInMemory_MCPOutsideManifestIsDenied` (the manifest check precedes the stop)
 - P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a saved recipe's dry run, QC-02 reads only, and never called in a draft); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
 - `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
@@ -694,6 +701,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-03 (Inbox builder A Task 5, board #1400, **owner approved in asks #961 and #445**): the SDK side of blocks and living artifacts. `output.inbox` takes `blocks` (exclusive with `body`; stored canonical, `body` = its plain text), `key` (required with `artifacts: living`, refused otherwise) and hook-registered fields (`folder` reserved for sub-project B); every inbox card carries `blocks.ContentHash` (an omitted priority hashes as `medium`). `output.remove({key})` (gated by `outputs: [inbox]` and `artifacts: living`) is buffered and committed only with the success (**AUTO-04**), journaled `dry_run` in a dry run (**AUTO-12**); the buffer keeps one operation per key, the later wins. A target action inside a block needs `outputs: [target]` like a card's (**AUTO-02**); the card's own actions count toward the 50-action cap. Strengthening, no guard relaxed. Guards added: `TestOutput_RemoveDryRun`, `TestAuto12_LivingDryRunWritesNothing`, `TestAuto04_LivingRunCommitsUpsertAndRemoval`, `TestOutput_RemoveLaterWins`, `TestOutput_OutputsCapCountsKeptOutputs`, `TestAuto08_ResumeRebuildsLivingBuffer`; `TestOutput_TargetActionNeedsTargetOutput` gains its list-row case.
 - 2026-11-03 (board #1400, Inbox builder A, **owner approved in ask #961**): **AUTO-04 extended** — the run's one finish transaction also upserts living Inbox outputs by `(automation_id, output_key)` and deletes the keys `output.remove` buffered (migration 00173: `blocks_json`, `output_key`, `content_hash`, `written_at`, `changed_at`, partial unique index `idx_automation_outputs_key`); only a changed content hash makes a card new again (moves `changed_at`, clears read/done/dismissed/press). A failed, timed-out, over-budget or cancelled run leaves living rows byte-identical, like every other output. Guards added: `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess`. No guard relaxed.
 - 2026-11-03 (board #1400, Inbox builder A Task 4, **owner approved in ask #961**): **AUTO-05 extended** — `artifacts: living` requires `concurrency: 1` and `outputs: [inbox]` (parse errors otherwise; one rule function, `serialRunReasons`). **AUTO-06 extended** — `artifacts` is in `approval_hash`, written to the canonical form only when `living`, so feed recipes hash as before (`TestApprovalHash_GoldenCanonicalBytes` unchanged); `ApprovalFields` and `validate --json` `fields` carry `artifacts` so the confirming screen lists it. Strengthening, no guard relaxed. Guards added: `TestAuto05_LivingArtifactsNeedConcurrencyOne`, `TestApprovalHash_ArtifactsIsHashed`, the `artifacts` case of `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.
 - 2026-11-03 (Inbox builder A Task 2, board #1400, **AUTO-02 amended, owner approved in ask #445**): an Inbox card's actions gain the `target` kind; the card action grammar moves into `internal/automations/blocks` (`blocks.ValidateAction`, shared with block actions); a target action needs `outputs: [target]`. The press path (`create_target` on the `inbox` surface) lands with Task 14. Strengthening, no guard relaxed. Guard added: `TestOutput_TargetActionNeedsTargetOutput`.

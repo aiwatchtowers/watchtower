@@ -232,9 +232,10 @@ func TestAuto08_ResumeRebuildsInboxCard(t *testing.T) {
 	}
 }
 
-// TestOutput_TargetActionNeedsTargetOutput (AUTO-02): a card's target
-// action is a PermissionDenied without outputs: [target], nothing buffered;
-// with it the card carries the action. (Block actions: plan Task 5.)
+// TestOutput_TargetActionNeedsTargetOutput (AUTO-02): a target action — on
+// the card or inside a list row of its blocks — is a PermissionDenied
+// without outputs: [target], nothing buffered; with it the card carries the
+// action.
 func TestOutput_TargetActionNeedsTargetOutput(t *testing.T) {
 	arg := `{title: "t", body: "b", actions: [{label: "Task", target: {title: "Follow up", parent: 4}}]}`
 	r := mustReturn(t, `try { output.inbox(`+arg+`); return "ok" } catch (e) { return e.name + "|" + e.message }`,
@@ -247,5 +248,16 @@ func TestOutput_TargetActionNeedsTargetOutput(t *testing.T) {
 	if len(a) != 1 || a[0].Kind != db.InboxActionTarget || a[0].Target == nil ||
 		*a[0].Target != (db.InboxTargetAction{Title: "Follow up", Parent: 4}) {
 		t.Fatalf("actions = %+v", a)
+	}
+
+	row := `{title: "t", blocks: [{type: "list", rows: [{title: "x", actions: [{label: "Task", target: {title: "Follow up"}}]}]}]}`
+	r = mustReturn(t, `try { output.inbox(`+row+`); return "ok" } catch (e) { return e.name + "|" + e.message }`,
+		sdkCase{outputs: []string{"inbox"}}, "PermissionDenied|permission denied: output.inbox(): a target action needs outputs: [target]")
+	if n := len(r.env.Buffer.Outputs()); n != 0 {
+		t.Fatalf("buffered %d outputs from a list-row target action; want none", n)
+	}
+	r = mustReturn(t, cardCall(row), sdkCase{outputs: []string{"inbox", "target"}}, "ok")
+	if doc := r.env.Buffer.Outputs()[0].BlocksJSON; !strings.Contains(doc, `"target":{"title":"Follow up"}`) {
+		t.Fatalf("BlocksJSON = %s; want the row's target action", doc)
 	}
 }

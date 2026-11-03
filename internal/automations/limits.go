@@ -40,6 +40,9 @@ const (
 	// MaxOutputTitleChars caps the title of one output.* call, in characters
 	// (Task 7 review decision; not in the spec's list — Task 13 docs).
 	MaxOutputTitleChars = 200
+	// MaxOutputKeyChars caps a living artifact's key (output.inbox and
+	// output.remove), in characters.
+	MaxOutputKeyChars = 200
 	// MaxLogBytes caps one log() call.
 	MaxLogBytes = 4 * 1024
 	// MaxLogCalls caps log() calls per run.
