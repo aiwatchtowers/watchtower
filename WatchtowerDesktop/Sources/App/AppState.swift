@@ -417,6 +417,14 @@ final class AppState {
     @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
     var hubAdoption: HubAdoptionDriver? // Mobile's hand-over to the Go hub (`startHubAdoption`)
     @ObservationIgnored var hubAdoptionDeps: HubAdoptionDeps? // the hand-over's runner and keys; nil: the live ones
+    /// The hub's Desktop events' AppKit side, seamed for tests: whether the
+    /// app is in front, the PROJ-16 typing notice, and the main window
+    /// brought forward (`bringWorkbenchForward`).
+    @ObservationIgnored var appIsActive: @MainActor () -> Bool = { NSApp?.isActive == true }
+    @ObservationIgnored var postTypingRequestNotice: @MainActor (_ deviceID: String, _ name: String) -> Void = {
+        NotificationService.shared.sendMobileTypingRequestNotification(deviceID: $0, name: $1)
+    }
+    @ObservationIgnored var frontMainWindow: @MainActor (AppState) -> Void = { $0.frontLiveMainWindow() }
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true

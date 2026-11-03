@@ -72,7 +72,7 @@ extension AppState {
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
         hubCenter?.onTypingRequest = { [weak self] in self?.hubTypingRequested(deviceID: $0, name: $1) }
         hubCenter?.onBringForward = { [weak self] workbench, session in
-            self?.bringWorkbenchForward(projectID: workbench, sessionID: session)
+            Task { await self?.bringWorkbenchForward(projectID: workbench, sessionID: session) }
         }
         hubCenter?.start()
         hubKeepAwake?.stop()

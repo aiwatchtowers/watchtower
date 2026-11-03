@@ -27,16 +27,23 @@ extension AppState {
     /// → Mobile shows the request, and while the app is in the background a
     /// macOS notice asks the owner. The hub sends one event per request.
     func hubTypingRequested(deviceID: String, name: String) {
-        guard NSApp?.isActive == false else { return }
-        NotificationService.shared.sendMobileTypingRequestNotification(deviceID: deviceID, name: name)
+        guard !appIsActive() else { return }
+        postTypingRequestNotice(deviceID, name)
     }
 
     /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
     /// the workbench's page on the main window, the app in front, and the
-    /// session the phone started shown there (Work on it's focus).
-    func bringWorkbenchForward(projectID: Int64, sessionID: Int64) {
+    /// session the phone started shown there as Work on it shows one, the
+    /// board kept (`showPhoneStartedSession`).
+    func bringWorkbenchForward(projectID: Int64, sessionID: Int64) async {
         selectedDestination = .workbench
         workbenchesViewModel?.drill(into: projectID)
+        frontMainWindow(self)
+        await workbenchesViewModel?.showPhoneStartedSession(sessionID, projectID: projectID)
+    }
+
+    /// The app in front with its main window shown (the live `frontMainWindow`).
+    func frontLiveMainWindow() {
         (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
         ActivationPolicyDecision.becomeRegularAndActivate()
         let shown = NSApp.windows.first { TrayAppDelegate.isMainWindow($0) && ($0.isVisible || $0.isMiniaturized) }
@@ -46,7 +53,6 @@ extension AppState {
         } else {
             openMainWindow?()
         }
-        Task { [weak vm = workbenchesViewModel] in await vm?.showAutomationSession(sessionID, projectID: projectID) }
     }
 
     /// Settings → Mobile's **Retry** after a failed hand-over.
