@@ -10,7 +10,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
@@ -28,6 +31,7 @@ import (
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
+	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy/policytest"
 )
@@ -91,10 +95,17 @@ func hubMeta(t *testing.T, dir, key string) string {
 // waits for its control socket.
 func startTestHub(t *testing.T, dir string) *memfake.Fake {
 	t.Helper()
-	policytest.Set(t, nil)
 	fake := memfake.New(transport.KindRelay, nil)
+	startTestHubOn(t, dir, fake)
+	return fake
+}
+
+// startTestHubOn is startTestHub over the transport tr.
+func startTestHubOn(t *testing.T, dir string, tr transport.Transport) {
+	t.Helper()
+	policytest.Set(t, nil)
 	o := hub.Options{Dir: dir}.WithTransport(func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
-		return fake, nil
+		return tr, nil
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -111,7 +122,6 @@ func startTestHub(t *testing.T, dir string) *memfake.Fake {
 		_, err := os.Stat(filepath.Join(dir, hub.SocketName))
 		return err == nil
 	})
-	return fake
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -156,7 +166,7 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings", "host", "mode",
 		"adoption", "bridge", "identity", "switched_at", "switched_by", "name", "cloudkit", "off_delete", "transcriber",
 		"paying_phones", "mailbox_full_phones"}, hubKeysOf(m))
-	assert.Equal(t, []any{}, m["paying_phones"])
+	assert.Nil(t, m["paying_phones"], "no hub runs: who pays is unknown")
 	assert.Equal(t, []any{}, m["mailbox_full_phones"])
 	od, ok := m["off_delete"].(map[string]any)
 	require.True(t, ok, "off_delete is an object")
@@ -524,16 +534,69 @@ func TestHubPhonesPayingMailboxAndAlerts(t *testing.T) {
 	require.NoError(t, st.Close())
 	assert.Equal(t, state.AlertNoToken, hubPhonesByID(t)[id]["alerts"])
 
-	startTestHub(t, dir)
+	assert.Nil(t, hubPhonesByID(t)[id]["paying"], "no hub runs: unknown")
+
+	fake := &accountFake{Fake: memfake.New(transport.KindRelay, nil)}
+	startTestHubOn(t, dir, fake)
 	waitHubState(t, dir, hub.StateRunning)
 	waitFor(t, "the mailbox flag in the status", func() bool {
 		s, err := hub.ReadStatus(dir)
 		return err == nil && len(s.MailboxFullPhones) == 1
 	})
 	p := hubPhonesByID(t)[id]
-	assert.Equal(t, false, p["paying"], "running on the relay: a bool, not null")
+	assert.Nil(t, p["paying"], "running on the relay with no account state known: unknown, not false")
 	assert.Equal(t, true, p["mailbox_full"])
 	assert.Equal(t, state.AlertNoToken, p["alerts"])
+
+	payingOf := func(paying bool) any {
+		t.Helper()
+		fake.set(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: devices[0].RelayDeviceID, Paying: paying}}})
+		waitFor(t, "the paying list in the status", func() bool {
+			s, err := hub.ReadStatus(dir)
+			return err == nil && s.PayingPhones != nil && slices.Contains(s.PayingPhones, dev) == paying
+		})
+		return hubPhonesByID(t)[id]["paying"]
+	}
+	assert.Equal(t, false, payingOf(false), "known, not paying")
+	assert.Equal(t, true, payingOf(true), "known, paying")
+}
+
+// TestHubPhonesListedWhenTheStatusIsUnreadable: a status file that does not
+// parse leaves the status-backed indicators null; the phones are listed and
+// the other indicators read.
+func TestHubPhonesListedWhenTheStatusIsUnreadable(t *testing.T) {
+	dir := hubTestDir(t)
+	id := linkTestPhone(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "status.json"), []byte("{not json"), 0o600))
+	p := hubPhonesByID(t)[id]
+	require.NotNil(t, p, "the phone is listed")
+	assert.Nil(t, p["mailbox_full"])
+	assert.Nil(t, p["paying"])
+	assert.Equal(t, float64(0), p["undelivered"])
+	assert.Equal(t, "", p["alerts"])
+}
+
+// accountFake is a memfake relay whose account state is known once set
+// (relay.Transport's KnownAccountState).
+type accountFake struct {
+	*memfake.Fake
+	mu   sync.Mutex
+	acct *relayv1.AccountState
+}
+
+func (f *accountFake) set(st *relayv1.AccountState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.acct = st
+}
+
+func (f *accountFake) KnownAccountState() (*relayv1.AccountState, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.acct == nil {
+		return &relayv1.AccountState{}, false
+	}
+	return proto.Clone(f.acct).(*relayv1.AccountState), true
 }
 
 func TestHubDiagnosticsJSONKeys(t *testing.T) {

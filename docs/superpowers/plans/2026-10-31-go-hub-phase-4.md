@@ -344,17 +344,18 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   ```go
   // hub.Status gains:
   Relay        *RelayHealth `json:"relay,omitempty"`        // absent when the hub has no relay origin
-  PayingPhones []string     `json:"paying_phones"`          // device ids; empty unless the active transport is the relay
+  PayingPhones []string     `json:"paying_phones"`          // device ids; empty unless the active transport is the relay; null = unknown (no hub runs, no account state read yet, or forgotten after HUB_NOT_VOUCHED) — never read as "nobody pays" (review round 1, #636)
   type RelayHealth struct {
       State string `json:"state"` // "connected" | "unavailable" (no connection for ≥ 60 s) | "connecting"
       Since string `json:"since"` // RFC 3339, when State began
       QuotaHub     bool `json:"quota_hub"`     // the hub's data zone refused a save as over quota; cleared by its next successful save
       PushOff      bool `json:"push_off"`      // the newest relay answer to send_alert, across phones, was push_off (rule in Global Constraints)
-      LastSavedAt string `json:"last_saved_at"` // RFC 3339 or ""
+      LastSavedAt string `json:"last_saved_at"` // RFC 3339 rounded down to the minute ("delivered <age> ago"), or "": the status changes at most once a minute from it
   }
   MailboxFullPhones []string `json:"mailbox_full_phones"` // hub.Status: device ids whose mailbox refused a write as over quota; one flag per phone, cleared only by a successful write to that phone's mailbox or by unlinking the phone; persisted in hub_meta key `mailbox_full_phones` (a JSON list of device ids, nothing else) and restored at hub start
-  // hub phones --json rows gain: "paying" (true|false|null — null unless the hub runs on the relay),
-  //   "undelivered" (int, this Mac's side), "mailbox_full" (bool, from the status file), "alerts" ("" | an outcome class of the last 7 days)
+  // hub phones --json rows gain: "paying" (true|false|null — null unless the hub runs on the relay and knows the account state),
+  //   "undelivered" (int, this Mac's side), "mailbox_full" (bool, from the status file), "alerts" ("" | an outcome class of the last 7 days);
+  //   each is null when the read behind it failed (a stderr warning; the phones are still listed)
   // hub diagnostics [--days N] --json → {"window_days":7,"rows":[{"step","transport","p50_ms","p90_ms","samples"}],"push_overflow_expired":N}
   //   reads the sidecar through state.OpenReadOnly (no hub needed); --days 1..7
   ```
@@ -381,7 +382,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   // MobileHubCLI.Phone gains: paying: Bool?; undelivered: Int; mailboxFull: Bool; alerts: String (the Task 7 keys)
   struct RelayHealth: Decodable, Equatable { let state: String; let since: Date; let quotaHub: Bool; let pushOff: Bool; let lastSavedAt: Date? }
   // MobileSettingsModel.PhoneRow gains:
-  let updatesLine: String?      // free phone on a relay hub: the pinned "Doesn't get updates…" text with the phone's name
+  let updatesLine: String?      // free phone on a relay hub: the pinned "Doesn't get updates…" text with the phone's name — only when `paying` is false, never when it is null (unknown)
   let undeliveredLine: String?  // N > 0: "On this Mac's side, N actions from this phone are not applied yet." (singular form for 1)
   let alertsLine: String?       // "no_token" → "Notifications aren't set up on this iPhone. Open Watchtower on it once."; "accepted" → "Last alert: sent to relay"
   // MobileSettingsModel gains:
@@ -495,6 +496,7 @@ No inventory contract changes: no `docs/inventory/` entry covers `ask_alert`, pu
 ## Known limits
 
 - The push-off line cannot appear before the first `send_alert` attempt: the relay offers no other way to learn its push configuration (case B above), and it disappears 7 days after the last answer with the ledger prune.
+- A save the relay refuses whole names every zone in its batch, so the mailbox flag would land on each phone in it; the hub's mailbox writes are single-item saves (`actions/control.go`), so in practice only the refused phone is flagged.
 - The local stand has no APNs: CI and local runs see only `push_off`. Real pushes are checked once, in Task 12.
 - A free phone linked to a Mac that runs over Relay gets no updates and no alerts until it subscribes or the Mac switches back (RC §8), as Desktop now says.
 - `accepted` is the relay's `Ok`, not a delivery: the relay keeps at most 4 alerts in flight per phone (`MAX_ALERTS_PER_PHONE`) and cancels the oldest beyond that, and APNs may still drop one; the hub cannot see either.

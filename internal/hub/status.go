@@ -116,7 +116,9 @@ type Status struct {
 	// the hub has no relay.
 	Relay *RelayHealth `json:"relay,omitempty"`
 	// PayingPhones is the linked phones (device ids) the relay lists as
-	// paying; empty unless the active transport is the relay.
+	// paying; empty unless the active transport is the relay, and null when
+	// it is not known (no hub runs, no account state read yet, or forgotten
+	// after HUB_NOT_VOUCHED): unknown is never "not paying".
 	PayingPhones []string `json:"paying_phones"`
 	// MailboxFullPhones is the linked phones (device ids) whose relay mailbox
 	// refused a write as over quota, each until a write to that phone's
@@ -141,12 +143,9 @@ type RelayHealth struct {
 	LastSavedAt string `json:"last_saved_at"`
 }
 
-// withLists gives s's lists their empty value, so they show as [] and
-// compare equal.
+// withLists gives s's mailbox list its empty value, so it shows as [] and
+// compares equal (PayingPhones keeps nil: unknown).
 func (s Status) withLists() Status {
-	if s.PayingPhones == nil {
-		s.PayingPhones = []string{}
-	}
 	if s.MailboxFullPhones == nil {
 		s.MailboxFullPhones = []string{}
 	}
@@ -179,7 +178,7 @@ func ReadStatus(dir string) (Status, error) {
 	f.Dir = dir
 	if f.State != StateOff && !processAlive(f.PID) {
 		// The runtime's live facts went with it.
-		f.State, f.Reason, f.Relay, f.PayingPhones = StateOff, "", nil, nil
+		f.State, f.Reason, f.Relay, f.PayingPhones, f.MailboxFullPhones = StateOff, "", nil, nil, nil
 	}
 	return f.withLists(), nil
 }

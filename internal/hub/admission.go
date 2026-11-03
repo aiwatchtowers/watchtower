@@ -66,13 +66,6 @@ func (r *accountReader) seed(st *relayv1.AccountState) {
 	r.at, r.last, r.lastErr = r.clock(), st, nil
 }
 
-// cached is the last answer the door read (nil: none yet), never a read.
-func (r *accountReader) cached() *relayv1.AccountState {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.last
-}
-
 // invalidate forgets the last answer after HUB_NOT_VOUCHED: the next read
 // goes to the relay (the window's limit holds again from that read), so a
 // pre-revoke state is never answered from the cache.

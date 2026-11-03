@@ -46,6 +46,12 @@ type connectedReporter interface {
 	Connected() bool
 }
 
+// accountKnower is the hosted relay's last account state and whether one is
+// known (*relay.Transport); a transport without it knows no paying phones.
+type accountKnower interface {
+	KnownAccountState() (*relayv1.AccountState, bool)
+}
+
 // relayHealth follows the relay's saves and connection for the status. Its
 // mailbox flags (device ids) live in hub_meta too, so they survive a restart.
 type relayHealth struct {
@@ -61,6 +67,9 @@ type relayHealth struct {
 	quotaHub    bool
 	lastSaved   time.Time
 	mailboxFull map[string]bool // device ids
+	// pushOffErr is the class of the last failed push-off read ("" = it
+	// read), so a failing read is logged once per class.
+	pushOffErr string
 }
 
 // newRelayHealth is the health of the relay rt (nil: none, nil returned) of
@@ -196,9 +205,29 @@ func (r *relayHealth) facts(connected bool, devices []state.Device) (RelayHealth
 	if dropped {
 		r.persist()
 	}
+	// The last save is shown to the minute ("delivered <age> ago"), so the
+	// status changes at most once a minute from it, not on every save.
 	return RelayHealth{
-		State: r.state, Since: rfc3339(r.since), QuotaHub: r.quotaHub, LastSavedAt: rfc3339(r.lastSaved),
+		State: r.state, Since: rfc3339(r.since), QuotaHub: r.quotaHub, LastSavedAt: rfc3339(r.lastSaved.Truncate(time.Minute)),
 	}, r.fullList()
+}
+
+// pushOff reads the push-off line from the ledger; a failed read reads as
+// not off and is logged once per error class.
+func (r *relayHealth) pushOff() bool {
+	off, err := r.st.PushOff(r.clock().Add(-AlertOutcomeWindow))
+	class := ""
+	if err != nil {
+		class = errClass(err)
+	}
+	r.mu.Lock()
+	changed := class != r.pushOffErr
+	r.pushOffErr = class
+	r.mu.Unlock()
+	if changed && class != "" {
+		log.Printf("hub: reading the push-off line failed (%s)", class)
+	}
+	return off
 }
 
 // rfc3339 is t in RFC 3339 UTC, "" for the zero time.
@@ -210,11 +239,16 @@ func rfc3339(t time.Time) string {
 }
 
 // payingPhones is the linked phones (device ids, sorted) the account state
-// lists as paying, while the active transport is the relay; none elsewhere.
-func payingPhones(active transport.Kind, acct *relayv1.AccountState, devices []state.Device) []string {
+// lists as paying while the active transport is the relay, none elsewhere,
+// and nil (unknown: the status shows null) on the relay while no account
+// state is known — before the first read, after HUB_NOT_VOUCHED.
+func payingPhones(active transport.Kind, acct *relayv1.AccountState, known bool, devices []state.Device) []string {
 	out := []string{}
 	if active != transport.KindRelay {
 		return out
+	}
+	if !known {
+		return nil
 	}
 	paying := map[string]bool{}
 	for _, p := range acct.GetPhones() {
@@ -232,8 +266,8 @@ func payingPhones(active transport.Kind, acct *relayv1.AccountState, devices []s
 }
 
 // relayFacts is the running hub's relay indicators for the status: the
-// relay's health (nil without a relay), the paying phones and the phones
-// whose mailbox is full.
+// relay's health (nil without a relay), the paying phones (nil: unknown) and
+// the phones whose mailbox is full.
 func (h *hubRuntime) relayFacts(devices []state.Device) (*RelayHealth, []string, []string) {
 	rt := h.relayT()
 	if h.health == nil || rt == nil {
@@ -248,16 +282,13 @@ func (h *hubRuntime) relayFacts(devices []state.Device) (*RelayHealth, []string,
 		h.mu.Unlock()
 	}
 	health, full := h.health.facts(connected, devices)
-	off, err := h.st.PushOff(h.sup.o.Clock().Add(-AlertOutcomeWindow))
-	if err != nil {
-		log.Printf("hub: reading the push-off line failed (%s)", errClass(err))
+	health.PushOff = h.health.pushOff()
+	var (
+		acct  *relayv1.AccountState
+		known bool
+	)
+	if a, ok := rt.(accountKnower); ok {
+		acct, known = a.KnownAccountState()
 	}
-	health.PushOff = off
-	var acct *relayv1.AccountState
-	if a, ok := rt.(relayAdmission); ok {
-		acct = a.LastAccountState()
-	} else if h.acct != nil {
-		acct = h.acct.cached()
-	}
-	return &health, payingPhones(h.tr.Kind(), acct, devices), full
+	return &health, payingPhones(h.tr.Kind(), acct, known, devices), full
 }

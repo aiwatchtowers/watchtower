@@ -46,6 +46,28 @@ func TestRelayTransport_ObserveSavesReportsEachZone(t *testing.T) {
 	}
 }
 
+// TestRelayTransport_KnownAccountState: unknown before the first read, known
+// after it, unknown again after HUB_NOT_VOUCHED.
+func TestRelayTransport_KnownAccountState(t *testing.T) {
+	h := newHarness(t)
+	if _, known := h.tr.KnownAccountState(); known {
+		t.Fatal("known before any read")
+	}
+	if _, err := h.tr.AccountState(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, known := h.tr.KnownAccountState(); !known {
+		t.Fatal("unknown after a read")
+	}
+	h.relay.FailNext("save", relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED)
+	if _, err := h.tr.Save(t.Context(), []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}}); !errors.Is(err, transport.ErrNotVouched) {
+		t.Fatalf("save: %v", err)
+	}
+	if _, known := h.tr.KnownAccountState(); known {
+		t.Fatal("known after HUB_NOT_VOUCHED")
+	}
+}
+
 // TestRelayTransport_ConnectedFollowsTheConnection: not connected before
 // Connect, connected after, not after Close.
 func TestRelayTransport_ConnectedFollowsTheConnection(t *testing.T) {

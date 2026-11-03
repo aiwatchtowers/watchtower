@@ -224,6 +224,15 @@ func Hold(tx *sql.Tx, device string, seq uint64, record string, envelope []byte)
 	return nil
 }
 
+// HeldCount is how many actions of device are held (no envelope read).
+func (s *Store) HeldCount(device string) (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM held_actions WHERE device_id = ? COLLATE NOCASE`, device).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting held actions: %w", err)
+	}
+	return n, nil
+}
+
 // HeldActions lists device's held actions in action_seq order.
 func (s *Store) HeldActions(device string) ([]Held, error) {
 	rows, err := s.db.Query(`SELECT device_id, action_seq, record_name, envelope, held_at FROM held_actions

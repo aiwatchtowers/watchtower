@@ -107,6 +107,9 @@ type Transport struct {
 	account    *relayv1.AccountState
 	refreshing bool
 	refreshDue bool
+	// accountKnown: account is a read the relay answered (false before the
+	// first read and after HUB_NOT_VOUCHED forgot it).
+	accountKnown bool
 	// observe sees every save's result per zone (ObserveSaves; nil = none).
 	observe func(zone string, err error)
 	wg      sync.WaitGroup
@@ -371,7 +374,7 @@ func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, er
 		return nil, errors.New("relay: get_account_state: no account state in the answer")
 	}
 	t.mu.Lock()
-	t.account = st
+	t.account, t.accountKnown = st, true
 	t.mu.Unlock()
 	return st, nil
 }
@@ -395,6 +398,18 @@ func (t *Transport) anyPhone(match func(*relayv1.SlotHolder) bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return slices.ContainsFunc(t.account.GetPhones(), match)
+}
+
+// KnownAccountState is a copy of the last account state read and whether one
+// is known: false (and an empty state) before the first read and after
+// HUB_NOT_VOUCHED forgot it.
+func (t *Transport) KnownAccountState() (*relayv1.AccountState, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.accountKnown {
+		return &relayv1.AccountState{}, false
+	}
+	return proto.Clone(t.account).(*relayv1.AccountState), true
 }
 
 // LastAccountState is a copy of the last account state read (an empty one
@@ -456,7 +471,7 @@ func (t *Transport) doMapped(ctx context.Context, req *relayv1.Request, mapErr f
 func (t *Transport) noteError(err error) error {
 	if errors.Is(err, transport.ErrNotVouched) {
 		t.mu.Lock()
-		t.account = &relayv1.AccountState{}
+		t.account, t.accountKnown = &relayv1.AccountState{}, false
 		t.mu.Unlock()
 	}
 	return err
@@ -567,6 +582,9 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 		}
 		t.rereadZones(zones)
 		if f := t.observed(); f != nil {
+			// A whole-call refusal names every zone of the batch; the hub's
+			// mailbox writes are single-item saves (actions/control.go), so a
+			// mailbox quota is never put on another phone's mailbox.
 			for _, z := range zones {
 				f(z, err)
 			}

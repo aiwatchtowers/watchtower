@@ -128,6 +128,7 @@ type Server struct {
 	pending    map[string][]frame // device → controls for its next WebSocket
 	lastDevice string             // the device that subscribed last (Push)
 	ready      chan struct{}      // closed at the first subscribe
+	wsDown     bool               // SetWebSocketDown: WebSockets cut and refused
 }
 
 type zone struct {
@@ -393,6 +394,21 @@ func (s *Server) SetPaying(phone string, paying bool) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+// SetWebSocketDown cuts every open WebSocket and refuses new ones (503)
+// while down; ops over HTTPS go on. Up again, clients reconnect.
+func (s *Server) SetWebSocketDown(down bool) {
+	s.mu.Lock()
+	s.wsDown = down
+	var open []*conn
+	if down {
+		open = slices.Clone(s.all)
+	}
+	s.mu.Unlock()
+	for _, c := range open {
+		_ = c.ws.CloseNow()
+	}
 }
 
 // SetNow replaces the relay's clock (pending vouch expiry).
@@ -1026,6 +1042,13 @@ func (s *Server) end(c *conn) {
 }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	down := s.wsDown
+	s.mu.Unlock()
+	if down {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return

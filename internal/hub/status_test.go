@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/hub/alerts"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -172,7 +173,7 @@ func TestQuotaClassSetAndClearedBySave(t *testing.T) {
 	}
 	g.advance(time.Second)
 	g.r.saved(g.data(), nil)
-	if h, _ := g.facts(true); h.QuotaHub || h.LastSavedAt != rfc3339(g.clock()) {
+	if h, _ := g.facts(true); h.QuotaHub || h.LastSavedAt != rfc3339(g.clock().Truncate(time.Minute)) {
 		t.Fatalf("after a successful save: %+v", h)
 	}
 }
@@ -303,18 +304,51 @@ func TestPushOffKeptAfterFailed(t *testing.T) {
 	}
 }
 
-func TestPushOffKeptAfterRateLimited(t *testing.T) {
-	// RATE_LIMITED is retried: pending while it waits, expired at the
-	// window's end.
-	if !pushOffAfter(t, [2]string{"", ""}, [2]string{state.AlertExpired, state.ReasonFreshness}) {
-		t.Fatal("a rate-limited push cleared the line")
+// retriedPushKeepsTheLine is a retried answer (RATE_LIMITED,
+// TRAFFIC_LIMIT_EXCEEDED, a relay-coded UNAVAILABLE) as the pusher leaves it
+// in the ledger: the pusher settles nothing for a retry, so the row stays
+// pending through every wait, and the window's end settles it
+// expired/freshness. The line stands at each step.
+func retriedPushKeepsTheLine(t *testing.T) {
+	t.Helper()
+	g := newHealthRig(t)
+	pushLedger(t, g.st, g.clock(), [2]string{state.AlertPushOff, ""})
+	at := g.clock().Add(time.Second)
+	if _, err := g.st.BeginAlertPush("ask-retried", "phone-b", at); err != nil {
+		t.Fatal(err)
+	}
+	since := g.clock().Add(-AlertOutcomeWindow)
+	if off, err := g.st.PushOff(since); err != nil || !off {
+		t.Fatalf("while the retry waits: %v, %v", off, err)
+	}
+	if _, err := g.st.SettleAlertPush("ask-retried", "phone-b", state.AlertExpired, state.ReasonFreshness, 3, at.Add(alerts.Freshness)); err != nil {
+		t.Fatal(err)
+	}
+	if off, err := g.st.PushOff(since); err != nil || !off {
+		t.Fatalf("after the retries expired: %v, %v", off, err)
 	}
 }
 
-func TestPushOffKeptAfterUnavailable(t *testing.T) {
-	// A relay-coded UNAVAILABLE is retried the same way.
-	if !pushOffAfter(t, [2]string{state.AlertExpired, state.ReasonFreshness}, [2]string{"", ""}) {
-		t.Fatal("an unavailable push cleared the line")
+func TestPushOffKeptAfterRateLimited(t *testing.T) { retriedPushKeepsTheLine(t) }
+
+func TestPushOffKeptAfterUnavailable(t *testing.T) { retriedPushKeepsTheLine(t) }
+
+// TestPushOffClearedAcrossPhones: the line is the relay's, not a phone's —
+// push_off on phone A is cleared by accepted on phone B.
+func TestPushOffClearedAcrossPhones(t *testing.T) {
+	g := newHealthRig(t)
+	t0 := g.clock()
+	for i, row := range []struct{ device, outcome string }{{"phone-a", state.AlertPushOff}, {"phone-b", state.AlertAccepted}} {
+		at := t0.Add(time.Duration(i) * time.Second)
+		if _, err := g.st.BeginAlertPush("ask-1", row.device, at); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.st.SettleAlertPush("ask-1", row.device, row.outcome, "", 1, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if off, err := g.st.PushOff(t0.Add(-AlertOutcomeWindow)); err != nil || off {
+		t.Fatalf("after accepted on another phone: %v, %v", off, err)
 	}
 }
 
@@ -359,14 +393,58 @@ func TestPayingPhonesOnlyOnRelay(t *testing.T) {
 		{PhoneDeviceId: g.phones[1].RelayDeviceID, Paying: false},
 		{PhoneDeviceId: "not-linked", Paying: true},
 	}}
-	if got := payingPhones(transport.KindRelay, acct, g.phones); !slices.Equal(got, []string{g.phones[0].ID}) {
+	// Known: the paying phone is listed (true), the other not (false).
+	if got := payingPhones(transport.KindRelay, acct, true, g.phones); !slices.Equal(got, []string{g.phones[0].ID}) {
 		t.Fatalf("on the relay: %v", got)
 	}
-	if got := payingPhones(transport.KindCloudKit, acct, g.phones); got == nil || len(got) != 0 {
+	if got := payingPhones(transport.KindCloudKit, acct, true, g.phones); got == nil || len(got) != 0 {
 		t.Fatalf("on CloudKit: %#v, want an empty list", got)
 	}
-	if got := payingPhones(transport.KindRelay, nil, g.phones); got == nil || len(got) != 0 {
-		t.Fatalf("no account state: %#v, want an empty list", got)
+	// Unknown (no read yet, or forgotten after HUB_NOT_VOUCHED): nil, never
+	// "nobody pays".
+	if got := payingPhones(transport.KindRelay, &relayv1.AccountState{}, false, g.phones); got != nil {
+		t.Fatalf("unknown account state: %#v, want nil", got)
+	}
+	b, err := json.Marshal(Status{}.withLists())
+	if err != nil || !strings.Contains(string(b), `"paying_phones":null`) {
+		t.Fatalf("an unknown paying list = %s, %v; want null", b, err)
+	}
+}
+
+// TestLastSavedAtChangesTheStatusOncePerMinute: two saves within one minute
+// show the same last_saved_at, so the status (and the watch) does not
+// change between them; a save in the next minute does.
+func TestLastSavedAtChangesTheStatusOncePerMinute(t *testing.T) {
+	g := newHealthRig(t)
+	g.mu.Lock()
+	g.now = g.now.Truncate(time.Minute).Add(5 * time.Second)
+	g.mu.Unlock()
+	w := &pairListener{queue: make(chan ControlAnswer, 4)}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{w: true}}
+	status := func() {
+		h, full := g.facts(true)
+		s.setStatus(Status{State: StateRunning, Relay: &h, MailboxFullPhones: full})
+	}
+	g.r.saved(g.data(), nil)
+	status()
+	g.advance(40 * time.Second)
+	g.r.saved(g.data(), nil)
+	status()
+	g.advance(30 * time.Second) // the next minute
+	g.r.saved(g.data(), nil)
+	status()
+	events := 0
+	for {
+		select {
+		case <-w.queue:
+			events++
+			continue
+		default:
+		}
+		break
+	}
+	if events != 2 {
+		t.Fatalf("%d status events for saves at 0:05, 0:45 and 1:15, want 2", events)
 	}
 }
 
@@ -410,5 +488,29 @@ func TestStatusFileHasNoContent(t *testing.T) {
 		if _, ok := m[k]; !ok {
 			t.Errorf("status file has no %q: %s", k, raw)
 		}
+	}
+}
+
+// TestDeadRunStatusDropsItsRuntimeFacts: a status left by a hub that died
+// reads off with no relay, an unknown paying list and no mailbox flags,
+// however the hub stopped.
+func TestDeadRunStatusDropsItsRuntimeFacts(t *testing.T) {
+	dir := t.TempDir()
+	b, err := json.Marshal(statusFile{Status: Status{
+		State: StateRunning, Relay: &RelayHealth{State: RelayConnected},
+		PayingPhones: []string{"A"}, MailboxFullPhones: []string{"A"},
+	}, PID: 0, Run: "gone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, statusFileName), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ReadStatus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.State != StateOff || s.Relay != nil || s.PayingPhones != nil || s.MailboxFullPhones == nil || len(s.MailboxFullPhones) != 0 {
+		t.Fatalf("dead run's status = %+v", s)
 	}
 }
