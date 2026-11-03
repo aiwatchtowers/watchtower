@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
+
+	"github.com/rivo/uniseg"
 )
 
 // Link code constants (spec §12a; the Kit's `LinkPayload` at v3).
@@ -52,15 +55,19 @@ type LinkPayload struct {
 // keys first, then the rest. A key that is absent or null is missing.
 var restLinkKeys = []string{"hub_id", "mac_name", "nonce", "iat", "exp"}
 
-// ClipMacName clips to MaxMacNameLength runes. The Kit clips grapheme
-// clusters, so a name with combining marks can differ; hub names are plain
-// host names (known gap).
+// ClipMacName clips to MaxMacNameLength grapheme clusters, as the Kit does
+// (a Swift String's prefix): an emoji joined with ZWJ, or a letter with its
+// combining marks, is never cut apart.
 func ClipMacName(s string) string {
-	r := []rune(s)
-	if len(r) > MaxMacNameLength {
-		return string(r[:MaxMacNameLength])
+	if uniseg.GraphemeClusterCount(s) <= MaxMacNameLength {
+		return s
 	}
-	return s
+	var b strings.Builder
+	g := uniseg.NewGraphemes(s)
+	for n := 0; n < MaxMacNameLength && g.Next(); n++ {
+		b.WriteString(g.Str())
+	}
+	return b.String()
 }
 
 // URL renders the code.

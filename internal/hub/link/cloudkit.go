@@ -17,8 +17,10 @@ package link
 // the next run's CloseLink(CloseRestart).
 //
 // Concurrency, as on the Swift main actor whose share calls interleave: no
-// lock is held across a bridge call except linkMu, which lets one public-link
-// write run at a time (the Swift single link writer, #262). The share state
+// lock is held across a bridge call except issueMu. The public link has one
+// writer goroutine (writeLink, the Swift link writer of #262) whose calls
+// are never cancelled, so one runs at a time and a call that timed out for
+// its caller and lands late is followed by the wanted state. The share state
 // (ckState) is read and changed under ck.mu for a moment only, so LinkUrgent
 // and Sharing never wait on the bridge. Interleavings are settled by
 // compare-and-set: a sweep clears the mark only if no unlink marked it again
@@ -189,8 +191,20 @@ type ckState struct {
 	// accountEpoch counts the account changes (the Swift ownerEpoch).
 	owner        string
 	accountEpoch uint64
-	// linkWanted is the public link the center wants (the Swift linkWanted).
-	linkWanted bool
+	// linkWanted is the public link the center wants (the Swift linkWanted);
+	// linkWritten what the last write left (unknown while one runs and after
+	// a failed one), linkWriteErr why the last failed write failed.
+	linkWanted   bool
+	linkWritten  linkWrite
+	linkWriteErr error
+	// writer is closed when the one public-link writer (writeLink) ends;
+	// nil while none runs.
+	writer chan struct{}
+	// closeWaiters counts the setLink callers waiting for a close (a close
+	// that fails while one waits is that caller's to retry); closeReason is
+	// the last close asked for.
+	closeWaiters int
+	closeReason  CloseReason
 	// decided is each hello record version already decided (wire name →
 	// change tag), oldest first in decidedOrder, at most maxDecidedHellos:
 	// a held-back page read again decides none of them twice.
@@ -240,7 +254,7 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 		c.ck.mu.Unlock()
 	}()
 	c.setRetired(retiredCode{}) // the new code retires every open one: their hellos read expired_code
-	account, err := bounded(ctx, s.AccountStatus)
+	account, err := bounded(ctx, c.shareTimeout, s.AccountStatus)
 	if err != nil {
 		log.Printf("hub link: iCloud account unreadable (%s): no code", shareErrorClass(err))
 		return wire.LinkPayload{}, "", &AccountError{Account: AccountUnreadable, Err: err}
@@ -310,7 +324,7 @@ func (c *Center) readOwner(ctx context.Context, s transport.Shares) (string, boo
 	if !ok {
 		return "", false
 	}
-	name, err := bounded(ctx, u.OwnerUser)
+	name, err := bounded(ctx, c.shareTimeout, u.OwnerUser)
 	if err != nil {
 		log.Printf("hub link: the Mac's iCloud user unreadable (%s)", shareErrorClass(err))
 		return "", false
@@ -356,7 +370,7 @@ func (c *Center) openPublicLink(ctx context.Context, s transport.Shares) (data, 
 		return "", "", false
 	}
 	type urls struct{ data, relay string }
-	got, err := bounded(ctx, func(ctx context.Context) (urls, error) {
+	got, err := bounded(ctx, c.shareTimeout, func(ctx context.Context) (urls, error) {
 		d, r, err := s.EnsureShares(ctx)
 		return urls{d, r}, err
 	})
@@ -399,11 +413,31 @@ func (c *Center) LinkUrgent() bool {
 	return c.ck.open != nil || c.now().Before(c.ck.graceEnd)
 }
 
-// setLink writes the public link through the one writer (the Swift
-// setPublicLink(open:reason:)): open or closed becomes the wanted state; a
-// close yields to a code being issued unless reason voids it; the write
-// runs only if it is still wanted when its turn comes (a newer wanted state
-// supersedes it). written false: no call was made.
+// linkWrite is what the last public-link write left.
+type linkWrite int
+
+const (
+	linkUnknown linkWrite = iota
+	linkWrittenClosed
+	linkWrittenOpen
+)
+
+func writtenAs(open bool) linkWrite {
+	if open {
+		return linkWrittenOpen
+	}
+	return linkWrittenClosed
+}
+
+// setLink opens or closes the public link through the one writer (the
+// Swift setPublicLink(open:reason:), #262) and waits, bounded by the share
+// timeout, until it is written. A public-link call is never cancelled: one
+// that timed out for its caller may still land, and the writer then writes
+// the wanted state again, one call at a time — so a late close never leaves
+// a newer code's link shut and a late open never leaves a closed link open.
+// A close yields to a code being issued (no call) unless reason voids that
+// code. written false with no error: the close yielded, or a newer wanted
+// state replaced this one meanwhile; an error: the write failed or timed out.
 func (c *Center) setLink(ctx context.Context, s transport.Shares, open bool, reason CloseReason) (bool, error) {
 	c.ck.mu.Lock()
 	if !open && c.ck.issuing > 0 && !reason.voidsCode() {
@@ -411,19 +445,104 @@ func (c *Center) setLink(ctx context.Context, s transport.Shares, open bool, rea
 		return false, nil
 	}
 	c.ck.linkWanted = open
+	if !open {
+		c.ck.closeWaiters++
+		c.ck.closeReason = reason
+		defer func() {
+			c.ck.mu.Lock()
+			c.ck.closeWaiters--
+			c.ck.mu.Unlock()
+		}()
+	}
+	// Each request writes at least once (a close repeats what a half-applied
+	// two-zone save left); a writer already running writes the wanted state
+	// again once its call ends, if it differs.
+	if c.ck.writer == nil {
+		c.ck.linkWritten = linkUnknown
+		c.ck.writer = make(chan struct{})
+		go c.writeLink(context.WithoutCancel(ctx), s, c.ck.writer)
+	}
 	c.ck.mu.Unlock()
-	c.linkMu.Lock()
-	defer c.linkMu.Unlock()
+	timer := time.NewTimer(c.shareTimeout)
+	defer timer.Stop()
+	for {
+		c.ck.mu.Lock()
+		w := c.ck.writer
+		c.ck.mu.Unlock()
+		if w == nil {
+			break
+		}
+		select {
+		case <-w:
+		case <-timer.C:
+			return false, fmt.Errorf("link: writing the public link: %w", context.DeadlineExceeded)
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
 	c.ck.mu.Lock()
-	wanted := c.ck.linkWanted
-	c.ck.mu.Unlock()
-	if wanted != open {
+	defer c.ck.mu.Unlock()
+	switch {
+	case c.ck.linkWanted != open:
 		return false, nil
+	case c.ck.linkWritten == writtenAs(open):
+		return true, nil
+	case c.ck.linkWriteErr != nil:
+		return false, c.ck.linkWriteErr
 	}
-	if err := boundedDo(ctx, func(ctx context.Context) error { return s.SetPublicLink(ctx, open) }); err != nil {
-		return false, err
+	return false, errSuperseded
+}
+
+// writeLink is the one public-link writer: it writes linkWanted until the
+// last write matches it, then closes done. A write that fails while its
+// state is still wanted ends the run: a failed open is the issue's to
+// report; a failed close marks the sweep pending again and, when no caller
+// waits for it (a reconciling close after the callers timed out) and no
+// retry chain runs, is retried after linkCloseRetryDelays.
+func (c *Center) writeLink(ctx context.Context, s transport.Shares, done chan struct{}) {
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	for {
+		target := c.ck.linkWanted
+		if c.ck.linkWritten == writtenAs(target) {
+			break
+		}
+		c.ck.linkWritten = linkUnknown
+		c.ck.mu.Unlock()
+		err := s.SetPublicLink(ctx, target)
+		c.ck.mu.Lock()
+		if err == nil {
+			c.ck.linkWritten = writtenAs(target)
+			continue
+		}
+		c.ck.linkWriteErr = err
+		if c.ck.linkWanted != target {
+			continue
+		}
+		if !target {
+			c.ck.mu.Unlock()
+			c.linkCloseFailed(err)
+			c.ck.mu.Lock()
+			if c.ck.linkWanted != target {
+				continue // an open came meanwhile: write it
+			}
+		}
+		if !target && c.ck.closeWaiters == 0 && c.ck.linkCloseAt.IsZero() {
+			c.ck.linkCloseAt, c.ck.linkCloseTries = c.now().Add(linkCloseRetryDelays[0]), 1
+		}
+		break
 	}
-	return true, nil
+	c.ck.writer = nil
+	close(done)
+}
+
+// linkCloseFailed keeps the sweep marked pending after a failed close, so
+// the next close or start sweeps (and closes the link) again.
+func (c *Center) linkCloseFailed(err error) {
+	log.Printf("hub link: share link not closed (%s)", shareErrorClass(err))
+	if err := c.st.WithTx(context.Background(), markSweepTx); err != nil {
+		log.Printf("hub link: share sweep mark not set (%s)", shareErrorClass(err))
+	}
 }
 
 // CloseLink closes the CloudKit link (the Swift closeLink): every request
@@ -669,7 +788,7 @@ func (c *Center) sweepShares(ctx context.Context, s transport.Shares, reason Clo
 		if yields() {
 			return false, nil
 		}
-		ps, err := bounded(ctx, func(ctx context.Context) ([]transport.Participant, error) { return s.Participants(ctx, zone) })
+		ps, err := bounded(ctx, c.shareTimeout, func(ctx context.Context) ([]transport.Participant, error) { return s.Participants(ctx, zone) })
 		if err != nil {
 			return fail("participants", err)
 		}
@@ -685,7 +804,7 @@ func (c *Center) sweepShares(ctx context.Context, s transport.Shares, reason Clo
 		if yields() {
 			return false, nil
 		}
-		if err := boundedDo(ctx, func(ctx context.Context) error { return s.RemoveParticipants(ctx, zone, leaving) }); err != nil {
+		if err := boundedDo(ctx, c.shareTimeout, func(ctx context.Context) error { return s.RemoveParticipants(ctx, zone, leaving) }); err != nil {
 			return fail("remove_participants", err)
 		}
 		removed += len(leaving)
@@ -891,7 +1010,7 @@ func (c *Center) acceptedBothShares(ctx context.Context, s transport.Shares, use
 		return false
 	}
 	for i, zone := range zones {
-		ps, err := bounded(ctx, func(ctx context.Context) ([]transport.Participant, error) { return s.Participants(ctx, zone) })
+		ps, err := bounded(ctx, c.shareTimeout, func(ctx context.Context) ([]transport.Participant, error) { return s.Participants(ctx, zone) })
 		if err != nil {
 			log.Printf("hub link: share participants unreadable (%s), phone %s not answered", shareErrorClass(err), device)
 			return false
@@ -985,7 +1104,7 @@ func (c *Center) removeParticipant(ctx context.Context, s transport.Shares, devi
 		return err
 	}
 	for _, zone := range zones {
-		if err := boundedDo(ctx, func(ctx context.Context) error { return s.RemoveParticipants(ctx, zone, []string{user}) }); err != nil {
+		if err := boundedDo(ctx, c.shareTimeout, func(ctx context.Context) error { return s.RemoveParticipants(ctx, zone, []string{user}) }); err != nil {
 			log.Printf("hub link: removed phone %s's participant left to the sweep (%s)", strings.ToUpper(device), shareErrorClass(err))
 			return fmt.Errorf("link: removing the phone's participant: %w", err)
 		}
@@ -1064,15 +1183,16 @@ func (c *Center) shareZones() ([2]string, error) {
 	return [2]string{transport.DataZone(rid), transport.SharedMailboxZone(rid)}, nil
 }
 
-// bounded runs one share call under ShareTimeout.
-func bounded[T any](ctx context.Context, call func(context.Context) (T, error)) (T, error) {
-	ctx, cancel := context.WithTimeout(ctx, ShareTimeout)
+// bounded runs one share call under timeout (the center's shareTimeout,
+// ShareTimeout outside tests).
+func bounded[T any](ctx context.Context, timeout time.Duration, call func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return call(ctx)
 }
 
-func boundedDo(ctx context.Context, call func(context.Context) error) error {
-	_, err := bounded(ctx, func(ctx context.Context) (struct{}, error) { return struct{}{}, call(ctx) })
+func boundedDo(ctx context.Context, timeout time.Duration, call func(context.Context) error) error {
+	_, err := bounded(ctx, timeout, func(ctx context.Context) (struct{}, error) { return struct{}{}, call(ctx) })
 	return err
 }
 
