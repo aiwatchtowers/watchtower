@@ -172,8 +172,8 @@ package struct ProviderFallbackPreview {
             )
         case .recovered:
             return Copy(
-                title: "\(p) is available again",
-                detail: "Background tasks have returned to \(p). This chat stays with \(r) until you switch.",
+                title: "\(p) can be tried",
+                detail: "No local quota block is currently recorded for \(p). This chat stays with \(r) until you switch.",
                 action: "Use \(p)",
                 emphasis: .success
             )

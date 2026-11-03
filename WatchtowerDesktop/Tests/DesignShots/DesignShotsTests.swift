@@ -29,6 +29,10 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all)
     }
 
+    func testProviderFallbackShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("provider-") })
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }

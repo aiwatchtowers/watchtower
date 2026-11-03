@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerCore
 
 final class ChatRoutingPresentationTests: XCTestCase {
-    func testRecoveryUsesRealLocalHealthAndStaysStickyInBothDirections() throws {
+    func testLocalAvailabilityOffersManualChoiceAndStaysStickyInBothDirections() throws {
         for preferred in ProviderFallbackPreview.Provider.allCases {
             let p = preferred.rawValue.lowercased(), reserve = preferred.other.rawValue.lowercased()
             let data = Data("""
@@ -59,6 +59,39 @@ extension ChatRoutingPresentationTests {
                     XCTAssertEqual(view.actual, "Current provider: \(preferred.other.rawValue) · historical-model")
                 }
             }
+        }
+    }
+}
+
+extension ChatRoutingPresentationTests {
+    /// The Go actual-command test verifies this same wire fixture against a
+    /// fresh owned HOME with forbidden provider executables and zero requests.
+    func testFreshCommandDTOOffersManualChoiceWithoutInventingCompletedWork() throws {
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let data = try Data(contentsOf: repository.appendingPathComponent("cmd/testdata/routing/fresh_status.json"))
+        let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        let statuses = try XCTUnwrap(rows)
+        XCTAssertEqual(statuses.count, ProviderFallbackPreview.Provider.allCases.count)
+        for row in statuses {
+            let health = try ChatRoutingStatus.parse(JSONSerialization.data(withJSONObject: row))
+            let preferred = try XCTUnwrap(ProviderFallbackPreview.Provider.allCases.first {
+                $0.rawValue.lowercased() == health.preferredProvider
+            })
+            let view = ChatRoutingPresentation(preferred: preferred, automatic: true,
+                                               actualProvider: preferred.other.rawValue.lowercased(),
+                                               actualModel: "persisted-model", reason: "quota_exhausted", health: health, busy: false)
+            let copy = try XCTUnwrap(view.preview?.copy)
+            XCTAssertEqual(copy.title, "\(preferred.rawValue) can be tried")
+            XCTAssertEqual(copy.detail, "No local quota block is currently recorded for \(preferred.rawValue). "
+                           + "This chat stays with \(preferred.other.rawValue) until you switch.")
+            XCTAssertEqual(copy.action, "Use \(preferred.rawValue)")
+            XCTAssertTrue(view.canUsePreferred)
+            XCTAssertEqual(view.actualProvider, preferred.other.rawValue.lowercased())
+            XCTAssertEqual(view.actualModel, "persisted-model")
         }
     }
 }

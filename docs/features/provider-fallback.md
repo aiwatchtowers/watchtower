@@ -3,6 +3,25 @@
 Spec: `docs/superpowers/specs/2026-11-02-provider-fallback-design.md` (ask #939).
 Plan: `docs/superpowers/plans/2026-11-02-provider-fallback.md` (ask #940).
 
+## Implemented state and acceptance boundary
+
+The opt-in routing, durable safe-source deferral, per-attempt accounting, chat
+preflight, daemon application acknowledgement and Settings controls are
+implemented. Integration tests use owned fake CLI processes, HTTP servers,
+health stores and databases in both directions; they do not establish live
+provider acceptance. No paid inference, native sign-in or owner-account
+acceptance was performed. The approved spec, plan and original mockup PNGs
+remain historical approval evidence.
+
+`cmd/provider_integration_test.go` composes production strict leaves with routing
+and persisted health: both exhausted, eligible deferred errors, restart with no
+physical call, exact selected-model Codex scope, competing recovery callers,
+real pending recovery and background return, with cache and reported-cost facts.
+`TestRoutingFactoriesPhysicalLeafLedgerBothDirections` covers successful reserve
+selection through CLI/bounded/pooled production factories. Existing process,
+durable receipt, SDK replay, chat persistence and concurrent Save suites retain
+their more specific lifecycle guarantees; this feature adds no generic queue.
+
 ## Safe routing core (Task 4)
 
 `internal/providerrouting.Router` accepts a request with configured preferred,
@@ -307,7 +326,10 @@ Historical actual/provider inequality alone never proves quota or recovery.
 The Go chat adapter retains the persisted routing cause across sticky turns and
 reopens, updating its in-memory provider/cause only after the DB write succeeds.
 Automatic quota/recovery cards require an affirmative quota cause; recovery also
-requires matching available local health. Unknown or ordinary historical causes
+requires matching available local health. Available here means no recorded local
+quota block, including a fresh or recreated health store; it does not establish
+that any background task completed. The manual-choice card says the preferred
+provider can be tried, without claiming a successful recovery request. Unknown or ordinary historical causes
 show the actual label and any diagnostic without inventing a quota explanation.
 
 ### Applying AI configuration
@@ -390,7 +412,7 @@ tests retain one request per distinct light/strong model against the form URL.
 Failures cross into Desktop as sanitized messages plus a typed `error_code`, not
 arbitrary child stderr. Real attempts retain normal leaf usage recording.
 
-`ai test` and `ai routing-status` skip the root schema-upgrade hook: a connection
+`ai models`, `ai test` and `ai routing-status` skip the root schema-upgrade hook: a catalog, connection
 or limits check does not migrate a database or rewrite the configuration. The
 explicit probe still sets its ordinary usage-spool destination after reading the
 configuration. Their existing CLI audit classifications remain unchanged.
@@ -401,7 +423,7 @@ the unsaved form. `ai routing-status --check-again` reserves the existing
 Its optional provider `manual_allowed` field distinguishes a throttled check.
 It sends no synthetic recovery prompt, claims no probe lease, and never clears a
 quota block because a timestamp passed. Only a real eligible request can prove
-recovery. Missing local health remains an error rather than successful recovery.
+recovery. Health read failures remain errors. An absent scope is no recorded block, not evidence of completed recovery.
 Ollama has no cloud health scope and is not misreported as unauthenticated.
 
 Connection, limits and apply have separate operations and Retry actions. The
@@ -411,3 +433,51 @@ saved file version and daemon acknowledgement; a successful connection test does
 not claim that the daemon applied anything. Production status cards and approved
 catalog scenes share `ProviderFallbackStatus` and `ProviderFallbackPreview` copy;
 sample chat names, default-model summaries and sample times stay in fixtures.
+
+
+## Rollout, rollback and v1 exclusions
+
+Reserve defaults off and must be explicitly enabled. Turning it off affects
+future jobs; a started job/turn finishes with its captured routing generation.
+Disabling does not delete chats, pending source descriptors, completion receipts,
+usage, provider model buckets or credentials. Keep both configured buckets when
+rolling back. No Reset LLM Data, credential removal or database downmigration is
+part of rollback.
+
+A binary downgrade has separate limits: older binaries cannot interpret all new
+configuration/metadata fields or consume the new routing contracts. They do not
+reverse migrations safely. Preserve a normal backup and use a compatible binary;
+do not manually downgrade a live database's schema.
+
+V1 does not replay started tool turns, proposals or whole custom recipes. Only
+the explicitly supported digest/people/ideas/history source steps defer durable
+input. Off/no-config/Ollama and explicit provider/model pins keep their legacy
+routes; old chats stay pinned. Organization policy, code-question boundaries,
+media capability checks, Stop with pending actions and the separate spec reviewer
+and hosted Workbench terminal paths remain intact. Required native claude.ai
+capabilities still prevent an incompatible reserve from starting; there is no
+silent tool or attachment downgrade. Slack home-team mismatch remains account
+revocation, not provider quota. Manually scoped backfill and day-rollup jobs keep
+their independent receipt semantics.
+
+Routing uses local reactive quota evidence, not usage percentages. No additional
+account poller or authentication manager was introduced. Unmerged account/plan
+work from other sessions is not incorporated. `ai models` is metadata-only: the
+actual-command regression proves a legacy saved config retains its bytes, file
+identity, timestamp and size while the owned Ollama model-list GET still runs.
+The shared fresh-status DTO fixture is verified by the actual CLI and decoded by
+the Swift production presentation tests in both directions.
+
+### Failure paths, writers and race winners
+
+These are local fallback contracts; they do not introduce a phone writer or a
+second Settings-screen writer. Existing single-writer database and proposal
+rules remain in force.
+
+| Data | Writers and winner | Failure/restart evidence |
+| --- | --- | --- |
+| Saved YAML / file version | Desktop `ConfigService.save` and CLI config writes use existing atomic saves. The current file instance wins; a later Save invalidates an earlier acknowledgement, including A→B→A. Catalog/status/Retry are readers. | `TestAIModelsCommandPreservesLegacySavedFile` drives the real command; `TestRoutingSavedVersionAtomicReplacementEqualTimestamp` and `testNewSaveWinsAgainstDelayedOldResponse` cover replacement and delayed results. |
+| Runtime generation / acknowledgement | The daemon publishes one immutable generation, then writes its own PID/start-qualified acknowledgement. Active jobs keep their captured generation. Desktop/CLI readers cannot publish or confirm a stale process. | `TestRoutingReloadLogicalJobsAndSDKKeepSnapshot`, `TestRoutingReloadPublishAndAckFailuresAndLatestSaved`, `TestRoutingAckIdentityLossReplacementAndCorruption`: failure before publication retains the generation; ack failure after publication leaves confirmation unknown; restart rejects the old identity. |
+| Installation health / lease JSON | Eligible routed daemon and CLI callers share the same flocked store and exact scopes. One lease claimant wins. Metadata reads never clear quota; manual checks only write their rate gate. | `TestProcessesCompeteForOneLease`, `TestProcessDeathReleasesStableLock`, `TestRoutingIntegrationStrictLeavesDeferredRestartAndRealRecovery`: process death releases the lock; bounded lease expiry permits later pending work; no child starts for a competing blocked caller. |
+| Safe-source receipts / watermarks | Existing daemon pipelines and full-history CLI paths use transactional exact-claim receipts. Existing reset/account writers keep independent scopes and monotonic live floors. Manual scoped backfill deliberately does not write these receipts. | `TestBackfillDeferredDeclinedPrefixSurvivesRestart`, `TestBackfillDailyDeferredDoesNotReplaySavedDayOnNewData` and the composed strict-leaf integration preserve committed input after a mid-step failure/reconstruction; quota leaves unfinished input available. |
+| Chat actual / pin metadata | Go session routing and the Desktop turn store write the existing conversation/message fields; explicit manual choice clears sticky actual metadata between turns. Observed actual never overwrites global preference or the pool's wanted configuration. | `TestAISessionRoutingPersistsStickyAcrossRestartAndManualPin`, `testHistoricalPinsRemainUntilCombinedAutomaticChoiceAndStartedQuotaNeverResends`, `testFreshCommandDTOOffersManualChoiceWithoutInventingCompletedWork`: restart/partial quota preserve actual and pin intent; a read or clock change cannot replay a turn or claim completed background work. |

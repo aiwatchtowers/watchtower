@@ -70,11 +70,14 @@ var aiQueryCmd = &cobra.Command{
 var aiModelsFlagJSON bool
 var aiTestCLIPath string
 
+// Catalog reads must not inherit the database/config schema upgrade hook:
+// Settings uses saved file identity to confirm daemon application.
 var aiModelsCmd = &cobra.Command{
-	Use:   "models",
-	Short: "List AI providers and their models",
-	Long:  "Prints the provider registry: default per-tier models, the resolved light/strong models per provider under the current config, and — for OpenAI-compatible providers — the live model list. The Desktop app consumes this via --json.",
-	RunE:  runAIModels,
+	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	Use:               "models",
+	Short:             "List AI providers and their models",
+	Long:              "Prints the provider registry: default per-tier models, the resolved light/strong models per provider under the current config, and — for OpenAI-compatible providers — the live model list. The Desktop app consumes this via --json.",
+	RunE:              runAIModels,
 }
 
 var aiTestCmd = &cobra.Command{

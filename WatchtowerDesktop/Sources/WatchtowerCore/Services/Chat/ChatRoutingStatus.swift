@@ -100,6 +100,8 @@ package struct ChatRoutingPresentation {
         let state: ProviderFallbackPreview.State
         if !automatic { state = .pinned } else if actualProvider == preferred.other.rawValue.lowercased(), reason == "quota_exhausted" {
             let preferredState = health?.provider(preferred.rawValue.lowercased())?.state
+            // "available" includes a fresh/missing scope. The shared copy
+            // offers a manual attempt; it cannot assert a background completion.
             state = health?.enabled == true && health?.preferredProvider == preferred.rawValue.lowercased()
                 && preferredState == "available" ? .recovered : .fallback
         } else if reason == "required_capability_missing" { state = .unsupported } else { return nil }

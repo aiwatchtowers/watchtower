@@ -79,7 +79,7 @@ New chats use **Preferred + reserve · Auto**. **Only Claude**, **Only Codex**, 
 
 The reserve is chosen before a new turn starts. A quota failure after work starts keeps the partial reply and offers **Review actions**, which opens saved actions without sending, approving or repeating anything. Check those actions, choose a provider if needed, then send a new message.
 
-A healthy reserve stays with the chat after the preferred provider recovers. **Use Claude** or **Use Codex** switches back between turns and keeps your draft. If that reserve later reaches its own limit, the next new turn can use the recovered compatible preferred provider. Availability refreshes when you enter a chat, return to the app or finish a turn; the app never sends a paid test prompt just to check recovery.
+A healthy reserve stays with the chat after the preferred provider recovers. **Use Claude** or **Use Codex** switches back between turns and keeps your draft. If that reserve later reaches its own limit, the next new turn can use the recovered compatible preferred provider. **Claude can be tried** or **Codex can be tried** means no local quota block is currently recorded. It does not prove a background task completed or that the provider will accept the next request. Availability refreshes when you enter a chat, return to the app or finish a turn; the app never sends a paid test prompt just to check recovery.
 
 ## What drives cost
 <!-- learn
@@ -163,3 +163,17 @@ It never refreshes that sign-in, so if Claude Code's token has expired the tab s
 - [Troubleshooting](../troubleshooting/README.md)
 
 For developers: [docs/features/llm-usage-ledger.md](../../features/llm-usage-ledger.md), [docs/features/model-provider-registry.md](../../features/model-provider-registry.md), [docs/features/claude-plan-limits.md](../../features/claude-plan-limits.md)
+
+
+To stop using the reserve, turn off **Use reserve when limits are reached** and
+save. Future jobs use the preferred provider; active work finishes with its
+current settings. Both providers' model settings, chats, pending source data,
+usage and credentials stay in place. Do not reset AI data or remove credentials
+to disable the feature. Downgrading to an older binary is a separate operation:
+older versions may not understand the new fields, and manually rolling back a
+live database's migrations is unsupported.
+
+This routing implementation was tested with fake providers and local fixtures;
+no paid or live-account acceptance check was performed. It does not automatically
+repeat custom recipes or started tool turns. A chat requiring native claude.ai
+tools remains blocked from switching to a provider that cannot supply them.
