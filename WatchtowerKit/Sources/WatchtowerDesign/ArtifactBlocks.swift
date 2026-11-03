@@ -15,7 +15,7 @@ public enum ArtifactTone: String, CaseIterable, Equatable, Sendable {
 
 /// A row ref's record kind (spec "Row `ref`"); what a ref does is
 /// sub-project B's, through `ArtifactRefHooks`.
-public enum ArtifactRefKind: String, CaseIterable, Equatable, Sendable {
+public enum ArtifactRefKind: String, Equatable, Sendable {
     case inboxItem = "inbox_item"
     case track, idea, reminder, action
 }
@@ -33,11 +33,8 @@ public struct ArtifactRef: Hashable, Sendable {
 
 /// The five things a button does. Stored as Go `db.InboxAction.Kind`, where
 /// `open` is written `"link"`.
-public enum ArtifactActionKind: String, CaseIterable, Hashable, Sendable {
+public enum ArtifactActionKind: String, Hashable, Sendable {
     case open, chat, agent, reply, target
-
-    /// The stored `kind` value.
-    public var storedName: String { self == .open ? "link" : rawValue }
 }
 
 /// A `target` action's task: the press proposes `create_target` with these.
@@ -206,6 +203,12 @@ public enum ArtifactBlock: Equatable, Sendable {
         }
 
         public static let defaultEmpty = "Nothing here"
+
+        /// Each row's first press index, the list's first being `start`
+        /// (from `ArtifactDocument.blockActionOffsets`).
+        public func rowActionOffsets(start: Int) -> [Int] {
+            ArtifactDocument.runningOffsets(rows.map(\.actions.count), start: start)
+        }
     }
 
     public struct Table: Equatable, Sendable {
@@ -253,8 +256,9 @@ public enum ArtifactBlock: Equatable, Sendable {
     case link(title: String, url: String, subtitle: String?)
     case actions([ArtifactAction])
 
-    /// The block's actions in press order (a list's row by row).
-    var actions: [ArtifactAction] {
+    /// The block's actions in press order (a list's row by row): the one
+    /// definition of a block's share of the flattened action list.
+    public var actions: [ArtifactAction] {
         switch self {
         case let .list(list): list.rows.flatMap(\.actions)
         case let .actions(actions): actions
@@ -275,16 +279,23 @@ public enum ArtifactDecodeResult: Equatable, Sendable {
     case unreadable
 }
 
+/// What a stored `actions_json` (the card's own buttons) holds. Present but
+/// undecodable is never folded into "no buttons": it would shift every
+/// block button's press index.
+public enum ArtifactActionsDecodeResult: Equatable, Sendable {
+    /// The buttons; the empty string is no buttons.
+    case actions([ArtifactAction])
+    case unreadable
+}
+
 /// A decoded block document.
 public struct ArtifactDocument: Equatable, Sendable {
     /// The only version this app reads.
     public static let supportedVersion = 1
 
-    public let version: Int
     public let blocks: [ArtifactBlock]
 
-    public init(version: Int = Self.supportedVersion, blocks: [ArtifactBlock]) {
-        self.version = version
+    public init(blocks: [ArtifactBlock]) {
         self.blocks = blocks
     }
 
@@ -299,14 +310,39 @@ public struct ArtifactDocument: Equatable, Sendable {
         }
         guard let items = object["blocks"] as? [Any],
               let blocks = try? items.map(ArtifactJSON.block) else { return .unreadable }
-        return .document(Self(version: Int(version), blocks: blocks))
+        return .document(Self(blocks: blocks))
     }
 
-    /// A card's own `actions_json` (Go `db.InboxAction` array); nil when it
-    /// is not an array of actions this app reads.
-    public static func decodeActions(_ json: String) -> [ArtifactAction]? {
-        guard let items = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [Any] else { return nil }
-        return try? items.map(ArtifactJSON.action)
+    /// A card's own `actions_json` (Go `db.InboxAction` array).
+    public static func decodeActions(_ json: String) -> ArtifactActionsDecodeResult {
+        if json.isEmpty { return .actions([]) }
+        guard let items = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [Any],
+              let actions = try? items.map(ArtifactJSON.action) else { return .unreadable }
+        return .actions(actions)
+    }
+
+    /// A stored card: its blocks and its own buttons together. Buttons that
+    /// are present but undecodable make the whole card `.unreadable` (with
+    /// no buttons), since every block press index counts them.
+    public static func decodeCard(blocksJSON: String, actionsJSON: String)
+        -> (result: ArtifactDecodeResult, cardActions: [ArtifactAction]) {
+        guard case let .actions(actions) = decodeActions(actionsJSON) else { return (.unreadable, []) }
+        return (decode(blocksJSON), actions)
+    }
+
+    /// Each block's first index in `flattenedActions` (a block without
+    /// actions gets the index the next action would take).
+    public func blockActionOffsets(cardActionCount: Int) -> [Int] {
+        Self.runningOffsets(blocks.map(\.actions.count), start: cardActionCount)
+    }
+
+    /// `start`, then `start` plus each running total of `counts`, one per count.
+    static func runningOffsets(_ counts: [Int], start: Int) -> [Int] {
+        var next = start
+        return counts.map { count in
+            defer { next += count }
+            return next
+        }
     }
 
     /// Every press address of the card (spec "Press address"): the card's

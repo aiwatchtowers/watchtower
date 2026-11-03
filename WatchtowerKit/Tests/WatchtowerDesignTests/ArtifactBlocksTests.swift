@@ -90,12 +90,19 @@ final class ArtifactBlocksTests: XCTestCase {
         return document
     }
 
+    private func cardActions(_ sample: Samples.Valid) throws -> [ArtifactAction] {
+        guard case let .actions(actions) = ArtifactDocument.decodeActions(sample.cardActions.text) else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        return actions
+    }
+
     func testEverySampleDocumentDecodes() throws {
         let samples = try samples()
         XCTAssertFalse(samples.documents.isEmpty)
         for sample in samples.documents {
             XCTAssertEqual(ArtifactDocument.decode(sample.document.text).isDocument, true, sample.name)
-            XCTAssertNotNil(ArtifactDocument.decodeActions(sample.cardActions.text), sample.name)
+            XCTAssertNoThrow(try cardActions(sample), sample.name)
         }
     }
 
@@ -121,16 +128,14 @@ final class ArtifactBlocksTests: XCTestCase {
     func testFlattenedActionCountMatchesEachSample() throws {
         for sample in try samples().documents {
             let doc = try document(sample)
-            let cardActions = try XCTUnwrap(ArtifactDocument.decodeActions(sample.cardActions.text), sample.name)
-            XCTAssertEqual(doc.flattenedActions(cardActions: cardActions).count, sample.actions, sample.name)
+            XCTAssertEqual(doc.flattenedActions(cardActions: try cardActions(sample)).count, sample.actions, sample.name)
         }
     }
 
     /// Card actions first, then each block's in document order, a list's row by row.
     func testFlattenedActionOrder() throws {
         let sample = try XCTUnwrap(try samples().documents.first { $0.name == "every-block" })
-        let cardActions = try XCTUnwrap(ArtifactDocument.decodeActions(sample.cardActions.text))
-        let labels = try document(sample).flattenedActions(cardActions: cardActions).map(\.label)
+        let labels = try document(sample).flattenedActions(cardActions: try cardActions(sample)).map(\.label)
         XCTAssertEqual(labels, ["Reply with a summary", "Open", "Reply", "Chat", "Make a task", "Open the board",
                                 "Ask the assistant"])
     }
@@ -160,8 +165,7 @@ final class ArtifactBlocksTests: XCTestCase {
 
     func testEveryActionKindAndField() throws {
         let sample = try XCTUnwrap(try samples().documents.first { $0.name == "every-tone-and-ref" })
-        let cardActions = try XCTUnwrap(ArtifactDocument.decodeActions(sample.cardActions.text))
-        let payloads = try document(sample).flattenedActions(cardActions: cardActions).map(\.payload)
+        let payloads = try document(sample).flattenedActions(cardActions: try cardActions(sample)).map(\.payload)
         XCTAssertEqual(payloads, [
             .open("https://example.com/acme"),
             .chat("What changed?"),
@@ -170,8 +174,51 @@ final class ArtifactBlocksTests: XCTestCase {
             .reply(value: "ok", dataJSON: #"{"a":"x","b":[1,2]}"#),
             .target(ArtifactTargetAction(title: "Follow up with colleague A", intent: "They asked twice"))
         ])
-        XCTAssertEqual(ArtifactActionKind.open.storedName, "link")
-        XCTAssertEqual(ArtifactActionKind.target.storedName, "target")
+    }
+
+    /// Present-but-undecodable buttons are never "no buttons": the whole
+    /// card reads as unreadable, since block press indices count them.
+    func testUndecodableCardActionsMakeTheCardUnreadable() {
+        XCTAssertEqual(ArtifactDocument.decodeActions(""), .actions([]))
+        XCTAssertEqual(ArtifactDocument.decodeActions("[]"), .actions([]))
+        XCTAssertEqual(ArtifactDocument.decodeActions("[{"), .unreadable)
+        XCTAssertEqual(ArtifactDocument.decodeActions(#"{"label":"x"}"#), .unreadable)
+        XCTAssertEqual(ArtifactDocument.decodeActions(#"[{"label":"x","kind":"shell"}]"#), .unreadable)
+
+        let blocks = #"{"v":1,"blocks":[{"type":"actions","actions":[{"label":"Go","kind":"chat","chat":"hi"}]}]}"#
+        let broken = ArtifactDocument.decodeCard(blocksJSON: blocks, actionsJSON: #"[{"label":"x","kind":"shell"}]"#)
+        XCTAssertEqual(broken.result, .unreadable)
+        XCTAssertEqual(broken.cardActions, [])
+        let markdown = ArtifactDocument.decodeCard(blocksJSON: "", actionsJSON: "not json")
+        XCTAssertEqual(markdown.result, .unreadable)
+
+        let good = ArtifactDocument.decodeCard(blocksJSON: blocks, actionsJSON: #"[{"label":"Open","kind":"link","open":"https://example.com"}]"#)
+        guard case .document = good.result else { return XCTFail("a good card does not decode") }
+        XCTAssertEqual(good.cardActions.map(\.label), ["Open"])
+    }
+
+    /// The renderer's press indices come from the Kit: block i's offset (and
+    /// a list row's) is the index of its first action in `flattenedActions`.
+    func testBlockAndRowOffsetsMatchTheFlattenedOrder() throws {
+        let samples = try samples()
+        XCTAssertTrue(samples.documents.contains { $0.name == "actions-before-list" })
+        for sample in samples.documents {
+            let doc = try document(sample)
+            let card = try cardActions(sample)
+            let flat = doc.flattenedActions(cardActions: card)
+            let offsets = doc.blockActionOffsets(cardActionCount: card.count)
+            XCTAssertEqual(offsets.count, doc.blocks.count, sample.name)
+            for (index, block) in doc.blocks.enumerated() {
+                let blockActions = block.actions
+                XCTAssertEqual(Array(flat[offsets[index]..<offsets[index] + blockActions.count]), blockActions,
+                               "\(sample.name) block \(index)")
+                guard case let .list(list) = block else { continue }
+                for (row, start) in zip(list.rows, list.rowActionOffsets(start: offsets[index])) {
+                    XCTAssertEqual(Array(flat[start..<start + row.actions.count]), row.actions,
+                                   "\(sample.name) block \(index) row \(row.title)")
+                }
+            }
+        }
     }
 
     func testZeroRowListAndTableDecode() throws {

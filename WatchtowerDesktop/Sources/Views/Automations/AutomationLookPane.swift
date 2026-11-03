@@ -18,6 +18,7 @@ struct AutomationLookPane: View {
 
     /// The dimming of a preview under a running or stale dry run.
     static let dimmedOpacity = 0.45
+    static let emptyLine = "Dry-run the recipe to see its card on your data."
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
@@ -26,15 +27,13 @@ struct AutomationLookPane: View {
                 placeholder(icon: "tray.slash", "This automation doesn't make an Inbox card.",
                             detail: "Ask the chat to put its result in the Inbox.", showsDryRun: false)
             case .empty:
-                placeholder(icon: "rectangle.on.rectangle", "Dry-run the recipe to see its card on your data.",
-                            detail: nil, showsDryRun: true)
+                placeholder(icon: "rectangle.on.rectangle", Self.emptyLine, detail: nil, showsDryRun: true)
             case let .running(previous):
                 runningLine
                 if let previous {
-                    cards(previous.cards, selected: previous.selected).opacity(Self.dimmedOpacity)
+                    cards(previous).opacity(Self.dimmedOpacity)
                 } else {
-                    placeholder(icon: "rectangle.on.rectangle", "Dry-run the recipe to see its card on your data.",
-                                detail: nil, showsDryRun: false)
+                    placeholder(icon: "rectangle.on.rectangle", Self.emptyLine, detail: nil, showsDryRun: false)
                         .opacity(Self.dimmedOpacity)
                 }
             case let .failed(message, steps):
@@ -43,18 +42,18 @@ struct AutomationLookPane: View {
                 placeholder(icon: "tray", "This dry run made no card — it found nothing to show.",
                             detail: AutomationLookPaneContent.runLine(tokens: tokens, at: nil, now: now),
                             showsDryRun: true)
-            case let .preview(cardList, selected, tokens, at):
+            case let .preview(shown, tokens, at):
                 Text(AutomationLookPaneContent.runLine(tokens: tokens, at: at, now: now))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                cards(cardList, selected: selected)
-            case let .stale(cardList, selected):
+                cards(shown)
+            case let .stale(shown):
                 notice("The recipe changed since this preview.", tone: .secondary, showsDryRun: true)
-                cards(cardList, selected: selected).opacity(Self.dimmedOpacity)
-            case let .stopped(cardList):
+                cards(shown).opacity(Self.dimmedOpacity)
+            case let .stopped(shown):
                 notice("The dry run stopped at a Quick Connection; dry-run the saved recipe from its card to see the rest.",
                        tone: Tone.warning, showsDryRun: false)
-                if !cardList.isEmpty { cards(cardList, selected: 0) }
+                cards(shown)
             }
         }
         .font(.callout)
@@ -105,15 +104,8 @@ struct AutomationLookPane: View {
 
     private func failure(message: String, steps: [String]) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Label("The dry run failed", systemImage: "exclamationmark.octagon")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Tone.error)
-                Text(message).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Spacing.medium)
-            .card()
+            // No close: the error stays until the next dry run of this text.
+            WriteErrorBanner(message: "The dry run failed: \(message)", onClose: nil)
             if !steps.isEmpty {
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text("Last steps").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -137,10 +129,10 @@ struct AutomationLookPane: View {
     // MARK: - Cards
 
     @ViewBuilder
-    private func cards(_ cards: [AutomationLookPaneContent.Card], selected: Int) -> some View {
-        if cards.indices.contains(selected) {
-            if cards.count > 1 { picker(cards, selected: selected) }
-            AutomationLookCard(card: cards[selected])
+    private func cards(_ shown: AutomationLookPaneContent.Shown) -> some View {
+        if shown.cards.indices.contains(shown.selected) {
+            if shown.cards.count > 1 { picker(shown.cards, selected: shown.selected) }
+            AutomationLookCard(card: shown.cards[shown.selected])
         }
     }
 
@@ -174,8 +166,8 @@ struct AutomationLookCard: View {
                     Chip(text: "High", color: Tone.priority("high"))
                 }
             }
-            ArtifactCardBody(result: ArtifactDocument.decode(card.blocksJSON), text: card.body,
-                             cardActions: ArtifactDocument.decodeActions(card.actionsJSON) ?? [], mode: .preview)
+            ArtifactCardBody(blocksJSON: card.blocksJSON, actionsJSON: card.actionsJSON, text: card.body,
+                             mode: .preview)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.medium)

@@ -50,6 +50,8 @@ public struct ArtifactTargetButton: View {
         }
     }
 
+    /// Every state but idle keeps the recipe's label for VoiceOver:
+    /// "Sign off the checklist: Task created".
     @ViewBuilder private var content: some View {
         switch state {
         case .idle:
@@ -59,6 +61,7 @@ public struct ArtifactTargetButton: View {
                 .buttonStyle(.kitSecondary)
                 .foregroundStyle(.secondary)
                 .help("Open the approval card")
+                .accessibilityLabel(spoken("Waiting for approval"))
         case .creating:
             Button(action: {}, label: {
                 HStack(spacing: Spacing.small) {
@@ -68,35 +71,51 @@ public struct ArtifactTargetButton: View {
             })
             .buttonStyle(.kitSecondary)
             .disabled(true)
+            .accessibilityLabel(spoken("Creating task"))
         case .stuck:
             ArtifactTargetStuckLine(onTryAgain: action)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(spoken("Didn't finish"))
         case .created:
             Button(action: action) { Label("Task created", systemImage: "checkmark") }
                 .buttonStyle(.kitSecondary)
                 .help("Open the task")
+                .accessibilityLabel(spoken("Task created"))
         case let .failed(message):
             VStack(alignment: .trailing, spacing: Spacing.small) {
                 Button("Try again", action: action)
                     .buttonStyle(.kitSecondary)
                     .help("Apply the same proposal again")
-                Text("Couldn't create the task: \(message)")
-                    .font(.caption)
-                    .foregroundStyle(Tone.error)
-                    .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                    .accessibilityLabel(spoken("Try again"))
+                errorLine("Couldn't create the task: \(message)")
             }
         case let .proposeError(message):
             VStack(alignment: .trailing, spacing: Spacing.small) {
                 idleButton
-                ArtifactErrorLine(message: "Couldn't propose the task: \(message)")
+                errorLine("Couldn't propose the task: \(message)")
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(spoken("Couldn't propose the task"))
         }
     }
 
     private var idleButton: some View {
         Button(action: action) { Label(label, systemImage: "checklist") }
             .buttonStyle(.kitSecondary)
+    }
+
+    private func spoken(_ state: String) -> String {
+        "\(label): \(state)"
+    }
+
+    /// The one error look of the button: why the apply or the press failed.
+    private func errorLine(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(Tone.error)
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
     }
 }
 
@@ -118,33 +137,6 @@ public struct ArtifactTargetStuckLine: View {
             Button("Try again", action: onTryAgain)
                 .buttonStyle(.kitSecondary)
                 .help("Creating the task didn't finish. Try again applies the same proposal.")
-        }
-    }
-}
-
-/// A failed write's reason on a soft warning fill, the kit's twin of the
-/// app's write-error banner for a single button.
-struct ArtifactErrorLine: View {
-    let message: String
-
-    var body: some View {
-        Label(message, systemImage: "exclamationmark.triangle.fill")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .labelStyle(ArtifactErrorLabelStyle())
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-            .padding(.horizontal, Spacing.regular)
-            .padding(.vertical, Spacing.compact)
-            .background(Tone.warning.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.control))
-    }
-}
-
-private struct ArtifactErrorLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-            configuration.icon.foregroundStyle(Tone.warning)
-            configuration.title
         }
     }
 }

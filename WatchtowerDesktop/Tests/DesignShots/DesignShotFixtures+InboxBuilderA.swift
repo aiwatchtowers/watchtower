@@ -42,13 +42,13 @@ enum InboxBuilderAShotFixtures {
                 message: "output.inbox(): blocks[1].rows[0].badge.tone must be one of neutral, info, success, "
                     + "warning, danger, accent",
                 steps: ["1 · slack.list_mentions — ok", "2 · output.inbox — error"]), nil),
-            ("look-preview", .preview(cards: waiting, selected: 0, tokens: 3100, at: now), nil),
-            ("look-preview-picker", .preview(cards: living, selected: 0, tokens: 3100, at: now), nil),
-            ("look-stale", .stale(cards: waiting, selected: 0), nil),
-            ("look-stopped", .stopped(cards: waiting), nil),
+            ("look-preview", .preview(.init(cards: waiting), tokens: 3100, at: now), nil),
+            ("look-preview-picker", .preview(.init(cards: living), tokens: 3100, at: now), nil),
+            ("look-stale", .stale(.init(cards: waiting)), nil),
+            ("look-stopped", .stopped(.init(cards: waiting)), nil),
             ("look-no-inbox-output", .noInboxOutput, nil),
             ("look-no-card", .noCard(tokens: 1200), nil),
-            ("look-save-llm-warning", .preview(cards: [waitingCard(sample: "waiting-with-summary")], selected: 0,
+            ("look-save-llm-warning", .preview(.init(cards: [waitingCard(sample: "waiting-with-summary")]),
                                                tokens: 5800, at: now), 5800)
         ]
         return states.map { name, content, llmTokens in
@@ -231,9 +231,10 @@ enum InboxBuilderAShotFixtures {
     private static func sample(_ name: String) throws -> Sample {
         let documents = try XCTUnwrap(try samplesObject()["documents"] as? [[String: Any]])
         let entry = try XCTUnwrap(documents.first { $0["name"] as? String == name }, "no sample \(name)")
-        let cardActions = try text(entry["card_actions"])
-        return Sample(json: try text(entry["document"]),
-                      cardActions: try XCTUnwrap(ArtifactDocument.decodeActions(cardActions)))
+        guard case let .actions(cardActions) = ArtifactDocument.decodeActions(try text(entry["card_actions"])) else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        return Sample(json: try text(entry["document"]), cardActions: cardActions)
     }
 
     private static func unsupportedJSON() -> String {

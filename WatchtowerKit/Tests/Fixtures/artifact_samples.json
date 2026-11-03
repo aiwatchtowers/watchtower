@@ -139,6 +139,32 @@
       ]
     },
     {
+      "name": "actions-before-list",
+      "card_actions": [
+        {"label": "Open", "kind": "link", "open": "https://example.com/acme"}
+      ],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "actions", "actions": [
+            {"label": "Discuss", "kind": "chat", "chat": "What is open?"},
+            {"label": "Tidy", "kind": "agent", "agent": {"task": "Tidy the acme board"}}
+          ]},
+          {"type": "heading", "text": "Open", "level": 2},
+          {"type": "list", "title": "", "empty": "Nothing here", "rows": [
+            {"title": "First", "link": "", "actions": [{"label": "Reply A", "kind": "reply", "reply": "a"}]},
+            {"title": "No buttons", "link": "", "actions": []},
+            {"title": "Third", "link": "", "actions": [
+              {"label": "Reply C", "kind": "reply", "reply": "c"},
+              {"label": "Task C", "kind": "target", "target": {"title": "Follow up on C"}}
+            ]}
+          ]}
+        ]
+      },
+      "actions": 6,
+      "refs": []
+    },
+    {
       "name": "empty-list-and-table",
       "card_actions": [],
       "document": {

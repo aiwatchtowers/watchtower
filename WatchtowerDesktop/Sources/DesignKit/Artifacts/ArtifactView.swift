@@ -17,7 +17,7 @@ public struct ArtifactView: View {
     }
 
     public var body: some View {
-        let offsets = Self.actionOffsets(document.blocks, start: cardActions.count)
+        let offsets = document.blockActionOffsets(cardActionCount: cardActions.count)
         VStack(alignment: .leading, spacing: Spacing.medium) {
             ForEach(Array(document.blocks.enumerated()), id: \.offset) { index, block in
                 ArtifactBlockView(block: block, firstIndex: offsets[index], mode: mode)
@@ -28,15 +28,6 @@ public struct ArtifactView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Each block's first flattened index: the card's actions come first.
-    static func actionOffsets(_ blocks: [ArtifactBlock], start: Int) -> [Int] {
-        var next = start
-        return blocks.map { block in
-            defer { next += block.actionCount }
-            return next
-        }
     }
 }
 
@@ -51,8 +42,8 @@ public struct ArtifactCardBody: View {
     let cardActions: [ArtifactAction]
     let mode: ArtifactRenderMode
 
-    public static let unsupportedLine = "This card needs a newer Watchtower."
-    public static let unreadableLine = "This card's layout can't be read."
+    public static let unsupportedLine = "This card needs a newer Watchtower"
+    public static let unreadableLine = "This card's layout can't be read"
 
     public init(
         result: ArtifactDecodeResult,
@@ -64,6 +55,14 @@ public struct ArtifactCardBody: View {
         self.text = text
         self.cardActions = cardActions
         self.mode = mode
+    }
+
+    /// A stored card: its `blocks_json` and its own `actions_json`, decoded
+    /// together (`ArtifactDocument.decodeCard`), so undecodable buttons draw
+    /// the unreadable fallback instead of shifting every press index.
+    public init(blocksJSON: String, actionsJSON: String, text: String, mode: ArtifactRenderMode) {
+        let card = ArtifactDocument.decodeCard(blocksJSON: blocksJSON, actionsJSON: actionsJSON)
+        self.init(result: card.result, text: text, cardActions: card.cardActions, mode: mode)
     }
 
     public var body: some View {
@@ -91,16 +90,6 @@ public struct ArtifactCardBody: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             ArtifactView(document: ArtifactDocument(blocks: []), cardActions: cardActions, mode: mode)
-        }
-    }
-}
-
-extension ArtifactBlock {
-    var actionCount: Int {
-        switch self {
-        case let .list(list): list.rows.reduce(0) { $0 + $1.actions.count }
-        case let .actions(actions): actions.count
-        default: 0
         }
     }
 }
@@ -176,7 +165,7 @@ struct ArtifactListView: View {
     @Environment(\.artifactEnvironment) private var environment
 
     var body: some View {
-        let offsets = rowOffsets
+        let offsets = list.rowActionOffsets(start: firstIndex)
         let shown = list.rows.indices.filter { index in
             list.rows[index].ref.map(environment.refHooks.isOpen) ?? true
         }
@@ -195,14 +184,6 @@ struct ArtifactListView: View {
         }
         // The rows' hover plates sit flush with the card's other blocks.
         .padding(.horizontal, -Spacing.regular)
-    }
-
-    private var rowOffsets: [Int] {
-        var next = firstIndex
-        return list.rows.map { row in
-            defer { next += row.actions.count }
-            return next
-        }
     }
 }
 
@@ -452,16 +433,19 @@ struct ArtifactActionButton: View {
 
     static func symbol(_ kind: ArtifactActionKind) -> String? {
         switch kind {
-        case .open: nil
         case .chat: "bubble.left"
         case .agent: "sparkles"
         case .reply: "arrowshape.turn.up.left"
-        case .target: "checklist"
+        // A target action draws `ArtifactTargetButton` instead.
+        case .open, .target: nil
         }
     }
 }
 
 /// A whole row or card that opens its link, in the Inbox and the preview alike.
+/// Known limitation: a tap gesture is not a focusable control, so these
+/// links (list rows, table cells, the link block, a person card) cannot be
+/// reached or opened from the keyboard; VoiceOver sees them as links.
 struct ArtifactLinkTap: ViewModifier {
     let link: String?
     @Environment(\.openURL) private var openURL

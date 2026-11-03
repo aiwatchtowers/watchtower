@@ -37,7 +37,7 @@ package enum AutomationLookPaneContent: Equatable, Sendable {
         }
     }
 
-    /// The cards of the last preview and which one was shown (`running` draws them dimmed).
+    /// The cards on screen and which one is shown (the picker's choice).
     package struct Shown: Equatable, Sendable {
         package let cards: [Card]
         package let selected: Int
@@ -59,13 +59,14 @@ package enum AutomationLookPaneContent: Equatable, Sendable {
     /// The dry run succeeded and made no Inbox card.
     case noCard(tokens: Int)
     /// The newest dry run of this text made at least one card.
-    case preview(cards: [Card], selected: Int, tokens: Int, at: Date)
-    /// The newest dry run is of other bytes than the text on screen.
-    case stale(cards: [Card], selected: Int)
+    case preview(Shown, tokens: Int, at: Date)
+    /// The newest dry run is of other bytes than the text on screen: its cards, dimmed.
+    case stale(Shown)
     /// The draft stopped at an `mcp()` call; the cards made before it, if any.
-    case stopped(cards: [Card])
+    case stopped(Shown)
 
-    /// "Waiting for you · 3"; a living card adds its key.
+    /// The picker's line for one card: "Card 1 of 4 — Waiting for you";
+    /// a living card adds " · key: waiting".
     package static func pickerTitle(_ card: Card, index: Int, count: Int) -> String {
         let key = card.key.isEmpty ? "" : " · key: \(card.key)"
         return "Card \(index + 1) of \(count) — \(card.title)\(key)"
@@ -74,16 +75,10 @@ package enum AutomationLookPaneContent: Equatable, Sendable {
     /// "Dry run · 3,100 tokens · just now".
     package static func runLine(tokens: Int, at: Date?, now: Date) -> String {
         var parts = ["Dry run", AutomationCardPresentation.tokensText(Int64(tokens), estimated: false)]
-        if let at { parts.append(age(of: at, now: now)) }
+        if let at {
+            let age = TimeFormatting.shortAge(from: at, now: now)
+            parts.append(at.distance(to: now) < 60 ? age : "\(age) ago")
+        }
         return parts.joined(separator: " · ")
-    }
-
-    private static func age(of date: Date, now: Date) -> String {
-        let seconds = now.timeIntervalSince(date)
-        if seconds < 60 { return "just now" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: now)
     }
 }

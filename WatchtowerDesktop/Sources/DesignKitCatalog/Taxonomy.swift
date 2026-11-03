@@ -103,10 +103,10 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .containers: ["card", "kitRow"]
         case .artifacts: ["ArtifactView", "ArtifactCardBody", "ArtifactRenderMode", "ArtifactEnvironment",
                           "artifactEnvironment", "ArtifactRefHooks", "ArtifactTargetButton", "ArtifactTargetButtonState",
-                          "ArtifactTargetStuckLine", "ArtifactDocument", "ArtifactDecodeResult", "ArtifactBlock",
-                          "ArtifactListRow", "ArtifactTableColumn", "ArtifactTableCell", "ArtifactMetric",
-                          "ArtifactPersonLine", "ArtifactBadge", "ArtifactTone", "ArtifactAction", "ArtifactActionKind",
-                          "ArtifactTargetAction", "ArtifactRef", "ArtifactRefKind"]
+                          "ArtifactTargetStuckLine", "ArtifactDocument", "ArtifactDecodeResult",
+                          "ArtifactActionsDecodeResult", "ArtifactBlock", "ArtifactListRow", "ArtifactTableColumn",
+                          "ArtifactTableCell", "ArtifactMetric", "ArtifactPersonLine", "ArtifactBadge", "ArtifactTone",
+                          "ArtifactAction", "ArtifactActionKind", "ArtifactTargetAction", "ArtifactRef", "ArtifactRefKind"]
         case .settings: ["SettingsSection", "SettingRow", "ManagedByOrganizationBadge", "managedByOrganization"]
         case .panels: ["PanelSplit", "PanelSplitWidth", "PanelResizeHandle", "panelSurface", "panelTab",
                        "panelListStyle", "workspaceListStyle", "clearPlainList"]
