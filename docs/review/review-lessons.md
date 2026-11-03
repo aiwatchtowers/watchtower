@@ -2582,3 +2582,11 @@ Entry format:
 - weak-dimension: 7. The tests exercise typed causes and subprocess envelopes separately, but missed their composition with existing retry markers and the legacy envelope shape. External Codex was unavailable after automatic approval rejected diff transmission; toolkit APIs were unavailable, so built-in prosecutor, test and failure/security lanes supplied the panel evidence.
 - rule-gap: no new binding rule needed; the approved task explicitly preserves pipeline error handling, and the common checklist preserves errors with fallback disabled. Actual baseline/current execution distinguished two independent compatibility failures.
 - outcome: TBD
+
+## 2026-11-03 — provider-fallback shared health (#1485, Task 3) — verdict: approve
+
+- contested: helper processes exercise shared persisted ownership, crash release and initialization, but starting two helpers alone does not guarantee simultaneous lock contention. A rendezvous would strengthen concurrency evidence; inspection of the lock-held read/modify/atomic-replace transaction found no corresponding defect. [7]
+- false-positive: a coverage quality rating of 8/10 is not a severity-8 gap. Missing backward-clock and late-write-failure injection tests are optional strengthening here: comparisons defer work conservatively, and Claim explicitly discards its capability on transaction failure. [6/7]
+- weak-dimension: independent review breadth was limited by external Codex diff transmission being rejected by automatic approval review and unavailable toolkit APIs; three built-in lanes supplied evidence. The judge inspected source and existing filesystem seams without rerunning checks. [7]
+- rule-gap: no new rule; task-scope approval covers the storage primitive. Combining account/model scopes, bounded degraded routing and caller cleanup contexts remain integration obligations in the approved dependent task.
+- outcome: TBD
