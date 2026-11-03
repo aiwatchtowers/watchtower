@@ -73,7 +73,8 @@ func LoadLedger(workspaceDir string) (*Ledger, error) {
 		return nil, fmt.Errorf("reading the slack backfill ledger %s: %w", l.path, err)
 	}
 	if err := json.Unmarshal(b, l); err != nil {
-		return nil, fmt.Errorf("the slack backfill ledger %s is unreadable; delete it and the next run decides its days again: %w", l.path, err)
+		return nil, fmt.Errorf("the slack backfill ledger %s is unreadable; deleting it lets the next run decide its days again, "+
+			"but a day an earlier run already fetched may then keep undigested messages: %w", l.path, err)
 	}
 	if l.Days == nil {
 		l.Days = map[string]*ledgerDay{}

@@ -196,6 +196,7 @@ type Pipeline struct {
 	backfillRollups                      bool
 	backfillRollupFrom, backfillRollupTo float64
 	backfillRollupAccountID              int64
+	backfillRollupReceipts               bool // write history_backfill_daily receipts (RunBackfillRollupsForAccount under routing)
 }
 
 // backfillScope is set only while RunBackfillWindow runs: a backfill window
@@ -1532,7 +1533,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		return fmt.Errorf("checking existing daily rollup for %s: %w", dayStart.Format("2006-01-02"), err)
 	}
 	if !needed {
-		if p.backfillRollups && RoutingEnabled(p.generator) {
+		if p.backfillRollupReceipts {
 			return p.db.MarkHistoryBackfillDailyExisting(p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo, fromUnix, toUnix)
 		}
 		return nil // nothing new since the last rollup for this day
@@ -1889,7 +1890,7 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 
 	var digestID int64
 	var err error
-	if digestType == "daily" && p.backfillRollups && RoutingEnabled(p.generator) {
+	if digestType == "daily" && p.backfillRollupReceipts {
 		digestID, err = p.db.UpsertHistoryBackfillDaily(d, p.backfillRollupAccountID, p.backfillRollupFrom, p.backfillRollupTo)
 	} else if digestType == "daily" && p.dailyAttemptID != "" {
 		digestID, err = p.db.UpsertDailyDigestAttempt(d, p.dailyAttemptID)

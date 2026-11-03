@@ -157,14 +157,13 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	// First of the writes, so a failure leaves the row moved and the next
 	// sign-in tries again; once the row is home, nothing would.
 	if moved {
-		rewound, err := rewindMovedSlackAccount(database, id)
+		covered, err := rewindMovedSlackAccount(database, id)
 		if err != nil {
 			return slackIdentity{}, fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
 		}
-		if !rewound {
-			// No stored message older than the watermark to rewind to (or the
-			// other team's messages were stored under this account): the days
-			// the other team's searches passed over stay missing.
+		if !covered {
+			// Nothing to rewind to (rewindMovedSlackAccount): the days the
+			// other team's searches passed over may stay missing.
 			fmt.Fprintf(warnOut, "warning: slack account %d is back on its workspace, but the next sync may not fetch "+
 				"the days it missed; fetch them with `watchtower slack backfill --account %d --from YYYY-MM-DD --to YYYY-MM-DD`\n", id, id)
 		}
@@ -271,24 +270,31 @@ func refuseDuplicateSlackTeam(database *db.DB, id int64, identity slackIdentity)
 // search sync fetches the days the wrong team's empty searches marked as done.
 // The search window clamps a gap over 30 days and records it on the account.
 // An account with no stored message or no watermark is left as it is.
-// rewound reports that the next sync searches the missed days: the watermark
-// moved back, or there is none (a first sync). It is false when nothing older
-// than the watermark is stored to rewind to — no message at all, or the other
-// team's messages stored under the account after its move.
-func rewindMovedSlackAccount(database *db.DB, id int64) (rewound bool, err error) {
+// covered reports that the next sync searches the missed days: the watermark
+// moved back, it already sits before the newest message, or there is none (a
+// first sync). It is false when there is nothing to rewind to — no stored
+// message, or the newest one on the watermark's own day (possibly the other
+// team's, stored under the account after its move).
+func rewindMovedSlackAccount(database *db.DB, id int64) (covered bool, err error) {
 	current, err := database.GetSlackAccountSearchWatermark(id)
-	if err != nil || current == "" {
-		return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	if current == "" {
+		return true, nil
 	}
 	newest, ok, err := database.LatestSlackMessageTime(id)
 	if err != nil || !ok {
 		return false, err
 	}
-	day := newest.Format("2006-01-02")
-	if day >= current {
+	switch day := newest.Format("2006-01-02"); {
+	case day == current:
 		return false, nil
+	case day > current:
+		return true, nil
+	default:
+		return true, database.SetSlackAccountSearchWatermark(id, day)
 	}
-	return true, database.SetSlackAccountSearchWatermark(id, day)
 }
 
 // rollbackSlackAccount soft-removes a row a command just created after its

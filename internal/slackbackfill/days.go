@@ -3,6 +3,7 @@ package slackbackfill
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -48,8 +49,9 @@ func spanOf(from, to time.Time) span { return span{float64(from.Unix()), float64
 func utcDaysNewestFirst(from, to time.Time) [][2]time.Time {
 	var out [][2]time.Time
 	for d := from.UTC().Truncate(24 * time.Hour); d.Before(to); d = d.Add(24 * time.Hour) {
-		out = append([][2]time.Time{{maxTime(d, from), minTime(d.Add(24*time.Hour), to)}}, out...)
+		out = append(out, [2]time.Time{maxTime(d, from), minTime(d.Add(24*time.Hour), to)})
 	}
+	slices.Reverse(out)
 	return out
 }
 

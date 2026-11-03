@@ -94,7 +94,7 @@ func TestLoadLedger(t *testing.T) {
 	_, err = LoadLedger(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), filepath.Join(dir, LedgerFile), "the error names the file")
-	assert.Contains(t, err.Error(), "delete it and the next run decides its days again")
+	assert.Contains(t, err.Error(), "deleting it lets the next run decide its days again")
 }
 
 // Two runs in one workspace would overwrite each other's ledger.

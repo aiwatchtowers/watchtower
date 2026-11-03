@@ -311,6 +311,42 @@ func TestRange_PendingRollupSurvivesAFailedRollup(t *testing.T) {
 	assert.False(t, f.ledgerDay(t, 1, day).RollupPending)
 }
 
+// routedGen is recGen behind provider routing (cliPooledGenerator's shape):
+// the backfill takes its durable path.
+type routedGen struct{ *recGen }
+
+func (routedGen) RoutingPreflight(context.Context) error { return nil }
+
+// Under routing, a later run that digests new messages of a day rebuilds
+// that day's rollup again: no history-backfill receipt from the first run
+// skips it.
+func TestRange_RoutedRerunRebuildsTheRollup(t *testing.T) {
+	f := newFixture(t)
+	f.pipe = digest.New(f.db, &config.Config{ActiveWorkspace: "test", Digest: config.DigestConfig{Enabled: true, MinMessages: 1}},
+		routedGen{f.gen}, log.New(io.Discard, "", 0))
+	require.True(t, digest.RoutingEnabled(routedGen{f.gen}))
+	day := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	seedMessage(t, f.db, "1:C0", day.Add(time.Hour), "seen")
+	seedDigest(t, f.db, "1:C0", day, day.Add(time.Hour))
+	seedMessage(t, f.db, "1:C1", day.Add(3*time.Hour), "first")
+	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
+	require.Equal(t, 1, dailyOn(t, f.db, day))
+	// The rollup is older than the next run's digest.
+	_, err := f.db.Exec(`UPDATE digests SET created_at = '2000-01-01T00:00:00Z' WHERE type = 'daily'`)
+	require.NoError(t, err)
+
+	seedMessage(t, f.db, "1:C2", day.Add(5*time.Hour), "second") // a channel with no digest yet
+	calls := f.gen.calls()
+	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
+	assert.Equal(t, calls+2, f.gen.calls(), "one digest and the day's rollup again")
+	var created string
+	require.NoError(t, f.db.QueryRow(`SELECT created_at FROM digests WHERE type = 'daily'`).Scan(&created))
+	assert.NotEqual(t, "2000-01-01T00:00:00Z", created, "the rollup was rebuilt")
+	var receipts int
+	require.NoError(t, f.db.QueryRow(`SELECT COUNT(*) FROM history_backfill_considered`).Scan(&receipts))
+	assert.Zero(t, receipts, "no considered receipt pins a later run's window")
+}
+
 // A pending rollup whose digest lock another run holds is held, not failed.
 func TestRange_PendingRollupWaitsForAHeldLock(t *testing.T) {
 	f := newFixture(t)
@@ -421,6 +457,37 @@ func TestRange_PurgeStartingMidRunStops(t *testing.T) {
 	assert.Contains(t, err.Error(), "run the backfill again once it finishes")
 	assert.Len(t, f.fetch.chunks, 1, "the next chunk is not fetched")
 	assert.Zero(t, f.gen.calls(), "nothing is digested")
+}
+
+// A purge that starts and finishes inside one fetch is caught too: the next
+// check sees a newer finished purge than the run's first one.
+func TestRange_PurgeFinishingMidRunStops(t *testing.T) {
+	f := newFixture(t)
+	floor := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	f.fetch.onFetch = func(from, _ time.Time) error {
+		seedMessage(t, f.db, "1:C1", from.Add(time.Hour), "news")
+		_, err := f.db.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state, finished_at)
+			VALUES ('slack', 1, 'revoked', '2026-01-01T00:00:00Z', 'done', '2026-02-01T00:00:00Z')`)
+		return err
+	}
+
+	err := f.runRange(t, floor, floor.AddDate(0, 0, 3))
+	require.ErrorIs(t, err, ErrPurgedDuringRun)
+	assert.Contains(t, err.Error(), "Re-login")
+	assert.Len(t, f.fetch.chunks, 1)
+	assert.Zero(t, f.gen.calls())
+}
+
+// A team mismatch shows the owner's text and still unwraps to its cause.
+func TestRange_TeamMismatchKeepsItsChain(t *testing.T) {
+	f := newFixture(t)
+	floor := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	mismatch := &sync.TeamMismatchError{AccountID: 1, Home: db.SlackHomeTeam{ID: "T_HOME", Name: "Acme"}, TeamID: "T_OTHER"}
+	f.fetch.onFetch = func(_, _ time.Time) error { return fmt.Errorf("%w: %w", sync.ErrBackfillIncomplete, mismatch) }
+
+	err := f.runRange(t, floor, floor.AddDate(0, 0, 1))
+	require.ErrorIs(t, err, sync.ErrSlackTeamMismatch)
+	assert.Equal(t, mismatch.OwnerMessage(), err.Error())
 }
 
 // A day decided before the account's latest finished purge is decided

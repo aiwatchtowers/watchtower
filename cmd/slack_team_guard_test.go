@@ -162,12 +162,28 @@ func TestConnectSlackAccount_RepairKeepsAnOlderWatermark(t *testing.T) {
 
 	_, warn, err := env.connectWarnings(t)
 	require.NoError(t, err)
-	assert.Equal(t, 1, strings.Count(warn, "watchtower slack backfill --account 1"),
-		"the watermark did not move: one warning points at the backfill")
+	assert.Empty(t, warn, "the next sync searches from the older watermark: nothing to warn about")
 	acct, err := env.db.GetSlackAccount(env.id)
 	require.NoError(t, err)
 	assert.Equal(t, "T_HOME", acct.TeamID)
 	assert.Equal(t, "2026-03-01", acct.SearchLastDate, "a watermark older than the newest message stays")
+}
+
+// The newest stored message sits on the watermark's own day (the other
+// team's messages may be stored under the account): no rewind, one warning
+// pointing at the backfill.
+func TestConnectSlackAccount_RepairOnTheWatermarkDayWarnsOnce(t *testing.T) {
+	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
+	require.NoError(t, env.db.SetSlackAccountSearchWatermark(env.id, "2026-03-05"))
+	env.addMessage(t, time.Date(2026, 3, 5, 12, 0, 0, 0, time.Local))
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+
+	_, warn, err := env.connectWarnings(t)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(warn, "watchtower slack backfill --account 1"), warn)
+	acct, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-03-05", acct.SearchLastDate)
 }
 
 // `slack add` of a team another live account already holds would sync the

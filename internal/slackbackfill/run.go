@@ -33,7 +33,7 @@ type Fetcher interface {
 // Digester writes the chunk digests and daily rollups (digest.Pipeline).
 type Digester interface {
 	RunBackfillWindowChannels(ctx context.Context, slackAccountID int64, from, to float64, channels []string) (digest.BackfillWindowResult, *digest.Usage, error)
-	RunBackfillRollupsForAccount(ctx context.Context, account int64, from, to float64) error
+	RunBackfillDayRollups(ctx context.Context, from, to float64) error
 	InitialHistorySince(nowUnix float64) float64
 }
 
@@ -43,6 +43,11 @@ type Digester interface {
 var ErrPurgeRunning = errors.New("watchtower is deleting this account's data; " +
 	"run the backfill again once it finishes (see 'watchtower accounts purges')")
 
+// ErrPurgedDuringRun stops a backfill whose account a purge deleted between
+// two checks: its token is gone and the account needs a Re-login.
+var ErrPurgedDuringRun = errors.New("watchtower deleted this account's data during the backfill; " +
+	"Re-login, then run the backfill again")
+
 // Run is one `slack backfill` command.
 type Run struct {
 	DB     *db.DB
@@ -51,7 +56,19 @@ type Run struct {
 	Ledger *Ledger  // held under LockLedger
 	Out    io.Writer
 	Now    func() time.Time // nil: time.Now
+
+	purgeChecked bool   // CheckPurge ran once and recorded purgedAt
+	purgedAt     string // the account's latest finished purge at the first check
 }
+
+// ownerError shows an owner text and still unwraps to its cause.
+type ownerError struct {
+	msg   string
+	cause error
+}
+
+func (e *ownerError) Error() string { return e.msg }
+func (e *ownerError) Unwrap() error { return e.cause }
 
 func (r *Run) now() time.Time {
 	if r.Now != nil {
@@ -60,9 +77,10 @@ func (r *Run) now() time.Time {
 	return time.Now()
 }
 
-// CheckPurge returns ErrPurgeRunning while the account's purge runs. Range
-// checks it before each chunk and each digest day; a purge that starts during
-// one fetch finds that chunk's rows still in place and deletes them.
+// CheckPurge returns ErrPurgeRunning while the account's purge runs, and
+// ErrPurgedDuringRun once a purge finished after the run's first check.
+// Range checks it before each chunk and each digest day, so a purge that
+// starts, or even finishes, during one fetch stops the run at the next step.
 func (r *Run) CheckPurge() error {
 	id := r.Fetch.AccountID()
 	running, err := r.DB.AccountPurgeRunning("slack", id)
@@ -71,6 +89,15 @@ func (r *Run) CheckPurge() error {
 	}
 	if running {
 		return fmt.Errorf("slack account %d: %w", id, ErrPurgeRunning)
+	}
+	latest, err := lastFinishedPurge(r.DB, id)
+	if err != nil {
+		return err
+	}
+	if !r.purgeChecked {
+		r.purgeChecked, r.purgedAt = true, latest
+	} else if latest != r.purgedAt {
+		return fmt.Errorf("slack account %d: %w", id, ErrPurgedDuringRun)
 	}
 	return nil
 }
@@ -103,9 +130,9 @@ func (r *Run) Range(ctx context.Context, floor, upper time.Time) error {
 		if err != nil {
 			var mismatch *sync.TeamMismatchError
 			if errors.As(err, &mismatch) {
-				return errors.New(mismatch.OwnerMessage())
+				return &ownerError{msg: mismatch.OwnerMessage(), cause: err}
 			}
-			if errors.Is(err, ErrPurgeRunning) {
+			if errors.Is(err, ErrPurgeRunning) || errors.Is(err, ErrPurgedDuringRun) {
 				return err
 			}
 			return fmt.Errorf("%s: %w; resume with --to %s", days, err, last)
@@ -141,11 +168,11 @@ func (r *Run) freeze(floor, upper time.Time) error {
 		day := spanOf(d, d.Add(24*time.Hour))
 		digests, err := r.DB.ChannelDigestsOverlapping(id, day.from, day.to)
 		if err != nil {
-			return err
+			return fmt.Errorf("deciding %s of slack account %d: %w", utcDayKey(d), id, err)
 		}
 		times, err := r.DB.ChannelMessageTimesInRange(id, day.from, day.to)
 		if err != nil {
-			return err
+			return fmt.Errorf("deciding %s of slack account %d: %w", utcDayKey(d), id, err)
 		}
 		r.Ledger.Days[key] = &ledgerDay{
 			Excluded:      excludedDigests(day, digests, times),
@@ -253,7 +280,7 @@ func (r *Run) digestDay(ctx context.Context, dayFrom, dayTo time.Time) (digests 
 		day.RollupPending = false
 		return 0, false, r.Ledger.save()
 	}
-	if err := r.Digest.RunBackfillRollupsForAccount(ctx, id, float64(dayFrom.Unix()), float64(dayTo.Unix())); err != nil {
+	if err := r.Digest.RunBackfillDayRollups(ctx, float64(dayFrom.Unix()), float64(dayTo.Unix())); err != nil {
 		if errors.Is(err, digest.ErrDigestLocked) {
 			return digests, false, errors.New("messages and digests saved, a daily rollup waits for another digest run; run it again")
 		}

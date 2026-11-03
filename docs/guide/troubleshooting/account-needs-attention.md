@@ -32,7 +32,7 @@ A Slack row says **Signed in to a different Slack workspace (…) — Re-login t
 1. Press **Re-login** on the row. If Slack's page shows another workspace, switch to the one the row names first, then approve.
 2. To use the workspace you chose by mistake too, press **Add Slack Workspace** and sign in to it there; it becomes an account of its own.
 
-After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run). With digests on, it writes digests only for messages no digest covered yet, and rebuilds the daily summary of those days; what a digest already covered keeps its digest. Messages newer than a channel's latest digest are left to the regular digests. Mentions from those days show in digests, not in the Inbox.
+After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run). With digests on, it writes digests only for messages no digest covered yet, and rebuilds the daily summary of those days; what a digest already covered keeps its digest. Messages newer than a channel's latest digest (for a channel never digested, newer than the first sync's look-back) are left to the regular digests. Mentions from those days show in digests, not in the Inbox.
 
 ## How to check
 

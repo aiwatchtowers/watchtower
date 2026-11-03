@@ -1,6 +1,7 @@
 package slackbackfill
 
 import (
+	"cmp"
 	"slices"
 	"sort"
 
@@ -24,15 +25,7 @@ func uncovered(window span, limit float64, covering []span, times []float64) []s
 		return nil
 	}
 	covering = slices.Clone(covering)
-	slices.SortFunc(covering, func(a, b span) int {
-		switch {
-		case a.from < b.from:
-			return -1
-		case a.from > b.from:
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(covering, func(a, b span) int { return cmp.Compare(a.from, b.from) })
 	var pieces []span
 	cur := window.from
 	for _, c := range covering {

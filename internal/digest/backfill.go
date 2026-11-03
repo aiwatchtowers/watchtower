@@ -53,8 +53,9 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 // backfill`, internal/slackbackfill), so a digest ending inside the window
 // does not move a channel's start: each channel loads (from, to] — a message
 // on `from` belongs to the digest ending there — and a call's passes advance
-// on what the call itself considered. An empty list digests nothing and is
-// complete.
+// on what the call itself considered, kept in memory even under routing (no
+// history_backfill_considered receipt: a later run over the same window must
+// see messages fetched since). An empty list digests nothing and is complete.
 func (p *Pipeline) RunBackfillWindowChannels(ctx context.Context, slackAccountID int64, from, to float64, channels []string) (BackfillWindowResult, *Usage, error) {
 	if len(channels) == 0 {
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
@@ -82,7 +83,7 @@ func (p *Pipeline) runBackfillWindow(ctx context.Context, slackAccountID int64, 
 	defer unlock()
 
 	p.loadCaches()
-	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator), only: only}
+	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator) && only == nil, only: only}
 	if scope.durable {
 		scope.considered, err = p.db.HistoryBackfillConsidered(slackAccountID, from, to)
 		if err != nil {
@@ -203,17 +204,18 @@ func (p *Pipeline) backfillWindows(slackAccountID int64, from, to, fastForwardTS
 	b := p.backfill
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	scoped := b.only != nil // RunBackfillWindowChannels
 	windows := make([]channelWindow, 0, len(candidates))
 	for _, c := range candidates {
-		if b.failed[c.ChannelID] || (b.only != nil && !b.only[c.ChannelID]) {
+		if b.failed[c.ChannelID] || (scoped && !b.only[c.ChannelID]) {
 			continue
 		}
 		since := max(from, b.considered[c.ChannelID], fastForwardTS)
-		if b.only == nil {
+		if !scoped {
 			since = max(since, c.LastDigestInRange)
 		}
 		if c.NewestInRange > since {
-			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since, afterSince: b.only != nil})
+			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since, afterSince: scoped})
 		}
 	}
 	if len(windows) == 0 {
@@ -250,6 +252,19 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 // RunBackfillRollupsForAccount gives each source chunk its own completion
 // receipts, while the daily output still summarizes workspace-global channels.
 func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int64, from, to float64) error {
+	return p.runBackfillRollups(ctx, account, from, to, true)
+}
+
+// RunBackfillDayRollups is RunBackfillRollups without the history backfill's
+// per-chunk completion receipts: `slack backfill` rebuilds a day's rollup
+// each time it writes new digests there, and a receipt from its earlier run
+// over the same day would skip the rebuild. A day whose rollup is newer than
+// every channel digest of the day is still left alone (dailyRollupNeeded).
+func (p *Pipeline) RunBackfillDayRollups(ctx context.Context, from, to float64) error {
+	return p.runBackfillRollups(ctx, 0, from, to, false)
+}
+
+func (p *Pipeline) runBackfillRollups(ctx context.Context, account int64, from, to float64, receipts bool) error {
 	if !p.cfg.Digest.Enabled {
 		return nil
 	}
@@ -262,9 +277,10 @@ func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int
 
 	p.loadCaches()
 	p.backfillRollups = true
+	p.backfillRollupReceipts = receipts && RoutingEnabled(p.generator)
 	p.backfillRollupFrom, p.backfillRollupTo = from, to
 	p.backfillRollupAccountID = account
-	defer func() { p.backfillRollups = false }()
+	defer func() { p.backfillRollups, p.backfillRollupReceipts = false, false }()
 
 	var errs []error
 	end := time.Unix(int64(to), 0).UTC()
@@ -273,7 +289,7 @@ func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int
 			errs = append(errs, err)
 			break
 		}
-		if RoutingEnabled(p.generator) {
+		if p.backfillRollupReceipts {
 			done, err := p.db.HistoryBackfillDailyCompleted(account, from, to, float64(d.Unix()))
 			if err != nil {
 				return err
