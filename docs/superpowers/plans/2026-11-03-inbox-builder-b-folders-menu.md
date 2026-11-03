@@ -2,11 +2,12 @@
 
 **Spec:** [2026-11-03-inbox-builder-b-folders-menu-design.md](../specs/2026-11-03-inbox-builder-b-folders-menu-design.md)
 **Umbrella:** [2026-11-02-inbox-builder-design.md](../specs/2026-11-02-inbox-builder-design.md) (board #1400). **Sibling plan:** `2026-11-03-inbox-builder-a-blocks-look.md` (sub-project A; "A Task N" below refers to it).
-**Status:** for owner review together with the spec (author loop, ask #448). Q1 and Q2 answered in ask #445: Reply on a row is Task 18; legacy entries in the root (Tasks 12 and 16). Task 16's inventory edits wait on ask #451; Task 18 (Reply) waits on ask #451 (AGENT-03/AGENT-07 and the STRIP-01 narrowing); if refused it is dropped and rows keep today's actions.
+**Status:** for owner review together with the spec (author loop, ask #448). Q1 and Q2 answered in ask #445: Reply on a row is Task 18; legacy entries in the root (Tasks 12 and 16). Ask #451 (still open) gates Tasks 2 (storage, STRIP-02), 7 and 8 (STRIP-01 built-in wording, APPROVAL-01, STRIP-03), 9 (STRIP-01), 12's Needs approval part (APPROVAL-01), 16's inventory edits and 18 (AGENT-03/AGENT-07, the STRIP-01 narrowing); the spec's refusal table says what each refused item drops or changes. Refusing STRIP-01's built-in wording or APPROVAL-01 blocks Needs approval and Waiting for me, B's core.
 
 ## Execution rules
 
 - Each task runs in its own worktree and branch, merged by the controller into `feature/inbox-builder-b`; never two implementers in one tree. Tasks whose `Depends on` are all merged may run in parallel lanes: the **Go lane** (Tasks 2–9, 15's Go half) and the **Swift lane** (Tasks 1, 10–14, 15's Swift half, 16) meet at Task 10 (schema) and Task 13 (A's renderer).
+- **Ask #451 gate:** Task 1 and the Go Tasks 3–6 that build on Task 2's storage may be prepared, but Task 2 itself waits for the STRIP-02 answer (it picks the storage); Tasks 7–9, 12's Needs approval selection and 18 wait for their items (Status line).
 - **Owner checkpoint after Task 1:** the controller files an ask with the Task 1 shots. Swift Tasks 11–16 start only after the owner's answer; Go Tasks 2–9 do not wait.
 - **Sub-project A gates:** Tasks 6, 8, 9, 13 and 18's Swift half start only after the named A tasks are merged into the shared base the controller uses for B (A Task 3 migration and living upsert, A Task 4 `artifacts:` key, A Task 5 SDK and field hook, A Task 1 renderer and hooks, A Task 10 cards with blocks). Everything else does not wait on A.
 - Inner loop only (CLAUDE.md): `go test ./internal/<pkg>` for the touched packages, `go test ./cmd -run '<Name>'` for cmd tests, `make test-swift FILTER=<Class>`, `make lint-diff`. The full gate (`make test`, `make test-swift`, `make lint-all`) runs once after Task 9 (Go phase), once after Task 16 (Swift phase), and before the PR — by the controller.
@@ -36,7 +37,7 @@ Checks: `make test-swift FILTER=DesignShotsTests`, `make lint-diff`.
 
 ## Task 2 — Migration and the db layer
 
-**Depends on:** none. **Lane:** Go.
+**Depends on:** ask #451 (STRIP-02: approved → these tables; refused → the file store in the spec's refusal table replaces the tables and the view). **Lane:** Go.
 
 Files: new `internal/db/migrations/00NNN_inbox_folders.sql` (spec "Data model and migration", seeds included); `internal/db/schema.sql`; `internal/db/db_test.go` (`TestAllTablesExist` gains `inbox_folders`, `inbox_folder_state`, `inbox_folder_routes`); schema golden and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` regenerated (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`); new `internal/db/inbox_folders.go`:
 - `type InboxFolder struct { ID int64; Kind, Slug, Title, Icon string; ParentID *int64; Position int; Hidden bool }`
@@ -103,7 +104,7 @@ Checks: `go test ./internal/automations ./internal/db`, `make lint-diff`.
 
 ## Task 7 — The `approval` trigger: hook, fire, wake, sweep
 
-**Depends on:** Task 5. **Lane:** Go.
+**Depends on:** Task 5, ask #451 (STRIP-01 built-in wording and APPROVAL-01 approved; refused → task dropped; STRIP-03 refused → the hidden `inbox approvals changed` CLI is left out). **Lane:** Go.
 
 Files:
 - `internal/db/agent_actions.go`, `internal/db/reminders.go` — each of the seven writers calls `db.approvalChanged(ref)` after a statement that changed a row; new `func (db *DB) SetApprovalHook(fn func(ref string))`.
@@ -121,7 +122,7 @@ Checks: `go test ./internal/db ./internal/automations ./internal/automations/bui
 
 ## Task 8 — Built-in `needs-approval`
 
-**Depends on:** Task 7, A Task 3, A Task 4, A Task 5. **Lane:** Go.
+**Depends on:** Task 7, A Task 3, A Task 4, A Task 5, ask #451 (STRIP-01 built-in wording and APPROVAL-01; refused → task dropped). **Lane:** Go.
 
 Files: new `internal/automations/builtin/recipes/needs-approval.md`; `registry.go` entry (`ID: "needs-approval"`, `Slot: ""`, `FeatureIDs: ["approval-cards"]`, `Primitives: ["approvals.list"]`, `DefaultFolder: "needs-approval"`, `RunNow: true`, card copy); new `internal/automations/builtin/approvals_primitive.go` (`ApprovalsPrimitives(d *db.DB) map[string]automations.PrimitiveFunc`, the read of spec "The recipe"); `internal/features/registry.go` (`approval-cards`, default on, no fast-forward hook); the daemon's primitive map; card fixtures; `docs/inventory/automations.md` changelog.
 
@@ -131,7 +132,7 @@ Checks: `go test ./internal/automations/builtin ./internal/features ./internal/d
 
 ## Task 9 — Built-in `waiting-for-me`
 
-**Depends on:** Task 5, A Task 3, A Task 4, A Task 5. **Lane:** Go.
+**Depends on:** Task 5, A Task 3, A Task 4, A Task 5, ask #451 (STRIP-01 built-in wording; refused → task dropped, the Messages legacy entry stays). **Lane:** Go.
 
 Files: new `recipes/waiting-for-me.md`; `registry.go` entry (`Slot: SlotWaitingForMe`, `FeatureIDs: ["secretary-inbox"]`, `Primitives: ["attention.waiting"]`, `DefaultFolder: "inbox"`, `RunNow: true`); `automations.SyncSlots` + `builtin.Slot` gain `waiting_for_me`; new `internal/automations/builtin/waiting.go` (`WaitingPrimitives(d *db.DB, now func() time.Time)`); new `internal/db/inbox_open.go` (`func (db *DB) OpenInboxItems(ctx, now time.Time, limit int) ([]InboxItem, error)` — the Go twin of `HomeFeedQueries.openMessageClause`); new `internal/inbox/testdata/open_items.json` (the shared fixture, also read by Task 10); new `phaseWaitingForMe` in `internal/daemon/builtin_slots.go`, called right after `phaseInbox` in `runSync`; `docs/inventory/inbox-pulse.md` INBOX-02/09 changelog note (ask #952).
 
@@ -167,7 +168,7 @@ Checks: `make test-swift FILTER='InboxFolderMenuModelTests|DesignShotsTests'`, `
 
 ## Task 12 — Folder contents, legacy entries, Needs approval
 
-**Depends on:** Task 10, Task 11. Recipe cards drawn after Task 8 and A Task 10 are merged (before that the selection rule always picks native, which is correct). **Lane:** Swift.
+**Depends on:** Task 10, Task 11; its Needs approval selection (recipe vs native) on ask #451 (APPROVAL-01, STRIP-01 — refused → native cards only). Recipe cards drawn after Task 8 and A Task 10 are merged (before that the selection rule always picks native, which is correct). **Lane:** Swift.
 
 Files: new `WatchtowerCore/Services/Inbox/InboxFolderEntries.swift` — `enum InboxFolderEntry { case artifact(AutomationOutputCard), legacyDay(InboxDayCard), legacyTracks, legacyIdeas, legacyMessages, approval(NeedsApprovalItem), builtinNotice(BuiltinUpgradeNotice) }` and `static func build(folder:snapshot:artifacts:refState:waitingForMe:) -> [InboxFolderEntry]` (root: legacy entries (ask #445), Waiting for me pinned first while it has waiting rows, the Messages legacy entry while Waiting for me has never succeeded or last failed); new `NeedsApprovalSelection.swift` — `static func pick(approval:artifact:recipeOn:lastRunFailed:) -> .recipe | .native` (spec's four conditions); `ActionStripViewModel` keeps feeding `InboxFeedQueries.read` and adds the folder read in the same `dbPool.read`; `InboxReadingPane` hosts the legacy panes and the native cards unchanged; `EmptyStateCopy.swift` keys `inbox` (reworded), `inboxFolder`, `inboxApprovals`.
 
