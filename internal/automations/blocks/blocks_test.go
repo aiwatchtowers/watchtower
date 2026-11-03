@@ -423,3 +423,16 @@ func FuzzValidateCanonical(f *testing.F) {
 		_ = blocks.PlainText(d, 64)
 	})
 }
+
+// TestContentHash_DefaultPriorityIsMedium: an omitted priority (”) and the
+// explicit default "medium" (what the row stores for ”) hash the same, so a
+// script that starts spelling out the default does not make a living card
+// new again.
+func TestContentHash_DefaultPriorityIsMedium(t *testing.T) {
+	if blocks.ContentHash("t", "b", nil, "", "", nil) != blocks.ContentHash("t", "b", nil, blocks.DefaultPriority, "", nil) {
+		t.Fatal(`ContentHash with priority "" differs from "medium"`)
+	}
+	if blocks.ContentHash("t", "b", nil, "", "", nil) == blocks.ContentHash("t", "b", nil, "low", "", nil) {
+		t.Fatal(`ContentHash with priority "" equals "low"`)
+	}
+}
