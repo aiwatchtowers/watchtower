@@ -1,11 +1,13 @@
-# Go hub (phase 1 core on the relay, phase 2 headless hosts, phase 3 the Mac)
+# Go hub (phase 1 core on the relay, phase 2 headless hosts, phase 3 the Mac, phase 4 pushes and measurements)
 
 The phone hub rewritten in Go and run by the daemon: it links phones, applies their actions in order, publishes the
 slices on change and starts, types into and stops workbench sessions through `watchtower session-host`. In phase 1 it
 runs **only** in a separate `hubtest-*` test workspace behind environment variables. Phase 2 runs it live on headless
 hosts — Linux and a Mac without the app ("Phase 2 — headless hosts" below). Phase 3 moves the Mac onto it ("Phase 3 —
 the Mac on the Go hub" below) and deletes the Swift hub that lived in the Desktop: since go hub plan 3 Task 24 the Go
-hub is the only hub. Phase 4 adds pushes and measurements.
+hub is the only hub. Phase 4 adds pushes over the relay, the Desktop's Relay indicators and hub-side latency samples
+("Phase 4 — pushes, indicators, measurements" below). The phone-facing map of all of it is
+[mobile-companion.md](mobile-companion.md).
 
 - Spec: [`docs/superpowers/specs/2026-10-31-go-hub-design.md`](../superpowers/specs/2026-10-31-go-hub-design.md)
   (approved, ask #819). Phone ↔ hub protocol:
@@ -15,8 +17,8 @@ hub is the only hub. Phase 4 adds pushes and measurements.
   [1b](../superpowers/plans/2026-10-31-go-hub-phase-1b.md); phase 2 — headless hosts
   ([`2026-10-31-go-hub-phase-2.md`](../superpowers/plans/2026-10-31-go-hub-phase-2.md), approved ask #838); phase 3 —
   the Mac on the Go hub ([`2026-10-31-go-hub-phase-3.md`](../superpowers/plans/2026-10-31-go-hub-phase-3.md), approved
-  ask #856); phase 4 — pushes and measurements (`docs/superpowers/plans/2026-10-31-go-hub-phase-4.md`, in review on
-  the `docs/go-hub-phase-4-plan` branch).
+  ask #856); phase 4 — pushes and measurements ([`2026-10-31-go-hub-phase-4.md`](../superpowers/plans/2026-10-31-go-hub-phase-4.md);
+  owner decisions ask #864, review asks #866/#872/#875/#877, answers #966/#968/#970).
 - Board: umbrella #1284, phase 1 #1285.
 
 ## Architecture
@@ -31,7 +33,9 @@ One runtime (`internal/hub`, `Run`) inside the daemon joins these packages:
 | `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`) — `memfake`, the in-memory relay/CloudKit stand-in for tests, and `cloudkit` (phase 3) — the client of `WatchtowerCloudBridge.app` over `<hub dir>/bridge.sock` (`bridge.proto`/`bridgepb`, frames pinned by `testdata/frames.json` for the Swift bridge; runtime zone names mapped onto `DataZone-<hub_id>`/`RelayZone-<hub_id>`, every phone on the one shared mailbox `relay/<relay id>/*`; the bridge's generation in `<hub dir>/bridge.generation` so a lost `bridge.db` resets cursors and refuses old tags), its `Supervisor` and the `bridgefake` test bridge. |
 | `internal/hub/link` | Linking: link codes, the pair zone hello, the awaiting keybox, the SAS confirmation (`Confirm(device, code, ok)`), grants (`typing`, `permissions`, `start_sessions`), unlink and the revoke hook. |
 | `internal/hub/actions` | The processor (ordered actions per phone by `action_seq`: hold ahead of a gap, one `resend_from` per gap, `skip_to`, the exactly-once ledger, `received`/final echoes, the legacy unordered path, controls, on CloudKit's shared `RelayZone` also the phone's `device-<id>` record through `link.Center.ApplyDeviceRecord`) and the dispatcher; the hosted relay keeps one mailbox per phone, read drain-then-read per phone as in phase 1, while the shared `RelayZone` (`actions/shared.go`) is read once per pass with every record routed to the phone its envelope's sender names (every linked phone with or without a relay id; a name naming another device than its sender is dropped as `sender_mismatch`; the hub's own records go to the phone whose key opens them; `control_queue` keyed `<zone>@<device>`, moved when a phone's mailbox changes shape; a failed phone's records wait for the next pass with the zone token held back; only a record whose own content fails is struck, and it is passed over after `MaxRecordStrikes` = 3 failures over at least `StrikeWindow` = 10 min — a store or transport error never strikes); `actions/handlers` holds every action handler (asks, board, session start/stop, session input and Interrupt, permission answers, chat/report requests, recording uploads). |
-| `internal/hub/slices` | The publisher (hash per record, urgent/full ticks, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms for 10 min after a change, else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
+| `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
+| `internal/hub/alerts` (phase 4) | The pusher: work alerts to the paying phones over the relay's `send_alert`, at most once per (alert key, phone), with the `alert_pushes` ledger (below). |
+| `internal/hub/measure` (phase 4) | `Recorder`: content-free latency samples (read → applied → slice saved) into `latency_samples`. |
 | `internal/hub/platform` | Darwin/Linux specifics: the owner-away signal, keeping the machine awake, and `PeerUID` (the unix-socket peer check of the control socket and the bridge client). |
 | `WatchtowerDesktop/Sources/CloudBridgeCore` + `WatchtowerCloudBridge` (phase 3) | `WatchtowerCloudBridge.app`, the signed `LSUIElement` helper at `Watchtower.app/Contents/Helpers/` (bundle id `com.watchtower.desktop.cloudbridge`, its own provisioning profile `WATCHTOWER_BRIDGE_PROFILE` — required by a release build, left out with a warning otherwise — checked by `scripts/check-bridge-signing.sh`): serves `--socket <hub dir>/bridge.sock` (0600, peer uid checked, Hello first, the hub's two zones only, assets read from `<hub dir>/assets` and downloads written under `<hub dir>/downloads` only, a refused frame answered `bad_request` and the connection closed, a late answer to a closed connection dropped), hand-coded frames (`BridgeFrames.swift`, pinned by `frames.json`), `BridgeTagMap` in `<hub dir>/cloudkit/bridge.db` (change tag → `tag_seq`, server change token → cursor, the `generation` minted with the file; another generation's cursor or tag is `token_expired`), the private database through the `BridgeDatabase` seam: conditional saves as `.ifServerRecordUnchanged` with the last known system fields (a conflict carries the server copy), conditional deletes checked against one read of the batch (not atomic — the hub deletes conditionally only write-once records and its own echoes), change feeds without assets (a relay record's name is its `asset_id`; `Download` fetches the asset) and failed whole when one record fails; the share code moved from the Swift hub's `ShareService` (`CloudKitZoneShares`, which `CloudKitShareService` wraps until the Swift hub goes; `EnsureShares` creates the zones first); silent pushes → `Event{pull_now}` through its own database subscription `watchtower-bridge-db-<hub_id>` (the phone's `ask-alert-<hub_id>` is never touched); exit after 10 minutes without the daemon. It links `WatchtowerSync` and GRDB only and references no sealing, opening or key type nor an entry point that reaches one (`CloudBridgeTests.testBridgeNeverOpensEnvelopes`). |
 | `internal/hub/hubtest` | Test-only: the Go phone emulator (`Phone`) and its hosted-relay store. Never imported by production code. |
@@ -68,8 +72,9 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 
 | Verb | `--json` keys (pinned) |
 |---|---|
-| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`; phase 3: `no_icloud` with `paused` on a CloudKit desktop host), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`); phase 3: `off_delete` {`state` (`ok`/`pending`/`failed` while the owner's switch is off, "" while on: the owner's off deletes the records the hub published, as POLICY-03's wipe, through the running transports before the hub stops, then retried while off from 1 min doubling to 1 h while records stay; it removes the staged assets (`<hub dir>/assets` and the `slice_assets` descriptors an adoption brought, also on an iCloud account change; a plain stop keeps them); and it unlinks every phone, as the Swift hub's off did (owner, ask #956): `supervisor.unlinkForOff` runs `hub unlink`'s offline path for each linked phone (row and grants gone, keybox read revoked, epoch rotated) and refuses each waiting one, at every reconcile while the switch is written off (`0`; read again under the lock `hub enable` also takes; one phone failing does not stop the rest), so turning on again needs a fresh pairing; the hub's identity key stays, as the Swift hub's Keychain identity did. The policy's off never unlinks), `at` (last try, RFC 3339)}, `transcriber` (a Desktop heartbeat ever arrived: recordings can go on), `cloudkit` {`account` (bridge account state, "" = not read), `throttled_since` (RFC 3339, "" = not throttled), `signed` (a desktop host's build has the bridge and its entitlement)}, `kept_recordings` (absent at 0), `name` (the name phones show: `hub name`'s value, else the short host name; Settings → Mobile's Mac name row) |
-| `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport` |
+| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`; phase 3: `no_icloud` with `paused` on a CloudKit desktop host), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`); phase 3: `adoption` (`none`, `in_progress`, `failed`, `done`), `bridge` (`running`, `restarting`, `unavailable`; "" off a desktop host), `identity` (`keychain`/`file`, "" = not known), `switched_at` (RFC 3339, "" = never), `switched_by` (a device id or `entitlement_expired`), `off_delete` {`state` (`ok`/`pending`/`failed` while the owner's switch is off, "" while on: the owner's off deletes the records the hub published, as POLICY-03's wipe, through the running transports before the hub stops, then retried while off from 1 min doubling to 1 h while records stay; it removes the staged assets (`<hub dir>/assets` and the `slice_assets` descriptors an adoption brought, also on an iCloud account change; a plain stop keeps them); and it unlinks every phone, as the Swift hub's off did (owner, ask #956): `supervisor.unlinkForOff` runs `hub unlink`'s offline path for each linked phone (row and grants gone, keybox read revoked, epoch rotated) and refuses each waiting one, at every reconcile while the switch is written off (`0`; read again under the lock `hub enable` also takes; one phone failing does not stop the rest), so turning on again needs a fresh pairing; the hub's identity key stays, as the Swift hub's Keychain identity did. The policy's off never unlinks), `at` (last try, RFC 3339)}, `transcriber` (a Desktop heartbeat ever arrived: recordings can go on), `cloudkit` {`account` (bridge account state, "" = not read), `throttled_since` (RFC 3339, "" = not throttled), `signed` (a desktop host's build has the bridge and its entitlement)}, `kept_recordings` (absent at 0), `name` (the name phones show: `hub name`'s value, else the short host name; Settings → Mobile's Mac name row); phase 4: `relay` (below), `paying_phones`, `mailbox_full_phones` |
+| `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport`; phase 4: `paying` (true, false, or null unless the hub runs on the relay and knows the account state), `undelivered` (this Mac's side: held actions plus 1 for an open gap), `mailbox_full`, `alerts` ("" or the last outcome class of 7 days) — each null when the read behind it failed (a stderr warning; the phones are still listed) |
+| `hub diagnostics [--days 1..7]` (phase 4, `cmd/hub_diagnostics.go`; reads the sidecar through `state.OpenReadOnly`, no hub needed; no sidecar = no rows) | `window_days`, `rows` [{`step` (`read_applied`, `applied_saved`, `read_saved`), `transport` (`cloudkit`, `relay`), `p50_ms`, `p90_ms`, `samples`}] (nearest rank), `push_overflow_expired` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
 | `hub name <name>` | `name` |
@@ -120,6 +125,14 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
 - `00009_recording_origin` — `recording_jobs.event_id` (the calendar event the phone recorded for, an opaque id) and
   `started_at` (REAL), so Desktop links the transcript and rebuilds the phone's title (phase 3 Task 17); never the
   upload's `title_hint` (content).
+- `00010_switch_epochs` — `hub_epochs.reason` (`age`, `cap`, `unlink`, `manual`, `transport_switch`) and
+  `retire_after`; `devices.relay_lapsed_at`, `relay_skip_before`, `relay_skip_seq` (a lapsed phone's pre-lapse relay
+  actions are never applied later, sim rule 16).
+- `00011_latency_samples` (phase 4) — `latency_samples(at, transport, step, ms)` and its `at` index: a time, two
+  enums and a duration, no id or kind.
+- `00012_alert_pushes` (phase 4) — `alert_pushes(alert_key, device_id, outcome, reason, attempts, first_at,
+  settled_at)`, primary key (alert key, device): ids, counters, timestamps and classes only.
+- `00013_alert_pushes_settled_index` (phase 4) — index on `alert_pushes.settled_at` for the status reads.
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -473,3 +486,77 @@ privacy page says so.
   first-ever CloudKit save of a hub — and the first save into a new account's zones — also reads as a recreation and
   costs one extra full publish (v1 limit; telling a first creation apart needs state the bridge does not keep). No
   sidecar migration: the tables were all there.
+
+## Phase 4 — pushes, indicators, measurements
+
+Plan [`2026-10-31-go-hub-phase-4.md`](../superpowers/plans/2026-10-31-go-hub-phase-4.md) (relay pinned at `bcca870`,
+re-checked in its Task 0; the plan's Global Constraints, Decisions and Known limits are the contract).
+
+- **The push envelope** (`internal/hub/secure`, protocol §4.8). `Sealer.AlertPush(key, WorkAlertFields)` seals the
+  `ask_alert-<key>` frame as class `alert` under `K_alert[current]`, signed, AAD wire name `alert-push`
+  (`AlertPushWireName`) in the data zone. The frame is padded to the 1 KiB bucket (a 1172-byte envelope); a payload
+  whose frame does not fit 1024 bytes has its body, then title, then workbench name (ask #968) clipped one grapheme
+  cluster at a time with "…", `ErrAlertTooLarge` only when all three are empty and it still does not fit. The final
+  bound is `AlertPushMaxEnvelope` = 3021 bytes (relay `MAX_PAYLOAD_BYTES` 4096 − the 67-byte APNs body, base64). The data-zone record keeps the full text (ask #864).
+  `secure.WorkAlertFields` is the one JSON shape of the record and the push (the Kit's `WorkAlertPayload` keys).
+  `secure.Push` has no exported constructor: only `AlertPush` makes one. Pinned by `go-sealed.json` case `alertPush`
+  and the Kit's `GoSealedEnvelopeTests.testGoSealedAlertPushOpensWithAlertOpener`.
+- **`send_alert`** (`transport.Alerts`, implemented by the relay transport only; `memfake` and `cloudkit` have none).
+  `relay.Transport.SendAlert(ctx, phoneRelayID, secure.Push)` refuses an unsealed push before any I/O and sends the
+  envelope only. On this op `NOT_FOUND` is `transport.ErrNoPushToken` and `UNSPECIFIED` "not implemented"
+  `transport.ErrPushOff`; the rest maps through `MapError`; `relay.RetryAfter(err)` reads `retry_after_s`.
+- **The pusher** (`internal/hub/alerts`, wired in `alerts_wiring.go`). The publisher calls
+  `slices.Config.OnAlertSaved` once per alert key after its first successful save, only while the relay is the active
+  transport (republishes and rotations never; on CloudKit the `sig-` signal path runs instead). `Pusher.Enqueue`
+  writes a `pending` row for every target in one short transaction, then queues the sealed push in memory (64 per
+  phone, `QueuePerPhone`; more settle `expired`/`overflow`); one sender per phone, the publisher never waits. Targets
+  (`pushTargets`, `alerts.Eligible`): linked phones with a relay device id that the last account state holds in a
+  paying slot and that the last accepted `set_hub_readers` names. Before every send, retries included, the owner-away
+  input is read again (`platform.Away`; back at the Mac → `expired`/`owner_back`). Freshness 5 minutes from the first
+  save (`Freshness`). `RATE_LIMITED`/`TRAFFIC_LIMIT_EXCEEDED` retry after `retry_after_s` (1 s default, 60 s cap), a
+  relay-coded `UNAVAILABLE` on the next connect (`Pusher.Reconnected`) or after 30 s; `not_paying` and `forbidden`
+  run one shared account refresh; `HUB_NOT_VOUCHED` is `forbidden` and the runtime's `noteNotVouched`. A request that
+  may have reached the relay with no answer heard (interrupted by `Abandon`/`Stop`, the window's deadline, or a
+  transport failure with no relay code) settles `expired`/`in_flight`: never resent, counted as received (ask #970).
+  At start every `pending` row settles `expired`/`restart`. A switch toward CloudKit runs `Pusher.Abandon("switched")`
+  and `Publisher.Resignal` with the keys it returns: unless the owner is back, each alert still open that some phone
+  has not received is saved on CloudKit with its signal. Ledger rows are pruned after 7 days.
+- **Outcome classes** (ledger, `hub phones` `alerts`, logs): `accepted` (the relay's `Ok`, not an APNs delivery),
+  `no_token`, `not_paying`, `forbidden`, `push_off`, `too_large`, `expired` (reasons `freshness`, `owner_back`,
+  `restart`, `switched`, `overflow`, `stopped`, `in_flight`), `failed`. Logs carry ids and classes only (FILES-01).
+- **Relay health in the status file** (`relayhealth.go`, through `setStatus`, so every change emits the existing
+  `status` watch event). `hub status --json` gains `relay` (absent with no relay origin): `state` `connected`,
+  `connecting` or `unavailable` (no connection for 60 s, RC §9's threshold), `since`, `quota_hub` (set by a data-zone
+  save refused as over quota, cleared by the next good one), `push_off` (case B: the relay has no push-config signal,
+  so the line is set by a `push_off` answer and cleared only by a later `accepted`, `not_paying`, `too_large` or
+  `no_token` for any phone, read from the ledger), `last_saved_at` (RFC 3339 rounded down to the minute, or ""). Also
+  `paying_phones` (empty unless the relay is active; null = unknown — no hub, no account state yet, or forgotten after
+  `HUB_NOT_VOUCHED`; never read as "nobody pays") and `mailbox_full_phones` (per phone, set by a refused write to that
+  phone's mailbox and cleared only by a good write to it or by unlinking it, kept in `hub_meta` key
+  `mailbox_full_phones`).
+- **Latency samples** (`internal/hub/measure`, RC §10). `Recorder.Applied` for an action applied on its first read
+  (a held action measures the phone's gap, not the hub) writes `read_applied`; the first save of one of its slice
+  kinds whose read began after the apply, within `SaveWait` (60 s), writes `applied_saved` and `read_saved` together;
+  waiting applies are in memory (256 at most). Batched once a second, never inside a pass transaction; pruned once a
+  minute to 7 days and 20 000 rows. Nothing leaves the device; the 500 ms line reads the relay p50 of `read_saved`.
+- **Desktop.** Settings → Mobile shows the Relay row (connection, push-off, storage-full lines) and per-phone lines
+  (mailbox full, free phone on a relay hub, not applied on this Mac's side, notifications not set up / last alert sent
+  to relay) from `hub status|phones --json` (`MobileHubCLI`, `MobileSettingsModel+Indicators.swift`), and
+  **Diagnostics**, a read-only sheet over `hub diagnostics --days 7 --json` (`MobileDiagnosticsModel`). The strings
+  and their tones are in mobile-companion.md → Hub → Desktop over the hub.
+
+### Known limits (phase 4)
+
+- The push-off line appears only after a first `send_alert` and leaves with the 7-day prune.
+- The local stand has no APNs: CI and local runs see only `push_off`; a real push needs relay staging with APNs and
+  the phone's `register_push` and inline open (relay client spec Phase 4, plan Task 12).
+- `accepted` is not a delivery: the relay keeps at most 4 alerts in flight per phone and cancels the oldest, and APNs
+  may drop one.
+- A save the relay refuses whole names every zone in its batch; the hub's mailbox writes are single-item saves, so in
+  practice only the refused phone is flagged.
+- An alert raised before the first readers sync succeeded, or between a phone's admission and the next readers sync,
+  is not pushed to that phone (it still reaches the replica).
+- A crash during a switch toward CloudKit leaves queued pushes `pending`: they settle `expired`/`restart` at the next
+  start and get no CloudKit signal.
+- An alert sealed in an epoch the phone's alert material no longer holds does not open; the notification extension
+  shows the generic notification.

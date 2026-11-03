@@ -88,7 +88,9 @@ When it is on, your Mac publishes a trimmed view of its data to your own iCloud 
 
 It is end-to-end encrypted.
 
-Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`. An older version kept them in the Keychain; the update moves them into that file and then deletes the Keychain items.
+Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. Over Relay, the same sealed records go through the relay, and a work alert reaches the phone as a push that carries only an encrypted envelope: the relay and Apple's push service see the word **Watchtower**, never the alert's title or text. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`. An older version kept them in the Keychain; the update moves them into that file and then deletes the Keychain items.
+
+**Diagnostics** in **Settings → Mobile** shows how long the Mac took to apply phone actions. Those timings hold no content, are kept for 7 days on the Mac and never leave it.
 
 A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
 

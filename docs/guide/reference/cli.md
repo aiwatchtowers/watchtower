@@ -88,7 +88,7 @@ This keeps an agent that was talked into running such a command from going ahead
 
 ## Headless host
 
-Commands for a [headless host](../features/headless-host.md): a Linux box or a Mac without the app. On a Mac with the Watchtower app the `hub` commands refuse with **Mobile on this Mac is run by the Watchtower app.** and `hub status` says `hub: off (desktop_host)`. Add `--json` for scripts.
+Commands for a [headless host](../features/headless-host.md): a Linux box or a Mac without the app. On a Mac with the Watchtower app the `hub` commands work on the app's hub too; while an older version's iPhone sync still waits to be moved over, the ones that change something refuse with **Mobile on this Mac is run by the Watchtower app.** Add `--json` for scripts.
 
 | Command | What it does |
 |---|---|
@@ -99,6 +99,7 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | `watchtower hub status` | The hub's state and reason, its host kind and mode, and the number of phones |
 | `watchtower hub pair` | Link a phone from this terminal: a QR code, a link, then **Confirm code 1234 on your phone? [y/N]**. Scripts use `--json --stream` |
 | `watchtower hub phones` | Linked phones with their device ids and grants |
+| `watchtower hub diagnostics [--days N]` | How long the hub took to apply phone actions and save what they changed, p50 and p90 per step and transport over the last 1–7 days (7 by default), and how many alerts were dropped because too many were waiting. Timings only, kept on this machine; works without a running hub |
 | `watchtower hub allow <device> typing\|permissions\|start_sessions` | Let a phone type into sessions, answer permission prompts or start sessions; `--revoke` takes it back |
 | `watchtower hub unlink <device>` | Unlink a phone |
 | `watchtower hub name <name>` | The name phones show for this host (the hostname by default) |
