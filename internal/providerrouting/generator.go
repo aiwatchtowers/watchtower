@@ -17,7 +17,7 @@ import (
 // when routing is off/pinned. Leaves must share the host's existing worker pool;
 // they must not install separate per-attempt deadlines.
 type GeneratorOptions struct {
-	Timeout  time.Duration
+	Timeout  time.Duration // Nonpositive uses DaemonAICallTimeout on enabled routes only.
 	Pinned   bool
 	Router   *Router
 	Identity func(provider string) string
@@ -32,6 +32,13 @@ func WrapGenerator(cfg *config.Config, legacy digest.Generator, factory func(str
 	}
 	if err := cfg.AI.Validate(); err != nil {
 		return digest.RefusedGenerator{Err: err}
+	}
+	// Raw safe callers (for example chat.title) may have no deadline. Supply
+	// one total bound so an actual pending request can claim a due recovery
+	// lease; shorter caller deadlines still win. Excluded SDK calls return
+	// Legacy before applying this bound in Generate/GenerateWithImage.
+	if opts.Timeout <= 0 {
+		opts.Timeout = digest.DaemonAICallTimeout
 	}
 	r := opts.Router
 	if r == nil {

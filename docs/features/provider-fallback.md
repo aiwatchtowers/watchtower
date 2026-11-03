@@ -18,8 +18,9 @@ coach. Its physical leaves use the actual provider's model bucket and never
 exchange native session identifiers. A routed pooled call uses the same existing
 worker pool for both leaves; its total timeout includes queue time and does not
 restart for reserve. Known cooldown/probe-busy checks happen before taking a
-worker. Unbounded interactive calls can use available providers but cannot claim
-a recovery probe without a real deadline.
+worker. Raw enabled routes also receive the default total call timeout, so
+deadline-free safe callers can recover a due circuit. Earlier caller deadlines win. Off,
+pinned and excluded automation calls retain their original legacy deadline.
 
 Off and explicit provider/model pins return the original legacy generator.
 Stop/ask guards explicitly use `legacyCLIGenerator`; spec reviewer and generic
