@@ -123,6 +123,8 @@ type vouchRig struct {
 	*rig
 	srv   *relaytest.Server
 	clock *setClock
+	// advances holds len(srv.Ops()) at each clock advance admit made.
+	advances []int
 }
 
 func startOnRelay(t *testing.T, rules bool) *vouchRig {
@@ -243,6 +245,7 @@ func (r *vouchRig) admit(l linkedPhone) {
 			return true
 		}
 		if tick++; tick%50 == 0 {
+			r.advances = append(r.advances, len(r.srv.Ops()))
 			r.clock.Advance(unvouchedPoll)
 		}
 		return false
@@ -354,36 +357,47 @@ func TestVouchAcceptedAdmitsTheHub(t *testing.T) {
 
 // readsToOpenTheGate counts the get_account_state ops between the phone's
 // promote_pairing and the hub's first set_hub_readers (an op the relay
-// refuses an unvouched hub, so the gate is open by then). Counting from a
-// moment before the admission, or to the end of the test, would also count
-// the vouched hub's link backstop (one read every linkEvery of real time),
-// which grows with how slow the machine is. Within this span the clock is
-// fixed, so an unvouched hub's polls are answered from the last read; the
-// reads are the SLOT_ADDED one, then at most one soon tick's slot check and
-// the readers' own read — never a poll for the slot.
+// refuses an unvouched hub, so the gate is open by then). It waits for that
+// set_hub_readers: the readers sync is linkUpkeep's, kicked by the open gate
+// beside the publisher, so the device_grant and the admitted stamp the test
+// waits for often land before it. Counting from a moment before the
+// admission, or to the end of the test, would also count the vouched hub's
+// link backstop (one read every linkEvery of real time), which grows with
+// how slow the machine is. Within this span the clock is fixed, so an
+// unvouched hub's polls are answered from the last read; the reads are the
+// SLOT_ADDED one, then at most one soon tick's slot check and the readers'
+// own read — never a poll for the slot. If admit advanced the clock (a
+// window passed), the span ends at the first advance: a read after it may be
+// the window's poll, not SLOT_ADDED's doing.
 func (r *vouchRig) readsToOpenTheGate() int {
 	r.t.Helper()
-	ops := r.srv.Ops()
-	from := -1
-	for i, op := range ops {
-		if strings.TrimPrefix(op, "ws:") == "promote_pairing" {
-			from = i
+	var ops []string
+	from, to := -1, -1
+	eventually(r.t, 10*time.Second, "set_hub_readers after promote_pairing", func() bool {
+		ops = r.srv.Ops()
+		from, to = -1, -1
+		for i, op := range ops {
+			switch strings.TrimPrefix(op, "ws:") {
+			case "promote_pairing":
+				from, to = i, -1
+			case "set_hub_readers":
+				if from >= 0 && to < 0 {
+					to = i
+				}
+			}
 		}
-	}
-	if from < 0 {
-		r.t.Fatalf("no promote_pairing in %v", ops)
+		return to >= 0
+	})
+	if len(r.advances) > 0 && r.advances[0] < to {
+		to = max(r.advances[0], from+1)
 	}
 	n := 0
-	for _, op := range ops[from+1:] {
-		switch strings.TrimPrefix(op, "ws:") {
-		case "get_account_state":
+	for _, op := range ops[from+1 : to] {
+		if strings.TrimPrefix(op, "ws:") == "get_account_state" {
 			n++
-		case "set_hub_readers":
-			return n
 		}
 	}
-	r.t.Fatalf("no set_hub_readers after promote_pairing in %v", ops[from:])
-	return 0
+	return n
 }
 
 // TestVouchRefusedKeepsTheHubOffTheRelay: a refused vouch_hub leaves the
