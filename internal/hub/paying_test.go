@@ -819,12 +819,20 @@ func (r *readersCounting) SetReadersFrom(context.Context, *relayv1.AccountState,
 // A linked phone that is never promoted costs the short link retry one
 // account read per tick: no keybox writes and no readers sets once the
 // window's first check ran.
+//
+// The worker's select picks among ready cases at random, so a transport
+// event barrier (settled) does not order it behind the link and soon kicks
+// the pairing left: the test waits for both kicks to be consumed before the
+// window's first tick, and for each tick's re-armed timer (the tick ran)
+// instead of a barrier.
 func TestUnpromotedPhoneCostsOneReadPerTick(t *testing.T) {
 	soon := newPayClock()
 	rc := &readersCounting{}
+	var rt atomic.Pointer[hubRuntime]
 	r := startRelayOnly(t, true, nil, false, func(o *Options) {
 		o.soonTimer = soon.Timer
 		o.linkEvery = time.Hour
+		o.started = func(h *hubRuntime) { rt.Store(h) }
 		dial := o.newTransport
 		o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
 			tr, err := dial(ctx, id, st, zones)
@@ -837,15 +845,27 @@ func TestUnpromotedPhoneCostsOneReadPerTick(t *testing.T) {
 	})
 	r.waitState(StatePaused, ReasonNeedsRelay)
 	r.pair(nil)
-	soon.Advance(linkSoonEvery) // the window's first tick: one full check
-	r.settled()
+	// The pairing's link and soon kicks consumed, and the worker past the
+	// work they started: nothing else kicks either while the phone waits.
+	h := rt.Load()
+	eventually(t, 10*time.Second, "the pairing's kicks consumed", func() bool {
+		r.settled()
+		r.settled()
+		return len(h.linkKick) == 0 && len(h.soonKick) == 0
+	})
+	tick := func() {
+		t.Helper()
+		soon.drain()
+		soon.Advance(linkSoonEvery)
+		soon.waitArmed(t) // the tick ran and armed the next one
+	}
+	tick() // the window's first tick: one full check
 	writes, sets, reads := r.ct.hubWrites(), rc.sets.Load(), r.fake.AccountStateReads()
 	const ticks = 5
 	for range ticks {
-		soon.Advance(linkSoonEvery)
-		r.settled()
+		tick()
 	}
-	if n := r.fake.AccountStateReads() - reads; n < ticks {
+	if n := r.fake.AccountStateReads() - reads; n != ticks {
 		t.Fatalf("%d account reads over %d ticks", n, ticks)
 	}
 	if n := r.ct.hubWrites() - writes; n != 0 {

@@ -633,7 +633,7 @@ func TestBridgeUnavailableSaysSoInStatus(t *testing.T) {
 	var h *hubRuntime
 	o := r.options()
 	o.Desktop.launch = nil
-	o.onStart = func(rt *hubRuntime) { h = rt }
+	o.started = func(rt *hubRuntime) { h = rt }
 	r.start(o)
 	r.waitStatus("relay-only", func(s Status) bool {
 		return s.State == StateRunning && s.Bridge == BridgeUnavailable && s.Transport == string(transport.KindRelay)
@@ -683,7 +683,7 @@ func TestDesktopHostWiresTheRelayBeforeTheSwitch(t *testing.T) {
 		r.dials.Add(1)
 		return w, nil
 	}
-	o.onStart = func(rt *hubRuntime) { h = rt }
+	o.started = func(rt *hubRuntime) { h = rt }
 	r.start(o)
 	r.waitState(StateRunning, "")
 	if h.acct == nil {
