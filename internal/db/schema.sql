@@ -3104,11 +3104,18 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     done_at       TEXT,                                      -- Desktop-written: the owner marked the card Done (00149 backfilled it from read_at)
     pressed_action INTEGER,                                  -- CLI-written by `automations reply`: the index of the pressed Reply action
     pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- CLI-written: the reply run the press queued
-    pressed_at    TEXT                                       -- CLI-written: when; a card is pressed at most once
+    pressed_at    TEXT,                                      -- CLI-written: when; a card is pressed at most once
+    blocks_json   TEXT NOT NULL DEFAULT '',                  -- the card's canonical block document; '' = none (markdown body) (00173)
+    output_key    TEXT,                                      -- a living artifact's key, upserted per (automation_id, output_key); NULL = feed (00173)
+    content_hash  TEXT NOT NULL DEFAULT '',                  -- SHA-256 over {title, body, blocks, priority, link, actions}; '' on rows from before 00173
+    written_at    TEXT,                                      -- the last run that wrote this row (backfilled to created_at)
+    changed_at    TEXT                                       -- the last write that changed content_hash (backfilled to created_at); the Inbox order
 );
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 
 -- Claude plan usage: one row per poll per limit (percent of the 5h/7d windows), pruned after 8 days.
 CREATE TABLE IF NOT EXISTS plan_usage_samples (
