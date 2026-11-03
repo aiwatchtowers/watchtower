@@ -20,7 +20,7 @@ func Allowed(id string) error {
 		return fmt.Errorf("unknown AI provider %q", id)
 	}
 	if p := policy.Current(); !p.ProviderAllowed(id) {
-		return p.ProviderError(id)
+		return WithFailure(id, Policy, p.ProviderError(id))
 	}
 	return nil
 }

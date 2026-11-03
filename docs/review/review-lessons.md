@@ -2573,3 +2573,12 @@ Entry format:
 - weak-dimension: external Codex review was unavailable after automatic approval rejected external diff transmission. Built-in prosecutor, test/error reviewers and judge converged after two fix rounds; unavailable reviews supply no evidence.
 - rule-gap: no new rule; apply the existing Go/Swift dual-writer and fresh-read requirements to provider model configuration.
 - outcome: TBD
+
+## 2026-11-03 — provider-fallback CLI isolation and typed errors (#1484, Task 2) — verdict: changes-needed
+
+- contested: a typed subscription-quota category and the historical ErrAICall marker serve different consumers. Preserve both when the old diagnostic classified the call as unavailable; do not mark every quota error unavailable merely because it is quota. Paired baseline/current probes through the real Codex generator and timeout decorator confirmed the lost marker for a status-429 usage-limit envelope. [6/8]
+- false-positive: the new diagnostic-only quota test does not itself encode this regression: its cause never matched the historical unavailable predicate, so its no-marker assertion remains valid. [7]
+- miss: the paired probe also found that requiring a redundant inner type field stopped unpacking an older trusted failed-turn envelope containing status and error. The lost HTTP diagnostic independently breaks historical retry handling; quota trust can remain conservative while legacy status handling survives. [6/8]
+- weak-dimension: 7. The tests exercise typed causes and subprocess envelopes separately, but missed their composition with existing retry markers and the legacy envelope shape. External Codex was unavailable after automatic approval rejected diff transmission; toolkit APIs were unavailable, so built-in prosecutor, test and failure/security lanes supplied the panel evidence.
+- rule-gap: no new binding rule needed; the approved task explicitly preserves pipeline error handling, and the common checklist preserves errors with fallback disabled. Actual baseline/current execution distinguished two independent compatibility failures.
+- outcome: TBD

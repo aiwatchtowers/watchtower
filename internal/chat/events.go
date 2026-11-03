@@ -58,6 +58,9 @@ const (
 
 // Event is one NDJSON line on the session's stdout.
 type Event struct {
+	// Cause retains a typed provider failure inside the host. It is deliberately
+	// absent from protocol-v2 JSON; routing metadata is added by the chat adapter.
+	Cause     error           `json:"-"`
 	Type      string          `json:"type"`
 	TurnID    string          `json:"turn_id,omitempty"`
 	Text      string          `json:"text,omitempty"`

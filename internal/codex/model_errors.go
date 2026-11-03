@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // ModelUnavailableError is codex refusing the model before the turn ran:
@@ -39,20 +40,20 @@ const (
 
 // turnError is the error for a failed codex turn with message msg. A JSON
 // envelope ({"type":"error","status":429,"error":{"type":…,"message":…}})
-// is unwrapped to its message, keeping its type and status in the text
+// is unwrapped to its message (older envelopes omit the redundant outer
+// type). Only a missing or explicit error type is accepted. Keep its type
+// and status in the text
 // ("codex error (rate_limit_error, status code 429): …") so digest's
 // aiUnavailable still sees rate limits and outages; a model refusal becomes
 // a *ModelUnavailableError.
 func turnError(model, msg string) error {
 	var body struct {
-		Status int `json:"status"`
-		Error  struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Type   string                  `json:"type"`
+		Status int                     `json:"status"`
+		Error  providers.FailureDetail `json:"error"`
 	}
-	if json.Unmarshal([]byte(msg), &body) != nil || body.Error.Message == "" {
-		return classifyTurn(model, msg, "")
+	if json.Unmarshal([]byte(msg), &body) != nil || (body.Type != "" && body.Type != "error") || body.Error.Message == "" {
+		return providers.CodexMessageFailure(msg, classifyTurn(model, msg, ""))
 	}
 	var tags []string
 	if body.Error.Type != "" {
@@ -61,7 +62,7 @@ func turnError(model, msg string) error {
 	if body.Status != 0 {
 		tags = append(tags, fmt.Sprintf("status code %d", body.Status))
 	}
-	return classifyTurn(model, body.Error.Message, strings.Join(tags, ", "))
+	return providers.TerminalFailure("codex", body.Error, body.Status, classifyTurn(model, body.Error.Message, strings.Join(tags, ", ")))
 }
 
 // classifyTurn is turnError for an unwrapped message and its envelope tags.
@@ -69,9 +70,9 @@ func classifyTurn(model, msg, tags string) error {
 	lower := strings.ToLower(msg)
 	switch {
 	case strings.Contains(lower, refusalNeedsUpdate):
-		return &ModelUnavailableError{Model: model, NeedsUpdate: true}
+		return providers.WithFailure("codex", providers.Model, &ModelUnavailableError{Model: model, NeedsUpdate: true})
 	case strings.Contains(lower, refusalChatGPT), strings.Contains(lower, refusalNoAccess):
-		return &ModelUnavailableError{Model: model}
+		return providers.WithFailure("codex", providers.Model, &ModelUnavailableError{Model: model})
 	case tags != "":
 		return logredact.Errorf("codex error (%s): %s", tags, logredact.Text(msg))
 	}
@@ -85,17 +86,23 @@ func classifyTurn(model, msg, tags string) error {
 // it counts only once the run has failed). nil when the output has neither.
 func failedTurn(model string, output []byte) error {
 	var last string
+	var terminal error
 	for line := range bytes.SplitSeq(output, []byte("\n")) {
 		var event CodexEvent
 		if json.Unmarshal(bytes.TrimSpace(line), &event) != nil {
 			continue
 		}
 		switch {
-		case event.Error != nil:
-			return turnError(model, event.Error.Message)
+		case (event.Type == "turn.failed" || event.Type == "error") && event.Error != nil:
+			terminal = eventTurnError(model, event.Error)
+		case event.Type == "turn.completed" || event.Type == "turn.started":
+			terminal, last = nil, ""
 		case event.Type == "error" && event.Message != "":
 			last = event.Message
 		}
+	}
+	if terminal != nil {
+		return terminal
 	}
 	if last != "" {
 		return turnError(model, last)
@@ -125,4 +132,13 @@ func runError(model string, output []byte, err error, stderr, codexBin string) e
 		turnErr = logredact.Errorf("%w (stderr: %s)", turnErr, logredact.Text(s))
 	}
 	return digest.WithCause(turnErr, exitErr)
+}
+
+// eventTurnError accepts structured fields only from a terminal turn.failed.
+func eventTurnError(model string, failure *CodexError) error {
+	cause := turnError(model, failure.Message)
+	if failure.Code == "" && failure.Type == "" {
+		return cause
+	}
+	return providers.TerminalFailure("codex", providers.FailureDetail{Type: failure.Type, Code: failure.Code, Message: failure.Message, ResetsAt: failure.ResetsAt}, failure.Status, cause)
 }
