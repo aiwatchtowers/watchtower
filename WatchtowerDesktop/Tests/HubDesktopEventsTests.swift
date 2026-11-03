@@ -15,7 +15,9 @@ final class HubDesktopEventsTests: XCTestCase {
 
     override func setUp() async throws {
         (pool, path) = try TestDatabase.createPool()
-        appState = AppState { [:] }
+        // Isolated: the workbench layouts this test sets would otherwise land
+        // in the runner's `.standard` domain and split the next run's board.
+        appState = AppState.isolated()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
     }
 
