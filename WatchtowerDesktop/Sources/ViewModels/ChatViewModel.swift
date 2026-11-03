@@ -88,6 +88,7 @@ final class ChatViewModel {
     private(set) var routingStatus: ChatRoutingStatus?
     private(set) var routingStatusError: String?
     private var readingRoutingStatus = false
+    @ObservationIgnored private var lastRoutingRevision: String?
 
     var routingPresentation: ChatRoutingPresentation? {
         let provider = automaticRouting ? preferredProvider : selectedProvider
@@ -110,7 +111,8 @@ final class ChatViewModel {
         do {
             let data = try await cliRunner.run(args: ["ai", "routing-status"], timeout: 5)
             let status = try ChatRoutingStatus.parse(data)
-            if routingStatus?.revision != status.revision { pool.retireRoutingSessions() }
+            if let previous = lastRoutingRevision, previous != status.revision { pool.retireRoutingSessions() }
+            lastRoutingRevision = status.revision
             routingStatus = status
             if let provider = AIProvider(rawValue: routingStatus?.preferredProvider ?? "") {
                 configuredPreferred = provider
