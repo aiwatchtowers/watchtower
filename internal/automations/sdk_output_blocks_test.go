@@ -136,7 +136,7 @@ func TestOutput_InboxKey(t *testing.T) {
 	wantRefusal(t, `output.inbox({title: "t", body: "b", key: "a"})`, feedCase(),
 		"ValidationError", `output.inbox(): key is only for living artifacts; add "artifacts: living" to the recipe`)
 	for name, key := range map[string]string{
-		"empty": `""`, "blank": `"  "`, "number": `7`, "201 chars": `"` + strings.Repeat("é", 201) + `"`,
+		"empty": `""`, "number": `7`, "201 chars": `"` + strings.Repeat("é", 201) + `"`,
 		"control": `"a\nb"`, "null": `null`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -144,6 +144,8 @@ func TestOutput_InboxKey(t *testing.T) {
 				"ValidationError", "output.inbox(): key must be a string of 1 to 200 characters without control characters")
 		})
 	}
+	wantRefusal(t, `output.inbox({title: "t", body: "b", key: "  "})`, livingCase(),
+		"ValidationError", "output.inbox(): key is blank; give it a non-space character")
 	mustReturn(t, try(`output.inbox({title: "t", body: "b", key: "`+strings.Repeat("é", 200)+`"})`), livingCase(), "ok")
 }
 
@@ -402,6 +404,7 @@ func TestAuto12_LivingDryRunWritesNothing(t *testing.T) {
 	a := f.seedText(t, "living", exRecipeText(`output.inbox({title: "t", key: "a", blocks: []}); output.remove({key: "b"}); return 1`,
 		"artifacts: living\nconcurrency: 1\n"), false)
 	f.commitPrior(t, a)
+	f.commitLivingPrior(t, a, "b", "h0")
 	before := f.dump(t)
 	id := f.enqueue(t, a, db.TriggerDryRun)
 	r, err := f.e.ExecuteInline(context.Background(), id)
@@ -414,6 +417,10 @@ func TestAuto12_LivingDryRunWritesNothing(t *testing.T) {
 	if got := stepStatusesOf(f.steps(t, id)); got != "output:dry_run,output:dry_run" {
 		t.Fatalf("steps = %s", got)
 	}
+	var hash string
+	if err := f.d.QueryRow(`SELECT content_hash FROM automation_outputs WHERE automation_id = ? AND output_key = 'b'`, a.ID).Scan(&hash); err != nil || hash != "h0" {
+		t.Fatalf("living card b after the dry run = %q, %v; want it kept with hash h0", hash, err)
+	}
 }
 
 // TestAuto08_ResumeRebuildsLivingBuffer: a resumed run's replay rebuilds
@@ -421,19 +428,10 @@ func TestAuto12_LivingDryRunWritesNothing(t *testing.T) {
 // commit carries them.
 func TestAuto08_ResumeRebuildsLivingBuffer(t *testing.T) {
 	w := newWriteFixture(t)
-	// outputRecipe's line is "outputs: [OUTPUTS]"; the trailing comment
-	// closes the bracket that line opens.
-	a := w.seedWorkbenchOutput(t, "living", []string{"ask:owner"}, "inbox]\nartifacts: living\nconcurrency: 1 #",
+	a := w.seedWorkbenchOutputWith(t, "living", []string{"ask:owner"}, "inbox", "artifacts: living\nconcurrency: 1\n",
 		`output.inbox({title: "filed", key: "k", blocks: [{type: "heading", text: "h"}]}); output.remove({key: "gone"});
 		const r = `+resumeAskCall+`; return 1`)
-	prior := w.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerCatchUp, Now: exStart.Add(-time.Hour)})
-	if ok, err := w.d.ClaimAutomationRun(prior, a.ApprovalHash, a.RecipeText, 50000, 5, exStart.Add(-time.Hour)); err != nil || !ok {
-		t.Fatalf("claim prior = (%v, %v)", ok, err)
-	}
-	if err := w.d.FinishAutomationRun(prior, db.RunFinish{Status: db.RunSucceeded, Now: exStart.Add(-time.Hour)},
-		&db.RunCommit{Outputs: []db.AutomationOutput{{Kind: "inbox", Title: "old", Body: "b", OutputKey: "gone", ContentHash: "h0"}}}); err != nil {
-		t.Fatal(err)
-	}
+	w.commitLivingPrior(t, a, "gone", "h0")
 	id := w.enqueue(t, a, db.TriggerManual)
 	w.stopWhileWaiting(t, id)
 	ask := w.onlyAsk(t, a.ProjectID)

@@ -864,7 +864,7 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 		}
 		priority := o.Priority
 		if priority == "" {
-			priority = "medium"
+			priority = "medium" // mirrors blocks.DefaultPriority (db cannot import blocks)
 		}
 		actions := o.Actions
 		if actions == nil {

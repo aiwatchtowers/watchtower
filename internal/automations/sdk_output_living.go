@@ -34,11 +34,14 @@ func outputKey(env *Env, fn string, fields map[string]any) (string, error) {
 }
 
 // checkOutputKey is a living artifact's key: a string of 1 to
-// MaxOutputKeyChars characters, not blank, without control characters. It
-// is stored as given.
+// MaxOutputKeyChars characters without control characters, not blank (only
+// spaces). It is stored as given.
 func checkOutputKey(fn string, raw any) (string, error) {
 	k, ok := raw.(string)
-	if !ok || strings.TrimSpace(k) == "" || utf8.RuneCountInString(k) > MaxOutputKeyChars ||
+	if ok && k != "" && strings.TrimSpace(k) == "" {
+		return "", validationf("%s(): key is blank; give it a non-space character", fn)
+	}
+	if !ok || k == "" || utf8.RuneCountInString(k) > MaxOutputKeyChars ||
 		!utf8.ValidString(k) || strings.ContainsFunc(k, unicode.IsControl) {
 		return "", validationf("%s(): key must be a string of 1 to %d characters without control characters", fn, MaxOutputKeyChars)
 	}
