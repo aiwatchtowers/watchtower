@@ -157,7 +157,7 @@ For a row with a `ref` the Desktop draws, at the row's trailing edge, exactly th
 
 ### Reply from a row (asks #445, #451)
 
-The owner chose Reply in ask #445 and approved the contract changes it needs (AGENT-03/AGENT-07, the STRIP-01 narrowing) in ask #451. **v1:** Reply is a native action on every `inbox_item` ref row — Waiting for me's rows and `inbox_item` rows in any other artifact (the matrix's first row).
+The owner chose Reply in ask #445 and approved the contract changes it needs (AGENT-03/AGENT-07, the STRIP-01 narrowing) in ask #451. **v1:** Reply is a native action on every `inbox_item` ref row — Waiting for me's rows and `inbox_item` rows in any other artifact (the matrix's first row) — and the message card of the **Messages** legacy entry whenever it stands in for Waiting for me (before its first run, after a failed run), so the approved Reply never disappears with a failed run *(agent's call, ask #457 review)*.
 
 
 - **Reply matrix — historical** (ask #451 was approved in full, so only the first row applies; the rest records the fallbacks the owner asked about, including the mixed case). Reply needed two of ask #451's items: the AGENT-03/AGENT-07 amendment (G) and the STRIP-01 Reply narrowing (N). Whether Waiting for me exists (the STRIP-01 built-in wording, B) decides only where Reply is drawn. APPROVAL-01 does not change whether Reply exists: a Reply proposal is a pending action like any other and Needs approval shows it — as the recipe's card or, if APPROVAL-01 or STRIP-01's built-in wording is refused, as today's native card.
@@ -172,7 +172,7 @@ The owner chose Reply in ask #445 and approved the contract changes it needs (AG
 
   Where Reply does not exist, every `inbox_item` row has exactly today's message-card set (Open, Discuss in Chat, Hand to Agent…, Done, Hide, Snooze ▾) and a recipe's own `reply` action stays drawn on it (no native Reply to win over it).
 - **Which items.** By `inbox_items.trigger_type`: Slack (`mention`, `dm`, `thread_reply`, `reaction`) → `send_slack_message`; Jira (`jira_assigned`, `jira_comment_mention`) → `add_jira_comment`; Linear (`linear_assigned`, `linear_comment_mention`) → `add_linear_comment`. Mail (`email_received`) has no write path in Watchtower, so its row has no **Reply…** (it keeps **Open in Mail**). A Slack item without a permalink, or a Jira/Linear item without an issue key, has no **Reply…** either *(the owner's rule in ask #445: no Reply unless a write path exists)*.
-- **The press.** **Reply…** opens a one-line composer under the row (plain text, ⌘↩ to propose, Esc to cancel; the owner types it — no AI draft in v1 *(agent's call)*). **Propose Reply** runs `watchtower actions propose --tool <tool> --surface inbox --context inbox_item:<id> --args <json>` without `--approve`. Args are bound to the item's own place: Slack `{"channel": <the item's permalink>, "account_id": <its account>, "text", "reason": "Reply from Waiting for me"}` — a message link replies in its thread, a reply's link in the parent thread, and `send_slack_message`'s Normalize pins the recipient at propose time exactly as `docs/features/slack-send.md` says (no re-resolution at Execute); Jira `{"key": <issue key>, "account_id", "body", "reason"}`; Linear `{"key", "account_id", "body", "reason"}`.
+- **The press.** **Reply…** opens a one-line composer under the row (plain text, ⌘↩ to propose, Esc to cancel; the owner types it — no AI draft in v1 *(agent's call)*). **Propose Reply** runs `watchtower actions propose --tool <tool> --surface inbox --context inbox_item:<id> --args <json>` without `--approve`. Args are bound to the item's own place: Slack `{"channel": <the item's permalink>, "account_id": <its account>, "text", "reason": "Reply from <host title>"}` (the title of the artifact the row is on, or "Messages" for the legacy entry — e.g. "Reply from Waiting for me") — a message link replies in its thread, a reply's link in the parent thread, and `send_slack_message`'s Normalize pins the recipient at propose time exactly as `docs/features/slack-send.md` says (no re-resolution at Execute); Jira `{"key": <issue key>, "account_id", "body", "reason"}`; Linear `{"key", "account_id", "body", "reason"}`.
 - **Where it lands.** The proposal is a pending `agent_actions` row; the approval hook draws it in **Needs approval** like any proposal, with the item's label ("Reply to colleague A in #acme-release"). Nothing is sent until the owner presses **Approve** there (`actions approve`, the owner's Confirm and AGENT-05's claim as today). **Edit…** there edits the text (`send_slack_message` allows `text` and `candidate`). Rejecting it leaves the item open.
 - **The row afterwards.** The row stays (the item is still open) with the caption "Reply waiting for approval" and **Reply…** disabled while that proposal is pending (read from `agent_actions` by `context_type='inbox_item'`). Once the reply is posted, INBOX-02 resolves the item at the next sync (the owner's own reply in the thread / comment on the issue) and the row leaves.
 - **Failure.** A refused proposal (validation, unknown channel, a deleted issue) keeps the composer open with the CLI's message under it; nothing is written.
@@ -209,6 +209,7 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Row write failed | the row stays, red error line, **Retry** |
 | Reply composer open | one-line field under the row, **Propose Reply** / **Cancel**, the line "Goes to Needs approval — nothing is sent until you approve it" |
 | Reply refused | the composer stays open with the CLI's message under it |
+| Messages stand-in with Reply | the Messages legacy entry's message card shows **Reply…** like a Waiting for me row |
 | Reply waiting for approval | the row stays with the caption "Reply waiting for approval", **Reply…** disabled |
 | Waiting for me, not yet run | the Messages legacy entry in its place |
 | Menu changed (CAS) | the reload line under the menu |
@@ -337,7 +338,7 @@ Approved in ask #451 (the owner approved every item):
 
 ### If an item of ask #451 had been refused (historical)
 
-Ask #451 was approved in full, so this table no longer applies; it records the fallbacks considered before the answer. Each row is one amendment in ask #451, refused on its own. **A refusal of the STRIP-01 built-in wording or of APPROVAL-01 blocks Needs approval and Waiting for me — B's core, not a detail — so the plan tasks that build them are gated on ask #451.**
+Ask #451 was approved in full, so this table no longer applies; it records the fallbacks considered before the answer. Each row is one amendment in ask #451, refused on its own. Before the answer, a refusal of the STRIP-01 built-in wording or of APPROVAL-01 would have blocked Needs approval and Waiting for me — B's core — and the plan tasks that build them were gated on ask #451 until it was approved; those gates are cleared.
 
 | Item refused | What B does instead | Plan tasks |
 |---|---|---|
@@ -415,7 +416,7 @@ Swift (`make test-swift FILTER=…`, Core where possible):
 - Reply covers Jira and Linear items too (`add_jira_comment` / `add_linear_comment`) — agent's call: ask #445's rule is "Reply where a write path exists", and these two exist; mail has none.
 - Reply text is typed by the owner in a one-line composer, no AI draft in v1 — agent's call: no model call or extra spend on a press, and the owner's own words go out; Edit… in Needs approval still allows changes.
 - A pending Reply disables the row's Reply — agent's call: one reply proposal per item at a time, no duplicates in Needs approval.
-- Reply is a native action of the `inbox_item` kind wherever such a ref row is drawn, never added to the legacy Messages card; had Waiting for me been refused in ask #451 it would have stayed only on other artifacts' `inbox_item` rows — agent's call: one per-kind rule for every outcome, and legacy entries stay today's panes.
+- Reply is a native action of the `inbox_item` kind wherever such a ref row is drawn, and also on the Messages legacy entry's card while it stands in for Waiting for me — agent's call (ask #457 review): the approved Reply must not vanish before Waiting for me's first run or after a failed one; the legacy card otherwise stays today's pane.
 - Native wins over a recipe action of the same kind per `ref` kind, incl. A's `target` on track and idea rows — agent's call.
 
 ## Contract with sub-project A
