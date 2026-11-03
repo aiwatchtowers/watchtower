@@ -9,8 +9,8 @@ import (
 // the Swift HubIdentity.clipMacName (String.prefix) do: a name of combining
 // marks or ZWJ emoji keeps MaxMacNameLength whole clusters.
 func TestClipMacNameCountsGraphemes(t *testing.T) {
-	accent := "é"
-	family := "\U0001F468‍\U0001F469‍\U0001F467"
+	accent := "e\u0301"
+	family := "\U0001F468\u200D\U0001F469\u200D\U0001F467"
 	for name, unit := range map[string]string{"ascii": "m", "combining": accent, "zwj": family} {
 		at := strings.Repeat(unit, MaxMacNameLength)
 		if got := ClipMacName(at); got != at {

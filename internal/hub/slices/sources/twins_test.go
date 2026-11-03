@@ -38,12 +38,12 @@ func graphemes(s string) []string {
 // the kept part is a whole-cluster prefix of the original, and the ellipsis
 // counts toward the cap.
 func TestClipTextReviewFocus4ClipsAtAGraphemeBoundary(t *testing.T) {
-	family := "\U0001F468‍\U0001F469‍\U0001F467‍\U0001F466"
-	accent := "é"
+	family := "\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466"
+	accent := "e\u0301"
 	samples := []struct{ name, text string }{
 		{"rtl", "שלום עולם مرحبا"},
 		{"zwj", strings.Repeat(family, 6)},
-		{"combining", strings.Repeat(accent, 6) + "ạ̈"},
+		{"combining", strings.Repeat(accent, 6) + "a\u0308\u0323"},
 		{"mixed", "a" + family + accent + "ש" + family},
 	}
 	for _, s := range samples {
@@ -316,7 +316,9 @@ func summaryRig(t *testing.T, fetch SummaryFetch) (*reportRig, *SessionReportRun
 	r := newReportRig(t)
 	run, err := SessionReport(r.d, SessionReportOptions{
 		Sessions: r.sessions(), Store: r.st, Sealer: r.k,
-		Fetch: func(_ context.Context, _, id int64, _ bool) (sessionreport.Report, error) { return cliReport(t, id), nil },
+		Fetch: func(_ context.Context, _, id int64, _ bool) (sessionreport.Report, error) {
+			return cliReport(t, id), nil
+		},
 		Summaries: fetch, Now: r.clock,
 		Timing: ReportTiming{Every: 120 * time.Second, StateSpacing: 5 * time.Second, RequestSpacing: time.Minute,
 			Timeout: 5 * time.Second, Idle: 5 * time.Second, SummaryEvery: time.Minute, SummarySpacing: 5 * time.Second,
@@ -345,7 +347,9 @@ func TestSessionSummaryMapsToTheReportFieldsAndAFailureKeepsTheLastValues(t *tes
 	project, s := r.seed()
 	session = s
 	r.setLive(session, true)
-	payload := func() map[string]any { return payloads(t, r.source([]int64{session}, time.Time{}, run.Summary))[session] }
+	payload := func() map[string]any {
+		return payloads(t, r.source([]int64{session}, time.Time{}, run.Summary))[session]
+	}
 	if p := payload(); p["report_target_id"] != nil || p["report_done"] != nil {
 		t.Fatalf("report fields before the first summary run: %v", p)
 	}

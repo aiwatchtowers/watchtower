@@ -127,7 +127,7 @@ func migrateAlertedAsks(db *sql.DB) error {
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS work_alerts (key TEXT PRIMARY KEY, seen_at REAL NOT NULL, pushed_at REAL, generation INTEGER NOT NULL)`,
 		`INSERT OR IGNORE INTO work_alerts (key, seen_at, pushed_at, generation)
-			SELECT 'ask-' || ask_id, at, at, generation FROM alerted_asks`,
+			SELECT 'ask-' || ask_id, at AS seen_at, at AS pushed_at, generation FROM alerted_asks`,
 		`DROP TABLE alerted_asks`,
 	} {
 		if _, err := db.Exec(q); err != nil {
