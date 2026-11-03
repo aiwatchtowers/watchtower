@@ -27,12 +27,12 @@ A row that says **Data deleted** (Slack, Google, Jira or Linear) is fixed the sa
 
 ## Slack is signed in to a different workspace
 
-A Slack row says **Signed in to a different Slack workspace (…) — Re-login to …**, or **Re-login** stops with "signed in to Slack workspace …, but this account holds …". An account keeps the workspace its messages came from, so Watchtower refuses a sign-in into another one and syncs nothing for that account until it is back.
+A Slack row says **Signed in to a different Slack workspace (…) — Re-login to …**, or **Re-login** stops with "sign in to "…", this account's Slack workspace (you chose "…"); to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)". An account keeps the workspace its messages came from, so Watchtower refuses a sign-in into another one and syncs nothing for that account until it is back.
 
 1. Press **Re-login** on the row. If Slack's page shows another workspace, switch to the one the row names first, then approve.
-2. To use the other workspace too, press **Add Slack Workspace** instead; it becomes an account of its own.
+2. To use the workspace you chose by mistake too, press **Add Slack Workspace** and sign in to it there; it becomes an account of its own.
 
-After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run). With digests on, it writes digests only for channels and days no digest covered yet, and rebuilds the daily summary of those days; a day that already had its digest keeps it. Mentions from those days show in digests, not in the Inbox.
+After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run). With digests on, it writes digests only for messages no digest covered yet, and rebuilds the daily summary of those days; what a digest already covered keeps its digest. Messages newer than a channel's latest digest are left to the regular digests. Mentions from those days show in digests, not in the Inbox.
 
 ## How to check
 
