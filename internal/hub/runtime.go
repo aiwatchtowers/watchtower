@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/docs/guide"
@@ -165,6 +166,18 @@ type hubRuntime struct {
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
 	ckAccount transport.Account
+
+	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
+	// cannot be used, ckPubHeld while that also holds the publisher and the
+	// worker's pass (CloudKit active; read lock-free by pass and the status).
+	ckHoldMu  sync.Mutex
+	ckHeld    bool
+	ckPubHeld atomic.Bool
+	// ckResetPending: a CloudKit reset whose wipe failed keeps CloudKit held
+	// until a retry succeeds; ckResetAccount: it was an account change.
+	// Worker goroutine only (icloud.go).
+	ckResetPending bool
+	ckResetAccount bool
 
 	// push is the work-alert pusher (nil without a relay that sends them).
 	push *alerts.Pusher
@@ -595,6 +608,9 @@ func (h *hubRuntime) kick(c chan struct{}) {
 
 // reason is the running hub's status reason.
 func (h *hubRuntime) reason() string {
+	if h.iCloudPaused() {
+		return ReasonNoICloud
+	}
 	h.mu.Lock()
 	unreachable := h.unreachable
 	h.mu.Unlock()
@@ -793,7 +809,10 @@ func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 
 // pass is one processor pass, run again at once while it left records.
 func (h *hubRuntime) pass(ctx context.Context) {
-	if h.isHeld() {
+	if h.ckAccountUnread() {
+		h.refreshCloudKitAccount(ctx) // the bridge may have come up since start
+	}
+	if h.isHeld() || h.iCloudPaused() {
 		return
 	}
 	if h.sup.o.onPass != nil {
@@ -1027,6 +1046,7 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 // housekeeping is the per-cycle upkeep: expired link requests, the epoch's
 // age and seq cap, and the daily hygiene (CloudKit sweep, ledger prune).
 func (h *hubRuntime) housekeeping(ctx context.Context) {
+	h.retryCloudKitReset(ctx)
 	h.refreshCloudKitAccount(ctx)
 	h.savePhoneContact()
 	if err := h.center.Sweep(); err != nil {

@@ -423,6 +423,16 @@
         }
       },
       "hex": "52022001"
+    },
+    {
+      "name": "event_zones_recreated",
+      "message": "Response",
+      "json": {
+        "event": {
+          "zones_recreated": true
+        }
+      },
+      "hex": "52022801"
     }
   ]
 }

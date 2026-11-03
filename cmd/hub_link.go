@@ -151,6 +151,10 @@ func init() {
 // origin.
 const hubRelayOriginRemedy = "Set the relay: watchtower config set hub.relay_origin <origin>"
 
+// hubNoICloudLine is `hub status`'s line for a hub paused because CloudKit,
+// its active transport, has no usable iCloud account.
+const hubNoICloudLine = "No usable iCloud account on this Mac: Mobile is paused and goes on by itself once iCloud is available."
+
 // runHubStatus prints the hub's status; an off hub shows the reason the
 // daemon's would stay off before writing a status, and the facts the
 // sidecar holds (the adoption, the identity store, the last switch).
@@ -194,6 +198,9 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	}
 	if mode == hub.ModeLive && s.Reason == hub.ReasonNoRelayOrigin {
 		line += "\n" + hubRelayOriginRemedy
+	}
+	if s.State == hub.StatePaused && s.Reason == hub.ReasonNoICloud {
+		line += "\n" + hubNoICloudLine
 	}
 	out := hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir), Transcriber: hubTranscriberSeen(dir)}
 	return hubPrint(cmd, asJSON, out, line)

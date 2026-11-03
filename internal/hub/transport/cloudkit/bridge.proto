@@ -233,13 +233,17 @@ message Failure {
 }
 
 // Event is server-sent (Response id 0): a zone that may have changed, a
-// silent push (pull_now), a transport-level error class, or
+// silent push (pull_now), a transport-level error class,
 // account_changed: the Mac's iCloud account changed
-// (CKAccountChanged; the hub drops what names the old user and closes an
-// open link code).
+// (CKAccountChanged; the hub drops what names the old user, closes an
+// open link code and republishes into the new account's zones), or
+// zones_recreated: CloudKit said one of the hub's zones was gone
+// (zoneNotFound / userDeletedZone) and the bridge created the zones again,
+// so what the hub published there may be gone (it republishes everything).
 message Event {
   string zone = 1;
   bool pull_now = 2;
   string error_class = 3;
   bool account_changed = 4;
+  bool zones_recreated = 5;
 }

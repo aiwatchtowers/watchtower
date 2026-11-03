@@ -547,6 +547,8 @@ func TestPullNowEventIsEmitted(t *testing.T) {
 	r.nextEvent("error", func(e transport.Event) bool { return errors.Is(e.Err, transport.ErrRateLimited) })
 	r.fake.AccountChanged()
 	r.nextEvent("account changed", func(e transport.Event) bool { return e.AccountChanged })
+	r.fake.ZonesRecreated()
+	r.nextEvent("zones recreated", func(e transport.Event) bool { return e.ZonesRecreated && !e.AccountChanged })
 	// A dropped connection is an Err event; the next op reconnects and the
 	// reconnect is a pull_now (pushes may have been missed).
 	r.fake.DropConnections()

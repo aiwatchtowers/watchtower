@@ -47,7 +47,8 @@ final class BridgeFramesFixtureTests: XCTestCase {
         XCTAssertGreaterThan(requests, 0)
         XCTAssertGreaterThan(responses, 0)
         let names = Set(all.map(\.name))
-        for added in ["batch_creators", "owner_user", "owner_user_info", "owner_user_info_empty", "event_account_changed"] {
+        for added in ["batch_creators", "owner_user", "owner_user_info", "owner_user_info_empty", "event_account_changed",
+                      "event_zones_recreated"] {
             XCTAssertTrue(names.contains(added), "fixture case \(added) is gone")
         }
     }
@@ -228,6 +229,7 @@ extension BridgeResponse {
             if e.pullNow { m["pull_now"] = true }
             if !e.errorClass.isEmpty { m["error_class"] = e.errorClass }
             if e.accountChanged { m["account_changed"] = true }
+            if e.zonesRecreated { m["zones_recreated"] = true }
             d["event"] = m
         case .ownerUser(let name):
             d["owner_user"] = name.isEmpty ? [:] : ["user_record_name": name]

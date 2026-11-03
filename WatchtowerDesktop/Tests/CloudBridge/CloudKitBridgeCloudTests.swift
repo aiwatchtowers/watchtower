@@ -66,16 +66,24 @@ final class CloudKitBridgeCloudTests: XCTestCase {
     }
 
     func testZoneNamesAndZoneCreation() async throws {
+        let recreated = Counter()
+        cloud = CloudKitBridgeCloud(hubID: hub, database: db, zonesRecreated: { recreated.add() }, entitlementPresent: { true })
         do {
             _ = try await cloud.save(zone: "DataZone-other", [CloudWrite(name: "x", envelope: env)])
             XCTFail("another hub's zone was accepted")
         } catch let failure as BridgeCloudFailure {
             XCTAssertEqual(failure, .unsupportedZone)
         }
+        _ = try await cloud.save(zone: data, [CloudWrite(name: "k1", envelope: env)])
+        XCTAssertEqual(recreated.value, 0, "zones that exist are not news")
         db.zonesMissing = true
         _ = try await cloud.save(zone: data, [CloudWrite(name: "k2", envelope: env)])
         XCTAssertEqual(Set(db.createdZones.map(\.zoneName)), ["DataZone-\(hub)", "RelayZone-\(hub)"])
         XCTAssertNotNil(db.record(name: "k2", zone: zoneID(data)), "the save ran again once the zones existed")
+        XCTAssertEqual(recreated.value, 1, "the hub hears its zones were created again (it republishes)")
+        db.zonesMissing = true
+        _ = try await cloud.changes(zone: relay, since: nil)
+        XCTAssertEqual(recreated.value, 2, "a change feed that found the zones gone says so too")
     }
 
     func testConditionalDeletesReadOnceAndCompareTags() async throws {
@@ -332,4 +340,14 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
             _zonesMissing = false
         }
     }
+}
+
+/// Counts calls from any thread.
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int { lock.withLock { count } }
+
+    func add() { lock.withLock { count += 1 } }
 }

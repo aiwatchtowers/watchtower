@@ -145,6 +145,7 @@ func (h *hubRuntime) refreshForPush(ctx context.Context) {
 // switchedTo is the switcher's OnSwitched.
 func (h *hubRuntime) switchedTo(target transport.Kind) {
 	switchPushes(h.push, h.pub, target)
+	h.applyICloudHold() // the publisher's iCloud hold follows the active transport
 }
 
 // switchPushes follows a committed switch: toward CloudKit every queued or
