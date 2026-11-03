@@ -35,7 +35,7 @@ final class GoSealedEnvelopeTests: XCTestCase {
     func testEveryGoSealedRecordOpensInTheKit() throws {
         let k = try E2EFixtureKeys()
         let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: Self.url))
-        XCTAssertEqual(Set(file.cases.keys), ["data", "alert", "relayToPhone", "keybox"])
+        XCTAssertEqual(Set(file.cases.keys), ["data", "alert", "relayToPhone", "keybox", "alertPush"])
         let metaKey = SymmetricKey(data: E2EFixtureKeys.metaKeyBytes)
         let hubToPhone = try KeyDerivation.relayKey(
             agreementPrivate: k.hubKX, peerPublic: k.devKX.publicKey, linkNonce: k.linkNonce,
@@ -75,7 +75,10 @@ final class GoSealedEnvelopeTests: XCTestCase {
             XCTAssertEqual(opened.header.hubID, k.hubID, name)
             XCTAssertEqual(opened.header.senderID.uuidString, item.sender, name)
             XCTAssertEqual(opened.header.epoch, file.epoch, name)
-            if envelopeClass != .keybox {
+            if name == "alertPush" {
+                // A push is no zone record: its AAD names the fixed wire name.
+                XCTAssertEqual(item.wireName, "alert-push", name)
+            } else if envelopeClass != .keybox {
                 // Go names records exactly as SecureTransport: the plain name split at its first "-".
                 let parts = item.id.split(separator: "-", maxSplits: 1).map(String.init)
                 XCTAssertEqual(
@@ -84,5 +87,29 @@ final class GoSealedEnvelopeTests: XCTestCase {
                     name)
             }
         }
+    }
+
+    /// The Go hub's relay push (`secure.Sealer.AlertPush`) opens in the notification extension's `AlertOpener` under
+    /// `"alert-push"` with the alert material alone, and never under the `ask_alert` record's own wire name.
+    func testGoSealedAlertPushOpensWithAlertOpener() throws {
+        let k = try E2EFixtureKeys()
+        let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: Self.url))
+        let item = try XCTUnwrap(file.cases["alertPush"])
+        let material = AlertMaterial(
+            epochs: [EpochKeys(
+                epoch: file.epoch, dataKey: HPKEEnvelopeVectors.dataKeyBytes, alertKey: E2EFixtureKeys.sequence(0xD0, 0xEF))],
+            hubSigningKey: k.hubSig.publicKey.rawRepresentation)
+        let opener = AlertOpener(material: material)
+        let envelope = Data(hex: item.envelope)
+
+        let expected = try JSONDecoder().decode(WorkAlertPayload.self, from: Data(hex: item.payload))
+        XCTAssertEqual(opener.open(wireName: "alert-push", envelope: envelope), expected)
+        XCTAssertEqual(expected.key, "ask-42")
+        XCTAssertEqual(item.id, "ask_alert-ask-42")
+
+        let parts = item.id.split(separator: "-", maxSplits: 1).map(String.init)
+        let recordName = KeyDerivation.recordName(
+            metaKey: SymmetricKey(data: E2EFixtureKeys.metaKeyBytes), zone: .data, kind: parts[0], id: parts[1])
+        XCTAssertNil(opener.open(wireName: recordName, envelope: envelope))
     }
 }

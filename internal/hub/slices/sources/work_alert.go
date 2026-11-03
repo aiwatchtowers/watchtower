@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/hub/platform"
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
@@ -60,21 +61,6 @@ func WorkAlert(c WorkAlertConfig) slices.Source {
 type workAlertSource struct{ c WorkAlertConfig }
 
 func (*workAlertSource) Kind() slices.Kind { return slices.KindAskAlert }
-
-// workAlertPayload is the Kit's WorkAlertPayload: titles only, never chat
-// text.
-type workAlertPayload struct {
-	Event         string `json:"event"`
-	Key           string `json:"key"`
-	WorkbenchID   int64  `json:"workbench_id"`
-	WorkbenchName string `json:"workbench_name"`
-	SessionID     *int64 `json:"session_id,omitempty"`
-	AskID         *int64 `json:"ask_id,omitempty"`
-	RequestID     *int64 `json:"request_id,omitempty"`
-	Title         string `json:"title"`
-	Body          string `json:"body"`
-	Quick         bool   `json:"quick"`
-}
 
 // The candidate events (WorkAlertPolicy.Event).
 const (
@@ -305,7 +291,7 @@ func (s *workAlertSource) awaySince(ctx context.Context, stamp time.Time) (time.
 func coverKey(key string) string { return "cover-" + key }
 
 // alertPayload is WorkAlertSlice.payload.
-func alertPayload(c alertCandidate, workbenchName string, quick bool) workAlertPayload {
+func alertPayload(c alertCandidate, workbenchName string, quick bool) secure.WorkAlertFields {
 	workbench, _ := clipText(workbenchName, alertMaxWorkbench)
 	session, _ := clipText(c.title, alertMaxSession)
 	title := workbench
@@ -313,7 +299,7 @@ func alertPayload(c alertCandidate, workbenchName string, quick bool) workAlertP
 		title = workbench + " · " + session
 	}
 	body, _ := clipText(c.body, alertMaxBody)
-	return workAlertPayload{
+	return secure.WorkAlertFields{
 		Event: c.event, Key: c.key, WorkbenchID: c.workbenchID, WorkbenchName: workbench,
 		SessionID: c.sessionID, AskID: c.askID, RequestID: c.requestID, Title: title, Body: body, Quick: quick,
 	}
