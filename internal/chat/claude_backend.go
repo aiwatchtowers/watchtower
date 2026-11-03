@@ -690,6 +690,7 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 		b.cancelled, b.inFlight = false, false
 		b.mu.Unlock()
 	}()
+	b.tr.SetTurnContext(ctx)
 	b.curTurn.Store(c.TurnID)
 	b.tr.clearInterrupted()
 	b.gate.resume()

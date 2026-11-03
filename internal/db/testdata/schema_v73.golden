@@ -1061,7 +1061,7 @@ context_id TEXT,
 created_at REAL NOT NULL,
 updated_at REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL)
+CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '')
 
 table	chat_fts
 CREATE VIRTUAL TABLE chat_fts USING fts5(
@@ -4479,6 +4479,10 @@ GROUP BY up.ancestor
 12	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
 13	active_leaf_message_id	INTEGER	notnull=0	dflt=NULL	pk=0
 14	read_at	REAL	notnull=0	dflt=NULL	pk=0
+15	routing_mode	TEXT	notnull=1	dflt='preferred_reserve'	pk=0
+16	actual_provider	TEXT	notnull=1	dflt=''	pk=0
+17	actual_model	TEXT	notnull=1	dflt=''	pk=0
+18	routing_reason	TEXT	notnull=1	dflt=''	pk=0
 
 ## chat_fts
 0	text		notnull=0	dflt=NULL	pk=0

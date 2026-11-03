@@ -148,6 +148,11 @@ func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.P
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
 		return newRefusedProvider(err) // #608: no fallback to an allowed provider
 	}
+	if toolRoutingEnabled(cfg, modelOverride) {
+		return newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) {
+			return buildAIClient(actual, dbPath, ""), func() {}, nil
+		})
+	}
 	return buildAIClient(cfg, dbPath, modelOverride)
 }
 
@@ -174,6 +179,21 @@ func buildAIClient(cfg *config.Config, dbPath, modelOverride string) ai.Provider
 // has no subprocess. It returns a cleanup to run after the query drains (closing
 // the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
 func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
+	if toolRoutingEnabled(cfg, aiFlagModel) {
+		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath) })
+		routed.capable = func(provider string) bool {
+			if provider == cfg.AI.Provider || aiFlagTools != "chat" {
+				return true
+			}
+			database, err := db.Open(dbPath)
+			if err != nil {
+				return false
+			}
+			defer database.Close()
+			return reserveConnectionsCapable(cfg, database, provider)
+		}
+		return routed, func() {}, nil
+	}
 	noop := func() {}
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
 		return nil, noop, err

@@ -207,6 +207,7 @@ func (db *DB) ActiveChatPath(conversationID int64) ([]ChatMessage, error) {
 type ChatConversation struct {
 	ID                                                                     int64
 	Title, TitleSource, SessionID, ContextType, ContextID, Provider, Model string
+	RoutingMode, ActualProvider, ActualModel, RoutingReason                string
 	ProjectID                                                              sql.NullInt64
 }
 
@@ -214,9 +215,9 @@ type ChatConversation struct {
 func (db *DB) GetChatConversation(id int64) (*ChatConversation, error) {
 	var c ChatConversation
 	err := db.QueryRow(`SELECT id, title, title_source, COALESCE(session_id, ''), COALESCE(context_type, ''),
-			COALESCE(context_id, ''), COALESCE(provider, ''), COALESCE(model, ''), project_id
+			COALESCE(context_id, ''), COALESCE(provider, ''), COALESCE(model, ''), project_id, routing_mode, actual_provider, actual_model, routing_reason
 		FROM chat_conversations WHERE id = ?`, id).Scan(&c.ID, &c.Title, &c.TitleSource, &c.SessionID,
-		&c.ContextType, &c.ContextID, &c.Provider, &c.Model, &c.ProjectID)
+		&c.ContextType, &c.ContextID, &c.Provider, &c.Model, &c.ProjectID, &c.RoutingMode, &c.ActualProvider, &c.ActualModel, &c.RoutingReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

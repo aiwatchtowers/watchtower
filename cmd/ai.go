@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/instructions"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
@@ -486,7 +487,19 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 	for err := range errCh {
 		if err != nil {
 			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
-			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
+			reason := ""
+			var failure *providers.Failure
+			if errors.Is(err, providerrouting.ErrDeferred) {
+				retry = false
+				reason = "quota_wait"
+			} else if errors.As(err, &failure) && failure.Category == providers.Quota {
+				retry = false
+				reason = "quota_exhausted"
+			} else if failure != nil && failure.Category == providers.Capability {
+				retry = false
+				reason = "required_capability_missing"
+			}
+			_ = out.Emit(chat.Event{Reason: reason, Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
 			return
 		}
 	}
