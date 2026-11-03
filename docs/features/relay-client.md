@@ -252,6 +252,13 @@ Script settings and its stand config:
 
 Task 12's run against the stand at `3a99bd7`: 44 passed, 20 skipped, 0 failed. Task 17's run at `bcca870` (Phase 3): 46 passed, 24 skipped, 0 failed.
 
+**Two Kit ↔ Go hub harnesses (since Phase 3b's merge of `feature/go-hub`).** They check different things and both stay; 3b attempts no merge of the two (R15's cost).
+
+- `scripts/relay-interop.sh KIT=1` + `GoHubInteropTests` (Go hub Phase 2 Task 12, env `WT_HUB_INTEROP_DIR`): the built CLI as a live headless hub, with the typing and session grants.
+- `scripts/relay-interop-kit-hub.sh` + `internal/hub/interop_kit_test.go` + `KitGoHubInteropTests` (Phase 3a Task 13, env `WT_GO_HUB_INTEROP_DIR`): the Kit's link pieces, vouch, Try Again, ordered actions and unlink.
+
+The environment variables do not collide, and `TestInterop_KitPhone` skips without `-kit-dir`, so the first runner's `-run '^TestInterop_'` passes over it.
+
 ### CI mode of the interop scripts
 
 There is no relay CI job: the owner dropped it on 2026-11-02 (spec §12 p. 4; the Swift part is being rewritten in Go). The two Kit interop scripts stay as local entry points, run by hand, and keep a non-interactive CI mode:
