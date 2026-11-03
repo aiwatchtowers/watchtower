@@ -9,7 +9,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/sessionfeed/` + `internal/db/terminal_session_agent_sessions.go` + `internal/db/migrations/00127_*.sql` + `cmd/workbench_session_feed.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionFeed.swift,Services/SessionFeedStore.swift,Services/SessionFeedPoller.swift}` + `WatchtowerDesktop/Sources/Views/Workbench/SessionChat*.swift` + the phone path: `WatchtowerDesktop/Sources/Services/MobileHub/{Slices/SessionChatPayload.swift,Slices/SessionChatRunner.swift,Slices/SessionChatSlice.swift,Handlers/SessionChatRequestHandler.swift}` + `WatchtowerKit/Sources/WatchtowerKit/Models/SessionChat.swift` (+ `WorkbenchActionParams.swift` `SessionChatRequestParams`) + `WatchtowerKit/Tests/Fixtures/workbench/session_chat*.json` + `WatchtowerMobile/Sources/Features/Workbench/{SessionChatView,SessionChatViewModel,WorkchatView,WorkchatModel}.swift`
+**Module:** `internal/sessionfeed/` + `internal/db/terminal_session_agent_sessions.go` + `internal/db/migrations/00127_*.sql` + `cmd/workbench_session_feed.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionFeed.swift,Services/SessionFeedStore.swift,Services/SessionFeedPoller.swift}` + `WatchtowerDesktop/Sources/Views/Workbench/SessionChat*.swift` + the phone path: `internal/hub/slices/sources/session_chat.go` + `internal/hub/actions/handlers/chat_request.go` (the Go hub; the Swift hub's `Services/MobileHub/` was deleted in go hub plan 3 Task 24) + `WatchtowerKit/Sources/WatchtowerKit/Models/SessionChat.swift` (+ `WorkbenchActionParams.swift` `SessionChatRequestParams`) + `WatchtowerKit/Tests/Fixtures/workbench/session_chat*.json` + `WatchtowerMobile/Sources/Features/Workbench/{SessionChatView,SessionChatViewModel,WorkchatView,WorkchatModel}.swift`
 **Last full audit:** 2026-10-16
 
 ## FEED-01 — No transcript text in SQLite; transcripts are read-only
@@ -79,16 +79,14 @@
 **Why locked:** The mobile POC's I-4 forbids publishing transcript text. The owner amended it (ask #379, 2026-10-18) for exactly this exception: dialog entries, on request, short-lived. Widening any of those (background publishing, tool output, longer lifetime) reopens the privacy decision.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/MobileHub/SessionChatSliceTests.swift::testNoWatchPublishesNothing`
-- `WatchtowerDesktop/Tests/MobileHub/SessionChatRunnerTests.swift::testExpiredWatchLeavesWindow`
-- `WatchtowerDesktop/Tests/MobileHub/SessionChatRunnerTests.swift::testUnlinkedPhoneDropsPayloadsForGood`
-- `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testMatchesKitFixtureKeys`
-- `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testOnlyFeedKindsPublished`
+- The Go hub (phase 1, **ask #807**; the only hub since go hub plan 3 Task 24): `internal/hub/slices/sources/session_chat_test.go::TestFeed05_NoWatchPublishesNothing`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_ExpiredWatchLeavesWindow`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_UnlinkedPhoneDropsPayloadsForGood`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_MatchesKitFixtureKeys`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_OnlyFeedKindsPublished`
 
 **Locked since:** 2026-10-18
 
 ## Changelog
 
+- 2026-11-03 (go hub plan 3 Task 24, spec `docs/superpowers/specs/2026-10-31-go-hub-design.md` §13 "Ported guards", approved with the spec; asks #807, #812, #813, #814): the Swift hub is deleted, and FEED-05's five Swift guards go with it. Each keeps its same-meaning Go twin, already listed since phase 1: `testNoWatchPublishesNothing` → `TestFeed05_NoWatchPublishesNothing`, `testExpiredWatchLeavesWindow` → `TestFeed05_ExpiredWatchLeavesWindow`, `testUnlinkedPhoneDropsPayloadsForGood` → `TestFeed05_UnlinkedPhoneDropsPayloadsForGood`, `testMatchesKitFixtureKeys` → `TestFeed05_MatchesKitFixtureKeys`, `testOnlyFeedKindsPublished` → `TestFeed05_OnlyFeedKindsPublished` (all in `internal/hub/slices/sources/session_chat_test.go`). The module's phone path now names the Go files. Text unchanged.
+- 2026-10-31 (Go hub phase 1, board #1284, **ask #807**): strengthening, no guard relaxed. FEED-05's Go twins added for the Go hub's `session_chat` source (`internal/hub/slices/sources/session_chat.go`): the payload stays in the hub's memory (not in `watchtower.db`, not in the hub sidecar). Text unchanged. Note `docs/features/go-hub.md`.
 
 - 2026-10-16 (board #477..#485): file created, FEED-01..04. Spec `docs/superpowers/specs/2026-10-16-session-chat-feed-design.md`.
 - 2026-10-17: FEED-01..03 now cover Codex sessions (`ParseCodex`/`LocateCodex`, agent instructions Task 6); `codex sessions are not supported yet` refusal removed.

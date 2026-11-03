@@ -222,7 +222,7 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 		}
 	}
 
-	if err := writeWorkspaceScaffold(configPath, workspace, true); err != nil {
+	if err := writeWorkspaceScaffold(configPath, workspace, true, nil); err != nil {
 		return nil, err
 	}
 

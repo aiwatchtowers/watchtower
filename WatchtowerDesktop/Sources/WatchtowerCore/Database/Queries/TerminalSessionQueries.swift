@@ -86,6 +86,35 @@ package enum TerminalSessionQueries {
         try TerminalSession.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?", arguments: [id])
     }
 
+    /// Where a start Go runs (`workbench session start`, Go hub 3 Task 8)
+    /// stands for its row, as the row says it. Read-only: Go writes it.
+    /// (Deliberately not part of `TerminalSession`: only a start reads it.)
+    package struct GoStartRow: Equatable, Sendable {
+        /// Go recorded the start's failure (`agent_failed_at` set): its
+        /// `agent_error` ("" when none); nil while none is recorded.
+        package var failure: String?
+        /// The owner's line about the place (`start_notice`, 00169); nil = none.
+        package var notice: String?
+
+        package init(failure: String? = nil, notice: String? = nil) {
+            self.failure = failure
+            self.notice = notice
+        }
+    }
+
+    /// nil when the row is gone (deleted, or a start whose failure could not
+    /// even be recorded).
+    package static func goStartRow(_ db: Database, id: Int64) throws -> GoStartRow? {
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT agent_failed_at, agent_error, start_notice FROM terminal_sessions WHERE id = ?",
+            arguments: [id]
+        ) else { return nil }
+        let failedAt: String? = row["agent_failed_at"]
+        let reason: String? = row["agent_error"]
+        let notice: String? = row["start_notice"]
+        return GoStartRow(failure: failedAt == nil ? nil : reason ?? "", notice: notice?.isEmpty == false ? notice : nil)
+    }
+
     /// Whether row `id`'s agent called `finish_session` and has not worked
     /// since (`finished_at` set; Go clears it on any `working` write). False
     /// for a missing row. Read-only: Go writes the column.

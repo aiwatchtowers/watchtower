@@ -164,9 +164,68 @@ for arg in "$@"; do
 done
 VERSION="${VERSION:-0.2.0}"
 
+# BEGIN relay-origin-check (extracted verbatim by scripts/tests/test-build-app-relay.sh)
+# WATCHTOWER_RELAY_ORIGIN_DEFAULT (from the build profile) becomes the CLI's
+# build-time default relay origin, watchtower/internal/hub.DefaultRelayOrigin
+# (Go hub: the origin the relay session announces), checked here before
+# anything is built. A release version — one starting with [v]X.Y.Z, a
+# prerelease such as v1.2.3-rc1 included — must pin the relay origin; any
+# other version may leave it empty, and so may --dev.
+RELAY_ORIGIN_DEFAULT="${WATCHTOWER_RELAY_ORIGIN_DEFAULT:-}"
+if ! $DEV_MODE && [ -z "$RELAY_ORIGIN_DEFAULT" ] \
+    && printf '%s' "$VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+'; then
+    echo "ERROR: WATCHTOWER_RELAY_ORIGIN_DEFAULT is empty: a release build must pin the relay origin" >&2
+    exit 1
+fi
+# END relay-origin-check
+
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
+
+# BEGIN bridge-profile-check (extracted verbatim by scripts/tests/test-build-app-bridge.sh)
+# WatchtowerCloudBridge.app (Go hub spec §6.2), the helper that serves the Go hub's CloudKit transport,
+# signs with its own Developer ID provisioning profile: App ID com.watchtower.desktop.cloudbridge with
+# iCloud (the app's container) and Push Notifications, named by WATCHTOWER_BRIDGE_PROFILE in the build
+# profile (.env, gitignored). A release build (not --dev, NOTARIZE_PROFILE set: the notarized path) needs
+# it and stops here, before anything is built, without it; any other build leaves the helper out with a
+# warning (no CloudKit bridge in that build). A profile that is set is always checked
+# (scripts/check-bridge-signing.sh --profile). Sets BRIDGE_PROFILE (empty = no helper) and
+# SIGNED_BRIDGE_ENTITLEMENTS: a temporary copy of the helper's entitlements with the application and team
+# identifiers from the profile and the WATCHTOWER_CLOUDKIT_ENV environment.
+BRIDGE_ENTITLEMENTS="$PROJECT_ROOT/WatchtowerDesktop/Resources/WatchtowerCloudBridge/WatchtowerCloudBridge.entitlements"
+BRIDGE_PROFILE=""
+SIGNED_BRIDGE_ENTITLEMENTS=""
+if [ -z "${WATCHTOWER_BRIDGE_PROFILE:-}" ]; then
+    if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ]; then
+        echo "ERROR: WATCHTOWER_BRIDGE_PROFILE is not set — create the App ID com.watchtower.desktop.cloudbridge with iCloud ($HUB_CONTAINER) and Push Notifications and a Developer ID provisioning profile for it, then put its path in .env as WATCHTOWER_BRIDGE_PROFILE" >&2
+        exit 1
+    fi
+    echo "WARNING: WATCHTOWER_BRIDGE_PROFILE is not set — building without the CloudKit bridge (WatchtowerCloudBridge.app); a release build needs it." >&2
+else
+    case "$WATCHTOWER_BRIDGE_PROFILE" in
+        /*) BRIDGE_PROFILE="$WATCHTOWER_BRIDGE_PROFILE" ;;
+        *) BRIDGE_PROFILE="$PROJECT_ROOT/$WATCHTOWER_BRIDGE_PROFILE" ;;
+    esac
+    HUB_CONTAINER="$HUB_CONTAINER" CLOUDKIT_ENV="$CLOUDKIT_ENV" "$SCRIPT_DIR/check-bridge-signing.sh" --profile "$BRIDGE_PROFILE" || exit 1
+    BRIDGE_WORK_DIR=$(mktemp -d)
+    trap 'rm -rf "${PROFILE_WORK_DIR:-}" "$BRIDGE_WORK_DIR"' EXIT
+    security cms -D -i "$BRIDGE_PROFILE" > "$BRIDGE_WORK_DIR/profile.plist"
+    BRIDGE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$BRIDGE_WORK_DIR/profile.plist")
+    BRIDGE_TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$BRIDGE_WORK_DIR/profile.plist" 2>/dev/null || true)
+    if [ -z "$BRIDGE_TEAM_ID" ] || [ "$BRIDGE_APP_ID" != "$BRIDGE_TEAM_ID.com.watchtower.desktop.cloudbridge" ]; then
+        echo "ERROR: WATCHTOWER_BRIDGE_PROFILE '$BRIDGE_PROFILE' is for App ID '$BRIDGE_APP_ID' (team '${BRIDGE_TEAM_ID:-<none>}'); the helper is <TEAM>.com.watchtower.desktop.cloudbridge" >&2
+        exit 1
+    fi
+    SIGNED_BRIDGE_ENTITLEMENTS="$BRIDGE_WORK_DIR/WatchtowerCloudBridge.entitlements"
+    cp "$BRIDGE_ENTITLEMENTS" "$SIGNED_BRIDGE_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $BRIDGE_APP_ID" "$SIGNED_BRIDGE_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $BRIDGE_TEAM_ID" "$SIGNED_BRIDGE_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Set :com.apple.developer.icloud-container-environment $CLOUDKIT_ENV" "$SIGNED_BRIDGE_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Set :com.apple.developer.aps-environment $APS_ENV" "$SIGNED_BRIDGE_ENTITLEMENTS"
+    echo "==> Bridge provisioning profile OK: $BRIDGE_APP_ID (CloudKit $CLOUDKIT_ENV)"
+fi
+# END bridge-profile-check
 
 # Without create-dmg the DMG silently degrades to a bare hdiutil image (no
 # window layout, opens like a plain folder), so surface that up front.
@@ -263,8 +322,12 @@ PURGE_DEFAULT="${WATCHTOWER_PURGE_DEFAULT:-}"
 LINK_FETCH_DENY_HOSTS="${WATCHTOWER_LINK_FETCH_DENY_HOSTS:-}"
 # -tags codegrammars: the code index's full grammar set (an untagged build
 # carries only Go, Swift and Python).
+# identity.KeychainBuildFlag=false: the Go hub keeps its identity in the file
+# store on a desktop host — the real-Mac Keychain check (scripts/hub-keychain-check.sh,
+# docs/features/go-hub.md "Keychain check") failed: a newer build cannot
+# delete the items an older build created.
 GOARCH=arm64 CGO_ENABLED=1 go build -tags codegrammars \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT} -X watchtower/internal/hub/identity.KeychainBuildFlag=false" \
     -o "$STAGE_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
 
@@ -289,6 +352,18 @@ OCR_HELPER=$(swift build -c release --arch arm64 --show-bin-path)/watchtower-ocr
 if [ ! -f "$OCR_HELPER" ]; then
     echo "ERROR: OCR helper not found at $OCR_HELPER"
     exit 1
+fi
+
+# The CloudKit bridge helper (Go hub spec §6.2): CloudBridgeCore + main.swift, no ML stack. Built only
+# when bridge-profile-check found its profile.
+BRIDGE_BINARY=""
+if [ -n "$BRIDGE_PROFILE" ]; then
+    swift build -c release --arch arm64 --product WatchtowerCloudBridge 2>&1
+    BRIDGE_BINARY=$(swift build -c release --arch arm64 --show-bin-path)/WatchtowerCloudBridge
+    if [ ! -f "$BRIDGE_BINARY" ]; then
+        echo "ERROR: CloudKit bridge not found at $BRIDGE_BINARY"
+        exit 1
+    fi
 fi
 
 echo "==> Creating app bundle..."
@@ -369,6 +444,33 @@ echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut
 cp "$STAGE_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 cp "$OCR_HELPER" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
 
+# BEGIN bridge-bundle (extracted verbatim by scripts/tests/test-build-app-bridge.sh)
+# WatchtowerCloudBridge.app at Contents/Helpers/: the executable, its Info.plist (bundle id
+# com.watchtower.desktop.cloudbridge, LSUIElement) with this build's version, and its provisioning profile
+# as Contents/embedded.provisionprofile. It loads the app's embedded frameworks (SQLCipher under GRDB)
+# from Watchtower.app/Contents/Frameworks, four levels up from its MacOS dir. app-codesign signs it
+# (sign_bridge) before the outer bundle. Without a bridge profile (bridge-profile-check) there is no helper:
+# BRIDGE_APP stays empty and nothing below touches it.
+BRIDGE_APP=""
+BRIDGE_EXECUTABLE=""
+if [ -n "$BRIDGE_PROFILE" ]; then
+    BRIDGE_APP="$APP_BUNDLE/Contents/Helpers/WatchtowerCloudBridge.app"
+    BRIDGE_EXECUTABLE="$BRIDGE_APP/Contents/MacOS/WatchtowerCloudBridge"
+    mkdir -p "$BRIDGE_APP/Contents/MacOS"
+    cp "$BRIDGE_BINARY" "$BRIDGE_EXECUTABLE"
+    cp "$PROJECT_ROOT/WatchtowerDesktop/Resources/WatchtowerCloudBridge/Info.plist" "$BRIDGE_APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION#v}" "$BRIDGE_APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION#v}" "$BRIDGE_APP/Contents/Info.plist"
+    cp "$BRIDGE_PROFILE" "$BRIDGE_APP/Contents/embedded.provisionprofile"
+    if ! otool -l "$BRIDGE_EXECUTABLE" | grep -qF 'path @executable_path/../../../../Frameworks '; then
+        install_name_tool -add_rpath "@executable_path/../../../../Frameworks" "$BRIDGE_EXECUTABLE"
+    fi
+    echo "    Embedded helper: Contents/Helpers/WatchtowerCloudBridge.app"
+else
+    echo "    WARNING: no CloudKit bridge in this build (WATCHTOWER_BRIDGE_PROFILE not set)."
+fi
+# END bridge-bundle
+
 # BEGIN sdk-stamp (extracted verbatim by scripts/tests/test-build-app-sdk-stamp.sh)
 # Since Xcode 27, SwiftPM's release build links against the current SDK but
 # records sdk = minos (14.0) in LC_BUILD_VERSION. AppKit picks its design
@@ -408,6 +510,7 @@ MACOS_SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)
 case "$MACOS_SDK_VERSION" in *.*) ;; *) MACOS_SDK_VERSION="$MACOS_SDK_VERSION.0" ;; esac
 stamp_sdk_version "$APP_BUNDLE/Contents/MacOS/WatchtowerDesktop" "$MACOS_SDK_VERSION" || exit 1
 stamp_sdk_version "$APP_BUNDLE/Contents/MacOS/watchtower-ocr" "$MACOS_SDK_VERSION" || exit 1
+if [ -n "$BRIDGE_EXECUTABLE" ]; then stamp_sdk_version "$BRIDGE_EXECUTABLE" "$MACOS_SDK_VERSION" || exit 1; fi
 
 # The licence notices of the third-party code compiled into the CLI (the
 # tree-sitter runtime and the code index's grammars): MIT, Apache-2.0 and
@@ -654,6 +757,26 @@ else
 fi
 # END signing-identity-selection
 
+# BEGIN bridge-codesign (extracted verbatim by scripts/tests/test-build-app-bridge.sh)
+# sign_bridge — signs Contents/Helpers/WatchtowerCloudBridge.app (BRIDGE_APP), called by app-codesign
+# before the outer bundle. A real identity signs it with the hardened runtime and SIGNED_BRIDGE_ENTITLEMENTS
+# (bridge-profile-check), then check-bridge-signing.sh must pass: the embedded profile grants the container,
+# CloudKit and push for com.watchtower.desktop.cloudbridge, Info.plist carries that id, and the signed
+# entitlements equal the merged copy and stay within the profile. Ad-hoc signs it without entitlements
+# (amfid kills an ad-hoc binary that carries restricted ones): such a build has no working bridge.
+sign_bridge() {
+    if [ "$SIGN_IDENTITY" != "-" ]; then
+        codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} \
+            --entitlements "$SIGNED_BRIDGE_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$BRIDGE_APP"
+        HUB_CONTAINER="$HUB_CONTAINER" CLOUDKIT_ENV="$CLOUDKIT_ENV" \
+            "$SCRIPT_DIR/check-bridge-signing.sh" "$BRIDGE_APP" "$SIGNED_BRIDGE_ENTITLEMENTS" || exit 1
+    else
+        echo "    WARNING: CloudKit bridge signed ad-hoc without entitlements — it cannot reach iCloud in this build."
+        codesign --force --sign - "$BRIDGE_APP"
+    fi
+}
+# END bridge-codesign
+
 # BEGIN app-codesign (extracted verbatim by scripts/tests/test-build-app-cloud.sh)
 # The mobile hub needs the iCloud container, CloudKit and push entitlements.
 # They are restricted: they take effect only with a real identity and an
@@ -683,6 +806,8 @@ if [ "$SIGN_IDENTITY" != "-" ]; then
     done
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
+    # The CloudKit bridge helper (bridge-codesign), inside the outer bundle's seal.
+    if [ -n "${BRIDGE_APP:-}" ]; then sign_bridge; fi
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --entitlements "$BUNDLE_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
     echo "==> Ad-hoc code signing..."
@@ -700,6 +825,7 @@ else
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
     # The OCR helper needs no entitlement at all: never give it the app's.
     codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
+    if [ -n "${BRIDGE_APP:-}" ]; then sign_bridge; fi
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi
 # END app-codesign
@@ -841,12 +967,26 @@ else
     fi
 fi
 
+# BEGIN cli-zip (extracted verbatim by scripts/tests/test-build-app-relay.sh)
+# The CLI-only Mac download (Go hub, a headless host): the bundle's signed
+# Contents/MacOS/watchtower alone. Only on the signed, notarized branch — its
+# cdhash was in the notarized ZIP, so Gatekeeper finds the ticket online (a
+# bare Mach-O cannot be stapled). The ad-hoc branch makes none.
+CLI_ZIP_NAME=""
+if [ "$SIGN_IDENTITY" != "-" ] && [ -n "$NOTARIZE_PROFILE" ]; then
+    CLI_ZIP_NAME="Watchtower-CLI-${VERSION}${FLAVOR_SUFFIX}-arm64.zip"
+    echo "==> Creating CLI zip..."
+    rm -f "$CLI_ZIP_NAME"
+    ditto -c -k "$APP_BUNDLE/Contents/MacOS/watchtower" "$CLI_ZIP_NAME"
+fi
+# END cli-zip
+
 # Generate checksums
 echo "==> Generating checksums..."
 # Flavored builds get a flavored manifest so artifacts moved out of build/
 # stay self-describing; the default name is a contract with install.sh.
 CHECKSUMS="$STAGE_DIR/checksums${FLAVOR_SUFFIX}.txt"
-shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > "$CHECKSUMS"
+shasum -a 256 "$DMG_NAME" "$ZIP_NAME" ${CLI_ZIP_NAME:+"$CLI_ZIP_NAME"} > "$CHECKSUMS"
 
 finish_staged_build
 echo ""
@@ -854,6 +994,9 @@ echo "==> Done!"
 echo "    App:  $APP_BUNDLE"
 echo "    DMG:  $OUT_DIR/$DMG_NAME ($DMG_SIZE)"
 echo "    ZIP:  $OUT_DIR/$ZIP_NAME ($ZIP_SIZE)  ← auto-update"
+if [ -n "$CLI_ZIP_NAME" ]; then
+    echo "    CLI:  $OUT_DIR/$CLI_ZIP_NAME  ← CLI-only Mac"
+fi
 echo "    SHA:  $OUT_DIR/$(basename "$CHECKSUMS")"
 if [ -n "$NOTARIZE_PROFILE" ] && [ "$SIGN_IDENTITY" != "-" ]; then
     echo "    Notarized & stapled ✓"

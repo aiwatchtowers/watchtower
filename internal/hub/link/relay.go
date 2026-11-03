@@ -8,10 +8,9 @@ package link
 // HandleHello's and Confirm's: only the record route changes.
 //
 // Vouching is the phone's call (vouch_hub, then promote_pairing); the hub
-// only reports the server's state. The relay proto has neither vouch_hub nor
-// HUB_NOT_VOUCHED yet (relay ask #805): until it does, a refused login or
-// register is transport.ErrForbidden, and the vouch-branch tests of spec §13
-// are written in phase 2, once the relay carries those codes.
+// only follows the server's state (the runtime's gate, internal/hub
+// admission.go): everything here touches only pair/<slot> zones, which the
+// relay opens to an unvouched hub.
 //
 // For the runtime (Task 14): call OnPairingOpened on Control{PairingOpened}
 // (Detail = the slot) and again on every zone event of a pair/<slot> zone;
@@ -20,7 +19,8 @@ package link
 // slot; call SyncReaders with relay.Transport.SetLinkedReaders after a link
 // change, after the relay's account state changes and on the backstop timer
 // — a phone becomes a reader only once promote_pairing put the hub in its
-// slots, and the relay sends the hub no event for that.
+// slots (the relay's SLOT_ADDED is best effort) — and only while the hub is
+// vouched: set_hub_readers is closed to an unvouched hub.
 
 import (
 	"context"
@@ -300,7 +300,7 @@ func (c *Center) SyncReaders(ctx context.Context, set func(context.Context, []st
 // transportClass is a transport error's class for the log, never its text.
 func transportClass(err error) string {
 	for _, s := range []error{transport.ErrUnavailable, transport.ErrForbidden, transport.ErrEntitlementInactive,
-		transport.ErrRateLimited, transport.ErrUnsupportedVersion, context.Canceled, context.DeadlineExceeded} {
+		transport.ErrRateLimited, transport.ErrUnsupportedVersion, transport.ErrNotVouched, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, s) {
 			return s.Error()
 		}

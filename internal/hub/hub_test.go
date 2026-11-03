@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/platform"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -433,6 +435,10 @@ func TestPolicy03_OffStopsHubKeepsSetting(t *testing.T) {
 			t.Fatalf("slice state of %s kept after the wipe: %v %v", k, h, err)
 		}
 	}
+	// The policy's off is not the owner's (ask #956): the phones stay linked.
+	if devices, err := st.Devices(); err != nil || len(devices) != 1 {
+		t.Fatalf("the policy's off unlinked the phone: %v %v", devices, err)
+	}
 }
 
 // TestPolicy03_LooseningDoesNotStartHubWhenSettingOff is the Go twin of
@@ -524,7 +530,7 @@ func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 	var foreign atomic.Bool
 	o := r.options()
 	o.peerUID = func(c *net.UnixConn) (int, error) {
-		uid, err := socketPeerUID(c)
+		uid, err := platform.PeerUID(c)
 		if foreign.Load() {
 			return uid + 1, err
 		}
@@ -567,6 +573,54 @@ func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 	a, err := c.Do(ControlRequest{Op: OpEnable})
 	if err != nil || !a.OK || a.Enabled == nil || !*a.Enabled {
 		t.Fatalf("enable: %+v, %v", a, err)
+	}
+	r.waitState(StateRunning, "")
+}
+
+// TestControlSocketClosesWhenPeerCredentialsFail: a connection whose peer
+// credentials cannot be read is closed before any request is read, never
+// trusted.
+func TestControlSocketClosesWhenPeerCredentialsFail(t *testing.T) {
+	policytest.Set(t, nil)
+	dir := shortDir(t)
+	r := newRig(t, dir)
+	var failing atomic.Bool
+	failing.Store(true)
+	o := r.options()
+	o.peerUID = func(c *net.UnixConn) (int, error) {
+		if failing.Load() {
+			return os.Getuid(), errors.New("peer credentials unreadable")
+		}
+		return platform.PeerUID(c)
+	}
+	r.start(o)
+	r.waitState(StateOff, ReasonDisabled)
+	eventually(t, 5*time.Second, "the control socket", func() bool {
+		_, err := os.Stat(filepath.Join(dir, SocketName))
+		return err == nil
+	})
+
+	c, err := Dial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := c.Do(ControlRequest{Op: OpEnable}); err == nil {
+		t.Fatalf("a client with unreadable credentials was answered: %+v", a)
+	}
+	_ = c.Close()
+	time.Sleep(200 * time.Millisecond)
+	if s := r.rec.last(); s.State != StateOff || s.Reason != ReasonDisabled {
+		t.Fatalf("an untrusted client's request was applied: %+v", s)
+	}
+
+	failing.Store(false)
+	c, err = Dial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if a, err := c.Do(ControlRequest{Op: OpEnable}); err != nil || !a.OK {
+		t.Fatalf("enable once the credentials read: %+v, %v", a, err)
 	}
 	r.waitState(StateRunning, "")
 }
@@ -822,10 +876,15 @@ func TestFILES01_HubLogsNoNamesCodesOrKeys(t *testing.T) {
 	sink := logcanary.Capture(t)
 	e := runEndToEnd(t, logcanary.Text("hub.name"), nil)
 	sink.AssertClean(t)
-	for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "code": e.code, "phone name": "Test Phone"} {
+	for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "phone name": "Test Phone"} {
 		if strings.Contains(sink.String(), v) {
 			t.Errorf("the %s reached the log", what)
 		}
+	}
+	// The four-digit code is matched as a whole token only: as a substring it
+	// also turns up by chance inside a logged UUID's hex run.
+	if regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(e.code) + `($|[^0-9A-Za-z])`).MatchString(sink.String()) {
+		t.Error("the code reached the log")
 	}
 }
 
@@ -880,6 +939,56 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 		t.Fatalf("status: %+v", status)
 	}
 
+	lp, qr, sas, phone := pairOverMemfake(t, r, c, status.RelayDeviceID)
+	if name != "" && lp.MacName != name {
+		t.Fatal("the link code does not carry the hub's new name")
+	}
+
+	for want := uint64(1); want <= 2; want++ {
+		seq, err := phone.Act("probe")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seq != want {
+			t.Fatalf("action_seq %d, want %d", seq, want)
+		}
+	}
+	eventually(t, 15*time.Second, "applied echoes for a1..a2", func() bool {
+		if _, err := phone.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		return phone.Echoes[1].Status == wire.StatusApplied && phone.Echoes[2].Status == wire.StatusApplied
+	})
+
+	data := transport.DataZone(status.RelayDeviceID)
+	eventually(t, 15*time.Second, "the device_grant in the data zone", func() bool {
+		kb, ok, err := phone.ReadKeybox(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok && kb.Grant.Linked && kb.Grant.OrderedActions != nil && *kb.Grant.OrderedActions == 1 &&
+			slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay})
+	})
+	eventually(t, 5*time.Second, "one phone in the status", func() bool {
+		s, err := ReadStatus(dir)
+		return err == nil && s.Phones == 1
+	})
+
+	for i, f := range r.fake.Frames() {
+		for _, marker := range []string{"Test Phone", "iPhone18,1", `"device_grant"`, `"probe"`} {
+			if bytes.Contains(f, []byte(marker)) {
+				t.Fatalf("frame %d carries %q in the clear", i, marker)
+			}
+		}
+	}
+	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code, phone: phone, rig: r, dir: dir}
+}
+
+// pairOverMemfake pairs a new emulated phone with the running hub through
+// the control socket c (pair, hello, SAS, confirm) until its keys are in the
+// pair zone.
+func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID string) (wire.LinkPayload, ControlAnswer, ControlAnswer, *hubtest.Phone) {
+	t.Helper()
 	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
 		t.Fatal(err)
 	}
@@ -903,11 +1012,8 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lp.RelayDeviceID != status.RelayDeviceID || !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
+	if lp.RelayDeviceID != relayDeviceID || !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
 		t.Fatalf("link code relay identity: %+v", lp)
-	}
-	if name != "" && lp.MacName != name {
-		t.Fatal("the link code does not carry the hub's new name")
 	}
 	phone, err := hubtest.FromLink(lp, r.fake, nil)
 	if err != nil {
@@ -951,43 +1057,5 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 		}
 		return ok && kb.Keys != nil
 	})
-
-	for want := uint64(1); want <= 2; want++ {
-		seq, err := phone.Act("probe")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if seq != want {
-			t.Fatalf("action_seq %d, want %d", seq, want)
-		}
-	}
-	eventually(t, 15*time.Second, "applied echoes for a1..a2", func() bool {
-		if _, err := phone.Sync(); err != nil {
-			t.Fatal(err)
-		}
-		return phone.Echoes[1].Status == wire.StatusApplied && phone.Echoes[2].Status == wire.StatusApplied
-	})
-
-	data := transport.DataZone(status.RelayDeviceID)
-	eventually(t, 15*time.Second, "the device_grant in the data zone", func() bool {
-		kb, ok, err := phone.ReadKeybox(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return ok && kb.Grant.Linked && kb.Grant.OrderedActions != nil && *kb.Grant.OrderedActions == 1 &&
-			slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay})
-	})
-	eventually(t, 5*time.Second, "one phone in the status", func() bool {
-		s, err := ReadStatus(dir)
-		return err == nil && s.Phones == 1
-	})
-
-	for i, f := range r.fake.Frames() {
-		for _, marker := range []string{"Test Phone", "iPhone18,1", `"device_grant"`, `"probe"`} {
-			if bytes.Contains(f, []byte(marker)) {
-				t.Fatalf("frame %d carries %q in the clear", i, marker)
-			}
-		}
-	}
-	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code, phone: phone, rig: r, dir: dir}
+	return lp, qr, sas, phone
 }

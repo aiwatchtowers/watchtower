@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -11,10 +12,11 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
-	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionstart"
 )
 
 // transcriptAssetDir is meeting_transcript's own staging dir inside the
@@ -22,6 +24,9 @@ import (
 // source's first call sweeps every *.asset in it, so nothing else may live
 // there.
 const transcriptAssetDir = "transcripts"
+
+// hostWarmBudget bounds the start's first reach of session-host.
+const hostWarmBudget = 10 * time.Second
 
 // reportKinds is what a stored report or summary changes: the report, its
 // timeline milestones and the terminal_session record's report_* fields.
@@ -31,12 +36,14 @@ var reportKinds = []slices.Kind{"session_report", "session_timeline", "terminal_
 // read never waits longer for a lock.
 const watchBusy = time.Second
 
-// errNoSessionHost answers a session action until the session-host port is
-// wired (Plan 1b Task 15).
+// errNoSessionHost answers a session action on a hub with no session-host
+// socket.
 var errNoSessionHost = errors.New("hub: no session host")
 
-// noSessionHost is the SessionPort until Task 15 wires session-host: no
-// session is live, and starting, typing into or stopping one fails.
+// noSessionHost is the SessionPort of a hub given no session-host socket
+// (Options.SessionStart.Socket ""; phase 1 never falls back to the
+// Desktop's host): no session is live, and starting, typing into or stopping
+// one fails.
 type noSessionHost struct{}
 
 func (noSessionHost) Live(context.Context, int64) (handlers.LiveRun, bool, error) {
@@ -70,6 +77,14 @@ type wiring struct {
 	// seed is the report runner's Seed; seeded is closed once it succeeded.
 	seed   func(context.Context) error
 	seeded chan struct{}
+	// port is the real session port the wiring built (nil when Options
+	// carried one, or no socket); closed with the wiring.
+	port *sessionstart.Port
+	// live is the sources' liveness over the port's host list (nil when the
+	// port cannot list: nothing is live).
+	live *liveness
+	// away nudges the work alerts when the owner leaves the Mac.
+	away *awayWatch
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -124,12 +139,32 @@ func (g gatedSource) Items(ctx context.Context) ([]slices.Item, error) {
 func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *actions.Dispatcher,
 	lateEcho func(context.Context, actions.Request, actions.Outcome) error,
 ) (*wiring, error) {
+	w := &wiring{}
+	// An open_existing start never reopens a session in the Desktop's Undo
+	// batch (PROJ-17), as the published sessions leave it out.
+	o.SessionStart.Hidden = func() map[int64]bool {
+		hidden, _ := h.sup.desktopView()
+		return hidden
+	}
+	port, err := w.sessionPort(context.Background(), o)
+	if err != nil {
+		return nil, err
+	}
+	// The sources see the same host list the handlers' Live reads; a port
+	// that cannot list (no session host) leaves nothing live.
+	var live func() sources.Liveness
+	if l, ok := port.(runLister); ok {
+		w.live = newLiveness(l, h.phoneLinked, o.liveEvery, func() { h.publishSoon(livenessKinds...) })
+		live = w.live.get
+	}
+	away := o.awayInput()
+	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
 	set, err := sources.All(sources.Config{
-		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode,
+		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
 		AssetDir: filepath.Join(o.Dir, assetDirName, transcriptAssetDir),
-		Home:     home, Away: platform.NewAway(), Active: h.phoneLinked,
+		Home:     home, Away: away, Active: h.phoneLinked, View: h.sup.desktopView,
 		OnChatChange:   func() { h.publishSoon(slices.KindSessionChat) },
 		OnReportChange: func() { h.publishSoon(reportKinds...) },
 		OnGitChange:    func() { h.publishSoon("workbench") },
@@ -139,14 +174,19 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		Now:            o.Clock,
 	})
 	if err != nil {
+		w.close()
 		return nil, err
 	}
-	w := &wiring{set: set}
-	port := o.Sessions
-	if port == nil {
-		port = noSessionHost{}
+	w.set = set
+	deps := handlerDeps(o, st, set, watches, h.kr, port, lateEcho)
+	deps.RecordingQueued = func(uploadID string) {
+		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
 	}
-	w.handlers = handlers.Register(d, handlerDeps(o, st, set, watches, h.kr, port, lateEcho))
+	// A headless host has no Desktop watching: nobody hears it.
+	deps.BringForward = func(workbenchID, sessionID int64) {
+		h.sup.notifyDesktop(ControlAnswer{Event: EventBringForward, OK: true, WorkbenchID: workbenchID, SessionID: sessionID})
+	}
+	w.handlers = handlers.Register(d, deps)
 
 	w.lane = newStateLane(o.DB.DB, o.Clock)
 	if o.laneBackstop > 0 {
@@ -202,6 +242,31 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 		deps.Reports = set.Report
 	}
 	return deps
+}
+
+// sessionPort is o.Sessions, else the real port over session-host
+// (Task 15) on o.SessionStart with the database's file as its scope, else —
+// no socket given — noSessionHost.
+func (w *wiring) sessionPort(ctx context.Context, o Options) (handlers.SessionPort, error) {
+	if o.Sessions != nil {
+		return o.Sessions, nil
+	}
+	if o.SessionStart.Socket == "" {
+		log.Printf("hub: no session host (%s not set)", sessionhost.SocketEnv)
+		return noSessionHost{}, nil
+	}
+	d := o.SessionStart
+	d.DB = o.DB
+	path, err := mainFile(ctx, o.DB)
+	if err != nil {
+		return nil, fmt.Errorf("hub: the session host scope: %w", err)
+	}
+	d.DBPath = path
+	if d.Clock == nil {
+		d.Clock = o.Clock
+	}
+	w.port = sessionstart.NewPort(d, nil)
+	return w.port, nil
 }
 
 // openWatch opens the data_version watch on a read-only handle of its own:
@@ -266,6 +331,19 @@ func mainFile(ctx context.Context, d *db.DB) (string, error) {
 // publisher retries it, and the lane does not observe). Nothing else waits:
 // the device_grant and the other kinds keep publishing.
 func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
+	if w.port != nil {
+		// Ensure the host on start when none answers (a later call dials
+		// again if this fails).
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			wctx, cancel := context.WithTimeout(ctx, hostWarmBudget)
+			defer cancel()
+			if err := w.port.Warm(wctx); err != nil {
+				log.Printf("hub: session host not reached at start (%s)", errClass(err))
+			}
+		}()
+	}
 	if w.trySeed(ctx) {
 		h.trace("seeded")
 	} else {
@@ -276,6 +354,19 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 			w.retrySeed(ctx)
 		}()
 	}
+	if w.live != nil {
+		// Before the runners: the first list settles the liveness soon.
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.live.run(ctx)
+		}()
+	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		w.away.run(ctx)
+	}()
 	h.trace("runners")
 	for _, r := range w.set.Runners {
 		h.wg.Add(1)
@@ -301,6 +392,9 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 		_ = w.watch.Run(ctx, func(kinds ...slices.Kind) {
 			h.publishSoon(kinds...)
 			w.lane.kick()
+			if w.live != nil {
+				w.live.kick() // a start or an exit wrote its row
+			}
 		})
 	}()
 }
@@ -328,6 +422,9 @@ func (w *wiring) close() {
 	if w == nil {
 		return
 	}
+	if w.port != nil {
+		_ = w.port.Close()
+	}
 	if w.watchConnClose != nil {
 		_ = w.watchConnClose()
 	}
@@ -336,13 +433,28 @@ func (w *wiring) close() {
 	}
 }
 
-// sweepTemps removes what a crash left in the recordings and asset dirs.
-func sweepTemps(o Options) {
+// sweepTemps removes what a crash left in the recordings and asset dirs,
+// and the recording jobs (with their audio) finished more than 31 days ago.
+func sweepTemps(o Options, st *state.Store) {
 	n, err := handlers.SweepRecordingTemps(o.RecordingsDir, filepath.Join(o.Dir, assetDirName))
 	if err != nil {
 		log.Printf("hub: sweeping temp files failed (%s)", errClass(err))
 	}
 	if n > 0 {
 		log.Printf("hub: %d temp files of an earlier run removed", n)
+	}
+	pruneRecordingJobs(o, st)
+}
+
+// pruneRecordingJobs drops the recording jobs finished more than 31 days ago
+// (a hub_moved job's kept audio with it): at start and on every
+// housekeeping tick.
+func pruneRecordingJobs(o Options, st *state.Store) {
+	n, err := st.PruneRecordingJobs(o.RecordingsDir, o.Clock().Add(-state.RecordingJobKeptFor))
+	if err != nil {
+		log.Printf("hub: pruning old recording jobs failed (%s)", errClass(err))
+	}
+	if n > 0 {
+		log.Printf("hub: %d recording jobs older than 31 days removed", n)
 	}
 }

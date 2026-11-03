@@ -1112,3 +1112,51 @@ func TestOnRevokeIsToldOfTypingRevokesAndUnlinks(t *testing.T) {
 		t.Fatalf("told %v, want %v", told, want)
 	}
 }
+
+// TestLinkSecretsGoWhenTheRequestEnds: a request's four-digit code, confirm
+// nonce and its copy of the link nonce live only in its pending_devices row,
+// which goes when the link completes, is refused or its code expires. What
+// stays is the code's own row (link_codes.nonce: a used or expired code is
+// still told apart from an unknown one) and devices.link_nonce, an input of
+// the phone's relay keys.
+func TestLinkSecretsGoWhenTheRequestEnds(t *testing.T) {
+	pendingRows := func(t *testing.T, r *rig) int {
+		t.Helper()
+		var n int
+		if err := r.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+			return tx.QueryRow(`SELECT COUNT(*) FROM pending_devices WHERE sas IS NOT NULL OR confirm_nonce IS NOT NULL OR link_nonce IS NOT NULL`).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, end := range []string{"linked", "refused", "expired"} {
+		t.Run(end, func(t *testing.T) {
+			r := newRig(t)
+			code := r.issue()
+			a := newPhone(t)
+			r.handle(a, code.Nonce)
+			if pendingRows(t, r) != 1 {
+				t.Fatal("the request's row is not there while it waits")
+			}
+			switch end {
+			case "linked":
+				if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+					t.Fatal(err)
+				}
+			case "refused":
+				if err := r.c.Confirm(a.id.String(), "", false); err != nil {
+					t.Fatal(err)
+				}
+			case "expired":
+				r.advance(601 * time.Second)
+				if err := r.c.Sweep(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := pendingRows(t, r); n != 0 {
+				t.Errorf("%d rows still hold a code or nonce after the request %s", n, end)
+			}
+		})
+	}
+}

@@ -2728,6 +2728,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run that started the session (00122); NULL = none
     target_bound_at   TEXT, -- when Go last re-bound target_id after launch (set_session_target / `workbench session-target`), RFC 3339 UTC; NULL when unbound or never re-bound (the binding stamp is then created_at) (00168)
+    start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00169)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -3511,7 +3512,8 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     meta_json      TEXT,
     started_at     REAL NOT NULL,
     transcribed_at REAL,
-    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1))
+    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)),
+    upload_id      TEXT -- the Go hub phone upload the recording came from (Desktop only)
 );
 
 -- An embedded chat's owner message queued but not yet sent (00157, #604;

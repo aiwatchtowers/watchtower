@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,9 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay"
 )
 
 // Publishing cadence (spec §9, ask #735).
@@ -39,6 +42,9 @@ const (
 	// transient relay failure delays an ask by seconds, never a full diff.
 	RetryFirst = time.Second
 	RetryMax   = 10 * time.Second
+	// RetryRateLimitedMax caps the relay's retry_after_s after RATE_LIMITED,
+	// which replaces the backoff for that failure (the alert pusher's cap).
+	RetryRateLimitedMax = 60 * time.Second
 )
 
 // ErrNoKeys is returned while the hub has no epoch keys yet, so nothing is read or published
@@ -87,6 +93,30 @@ type Config struct {
 	Spacing   time.Duration
 	Clock     func() time.Time
 	Linked    func() (bool, error)
+	// OnError (nil = none) sees every failed cycle's error in Run (the
+	// hub's relay-only rules re-read the account state on
+	// ENTITLEMENT_INACTIVE).
+	OnError func(error)
+	// Latency (nil = none) takes a stamp per kind a cycle saved or deleted
+	// records of (internal/hub/measure), after its state write committed.
+	Latency SaveLatency
+	// OnAlertSaved (nil = none) is called once per alert key, after its
+	// first successful save, while the transport that save went to is the
+	// hosted relay (the alert pusher's Enqueue, spec §12a). On CloudKit the
+	// alert's signal record runs instead; a resave (a changed payload, a
+	// rotation's reseal, a switch's full diff) never calls it. It runs on the
+	// publisher's cycle and must not wait on a push.
+	OnAlertSaved func(key string, fields secure.WorkAlertFields, savedAt time.Time)
+	// Away is the work-alert policy's owner-away input Resignal re-checks
+	// (nil = always away; an error reads as away).
+	Away platform.Away
+}
+
+// SaveLatency is the publisher's side of the latency samples
+// (measure.Recorder): kind saved on transport (the one its write went to),
+// from a source read that began at readAt, done at doneAt.
+type SaveLatency interface {
+	Saved(transport, kind string, readAt, doneAt time.Time)
 }
 
 // CycleReport is what one cycle did. Skipped names records not published
@@ -131,12 +161,24 @@ type Publisher struct {
 	// unlinkedSeen: a cycle saw no phone linked and no cycle has completed
 	// since one is.
 	unlinkedSeen bool
+	// kindRead and kindTransport are the latency stamp of the kind being
+	// published: when its source read began and the transport its first
+	// write went to (set by publishKind).
+	kindRead      time.Time
+	kindTransport transport.Kind
 
-	mu          sync.Mutex // guards the dirty set and lastPublish
-	dirty       map[Kind]bool
-	firstDirty  time.Time // monotonic, first PublishSoon of the dirty set
-	lastDirty   time.Time // monotonic, latest PublishSoon
+	mu          sync.Mutex      // guards the dirty set, the pause and lastPublish
+	paused      bool            // a hold: no cycle runs, the dirty set waits
+	holds       map[string]bool // the PauseFor reasons held
+	resumed     bool            // Resume: Run's next step is one full diff
+	dirty       map[Kind]bool   // PublishSoon's kinds, due after the debounce
+	firstDirty  time.Time       // monotonic, first PublishSoon of the dirty set
+	lastDirty   time.Time       // monotonic, latest PublishSoon
+	nowDirty    map[Kind]bool   // PublishNow's kinds, due at once
 	lastPublish time.Time
+	// resignal holds the alert keys Resignal asked to signal on CloudKit,
+	// kept until a cycle saved the alert with its signal or found it gone.
+	resignal map[string]bool
 }
 
 // NewPublisher builds a Publisher over c.
@@ -158,7 +200,7 @@ func NewPublisher(c Config) *Publisher {
 	}
 	return &Publisher{
 		c: c, spacing: spacing, clock: c.Clock, wake: make(chan struct{}, 1), mono: time.Now, timer: realTimer,
-		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{},
+		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{}, nowDirty: map[Kind]bool{}, resignal: map[string]bool{},
 	}
 }
 
@@ -179,14 +221,97 @@ func (p *Publisher) PublishSoon(kinds ...Kind) {
 		p.firstDirty = now
 	}
 	for _, k := range kinds {
-		p.dirty[k] = true
+		if !p.nowDirty[k] {
+			p.dirty[k] = true
+		}
 	}
 	p.lastDirty = now
+	p.mu.Unlock()
+	p.poke()
+}
+
+// PublishNow marks kinds dirty for an applied phone action: they are due at
+// once instead of after the debounce, so a steady stream of actions is not
+// held to MaxDebounceWait; kinds PublishSoon marked keep their debounce.
+// Bursts still coalesce: a kind written less than the spacing ago, or
+// waiting out a failed save's retry, goes only when that time comes, so each
+// kind is saved at most once per spacing.
+func (p *Publisher) PublishNow(kinds ...Kind) {
+	if len(kinds) == 0 {
+		return
+	}
+	p.mu.Lock()
+	for _, k := range kinds {
+		p.nowDirty[k] = true
+		delete(p.dirty, k)
+	}
+	p.mu.Unlock()
+	p.poke()
+}
+
+// poke wakes Run.
+func (p *Publisher) poke() {
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Pause stops publishing (spec §7.3, a headless hub with no paying phone):
+// no cycle runs until Resume, and the kinds marked meanwhile stay dirty. It
+// returns once a cycle already running has ended, so nothing is saved or
+// deleted after it. Pause and Resume hold and release the admission gate's
+// own reason ("") of PauseFor/ResumeFor.
+func (p *Publisher) Pause() { p.PauseFor("") }
+
+// Resume ends a Pause: Run's next step is one full diff, which covers what
+// changed during the pause. A Resume without a Pause does nothing.
+func (p *Publisher) Resume() { p.ResumeFor("") }
+
+// PauseFor holds the publisher for reason. Holds are a set: it runs again
+// only once every reason was released, so one pauser (the transport switch)
+// never lifts another's (the admission gate). It returns once a cycle
+// already running has ended.
+func (p *Publisher) PauseFor(reason string) {
+	p.mu.Lock()
+	if p.holds == nil {
+		p.holds = map[string]bool{}
+	}
+	p.holds[reason] = true
+	p.paused = true
+	p.mu.Unlock()
+	p.cycleMu.Lock()
+	p.cycleMu.Unlock() //nolint:staticcheck // SA2001: only waits for the running cycle
+}
+
+// ResumeFor releases reason's hold; the last release resumes with one full
+// diff. Releasing a reason that holds nothing does nothing.
+func (p *Publisher) ResumeFor(reason string) {
+	p.mu.Lock()
+	if !p.holds[reason] {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.holds, reason)
+	if len(p.holds) > 0 {
+		p.mu.Unlock()
+		return
+	}
+	p.paused, p.resumed = false, true
 	p.mu.Unlock()
 	select {
 	case p.wake <- struct{}{}:
 	default:
 	}
+}
+
+// pauseState reads the pause and takes a pending Resume's full diff.
+func (p *Publisher) pauseState() (paused, resumed bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	paused, resumed = p.paused, p.resumed
+	p.resumed = false
+	return paused, resumed
 }
 
 // LastPublishAt is the end of the last completed cycle (the heartbeat's
@@ -197,10 +322,18 @@ func (p *Publisher) LastPublishAt() (time.Time, bool) {
 	return p.lastPublish, !p.lastPublish.IsZero()
 }
 
-// debounceDue is when the dirty set is due; ok is false when it is empty.
-func (p *Publisher) debounceDue() (time.Time, bool) {
+// dirtyDue is when the next dirty kinds are due: at once with a PublishNow
+// kind, else the debounce's; ok is false when nothing is dirty.
+func (p *Publisher) dirtyDue(now time.Time) (time.Time, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if len(p.nowDirty) > 0 {
+		return now, true
+	}
+	return p.debounceDueLocked()
+}
+
+func (p *Publisher) debounceDueLocked() (time.Time, bool) {
 	if len(p.dirty) == 0 {
 		return time.Time{}, false
 	}
@@ -211,57 +344,138 @@ func (p *Publisher) debounceDue() (time.Time, bool) {
 	return due, true
 }
 
-// takeDirty empties the dirty set and returns it.
-func (p *Publisher) takeDirty() []Kind {
+// takeDue empties and returns the dirty kinds due at now: PublishNow's, and
+// PublishSoon's once their debounce is over.
+func (p *Publisher) takeDue(now time.Time) []Kind {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]Kind, 0, len(p.dirty))
-	for k := range p.dirty {
+	out := make([]Kind, 0, len(p.nowDirty)+len(p.dirty))
+	for k := range p.nowDirty {
 		out = append(out, k)
 	}
-	clear(p.dirty)
+	clear(p.nowDirty)
+	if due, ok := p.debounceDueLocked(); ok && !now.Before(due) {
+		for k := range p.dirty {
+			out = append(out, k)
+		}
+		clear(p.dirty)
+	}
 	return out
+}
+
+// takeDirty empties both dirty sets (a full diff covers them).
+func (p *Publisher) takeDirty() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clear(p.dirty)
+	clear(p.nowDirty)
+}
+
+// fullKinds is what a full diff at now covers: nil (every kind) unless some
+// kind is held past now, else every kind with a source but those, which keep
+// their time. Holds that have run out are dropped.
+func (p *Publisher) fullKinds(now time.Time, held map[Kind]time.Time) []Kind {
+	waiting := false
+	for k, at := range held {
+		if now.Before(at) {
+			waiting = true
+		} else {
+			delete(held, k)
+		}
+	}
+	if !waiting {
+		return nil
+	}
+	out := []Kind{}
+	for _, k := range p.sourceKinds() {
+		if _, ok := held[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// retryWait is how long the kinds a failed cycle left wait: the relay's
+// retry_after_s after RATE_LIMITED (RetryFirst without one, at most
+// RetryRateLimitedMax), else the backoff, doubled from RetryFirst to RetryMax.
+func retryWait(err error, backoff *time.Duration) time.Duration {
+	if errors.Is(err, transport.ErrRateLimited) {
+		d := relay.RetryAfter(err)
+		if d <= 0 {
+			d = RetryFirst
+		}
+		return min(d, RetryRateLimitedMax)
+	}
+	*backoff = min(max(*backoff*2, RetryFirst), RetryMax)
+	return *backoff
 }
 
 // Run publishes until ctx ends (it returns ctx.Err()): a full cycle at once
 // and every FullDiffEvery, the dirty kinds after their debounce, the kinds
 // the spacing rule deferred once it allows them, and the kinds a cycle did
-// not finish after a bounded backoff (RetryFirst doubling to RetryMax).
+// not finish after a bounded backoff (RetryFirst doubling to RetryMax; the
+// relay's retry_after_s after RATE_LIMITED). A kind held for its spacing or
+// a retry waits for that time whatever marks it: a nudge, the periodic full
+// diff and Resume's full diff alike cover only the kinds not held.
 func (p *Publisher) Run(ctx context.Context) error {
 	held := map[Kind]time.Time{} // monotonic time each deferred or retried kind may go
 	nextFull := p.mono()
 	var backoff time.Duration
 	for {
 		now := p.mono()
+		paused, resumed := p.pauseState()
+		if paused {
+			// Nothing goes out; a PublishSoon's or a Resume's wake, or the
+			// full-diff period, brings Run back here.
+			fired, stop := p.timer(FullDiffEvery)
+			select {
+			case <-ctx.Done():
+				stop()
+				return ctx.Err()
+			case <-p.wake:
+			case <-fired:
+			}
+			stop()
+			continue
+		}
+		if resumed {
+			nextFull = now
+		}
 		var (
 			kinds []Kind
 			full  = !now.Before(nextFull)
 		)
 		if full {
 			p.takeDirty()
-			clear(held)
+			kinds = p.fullKinds(now, held)
 			nextFull = now.Add(FullDiffEvery)
 		} else {
-			if due, ok := p.debounceDue(); ok && !now.Before(due) {
-				kinds = p.takeDirty()
+			for _, k := range p.takeDue(now) {
+				// A kind held for its spacing or a retry goes at that time
+				// (it reads the latest state then), never earlier.
+				if at, ok := held[k]; !ok || !now.Before(at) {
+					kinds = append(kinds, k)
+				}
 			}
 			for k, at := range held {
 				if !now.Before(at) {
-					kinds = append(kinds, k)
+					if !slices.Contains(kinds, k) {
+						kinds = append(kinds, k)
+					}
 					delete(held, k)
 				}
 			}
 		}
-		if full || len(kinds) > 0 {
-			if full {
-				kinds = nil
-			}
+		if (full && kinds == nil) || len(kinds) > 0 {
 			rep, err := p.Cycle(ctx, kinds)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			if err != nil {
 				log.Printf("hub slices: publish cycle failed (%s); %d kinds retried", errClass(err), len(rep.Unfinished))
+				if p.c.OnError != nil {
+					p.c.OnError(err)
+				}
 			}
 			after := p.mono()
 			clockNow := p.clock()
@@ -272,16 +486,16 @@ func (p *Publisher) Run(ctx context.Context) error {
 				backoff = 0
 				continue
 			}
-			backoff = min(max(backoff*2, RetryFirst), RetryMax)
+			wait := retryWait(err, &backoff)
 			for _, k := range rep.Unfinished {
-				if at, ok := held[k]; !ok || at.Before(after.Add(backoff)) {
-					held[k] = after.Add(backoff)
+				if at, ok := held[k]; !ok || at.Before(after.Add(wait)) {
+					held[k] = after.Add(wait)
 				}
 			}
 			continue
 		}
 		deadline := nextFull
-		if due, ok := p.debounceDue(); ok && due.Before(deadline) {
+		if due, ok := p.dirtyDue(now); ok && due.Before(deadline) {
 			deadline = due
 		}
 		for _, at := range held {
@@ -315,6 +529,18 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 	p.cycleMu.Lock()
 	defer p.cycleMu.Unlock()
 	rep := CycleReport{Deferred: map[Kind]time.Time{}}
+	p.mu.Lock()
+	paused := p.paused
+	p.mu.Unlock()
+	if paused {
+		// Paused after Run chose to cycle: nothing is read or written.
+		rep.Aborted = true
+		rep.Unfinished = kinds
+		if kinds == nil {
+			rep.Unfinished = p.sourceKinds()
+		}
+		return rep, nil
+	}
 	linked := true
 	if p.c.Linked != nil {
 		var err error
@@ -356,6 +582,9 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		wrote, err := p.publishKind(ctx, k, srcs, &rep)
 		if wrote {
 			p.lastWrite[k] = now
+			if err == nil {
+				p.stampSaved(k)
+			}
 		}
 		if errors.Is(err, errEpochMoved) {
 			log.Printf("hub slices: epoch rotated while %s was sealed: the rest is resealed next cycle", k)
@@ -400,10 +629,14 @@ func (p *Publisher) sourcesOf(k Kind) []Source {
 }
 
 // pushed is a record saved this cycle, recorded once the save succeeded.
-// signal is a new alert's signal record (zero when it has none).
+// signal is a new alert's signal record (zero when it has none); id is the
+// item's id; alert is a new alert's fields for OnAlertSaved (nil when it is
+// not pushed); resignal marks an alert Resignal asked for.
 type pushed struct {
-	name, wire, hash string
-	signal           secure.Record
+	name, wire, hash, id string
+	signal               secure.Record
+	alert                *secure.WorkAlertFields
+	resignal             bool
 }
 
 // publishKind diffs one kind; wrote is true when it saved or deleted a record.
@@ -416,19 +649,10 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	if err != nil {
 		return false, err
 	}
-	var items []Item
-	for _, s := range srcs {
-		got, err := s.Items(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return false, ctx.Err()
-			}
-			log.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, errClass(err))
-			rep.Failed = append(rep.Failed, k)
-			rep.Unfinished = append(rep.Unfinished, k)
-			return false, nil
-		}
-		items = append(items, got...)
+	p.kindRead, p.kindTransport = p.clock(), ""
+	items, ok, err := p.readItems(ctx, k, srcs, rep)
+	if !ok || err != nil {
+		return false, err
 	}
 	if k == KindDeviceGrant {
 		// A keybox payload carries epoch keys: wiped once sealed.
@@ -438,12 +662,60 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 			}
 		}()
 	}
+	// A stop during the reads (the heartbeat's accounts read, which may not
+	// heed ctx) writes nothing, whatever the transport does with an ended ctx.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 
-	seen := map[string]bool{}
-	var (
-		saves   []transport.SaveItem
-		pending []pushed
-	)
+	var resignal map[string]bool
+	if k == KindAskAlert {
+		resignal = p.resignalWanted()
+	}
+	saves, pending, seen := p.diffItems(k, items, known, resignal, rep)
+	if len(saves) > 0 {
+		if wrote, err = p.saveChanged(ctx, k, epoch, saves, pending, rep); err != nil {
+			return wrote, err
+		}
+	}
+	if k == KindAskAlert {
+		// An alert asked for that the slice no longer has resolved before
+		// it was signalled: nothing is left to write for it.
+		p.resignalGone(resignal, items)
+	}
+	deleted, err := p.deleteGone(ctx, k, known, seen, rep)
+	return wrote || deleted, err
+}
+
+// readItems reads every source of k. ok is false, with no error, when a
+// source failed (the kind is skipped this cycle and retried); an error is
+// the cycle's context ending.
+func (p *Publisher) readItems(ctx context.Context, k Kind, srcs []Source, rep *CycleReport) (items []Item, ok bool, err error) {
+	for _, s := range srcs {
+		got, err := s.Items(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, false, ctx.Err()
+			}
+			log.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, errClass(err))
+			rep.Failed = append(rep.Failed, k)
+			rep.Unfinished = append(rep.Unfinished, k)
+			return nil, false, nil
+		}
+		items = append(items, got...)
+	}
+	return items, true, nil
+}
+
+// diffItems seals the items whose payload changed since their last save (or
+// that Resignal asked for), with a new alert's signal on CloudKit and its
+// fields for OnAlertSaved on the relay. seen is every valid record name.
+func (p *Publisher) diffItems(k Kind, items []Item, known map[string]state.SliceRecord, resignal map[string]bool, rep *CycleReport) (saves []transport.SaveItem, pending []pushed, seen map[string]bool) {
+	seen = map[string]bool{}
+	// A new alert is pushed when its save goes to the relay; the alerts a
+	// switch to CloudKit asked for are signalled there (Resignal).
+	pushAlerts := k == KindAskAlert && p.c.OnAlertSaved != nil &&
+		p.c.Transport != nil && p.c.Transport.Kind() == transport.KindRelay
 	for _, it := range items {
 		name, ok := recordName(k, it.ID)
 		if !ok {
@@ -457,7 +729,8 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		}
 		seen[name] = true
 		hash := itemHash(it)
-		if prev, ok := known[name]; ok && prev.Hash == hash {
+		resig := resignal[it.ID]
+		if prev, ok := known[name]; ok && prev.Hash == hash && !resig {
 			continue
 		}
 		rec, err := p.seal(k, name, it)
@@ -466,73 +739,89 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 			p.warnOnce(name, hash, fmt.Sprintf("not sealed (%s), payload %d bytes", errClass(err), len(it.Payload)))
 			continue
 		}
-		pu := pushed{name: name, wire: rec.WireName(), hash: hash}
-		if _, published := known[name]; k == KindAskAlert && !published && p.alertSignals() {
+		pu := pushed{name: name, wire: rec.WireName(), hash: hash, id: it.ID, resignal: resig}
+		_, published := known[name]
+		if k == KindAskAlert && (!published || resig) && p.alertSignals() {
 			if pu.signal, err = p.c.Sealer.Signal(rec); err != nil {
 				rep.Skipped = append(rep.Skipped, name)
 				p.warnOnce(name, hash, "without a signal ("+errClass(err)+")")
 				continue
 			}
 		}
+		if pushAlerts && !published {
+			pu.alert = alertFields(name, it.Payload)
+		}
 		saves = append(saves, transport.SaveItem{Record: rec})
 		pending = append(pending, pu)
 	}
+	return saves, pending, seen
+}
 
-	if len(saves) > 0 {
-		// One Save per kind, not chunked: after a rotation or a new phone a
-		// big kind goes as one request of up to N sealed records. The hosted
-		// relay client (Task 8) or Plan 1b caps or splits the batch.
-		outs, err := p.c.Transport.Save(ctx, saves)
-		if err != nil {
-			return false, fmt.Errorf("slices: saving %s: %w", k, err)
-		}
-		if len(outs) != len(saves) {
-			return false, fmt.Errorf("slices: saving %s: %d outcomes for %d records", k, len(outs), len(saves))
-		}
-		var done []pushed
-		for i, o := range outs {
-			if o.Saved {
-				done = append(done, pending[i])
-				continue
-			}
-			rep.Skipped = append(rep.Skipped, pending[i].name)
-			why := "a failed precondition"
-			if o.Refused != nil {
-				why = errClass(o.Refused)
-			}
-			p.warnOnce(pending[i].name, pending[i].hash, "refused by the transport ("+why+")")
-		}
-		if done, err = p.saveSignals(ctx, done, rep); err != nil {
-			return true, err
-		}
-		if len(done) > 0 {
-			wrote = true
-			at := p.clock()
-			err := p.c.Store.WithTx(ctx, func(tx *sql.Tx) error {
-				now, err := latestEpoch(state.EpochsTx(tx))
-				if err != nil {
-					return err
-				}
-				if now != epoch {
-					return errEpochMoved
-				}
-				for _, d := range done {
-					if err := state.SetSliceState(tx, d.name, d.wire, d.hash, at); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				return wrote, err
-			}
-			rep.Saved += len(done)
-			for _, d := range done {
-				delete(p.warned, d.name)
-			}
-		}
+// saveChanged saves k's changed records in one Save, then their signals,
+// and records the hashes of those saved in one transaction (refused while
+// the epoch moved since the cycle read it); wrote is true when any was saved.
+func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves []transport.SaveItem, pending []pushed, rep *CycleReport) (wrote bool, err error) {
+	// One Save per kind, not chunked: after a rotation or a new phone a
+	// big kind goes as one request of up to N sealed records. The hosted
+	// relay client (Task 8) or Plan 1b caps or splits the batch.
+	p.noteWriteTransport()
+	outs, err := p.c.Transport.Save(ctx, saves)
+	if err != nil {
+		return false, fmt.Errorf("slices: saving %s: %w", k, err)
 	}
+	if len(outs) != len(saves) {
+		return false, fmt.Errorf("slices: saving %s: %d outcomes for %d records", k, len(outs), len(saves))
+	}
+	var done []pushed
+	for i, o := range outs {
+		if o.Saved {
+			done = append(done, pending[i])
+			continue
+		}
+		rep.Skipped = append(rep.Skipped, pending[i].name)
+		why := "a failed precondition"
+		if o.Refused != nil {
+			why = errClass(o.Refused)
+		}
+		p.warnOnce(pending[i].name, pending[i].hash, "refused by the transport ("+why+")")
+	}
+	if done, err = p.saveSignals(ctx, done, rep); err != nil {
+		return true, err
+	}
+	if len(done) == 0 {
+		return false, nil
+	}
+	at := p.clock()
+	err = p.c.Store.WithTx(ctx, func(tx *sql.Tx) error {
+		now, err := latestEpoch(state.EpochsTx(tx))
+		if err != nil {
+			return err
+		}
+		if now != epoch {
+			return errEpochMoved
+		}
+		for _, d := range done {
+			if err := state.SetSliceState(tx, d.name, d.wire, d.hash, at); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return true, err
+	}
+	rep.Saved += len(done)
+	for _, d := range done {
+		delete(p.warned, d.name)
+	}
+	p.alertsSaved(done, at)
+	return true, nil
+}
 
+// deleteGone deletes from the zone k's records its sources no longer list
+// (an alert with its signal) and forgets those deleted; deleted is true
+// when any was.
+func (p *Publisher) deleteGone(ctx context.Context, k Kind, known map[string]state.SliceRecord, seen map[string]bool, rep *CycleReport) (deleted bool, err error) {
 	var gone []string
 	for name := range known {
 		if !seen[name] {
@@ -540,7 +829,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		}
 	}
 	if len(gone) == 0 {
-		return wrote, nil
+		return false, nil
 	}
 	sort.Strings(gone)
 	dels := make([]transport.DeleteItem, 0, len(gone))
@@ -548,44 +837,60 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		w := known[name].WireName
 		if w == "" {
 			if w, err = p.c.Sealer.WireName(secure.ZoneData, name); err != nil {
-				return wrote, fmt.Errorf("slices: wire name of a gone %s record: %w", k, err)
+				return false, fmt.Errorf("slices: wire name of a gone %s record: %w", k, err)
 			}
 		}
 		dels = append(dels, transport.DeleteItem{Name: w})
 	}
 	dels = p.withSignalDeletes(k, dels)
+	p.noteWriteTransport()
 	outs, err := p.c.Transport.Delete(ctx, p.c.DataZone, dels)
 	if err != nil {
-		return wrote, fmt.Errorf("slices: deleting %s: %w", k, err)
+		return false, fmt.Errorf("slices: deleting %s: %w", k, err)
 	}
 	if len(outs) != len(dels) {
-		return wrote, fmt.Errorf("slices: deleting %s: %d outcomes for %d records", k, len(outs), len(dels))
+		return false, fmt.Errorf("slices: deleting %s: %d outcomes for %d records", k, len(outs), len(dels))
 	}
 	logSignalDeletes(outs[len(gone):])
-	var deleted []string
+	var done []string
 	for i, o := range outs[:len(gone)] {
 		if o.Saved {
-			deleted = append(deleted, gone[i])
+			done = append(done, gone[i])
 		} else {
 			log.Printf("hub slices: delete of %s not done (%s); retried next cycle", gone[i], errClass(o.Refused))
 		}
 	}
-	if len(deleted) == 0 {
-		return wrote, nil
+	if len(done) == 0 {
+		return false, nil
 	}
-	wrote = true
 	if err := p.c.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		for _, name := range deleted {
+		for _, name := range done {
 			if err := state.DeleteSliceState(tx, name); err != nil {
 				return err
 			}
 		}
 		return nil
 	}); err != nil {
-		return wrote, err
+		return true, err
 	}
-	rep.Deleted += len(deleted)
-	return wrote, nil
+	rep.Deleted += len(done)
+	return true, nil
+}
+
+// noteWriteTransport takes the transport of the kind's first write, before
+// it is sent: a switch later in the cycle does not retag the stamp.
+func (p *Publisher) noteWriteTransport() {
+	if p.c.Latency != nil && p.kindTransport == "" {
+		p.kindTransport = p.c.Transport.Kind()
+	}
+}
+
+// stampSaved hands the latency recorder a kind this cycle wrote.
+func (p *Publisher) stampSaved(k Kind) {
+	if p.c.Latency == nil || p.kindTransport == "" {
+		return
+	}
+	p.c.Latency.Saved(string(p.kindTransport), string(k), p.kindRead, p.clock())
 }
 
 // alertSignals reports whether new alerts get a signal record: on CloudKit,
@@ -671,6 +976,143 @@ func (p *Publisher) saveSignals(ctx context.Context, done []pushed, rep *CycleRe
 		}
 	}
 	return kept, nil
+}
+
+// alertFields reads an alert's payload for its push; an unreadable one is
+// logged (the record name only) and not pushed.
+func alertFields(name string, payload []byte) *secure.WorkAlertFields {
+	var f secure.WorkAlertFields
+	if err := json.Unmarshal(payload, &f); err != nil {
+		log.Printf("hub slices: record %s: alert payload unreadable; not pushed", name)
+		return nil
+	}
+	return &f
+}
+
+// alertsSaved follows the alerts whose save and state write succeeded: a
+// new one saved on the relay goes to OnAlertSaved, and one Resignal asked
+// for is done.
+func (p *Publisher) alertsSaved(done []pushed, at time.Time) {
+	var resignalled []string
+	for _, d := range done {
+		if d.resignal {
+			resignalled = append(resignalled, d.id)
+		}
+		if d.alert != nil {
+			p.c.OnAlertSaved(d.id, *d.alert, at)
+		}
+	}
+	if len(resignalled) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, id := range resignalled {
+		delete(p.resignal, id)
+	}
+}
+
+// resignalWanted is a copy of the alert keys Resignal asked for, on a
+// transport that writes signals while the owner is still away. Otherwise the
+// requests are dropped: the hub went back to the relay, which writes no
+// signal, or the owner came back to the Mac before the write (a retried
+// signal write included).
+func (p *Publisher) resignalWanted() map[string]bool {
+	p.mu.Lock()
+	n := len(p.resignal)
+	p.mu.Unlock()
+	if n == 0 {
+		return nil
+	}
+	back := !p.ownerAway()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.alertSignals() || back {
+		if back && len(p.resignal) > 0 {
+			log.Printf("hub slices: %d alerts not signalled on CloudKit: the owner is back at the Mac", len(p.resignal))
+		}
+		clear(p.resignal)
+		return nil
+	}
+	out := make(map[string]bool, len(p.resignal))
+	for k := range p.resignal {
+		out[k] = true
+	}
+	return out
+}
+
+// resignalGone drops the keys asked for that the slice no longer has.
+func (p *Publisher) resignalGone(asked map[string]bool, items []Item) {
+	if len(asked) == 0 {
+		return
+	}
+	present := make(map[string]bool, len(items))
+	for _, it := range items {
+		present[it.ID] = true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k := range asked {
+		if !present[k] {
+			delete(p.resignal, k)
+		}
+	}
+}
+
+// ownerAway is the owner-away input: nil reads as away, an error too.
+func (p *Publisher) ownerAway() bool {
+	if p.c.Away == nil {
+		return true
+	}
+	away, err := p.c.Away.Away()
+	return away || err != nil
+}
+
+// Resignal follows a switch to CloudKit that dropped the pushes of keys
+// (spec §12a, review ask #866). With the owner back at the Mac nothing is
+// written. A key every linked phone already received over the relay
+// (ReceivedAlertPushes: accepted, or expired in_flight, which may have
+// reached it) is skipped, since a CloudKit signal fires for every phone of
+// the zone. Every other key still in the work-alert slice has its ask_alert
+// record saved on CloudKit and its signal written as for a first save, once,
+// by the next cycle; a key that resolved meanwhile writes nothing.
+func (p *Publisher) Resignal(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	if !p.ownerAway() {
+		log.Printf("hub slices: %d alerts not signalled on CloudKit: the owner is back at the Mac", len(keys))
+		return
+	}
+	devices, err := p.c.Store.Devices()
+	if err != nil {
+		log.Printf("hub slices: %d alerts not signalled on CloudKit: devices unreadable (%s)", len(keys), errClass(err))
+		return
+	}
+	received, err := p.c.Store.ReceivedAlertPushes(keys)
+	if err != nil {
+		log.Printf("hub slices: %d alerts not signalled on CloudKit: push ledger unreadable (%s)", len(keys), errClass(err))
+		return
+	}
+	var want []string
+	for _, k := range keys {
+		for _, d := range devices {
+			if !received[k][d.ID] {
+				want = append(want, k)
+				break
+			}
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	p.mu.Lock()
+	for _, k := range want {
+		p.resignal[k] = true
+	}
+	p.mu.Unlock()
+	log.Printf("hub slices: %d alerts signalled on CloudKit after the switch", len(want))
+	p.PublishSoon(KindAskAlert)
 }
 
 // seal builds the sendable record: a device_grant as the phone's keybox, an

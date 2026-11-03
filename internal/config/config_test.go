@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -747,7 +748,12 @@ func TestConfigRecordingsDir(t *testing.T) {
 		cfg := &Config{}
 		got := cfg.RecordingsDir()
 		require.NotEmpty(t, got, "default recordings dir must resolve when a home directory exists")
+		// The Swift recorder runs only on macOS; off darwin the default
+		// follows AppSupportDir (<data root>/.support).
 		suffix := filepath.Join("Library", "Application Support", "Watchtower", "recordings")
+		if runtime.GOOS != "darwin" {
+			suffix = filepath.Join(".local", "share", "watchtower", ".support", "recordings")
+		}
 		assert.True(t, strings.HasSuffix(got, suffix),
 			"default must match the Swift MeetingRecorderCenter path, got %q", got)
 	})
@@ -760,8 +766,36 @@ func TestAppSupportDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	got, err := AppSupportDir()
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, "Library", "Application Support", "Watchtower"), got)
+	root, err := DataRoot()
+	require.NoError(t, err)
+	assert.Equal(t, appSupportDirFor(runtime.GOOS, home, root), got)
+	if runtime.GOOS == "darwin" {
+		assert.Equal(t, filepath.Join(home, "Library", "Application Support", "Watchtower"), got)
+	}
 	assert.Equal(t, filepath.Join(got, "recordings"), (&Config{}).RecordingsDir())
+}
+
+// Off darwin the support folder lives under the data root, never in a
+// macOS-shaped Library path; darwin is unchanged.
+func TestAppSupportDirOffDarwinIsUnderDataRoot(t *testing.T) {
+	home, root := "/home/u", "/home/u/.local/share/watchtower"
+	for _, goos := range []string{"linux", "freebsd"} {
+		got := appSupportDirFor(goos, home, root)
+		assert.Equal(t, filepath.Join(root, ".support"), got, goos)
+		assert.NotContains(t, got, filepath.Join("Library", "Application Support"), goos)
+	}
+	assert.Equal(t, filepath.Join(home, "Library", "Application Support", "Watchtower"),
+		appSupportDirFor("darwin", home, root))
+}
+
+// Without a home folder there is no support folder: never a relative or
+// temp path.
+func TestAppSupportDirWithoutHomeIsAnError(t *testing.T) {
+	t.Setenv("HOME", "")
+	got, err := AppSupportDir()
+	require.Error(t, err)
+	assert.Empty(t, got)
+	assert.Empty(t, (&Config{}).RecordingsDir())
 }
 
 func TestFeatureGateDefaults(t *testing.T) {

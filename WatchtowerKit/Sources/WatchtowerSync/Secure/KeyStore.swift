@@ -166,5 +166,8 @@ public struct HubIdentityKeys: Sendable {
 public protocol HubKeyStore: Sendable {
     /// Loads the hub's identity; creates all three items when none exists. `created` is true when it did.
     func hubIdentity(hubID: String) throws -> (keys: HubIdentityKeys, created: Bool)
+    /// The hub's identity when all three items exist, nil when none does; never creates anything. A partial or
+    /// unparsable identity throws `.corrupt`, a locked keychain `.locked`.
+    func existingHubIdentity(hubID: String) throws -> HubIdentityKeys?
     func deleteHubIdentity(hubID: String) throws
 }

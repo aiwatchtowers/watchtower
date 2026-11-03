@@ -28,3 +28,12 @@ extension MeetingRecorderCenter.ProcessingJob {
     /// The private flag can change until the save starts (`.summarizing`).
     var canChangePrivate: Bool { phase != .summarizing }
 }
+
+extension MeetingRecorderCenter.ProcessingJob.Phase {
+    var isFailed: Bool { failureMessage != nil }
+
+    var failureMessage: String? {
+        if case let .failed(message) = self { return message }
+        return nil
+    }
+}

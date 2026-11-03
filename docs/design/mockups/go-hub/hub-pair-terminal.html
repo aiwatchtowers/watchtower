@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hub pair terminal</title>
+<style>
+:root{--bg:#0f0f10;--fg:#e6e6e8;--muted:#8e8e93;--term-bg:#000;--term-fg:#d7d7d7;--chrome:#2a2a2d;--err:#ff6961;--ps:#7ee29a;--url:#8fc2ff}
+body{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,sans-serif;font-size:13px}
+main{max-width:1100px;margin:0 auto}
+h1{font-size:18px;margin:0 0 6px}
+h2{font-size:14px;color:#c7c7cc;margin:32px 0 6px}
+.note{color:var(--muted);font-size:12px;max-width:900px;margin:0 0 10px;line-height:1.5}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#c7c7cc}
+ul{color:var(--muted);font-size:12px;columns:2;max-width:700px;padding-left:18px}
+a{color:var(--url)}
+.term{background:var(--term-bg);border:1px solid #3a3a3c;border-radius:10px;overflow:hidden;
+  width:min(100%, calc(var(--cols) * 1ch + 24px));font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.bar{background:var(--chrome);display:flex;align-items:center;gap:6px;padding:6px 10px;font-family:-apple-system,system-ui,sans-serif}
+.bar i{width:10px;height:10px;border-radius:50%;background:#55555a;display:inline-block}
+.bar span{margin-left:auto;color:var(--muted);font-size:11px}
+.term pre{margin:0;padding:10px 12px;color:var(--term-fg);font:inherit;line-height:1.25;
+  white-space:pre-wrap;word-break:break-all;overflow-x:auto}
+.qr{display:inline-block;line-height:1;white-space:pre;word-break:normal;color:#000;background:#fff}
+.ps{color:var(--ps)}
+.url{color:var(--url)}
+.err{color:var(--err)}
+.in{color:#fff}
+.elided{color:#5a5a5f;font-style:italic}
+.cur{background:var(--term-fg)}
+.exit{color:var(--muted);font-size:11px;margin-top:4px}
+</style></head><body><main>
+<h1>watchtower hub pair — terminal (headless host)</h1>
+<p class="note">Go hub plan 2, Task 6 (spec §10, §12.4). One panel per state; the copy is the plan's, the SAS prompt is the spec's pinned line.
+Hub name <code>raspberrypi</code>, phone name <code>iPhone</code>, device id and URL are placeholders. The terminal look is a dark theme; the code is the same in any terminal.</p>
+<ul><li><a href="#qr">QR code and waiting</a></li><li><a href="#narrow">Narrow window</a></li><li><a href="#sas">SAS prompt</a></li><li><a href="#linked">Linked</a></li><li><a href="#r-used_code">Refused: used_code</a></li><li><a href="#r-expired_code">Refused: expired_code</a></li><li><a href="#r-unknown_code">Refused: unknown_code</a></li><li><a href="#r-not_confirmed">Refused: not_confirmed</a></li><li><a href="#r-too_many_requests">Refused: too_many_requests</a></li><li><a href="#r-unknown">Refused: unknown reason</a></li><li><a href="#cancel">Ctrl-C</a></li><li><a href="#notty">Not a terminal</a></li></ul>
+<section id="qr">
+<h2>1. QR code and waiting</h2>
+<p class="note">The window is at least 93 columns wide (the QR's width for a headless hub's link, quiet zone included). The QR is real <code>termqr.Render</code> output of a placeholder URL as long as a v4 headless link. It is drawn with explicit colours, black modules on a white background (quiet zone included), so it reads the same on a light and a dark terminal.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+
+<span class="qr">                                                                                             
+                                                                                             
+    █▀▀▀▀▀█ ▄▄ ▀█▄▄▀█▀▀▀▀▄▀ ██▀█ █ █ ▄▄ ▀ ▄█▀▀▀▀▀▄▄▄█▀▄▀▄█▄ ▄▀▄▄▄▄█ ▀▄ ▄▀▀█ ▄▀█▄▀ █▀▀▀▀▀█    
+    █ ███ █ ▄▀ ▄█▀█▄▀▄▀▄▀█ ▄▀   ▄█████▀▄▄ ▄ ▀▄▀▄▀▄ █▄▀▀▀▀ ▄█▄▄▄▀ █▄▄▀▀ ▀▀█▄▀▀▀▀▄  █ ███ █    
+    █ ▀▀▀ █ ▄▄ ▀█▄▄▀█▀▀▀▀▄▀ ▀█▀▀█▀▀▀█▄▄█  ▄ ▄▀▀█ ▄▄██▀▄▄█▀▀▀█▀▄ █▄█▀▀▄   ▀█▄▄█▀▄  █ ▀▀▀ █    
+    ▀▀▀▀▀▀▀ ▀▄▀ █▄█ ▀ █ █▄▀▄█ ▀ █ ▀ █▄█▄█ ▀▄▀ █ █ ▀ ▀▄█▄█ ▀ █ ▀▄▀▄▀ █▄▀▄▀▄▀▄▀ █▄█ ▀▀▀▀▀▀▀    
+    ▀▀▀▀▀ ▀▀▀  ▄▀ ▀ ██▄ ▄▀▄▄▄▄▄ ██▀█▀▀ ▄█ ▀▄██▄█ ▀ ▀█▄ ███▀▀▀█▀ █▀██   ▄ ██▄▄ █▄██ ▀ █ █     
+    ▄ ▄█▀█▀▄█ ▄█ █▀ ▄█ █▄█ █ ▀ █▄█▄█▄██ ▀ ▀ █ ▄ ▄▀▀▀ ▄█▄ ▀▀▄▀ ▀▄▀█▀ ▄█ ▄ ▄▀▄▀▀███▀▀▄▀█▀▀█    
+    ▀▀▀█  ▀  █▀   ▀█▀██ ▄▀▄▀ ▄▄█ █▀▄▀▀ ██ ▀  █▄█ ▀ ▀█▄ █▄▄▀▀▀█▀ █▀██   ▄ ██▄▄ █▄██ ▀▀█▀▄     
+    ▄ █▀▀█▀█▄ █▄ ▀ ▀█▀   █ ▄ █▄▄█▀   ▀█▀▀ ▀ ▄ ▄ ▄▀▀▀ ▄█▄ ▀▀ ▀ ▀▄▀█▀ ▄█ ▄ ▄▀▄▀▀█▀▀ ▀▄▀█▀██    
+    ▀▀ ▀  ▀█ ▄▀▀  ▀▄ █ ▀██▀▀ ▀▄█▀▀▄▀ ▀███▀   █▄█ ▀ ▀█▄ █▄▄▀▀██▀ █▀██   ▄ ██▄▄ █▄▀██▀▀█▀█▀    
+    ▄ ██▀█▀  ▄▄▀▀ ▄▄▄▀ █▀█▀▄ ▀▄▄█▀▄▀ ▀▄▀▀▀  ▄   ▄█▀▀  ▀▄  ▀█▀▄▀▄▀▀▀ ▄█ ▄  ▀▄▀▀██▀▀▀▄▀█▀██    
+     ▀█   ▀▄▀▄ ▀ ▀▀▄ ▄▄▀█▀█▀ ▄▄█▀▀▀ ▀▀ ██▄   ▄██ █▀▀██▀█▄▄ ▀█▄▄ █ ▀█  ▄▄ ▄█▄▄  ▄▀██▀▀█▀█▀    
+    ▄▄█▄ ▀▀█▄▄█▀▀ ▄▄▄▀ █▀▄▄▄ █▄▄█ █ ▀▀█▀▀▄█ ▄▄▄ ▄▀▀▀  ▀▄   █▀▄▀▄▀█▀ ▄▀▄▄  ▀▄▀▀▀█▀▀▀▄▀█▀██    
+    ▄▀█ ▄▀▀█ ▄ ▀ ▀▀▄ ▄▄▀█▀▄▀ ▄██▀▀▀ ▀ ▀███   ███   ▀██ █▄▄▀▀██▄ █ ▀█  █▄ █ ▄▄▀ ▄▀██▀▀█▀█▀    
+      █▄▄ ▀█▄▄█▀▀ ▄▄▄▀ █▀▄▄▄▄█▄▄█ █ ▀▀█▀▀██▄▄▄▄ ▄ ▀▀  ▀▄  ▀█▀▄▀▄▀█▀ ▄▀▄▄█ ▀▄▀▀ █▀▀▀ ▀█▀██    
+    ▄ █ █▀▀▀█▄ ▀ ▀▀▄ ▄▄▀█▀▄▀▄▄█▀█▀▀▀█ ▀▀██ █▄███▄  ▀██ ██▀▀▀██▄ ▀ ▀▀█ █▄▀█ ▄ ▀  █▀▀▀█▀▀█▀    
+    ▄ █▄█ ▀ █▄█▀▀ ▄▄ ▀ █▀▄▄ ▀█▄██ ▀ █▀█ ▄██▀ ▄▄ ▄ ▀▀▀ ▀▀█ ▀ █▄▀█ █▀ ▄▀▄▄█ ▀█▀▀ ██ ▀ █▀ ██    
+    ▄ █ ▀▀▀█▀▄  █▀▀▄█▄▄▄▀▀▄ ▀▄█ ▀██▀█ ▀▀ █ ▀ ██▀   █▀█ ▄▀▀████▄   ▀██ █ ██  ▄▀ ▀▀██▀█ █▀▀    
+    ▄ █▄ █▀█ █▀▀▄   █ ▄█▀▄▄ ██▄█▄ ▄ ▄▀█▀ ███▄▄▄▀█ ▀▀  ▀▀█▀▄▄█▄▀█ █▀▀▄▀▄▄█ ▀▄▀▀ ▀▀██ █  ▀▀    
+    ▄ █▄  ▀█▀██ █▄█ █▄▄▀▀▀▄▀█▄█▀▄▄█ ▄ ▀█▀█ ▄ ██▀   █▀█ ▄█ ▄█▄█▄   ▀██ █ ██  ▄▀ ▀ ▄▄█  █▀     
+    ▄ ▄█ █▀█ ▄▀▄▀█ ██ ▄▄  ▄▀█  ▀█ ▄ ▄█▀ ▀██▄▄▄▄▀█ ▀▀  ▀▀█▀▄▄█▄▀█ █▀▀▄▀▄▄█ ▀▄▀▀ ▀▀██ ▄  ▀█    
+    ▄ ▀█  ▀█▀ ▄▀ ▀▄▄█▀█▀▀▄▄▀█ ▀▀▀▄█▄▄▄ █▀▄█▄ ▀█▀   █▀█ ▄█ ▄█▄█▄   ▀██ █ ██  ▄▀ ▄ ▄ █  █▀▀    
+    ▄  █ █▀█▀▄▄ ▀▄▄█▄█▄▄ ▀ ▀█ █▄▀ ▄█    ▀▄▄▄▄▄▀▀█ █▀ ▄▀▀█▀▄ ▄▄▀█ ▀▀▀▄▀▄▄█ ▀▄▀█ ▀▀█▄ ▄  ▀█    
+    █▄█▀  ▀▄▀██▀ █▀▄█ ▄▀▀▀█▀█▄▄▀▀▀█▀▀▀ █▀▄ ▄ █▄▀   █▀█ ▄█ ▄█▄██   ███ ▀ ██▀ ▄ ▀▀▄  █  █▀▀    
+    █ █  █▀▀ ▄█ ▀▄██▄██▄ █ ▀█▀▄▄▀▀█▀█▀█ ▀ ▀▄▄  ▀█▄▀▀  ▀▀█▀▄  ▄▀█ ▀█▀▄█▄▄█ ▀▄▀█▀▀▀▄█ ▄  ▀█    
+     ▄█ ▄ ▀████▀ █▀▄█ ▄▀▀▀█▀█▄▄▀▀████▀ █▀▄ ▄ ▄█▀ █▀█▀█▀▄█▀██▄▄▄   ▀██ ▄ █▄█ ▄ █▀▄  █  █▀▀    
+      █  ▄▀  ▄█ ▀▄██▄██▄ █ ▀▀▀▄▄▀▄ █ ▀█ ▀ ▀ ▄  ▀██▀▀  ▀▀█▀█  ▄▀█▀▀▀▀▄█▄▄  ▀▄▀██▀▀▄█ ▄  ▀█    
+    ███ █▀▀▀███▀ █▀▄█ ▄▀█▀█▀ ▄▄▀█▀▀▀█▀ ██▄   ▄██ █▀▀██▀ █▀▀▀█▄▄ █ ▀█  ▄▄▀▄█▄▄ ███▀▀▀█ ▀▀▀    
+    ▀▀█ █ ▀ █▄█ █▄██▄█████ ▄▄▀▄▄█ ▀ █▀███ ▀▄    ▄█▀▀  ▀▀█ ▀ █▄▀▄█▀▀ ▄█▄█▄ ▀▄▀██ █ ▀ █▀ ▀█    
+    ███ ▀▀▀█████▀█▀▀  ▄ ▄▀█▄▄▄▄ ▀▀██▀▀ ▄█▄ ▄█▄█▀ █▀▀██▀▀█▀▀█▀▄▄▄█ ▀▀▀ ▄ ▄▄█ ▀ █▀█▀▀█▀▄▀██    
+    ▀▀█ ▄ ▀▄  ██ ▀▀ █▀█  █ █ ▀▄▀▄▀▀█▀▀█ ▀ ▀▄█   ▄█▀   ▀▀▀▄ ▀▀▄▀▄█▀▀▀▄█▄▄▄ ▀█▀███▄ ▄▀ ▀ ▀▀    
+    ███ ▀▄▀▄▄▀   ▄█   ▄▀█▀█▀ ▄▄██▀▄█ ▀ ██▄ ▄ ▄█▀ █▀▀██▀█   ▄ ▄▄▄█ ▀▀▀ ▄ ▄▄█ ▀ █ ▄▀▀▀▀█▀ ▀    
+    ▀▀▀██ ▀▄ █ ▄▄█  ▄▀  ▀█   █▄█▀▀▀█▀▀█ ▀ ▀▄█▄  ▄█▀   ▀█▀▄ ▀▀▄▀▄█▀▀▀▄█▄▄▄ ▀█▀███▄ ▄▀▀▀ ▀█    
+    ███▄▄ ▀▄▄ █▀█▄▄▀▄▄▄▀██▀▀ ▀▄█▀▀▄█ ▀███▀ ▄ ▄ ▀ █▀▀██▀█▀  ▄ ▄▄▄█ ▀▀▀ ▄ ▄▄█ ▀ █ ▄▀▀▄▀█▀▀     
+    ▀▀ ▄█ ▀▄ ▀████  ▄██ ▀██   ▄▀▄▀▀█▀▀  ▀▀ ▄█▄▀ ▄█▀   ██▀▄ ▀▀ ▀▄█▀▀▀▄▀▄▄▄ ▀█▀▀██  ▄▄▄▀ ▀█    
+    ▀█▄▄▄ ▀▄▄▀█▀██ ▀▄ ▀▀█▀█▀ ▄██▀▀▄█   ███ ▄ ▄█▀ ▀ ▀█▄ █▀  ▄ █ ▄█▀ ▀▀▀▀ ▄█▄ ▀ █ ▄▀▀▄▀█▀▀     
+     █▀██ ▀▄▄▀▄███▀ ▄██ ▀▀    █▀▄▀▀ ▀ ▀ ▀▄█▄█▄  ▄▀█  ▄▀█▀▄ ▀█▄▀▄█▀ ▀▄▀▄▄▄ ▀█▀▀ ▀███▄▄▀ ▀█    
+    █▀██▄ ▀▄ ▀█▀██ ▀▄ ▀▀█▀█▀ ▄▄█▀▀  ▀▀ ██▄ ▄ █▄▀   ▀██ █▀  █▀██▄█ █▀▀ ▀ ▄█▀ ▀   ▄█▀▄▀█▀▀     
+    ▀█▀▄▀▄▀█▀▀▄███▀ ▄██ ▀▀  ▄ ▄▀▄▀▄▀ ▀▀ ▀▄█▄█▄  ▄ █  ▄▀█▀▄ ▀█▄▀▄ ▀█▀▄▀▄▄▄ ▀█▀▀▀▀██ ▄▄▀ ▀█    
+    ▀     ▀▀█▀█▀██ ▀▄ ▀▀▀▀█▀█▄▄▀█▀▀▀█▀ █▀▄ ▄ █▄▀   █▀█ ▀█▀▀▀███   ███ ▀▄▄█▀▄▀  ▄█▀▀▀██▀▀     
+    █▀▀▀▀▀█ ▀▀▄█▀█▀  ██▄ ▀ ▀▀ ▄██ ▀ █▀▀ █▄█  ▄ ██ █▀ ▄▀██ ▀ █▄▀█ ▀█▀▄▀▄█▄ ▀█▀▀▀ █ ▀ █▀ ▀█    
+    █ ███ █ █▀█  █ ▀▀ ▀▄▀▀█ ▀▄▄██▀██▀▀ ▀ ▄ ▀ █▄█   ███ ▀▀█▀▀███   ██▀ ▀ ▄█▀ █  ▀███▀█ █▀▄    
+    █ ▀▀▀ █ ██▄▄▀▀▀  ▀██▀▀  █ ▄  █▄ ▄▀▀▀ ▄██▄▄ ██ █▀▀▄▀▀   ▄▄▄▀▄ ▀█▀▄▀▄█▄ ▀▄▀▀▀▄█▄ ▀ ▀  █    
+    ▀▀▀▀▀▀▀ ▀        ▀▀▀▀▀▀▀   ▀   ▀ ▀ ▀▀    ▀ ▀   ▀▀▀ ▀▀▀  ▀▀▀   ▀▀▀ ▀  ▀▀ ▀    ▀ ▀▀▀▀▀▀    
+                                                                                             
+                                                                                             </span>
+
+Scan it with the Watchtower app on your iPhone, or open this link on the phone:
+<span class="url">https://example.com/link#placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-place</span>
+Needs a phone with Relay. The code expires at 14:30.
+
+Waiting for your phone… (Ctrl-C cancels)
+<span class="cur"> </span></pre></div>
+
+</section><section id="narrow">
+<h2>2. Narrow window</h2>
+<p class="note"><code>term.GetSize</code> reports fewer columns than the QR needs (93); the hint replaces the QR, the rest is unchanged.</p>
+<div class="term" style="--cols:80"><div class="bar"><i></i><i></i><i></i><span>80 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+
+Widen this window to at least 93 columns to see the QR code.
+
+Scan it with the Watchtower app on your iPhone, or open this link on the phone:
+<span class="url">https://example.com/link#placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-place</span>
+Needs a phone with Relay. The code expires at 14:30.
+
+Waiting for your phone… (Ctrl-C cancels)
+<span class="cur"> </span></pre></div>
+
+</section><section id="sas">
+<h2>3. SAS prompt</h2>
+<p class="note">A phone scanned the code. Its name is the phone's own and passes <code>sanitizeForTerminal</code>. <code>y</code> or <code>yes</code> in any case confirms; anything else, an empty line, EOF or the code's expiry sends no.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+"iPhone" wants to link.
+Confirm code 4827 on your phone? [y/N] <span class="cur"> </span></pre></div>
+
+</section><section id="linked">
+<h2>4. Linked</h2>
+<p class="note">The owner typed <code>y</code>.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+"iPhone" wants to link.
+Confirm code 4827 on your phone? [y/N] <span class="in">y</span>
+Linked "iPhone".
+To let it type into sessions or start them: watchtower hub allow BBBBBBBB-0000-4000-8000-000000000002 typing|start_sessions
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 0</div>
+</section><section id="r-used_code">
+<h2>5. Refused: used_code</h2>
+<p class="note">Refusal <code>used_code</code>.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+<span class="err">This code was already used. Run watchtower hub pair for a new one.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 1</div>
+</section><section id="r-expired_code">
+<h2>6. Refused: expired_code</h2>
+<p class="note">Refusal <code>expired_code</code>.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+<span class="err">This code expired. Run watchtower hub pair for a new one.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 1</div>
+</section><section id="r-unknown_code">
+<h2>7. Refused: unknown_code</h2>
+<p class="note">Refusal <code>unknown_code</code>.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+<span class="err">The phone sent a code this host does not know. Run watchtower hub pair again.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 1</div>
+</section><section id="r-not_confirmed">
+<h2>8. Refused: not_confirmed</h2>
+<p class="note">Refusal <code>not_confirmed</code>: the owner answered anything but yes (here <code>n</code>).</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+"iPhone" wants to link.
+Confirm code 4827 on your phone? [y/N] <span class="in">n</span>
+<span class="err">Not linked: the code was not confirmed.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 1</div>
+</section><section id="r-too_many_requests">
+<h2>9. Refused: too_many_requests</h2>
+<p class="note">Refusal <code>too_many_requests</code>.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+<span class="err">Too many phones tried this code. Run watchtower hub pair for a new one.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 1</div>
+</section><section id="r-unknown">
+<h2>10. Refused: an unknown reason</h2>
+<p class="note">A reason this build does not know (here <code>slot_full</code>) prints as is, after <code>sanitizeForTerminal</code>.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+
+<span class="err">Not linked (slot_full).</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 1</div>
+</section><section id="cancel">
+<h2>11. Ctrl-C</h2>
+<p class="note">The owner presses Ctrl-C while the code waits for a phone, or at the SAS prompt; at the prompt the hub is sent no first.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+^C
+<span class="err">Cancelled. Not linked.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 130</div>
+</section><section id="notty">
+<h2>12. Not a terminal</h2>
+<p class="note">stdin or stdout is not a terminal. Nothing else is printed and no code is issued.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair | tee pair.log
+<span class="err">hub pair needs a terminal; scripts use --json --stream</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 2</div>
+</section>
+</main></body></html>

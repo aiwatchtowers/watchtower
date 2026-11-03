@@ -15,6 +15,13 @@ const (
 	MetaHubImpl     = "hub_impl"
 	MetaEnabled     = "enabled"
 	MetaDisplayName = "display_name"
+	// MetaTransport is the transport the hub runs on, "cloudkit" | "relay"
+	// (adoption writes "cloudkit").
+	MetaTransport = "transport"
+	// MetaMailboxFullPhones is the device ids (a JSON list, nothing else)
+	// whose relay mailbox refused the hub's write as over quota, until a
+	// write to that phone's mailbox succeeds or the phone is unlinked.
+	MetaMailboxFullPhones = "mailbox_full_phones"
 )
 
 // Meta reads one hub_meta value; ok is false when the key is unset.

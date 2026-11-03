@@ -26,8 +26,11 @@ import (
 // Rotation and relay-window constants (spec §2.2, D10), the Swift
 // HubKeyring's values.
 const (
-	// PreviousEpochGrace: the retired epoch's relay envelopes are accepted,
-	// and keyboxes carry its keys, this long after it was retired.
+	// PreviousEpochGrace: a retired epoch's relay envelopes are accepted, and
+	// keyboxes carry the newest retired epoch's keys, at most this long after
+	// it was retired — for every rotation, transport-switch epochs included
+	// (Go hub plan 3 Task 20, ask #843; relay sim rule 14's 14 days is not
+	// used). RetireIfDone ends it sooner.
 	PreviousEpochGrace = 7 * 24 * time.Hour
 	// RotationAge: the epoch rotates when it is this old.
 	RotationAge = 90 * 24 * time.Hour
@@ -46,6 +49,9 @@ const (
 	ReasonCap    Reason = "cap"
 	ReasonUnlink Reason = "unlink"
 	ReasonManual Reason = "manual"
+	// ReasonTransportSwitch: every accepted transport switch begins an
+	// epoch (relay sim rule 11, internal/hub/switcher).
+	ReasonTransportSwitch Reason = "transport_switch"
 )
 
 var (
@@ -165,7 +171,7 @@ func NewKeyring(id Identity, st *state.Store, now func() time.Time) (*Keyring, e
 			return err
 		}
 		if len(epochs) == 0 {
-			return k.insertEpoch(tx, 1, k.now())
+			return k.insertEpoch(tx, 1, k.now(), "")
 		}
 		return nil
 	})
@@ -195,8 +201,8 @@ func NewKeyring(id Identity, st *state.Store, now func() time.Time) (*Keyring, e
 }
 
 // insertEpoch seals fresh K_data ‖ K_alert for epoch and inserts it with
-// first_seq = the seq ceiling now, in tx.
-func (k *Keyring) insertEpoch(tx *sql.Tx, epoch uint32, at time.Time) error {
+// first_seq = the seq ceiling now and why it began ("" for epoch 1), in tx.
+func (k *Keyring) insertEpoch(tx *sql.Tx, epoch uint32, at time.Time, r Reason) error {
 	keys := randomKey(64)
 	defer clear(keys)
 	sealed, err := k.seal(keys, k.epochAAD(epoch))
@@ -211,7 +217,7 @@ func (k *Keyring) insertEpoch(tx *sql.Tx, epoch uint32, at time.Time) error {
 	if err != nil {
 		return err
 	}
-	return state.InsertEpoch(tx, state.Epoch{Epoch: epoch, SealedKeys: sealed, CreatedAt: at, FirstSeq: first})
+	return state.InsertEpoch(tx, state.Epoch{Epoch: epoch, SealedKeys: sealed, CreatedAt: at, FirstSeq: first, Reason: string(r)})
 }
 
 // HubID is the hub's id.
@@ -316,33 +322,151 @@ func (k *Keyring) openEpoch(e state.Epoch) ([]byte, error) {
 	return plain, nil
 }
 
-// window is the current epoch and, while its grace runs, the retired one
-// before it (nil otherwise).
-func (k *Keyring) window() (current state.Epoch, previous *state.Epoch, err error) {
+// retainedEpochs is the current epoch last, after every retired epoch whose
+// relay-lane keys are still accepted (oldest first).
+func (k *Keyring) retainedEpochs() ([]state.Epoch, error) {
 	epochs, err := k.st.Epochs()
+	if err != nil {
+		return nil, err
+	}
+	if len(epochs) == 0 {
+		return nil, ErrKeysUnavailable
+	}
+	now := k.now()
+	out := make([]state.Epoch, 0, len(epochs))
+	for i, e := range epochs[:len(epochs)-1] {
+		if now.Before(retireAfter(e, epochs[i+1])) {
+			out = append(out, e)
+		}
+	}
+	return append(out, epochs[len(epochs)-1]), nil
+}
+
+// retireAfter is when retired epoch e's keys stop being accepted: its
+// retire_after, or — on a row retired before sidecar migration 00010 —
+// PreviousEpochGrace after it was retired (the next epoch's start when even
+// retired_at is missing).
+func retireAfter(e, next state.Epoch) time.Time {
+	if e.RetireAfter != nil {
+		return *e.RetireAfter
+	}
+	at := next.CreatedAt
+	if e.RetiredAt != nil {
+		at = *e.RetiredAt
+	}
+	return at.Add(PreviousEpochGrace)
+}
+
+// window is the current epoch and the newest retired one still retained
+// (nil when none is).
+func (k *Keyring) window() (current state.Epoch, previous *state.Epoch, err error) {
+	kept, err := k.retainedEpochs()
 	if err != nil {
 		return state.Epoch{}, nil, err
 	}
-	if len(epochs) == 0 {
-		return state.Epoch{}, nil, ErrKeysUnavailable
-	}
-	current = epochs[len(epochs)-1]
-	if len(epochs) >= 2 {
-		retired := epochs[len(epochs)-2]
-		at := current.CreatedAt
-		if retired.RetiredAt != nil {
-			at = *retired.RetiredAt
-		}
-		if k.now().Sub(at) < PreviousEpochGrace {
-			previous = &retired
-		}
+	current = kept[len(kept)-1]
+	if len(kept) >= 2 {
+		previous = &kept[len(kept)-2]
 	}
 	return current, previous, nil
 }
 
+// Retained is every epoch whose relay-lane keys are still accepted, oldest
+// first, the current one last: each retired epoch for PreviousEpochGrace
+// after its retirement unless RetireIfDone ended it sooner.
+func (k *Keyring) Retained() ([]uint32, error) {
+	kept, err := k.retainedEpochs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint32, len(kept))
+	for i, e := range kept {
+		out[i] = e.Epoch
+	}
+	return out, nil
+}
+
+// RetireIfDone is relay sim rule 14 with the 7-day cap: a retired epoch
+// still retained ends now when every linked phone acked a newer epoch
+// (acked: device id → its acked epoch) and nothing sealed in it is held or
+// queued: heldIn (the caller's view) and, in the retiring transaction,
+// state.SealedIn over held_actions and control_queue. The current epoch is
+// never retired here; a retention is only ever shortened.
+func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) error {
+	kept, err := k.retainedEpochs()
+	if err != nil {
+		return err
+	}
+	var candidates []uint32
+	for _, e := range kept[:len(kept)-1] {
+		if heldIn[e.Epoch] {
+			continue
+		}
+		all := true
+		for _, a := range acked {
+			if a <= e.Epoch {
+				all = false
+				break
+			}
+		}
+		if all {
+			candidates = append(candidates, e.Epoch)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	now := k.now()
+	var done []uint32
+	err = k.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		done = done[:0]
+		for _, e := range candidates {
+			// Checked with the write: a held action or a queued write
+			// (an owed echo, a control) sealed in e keeps its keys.
+			used, err := state.SealedIn(tx, e)
+			if err != nil {
+				return err
+			}
+			if used {
+				continue
+			}
+			if err := state.EndRetention(tx, e, now); err != nil {
+				return err
+			}
+			done = append(done, e)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, e := range done {
+		log.Printf("hub: epoch %d retired: every phone acked a newer one", e)
+	}
+	return nil
+}
+
+// RetireOld is RetireIfDone over the sidecar: every linked phone's acked
+// epoch (devices.acked_epoch, a phone that never acked counts as 0); the
+// held actions and queued writes are checked inside the retiring
+// transaction (state.SealedIn). The runtime's housekeeping is its one
+// caller.
+func (k *Keyring) RetireOld() error {
+	devices, err := k.st.Devices()
+	if err != nil {
+		return err
+	}
+	acked := make(map[string]uint32, len(devices))
+	for _, d := range devices {
+		acked[d.ID] = d.AckedEpoch
+	}
+	return k.RetireIfDone(acked, nil)
+}
+
 // KeyboxKeys are the keys a linked phone's keybox carries (spec §2.3): the
-// current epoch's K_data and K_alert and K_meta, plus the retired epoch's
-// while its grace runs. Strings are unpadded base64url.
+// current epoch's K_data and K_alert and K_meta, plus the newest retired
+// epoch's while it is retained (the keybox has room for one). Strings are
+// unpadded base64url.
 func (k *Keyring) KeyboxKeys() (wire.KeyboxKeys, error) {
 	current, previous, err := k.window()
 	if err != nil {
@@ -372,22 +496,28 @@ func (k *Keyring) KeyboxKeys() (wire.KeyboxKeys, error) {
 	return out, nil
 }
 
-// AcceptsRelayEpoch accepts the current epoch, and the previous one until
-// PreviousEpochGrace after it was retired (D10). false for a device without
-// usable relay material.
+// AcceptsRelayEpoch accepts the current epoch and every retained one
+// (Retained: each retired epoch at most PreviousEpochGrace after it was
+// retired, D10 and ask #843). false for a device without usable relay
+// material.
 func (k *Keyring) AcceptsRelayEpoch(epoch uint32, device secure.ID) (bool, error) {
 	usable, err := k.hasMaterial(device)
 	if err != nil || !usable {
 		return false, err
 	}
-	current, previous, err := k.window()
+	kept, err := k.retainedEpochs()
 	if errors.Is(err, ErrKeysUnavailable) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return epoch == current.Epoch || (previous != nil && epoch == previous.Epoch), nil
+	for _, e := range kept {
+		if e.Epoch == epoch {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // RelayKey is the pairwise relay key for one phone, epoch and direction.
@@ -590,7 +720,7 @@ func (k *Keyring) Record(wireName string, sender secure.ID, epoch uint32, seq ui
 // current epoch retired, the new one inserted (first_seq = the seq ceiling
 // now), the slice hashes wiped and the work alerts moved to the bumped sync
 // generation (state.MoveWorkAlertsForRotation), in one transaction. The
-// previous epoch stays readable for PreviousEpochGrace.
+// retired epoch stays readable for PreviousEpochGrace at most (Retained).
 func (k *Keyring) Rotate(r Reason) error { return k.RotateWith(r, nil) }
 
 // ErrSkipRotation is returned by RotateWith's also to end the rotation with
@@ -607,7 +737,7 @@ var ErrSkipRotation = errors.New("identity: rotation skipped")
 // writes nothing and is returned.
 func (k *Keyring) RotateWith(r Reason, also func(*sql.Tx) error) error {
 	switch r {
-	case ReasonAge, ReasonCap, ReasonUnlink, ReasonManual:
+	case ReasonAge, ReasonCap, ReasonUnlink, ReasonManual, ReasonTransportSwitch:
 	default:
 		return fmt.Errorf("identity: unknown rotation reason %q", r)
 	}
@@ -631,10 +761,10 @@ func (k *Keyring) RotateWith(r Reason, also func(*sql.Tx) error) error {
 		}
 		next = current + 1
 		at := k.now()
-		if err := state.RetireEpoch(tx, current, at); err != nil {
+		if err := state.RetireEpoch(tx, current, at, at.Add(PreviousEpochGrace)); err != nil {
 			return err
 		}
-		if err := k.insertEpoch(tx, next, at); err != nil {
+		if err := k.insertEpoch(tx, next, at, r); err != nil {
 			return err
 		}
 		if err := state.WipeSliceHashes(tx); err != nil {

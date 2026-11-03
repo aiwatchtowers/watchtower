@@ -105,5 +105,6 @@ public final class InMemoryHubKeyStore: HubKeyStore, @unchecked Sendable {
     public init() {}
 
     public func hubIdentity(hubID: String) throws -> (keys: HubIdentityKeys, created: Bool) { try store.hubIdentity(hubID: hubID) }
+    public func existingHubIdentity(hubID: String) throws -> HubIdentityKeys? { try store.existingHubIdentity(hubID: hubID) }
     public func deleteHubIdentity(hubID: String) throws { try store.deleteHubIdentity(hubID: hubID) }
 }

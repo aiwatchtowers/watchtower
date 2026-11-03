@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrHostV1 is returned by Dial (and Ensure) when the socket is served by a
@@ -28,9 +29,10 @@ const v1Refusal = "(host speaks 1)"
 // with InputTo, delivers lines (Deliver), hints and stops, and never binds its connection to a
 // session, so it never takes a pane over. Calls are serialised.
 type Client struct {
-	mu  sync.Mutex
-	nc  net.Conn
-	pid int
+	mu   sync.Mutex
+	nc   net.Conn
+	pid  int
+	dead atomic.Bool // the connection was closed (Close, or a failure that left the stream out of step)
 }
 
 // Dial connects to the host on socket and says a v2 Hello. A v1 host gives
@@ -72,8 +74,14 @@ func (c *Client) hello(ctx context.Context) error {
 // Pid is the host's process id from its HelloOK.
 func (c *Client) Pid() int { return c.pid }
 
+// Dead reports whether the connection is closed: Close was called, or a
+// call failed with anything but the host's own Error answer (the stream was
+// out of step, so it was closed). A dead client fails every later call.
+func (c *Client) Dead() bool { return c.dead.Load() }
+
 // Close closes the connection; hosted sessions keep running.
 func (c *Client) Close() error {
+	c.dead.Store(true)
 	return c.nc.Close() //nolint:wrapcheck // the connection's own close error
 }
 
@@ -190,11 +198,12 @@ func (c *Client) do(ctx context.Context, fn func() (FrameType, []byte, error)) (
 	}
 	dl, _ := ctx.Deadline() // zero = no deadline
 	_ = c.nc.SetDeadline(dl)
-	stop := context.AfterFunc(ctx, func() { _ = c.nc.Close() })
+	stop := context.AfterFunc(ctx, func() { c.dead.Store(true); _ = c.nc.Close() })
 	defer stop()
 	ft, p, err := fn()
 	var he *HostError
 	if err != nil && !errors.As(err, &he) {
+		c.dead.Store(true)
 		_ = c.nc.Close()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return 0, nil, ctxErr //nolint:wrapcheck // the caller wraps with the operation

@@ -10,22 +10,29 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/docs/guide"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/alerts"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/measure"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit"
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
+	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
 )
@@ -37,6 +44,14 @@ const (
 	// linkEvery is the backstop for the readers, the pair keyboxes and the
 	// mailbox subscriptions: no event fires after promote_pairing.
 	linkEvery = time.Minute
+	// linkSoonEvery and linkSoonFor: after a link change (a phone linked or
+	// unlinked) the link check runs every linkSoonEvery until every linked
+	// phone holds the hub in a slot, for at most linkSoonFor, so a phone
+	// promoted after its link (promote_pairing sends the hub no event) is a
+	// reader, and in live mode ends the pause, within seconds instead of at
+	// the next linkEvery.
+	linkSoonEvery = 2 * time.Second
+	linkSoonFor   = 2 * time.Minute
 	// houseEvery is the housekeeping backstop between daemon cycles: link
 	// sweep, epoch rotation, the daily hygiene (which gates itself).
 	houseEvery = 10 * time.Minute
@@ -45,8 +60,9 @@ const (
 )
 
 // assetDirName is the sealer's own asset directory inside the hub dir: the
-// relay transport uploads only files under it.
-const assetDirName = "assets"
+// relay transport uploads only files under it, and the CloudKit bridge reads
+// assets only from it (one constant for both).
+const assetDirName = cloudkit.AssetsDirName
 
 // workbenchOnly is what MobileSync = workbench_only keeps (the Swift
 // SliceKind.workbenchOnly): the sources' workbench kinds and the hub's own
@@ -63,9 +79,10 @@ func workbenchOnly(k slices.Kind) bool {
 	return false
 }
 
-// readersSetter is the hosted relay's set_hub_readers for the linked phones.
+// readersSetter is the hosted relay's set_hub_readers for the linked phones
+// held in a slot by the account state given.
 type readersSetter interface {
-	SetLinkedReaders(ctx context.Context, linked []string) error
+	SetReadersFrom(ctx context.Context, st *relayv1.AccountState, linked []string) error
 }
 
 // zoneWatcher is the hosted relay's subscription of a zone added after
@@ -74,16 +91,13 @@ type zoneWatcher interface {
 	WatchZone(ctx context.Context, zone string) error
 }
 
-// admission is the hosted relay's view of whether the hub is in a paying
-// phone's slot.
-type admission interface{ Admitted() bool }
-
 // hubRuntime is the hub while it runs: the identity it borrows to the
 // keyring, the transport, the link center, the processor and the publisher,
 // one worker goroutine and the publisher's.
 type hubRuntime struct {
 	sup     *supervisor
 	st      *state.Store
+	lat     *measure.Recorder // the content-free latency samples (RC §10)
 	mode    string
 	name    string
 	id      identity.Identity
@@ -92,24 +106,81 @@ type hubRuntime struct {
 	relayID string
 	data    string
 	center  *link.Center
-	proc    *actions.Processor
+	proc    *actions.Processor // nil on a desktop host: the switcher's (processor)
+	// A desktop host's two transports (phase 3 Task 21): rel the hosted
+	// relay (nil without a relay origin), ck the CloudKit bridge client, sw
+	// the switch between them, whose Front() is tr; bridge supervises the
+	// bridge process (nil: this build has none). All nil elsewhere.
+	rel, ck transport.Transport
+	sw      *switcher.Switcher
+	bridge  *cloudkit.Supervisor
+	// bridgeStop ends the bridge's supervisor and waits for it (stop calls
+	// it after the policy wipe, which may need the bridge).
+	bridgeStop func()
+	// relDown: the relay is not connected yet (a desktop host connects it
+	// in the link upkeep, so an unreachable relay never holds CloudKit up).
+	relDown bool
 	pub     *slices.Publisher
 	wiring  *wiring // nil without a database
+	// paying is the relay-only rules' watch (nil when they are off), and
+	// paused is true while no phone pays (guarded by mu).
+	paying *PayingWatch
+	paused bool
+	// acct is the account-state door (nil without one); unvouched is true
+	// while the relay has not vouched for the hub (mu); gateHeld is the
+	// hold applyGate last applied (gateMu, which orders holds and releases).
+	acct      *accountReader
+	unvouched bool
+	gateMu    sync.Mutex
+	gateHeld  bool
+	// health is the relay's status indicators (relayhealth.go; nil
+	// without a relay).
+	health *relayHealth
 
+	// ctx is the hub's own context (cancelled by stop): the CloudKit share
+	// calls an owner request starts run under it (cloudkit_runtime.go).
+	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	watched map[string]bool // zones subscribed (worker only)
 	// subRetry backs off a zone whose subscription the relay refused, and
-	// admitted is the admission the last link upkeep saw (worker only).
-	subRetry map[string]*subRetry
-	admitted bool
+	// wasVouched is the vouch state the last link upkeep saw (worker only).
+	subRetry   map[string]*subRetry
+	wasVouched bool
+	// lastPass is when the last mailbox pass started (worker only): the
+	// CloudKit cadence counts from it (cloudkit_runtime.go).
+	lastPass time.Time
 
 	passKick, linkKick, houseKick chan struct{}
+	// soonKick opens the link check's short-retry window (linkSoonFor).
+	soonKick chan struct{}
 
 	mu          sync.Mutex
 	unreachable bool
 	lastRelay   time.Time
 	lastTouch   time.Time // a phone's last write the hub saw (the active poll)
+	// lastContact: this run's last admitted phone contact (the processors'
+	// Config.Contact; the keep-awake input, desktop_facts.go).
+	lastContact time.Time
+	// storedContact: the last phone contact hub_meta holds (desktop_facts.go).
+	storedContact time.Time
+	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
+	ckAccount transport.Account
+
+	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
+	// cannot be used, ckPubHeld while that also holds the publisher and the
+	// worker's pass (CloudKit active; read lock-free by pass and the status).
+	ckHoldMu  sync.Mutex
+	ckHeld    bool
+	ckPubHeld atomic.Bool
+	// ckResetPending: a CloudKit reset whose wipe failed keeps CloudKit held
+	// until a retry succeeds; ckResetAccount: it was an account change.
+	// Worker goroutine only (icloud.go).
+	ckResetPending bool
+	ckResetAccount bool
+
+	// push is the work-alert pusher (nil without a relay that sends them).
+	push *alerts.Pusher
 }
 
 // loadIdentity reads the hub identity from the hub dir's 0600 file,
@@ -146,12 +217,11 @@ func (o Options) relayTransport(ctx context.Context, id identity.Identity, st *s
 	if err := os.MkdirAll(assets, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: creating the asset dir: %w", ErrStartFailed, err)
 	}
-	var opts []client.Option
-	if o.httpClient != nil {
-		opts = append(opts, client.WithHTTPClient(o.httpClient))
-	}
-	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, opts...), relay.Options{
-		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient,
+	// The client's HTTP is watched for its WebSocket connects (the alert
+	// pushes waiting after UNAVAILABLE wake on one).
+	connects := relay.WatchConnects(o.httpClient)
+	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, client.WithHTTPClient(connects.HTTPClient())), relay.Options{
+		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient, Connects: connects,
 	})
 	if len(zones) == 0 {
 		return t, nil
@@ -181,20 +251,19 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if err := ensureEnabledAt(st, o.Clock()); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
-	id, err := loadIdentity(o.Dir)
+	id, err := o.hubIdentity(st)
 	if err != nil {
 		return nil, err
 	}
 	h := &hubRuntime{
 		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{}, subRetry: map[string]*subRetry{},
 		passKick: make(chan struct{}, 1), linkKick: make(chan struct{}, 1), houseKick: make(chan struct{}, 1),
+		soonKick: make(chan struct{}, 1),
 	}
 	ok := false
 	defer func() {
 		if !ok {
-			if h.tr != nil {
-				closeTransport(h.tr)
-			}
+			h.closeTransports()
 			if h.kr != nil {
 				h.kr.Wipe()
 			}
@@ -216,10 +285,27 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
-	if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
+	if o.Desktop != nil {
+		if err := h.desktopTransports(ctx, o); err != nil {
+			return nil, err
+		}
+	} else if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
-	if _, ok := h.tr.(zoneWatcher); !ok {
+	h.health = newRelayHealth(st, o.Clock, h.relayID, h.relayT())
+	if as, ok := h.relayT().(accountStater); ok {
+		h.acct = &accountReader{read: as.AccountState, vouched: h.relayVouched, clock: o.Clock}
+	}
+	if o.RelayOnlyRules {
+		if h.acct == nil {
+			return nil, fmt.Errorf("%w: the transport has no account state", ErrStartFailed)
+		}
+		h.paying = NewPayingWatch(h.readAccount)
+		if o.payTimer != nil {
+			h.paying.timer = o.payTimer
+		}
+	}
+	if _, ok := h.relayT().(zoneWatcher); !ok {
 		// A transport that sends every zone's events (memfake).
 		for _, z := range zones {
 			h.watched[z] = true
@@ -228,30 +314,53 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 
 	sealer := secure.NewSealer(h.kr)
 	opener := secure.NewOpener(h.kr, h.kr)
+	h.lat = measure.New(st, o.Clock)
 	var pub *slices.Publisher
 	h.center = link.NewCenter(link.Config{
-		Store: st, Keys: h.kr, Opener: opener, Host: link.HeadlessHost(name, authPub), Clock: o.Clock,
+		Store: st, Keys: h.kr, Opener: opener, Host: hostInfo(o, name, authPub), Clock: o.Clock,
 		Publish: func(kinds ...string) {
 			pub.PublishSoon(toKinds(kinds)...)
+			h.devicesChanged(kinds)
 			h.kick(h.linkKick)
+			h.kick(h.soonKick)
+			if h.paying != nil {
+				// A link changed: a newly promoted phone may pay.
+				h.paying.Recheck()
+			}
 		},
 	})
+	// PROJ-16 (OD-2): a phone asking to type asks the owner through
+	// Desktop's macOS notice; a headless host has no watch stream.
+	h.center.OnTypingRequest(h.typingRequested)
 	d := actions.NewDispatcher()
 	actions.RegisterProbe(d)
 	if o.Register != nil {
 		o.Register(d)
 	}
-	h.proc = actions.NewProcessor(actions.Config{
+	ac := actions.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
-		HubRelayID: h.relayID, Clock: o.Clock,
-		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
-	})
-	sweepTemps(o)
+		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
+		Nudge: func(kinds []string) { pub.PublishNow(toKinds(kinds)...) },
+		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos, Contact: h.noteContact, Latency: h.lat,
+	}
+	if o.Desktop != nil {
+		// One processor per transport, the switcher their Switch; the
+		// publisher writes through its Front (the active transport).
+		if err := h.newSwitcher(ac); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
+		}
+	} else {
+		h.proc = actions.NewProcessor(ac)
+	}
+	sweepTemps(o, st)
 	if o.DB != nil {
 		// Registered after the processor exists: the handlers' start may
 		// already late-echo a held line it ends. No pass runs before the
 		// worker starts, so the table is complete by the first dispatch.
-		if h.wiring, err = h.buildWiring(o, st, mode, d, h.proc.LateEcho); err != nil {
+		lateEcho := func(ctx context.Context, r actions.Request, out actions.Outcome) error {
+			return h.processor().LateEcho(ctx, r, out)
+		}
+		if h.wiring, err = h.buildWiring(o, st, mode, d, lateEcho); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 		}
 		// PROJ-16: a phone whose typing is taken away fails its held lines.
@@ -273,27 +382,52 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		}
 		srcs = kept
 	}
-	pub = slices.NewPublisher(slices.Config{
+	h.newPusher(sealer)
+	pc := slices.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: srcs, Clock: o.Clock,
+		OnError: h.observe, Latency: h.lat,
 		Linked: func() (bool, error) {
 			devices, err := st.Devices()
 			return len(devices) > 0, err
 		},
-	})
+	}
+	h.withAlerts(&pc)
+	pub = slices.NewPublisher(pc)
 	h.pub = pub
+	if h.sw != nil {
+		h.sw.SetPublisher(pub)
+	}
+	if h.paying != nil {
+		// Paused until the first account state shows a paying phone.
+		h.paused = true
+		log.Printf("hub: relay-only rules on: paused until the account state shows a paying phone")
+	}
+	if a, ok := h.relayT().(relayAdmission); ok && h.acct != nil {
+		// The account state Connect read takes the one door: it stamps the
+		// phones it lists and sets the vouch state.
+		st := a.LastAccountState()
+		h.acct.seed(st)
+		h.followAccount(st)
+	}
+	h.applyGate()
 
 	hctx, cancel := context.WithCancel(context.Background())
-	h.cancel = cancel
+	h.ctx, h.cancel = hctx, cancel
 	if h.wiring != nil {
 		h.wiring.openWatch(ctx, o.DB, h.touched, o.Clock)
 		// Seeded before the publisher's start cycle reads the timeline.
 		h.startWiring(hctx, h.wiring)
 	}
+	h.startPusher(hctx)
 	h.trace("publisher")
-	h.wg.Add(3)
+	h.wg.Add(4)
 	go func() {
 		defer h.wg.Done()
 		_ = pub.Run(hctx)
+	}()
+	go func() {
+		defer h.wg.Done()
+		h.measureLoop(hctx)
 	}()
 	go func() {
 		defer h.wg.Done()
@@ -303,11 +437,49 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		defer h.wg.Done()
 		h.work(hctx)
 	}()
+	if h.paying != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			_ = h.paying.Run(hctx, h.setPaying)
+		}()
+	}
+	h.startDesktop(hctx)
+	h.loadPhoneContact()
 	h.kick(h.passKick)
 	h.kick(h.linkKick)
 	h.kick(h.houseKick)
 	ok = true
 	return h, nil
+}
+
+// measureLoop writes the latency samples once a second and prunes them to
+// the window and the row cap once a minute, then writes what is left when
+// the hub stops. A failure is logged by class and the samples it held are
+// dropped (timings, never retried).
+func (h *hubRuntime) measureLoop(ctx context.Context) {
+	flush := time.NewTicker(time.Second)
+	defer flush.Stop()
+	prune := time.NewTicker(time.Minute)
+	defer prune.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if err := h.lat.Flush(); err != nil {
+				log.Printf("hub: writing latency samples failed (%s)", errClass(err))
+			}
+			return
+		case <-flush.C:
+			if err := h.lat.Flush(); err != nil {
+				log.Printf("hub: writing latency samples failed (%s)", errClass(err))
+			}
+		case <-prune.C:
+			if err := h.lat.Prune(); err != nil {
+				log.Printf("hub: pruning latency samples failed (%s)", errClass(err))
+			}
+			h.pruneAlertPushes()
+		}
+	}
 }
 
 // ensureEnabledAt stamps hub_meta.enabled_at once, as the Swift hub does
@@ -322,7 +494,7 @@ func ensureEnabledAt(st *state.Store, now time.Time) error {
 // heartbeat is the heartbeat source's facts.
 func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFacts {
 	f := slices.HeartbeatFacts{
-		HubID: h.kr.HubID().String(), MacName: name, AppVersion: guide.Version, Flavor: wire.FlavorDefault,
+		HubID: h.kr.HubID().String(), MacName: name, AppVersion: guide.Version, Flavor: wire.FlavorOf(BuildFlavor),
 		Clock: h.sup.o.Clock,
 		LastPublishAt: func() (time.Time, bool) {
 			if h.pub == nil {
@@ -334,6 +506,14 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			return h.lastRelay, !h.lastRelay.IsZero()
+		},
+		Recordings: func() bool {
+			on, _, err := st.Recordings()
+			if err != nil {
+				log.Printf("hub: recording switch unreadable (%s): heartbeat says off", errClass(err))
+				return false
+			}
+			return on
 		},
 	}
 	if raw, ok, err := st.Meta(state.MetaEnabledAt); err == nil && ok {
@@ -349,6 +529,9 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 
 // publishSoon marks kinds dirty on the publisher (none before it is built).
 func (h *hubRuntime) publishSoon(kinds ...slices.Kind) {
+	if h.sup != nil && h.sup.o.published != nil {
+		h.sup.o.published(kinds)
+	}
 	if h.pub != nil {
 		h.pub.PublishSoon(kinds...)
 	}
@@ -364,6 +547,16 @@ func (h *hubRuntime) phoneLinked() bool {
 func (h *hubRuntime) touch() {
 	h.mu.Lock()
 	h.lastTouch = h.sup.o.Clock()
+	h.mu.Unlock()
+}
+
+// noteContact records an admitted phone contact at at; an earlier time never
+// lowers the last one.
+func (h *hubRuntime) noteContact(at time.Time) {
+	h.mu.Lock()
+	if at.After(h.lastContact) {
+		h.lastContact = at
+	}
 	h.mu.Unlock()
 }
 
@@ -415,16 +608,64 @@ func (h *hubRuntime) kick(c chan struct{}) {
 
 // reason is the running hub's status reason.
 func (h *hubRuntime) reason() string {
+	if h.iCloudPaused() {
+		return ReasonNoICloud
+	}
 	h.mu.Lock()
 	unreachable := h.unreachable
 	h.mu.Unlock()
 	if unreachable {
 		return ReasonRelayUnreachable
 	}
-	if a, ok := h.tr.(admission); ok && !a.Admitted() {
+	if h.isUnvouched() {
+		return h.vouchReason()
+	}
+	if h.isPaused() {
+		return ReasonNeedsRelay
+	}
+	if a, ok := h.tr.(relayAdmission); ok && !a.Admitted() {
 		return ReasonNotAdmitted
 	}
 	return ""
+}
+
+// observe hands a relay write's error to the gate (HUB_NOT_VOUCHED holds
+// the hub) and to the PayingWatch (ENTITLEMENT_INACTIVE re-reads the
+// account state).
+func (h *hubRuntime) observe(err error) {
+	h.noteNotVouched(err)
+	if h.paying != nil {
+		h.paying.Observe(transport.Event{}, err)
+	}
+}
+
+// isPaused: the relay-only rules hold the hub paused (no paying phone).
+func (h *hubRuntime) isPaused() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.paused
+}
+
+// setPaying follows the PayingWatch (spec §7.3): no paying phone pauses the
+// publisher and the processor, keeping every queue and the sidecar; a paying
+// phone again resumes them with one full diff and one mailbox pass, which
+// writes the queued echoes and controls.
+func (h *hubRuntime) setPaying(paying bool) {
+	h.mu.Lock()
+	was := h.paused
+	h.paused = !paying
+	changed := was != h.paused
+	h.mu.Unlock()
+	if !changed {
+		return
+	}
+	if paying {
+		log.Printf("hub: resumed (a paying phone)")
+	} else {
+		log.Printf("hub: paused (%s)", ReasonNeedsRelay)
+	}
+	h.applyGate()
+	h.sup.poke()
 }
 
 func (h *hubRuntime) setUnreachable(v bool) {
@@ -440,26 +681,39 @@ func (h *hubRuntime) setUnreachable(v bool) {
 // work is the hub's one worker: transport events, mailbox passes, link
 // upkeep and housekeeping, one at a time.
 func (h *hubRuntime) work(ctx context.Context) {
-	passes := time.NewTicker(h.sup.o.passEvery)
-	defer passes.Stop()
+	h.cloudKitStart(ctx)
+	evA, evB := h.events()
+	passC, stopPasses := h.sup.o.passTicker(h.passTickEvery())
+	defer stopPasses()
 	links := time.NewTicker(h.sup.o.linkEvery)
 	defer links.Stop()
 	house := time.NewTicker(houseEvery)
 	defer house.Stop()
+	soon := &soonWindow{stop: func() {}}
+	defer func() { soon.stop() }()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case ev := <-h.tr.Events():
+		case ev := <-evA:
+			h.onEvent(ctx, ev)
+		case ev := <-evB:
 			h.onEvent(ctx, ev)
 		case <-h.passKick:
 			h.pass(ctx)
-		case <-passes.C:
-			h.pass(ctx)
+		case <-passC:
+			h.passTick(ctx)
 		case <-h.linkKick:
 			h.linkUpkeep(ctx)
 		case <-links.C:
 			h.linkUpkeep(ctx)
+		case <-h.soonKick:
+			soon.until, soon.checked = h.sup.o.Clock().Add(linkSoonFor), false
+			if soon.c == nil {
+				soon.c, soon.stop = h.sup.o.soonTimer(linkSoonEvery)
+			}
+		case <-soon.c:
+			h.soonTick(ctx, soon)
 		case <-h.houseKick:
 			h.housekeeping(ctx)
 		case <-house.C:
@@ -470,6 +724,13 @@ func (h *hubRuntime) work(ctx context.Context) {
 
 // onEvent handles one transport event.
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
+	if h.cloudKitEvent(ctx, ev) {
+		return
+	}
+	h.noteNotVouched(ev.Err)
+	if h.paying != nil {
+		h.paying.Observe(ev, nil)
+	}
 	switch {
 	case ev.Err != nil && ev.Zone != "":
 		// The relay dropped this zone's subscription (refused on a
@@ -494,11 +755,24 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		switch {
 		case strings.HasPrefix(ev.Zone, transport.PairZone("")):
 			h.pairing(ctx, strings.TrimPrefix(ev.Zone, transport.PairZone("")))
-		case strings.HasPrefix(ev.Zone, transport.MailboxZone(h.relayID, "")):
+		case h.isMailbox(ev.Zone):
+			if h.passEvent(ctx, ev) {
+				break // only the hub's own writes: no phone wrote, nothing to poll
+			}
 			h.touch()
-			h.pass(ctx)
+			if h.sw != nil {
+				// The other transport's mailbox may have news too (a
+				// switch back, an epoch_ack): its poll runs now.
+				h.sw.Kick()
+			}
 		}
 	}
+}
+
+// isMailbox: zone is a phone's mailbox — relay/<relay id>/<phone>, or the
+// shared mailbox relay/<relay id>/* every phone has on CloudKit.
+func (h *hubRuntime) isMailbox(zone string) bool {
+	return strings.HasPrefix(zone, transport.MailboxZone(h.relayID, ""))
 }
 
 // onControl handles a server control event.
@@ -509,6 +783,14 @@ func (h *hubRuntime) onControl(ctx context.Context, c transport.Control) {
 	case transport.EntitlementExpired, transport.SlotRemoved, transport.SubscriptionMoved:
 		log.Printf("hub: relay control %d: readers synced again", c.Kind)
 		h.kick(h.linkKick)
+		if h.sw != nil {
+			// A phone's relay entitlement lapsed (sim rule 16).
+			if err := h.sw.OnControl(ctx, c); err != nil {
+				log.Printf("hub: relay control %d not taken by the switch (%s)", c.Kind, errClass(err))
+			}
+		}
+	case transport.SlotAdded:
+		h.onSlotAdded()
 	case transport.SessionExpired:
 		// The relay client signs in again by itself.
 	}
@@ -518,20 +800,63 @@ func (h *hubRuntime) onControl(ctx context.Context, c transport.Control) {
 func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := h.center.OnPairingOpened(ctx, h.tr, slot); err != nil {
+	rt := h.relayT()
+	if rt == nil {
+		return
+	}
+	if err := h.center.OnPairingOpened(ctx, rt, slot); err != nil {
 		log.Printf("hub: pairing slot read failed (%s)", errClass(err))
 	}
 }
 
 // pass is one processor pass, run again at once while it left records.
 func (h *hubRuntime) pass(ctx context.Context) {
+	h.runPass(ctx, nil)
+}
+
+// passEvent is the pass a mailbox event asks for: on the hosted relay only
+// that mailbox, read from the event (actions.Processor.PassEvent). It is not
+// the backstop: lastPass stays, so the timer's pass over every mailbox
+// still comes. own reports an event that stood only for the hub's own
+// writes (actions.PassReport.OwnEcho): nothing was read.
+func (h *hubRuntime) passEvent(ctx context.Context, ev transport.Event) (own bool) {
+	return h.runPass(ctx, &ev)
+}
+
+// runPass runs a mailbox pass (PassEvent for ev when set), again while the
+// batch limit left records, up to 10 times, then once more on a kick.
+func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) (ownEcho bool) {
+	if h.ckAccountUnread() {
+		h.refreshCloudKitAccount(ctx) // the bridge may have come up since start
+	}
+	if h.isHeld() || h.iCloudPaused() {
+		return false
+	}
+	if h.sup.o.onPass != nil {
+		h.sup.o.onPass()
+	}
+	if ev == nil || !h.processor().ReadsEvents() {
+		h.lastPass = h.sup.o.Clock()
+	}
+	defer h.sweepShares(ctx)
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
-		rep, err := h.proc.Pass(pctx)
+		var rep actions.PassReport
+		var err error
+		if ev != nil {
+			rep, err = h.processor().PassEvent(pctx, *ev)
+			ev = nil // what the batch limit left: a full pass
+		} else {
+			rep, err = h.processor().Pass(pctx)
+		}
 		cancel()
 		if err != nil {
+			h.observe(err)
 			log.Printf("hub: mailbox pass failed (%s)", errClass(err))
-			return
+			return false
+		}
+		if rep.OwnEcho {
+			return true
 		}
 		h.mu.Lock()
 		h.lastRelay = h.sup.o.Clock()
@@ -540,10 +865,11 @@ func (h *hubRuntime) pass(ctx context.Context) {
 		}
 		h.mu.Unlock()
 		if rep.Remaining == 0 {
-			return
+			return false
 		}
 	}
 	h.kick(h.passKick)
+	return false
 }
 
 // linkUpkeep follows a link change (and backs it up on a timer): the pair
@@ -552,19 +878,128 @@ func (h *hubRuntime) pass(ctx context.Context) {
 func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := h.center.PublishPairKeyboxes(ctx, h.tr); err != nil {
-		log.Printf("hub: pair keyboxes not written (%s)", errClass(err))
-	}
-	if rs, ok := h.tr.(readersSetter); ok {
-		if err := h.center.SyncReaders(ctx, rs.SetLinkedReaders); err != nil {
-			log.Printf("hub: readers not synced (%s)", errClass(err))
+	h.connectRelay(ctx)
+	rt := h.relayT()
+	if rt != nil {
+		if err := h.center.PublishPairKeyboxes(ctx, rt); err != nil {
+			h.observe(err)
+			log.Printf("hub: pair keyboxes not written (%s)", errClass(err))
 		}
 	}
-	if zw, ok := h.tr.(zoneWatcher); ok {
+	vouched := h.relayVouched()
+	h.syncReaders(ctx, rt, vouched)
+	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
 		h.watchZones(ctx, zw)
+	}
+	if !vouched && h.acct != nil && h.phoneLinked() {
+		// A linked phone and no slot: the hub expects one. SLOT_ADDED is
+		// best effort, so this backstop polls (at most every unvouchedPoll).
+		if _, err := h.readAccount(ctx); err != nil {
+			log.Printf("hub: reading the account state failed (%s)", errClass(err))
+		}
 	}
 	h.pass(ctx)
 	h.sup.poke()
+}
+
+// syncReaders sets the relay's hub readers to the linked phones the account
+// state holds in a slot (link upkeep, and once before the first publish).
+func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vouched bool) {
+	if rs, ok := rt.(readersSetter); ok && vouched && h.acct != nil {
+		// set_hub_readers is closed to an unvouched hub; the account state
+		// it is computed from comes through the one door.
+		set := func(ctx context.Context, linked []string) error {
+			st, err := h.readAccount(ctx)
+			if err != nil {
+				return fmt.Errorf("hub: readers: account state: %w", err)
+			}
+			return rs.SetReadersFrom(ctx, st, linked)
+		}
+		if err := h.center.SyncReaders(ctx, set); err != nil {
+			h.noteNotVouched(err)
+			log.Printf("hub: readers not synced (%s)", errClass(err))
+		}
+	}
+}
+
+// soonWindow is the link check's short-retry window after a link change
+// (worker only): its timer, its end, and the slotted set the last link
+// check of the window saw.
+type soonWindow struct {
+	c       <-chan time.Time
+	stop    func()
+	until   time.Time
+	checked bool   // a link check ran in this window
+	slotted string // the slotted set at that check
+}
+
+// soonTick is one tick of the short-retry window. Per tick it costs one
+// get_account_state; while the hub is unvouched, at most one per
+// unvouchedPoll (the relay's limit: accountReader answers the ticks between
+// from the last read). The full link check (keyboxes, readers,
+// subscriptions, a pass) runs only on the window's first tick and when the slotted set
+// changed since the last one, so a phone that is never promoted costs one
+// read every linkSoonEvery for linkSoonFor, nothing more. The window ends
+// once every linked phone holds the hub in a slot, or at its end; either
+// way the PayingWatch re-reads then, so a headless hub paused for want of
+// a paying phone resumes as soon as one is there.
+func (h *hubRuntime) soonTick(ctx context.Context, w *soonWindow) {
+	w.stop()
+	w.c, w.stop = nil, func() {}
+	settled, slotted, read := h.slotState(ctx)
+	if read && (!w.checked || slotted != w.slotted) {
+		h.linkUpkeep(ctx)
+		w.checked, w.slotted = true, slotted
+	}
+	if read && settled {
+		h.recheckPaying()
+		return
+	}
+	if h.sup.o.Clock().Before(w.until) {
+		w.c, w.stop = h.sup.o.soonTimer(linkSoonEvery)
+		return
+	}
+	h.recheckPaying() // the window ran out unsettled: one more read
+}
+
+func (h *hubRuntime) recheckPaying() {
+	if h.paying != nil {
+		h.paying.Recheck()
+	}
+}
+
+// slotState reads the account state once: settled when every linked phone
+// with a relay id holds the hub in a slot, slotted the sorted set of the
+// phones that do (a key), read false when it could not be read. A
+// transport with no account state has nothing to wait for (settled).
+func (h *hubRuntime) slotState(ctx context.Context) (settled bool, slotted string, read bool) {
+	if h.acct == nil {
+		return true, "", true
+	}
+	devices, err := h.st.Devices()
+	if err != nil {
+		return false, "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	st, err := h.readAccount(ctx) // throttled while unvouched
+	cancel()
+	if err != nil {
+		return false, "", false
+	}
+	held := map[string]bool{}
+	ids := make([]string, 0, len(st.GetPhones()))
+	for _, p := range st.GetPhones() {
+		held[p.GetPhoneDeviceId()] = true
+		ids = append(ids, p.GetPhoneDeviceId())
+	}
+	sort.Strings(ids)
+	settled = true
+	for _, d := range devices {
+		if d.RelayDeviceID != "" && !held[d.RelayDeviceID] {
+			settled = false
+		}
+	}
+	return settled, strings.Join(ids, ","), true
 }
 
 // subRetry is one refused zone subscription: how often it failed in a row
@@ -592,16 +1027,16 @@ func zoneKind(zone, data string) string {
 // watchZones subscribes the hub's zones not subscribed yet. The relay
 // refuses them (FORBIDDEN) until a phone holds the hub in a slot: a refused
 // zone waits linkEvery, doubling up to maxSubBackoff, and is logged once
-// until it succeeds; the hub becoming admitted (promote_pairing, which
-// sends the hub no event) clears the waits. A subscription that takes means
+// until it succeeds; the hub becoming vouched (SLOT_ADDED, or a poll that
+// sees a slot) clears the waits. A subscription that takes means
 // the relay is reachable.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
-	if a, ok := h.tr.(admission); ok {
-		admitted := a.Admitted()
-		if admitted && !h.admitted {
+	if _, ok := h.relayT().(relayAdmission); ok {
+		v := h.relayVouched()
+		if v && !h.wasVouched {
 			clear(h.subRetry)
 		}
-		h.admitted = admitted
+		h.wasVouched = v
 	}
 	zones, err := h.zones()
 	if err != nil {
@@ -627,6 +1062,11 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			r.next = now.Add(min(wait, maxSubBackoff))
 			continue
 		}
+		if r != nil && h.paying != nil {
+			// The relay takes a zone it refused: a phone holds the hub in
+			// a slot now, and may pay.
+			h.paying.Recheck()
+		}
 		delete(h.subRetry, z)
 		h.watched[z] = true
 		h.setUnreachable(false)
@@ -636,6 +1076,9 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 // housekeeping is the per-cycle upkeep: expired link requests, the epoch's
 // age and seq cap, and the daily hygiene (CloudKit sweep, ledger prune).
 func (h *hubRuntime) housekeeping(ctx context.Context) {
+	h.retryCloudKitReset(ctx)
+	h.refreshCloudKitAccount(ctx)
+	h.savePhoneContact()
 	if err := h.center.Sweep(); err != nil {
 		log.Printf("hub: link sweep failed (%s)", errClass(err))
 	}
@@ -646,21 +1089,30 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	if rotated {
 		h.pub.PublishSoon(slices.AllKinds...)
 	}
+	// Relay sim rule 14: a retired epoch's keys go once every phone acked a
+	// newer one and no held action is sealed in it, 7 days at most.
+	if err := h.kr.RetireOld(); err != nil {
+		log.Printf("hub: retiring old epochs failed (%s)", errClass(err))
+	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if h.mode == policy.MobileWorkbenchOnly {
+	if h.mode == policy.MobileWorkbenchOnly && !h.isHeld() {
 		// What the switch to workbench_only failed to delete: no source
-		// publishes those kinds now, so whatever is left is retried here.
+		// publishes those kinds now, so whatever is left is retried here
+		// (not while paused or unvouched: then the hub deletes nothing).
 		if left, err := publishedRecords(h.st, workbenchOnly); err != nil {
 			log.Printf("hub: reading what was published failed (%s)", errClass(err))
 		} else {
 			wipe(ctx, h.st, h.tr, h.data, left)
 		}
 	}
-	if rep, err := h.proc.Hygiene(ctx); err != nil {
-		log.Printf("hub: hygiene failed (%s)", errClass(err))
-	} else if rep.Ran {
-		log.Printf("hub: hygiene: %d mailbox records deleted, %d ledger rows pruned", rep.Deleted, rep.Pruned)
+	pruneRecordingJobs(h.sup.o, h.st)
+	for _, p := range h.processors() {
+		if rep, err := p.Hygiene(ctx); err != nil {
+			log.Printf("hub: hygiene failed (%s)", errClass(err))
+		} else if rep.Ran {
+			log.Printf("hub: hygiene: %d mailbox records deleted, %d ledger rows pruned", rep.Deleted, rep.Pruned)
+		}
 	}
 	h.sup.poke()
 }
@@ -684,17 +1136,25 @@ func (h *hubRuntime) forwardPairEvents(ctx context.Context) {
 func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 	h.cancel()
 	h.wg.Wait()
+	h.stopPusher()
 	h.wiring.close()
-	if keep != nil {
+	if keep != nil && !h.vouched() {
+		// The data zone is closed to an unvouched hub: the records stay in
+		// slice_state, so the next start (or the stopped wipe) retries.
+		log.Printf("hub: not vouched on the relay: published records not deleted yet")
+	} else if keep != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 		if published, err := publishedRecords(h.st, keep); err != nil {
 			log.Printf("hub: reading what was published failed (%s)", errClass(err))
 		} else {
+			// While the bridge still runs: it is stopped after the wipe.
+			wipeOthers(ctx, h.usedOthers(), h.data, published)
 			wipe(ctx, h.st, h.tr, h.data, published)
 		}
 		cancel()
 	}
-	closeTransport(h.tr)
+	h.stopBridge()
+	h.closeTransports()
 	h.kr.Wipe()
 	h.id.Zero()
 }
@@ -758,4 +1218,30 @@ func wipe(ctx context.Context, st *state.Store, tr transport.Transport, zone str
 		return
 	}
 	log.Printf("hub: %d published records deleted from the data zone", len(gone))
+}
+
+// devicesChanged tells Desktop's watch that the linked phones changed (a
+// link, an unlink from either side, a grant): kinds is what a link-center
+// change touched, and only device_grant counts. Desktop reads `hub status`
+// again (its phones count, Learn's "iPhone paired").
+func (h *hubRuntime) devicesChanged(kinds []string) {
+	if h.sup == nil {
+		return
+	}
+	for _, k := range kinds {
+		if k == link.KindDeviceGrant {
+			h.sup.notifyDesktop(ControlAnswer{Event: EventDevicesChanged, OK: true})
+			return
+		}
+	}
+}
+
+// typingRequested tells Desktop's watch that a linked phone newly asks to
+// type (PROJ-16, OD-2): its device id and display name, nothing else.
+// Desktop asks the owner with a macOS notice; a headless host has no watch.
+func (h *hubRuntime) typingRequested(device, name string) {
+	if h.sup == nil {
+		return
+	}
+	h.sup.notifyDesktop(ControlAnswer{Event: EventTypingRequest, OK: true, DeviceID: device, Name: name})
 }

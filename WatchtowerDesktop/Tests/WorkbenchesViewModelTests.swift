@@ -768,21 +768,28 @@ final class WorkbenchesViewModelTests: XCTestCase {
     }
 
     /// A created and installed workbench gets one "Workbench setup" claude row,
-    /// started fresh with its own session id and the first-run prompt.
+    /// started fresh with its own session id and the first-run prompt. Since
+    /// Go hub 3 Task 8 Go starts it (`workbench session start`, the prompt on
+    /// stdin; its argv is pinned by Go's launch fixtures) and the pane attaches
+    /// to Go's run: the same session, running and focused, as before.
     func testInstalledProjectStartsTheSetupSessionFresh() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-create-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let id = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folder.path) }
-        let runner = ScriptedCLIRunner(results: [
+        let scripted = ScriptedCLIRunner(results: [
             .success(createdJSON(id)),
             .success(Data()),
             .success(Data(#"{"skill":"installed","hook":true,"mcp":true}"#.utf8))
         ])
+        let runner = ScriptedSessionStartRunner(pool: pool, base: scripted)
         let appState = AppState.isolated()
         let process = FakeTerminalSession(pid: 0)
         appState.terminalCenter.makeProcess = { process }
         appState.terminalCenter.shell = { "/bin/zsh" }
+        let host = await FakeGoSessionHost.install(on: appState.terminalCenter)
+        defer { host.detachAll(appState.terminalCenter) }
+        runner.onStarted = { id in await MainActor.run { host.launch(row: id) } }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()
@@ -800,9 +807,11 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertTrue(TerminalLaunch.isValidSessionID(uuid))
         XCTAssertEqual(appState.terminalCenter.states[row.id], .running)
         XCTAssertEqual(appState.terminalCenter.focusOrder, [row.id])
-        XCTAssertEqual(process.launches.last?.args.last,
-                       "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
-        XCTAssertEqual(process.launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt)")
+        let start = try XCTUnwrap(runner.invocations.first { $0.starts(with: ["workbench", "session", "start"]) })
+        XCTAssertEqual(start, ["workbench", "session", "start", "--workbench", String(id), "--agent", "claude",
+                               "--place", "auto", "--title", TerminalSessionNaming.setupTitle, "--brief-stdin", "--json"])
+        XCTAssertEqual(runner.stdinInputs.last.flatMap { String(bytes: $0, encoding: .utf8) }, TerminalLaunch.firstRunPrompt)
+        XCTAssertTrue(process.launches.isEmpty, "Go launched it; nothing launches from Swift")
         XCTAssertEqual(vm.terminalSessions[id]?.map(\.id), [row.id])
     }
 

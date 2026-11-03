@@ -67,5 +67,5 @@ func (p *Processor) legacyOwnReceived(ctx context.Context, b mailbox, rec transp
 		return err
 	}
 	ps.report.Read++
-	return p.apply(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, o, a, 0, plain, ps)
+	return p.apply(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, o, a, 0, plain, ps)
 }
