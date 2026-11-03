@@ -980,10 +980,12 @@ func TestAFailedLinkCloseIsRetriedBeforeTheGraceEnds(t *testing.T) {
 }
 
 // TestCloudKitLinkingMatchesTheSwiftHub pins the wire shapes and the share
-// rules today's phone and Swift hub use (phone contract point 8): the QR's
-// key set, the container, the share surface and the timing constants. The
-// literals hold on their own; the Swift sources are read too while they
-// exist (Task 24 deletes Services/MobileHub).
+// rules today's phone and the retired Swift hub use (phone contract point 8):
+// the QR's key set, the container, the share surface and the timing
+// constants. The Swift hub's sources are gone (go hub plan 3 Task 24): its
+// constants stay pinned as Go literals, the Kit's sources are still read, and
+// the share surface is compared with the bridge's (`BridgeShareProviding`),
+// which runs the shares for the Go hub.
 func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 	r := newCKRig(t)
 	p := r.issueCK()
@@ -1045,32 +1047,15 @@ func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 		t.Error("the Kit's WatchtowerCloud.containerID differs")
 	}
 
-	// The constants copied verbatim from today's MobileLinkCenter / MobileHubService.
+	// The constants copied verbatim from the retired Swift hub's MobileLinkCenter / MobileHubService.
 	if MetaShareSweepPending != "share_sweep_pending" || DefaultSweep.AnswerGrace != 120*time.Second ||
 		ShareTimeout != 30*time.Second ||
 		!slices.Equal(sweepRetryDelays, []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour}) ||
 		!slices.Equal(linkCloseRetryDelays, []time.Duration{15 * time.Second, time.Minute}) {
 		t.Error("a constant changed")
 	}
-	// The Swift hub's sources (Task 24 deletes them and these reads with them; the literals above stay).
-	const swiftHub = "../../../WatchtowerDesktop/Sources/Services/MobileHub/"
-	center := string(readSource(t, swiftHub+"MobileLinkCenter.swift"))
-	for _, line := range []string{
-		`sweepPendingKey = "share_sweep_pending"`,
-		`answerGrace: Duration = .seconds(120)`,
-		`sweepRetryDelays: [Duration] = [.seconds(60), .seconds(300), .seconds(900), .seconds(3600)]`,
-		`linkCloseRetryDelays: [Duration] = [.seconds(15), .seconds(60)]`,
-		`case sheetClosed = "sheet_closed"`, `case issueFailed = "issue_failed"`, `case accountChanged = "account_changed"`,
-	} {
-		if !strings.Contains(center, line) {
-			t.Errorf("MobileLinkCenter.swift no longer has %q", line)
-		}
-	}
-	if !strings.Contains(string(readSource(t, swiftHub+"MobileHubService.swift")), "defaultCloudTimeout: Duration = .seconds(30)") {
-		t.Error("the Swift share timeout changed")
-	}
 
-	// The share surface is today's ShareService, call for call.
+	// The share surface is the Swift hub's ShareService, call for call, as the bridge carries it.
 	shareOps := []string{"accountStatus", "ensureShares", "participants", "removeParticipants", "setPublicLink"}
 	var goOps []string
 	st := reflect.TypeFor[transport.Shares]()
@@ -1083,14 +1068,15 @@ func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 	if !slices.Equal(goOps, shareOps) {
 		t.Errorf("transport.Shares %v, ShareService %v", goOps, shareOps)
 	}
-	var swiftOps []string
+	var bridgeOps []string
+	bridge := readSource(t, "../../../WatchtowerDesktop/Sources/CloudBridgeCore/BridgeShares.swift")
 	for _, m := range regexp.MustCompile(`func (\w+)\(`).FindAllSubmatch(
-		submatch(t, `(?s)protocol ShareService: Sendable \{(.*?)\n\}`, readSource(t, swiftHub+"ShareService.swift")), -1) {
-		swiftOps = append(swiftOps, string(m[1]))
+		submatch(t, `(?s)public protocol BridgeShareProviding: Sendable \{(.*?)\n\}`, bridge), -1) {
+		bridgeOps = append(bridgeOps, string(m[1]))
 	}
-	slices.Sort(swiftOps)
-	if !slices.Equal(swiftOps, shareOps) {
-		t.Errorf("ShareService is %v, pinned %v", swiftOps, shareOps)
+	slices.Sort(bridgeOps)
+	if !slices.Equal(bridgeOps, shareOps) {
+		t.Errorf("BridgeShareProviding is %v, pinned %v", bridgeOps, shareOps)
 	}
 }
 

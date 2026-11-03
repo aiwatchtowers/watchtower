@@ -26,9 +26,8 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class HubCenter {
-    /// The Core status; qualified while the Swift hub's own `HubStatus` lives
-    /// (removed with it in Task 24).
-    typealias Status = WatchtowerCore.HubStatus
+    /// The Core status, `watchtower hub status --json`.
+    typealias Status = HubStatus
 
     nonisolated static let heartbeatInterval: Duration = .seconds(30)
     nonisolated static let viewCoalesce: Duration = .milliseconds(250)

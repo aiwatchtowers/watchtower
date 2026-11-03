@@ -140,6 +140,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
 - **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
 - **Nothing updates.** Mobile stops when you quit Watchtower. Closing the window is fine.
+- **Mobile off after going back to an older Watchtower.** After this update, an older Watchtower can't run Mobile: update instead.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 

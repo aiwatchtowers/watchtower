@@ -878,9 +878,8 @@ extension WorkbenchesViewModel {
     /// command before its agent's first start — when that launch does not
     /// run, `startNotice` gives the command to run by hand.
     /// With `goSessionStart` set, a workbench agent row (`placing`) is
-    /// started by Go instead (`startInGo`) unless `throughGo` is false — the
-    /// Swift hub's phone starts, which keep the Swift path until Go hub 3
-    /// Task 24 removes it with that hub.
+    /// started by Go instead (`startInGo`) unless `throughGo` is false, which
+    /// keeps the Swift launch path (`startUntargeted`).
     private func createAndActivate(
         _ new: TerminalSessionQueries.NewSession,
         prompt: String?,

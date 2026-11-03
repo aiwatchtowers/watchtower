@@ -85,8 +85,8 @@ final class HubKeepAwakeTests: XCTestCase {
         let (shell, agent) = try pool.write { db -> (Int64, Int64) in
             let project = try TestDatabase.insertWorkbench(db)
             return (
-                try SliceSeed.insertSession(db, projectID: project, kind: "shell"),
-                try SliceSeed.insertSession(db, projectID: project, kind: "claude")
+                try Self.insertSession(db, projectID: project, kind: "shell"),
+                try Self.insertSession(db, projectID: project, kind: "claude")
             )
         }
         XCTAssertEqual(HubKeepAwake.liveBoardSessions(pool, liveIDs: []), 0)
@@ -102,5 +102,17 @@ final class HubKeepAwakeTests: XCTestCase {
         XCTAssertEqual(answer.phoneContactAt?.timeIntervalSince1970 ?? 0, 1_793_616_120.5, accuracy: 0.01)
         let none = try JSONDecoder().decode(HubControlAnswer.self, from: Data(#"{"op":"desktop_heartbeat","ok":true}"#.utf8))
         XCTAssertNil(none.phoneContactAt)
+    }
+
+    /// A board session row of `kind` in `projectID`.
+    private static func insertSession(_ db: Database, projectID: Int64, kind: String) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+                VALUES (?, ?, 'Session', '/tmp/acme', ?)
+                """,
+            arguments: [projectID, kind, kind == "claude" ? UUID().uuidString.lowercased() : nil]
+        )
+        return db.lastInsertedRowID
     }
 }

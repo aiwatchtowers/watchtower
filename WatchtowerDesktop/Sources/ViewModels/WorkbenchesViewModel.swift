@@ -329,9 +329,8 @@ final class WorkbenchesViewModel {
     var preparingSessions: Set<Int64> = []
     /// Set (by AppState): new workbench agent sessions start in Go —
     /// `workbench session start`, then the pane attaches to the run Go
-    /// launched (Go hub 3 Task 8, `startInGo`). Unset, the Swift launch path
-    /// starts them; it stays for the Swift hub's phone starts and its tests
-    /// until Go hub 3 Task 24 removes both.
+    /// launched (Go hub 3 Task 8, `startInGo`). Unset (no CLI) or with
+    /// `throughGo` false, the Swift launch path starts them.
     @ObservationIgnored var goSessionStart: GoSessionStartWait?
     /// Per workbench, how many Go starts began: a start's place notice
     /// replaces `startNotice` only while no later start of it began.

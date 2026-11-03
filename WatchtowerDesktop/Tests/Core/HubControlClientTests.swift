@@ -171,12 +171,14 @@ final class HubControlClientTests: XCTestCase {
         let status = try JSONDecoder().decode(HubStatus.self, from: Data(json.utf8))
         XCTAssertEqual(status, HubStatus(
             state: "running", reason: nil, hubID: "hub-acme", transport: "cloudkit", host: "desktop", mode: "live",
-            recordings: "on", adoption: "done"
+            recordings: "on", adoption: "done", phones: 2
         ))
+        XCTAssertEqual(status.with(state: "paused", reason: "needs_relay").phones, 2, "a watch event keeps the count")
         // A desktop host's CLI answer before the Go hub runs there.
         let off = try JSONDecoder().decode(HubStatus.self, from: Data(#"{"state":"off","reason":"desktop_host"}"#.utf8))
         XCTAssertEqual(off.reason, "desktop_host")
         XCTAssertNil(off.hubID)
+        XCTAssertNil(off.phones)
     }
 
     func testHeartbeatAnswerCarriesViewNeeded() async throws {

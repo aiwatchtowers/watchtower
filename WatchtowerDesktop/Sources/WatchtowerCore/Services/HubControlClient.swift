@@ -14,6 +14,8 @@ package struct HubStatus: Decodable, Equatable, Sendable {
     package let mode: String?
     package let recordings: String?
     package let adoption: String?
+    /// How many phones are linked (`phones`); nil when the answer carried none.
+    package let phones: Int?
 
     package init(
         state: String,
@@ -23,7 +25,8 @@ package struct HubStatus: Decodable, Equatable, Sendable {
         host: String? = nil,
         mode: String? = nil,
         recordings: String? = nil,
-        adoption: String? = nil
+        adoption: String? = nil,
+        phones: Int? = nil
     ) {
         func value(_ text: String?) -> String? { text?.isEmpty == false ? text : nil }
         self.state = state
@@ -34,6 +37,7 @@ package struct HubStatus: Decodable, Equatable, Sendable {
         self.mode = value(mode)
         self.recordings = value(recordings)
         self.adoption = value(adoption)
+        self.phones = phones
     }
 
     /// This status with a newer `state` and `reason` (a watch event), the
@@ -41,12 +45,12 @@ package struct HubStatus: Decodable, Equatable, Sendable {
     package func with(state: String, reason: String?) -> Self {
         Self(
             state: state, reason: reason, hubID: hubID, transport: transport, host: host, mode: mode,
-            recordings: recordings, adoption: adoption
+            recordings: recordings, adoption: adoption, phones: phones
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case state, reason, transport, host, mode, recordings, adoption
+        case state, reason, transport, host, mode, recordings, adoption, phones
         case hubID = "hub_id"
     }
 
@@ -60,7 +64,8 @@ package struct HubStatus: Decodable, Equatable, Sendable {
             host: try c.decodeIfPresent(String.self, forKey: .host),
             mode: try c.decodeIfPresent(String.self, forKey: .mode),
             recordings: try c.decodeIfPresent(String.self, forKey: .recordings),
-            adoption: try c.decodeIfPresent(String.self, forKey: .adoption)
+            adoption: try c.decodeIfPresent(String.self, forKey: .adoption),
+            phones: try c.decodeIfPresent(Int.self, forKey: .phones)
         )
     }
 }

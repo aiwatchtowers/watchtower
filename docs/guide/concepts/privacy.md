@@ -14,7 +14,7 @@ Removing an account deletes its sign-in file. With **Delete an account's data wh
 
 In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits.
 
-Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Mobile sync** and remove the phone before you reset.
+Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, an older version's iPhone-sync folder next to them (`MobileHub`) and anything already in iCloud. The iPhone-sync keys go with the database folder. Delete the recordings by hand. To clear iPhone data, turn off **Mobile sync** and remove the phone before you reset.
 
 ## Watchtower stays out of Time Machine
 <!-- learn
@@ -88,7 +88,7 @@ When it is on, your Mac publishes a trimmed view of its data to your own iCloud 
 
 It is end-to-end encrypted.
 
-Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception.
+Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`, not in the Keychain.
 
 A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
 
@@ -143,9 +143,8 @@ A company's configuration profile can restrict sources, iPhone sync, Quick Conne
 ## On a Linux host or a Mac without the app
 <!-- learn: none -->
 
-A [headless host](../features/headless-host.md) keeps the same promise: everything it sends your phone is end-to-end encrypted, and the relay carries only ciphertext. A few things differ from the Mac app.
+A [headless host](../features/headless-host.md) keeps the same promise: everything it sends your phone is end-to-end encrypted, and the relay carries only ciphertext. Its key is a file in `~/.local/share/watchtower/.hub`, readable only by your user, as on the Mac: keep the box's disk and your account to yourself. A few things differ from the Mac app.
 
-- **The host's key is a file.** The host keeps its identity in a file instead of the Keychain, in `~/.local/share/watchtower/.hub`, readable only by your user. Keep the box's disk and your account to yourself.
 - **No audit line in a system log on Linux.** There the content-free read line described above is not written. The read limits still hold.
 - **No organization policy on Linux.** A configuration profile exists only on macOS, so nothing is managed on a Linux host.
 - **The service holds no secret.** Its logs carry ids, counts and errors, as Watchtower's logs do on the Mac.
