@@ -14,6 +14,29 @@ enum MobileSettingsShotFixtures {
         case iCloud = "icloud"
         case keptRecordings = "kept-recordings"
         case keptRecordingsNarrow = "kept-recordings-narrow"
+        // Go hub plan 4 Task 8 (coverage table rows 5–25, mockups §19–§21):
+        // the raw value is the shot's name.
+        case relayConnected = "mobileSettingsRelayConnected"
+        case relayConnecting = "mobileSettingsRelayConnecting"
+        case relayUnavailable = "mobileSettingsRelayUnavailable"
+        case pushOff = "mobileSettingsPushOff"
+        case quotaHub = "mobileSettingsQuotaHub"
+        case mailboxFull = "mobileSettingsMailboxFull"
+        case connectedPushOff = "mobileSettingsConnectedPushOff"
+        case connectingPushOff = "mobileSettingsConnectingPushOff"
+        case unavailablePushOff = "mobileSettingsUnavailablePushOff"
+        case connectedQuotaHub = "mobileSettingsConnectedQuotaHub"
+        case bothQuotas = "mobileSettingsBothQuotas"
+        case hubAllLines = "mobileSettingsHubAllLines"
+        case freePhoneOnRelay = "mobileSettingsFreePhoneOnRelay"
+        case undeliveredOne = "mobileSettingsUndeliveredOne"
+        case undeliveredMany = "mobileSettingsUndeliveredMany"
+        case notificationsMissing = "mobileSettingsNotificationsMissing"
+        case alertAccepted = "mobileSettingsAlertAccepted"
+        case phoneAllLines = "mobileSettingsPhoneAllLines"
+        case undeliveredNoToken = "mobileSettingsUndeliveredNoToken"
+        case twoMailboxesFull = "mobileSettingsTwoMailboxesFull"
+        case indicatorsNarrow = "mobileSettingsIndicatorsNarrow"
 
         var name: String {
             switch self {
@@ -28,18 +51,21 @@ enum MobileSettingsShotFixtures {
             case .iCloud: "mobileSettingsICloud"
             case .keptRecordings: "mobileSettingsKeptRecordings"
             case .keptRecordingsNarrow: "mobileSettingsKeptRecordings-narrow"
+            default: rawValue
             }
         }
 
         var size: NSSize {
-            switch self {
-            case .narrow: NSSize(width: 380, height: 720)
-            case .keptRecordingsNarrow: NSSize(width: 380, height: 860)
+            if let indicator = MobileSettingsShotFixtures.size(indicator: self) { return indicator }
+            return switch self {
+            case .narrow: NSSize(width: 380, height: 760)
+            case .keptRecordingsNarrow: NSSize(width: 380, height: 900)
             case .loading, .error, .off, .swiftBesideGo: NSSize(width: 640, height: 140)
             case .iCloud: NSSize(width: 640, height: 520)
-            case .empty: NSSize(width: 640, height: 420)
-            case .keptRecordings: NSSize(width: 640, height: 700)
-            case .busy, .phones: NSSize(width: 640, height: 640)
+            case .empty: NSSize(width: 640, height: 460)
+            case .keptRecordings: NSSize(width: 640, height: 740)
+            case .busy, .phones: NSSize(width: 640, height: 680)
+            default: NSSize(width: 640, height: 640)
             }
         }
     }
@@ -111,6 +137,9 @@ enum MobileSettingsShotFixtures {
                 .init(uploadID: "u-2", status: "failed", errorClass: "transcription_failed")
             ])
             model.present(status: running(kept: kept), phones: [phones[0]], jobs: jobs)
+        default:
+            let (status, phones) = indicators(frame)
+            model.present(status: status, phones: phones, jobs: nil)
         }
         return AnyView(MobileSettingsView(model: model)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -147,12 +176,19 @@ enum MobileSettingsShotFixtures {
             .background(Surface.window))
     }
 
-    private static func running(recordings: String = "on", kept: MobileHubCLI.Status.Kept? = nil) -> MobileHubCLI.Status {
+    /// A running Relay hub; its Relay row says connected unless `relay` says otherwise (phase 4 Task 8).
+    static func running(
+        recordings: String = "on", kept: MobileHubCLI.Status.Kept? = nil, relay: MobileHubCLI.RelayHealth? = connectedRelay
+    ) -> MobileHubCLI.Status {
         MobileHubCLI.Status(
             state: "running", transport: "relay", recordings: recordings, name: "Work Mac",
-            switchedAt: now.addingTimeInterval(-480), switchedBy: "AAAA0001", keptRecordings: kept
+            switchedAt: now.addingTimeInterval(-480), switchedBy: "AAAA0001", keptRecordings: kept, relay: relay
         )
     }
+
+    static let connectedRelay = MobileHubCLI.RelayHealth(
+        state: "connected", since: now.addingTimeInterval(-3600), lastSavedAt: now.addingTimeInterval(-120)
+    )
 
     private static let phones = [
         MobileHubCLI.Phone(

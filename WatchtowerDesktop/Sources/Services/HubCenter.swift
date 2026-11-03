@@ -42,6 +42,10 @@ final class HubCenter {
     /// Bumped on each `switched` event and each pairing that linked a phone:
     /// what Settings → Mobile reads again on (Task 23).
     private(set) var linksChanged = 0
+    /// Bumped on each watch `status` event: the hub rewrote its status file,
+    /// maybe only its Relay indicators (phase 4 Task 8), which `status` does
+    /// not carry; Settings → Mobile reads again on it.
+    private(set) var statusEvents = 0
     /// When a phone was last in touch, from the last answered heartbeat;
     /// nil while no hub answers (the keep-awake's input, Task 23).
     @ObservationIgnored private(set) var lastPhoneContact: Date?
@@ -227,6 +231,7 @@ final class HubCenter {
                     watchedStatus(next)
                     onWatchConnected?()
                 case let .status(next):
+                    statusEvents += 1
                     watchedStatus(next)
                 case .switched, .pair(kind: "linked", deviceID: _):
                     linksChanged += 1

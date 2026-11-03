@@ -216,6 +216,23 @@ final class HubCenterTests: XCTestCase {
         XCTAssertEqual(center.linksChanged, 2)
     }
 
+    /// Each watch `status` event counts, even one that leaves state and
+    /// reason as they were (only the Relay indicators changed): Settings →
+    /// Mobile reads again on it (go hub plan 4 Task 8). A snapshot does not.
+    func testEachStatusEventBumpsStatusEvents() async {
+        let center = makeCenter()
+        center.start()
+        await waitUntil("the stream is open") { client.watches == 1 }
+        client.emit(.snapshot(HubCenter.Status(state: "running")))
+        await waitUntil("the snapshot") { center.status?.state == "running" }
+        XCTAssertEqual(center.statusEvents, 0)
+        client.emit(.status(HubCenter.Status(state: "running")))
+        await waitUntil("the first status event") { center.statusEvents == 1 }
+        client.emit(.status(HubCenter.Status(state: "running")))
+        await waitUntil("the same state again") { center.statusEvents == 2 }
+        XCTAssertEqual(center.status, HubCenter.Status(state: "running"))
+    }
+
     /// The phone recording queue's two inputs: each snapshot (a rescan) and
     /// each `recording_queued` with its upload id.
     func testRecordingEventsReachTheQueue() async {
