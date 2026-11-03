@@ -22,7 +22,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 
 | Command | What it does |
 |---|---|
-| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first) |
+| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with their digests) |
 | `watchtower google`, `gmail` | Google accounts and Gmail |
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
