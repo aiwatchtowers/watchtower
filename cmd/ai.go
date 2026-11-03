@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+	"watchtower/internal/codex"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
@@ -66,6 +68,7 @@ var aiQueryCmd = &cobra.Command{
 }
 
 var aiModelsFlagJSON bool
+var aiTestCLIPath string
 
 var aiModelsCmd = &cobra.Command{
 	Use:   "models",
@@ -75,10 +78,11 @@ var aiModelsCmd = &cobra.Command{
 }
 
 var aiTestCmd = &cobra.Command{
-	Use:   "test",
-	Short: "Test AI provider connectivity",
-	Long:  "Verifies that the configured AI provider is available and responds. Outputs JSON with status.",
-	RunE:  runAITest,
+	Use:               "test",
+	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	Short:             "Test AI provider connectivity",
+	Long:              "Verifies that the configured AI provider is available and responds. Outputs JSON with status.",
+	RunE:              runAITest,
 }
 
 // aiStreamEvent is a JSON line emitted by `watchtower ai query`.
@@ -105,6 +109,7 @@ func init() {
 
 	aiModelsCmd.Flags().BoolVar(&aiModelsFlagJSON, "json", false, "output JSON")
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
+	aiTestCmd.Flags().StringVar(&aiTestCLIPath, "cli-path", "", "test this CLI path without saving it")
 
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	// Ignored since #604 G11 (no Claude session is stored); kept so an
@@ -351,33 +356,58 @@ func runAITest(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return enc.Encode(map[string]any{
 			"ok":    false,
-			"error": fmt.Sprintf("loading config: %v", err),
+			"error": "Could not read provider configuration",
 		})
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	applyProviderOverride(cfg)
+	wireLLMUsage(cfg)
 
 	_, model := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	if aiFlagModel != "" {
 		model = aiFlagModel
 	}
 
-	// Quick connectivity check — ask for a minimal response
-	aiClient := newAIClientWithModel(cfg, "", model)
-
-	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
+	// Explicit single-provider probe: never enter the fallback router or mount
+	// chat tools. The same canonical batch leaves enforce startup isolation.
+	var gen digest.Generator
+	switch cfg.AI.Provider {
+	case "claude":
+		path := cfg.ClaudePath
+		if aiTestCLIPath != "" {
+			path = aiTestCLIPath
+		}
+		leaf := digest.NewClaudeGenerator(model, model, path)
+		leaf.SetIsolatedChild()
+		gen = leaf
+	case "codex":
+		path := cfg.CodexPath
+		if aiTestCLIPath != "" {
+			path = aiTestCLIPath
+		}
+		leaf := codex.NewCodexGenerator(model, model, path)
+		leaf.SetIsolatedChild()
+		gen = leaf
+	case "ollama":
+		if aiTestCLIPath != "" {
+			return enc.Encode(map[string]any{"ok": false, "error": "CLI path is unavailable for HTTP providers", "provider": cfg.AI.Provider, "model": model})
+		}
+		gen = ollama.NewGenerator(model, model, cfg.AI.OllamaURL)
+	default:
+		return enc.Encode(map[string]any{"ok": false, "error": "Unknown AI provider", "provider": cfg.AI.Provider, "model": model})
+	}
+	ctx, shutdown := notifyShutdownContext(context.Background(), stderrLogf)
+	defer shutdown()
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-
-	_, _, err = aiClient.QuerySync(digest.WithSource(ctx, "probe"), "", "respond with exactly: OK", "")
+	err = providers.Allowed(cfg.AI.Provider)
+	if err == nil {
+		_, _, _, err = gen.Generate(digest.WithSource(ctx, "probe"), "", "respond with exactly: OK", "")
+	}
 	if err != nil {
-		return enc.Encode(map[string]any{
-			"ok":       false,
-			"error":    err.Error(),
-			"provider": cfg.AI.Provider,
-			"model":    model,
-		})
+		return enc.Encode(map[string]any{"ok": false, "error": connectionTestError(err), "error_code": connectionTestCode(err), "provider": cfg.AI.Provider, "model": model})
 	}
 
 	return enc.Encode(map[string]any{
@@ -385,6 +415,24 @@ func runAITest(_ *cobra.Command, _ []string) error {
 		"provider": cfg.AI.Provider,
 		"model":    model,
 	})
+}
+
+// The Desktop boundary contains classifications, never arbitrary child stderr,
+// owner paths, tokens or managed-configuration contents.
+func connectionTestCode(err error) providers.ErrorCategory {
+	var failure *providers.Failure
+	if errors.As(err, &failure) {
+		return failure.Category
+	}
+	return providers.Unknown
+}
+
+func connectionTestError(err error) string {
+	var failure *providers.Failure
+	if errors.As(err, &failure) {
+		return "Provider request failed (" + string(failure.Category) + ")."
+	}
+	return "Provider request failed. Check the CLI installation and sign-in in Terminal."
 }
 
 // aiModelsProvider is one provider entry in the `ai models` output.

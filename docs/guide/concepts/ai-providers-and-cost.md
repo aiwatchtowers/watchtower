@@ -19,13 +19,13 @@ since: 0.24.0
 | **Codex** | The Codex command-line tool | Installed and signed in |
 | **Ollama / Local** | Any OpenAI-compatible server (Ollama, LM Studio, vLLM), at `http://localhost:11434` unless you change it | A running server and a chosen model |
 
-Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). When no provider is picked and only Codex is installed, setup picks Codex for you. If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "auto-detect"), then press **Test Connection**. The main chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the provider picker in **Settings → System → AI** lists only those; a configured provider it forbids shows "(not allowed)" there, and every AI call fails until you pick another.
+Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). When no provider is picked and only Codex is installed, setup picks Codex for you. If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "Auto-detect"), then press **Test connection**. The main chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the provider picker in **Settings → System → AI** lists only those; a configured provider it forbids shows "(not allowed)" there, and every AI call fails until you pick another.
 
 ## Light and strong models
 <!-- learn
 id: ai-models-per-provider
 title: Keep models for each provider
-text: Set **Light Model** and **Strong Model** in **Settings → System → AI**; each provider keeps its choices.
+text: Set **Light model** and **Strong model** in **Settings → System → AI**; each provider keeps its choices.
 replaces: [ai-own-models]
 changed: Switching providers restores their saved models.
 area: setup
@@ -42,10 +42,10 @@ Every AI call is routed to one of two tiers, and each provider has a model per t
 Defaults:
 
 - **Claude:** the aliases `haiku` (light) and `opus` (strong), which move to the newest model of each class without a Watchtower update.
-- **Codex:** `gpt-5.6-luna` (light) and `gpt-5.6-sol` (strong), the models the Codex tool offers on a ChatGPT sign-in. A newer model such as `gpt-6-astra` needs an up-to-date Codex: run `codex update`, then type it into **Strong Model**.
+- **Codex:** `gpt-5.6-luna` (light) and `gpt-5.6-sol` (strong), the models the Codex tool offers on a ChatGPT sign-in. A newer model such as `gpt-6-astra` needs an up-to-date Codex: run `codex update`, then type it into **Strong model**.
 - **Ollama / Local:** none, so pick a model; one model then serves both tiers.
 
-Override either tier in **Light Model** and **Strong Model**, or press **Default** to clear it.
+Override either tier in **Light model** and **Strong model**, or press **Provider default** to clear it.
 
 Each provider keeps its own model choices. Switching providers restores its saved choices; a provider without saved choices starts with **Default**.
 
@@ -60,14 +60,20 @@ kind: tip
 since: 0.26.5
 -->
 
-If you have both Claude Code and Codex, the other one can stand in when your plan's quota runs out. It is off until you turn it on in Terminal (there is no switch in Settings yet):
+If you have both Claude Code and Codex, the other one can stand in when your plan's quota runs out. In **Settings → System → AI**, choose your **Preferred provider**, check the other provider's models and CLI path under **Reserve provider**, then turn on **Use reserve when limits are reached** and save. The switch starts off; installing or testing the other CLI never turns it on.
+
+**Check connection** checks the installed CLI without sending an AI prompt. **Not verified** means sign-in cannot safely be confirmed from metadata; **Test connection** sends one short request with that provider's strong model and account, possibly using paid quota. It tests your unsaved model and path without testing the light model or switching to the reserve.
+
+**Saved provider limits → Check again** only reads local quota metadata and is limited to once a minute. A reset time passing does not prove recovery; a waiting safe request must succeed. Saving shows **Applying provider settings** until the background service confirms the saved configuration; **Retry** after an apply failure checks the latest saved settings.
+
+You can also enable the reserve in Terminal:
 
 ```
 watchtower config set ai.fallback.provider codex
 watchtower config set ai.fallback.enabled true
 ```
 
-Use `claude` as the provider when Codex is your main one. Background summaries switch only on a confirmed quota error, with the reserve's own **Light Model** and **Strong Model**. When both are out of quota, supported unfinished AI steps wait for a later sync; source syncing continues. A provider your company's profile forbids is never used as the reserve. Workbench sessions keep their own agent.
+Use `claude` as the provider when Codex is your main one. Background summaries switch only on a confirmed quota error, with the reserve's own **Light model** and **Strong model**. When both are out of quota, supported unfinished AI steps wait for a later sync; source syncing continues. A provider your company's profile forbids is never used as the reserve. Workbench sessions keep their own agent.
 
 New chats use **Preferred + reserve · Auto**. **Only Claude**, **Only Codex**, **Only Ollama** or an explicit model pins the chat; old chats keep their pins until you explicitly choose **Preferred + reserve · Auto model**. **Current provider** shows who actually answers and its model. Codex and Ollama cannot read images or PDFs, and a reserve missing a required tool or attachment is refused before startup.
 

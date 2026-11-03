@@ -113,3 +113,38 @@ extension DesignShotsTests {
         }
     }
 }
+
+extension DesignShotsTests {
+    func testRuntimeProviderSettingsShotsRender() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for provider in ["claude", "codex"] {
+            let other = provider == "claude" ? "codex" : "claude"
+            for (name, metadata) in [("unverified", ProviderConnection.Metadata.notVerified),
+                                     ("notInstalled", .missingCLI), ("signInRequired", .missingSignIn), ("networkError", .networkError)] {
+                let connection = ProviderConnection { _ in metadata }
+                let path = directory.appendingPathComponent("\(provider)-\(name).yaml").path
+                let yaml = """
+                ai:
+                  provider: \(provider)
+                  fallback: {enabled: false, provider: \(other)}
+                  providers:
+                    \(provider): {models: {light: sample-light, strong: sample-strong}}
+                    \(other): {models: {light: reserve-light, strong: reserve-strong}}
+                """
+                try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+                let config = ConfigService(configPath: path, connection: connection)
+                await connection.check(.init(provider: other, model: "reserve-strong", path: "", configPath: path), policy: .none)
+                for narrow in [false, true] {
+                    let shot = DesignShot(name: "provider-settings-\(name)-\(provider)\(narrow ? "-narrow" : "")",
+                                          size: CGSize(width: narrow ? 360 : 640, height: 0)) {
+                        AnyView(ProviderSettings(config: config, catalog: AIModelCatalog(), policy: .none)
+                            .padding(Spacing.page).detailBackground())
+                    }
+                    try renderShots([shot])
+                }
+            }
+        }
+    }
+}
