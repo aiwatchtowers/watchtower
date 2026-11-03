@@ -1522,6 +1522,8 @@ Today's interop runs the hub as a headless host, relay only (`interop_test.go` `
 
 ### Open decisions for the owner (3b)
 
+**Answered 2026-11-03.** Ask #977: 1 merge `feature/go-hub` in, 2 yes and our lane writes the Go half, 4 one automatic retry, 5 keep the slot. Ask #980 (plan approved): 3 the texts as proposed, 6 defer the hello proof. Each item below is now a decision, not a proposal.
+
 1. **Base:** merge `feature/go-hub` into `feature/relay-client-next` (Task 22, recommended above), or keep the branches apart and build the hub from `feature/go-hub` for interop runs. The recommended way brings Go hub Phase 3 (manual gate M1–M5 not run) and Phase 4 into our branch. Neither reaches main before `feature/go-hub` does.
 2. **Go hub production code in our lane (ask #977): the hub learns an upgraded phone's relay id from its `device` record** (Task 23, R22). Approving this approves two things:
    - the contract: three new optional fields in the phone's device record (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`), the proof bytes and the shared vector, written into protocol §5.5;
