@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"watchtower/internal/automations"
@@ -180,5 +181,23 @@ func TestDraftCache_EvaluationErrorIsCachedNewest(t *testing.T) {
 	last := entries[1]
 	if last.RecipeText != failing || last.Result != nil || last.Error == "" {
 		t.Fatalf("newest entry = %+v; want the failing text, no result, its error", last)
+	}
+}
+
+// TestDraftCache_KeepsBlocksAndKey: the editor's cache entry carries the
+// outputs' blocks, key and content hash (the Look pane reads them).
+func TestDraftCache_KeepsBlocksAndKey(t *testing.T) {
+	f := newDraftFixture(t)
+	text := recipeText(nil, "outputs: [inbox]\nartifacts: living\n", livingBlocksScript)
+	seedConversations(t, f.d, 9)
+	f.callBound(t, t.TempDir(), text, editorBinding(9))
+	entries := readDraftCache(t, f.d, 9)
+	if len(entries) != 1 || entries[0].Result == nil || entries[0].Result.DryRun == nil {
+		t.Fatalf("cache = %+v; want one entry with a dry run", entries)
+	}
+	outs := entries[0].Result.DryRun.Outputs
+	if len(outs) != 2 || outs[0].Key != "thread:1" || !strings.Contains(string(outs[0].Blocks), `"heading"`) ||
+		outs[0].ContentHash == "" || string(outs[1].Blocks) != "null" {
+		t.Fatalf("cached outputs = %+v; want blocks, key and hash", outs)
 	}
 }

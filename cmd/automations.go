@@ -47,7 +47,9 @@ type automationsFlags struct {
 	Output            int64    // reply --output
 	Action            int      // reply --action
 	ContentHash       string   // reply --content-hash ("" = not checked)
-	Slug              string   // validate --slug, with "-" (stdin)
+	Slug              string   // validate --slug, with "-" (stdin); preview --slug
+	Stdin             bool     // preview --stdin
+	Builtin           string   // preview --builtin
 }
 
 var autoFlags automationsFlags
@@ -100,14 +102,18 @@ func init() {
 	reply := newAutomationsSubcommand("reply", "Press a Reply button on an Inbox card: queue its run (owner only)",
 		cobra.NoArgs, runAutomationsReply)
 
+	preview := newAutomationsSubcommand("preview",
+		"Dry-run the recipe text on stdin in memory and print what it would do (owner only; writes nothing)",
+		cobra.NoArgs, runAutomationsPreview)
+
 	upgrade := newAutomationsSubcommand("upgrade-builtins",
 		"Run the failed one-time moves of built-ins from their old settings again", cobra.NoArgs,
 		runAutomationsUpgradeBuiltins)
 
-	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto, reply, reset, upgrade} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto, reply, reset, upgrade, preview} {
 		c.Flags().BoolVar(&autoFlags.JSON, "json", false, "output as JSON")
 	}
-	for _, c := range []*cobra.Command{list, show, validate, rescan, auto} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, auto, preview} {
 		c.Flags().Int64Var(&autoFlags.Workbench, "workbench", 0, "workbench id (its .watchtower/automations folder)")
 	}
 	dryRun.Flags().StringVar(&autoFlags.File, "file", "", "a recipe file in a recipe folder (rescanned first)")
@@ -119,6 +125,9 @@ func init() {
 	validate.Flags().StringVar(&autoFlags.Slug, "slug", "", `the recipe's slug when the file is "-" (stdin)`)
 	validate.Flags().Int64Var(&autoFlags.Against, "against", 0,
 		"compare with this automation: its scope, widening from its current permissions")
+	preview.Flags().BoolVar(&autoFlags.Stdin, "stdin", false, "read the recipe text from stdin (required)")
+	preview.Flags().StringVar(&autoFlags.Slug, "slug", "", "the saved automation the text edits (omit for a new recipe)")
+	preview.Flags().StringVar(&autoFlags.Builtin, "builtin", "", "the built-in the text edits")
 	confirm.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash being confirmed (required)")
 	auto.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash the grant binds to (required for on)")
 	run.Flags().Int64Var(&autoFlags.RerunOf, "rerun-of", 0, "the run this one reruns")
@@ -132,7 +141,7 @@ func init() {
 	reply.Flags().StringVar(&autoFlags.ContentHash, "content-hash", "",
 		"the content hash of the card as drawn: the press is refused when the card changed since")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
-		confirm, save, del, outputs, wake, auto, reply, reset, upgrade)
+		confirm, save, del, outputs, wake, auto, reply, reset, upgrade, preview)
 }
 
 // openAutomationsCmd loads the config and opens the database with the

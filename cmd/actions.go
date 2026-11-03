@@ -443,7 +443,8 @@ var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX",
 // enable` and `automations delete` (D24, ask #293); `automations auto …
 // on` (spec §6.4, P2); `automations session-launched` and `session-ended`
 // (P5); `actions dismiss` (#737, ask #342); `automations reply`, an Inbox
-// card's Reply press (ask #475); `actions propose`, an Inbox card's
+// card's Reply press (ask #475); `automations preview`, the Look step's
+// Dry run (ask #445); `actions propose`, an Inbox card's
 // track-action press (with --approve it is the approve); `workbench
 // session-target`, the Desktop's session-to-target binding (the agent has
 // the set_session_target tool). The Desktop's buttons are the path.
