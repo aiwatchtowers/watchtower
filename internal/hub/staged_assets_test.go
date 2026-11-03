@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,5 +108,37 @@ func TestAnICloudAccountChangeRemovesTheStagedAssets(t *testing.T) {
 	})
 	if s := h.rec.last(); s.State != StateRunning {
 		t.Fatalf("the hub stopped: %+v", s)
+	}
+}
+
+// A symlinked asset dir is refused: its target's files stay, the
+// descriptors still go.
+func TestRemoveStagedAssetsRefusesASymlinkedAssetDir(t *testing.T) {
+	dir := shortDir(t)
+	target := t.TempDir()
+	keep := filepath.Join(target, "keep.txt")
+	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedStagedAssets(t, dir)
+	if err := os.RemoveAll(filepath.Join(dir, assetDirName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, assetDirName)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeStagedAssets(dir, st); !errors.Is(err, errAssetDirNotADir) {
+		t.Fatalf("removeStagedAssets = %v, want errAssetDirNotADir", err)
+	}
+	_ = st.Close()
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("the link's target was emptied: %v", err)
+	}
+	if _, row := stagedLeft(t, dir); row {
+		t.Fatal("the descriptors stayed")
 	}
 }

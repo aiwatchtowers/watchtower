@@ -16,13 +16,24 @@ import (
 // an iCloud account change remove both, so no key outlives its link; a plain
 // stop keeps them (the next start's transcript read sweeps its own files).
 
+// errAssetDirNotADir: <dir>/assets is a symlink or not a directory; nothing
+// under it is deleted, so a link can never empty its target.
+var errAssetDirNotADir = errors.New("hub: the asset dir is not a plain directory")
+
 // removeStagedAssets empties <dir>/assets (the directory stays: the
 // transports confine uploads to it) and deletes every slice_assets row.
 func removeStagedAssets(dir string, st *state.Store) error {
 	root := filepath.Join(dir, assetDirName)
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
+	var entries []os.DirEntry
+	fi, err := os.Lstat(root)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
 		err = nil
+	case err != nil:
+	case !fi.IsDir(): // a symlink (Lstat does not follow it) or a file
+		err = errAssetDirNotADir
+	default:
+		entries, err = os.ReadDir(root)
 	}
 	for _, e := range entries {
 		err = errors.Join(err, os.RemoveAll(filepath.Join(root, e.Name())))
