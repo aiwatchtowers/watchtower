@@ -332,6 +332,8 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	// PROJ-16 (OD-2): a phone asking to type asks the owner through
 	// Desktop's macOS notice; a headless host has no watch stream.
 	h.center.OnTypingRequest(h.typingRequested)
+	// An upgraded phone's device record named its relay id (Task 23, R22).
+	h.center.OnRelayIDNamed(func(string) { h.relayIDNamed() })
 	d := actions.NewDispatcher()
 	actions.RegisterProbe(d)
 	if o.Register != nil {
@@ -900,6 +902,22 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	}
 	h.pass(ctx)
 	h.sup.poke()
+}
+
+// relayIDNamed follows a linked phone's device record naming a new relay id:
+// the link upkeep runs now and its short-retry window opens, and the account
+// state is read afresh (the reader's unvouched window is dropped), so
+// set_hub_readers names the phone and its admission stamp and paying state
+// follow without waiting for an interval.
+func (h *hubRuntime) relayIDNamed() {
+	if h.acct != nil {
+		h.acct.invalidate()
+	}
+	h.kick(h.linkKick)
+	h.kick(h.soonKick)
+	if h.paying != nil {
+		h.paying.Recheck()
+	}
 }
 
 // syncReaders sets the relay's hub readers to the linked phones the account

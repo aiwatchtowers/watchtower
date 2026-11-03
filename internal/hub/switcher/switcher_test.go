@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"maps"
 	"slices"
@@ -597,5 +598,71 @@ func TestOldTransportMailboxDrainedBeforeRotation(t *testing.T) {
 		if w.epoch() != e+1 {
 			t.Fatalf("epoch %d", w.epoch())
 		}
+	})
+}
+
+// An iCloud-linked phone that subscribed has a relay id the hub does not
+// know yet: the account lists it paying, but no linked phone holds it, so a
+// switch is not_paying. Once the phone's device record names the id with its
+// relay key's proof, the same account makes it paying and the switch is
+// accepted (the hub's payingByDevice, by relay id).
+func TestAnUpgradedPhoneIsPayingOnceItsRelayIDIsKnown(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		account := map[string]bool{} // relay id → paying, as the relay's account state lists it
+		w.rebuild(func(c *switcher.Config) {
+			c.Paying = func(context.Context) (map[string]bool, error) {
+				devices, err := w.st.Devices()
+				if err != nil {
+					return nil, err
+				}
+				out := map[string]bool{}
+				for _, d := range devices {
+					if paying, ok := account[d.RelayDeviceID]; ok && d.RelayDeviceID != "" {
+						out[d.ID] = paying
+					}
+				}
+				return out, nil
+			}
+		})
+		ph := w.addPhone(true)
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE devices SET relay_device_id = NULL`)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		account[ph.RelayDeviceID()] = true
+
+		w.ask(ph, wire.TransportRelay)
+		w.settle(ph)
+		w.wantActive(transport.KindCloudKit)
+		var rej []wire.Control
+		for _, c := range ph.Controls {
+			if c.Kind == wire.ControlSwitchRejected {
+				rej = append(rej, c)
+			}
+		}
+		if len(rej) != 1 || *rej[0].Reason != wire.SwitchNotPaying {
+			t.Fatalf("rejections before the record %+v", rej)
+		}
+
+		pub := ph.RelayAuth().Public().(ed25519.PublicKey)
+		d := wire.DevicePayload{
+			DeviceID: ph.ID().String(), Name: "Test Phone", Scope: wire.ScopePrivate, StartSessions: true,
+			UpdatedAt: wire.Time{Time: w.clock()}, RelayDeviceID: ph.RelayDeviceID(),
+			RelayAuthPub: base64.RawURLEncoding.EncodeToString(pub),
+			RelayIDSig: base64.RawURLEncoding.EncodeToString(ed25519.Sign(ph.RelayAuth(),
+				link.RelayIDProofMessage(w.keys.HubID(), ph.ID(), ph.RelayDeviceID()))),
+		}
+		if _, err := ph.WriteDeviceRecord(d, ""); err != nil {
+			t.Fatal(err)
+		}
+		w.settle(ph)
+		if got, _, _ := w.st.Device(ph.ID().String()); got.RelayDeviceID != ph.RelayDeviceID() {
+			t.Fatalf("the hub did not take the relay id: %q", got.RelayDeviceID)
+		}
+		w.advance(time.Minute)
+		w.moveTo(ph, wire.TransportRelay)
+		w.wantActive(transport.KindRelay)
 	})
 }

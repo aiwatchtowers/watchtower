@@ -117,6 +117,39 @@ func TestAccountReaderInvalidateAndEmptySeed(t *testing.T) {
 	}
 }
 
+// A phone's device record naming a new relay id (link.Center's
+// OnRelayIDNamed) runs the link upkeep now, opens its short-retry window and
+// drops the reader's unvouched window, so the upkeep's account read goes to
+// the relay and set_hub_readers names the phone without waiting.
+func TestARelayIDNamedRunsTheLinkUpkeepWithAFreshAccountRead(t *testing.T) {
+	clock := &setClock{now: time.Unix(1_800_000_000, 0)}
+	reads := 0
+	r := &accountReader{
+		read: func(context.Context) (*relayv1.AccountState, error) {
+			reads++
+			return onePaying(), nil
+		},
+		vouched: func() bool { return false },
+		clock:   clock.Now,
+	}
+	r.seed(onePaying())
+	h := &hubRuntime{acct: r, linkKick: make(chan struct{}, 1), soonKick: make(chan struct{}, 1)}
+	h.relayIDNamed()
+	select {
+	case <-h.linkKick:
+	default:
+		t.Fatal("no link upkeep kicked")
+	}
+	select {
+	case <-h.soonKick:
+	default:
+		t.Fatal("no short-retry window opened")
+	}
+	if _, err := r.State(t.Context()); err != nil || reads != 1 {
+		t.Fatalf("the account read after the record: %d reads, %v", reads, err)
+	}
+}
+
 // vouchRig is a test-mode Run (rules off unless asked) over the production
 // relay transport against relaytest.
 type vouchRig struct {

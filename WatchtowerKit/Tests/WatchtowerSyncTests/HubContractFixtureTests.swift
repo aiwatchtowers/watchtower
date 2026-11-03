@@ -231,6 +231,37 @@ final class HubContractFixtureTests: XCTestCase {
         XCTAssertTrue(RelayIDs.isValid(try XCTUnwrap(decoded.relayDeviceID)))
     }
 
+    /// A device record's relay identity (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`), read and written as
+    /// the Go `wire.DevicePayload` does; an invalid id reads as none. `RelayIDProof.verify` gives each case's `proof`,
+    /// the verdict of the Go hub's `link.VerifyRelayIDProof`.
+    func testDevicePayloadRelayIDCases() throws {
+        let cases = try XCTUnwrap(load()["device_payload"])
+        XCTAssertEqual(cases.map { $0["name"] as? String }, [
+            "with_proven_relay_id", "without_relay_id", "invalid_relay_id_reads_as_none", "wrong_key", "bad_signature",
+            "other_hub"
+        ])
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(payload.relayDeviceID, kit["relay_device_id"] as? String, name)
+            let hubID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(fixtureCase["hub_id"] as? String)), name)
+            let deviceID = try XCTUnwrap(UUID(uuidString: payload.deviceID), name)
+            XCTAssertEqual(RelayIDProof.verify(payload, hubID: hubID, deviceID: deviceID), fixtureCase["proof"] as? Bool, name)
+            let encoded = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(payload), encoding: .utf8), name)
+            if name == "invalid_relay_id_reads_as_none" {
+                XCTAssertFalse(encoded.contains("relay_device_id"), name)
+            } else {
+                XCTAssertEqual(encoded, fixtureCase["relay_coder"] as? String, name)
+            }
+        }
+        let proven = try XCTUnwrap(cases.first)
+        let payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: bytes(try XCTUnwrap(proven["json"])))
+        let pair = try relayPair(seed: proven["relay_auth_seed"])
+        XCTAssertEqual(payload.relayAuthPub, pair.pub)
+        XCTAssertEqual(payload.relayDeviceID, pair.id)
+    }
+
     /// The grant's relay fields; an absent `transports` reads as an iCloud-only hub.
     func testDeviceGrantRelayFieldsDecode() throws {
         let cases = try XCTUnwrap(load()["device_grant"])

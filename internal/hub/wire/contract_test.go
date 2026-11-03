@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
 )
 
@@ -45,6 +47,17 @@ type fixture struct {
 	UploadEcho        []contractCase `json:"upload_echo"`
 	TransportSwitched []contractCase `json:"transport_switched"`
 	SwitchRejected    []contractCase `json:"transport_switch_rejected"`
+	DevicePayload     []struct {
+		Name          string          `json:"name"`
+		RelayAuthSeed string          `json:"relay_auth_seed"`
+		HubID         string          `json:"hub_id"`
+		JSON          json.RawMessage `json:"json"`
+		RelayCoder    string          `json:"relay_coder"`
+		Proof         bool            `json:"proof"`
+		Kit           struct {
+			RelayDeviceID *string `json:"relay_device_id"`
+		} `json:"kit"`
+	} `json:"device_payload"`
 }
 
 // contractCase is a {name, json, expect, kit} case: json decoded and
@@ -367,4 +380,45 @@ func TestHubContractFixture_SwitchRejected(t *testing.T) {
 func linkURL(t *testing.T, js string) string {
 	t.Helper()
 	return "watchtower://link?d=" + base64.RawURLEncoding.EncodeToString([]byte(js))
+}
+
+// TestDevicePayloadCases pins a device record's relay id fields (Task 23):
+// Go reads and writes the Kit's bytes, and the hub's proof check
+// (link.VerifyRelayIDProof) gives each case's `proof` verdict, which the Kit's
+// RelayIDProof.verify gives too.
+func TestDevicePayloadCases(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	names := map[string]bool{}
+	for _, c := range f.DevicePayload {
+		names[c.Name] = true
+		t.Run(c.Name, func(t *testing.T) {
+			var p wire.DevicePayload
+			require.NoError(t, json.Unmarshal(c.JSON, &p))
+			out, err := wire.Marshal(p)
+			require.NoError(t, err)
+			require.JSONEq(t, string(c.JSON), string(out))
+			if c.RelayCoder != "" {
+				require.Equal(t, c.RelayCoder, string(out), "Go writes the Kit's device record bytes")
+			}
+			hub, err := secure.ParseID(c.HubID)
+			require.NoError(t, err)
+			device, err := secure.ParseID(p.DeviceID)
+			require.NoError(t, err)
+			id, ok := link.VerifyRelayIDProof(hub, device, p)
+			require.Equal(t, c.Proof, ok)
+			if c.Proof {
+				require.Equal(t, p.RelayDeviceID, id)
+				requireCoherentRelay(t, c.RelayAuthSeed, p.RelayAuthPub, p.RelayDeviceID)
+				require.NotNil(t, c.Kit.RelayDeviceID)
+				require.Equal(t, *c.Kit.RelayDeviceID, id, "the Kit reads the id the hub takes")
+			}
+		})
+	}
+	for _, n := range []string{"with_proven_relay_id", "without_relay_id", "invalid_relay_id_reads_as_none",
+		"wrong_key", "bad_signature", "other_hub"} {
+		require.True(t, names[n], "missing case %s", n)
+	}
 }

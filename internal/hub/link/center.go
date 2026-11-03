@@ -137,6 +137,11 @@ type Center struct {
 	// unlock (guarded by mu).
 	onTypingAsk func(device, name string)
 	typingAsks  []TypingAsk
+	// onRelayID and relayNamed: the relay id seam (OnRelayIDNamed) and the
+	// phones whose device record named a new relay id in the locked
+	// section, told from unlock (guarded by mu).
+	onRelayID  func(device string)
+	relayNamed []string
 	// beforeKeys is a test seam: run by Keyboxes between the device read
 	// and the key read.
 	beforeKeys func()
@@ -212,7 +217,8 @@ func (c *Center) unlock() {
 	c.dirty = false
 	revoked, onRevoke := c.revoked, c.onRevoke
 	asks, onAsk := c.typingAsks, c.onTypingAsk
-	c.revoked, c.typingAsks = nil, nil
+	named, onRelay := c.relayNamed, c.onRelayID
+	c.revoked, c.typingAsks, c.relayNamed = nil, nil, nil
 	c.mu.Unlock()
 	if dirty && c.publish != nil {
 		c.publish(KindDeviceGrant)
@@ -227,6 +233,21 @@ func (c *Center) unlock() {
 			onAsk(a.DeviceID, a.Name)
 		}
 	}
+	if onRelay != nil {
+		for _, d := range named {
+			onRelay(d)
+		}
+	}
+}
+
+// OnRelayIDNamed sets fn, called with a phone's device id (upper case) after
+// a change commits in which its device record named a new relay id
+// (ApplyDeviceRecord): the readers and the account state are due again.
+// Call it before the center is used.
+func (c *Center) OnRelayIDNamed(fn func(device string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onRelayID = fn
 }
 
 // TypingAsk is a linked phone that newly asks to type into sessions.
