@@ -8,7 +8,10 @@
 // default written out (a heading's level, a list's rows and empty text, a
 // row's actions, a column's align, a person's lines), optional keys without
 // a default left out when absent, table cells and person lines always as
-// objects, every string trimmed, no HTML escaping. It is pinned by
+// objects, every block string trimmed (an action keeps its label, chat,
+// agent task and reply value as written; only a target's title and intent
+// are trimmed), encoded by marshal (below), and a reply action's data as
+// the opaque bytes the action grammar stored. It is pinned by
 // testdata/blocks_cases.json.
 //
 // The package is a leaf: it imports db for the action type only and never
@@ -284,8 +287,12 @@ func (b *Block) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(data, p)
 }
 
-// marshal is json.Marshal without HTML escaping and without the trailing
-// newline, so the bytes are what a Swift encoder writes for the same value.
+// marshal is encoding/json without HTML escaping and without the trailing
+// newline: <, > and & stay raw, while control characters are written as
+// \u00XX (\n, \r, \t as such), U+2028/U+2029 as \u2028/\u2029, and
+// "/" unescaped. A raw value inside (an action's data) is copied as stored.
+// Every reader that rebuilds these bytes (the Swift action hash) follows
+// this rule; the shared fixture pins it.
 func marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

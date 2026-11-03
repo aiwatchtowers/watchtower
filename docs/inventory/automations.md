@@ -115,7 +115,12 @@ workbench was deleted fails at Apply, and a row whose run is gone fails closed
 (`ErrAutomationRunGone`, `NotAvailable` to the script) (AGENT-01). The automation read
 tools write nothing either: `memory_open` skips its access-stat bump on the
 `automation` surface and `buildAutomationRegistry` mounts `memory_recall`
-without the shadow handle, so it writes no shadow row.
+without the shadow handle, so it writes no shadow row. An Inbox card may carry
+a `target` button (`{label, target: {title, intent?, parent?}}`, Inbox builder
+A, ask #445): writing the card creates nothing; the button needs
+`outputs: [target]` (`PermissionDenied` otherwise), and its press only proposes
+`create_target` through `Registry.Propose` on the `inbox` surface, so nothing
+is written until the owner's Approve.
 
 **Why locked:** Every write an automation makes must be one reviewable
 `agent_actions` row (AGENT-01) or a declared automation output; a module that
@@ -123,6 +128,7 @@ wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 
 **Test guards:**
 - `internal/automations/sdk_tool_write_test.go` — `TestAuto02_ToolWriteGoesThroughPropose` (P2: a `tool()` write is one pending `agent_actions` row on the `automation` surface with `context_type='automation_run'`; no target is created before an approval), `TestToolWait_AppliedRejectedFailed`
+- `internal/automations/sdk_output_card_test.go` — `TestOutput_TargetActionNeedsTargetOutput` (a card's target action is a `PermissionDenied` without `outputs: [target]`, nothing buffered)
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`, `TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable`, `TestWorkbenchAutomation_WritesAreProposals`
 - `internal/tools/registry_automation_test.go` — `TestAgent01_AutomationWriteRecordsProposalOnly`, `TestWorkbenchAutomation_ProposesInItsRunsWorkbench`, `TestWorkbenchAutomation_RowAppliesOnlyWhileItsWorkbenchLives`
 - `internal/tools/automation_reads_test.go` — `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestD23Tools_AutomationSurfaceOnly`
@@ -671,6 +677,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-03 (Inbox builder A Task 2, board #1400, **AUTO-02 amended, owner approved in ask #445**): an Inbox card's actions gain the `target` kind; the card action grammar moves into `internal/automations/blocks` (`blocks.ValidateAction`, shared with block actions); a target action needs `outputs: [target]`. The press path (`create_target` on the `inbox` surface) lands with Task 14. Strengthening, no guard relaxed. Guard added: `TestOutput_TargetActionNeedsTargetOutput`.
 - 2026-10-28 (board #1194, **AUTO-06 amended, owner approved in ask #692**): quick run gains a third origin, the iPhone (`QuickRunCenter.runFromPhone` through `AutomationRunHandler`), for workbench recipes only; the not-runnable states refuse as on the Mac, and a `confirm: true` recipe needs the phone's own confirmation, carried as `confirmed: true` and checked by the hub. No guard relaxed (`testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun` unchanged). Guards added: `AutomationRunHandlerTests.testAConfirmRecipeRunsOnlyWhenThePhoneConfirmedIt`, `testARecipeThatCannotRunIsRefusedWithItsReason`.
 - 2026-10-25 (board #606, ask #567): **AUTO-08 amended** — a run is also bounded by the read budget (READ-01, key `run:<id>`, `mcp()` counts as a call); reaching it is a catchable `ValidationError`, not an interrupt; an `agent()` CLI child keeps its own counter under the same key. Strengthening, no guard relaxed. Guards added: `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes`.
 - 2026-10-23 (board #801, C2 final review fix batch 1): **AUTO-08 strengthened** — a runaway-disabled built-in stays off until the owner turns it on (the slot runner, Run Now and `automations run` check `disabled_reason`; the built-in sync's mirror never turns such a row on; only the owner's `features enable` — the card's Turn On — clears it, and not under AI-agent markers), and a CLI inline built-in run (a running `manual` run) is swept at daemon start only past its deadline, as a live CLI dry run is. No guard relaxed. Guards added: `TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives`, `TestSetBuiltinEnabled_NeverTurnsOnARunawayStop`, `TestRunner_RunawayStoppedBuiltinStaysOff`, `TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn`.

@@ -176,7 +176,10 @@ func agentAction(fn, field string, v any) (*db.InboxAgentAction, error) {
 	return nil, errorf("%s(): %s.workbench must be a workbench id or name", fn, field)
 }
 
-// replyAction validates a reply's value and its optional data object.
+// replyAction validates a reply's value and its optional data object. The
+// data is stored as json.Marshal's bytes (HTML-escaped, keys sorted), as
+// card actions always were: those bytes are opaque to the canonical form
+// and the hashes, which copy them unchanged.
 func replyAction(fn, field string, fields map[string]any, a *db.InboxAction) error {
 	s, ok := fields["reply"].(string)
 	if !ok || strings.TrimSpace(s) == "" {

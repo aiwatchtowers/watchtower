@@ -516,6 +516,78 @@
       "actions": [],
       "action_hashes": [],
       "content_hash": "cf73bd16a69ea899b29963a3b542b1d59da41fc3df20557742c1dc29655a1cfa"
+    },
+    {
+      "name": "escaping of special characters",
+      "built_in": false,
+      "input": {
+        "title": "Card / <&>",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "a\u2028b\u0007c / <&>",
+                "actions": [
+                  {
+                    "label": "Task <&>",
+                    "target": {
+                      "title": "t\u2028\u0007 / <&>",
+                      "intent": "i\u2029\u0007 / <&>"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"a\\u2028b\\u0007c / <&>\",\"actions\":[{\"label\":\"Task <&>\",\"kind\":\"target\",\"target\":{\"title\":\"t\\u2028\\u0007 / <&>\",\"intent\":\"i\\u2029\\u0007 / <&>\"},\"primary\":true}]}],\"empty\":\"Nothing here\"}]}",
+      "plain_text": "- a\u2028b\u0007c / <&>",
+      "actions": [
+        "Task <&>"
+      ],
+      "action_hashes": [
+        "a37c5ef6cfadaea4"
+      ],
+      "content_hash": "35d39e2f570abdcff9bbe02f28b438a5057f3d1e6a69f0b6de690c1aa89d5929"
+    },
+    {
+      "name": "reply data bytes",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "actions",
+            "actions": [
+              {
+                "label": "Reply",
+                "reply": "v",
+                "data": {
+                  "a": "<&>",
+                  "f": 1.5,
+                  "n": [
+                    1,
+                    {
+                      "b": null
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"v\",\"data\":{\"a\":\"\\u003c\\u0026\\u003e\",\"f\":1.5,\"n\":[1,{\"b\":null}]},\"primary\":true}]}]}",
+      "plain_text": "",
+      "actions": [
+        "Reply"
+      ],
+      "action_hashes": [
+        "6fa8d616cda2eba4"
+      ],
+      "content_hash": "d6c4088528c44fcffa54dca02803b2019f7adaecd3100089614ca68ab6e0c585"
     }
   ],
   "invalid": [
