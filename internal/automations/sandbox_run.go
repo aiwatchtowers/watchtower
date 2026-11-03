@@ -272,8 +272,7 @@ func (s *Sandbox) Run() (any, error) {
 	// The memory baseline is read here, before the script can run: read in
 	// the watchdog goroutine, it raced the script's first allocations (a
 	// busy machine schedules the script first) and could take them in.
-	heap := heapWatch{events: runEvents.Load()}
-	_, heap.base = heapReadings()
+	heap := heapWatch{events: runEvents.Load(), base: heapBaseline()}
 	done, watched, heapWatched := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watched)
@@ -422,6 +421,23 @@ func heapReadings() (live, objects uint64) {
 	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}, {Name: "/memory/classes/heap/objects:bytes"}}
 	metrics.Read(sample)
 	return sample[0].Value.Uint64(), sample[1].Value.Uint64()
+}
+
+// heapBaseline is a run's starting memory baseline: the heap's objects
+// now. Past one RunHeapBudget of objects a GC is forced first. Those objects
+// may be garbage no GC has looked at yet: a run stopped for memory leaves its
+// whole heap behind, and GOGC puts the next GC at twice that, so the live
+// reading still counts it too. Taken into the baseline, that garbage raised
+// the next run's limit by its own size, and back-to-back memory bombs each
+// got twice the room of the one before. Below one budget the garbage a
+// baseline can take in is bounded by the budget, and no GC is forced.
+func heapBaseline() uint64 {
+	if _, objects := heapReadings(); objects <= RunHeapBudget {
+		return objects
+	}
+	runtime.GC()
+	_, objects := heapReadings()
+	return objects
 }
 
 // heapWatch is a run's starting point for watchHeap: the baseline (the
