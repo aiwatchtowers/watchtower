@@ -79,20 +79,24 @@ Each artifact's header and each folder entry carry **⋯**: Run now, Edit what i
 
 ## Built-ins
 
-| Built-in | Becomes | Default folder | Lifecycle |
-|---|---|---|---|
-| Morning brief | unchanged automation, blocks instead of markdown | root | feed |
-| Track my threads | reads raw windows, not digests | root | living |
-| Idea finder | reads raw windows, not digests | root | feed |
-| People | new built-in automation; replaces the People Cards pipeline and the People tab | People | living, one per person |
-| Catch Up | new built-in automation with a new built-in-only trigger `return` (below); replaces the Catch Up tab | root | feed |
-| Needs approval | built-in recipe `needs-approval` over `agent_actions` / reminders, `approval` event trigger | Needs approval | living, one per action |
-| Waiting for me | new built-in automation over the attention detector (`internal/inbox`, mechanical, no AI): mentions, DMs and questions to the owner (ask #952); replaces the Messages filter | root | living, one artifact listing what waits *(agent's call on one artifact)* |
-| Reactions | unchanged (writes no artifact) | — | — |
+| Built-in | Becomes | Default folder | Lifecycle | Sub-project |
+|---|---|---|---|---|
+| Morning brief | unchanged automation, blocks instead of markdown | root | feed | C |
+| Track my threads | reads raw windows, not digests | root | living | C |
+| Idea finder | reads raw windows, not digests | root | feed | C |
+| People | new built-in automation; replaces the People Cards pipeline and the People tab | People | living, one per person | D |
+| Catch Up | new built-in automation with a new built-in-only trigger `return` (below); replaces the Catch Up tab | root | feed | D |
+| Needs approval | built-in recipe `needs-approval` over `agent_actions` / reminders, `approval` event trigger | Needs approval | living, one per action | B |
+| Waiting for me | new built-in automation over the attention detector (`internal/inbox`, mechanical, no AI): mentions, DMs and questions to the owner (ask #952); replaces the Messages filter | root | living, one artifact listing everything that waits (owner's confirmation, ask #959) | B |
+| Reactions | unchanged (writes no artifact) | — | — | — |
 
 **Catch Up trigger.** Automations today have schedule, button, event, manual and sync triggers; none fires on the owner's return. Sub-project D adds a built-in-only trigger `return`: the Desktop's existing absence detection (the one that opens Catch Up today) calls `automations run catch-up --since <absence start>`, and the run's window is the absence. The CATCHUP-01..04 guarantees move with it.
 
 **Filters become folders** (ask #952): the Inbox filters Day / Messages / Tracks / Ideas / Automations go away. Existing content moves as follows — briefs and day plans: Morning brief artifacts in the root; tracks: the rows stay in `tracks` and Track my threads renders them; ideas: the rows stay in the registry and Idea finder renders them; existing automation outputs: their folder is the root, markdown shown as a text block; proposals and reminders: Needs approval; attention-detection items (`inbox_items`): the rows stay and the Waiting for me built-in renders them in the root. Sub-project B owns the move.
+
+**Acting on one row of a list** (ask #959). One artifact can list many things the owner acts on one by one — the pings in Waiting for me, the threads in Track my threads. A list row may carry a `ref` to the thing it shows: `inbox_item`, `track`, `idea` or `action` plus its id. For a row with a `ref` the Desktop adds that kind's native row actions, the ones the Inbox has today: an attention item — Done, Snooze, Hide; a track — Done; an idea — Open; an action — Approve / Reject / Edit (the Needs approval rule above). Like the approval buttons, these are not part of the look and cannot be removed from it; they act on the row's own record (the existing `messageDone`, `snoozeMessage`, `hideMessage`, `markTrackDone` paths). The row disappears at once and the next run leaves it out because the record is closed or snoozed; a snoozed row comes back on the run after its snooze ends. The recipe's own row actions (open, reply, chat, agent, create target) stay beside them. *(Agent's call on the `ref` mechanism, sub-project A for the block field, B for the native actions.)*
+
+**What else sits by the Inbox today** (ask #959). The Inbox screen (`ActionStripView`) is the old action strip; its list and reading pane are replaced by the folder menu and the artifacts, and its per-kind Done / Dismiss / Hide / Snooze move into artifact and row actions. The header's **?** (reaction cheat sheet) stays in the Inbox header. **Learned Rules** and **Assistant Profile** move into the root folder's ⋯ menu and still open in the reading pane: learned rules still feed the tracks, brief and Catch Up prompts (the digest pipeline's rules go with the digests), and the profile still feeds Catch Up and the idea chat. Sub-project B owns this. *(Agent's call.)*
 
 ## Removing digests
 
@@ -133,14 +137,14 @@ TRACKS-01..07 (source changes from digests to raw windows; the guarantees stay),
 
 ## Sub-projects (order)
 
-- **A. Blocks and the Look step** — block schema (Go validation, Swift renderer in DesignKit), `output.inbox` `blocks`/`key`, living artifacts and their upsert, dry-run preview pane in the editor.
-- **B. Folders and the Inbox menu** — folder config (migration, CLI with compare-and-set, Desktop), root and Needs approval, `folder` on outputs, ⋯ management, + New artifact, replacing the five filters and moving the existing Inbox content.
+- **A. Blocks and the Look step** — block schema (Go validation, Swift renderer in DesignKit) incl. the list row `ref`, `output.inbox` `blocks`/`key`, living artifacts, their upsert and their removal by key, dry-run preview pane in the editor, the Look step's warning when a look adds an `llm()` step.
+- **B. Folders and the Inbox menu** — folder config (migration, CLI with compare-and-set, Desktop), root and Needs approval (the `needs-approval` recipe, the `approval` trigger, the native card fallback), `folder` on outputs, ⋯ management, + New artifact, replacing the five filters and moving the existing Inbox content, the Waiting for me built-in, native row actions for a `ref`, the Inbox header's ? and the Learned Rules / Assistant Profile entries.
 - **C. Raw window primitive; built-ins off digests** — the primitive (scope, cursor, caps, fence), Track my threads / Idea finder / Morning brief moved, spend baseline and measurement.
-- **D. People and Catch Up as built-ins** — new entries, the `return` trigger, artifacts, meeting prep re-pointed, tabs removed.
-- **E. Drop digests** — release N: every Go and Swift reader removed, pipelines, tab, tools, CLI, features, readiness, guide pages, inventory; release N+1: the migration dropping the tables.
+- **D. People and Catch Up as built-ins** — new entries, the `return` trigger, artifacts, meeting prep re-pointed (People artifacts, raw-window fallback), tabs removed.
+- **E. Drop digests** — release N: every Go and Swift reader removed, pipelines, rollups, tab, tools and the `digests:read` capability, CLI (`digest`/`trends`/`decisions`), the "without Jira" detector, the brief's channel section, the KB digest-topic source, memory `digest_compare`, the backfill digest chunk, features, readiness, onboarding entries, guide pages, inventory; release N+1: the migration dropping the tables.
 - **F. Phone renders blocks** — with #1170.
 
-A and B can run in parallel; C before D and E; E last on the Mac side.
+A and B can run in parallel; C before D and E; E last on the Mac side. Every promise in this spec is owned by one of A–F: the built-ins table names its sub-project, and the lists above name the rest.
 
 ## Decisions
 
@@ -157,4 +161,5 @@ A and B can run in parallel; C before D and E; E last on the Mac side.
 - The attention detector (Messages) becomes the built-in automation Waiting for me in the root — ask #952.
 - The Morning brief's "what happened in your channels" section is removed with the digests — ask #952.
 - Removed without replacement: the "discussed without a Jira ticket" detector, the `digest`/`trends`/`decisions` CLI, digest topics in knowledge search and `get_digest`/`list_digests`, digest history (no export) — ask #952.
-- Needs approval as the built-in recipe `needs-approval` with the `approval` trigger and Desktop-added actions; `concurrency: 1` for living outputs and raw-window readers; the spend target is a goal, not a gate; feed vs living lifecycles, no version history; living upsert and read-state rule; folder writes through the CLI with compare-and-set; folder creation without its own approval; deleting a folder moves its contents up; script emits blocks directly; v1 block set; raw window scope, cursor, caps and 7-day skip; meeting prep fallback; `return` trigger for Catch Up; two-release table drop; 50 % spend target — decided by the agent.
+- Waiting for me is one living artifact listing everything that waits — ask #959.
+- Needs approval as the built-in recipe `needs-approval` with the `approval` trigger and Desktop-added actions; `concurrency: 1` for living outputs and raw-window readers; the spend target is a goal, not a gate; feed vs living lifecycles, no version history; living upsert and read-state rule; folder writes through the CLI with compare-and-set; folder creation without its own approval; deleting a folder moves its contents up; script emits blocks directly; v1 block set; raw window scope, cursor, caps and 7-day skip; meeting prep fallback; `return` trigger for Catch Up; two-release table drop; 50 % spend target; approval card removed after the decision and native fallback while the recipe is off; list row `ref` with Desktop-added native row actions; Learned Rules / Assistant Profile in the root's ⋯ and the ? in the Inbox header — decided by the agent.
