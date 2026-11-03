@@ -151,6 +151,77 @@ final class ProviderConnectionTests: XCTestCase {
         XCTAssertEqual(try ProviderExecutableMetadata.check(path: home + "/missing", home: home), .missingCLI)
     }
 
+    func testMetadataRetryAfterExplicitTestNeverSendsInference() async {
+        for provider in ["claude", "codex"] {
+            for metadata in [ProviderConnection.Metadata.missingCLI, .missingSignIn, .networkError] {
+                var metadataCalls = 0
+                var inferenceCalls = 0
+                let model = ProviderConnection(metadata: { _ in metadataCalls += 1; return metadata }, test: { selection in
+                    inferenceCalls += 1
+                    return .init(ok: true, provider: selection.provider, model: selection.model)
+                })
+                model.startTest(selected(provider), policy: .none)
+                await settle(model)
+                await model.check(selected(provider), policy: .none)
+                XCTAssertEqual(model.copy?.action, "Retry connection check")
+                await model.performAction(policy: .none)
+                await settle(model)
+                XCTAssertEqual(metadataCalls, 2)
+                XCTAssertEqual(inferenceCalls, 1)
+                XCTAssertNotEqual(model.state, .ready)
+                await model.cancelAndWait()
+            }
+        }
+    }
+
+    func testInvalidatedProbeIsJoinedByEveryQuitCaller() async {
+        var cleanup: CheckedContinuation<ProviderConnection.Result, Never>?
+        let model = ProviderConnection(metadata: { _ in .notVerified }, test: { _ in
+            await withCheckedContinuation { cleanup = $0 }
+        })
+        model.startTest(selected(), policy: .none)
+        while cleanup == nil { await Task.yield() }
+        model.invalidate()
+        var started = 0
+        var finished = 0
+        let first = Task { started += 1; await model.cancelAndWait(); finished += 1 }
+        let second = Task { started += 1; await model.cancelAndWait(); finished += 1 }
+        while started < 2 { await Task.yield() }
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(finished, 0, "both quit callers must await canceled subprocess cleanup")
+        cleanup?.resume(returning: .init(ok: true, provider: "codex", model: "form-model"))
+        await first.value
+        await second.value
+        XCTAssertEqual(finished, 2)
+        XCTAssertNil(model.copy)
+        XCTAssertNil(model.result)
+        XCTAssertFalse(model.testing)
+    }
+
+    func testReplacementQuitWaitsForBothOldAndCurrentCleanup() async {
+        var cleanups: [String: CheckedContinuation<ProviderConnection.Result, Never>] = [:]
+        let model = ProviderConnection(metadata: { _ in .notVerified }, test: { selection in
+            await withCheckedContinuation { cleanups[selection.model] = $0 }
+        })
+        model.startTest(selected(model: "old-model"), policy: .none)
+        while cleanups["old-model"] == nil { await Task.yield() }
+        model.startTest(selected(model: "new-model"), policy: .none)
+        while cleanups["new-model"] == nil { await Task.yield() }
+        var started = false
+        var finished = false
+        let quit = Task { started = true; await model.cancelAndWait(); finished = true }
+        while !started { await Task.yield() }
+        cleanups["new-model"]?.resume(returning: .init(ok: true, provider: "codex", model: "new-model"))
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertFalse(finished, "finishing the current child must not forget the canceled old child")
+        XCTAssertNil(model.copy)
+        cleanups["old-model"]?.resume(returning: .init(ok: true, provider: "codex", model: "old-model"))
+        await quit.value
+        XCTAssertTrue(finished)
+        XCTAssertNil(model.result)
+        XCTAssertFalse(model.testing)
+    }
+
     private func settle(_ model: ProviderConnection) async {
         for _ in 0..<100 where model.testing { await Task.yield() }
         XCTAssertFalse(model.testing)

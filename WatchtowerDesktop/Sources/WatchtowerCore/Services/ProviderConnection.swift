@@ -33,10 +33,11 @@ package final class ProviderConnection {
     package private(set) var selection: Selection?
     package private(set) var state: ProviderFallbackPreview.State = .empty
     package private(set) var testing = false
-    package private(set) var lastWasTest = false
+    private enum OperationKind { case metadata, test }
+    private var kind: OperationKind?
     package private(set) var result: String?
     private var operation = 0
-    private var task: Task<Void, Never>?
+    private var tasks: [Int: Task<Void, Never>] = [:]
     private let metadata: (Selection) async throws -> Metadata
     private let test: (Selection) async throws -> Result
 
@@ -83,44 +84,79 @@ package final class ProviderConnection {
         return args
     }
     package func invalidate() {
-        operation += 1; task?.cancel(); task = nil
+        operation += 1
+        for task in tasks.values { task.cancel() }
+        kind = nil
         selection = nil; state = .empty; testing = false; result = nil
     }
     package func cancelAndWait() async {
-        let running = task
         invalidate()
-        await running?.value
+        // Each joiner retains its own snapshot. Completion prunes handles;
+        // one quit caller must never take them away from another joiner.
+        while !tasks.isEmpty {
+            let draining = Array(tasks.values)
+            for task in draining { task.cancel() }
+            for task in draining { await task.value }
+        }
     }
     package func check(_ selected: Selection, policy: ManagedPolicy) async {
-        invalidate(); selection = selected
+        invalidate(); selection = selected; kind = .metadata
         if let refusal = ConnectionTest.policyRefusal(provider: selected.provider, policy: policy) {
             state = .policy; result = refusal; return
         }
         state = .checking
         let current = operation
-        do {
-            let value = try await metadata(selected)
-            guard operation == current else { return }
-            switch value {
-            case .missingCLI: state = .notInstalled
-            case .missingSignIn: state = .connectionError
-            case .notVerified: state = .notVerified
-            case .networkError: state = .connectionNetworkError
+        let running = track { [self] in
+            do {
+                let value = try await metadata(selected)
+                guard operation == current else { return }
+                switch value {
+                case .missingCLI: state = .notInstalled
+                case .missingSignIn: state = .connectionError
+                case .notVerified: state = .notVerified
+                case .networkError: state = .connectionNetworkError
+                }
+            } catch {
+                guard operation == current else { return }
+                state = .connectionNetworkError; result = Self.metadataFailure
             }
-        } catch {
-            guard operation == current else { return }
-            state = .connectionNetworkError; result = Self.metadataFailure
+        }
+        await running.value
+    }
+
+    private var actionKind: OperationKind? {
+        guard selection != nil, ![.empty, .checking, .ready, .policy].contains(state) else { return nil }
+        return kind == .test || state == .notVerified ? .test : .metadata
+    }
+    package func performAction(policy: ManagedPolicy) async {
+        guard let selection, let actionKind else { return }
+        switch actionKind {
+        case .test: startTest(selection, policy: policy)
+        case .metadata: await check(selection, policy: policy)
         }
     }
+
+    /// Retain canceled/replaced operations until their asynchronous cleanup
+    /// finishes. Removing only on completion also keeps concurrent joins safe.
+    @discardableResult
+    private func track(_ work: @escaping () async -> Void) -> Task<Void, Never> {
+        let identifier = operation
+        let running = Task {
+            defer { tasks.removeValue(forKey: identifier) }
+            await work()
+        }
+        tasks[identifier] = running
+        return running
+    }
     package func startTest(_ selected: Selection, policy: ManagedPolicy) {
-        invalidate(); selection = selected; lastWasTest = true
+        invalidate(); selection = selected; kind = .test
         if let refusal = ConnectionTest.policyRefusal(provider: selected.provider, policy: policy) {
             state = .policy; result = refusal; return
         }
         guard !selected.model.isEmpty else { state = .notVerified; result = Self.modelRequired; return }
         testing = true; state = .checking
         let current = operation
-        task = Task {
+        track { [self] in
             do {
                 let response = try await test(selected)
                 guard operation == current, !Task.isCancelled else { return }
@@ -171,8 +207,9 @@ package final class ProviderConnection {
             return .init(title: "Connection test completed", detail: result ?? "", action: nil, emphasis: .success)
         }
         let approved = ProviderFallbackPreview(preferred: state == .policy ? provider : provider.other, state: state).copy
-        let action: String? = state == .checking || state == .policy ? nil
-            : lastWasTest ? "Retry connection test" : state == .notVerified ? Self.testLabel : "Retry connection check"
+        let action = actionKind.map { action in
+            action == .metadata ? "Retry connection check" : kind == .test ? "Retry connection test" : Self.testLabel
+        }
         let detail = state == .connectionError
             ? "Sign in to the \(Self.name(selection.provider)) CLI in Terminal, then test connection again."
             : state == .checking ? "Checking the installed CLI without reading credentials or sending an AI prompt." : approved.detail

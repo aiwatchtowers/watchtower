@@ -157,10 +157,7 @@ struct ProviderSettings: View {
     @ViewBuilder private var connectionStatus: some View {
         if let copy = connection.copy {
             ProviderFallbackStatus(copy: copy) {
-                guard let selection = connection.selection else { return }
-                if connection.lastWasTest || connection.state == .notVerified {
-                    connection.startTest(selection, policy: policy)
-                } else { Task { await connection.check(selection, policy: policy) } }
+                Task { await connection.performAction(policy: policy) }
             }
             if let result = connection.result, connection.state != .ready {
                 Text(result).font(.caption).foregroundStyle(Tone.warning).textSelection(.enabled)
