@@ -33,7 +33,7 @@ final class MobileDiagnosticsModelTests: XCTestCase {
     ]
 
     private func loaded(_ json: String) async -> Model {
-        cli.answer(Model.args, json)
+        cli.answer(MobileHubCLI.diagnosticsArgs, json)
         let model = Model(cli: cli)
         await model.load()
         return model
@@ -49,7 +49,7 @@ final class MobileDiagnosticsModelTests: XCTestCase {
     func testRowsFromPinnedJSON() async {
         let model = await loaded(Self.json(rows: Self.mockupRows))
         XCTAssertEqual(cli.invocations, [["hub", "diagnostics", "--days", "7", "--json"]])
-        XCTAssertEqual(cli.timeout(for: Model.args), MobileHubCLI.readTimeout)
+        XCTAssertEqual(cli.timeout(for: MobileHubCLI.diagnosticsArgs), MobileHubCLI.readTimeout)
         let shown = rows(model).map { [$0.stepLabel, $0.transportLabel, $0.p50, $0.p90, $0.samples] }
         XCTAssertEqual(shown, [
             ["Phone action read → applied", "Relay", "p50 38 ms", "p90 120 ms", "42 samples"],
@@ -104,17 +104,18 @@ final class MobileDiagnosticsModelTests: XCTestCase {
     }
 
     func testErrorThenRetryLoads() async {
-        cli.fail(Model.args, stderr: "Error: database is locked")
+        cli.fail(MobileHubCLI.diagnosticsArgs, stderr: "Error: database is locked")
         let model = Model(cli: cli)
         await model.load()
         XCTAssertEqual(model.state, .error("Couldn't read the timings."))
         XCTAssertEqual(Model.errorText, "Couldn't read the timings.")
         XCTAssertEqual(Model.retryTitle, "Retry")
+        XCTAssertEqual(Model.doneTitle, "Done")
         XCTAssertNil(model.overGoalLine)
         XCTAssertNil(model.overflowLine)
 
-        cli.answer(Model.args, Self.json(rows: Self.mockupRows))
-        await model.retry()
+        cli.answer(MobileHubCLI.diagnosticsArgs, Self.json(rows: Self.mockupRows))
+        await model.load()
         XCTAssertEqual(rows(model).count, 6)
         XCTAssertEqual(cli.invocations.count, 2)
     }
@@ -142,7 +143,7 @@ final class MobileDiagnosticsModelTests: XCTestCase {
 
     func testAFailedRefreshShowsTheError() async {
         let model = await loaded(Self.json(rows: Self.mockupRows, overflow: 2))
-        cli.fail(Model.args, stderr: "Error: boom")
+        cli.fail(MobileHubCLI.diagnosticsArgs, stderr: "Error: boom")
         await model.load()
         XCTAssertEqual(model.state, .error(Model.errorText))
         XCTAssertNil(model.overflowLine)

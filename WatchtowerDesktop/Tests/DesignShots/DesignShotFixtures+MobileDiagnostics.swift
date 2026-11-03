@@ -80,7 +80,7 @@ enum MobileDiagnosticsShotFixtures {
     private typealias Row = MobileHubCLI.Diagnostics.Row
 
     private static func diagnostics(rows: [Row], overflow: Int = 0) -> MobileHubCLI.Diagnostics {
-        MobileHubCLI.Diagnostics(windowDays: 7, rows: rows, pushOverflowExpired: overflow)
+        MobileHubCLI.Diagnostics(rows: rows, pushOverflowExpired: overflow)
     }
 
     private static let iCloud = [

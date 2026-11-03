@@ -17,9 +17,8 @@ final class MobileDiagnosticsModel {
     }
 
     struct Row: Equatable, Identifiable {
-        var id: String { step + "/" + transport }
-        /// The CLI's step and transport, for the order and the pill colour.
-        let step: String
+        var id: String { transport + "/" + stepLabel }
+        /// The CLI's transport (`relay`, `cloudkit`), for the pill colour.
         let transport: String
         let stepLabel: String
         /// "Relay" | "iCloud".
@@ -37,10 +36,11 @@ final class MobileDiagnosticsModel {
     nonisolated static let emptyText = "No timings yet. They appear after the first action from a phone."
     nonisolated static let errorText = "Couldn't read the timings."
     nonisolated static let retryTitle = "Retry"
+    /// Closes the Diagnostics sheet.
+    nonisolated static let doneTitle = "Done"
     nonisolated static let overGoalText = "This Mac's part alone is over the 500 ms goal."
     /// The goal for this Mac's part of one phone action, from read to slice saved.
     nonisolated static let goalMs = 500
-    nonisolated static let args = MobileHubCLI.diagnosticsArgs
 
     /// The steps in the order shown, with their labels.
     nonisolated static let steps: [(step: String, label: String)] = [
@@ -64,7 +64,7 @@ final class MobileDiagnosticsModel {
         self.cli = MobileHubCLI(runner: cli)
     }
 
-    /// Reads the timings; one read at a time. The first read shows
+    /// Reads the timings; one read at a time. The first read and Retry show
     /// `.loading`, a later one keeps what is shown and sets `isRefreshing`.
     func load() async {
         guard !loading else { return }
@@ -79,18 +79,11 @@ final class MobileDiagnosticsModel {
         do {
             let diagnostics = try await cli.diagnostics()
             present(diagnostics)
-        } catch is CancellationError {
-            // The screen went away mid-read: what it shows stays.
         } catch {
-            guard !Task.isCancelled else { return }
+            // The sheet went away mid-read: what it shows stays.
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
             presentFailure()
         }
-    }
-
-    /// Retry on the error: loading again from scratch.
-    func retry() async {
-        state = .loading
-        await load()
     }
 
     /// Shows one read of the timings.
@@ -119,7 +112,7 @@ final class MobileDiagnosticsModel {
             steps.compactMap { step, label in
                 rows.first { $0.step == step && $0.transport == transport }.map { row in
                     Row(
-                        step: step, transport: transport, stepLabel: label,
+                        transport: transport, stepLabel: label,
                         transportLabel: MobileSettingsModel.transportLabel(transport),
                         p50: "p50 " + duration(ms: row.p50Ms), p90: "p90 " + duration(ms: row.p90Ms),
                         samples: samplesText(row.samples)

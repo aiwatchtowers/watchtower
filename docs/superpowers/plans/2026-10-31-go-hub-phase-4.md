@@ -427,6 +427,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   }
   ```
   Durations format: < 1 s as "38 ms", else "2.1 s".
+  As built (review round 1, PR #641): Diagnostics is a sheet over Settings → Mobile with **Done** (`doneTitle`), one `SettingsSection` (the kit's `caption` and `isBusy` header spinner) holding the lines above the rows. At 480 pt a row keeps one line only where it fits; there the step label, the pill and the three figures (about 470 pt) do not, so the figures wrap below the label (mockup §23 shows one line).
 - **Depends on:** Task 1 (mockup approved), Task 7
 
 - [ ] **Step 1: DesignShots** (light/dark), exactly the Task 9 rows of Task 1's coverage table: `mobileDiagnosticsEntry`, `mobileDiagnosticsRows`, `mobileDiagnosticsEmpty`, `mobileDiagnosticsLoading`, `mobileDiagnosticsError`, `mobileDiagnosticsBusy`, `mobileDiagnosticsNarrow`, `mobileDiagnosticsOverGoal`, `mobileDiagnosticsOverGoalNarrow`, `mobileDiagnosticsOverflowOne`, `mobileDiagnosticsOverflowMany`, `mobileDiagnosticsOverflowNarrow`, `mobileDiagnosticsAllLines`, `mobileDiagnosticsEmptyOverflow`, `mobileDiagnosticsBusyOverGoal`.

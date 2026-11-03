@@ -276,13 +276,11 @@ extension MobileHubCLI {
             }
         }
 
-        let windowDays: Int
         let rows: [Row]
         let pushOverflowExpired: Int
 
         enum CodingKeys: String, CodingKey {
             case rows
-            case windowDays = "window_days"
             case pushOverflowExpired = "push_overflow_expired"
         }
     }
