@@ -1480,7 +1480,7 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     read_at       TEXT,                                      -- Desktop-written
     dismissed_at  TEXT                                       -- Desktop-written
-, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT);
+, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT, blocks_json TEXT NOT NULL DEFAULT '', output_key TEXT, content_hash TEXT NOT NULL DEFAULT '', written_at TEXT, changed_at TEXT);
 CREATE TABLE IF NOT EXISTS plan_usage_samples (
     taken_at   TEXT NOT NULL,
     limit_key  TEXT NOT NULL,
@@ -2719,6 +2719,8 @@ CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at
 CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

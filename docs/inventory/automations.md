@@ -191,13 +191,20 @@ interrupted run — leaves `automation_state` and `automation_outputs`
 byte-identical. Reads see the committed state plus the run's own sets. A dry
 run never commits. A succeeded script whose journal lost a write still commits
 (its writes already happened; failing it would make the next run repeat them),
-and the run's error notes the incomplete journal (board #562).
+and the run's error notes the incomplete journal (board #562). The same
+commit upserts living outputs by `(automation_id, output_key)` (migration
+00173: a changed `content_hash` moves `changed_at` and clears the read, done,
+dismissed and press state; a same-hash rewrite moves only `written_at`) and
+applies `output.remove` (`RunCommit.Removals`, delete by key, a missing key
+is a no-op); every other terminal status leaves living rows byte-identical
+too (Inbox builder A, ask #961).
 
 **Why locked:** A run that dies halfway must be safe to rerun; a half-written
 cursor in `state` would silently skip or repeat work.
 
 **Test guards:**
 - `internal/db/automation_runs_test.go` — `TestAuto04_FinishCommitOnlyOnSuccess`, `TestFinish_RefusesTerminalRun`, `TestFinish_RefusesForeignOutput`
+- `internal/db/automation_outputs_living_test.go` — `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess` (Inbox builder A)
 - `internal/automations/executor_test.go` — `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed out, over budget, cancelled), `TestAuto04_SucceededCommitsStateAndOutputsAtomically`
 - `internal/automations/sdk_test.go` — `TestState_ReadsCommittedPlusOwnSets`, `TestState_RejectsUnserialisableValues`
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_BriefingBufferedAndCommittedOnSuccess` (P2: `output.briefing` is buffered like `report` and committed only with `succeeded`)
@@ -671,6 +678,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-03 (board #1400, Inbox builder A, **owner approved in ask #961**): **AUTO-04 extended** — the run's one finish transaction also upserts living Inbox outputs by `(automation_id, output_key)` and deletes the keys `output.remove` buffered (migration 00173: `blocks_json`, `output_key`, `content_hash`, `written_at`, `changed_at`, partial unique index `idx_automation_outputs_key`); only a changed content hash makes a card new again (moves `changed_at`, clears read/done/dismissed/press). A failed, timed-out, over-budget or cancelled run leaves living rows byte-identical, like every other output. Guards added: `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess`. No guard relaxed.
 - 2026-10-28 (board #1194, **AUTO-06 amended, owner approved in ask #692**): quick run gains a third origin, the iPhone (`QuickRunCenter.runFromPhone` through `AutomationRunHandler`), for workbench recipes only; the not-runnable states refuse as on the Mac, and a `confirm: true` recipe needs the phone's own confirmation, carried as `confirmed: true` and checked by the hub. No guard relaxed (`testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun` unchanged). Guards added: `AutomationRunHandlerTests.testAConfirmRecipeRunsOnlyWhenThePhoneConfirmedIt`, `testARecipeThatCannotRunIsRefusedWithItsReason`.
 - 2026-10-25 (board #606, ask #567): **AUTO-08 amended** — a run is also bounded by the read budget (READ-01, key `run:<id>`, `mcp()` counts as a call); reaching it is a catchable `ValidationError`, not an interrupt; an `agent()` CLI child keeps its own counter under the same key. Strengthening, no guard relaxed. Guards added: `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes`.
 - 2026-10-23 (board #801, C2 final review fix batch 1): **AUTO-08 strengthened** — a runaway-disabled built-in stays off until the owner turns it on (the slot runner, Run Now and `automations run` check `disabled_reason`; the built-in sync's mirror never turns such a row on; only the owner's `features enable` — the card's Turn On — clears it, and not under AI-agent markers), and a CLI inline built-in run (a running `manual` run) is swept at daemon start only past its deadline, as a live CLI dry run is. No guard relaxed. Guards added: `TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives`, `TestSetBuiltinEnabled_NeverTurnsOnARunawayStop`, `TestRunner_RunawayStoppedBuiltinStaysOff`, `TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn`.
