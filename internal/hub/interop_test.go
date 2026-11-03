@@ -153,6 +153,12 @@ type tappedTransport struct {
 
 	mu      sync.Mutex
 	resyncs map[string]int
+	// dropZone, when set, is a mailbox zone whose every save is deleted
+	// again at once (dropped counts them); readers is the last reader set
+	// the hub gave set_hub_readers (TestInterop_KitPhoneFollowsASwitch).
+	dropZone string
+	dropped  int
+	readers  []string
 }
 
 func newTappedTransport(tr *relay.Transport) *tappedTransport {
@@ -204,6 +210,10 @@ type interopOpts struct {
 	// httpWrap, when set, wraps the round tripper of the hub's relay HTTP
 	// client (the phone's is not wrapped).
 	httpWrap func(http.RoundTripper) http.RoundTripper
+	// clock, when set, is the hub's clock (startDesktopHub only; the relay
+	// transport keeps time.Now); cycle is its daemon cycle tick.
+	clock func() time.Time
+	cycle <-chan struct{}
 }
 
 // interopHub is one Run on the stand.

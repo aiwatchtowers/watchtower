@@ -265,7 +265,7 @@ run_args() {
 setup_args desktop-run
 run_args RELAY_INTEROP_DESKTOP=1
 [ "$RC" -eq 0 ] || note_fail "desktop-run: exit $RC ($(cat "$C/err"))"
-grep -qxF 'TestInterop_KitPhone(FollowsASwitch)?$' "$C/go.args" 2>/dev/null ||
+grep -qxF '^TestInterop_KitPhoneFollowsASwitch$' "$C/go.args" 2>/dev/null ||
 	note_fail "desktop-run: go did not run the desktop pattern: $(tr '\n' ' ' <"$C/go.args" 2>/dev/null)"
 grep -qxF -- '-kit-desktop' "$C/go.args" 2>/dev/null || note_fail "desktop-run: go got no -kit-desktop"
 [ "$(cat "$C/kit.env" 2>/dev/null)" = "desktop=1 dir=set" ] || note_fail "desktop-run: Kit env $(cat "$C/kit.env" 2>/dev/null)"

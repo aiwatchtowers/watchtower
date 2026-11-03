@@ -24,7 +24,7 @@
 # other reads, so neither waits out its timeouts. Exits 0 only when both pass.
 #
 # RELAY_INTEROP_DESKTOP=1 is the desktop host's run (relay client Phase 3b Task
-# 24): the Go half runs -run 'TestInterop_KitPhone(FollowsASwitch)?$' with
+# 24): the Go half runs -run '^TestInterop_KitPhoneFollowsASwitch$' with
 # -kit-desktop (the hub is a Mac's desktop host on both transports, its CloudKit
 # side served to the phone by the loopback store whose URL and token it writes
 # to ck.url in the handoff folder; the relay-only TestInterop_KitPhone skips),
@@ -137,7 +137,7 @@ case "${RELAY_INTEROP_DESKTOP:-0}" in
 	;;
 1)
 	DESKTOP=1
-	GO_RUN='TestInterop_KitPhone(FollowsASwitch)?$'
+	GO_RUN='^TestInterop_KitPhoneFollowsASwitch$'
 	;;
 *)
 	echo "relay-interop-kit-hub: RELAY_INTEROP_DESKTOP is 1 or 0" >&2
@@ -177,6 +177,7 @@ GO_PIN="$(cut -d' ' -f1 "$ROOT/internal/hub/transport/relay/VERSION")"
 if HEAD="$(git -C "$RELAY" rev-parse HEAD 2>/dev/null)"; then
 	echo "relay-interop-kit-hub: relay checkout at $HEAD (Kit pin $KIT_PIN, Go hub pin $GO_PIN)" >&2
 	[ "$HEAD" = "$KIT_PIN" ] || echo "relay-interop-kit-hub: warning: the Kit's proto is pinned to $KIT_PIN" >&2
+	[ "$HEAD" = "$GO_PIN" ] || echo "relay-interop-kit-hub: warning: the Go hub's proto is pinned to $GO_PIN" >&2
 else
 	echo "relay-interop-kit-hub: $RELAY is not a git checkout (Kit pin $KIT_PIN, Go hub pin $GO_PIN)" >&2
 fi

@@ -31,7 +31,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         return try RelayBackend.standFromEnvironment()
     }
 
-    private func handoffDir() throws -> URL {
+    func handoffDir() throws -> URL {
         guard let dir = ProcessInfo.processInfo.environment[Self.handoffVariable], !dir.isEmpty else {
             throw XCTSkip("\(Self.handoffVariable) is not set: run `make relay-interop-kit-hub RELAY=<relay checkout>`")
         }
@@ -188,7 +188,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
 
     // MARK: - Helpers
 
-    private func expectServerCode(
+    func expectServerCode(
         _ code: Relay_V1_ErrorCode,
         _ what: String,
         file: StaticString = #filePath,
@@ -204,7 +204,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
     }
 
     /// Runs `body` every second until it returns true; throws when `limit` passes first.
-    private func poll(within limit: TimeInterval, _ what: String, _ body: () async throws -> Bool) async throws {
+    func poll(within limit: TimeInterval, _ what: String, _ body: () async throws -> Bool) async throws {
         let deadline = Date().addingTimeInterval(limit)
         while true {
             if try await body() { return }
@@ -220,7 +220,7 @@ enum GoHubInteropFailure: Error, Equatable {
 }
 
 /// The handoff folder: files written whole (temp + rename), read by polling.
-private final class Handoff: @unchecked Sendable {
+final class Handoff: @unchecked Sendable {
     let dir: URL
     /// The step running now, written to kit.fail when the run throws.
     var step = "start"
@@ -256,7 +256,7 @@ private final class Handoff: @unchecked Sendable {
 }
 
 /// The phone's side of one link: its keys, the hub's keys from the code, the replica and the sealing.
-private struct PhoneLink {
+struct PhoneLink {
     let keys = InMemoryPhoneKeyStore()
     let identity: DeviceIdentityKeys
     let hubID: String

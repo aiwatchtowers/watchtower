@@ -30,6 +30,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -37,6 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -124,8 +126,16 @@ func startDesktopHub(t *testing.T, opts interopOpts) *interopHub {
 	}
 	// A desktop host builds its relay unconnected (zones nil) once per start;
 	// the link upkeep connects it.
+	if opts.clock != nil {
+		o.Clock = opts.clock
+	}
+	o.CycleTick = opts.cycle
+	// The relay keeps the real clock: it stamps client_modified_at_ms, which
+	// the stand checks against its own.
+	relayOpts := o
+	relayOpts.Clock = time.Now
 	o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
-		tr, err := o.relayTransport(ctx, id, st, zones)
+		tr, err := relayOpts.relayTransport(ctx, id, st, zones)
 		if err != nil {
 			t.Logf("hub transport: %v", err)
 			return nil, err
@@ -212,12 +222,36 @@ func (k kitRun) writeCloudKitURL(url, token string) {
 type cloudKitLoop struct {
 	f     *bridgefake.Fake
 	token []byte
+
+	// bodies is every authorized request body, as read (the canary check of
+	// TestInterop_KitPhoneFollowsASwitch).
+	mu     sync.Mutex
+	bodies [][]byte
+}
+
+// requestBodies is a copy of every authorized request body the store read.
+func (l *cloudKitLoop) requestBodies() [][]byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([][]byte, len(l.bodies))
+	for i, b := range l.bodies {
+		out[i] = bytes.Clone(b)
+	}
+	return out
 }
 
 // serveCloudKitLoop serves f's phone records on 127.0.0.1:<random port>
 // behind a per-run token of 32 random bytes (hex); it stops at the test's
 // end. The URL is http://127.0.0.1:<port>.
 func serveCloudKitLoop(t *testing.T, f *bridgefake.Fake) (url, token string) {
+	t.Helper()
+	url, token, _ = serveTappedCloudKitLoop(t, f)
+	return url, token
+}
+
+// serveTappedCloudKitLoop is serveCloudKitLoop that also returns the store,
+// whose requestBodies the caller reads.
+func serveTappedCloudKitLoop(t *testing.T, f *bridgefake.Fake) (url, token string, loop *cloudKitLoop) {
 	t.Helper()
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -228,7 +262,8 @@ func serveCloudKitLoop(t *testing.T, f *bridgefake.Fake) (url, token string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: &cloudKitLoop{f: f, token: []byte(token)}, ReadHeaderTimeout: 10 * time.Second}
+	loop = &cloudKitLoop{f: f, token: []byte(token)}
+	srv := &http.Server{Handler: loop, ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -240,7 +275,7 @@ func serveCloudKitLoop(t *testing.T, f *bridgefake.Fake) (url, token string) {
 		_ = srv.Shutdown(ctx)
 		<-done
 	})
-	return "http://" + l.Addr().String(), token
+	return "http://" + l.Addr().String(), token, loop
 }
 
 // loopRequest is every op's body; each op reads its own fields.
@@ -289,8 +324,16 @@ func (l *cloudKitLoop) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		loopError(w, http.StatusServiceUnavailable, "no_hub")
 		return
 	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, loopBodyLimit))
+	if err != nil {
+		loopError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	l.mu.Lock()
+	l.bodies = append(l.bodies, body)
+	l.mu.Unlock()
 	var req loopRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, loopBodyLimit))
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		loopError(w, http.StatusBadRequest, "bad_request")
