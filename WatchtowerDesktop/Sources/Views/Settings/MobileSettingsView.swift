@@ -13,6 +13,7 @@ struct MobileSettingsTab: View {
         Group {
             if let model {
                 MobileSettingsView(model: model)
+                    .modifier(MobileDiagnosticsPresenter { MobileDiagnosticsModel(cli: ProcessCLIRunner.makeDefault()) })
             } else {
                 Color.clear
             }
@@ -194,6 +195,7 @@ private struct MobileCorpNotice: View {
 private struct MobileHubSection: View {
     typealias Copy = MobileSettingsModel
     let model: MobileSettingsModel
+    @Environment(\.openMobileDiagnostics) private var openDiagnostics
 
     var body: some View {
         SettingsSection(title: Copy.sectionTitle) {
@@ -223,6 +225,7 @@ private struct MobileHubSection: View {
                 Toggle(Copy.keepAwakeTitle, isOn: Binding(get: { model.keepAwake }, set: { model.setKeepAwake($0) }))
                     .labelsHidden()
             }
+            MobileDiagnosticsEntryRow { openDiagnostics?() }
         }
     }
 

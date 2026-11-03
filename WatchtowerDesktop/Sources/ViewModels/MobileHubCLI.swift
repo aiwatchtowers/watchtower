@@ -252,3 +252,47 @@ struct MobileHubCLI {
         return fractional.date(from: text)
     }
 }
+
+// MARK: - Diagnostics (go hub plan 4 Task 9)
+
+extension MobileHubCLI {
+    /// `hub diagnostics --json` (Task 7 keys): the hub's content-free
+    /// timings per step and transport, and the alert pushes dropped in the
+    /// window because too many were waiting for one phone.
+    struct Diagnostics: Decodable, Equatable {
+        struct Row: Decodable, Equatable {
+            /// read_applied, applied_saved, read_saved.
+            let step: String
+            /// cloudkit, relay.
+            let transport: String
+            let p50Ms: Int
+            let p90Ms: Int
+            let samples: Int
+
+            enum CodingKeys: String, CodingKey {
+                case step, transport, samples
+                case p50Ms = "p50_ms"
+                case p90Ms = "p90_ms"
+            }
+        }
+
+        let windowDays: Int
+        let rows: [Row]
+        let pushOverflowExpired: Int
+
+        enum CodingKeys: String, CodingKey {
+            case rows
+            case windowDays = "window_days"
+            case pushOverflowExpired = "push_overflow_expired"
+        }
+    }
+
+    /// The window Diagnostics shows: the samples' whole 7 days.
+    nonisolated static let diagnosticsArgs = ["hub", "diagnostics", "--days", "7", "--json"]
+
+    func diagnostics() async throws -> Diagnostics { try Self.decodeDiagnostics(await output(Self.diagnosticsArgs)) }
+
+    nonisolated static func decodeDiagnostics(_ data: Data) throws -> Diagnostics {
+        try JSONDecoder().decode(Diagnostics.self, from: data)
+    }
+}
