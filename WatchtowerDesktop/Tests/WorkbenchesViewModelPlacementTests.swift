@@ -442,7 +442,7 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         XCTAssertNotEqual(center.states[row.id].map { if case .unavailable = $0 { true } else { false } }, true)
     }
 
-    func testResumeOfAWorktreeNowOnAnotherBranchIsUnavailable() async throws {
+    func testResumeOfAWorktreeALaterSessionHoldsIsUnavailable() async throws {
         let p = try await workbench()
         let runner = PlacementRunner(workbenchID: p, worktree: worktree)
         runner.setFolderStatusReply(#"""
@@ -451,6 +451,8 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
             """#)
         let vm = await makeVM(runner)
         let row = try await placedRow(p, gone: false)
+        // A later session reused the path after this row's directory was removed.
+        try await otherPlacedRow(p, title: "later", branch: "wt/session-2-2")
 
         await vm.open(row)
 
@@ -458,10 +460,57 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         XCTAssertEqual(call.firstIndex(of: "--folder").map { call[$0 + 1] }, worktree)
         XCTAssertEqual(
             center.states[row.id],
-            .unavailable("The worktree at \(worktree) is now on wt/session-2-2, not wt/session-2 — start a new session.")
+            .unavailable("The worktree at \(worktree) now belongs to the session \"later\" (on wt/session-2-2, "
+                + "not wt/session-2) — start a new session.")
         )
         XCTAssertTrue(launches.isEmpty, "never a launch in another session's worktree")
         XCTAssertTrue(runner.ensureCalls.isEmpty)
+    }
+
+    func testResumeOfItsOwnWorktreeOnAnotherBranchLaunches() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        // The agent ran `git checkout -b` inside its own worktree.
+        runner.setFolderStatusReply(#"""
+            {"workbench_id":1,"git_available":true,"git":true,"branch":"fix/onboarding","status_ok":true,
+             "folder_scope":"worktree"}
+            """#)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+
+        await vm.open(row)
+
+        XCTAssertEqual(launches.last?.currentDirectory, worktree)
+        XCTAssertNotEqual(center.states[row.id].map { if case .unavailable = $0 { true } else { false } }, true)
+        let stored = try await pool.read { try TerminalSessionQueries.fetch($0, id: row.id) }
+        XCTAssertEqual(stored?.worktreeBranch, "wt/session-2", "the row's branch stays: cleanup relies on it")
+    }
+
+    func testResumeOfItsOwnWorktreeOnADetachedHeadLaunches() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(#"""
+            {"workbench_id":1,"git_available":true,"git":true,"branch":"","detached":true,"status_ok":true,
+             "folder_scope":"worktree"}
+            """#)
+        let vm = await makeVM(runner)
+        // An earlier session held the same path before this row reused it.
+        try await otherPlacedRow(p, title: "earlier", branch: "wt/session-1")
+        let row = try await placedRow(p, gone: false)
+
+        await vm.open(row)
+
+        XCTAssertEqual(launches.last?.currentDirectory, worktree)
+    }
+
+    private func otherPlacedRow(_ p: Int64, title: String, branch: String) async throws {
+        let folder = worktree
+        _ = try await pool.write { db in
+            try TerminalSessionQueries.create(db, .init(
+                projectID: p, kind: .claude, title: title, folderPath: folder,
+                claudeSessionID: UUID().uuidString.lowercased(), worktreeBranch: branch, worktreeBase: "abc"
+            ))
+        }
     }
 
     func testResumeOfAWorktreeWhoseStatusFailsIsUnavailable() async throws {

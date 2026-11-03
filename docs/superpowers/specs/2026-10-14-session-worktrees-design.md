@@ -162,6 +162,14 @@ command). When the branch is gone too (#535 removes a merged branch), the row is
 "The worktree and its branch wt/… were cleaned up — start a new session." Never a silent start in
 the main folder.
 
+When the directory exists, ownership is decided by the path, not the branch (amended 2026-11-03):
+an agent may switch branches or detach HEAD inside its own worktree, so the resume launches there
+unless another session row placed later (`created_at`, then id) has its folder in the same worktree
+top — the path was reused after this row's directory was removed — which leaves the row unavailable:
+"The worktree at <top> now belongs to the session "<title>" … — start a new session." An unreadable
+git status or a folder that is not a worktree of the workbench is refused as before. The row's
+`worktree_branch` stays as recorded.
+
 ## 8. Workbench integration inside a worktree
 
 Claude Code keys its project configuration by the working directory: the hooks and #535's cleanup

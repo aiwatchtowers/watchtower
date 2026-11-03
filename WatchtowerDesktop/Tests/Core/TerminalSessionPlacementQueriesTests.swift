@@ -34,4 +34,25 @@ final class TerminalSessionPlacementQueriesTests: XCTestCase {
         let db = try TestDatabase.create()
         XCTAssertThrowsError(try db.write { try WorkbenchQueries.setWorktreeSetup($0, projectID: 999, command: "x") })
     }
+
+    func testFetchInFolderReturnsRowsInTheFolderOnly() throws {
+        let db = try TestDatabase.create()
+        let projectID = try db.write { try TestDatabase.insertWorkbench($0, folder: "/repo") }
+        let other = try db.write { try TestDatabase.insertWorkbench($0, name: "other", folder: "/other") }
+        func add(_ p: Int64, _ folder: String) throws -> Int64 {
+            try db.write { db in
+                try TerminalSessionQueries.create(db, .init(
+                    projectID: p, kind: .claude, title: "t", folderPath: folder, claudeSessionID: UUID().uuidString)).id
+            }
+        }
+        let top = "/repo/.claude/worktrees/a_b"
+        let exact = try add(projectID, top)
+        let inside = try add(projectID, top + "/app")
+        let fromOtherWorkbench = try add(other, top)
+        _ = try add(projectID, "/repo/.claude/worktrees/a_bc")
+        _ = try add(projectID, "/repo/.claude/worktrees/aXb")
+        _ = try add(projectID, "/repo")
+        let ids = try db.read { try TerminalSessionQueries.fetchInFolder($0, top: top) }.map(\.id)
+        XCTAssertEqual(ids, [exact, inside, fromOtherWorkbench])
+    }
 }

@@ -1089,8 +1089,7 @@ extension WorkbenchesViewModel {
     /// — the row `.unavailable`, nothing launches — when the branch is gone
     /// too or the worktree could not be restored; never a start in the main
     /// folder. A setup command never runs here. An existing directory
-    /// launches only while it is still on the row's branch: a later session
-    /// may hold that path now (`isOnOwnBranch`).
+    /// launches unless a later session holds that path now (`isStillHeld`).
     private func restoreWorktree(_ row: TerminalSession) async -> Bool {
         guard let branch = row.worktreeBranch, let projectID = row.projectID, let center = terminalCenter else { return true }
         if center.states[row.id] == .running { return true }
@@ -1101,7 +1100,7 @@ extension WorkbenchesViewModel {
             center.refuseLaunch(row, reason: "The worktree \(what): no CLI is available.")
             return false
         }
-        if exists { return await isOnOwnBranch(row, projectID: projectID, branch: branch, top: top) }
+        if exists { return await isStillHeld(row, projectID: projectID, branch: branch, top: top) }
         do {
             let result = try await cli.worktreeEnsure(
                 projectID: projectID, path: top, branch: branch, agent: row.kind.agent
@@ -1109,7 +1108,7 @@ extension WorkbenchesViewModel {
             if result.created { return true }
             // An existing directory is a no-op (`created` false, nothing refused).
             if result.refused.isEmpty && result.error.isEmpty && Self.isDirectory(row.folderPath) {
-                return await isOnOwnBranch(row, projectID: projectID, branch: branch, top: top)
+                return await isStillHeld(row, projectID: projectID, branch: branch, top: top)
             }
             if result.refused == "unknown_branch" {
                 center.refuseLaunch(
@@ -1126,12 +1125,16 @@ extension WorkbenchesViewModel {
         return false
     }
 
-    /// Whether the worktree at the row's folder is still on `branch`; when
-    /// not — another session's worktree now, a branch switched by hand, or a
-    /// status that could not be read — the row is `.unavailable` and false:
-    /// never a launch in somebody else's worktree. Called with `cli` and a
-    /// terminal center present (`restoreWorktree`).
-    private func isOnOwnBranch(_ row: TerminalSession, projectID: Int64, branch: String, top: String) async -> Bool {
+    /// Whether the worktree at the row's folder is still the row's own. On
+    /// `branch` it is; on another branch or a detached HEAD (an agent's
+    /// `git checkout` inside its worktree) it is unless another session row
+    /// placed later claims the same top — the path reused after this row's
+    /// directory was removed (`SessionStartPlacement.laterHolder`). A status
+    /// that could not be read, a folder that is not a worktree of the
+    /// workbench, an unreadable database or a later holder leave the row
+    /// `.unavailable` and false: never a launch in somebody else's worktree.
+    /// Called with `cli` and a terminal center present (`restoreWorktree`).
+    private func isStillHeld(_ row: TerminalSession, projectID: Int64, branch: String, top: String) async -> Bool {
         guard let cli, let center = terminalCenter else { return false }
         let status: WorkbenchGitStatus
         do {
@@ -1146,9 +1149,19 @@ extension WorkbenchesViewModel {
             return false
         }
         if !status.detached, status.branch == branch { return true }
+        let holder: TerminalSession?
+        do {
+            let rows = try await dbPool.read { try TerminalSessionQueries.fetchInFolder($0, top: top) }
+            holder = SessionStartPlacement.laterHolder(of: top, row: row, among: rows)
+        } catch {
+            center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(error.localizedDescription)")
+            return false
+        }
+        guard let holder else { return true }
         let now = status.detached ? "a detached HEAD" : status.branch
         center.refuseLaunch(
-            row, reason: "The worktree at \(top) is now on \(now), not \(branch) — start a new session."
+            row, reason: "The worktree at \(top) now belongs to the session \"\(holder.title)\" (on \(now), "
+                + "not \(branch)) — start a new session."
         )
         return false
     }

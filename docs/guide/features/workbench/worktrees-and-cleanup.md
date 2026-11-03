@@ -50,7 +50,7 @@ A file named `.worktreeinclude` at the repository root lists ignored files, such
 
 In the title row's **…** menu, **Worktree Setup Command…** sets one shell command that runs in each new worktree before the agent starts, for example a dependency install. A failure prints a line and the agent starts anyway. It does not run on resume.
 
-A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session.
+A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session. A session resumes in its worktree even when the agent switched it to another branch; only when a later session now uses the same folder does the row say to start a new session.
 
 ### What cleanup removes
 

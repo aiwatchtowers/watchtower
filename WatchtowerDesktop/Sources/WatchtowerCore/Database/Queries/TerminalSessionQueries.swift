@@ -119,6 +119,20 @@ package enum TerminalSessionQueries {
         )
     }
 
+    /// Every row, of any workbench, whose folder is `top` or inside it —
+    /// the candidates `SessionStartPlacement.laterHolder` decides among.
+    package static func fetchInFolder(_ db: Database, top: String) throws -> [TerminalSession] {
+        try TerminalSession.fetchAll(
+            db,
+            sql: """
+                SELECT * FROM terminal_sessions
+                WHERE folder_path = ? OR substr(folder_path, 1, length(?) + 1) = ? || '/'
+                ORDER BY id
+                """,
+            arguments: [top, top, top]
+        )
+    }
+
     package static func fetchForTarget(_ db: Database, targetID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
