@@ -320,8 +320,9 @@ public struct CloudKitBridgeCloud: BridgeCloud {
     public init(
         hubID: String,
         database: any BridgeDatabase = LiveBridgeDatabase(),
-        entitlementPresent: (@Sendable () -> Bool)? = nil,
-        zonesRecreated: @escaping @Sendable () -> Void = {}
+        // Before entitlementPresent, so a trailing `{ true }` keeps meaning the entitlement check.
+        zonesRecreated: @escaping @Sendable () -> Void = {},
+        entitlementPresent: (@Sendable () -> Bool)? = nil
     ) {
         self.hubID = hubID
         self.database = database

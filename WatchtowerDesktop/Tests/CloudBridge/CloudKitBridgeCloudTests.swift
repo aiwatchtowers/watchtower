@@ -67,7 +67,7 @@ final class CloudKitBridgeCloudTests: XCTestCase {
 
     func testZoneNamesAndZoneCreation() async throws {
         let recreated = Counter()
-        cloud = CloudKitBridgeCloud(hubID: hub, database: db, entitlementPresent: { true }, zonesRecreated: { recreated.add() })
+        cloud = CloudKitBridgeCloud(hubID: hub, database: db, zonesRecreated: { recreated.add() }, entitlementPresent: { true })
         do {
             _ = try await cloud.save(zone: "DataZone-other", [CloudWrite(name: "x", envelope: env)])
             XCTFail("another hub's zone was accepted")
