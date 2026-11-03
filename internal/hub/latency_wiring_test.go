@@ -37,16 +37,6 @@ func TestRuntimeRecordsLatencySamples(t *testing.T) {
 		}
 		o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{bumpSource{&n}} }
 	})
-	seq, err := e.phone.Act("latency_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, 15*time.Second, "the latency_test action applied", func() bool {
-		if _, err := e.phone.Sync(); err != nil {
-			t.Fatal(err)
-		}
-		return e.phone.Echoes[seq].Status == wire.StatusApplied
-	})
 	steps := func() map[string]int {
 		st, err := state.OpenReadOnly(e.dir)
 		if err != nil {
@@ -65,12 +55,46 @@ func TestRuntimeRecordsLatencySamples(t *testing.T) {
 		}
 		return out
 	}
-	eventually(t, 15*time.Second, "read_applied, applied_saved and read_saved samples", func() bool {
-		s := steps()
-		// The two probes and latency_test are timed read → applied; only
-		// latency_test nudges a slice.
-		return s[state.StepReadApplied] >= 3 && s[state.StepAppliedSaved] == 1 && s[state.StepReadSaved] == 1
+	// The handler moves the source's value before its outcome commits, so an
+	// unrelated cycle whose read began in that window publishes the value
+	// uncredited (correctly: its read began before the apply). Send the
+	// action again, a bounded number of times, until one is credited.
+	const attempts = 5
+	sent := 0
+	var s map[string]int
+	for sent < attempts {
+		seq, err := e.phone.Act("latency_test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sent++
+		eventually(t, 15*time.Second, "the latency_test action applied", func() bool {
+			if _, err := e.phone.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			return e.phone.Echoes[seq].Status == wire.StatusApplied
+		})
+		// The recorder flushes once a second; the nudged cycle follows the
+		// apply within the publisher's debounce.
+		for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if s = steps(); s[state.StepAppliedSaved] >= 1 {
+				break
+			}
+		}
+		if s[state.StepAppliedSaved] >= 1 {
+			break
+		}
+	}
+	// The two probes and every latency_test are timed read → applied; only
+	// latency_test nudges a slice, and each credited save writes
+	// applied_saved and read_saved together.
+	eventually(t, 5*time.Second, "a read_applied sample per action", func() bool {
+		s = steps()
+		return s[state.StepReadApplied] >= 2+sent
 	})
+	if s[state.StepAppliedSaved] < 1 || s[state.StepAppliedSaved] > sent || s[state.StepReadSaved] != s[state.StepAppliedSaved] {
+		t.Fatalf("samples after %d actions: %+v, want 1..%d applied_saved with as many read_saved", sent, s, sent)
+	}
 }
 
 // TestMeasureLoopFlushesOnStop: what the recorder holds when the hub stops is
