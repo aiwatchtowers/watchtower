@@ -161,15 +161,16 @@ type DraftTarget struct {
 // under every agent marker before it gets here (AUTO-06).
 func EvaluateDraft(ctx context.Context, d Deps, text string, target DraftTarget) (*DraftResult, error) {
 	a := draftArgs{RecipeText: text, Slug: target.Slug, WorkbenchID: target.WorkbenchID, BuiltinID: target.BuiltinID}
-	return evaluate(ctx, d, a, evalOptions{})
+	return evaluate(ctx, d, a, evalOptions{allowUnconfirmed: true})
 }
 
 // evalOptions tunes evaluate: the chat conversation whose read budget the
 // dry run spends (READ-01; 0 = none) and whether a draft equal to an indexed
-// unconfirmed recipe is refused its dry run (D16, the chat path).
+// unconfirmed recipe may be dry-run. The zero value refuses it (D16, the
+// chat path); only the owner's preview, EvaluateDraft, allows it.
 type evalOptions struct {
-	conversation      int64
-	refuseUnconfirmed bool
+	conversation     int64
+	allowUnconfirmed bool
 }
 
 // draft runs evaluate and, on the editor surface, caches its result — or its
@@ -180,7 +181,7 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	if err := json.Unmarshal(call.Args, &a); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
-	res, err := evaluate(ctx, d, a, evalOptions{conversation: call.Binding.ConversationID, refuseUnconfirmed: true})
+	res, err := evaluate(ctx, d, a, evalOptions{conversation: call.Binding.ConversationID})
 	d.cacheDraft(call.Binding, a.RecipeText, res, err)
 	if err != nil {
 		return nil, err
@@ -230,7 +231,7 @@ func evaluate(ctx context.Context, d Deps, a draftArgs, opts evalOptions) (*Draf
 	if res.Widening, err = draftWidening(d.DB, scope, a.Slug, res.Manifest.Permissions); err != nil {
 		return nil, err
 	}
-	if opts.refuseUnconfirmed {
+	if !opts.allowUnconfirmed {
 		refused, err := isUnconfirmedRecipe(d.DB, scope, res.Manifest.ApprovalHash)
 		if err != nil {
 			return nil, err

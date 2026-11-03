@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -12,12 +13,14 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
 )
 
 // previewRecipe is a manual recipe making one llm() call and one feed
 // Inbox card with a markdown body.
-const previewRecipe = "---\nname: Preview test\ntrigger:\n  manual: true\npermissions:\n  - llm:light\noutputs: [inbox]\n---\n" +
-	"A preview test recipe.\n\n```js\nvar s = llm(\"x\");\noutput.inbox({title: \"Threads\", body: s});\nreturn 1\n```\n"
+const previewRecipe = "---\nname: Preview test\ntrigger:\n  manual: true\npermissions:\n  - llm:light\n  - tool:list_messages\n" +
+	"outputs: [inbox]\n---\nA preview test recipe.\n\n```js\nvar m = tool(\"list_messages\", {query: \"release\"});\nvar s = llm(\"x\");\n" +
+	"output.inbox({title: \"Threads\", body: s});\nreturn 1\n```\n"
 
 // readSpy is a stdin that records whether anything read it.
 type readSpy struct{ read bool }
@@ -70,8 +73,9 @@ func allTableCounts(t *testing.T, d *db.DB) map[string]int {
 }
 
 // TestAutomationsCLI_PreviewWritesNoRows pins AUTO-12 (ask #445): the
-// preview is a dry run in memory — llm() runs (faked), no row of any table
-// changes, the draft cache included.
+// preview is a dry run in memory — a real read tool (list_messages, on the
+// query_only handle) and llm() (faked) run, no row of any table changes, the
+// draft cache included.
 func TestAutomationsCLI_PreviewWritesNoRows(t *testing.T) {
 	c := newAutoCLI(t)
 	before := allTableCounts(t, c.d)
@@ -83,7 +87,13 @@ func TestAutomationsCLI_PreviewWritesNoRows(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &res), out)
 	require.Equal(t, true, res["ok"], out)
 	dry := res["dry_run"].(map[string]any)
-	assert.Equal(t, db.RunSucceeded, dry["status"])
+	assert.Equal(t, db.RunSucceeded, dry["status"], dry["error"])
+	steps := dry["steps"].([]any)
+	require.NotEmpty(t, steps)
+	read := steps[0].(map[string]any)
+	assert.Equal(t, "tool", read["kind"])
+	assert.Equal(t, "list_messages", read["name"])
+	assert.Equal(t, "ok", read["status"], read["error"])
 	assert.Equal(t, 1, c.gen.CallCount())
 	assert.Equal(t, before, allTableCounts(t, c.d))
 }
@@ -193,4 +203,48 @@ func TestAutomationsCLI_PreviewUnknownBuiltin(t *testing.T) {
 	newAutoCLI(t)
 	_, err := runAutomationsWithStdin(t, previewRecipe, "preview", "--stdin", "--json", "--builtin", "no-such")
 	require.ErrorContains(t, err, `there is no built-in "no-such"`)
+}
+
+// TestAutomationsCLI_PreviewNeedsTheDesktopsConfirmation pins AGENT-07
+// (variant A, ask #357) for the preview: without a marker it runs only after
+// the owner confirms it in the running Desktop, whose window shows the text;
+// with no Desktop, or a denial, nothing is evaluated and no model is called.
+func TestAutomationsCLI_PreviewNeedsTheDesktopsConfirmation(t *testing.T) {
+	t.Run("no Desktop", func(t *testing.T) {
+		c := newAutoCLI(t)
+		reqs := withOwnerDesktop(t, ownerconfirm.Reply{}, fmt.Errorf("%w: test", ownerconfirm.ErrNoDesktop))
+		out, err := runAutomationsWithStdin(t, previewRecipe, "preview", "--stdin", "--json")
+		require.ErrorContains(t, err, "open Watchtower to confirm this")
+		assert.Empty(t, strings.TrimSpace(out))
+		assert.Len(t, *reqs, 1)
+		assert.Zero(t, c.gen.CallCount())
+	})
+	t.Run("the owner denies", func(t *testing.T) {
+		c := newAutoCLI(t)
+		withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+		out, err := runAutomationsWithStdin(t, previewRecipe, "preview", "--stdin", "--json")
+		require.ErrorContains(t, err, "refusing to "+previewVerb)
+		assert.Empty(t, strings.TrimSpace(out))
+		assert.Zero(t, c.gen.CallCount())
+	})
+	t.Run("the owner confirms", func(t *testing.T) {
+		c := newAutoCLI(t)
+		reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+		out, err := runAutomationsWithStdin(t, previewRecipe, "preview", "--stdin", "--json", "--slug", "threads")
+		require.NoError(t, err, out)
+		require.Len(t, *reqs, 1)
+		req := (*reqs)[0]
+		assert.Equal(t, previewVerb, req.Verb)
+		assert.Contains(t, req.Detail, `Dry run in memory of "threads"`)
+		assert.Contains(t, req.Detail, previewRecipe)
+		assert.Equal(t, 1, c.gen.CallCount())
+	})
+	t.Run("a marker is refused without asking", func(t *testing.T) {
+		newAutoCLI(t)
+		reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+		t.Setenv("CLAUDECODE", "1")
+		_, err := runAutomationsWithStdin(t, previewRecipe, "preview", "--stdin", "--json")
+		require.ErrorContains(t, err, "under an AI agent")
+		assert.Empty(t, *reqs)
+	})
 }
