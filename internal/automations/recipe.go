@@ -403,11 +403,8 @@ func applyArtifacts(f map[string]*yaml.Node, r *Recipe, m *Manifest) error {
 	if len(reasons) == 0 || r.Concurrency == 1 {
 		return nil
 	}
-	line := 0
-	if n := f["concurrency"]; n != nil {
-		line = fileLine(n)
-	}
-	return &ParseError{Line: line, Msg: "concurrency: an automation with " + reasons[0] + " runs one at a time; set concurrency: 1"}
+	// concurrency is set here: an absent key is the default 1, which passed.
+	return &ParseError{Line: fileLine(f["concurrency"]), Msg: "concurrency: an automation with " + reasons[0] + " runs one at a time; set concurrency: 1"}
 }
 
 // serialRunReasons lists why r must run one at a time (concurrency: 1), as
