@@ -76,9 +76,15 @@ func startICloudDesk(t *testing.T, active transport.Kind, src hubslices.Source) 
 	}
 	o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{src} }
 	r.start(o)
-	r.waitState(StateRunning, "")
+	// Paused (no_icloud) only while CloudKit is the active transport; on the
+	// relay nothing is paused.
+	wantState, wantReason := StateRunning, ""
+	if active == transport.KindCloudKit {
+		wantState, wantReason = StatePaused, ReasonNoICloud
+	}
 	r.waitStatus("no iCloud account", func(s Status) bool {
-		return s.Transport == string(active) && s.CloudKit.Account == string(transport.AccountNoAccount)
+		return s.Transport == string(active) && s.CloudKit.Account == string(transport.AccountNoAccount) &&
+			s.State == wantState && s.Reason == wantReason
 	})
 	time.Sleep(300 * time.Millisecond) // a cycle or pass the hold waited for ends
 	return r, ck
@@ -104,9 +110,9 @@ func TestNoICloudAccountHoldsCloudKitUntilItReturns(t *testing.T) {
 	eventually(t, 10*time.Second, "the full diff and the pass after the account came back", func() bool {
 		return src.reads.Load() > reads && ck.reads.Load() > mbox
 	})
-	if s := r.rec.last(); s.State != StateRunning || s.CloudKit.Account != string(transport.AccountAvailable) {
-		t.Fatalf("status %+v", s)
-	}
+	r.waitStatus("running again with the account", func(s Status) bool {
+		return s.State == StateRunning && s.Reason == "" && s.CloudKit.Account == string(transport.AccountAvailable)
+	})
 }
 
 // With the relay active, no iCloud account holds only CloudKit's mailbox

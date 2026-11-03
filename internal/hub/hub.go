@@ -713,7 +713,7 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		st.State, st.Reason = StateStarting, s.failure
 	default:
 		st.State, st.Reason = StateRunning, h.reason()
-		if h.isPaused() {
+		if h.isPaused() || h.iCloudPaused() {
 			st.State = StatePaused
 		}
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())

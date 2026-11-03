@@ -75,12 +75,21 @@ func (h *hubRuntime) applyICloudHold() {
 		}
 	}
 	released := h.ckHeld && !off
+	paused := pub != h.ckPubHeld
 	h.ckHeld, h.ckPubHeld = off, pub
 	h.ckPassHeld.Store(pub)
 	if released {
 		h.kick(h.passKick)
 	}
+	if paused {
+		h.sup.poke() // the status reads paused (no_icloud), or running again
+	}
 }
+
+// iCloudPaused: the iCloud hold stops the whole hub because CloudKit is the
+// active transport, so the status reads paused (ReasonNoICloud), as the
+// Swift hub showed itself unavailable. On the relay nothing is paused.
+func (h *hubRuntime) iCloudPaused() bool { return h.ckPassHeld.Load() }
 
 // resetCloudKit is the Swift hub's account and data-zone resets: with
 // CloudKit's processor and the publisher held, what the hub believes is

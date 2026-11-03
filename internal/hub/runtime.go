@@ -600,6 +600,9 @@ func (h *hubRuntime) kick(c chan struct{}) {
 
 // reason is the running hub's status reason.
 func (h *hubRuntime) reason() string {
+	if h.iCloudPaused() {
+		return ReasonNoICloud
+	}
 	h.mu.Lock()
 	unreachable := h.unreachable
 	h.mu.Unlock()
