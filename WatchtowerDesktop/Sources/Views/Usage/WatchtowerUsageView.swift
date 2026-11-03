@@ -117,7 +117,7 @@ private struct UsageReportBody: View {
     // MARK: Totals
 
     private var totalsCard: some View {
-        let totals = report.pageTotal
+        let totals = LLMUsagePresentation.cardTotals(report)
         let gaps = LLMUsagePresentation.gaps(totals)
         return VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(alignment: .top, spacing: Spacing.wide) {

@@ -180,7 +180,9 @@ final class LLMUsageReportTests: XCTestCase {
     /// The top card is the page total: the three sections it names add up to it.
     func testTotalsCardIsThePageTotal() throws {
         let rep = try report()
-        let card = rep.pageTotal
+        let card = LLMUsagePresentation.cardTotals(rep)
+        XCTAssertEqual(card, rep.pageTotal)
+        XCTAssertNotEqual(card, rep.watchtower.totals, "the card is the whole page, not Watchtower's section")
         let parts = [rep.watchtower.totals, rep.ownAutomations.totals, rep.chats]
         XCTAssertEqual(card.calls, parts.map(\.calls).reduce(0, +))
         XCTAssertEqual(card.tokens, parts.map(\.tokens).reduce(0, +))
