@@ -1,0 +1,182 @@
+{
+  "_comment": "Swift-only sample block documents (Inbox builder A, plan Task 1), written by hand in the spec's canonical form. The shared Go fixture is internal/automations/blocks/testdata/blocks_cases.json (Task 2); Task 13 checks the decoder against it.",
+  "documents": [
+    {
+      "name": "every-block",
+      "card_actions": [
+        {"label": "Reply with a summary", "kind": "reply", "reply": "summary", "data": {"week": 44, "scope": "acme"}, "primary": true}
+      ],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "heading", "text": "Release 4.2 — where we are", "level": 1},
+          {"type": "metrics", "items": [
+            {"label": "Open issues", "value": "12", "hint": ""},
+            {"label": "Blocked", "value": "3", "tone": "danger", "hint": "Two wait on review"},
+            {"label": "Done this week", "value": "9", "tone": "success", "hint": ""}
+          ]},
+          {"type": "text", "markdown": "The freeze is on **Thursday**. Two items need a decision; see the [release page](https://wiki.example.com/acme/release-4-2)."},
+          {"type": "heading", "text": "Needs you", "level": 2},
+          {"type": "list", "title": "", "empty": "Nothing waits on you", "rows": [
+            {"title": "Sign off the checklist", "subtitle": "Colleague A in #acme-release", "badge": {"text": "2 days", "tone": "danger"}, "tone": "danger", "link": "",
+             "actions": [
+               {"label": "Open", "kind": "link", "open": "https://wiki.example.com/acme/checklist"},
+               {"label": "Reply", "kind": "reply", "reply": "checklist"}
+             ]},
+            {"title": "Pick the rollout window", "subtitle": "Colleague B", "tone": "warning", "link": "",
+             "actions": [
+               {"label": "Chat", "kind": "chat", "chat": "Help me pick the acme rollout window"}
+             ]},
+            {"title": "Write the release notes", "subtitle": "Nobody owns it yet", "badge": {"text": "new"}, "link": "",
+             "actions": [
+               {"label": "Make a task", "kind": "target", "target": {"title": "Write the acme 4.2 release notes", "intent": "Release can't ship without notes", "parent": 12}}
+             ]},
+            {"title": "Migration review", "subtitle": "Colleague C in #acme-infra", "link": "", "actions": [], "ref": {"kind": "inbox_item", "id": 7}}
+          ]},
+          {"type": "table", "title": "Open by service", "columns": [
+            {"title": "Service", "align": "leading"},
+            {"title": "Owner", "align": "leading"},
+            {"title": "Open", "align": "trailing"}
+          ], "rows": [
+            ["api", "Colleague A", "5"],
+            [{"text": "web", "link": "https://example.com/acme/web"}, "Colleague B", {"text": "7", "tone": "danger"}]
+          ]},
+          {"type": "person", "name": "Colleague A", "role": "Release manager", "avatar": {"slack_user": "acme:colleague-a"},
+           "lines": ["Owns the checklist · last reply 2 days ago", {"text": "Waiting on you", "tone": "warning"}], "link": ""},
+          {"type": "link", "title": "Release 4.2 plan", "url": "https://wiki.example.com/acme/release-4-2", "subtitle": "wiki.example.com"},
+          {"type": "actions", "actions": [
+            {"label": "Open the board", "kind": "link", "open": "watchtower-nav://projects"},
+            {"label": "Ask the assistant", "kind": "agent", "agent": {"task": "Summarise the acme 4.2 blockers", "workbench": 3}}
+          ]}
+        ]
+      },
+      "actions": 7,
+      "refs": [{"kind": "inbox_item", "id": 7}]
+    },
+    {
+      "name": "waiting-living",
+      "card_actions": [],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "heading", "text": "Waiting for you · 3", "level": 1},
+          {"type": "list", "title": "", "empty": "Nobody is waiting on you", "rows": [
+            {"title": "Release checklist", "subtitle": "Colleague A in #acme-release — “Can you look at the checklist before Friday?”", "badge": {"text": "2 days", "tone": "danger"}, "tone": "danger", "link": "",
+             "actions": [{"label": "Reply", "kind": "reply", "reply": "t-1"}], "ref": {"kind": "inbox_item", "id": 41}},
+            {"title": "Q4 budget", "subtitle": "Colleague B in a DM — “Will you sign off the Q4 budget?”", "badge": {"text": "26 h", "tone": "danger"}, "tone": "danger", "link": "",
+             "actions": [{"label": "Reply", "kind": "reply", "reply": "t-2"}], "ref": {"kind": "inbox_item", "id": 42}},
+            {"title": "Migration review", "subtitle": "Colleague C in #acme-infra — “Who reviews the migration?”", "badge": {"text": "3 h", "tone": "neutral"}, "tone": "neutral", "link": "",
+             "actions": [{"label": "Reply", "kind": "reply", "reply": "t-3"}], "ref": {"kind": "inbox_item", "id": 43}}
+          ]}
+        ]
+      },
+      "actions": 3,
+      "refs": [{"kind": "inbox_item", "id": 41}, {"kind": "inbox_item", "id": 42}, {"kind": "inbox_item", "id": 43}]
+    },
+    {
+      "name": "waiting-with-summary",
+      "card_actions": [],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "heading", "text": "Waiting for you · 3", "level": 1},
+          {"type": "text", "markdown": "Two people need a sign-off before Friday; one review is open."},
+          {"type": "list", "title": "", "empty": "Nobody is waiting on you", "rows": [
+            {"title": "Release checklist", "subtitle": "Colleague A in #acme-release", "badge": {"text": "2 days", "tone": "danger"}, "tone": "danger", "link": "",
+             "actions": [{"label": "Reply", "kind": "reply", "reply": "t-1"}]},
+            {"title": "Q4 budget", "subtitle": "Colleague B in a DM", "badge": {"text": "26 h", "tone": "danger"}, "tone": "danger", "link": "",
+             "actions": [{"label": "Reply", "kind": "reply", "reply": "t-2"}]},
+            {"title": "Migration review", "subtitle": "Colleague C in #acme-infra", "badge": {"text": "3 h", "tone": "neutral"}, "tone": "neutral", "link": "",
+             "actions": [{"label": "Reply", "kind": "reply", "reply": "t-3"}]}
+          ]}
+        ]
+      },
+      "actions": 3,
+      "refs": []
+    },
+    {
+      "name": "target-row",
+      "card_actions": [],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "list", "title": "", "empty": "Nothing here", "rows": [
+            {"title": "Sign off the checklist", "subtitle": "Colleague A in #acme-release", "link": "",
+             "actions": [{"label": "Make a task", "kind": "target", "target": {"title": "Sign off the checklist"}}]}
+          ]}
+        ]
+      },
+      "actions": 1,
+      "refs": []
+    },
+    {
+      "name": "every-tone-and-ref",
+      "card_actions": [
+        {"label": "Open", "kind": "link", "open": "https://example.com/acme"},
+        {"label": "Discuss", "kind": "chat", "chat": "What changed?"}
+      ],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "list", "title": "Tones", "empty": "Nothing here", "rows": [
+            {"title": "neutral", "tone": "neutral", "link": "", "actions": [], "ref": {"kind": "track", "id": 1}},
+            {"title": "info", "tone": "info", "link": "", "actions": [], "ref": {"kind": "idea", "id": 2}},
+            {"title": "success", "tone": "success", "link": "", "actions": [], "ref": {"kind": "reminder", "id": 3}},
+            {"title": "warning", "tone": "warning", "link": "", "actions": [], "ref": {"kind": "action", "id": 4}},
+            {"title": "danger", "tone": "danger", "link": "https://example.com/acme/danger", "actions": []},
+            {"title": "accent", "tone": "accent", "link": "", "actions": [], "ref": {"kind": "inbox_item", "id": 5}}
+          ]},
+          {"type": "actions", "actions": [
+            {"label": "Agent by name", "kind": "agent", "agent": {"task": "Tidy the acme board", "workbench": "acme"}},
+            {"label": "Agent anywhere", "kind": "agent", "agent": {"task": "Look around"}},
+            {"label": "Reply with data", "kind": "reply", "reply": "ok", "data": {"b": [1, 2], "a": "x"}},
+            {"label": "Task", "kind": "target", "target": {"title": "Follow up with colleague A", "intent": "They asked twice"}}
+          ]}
+        ]
+      },
+      "actions": 6,
+      "refs": [
+        {"kind": "track", "id": 1}, {"kind": "idea", "id": 2}, {"kind": "reminder", "id": 3},
+        {"kind": "action", "id": 4}, {"kind": "inbox_item", "id": 5}
+      ]
+    },
+    {
+      "name": "empty-list-and-table",
+      "card_actions": [],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "list", "title": "Open threads", "empty": "Nothing waits on you", "rows": []},
+          {"type": "table", "title": "", "columns": [{"title": "Service", "align": "leading"}], "rows": []}
+        ]
+      },
+      "actions": 0,
+      "refs": []
+    },
+    {
+      "name": "no-blocks",
+      "card_actions": [],
+      "document": {"v": 1, "blocks": []},
+      "actions": 0,
+      "refs": []
+    }
+  ],
+  "unsupported": [
+    {"name": "version-2", "document": {"v": 2, "blocks": [{"type": "chart", "series": [1, 2, 3]}]}, "version": 2}
+  ],
+  "malformed": [
+    {"name": "not-json", "json": "{\"v\": 1, \"blocks\": ["},
+    {"name": "an-array", "json": "[]"},
+    {"name": "no-version", "json": "{\"blocks\": []}"},
+    {"name": "version-zero", "json": "{\"v\": 0, \"blocks\": []}"},
+    {"name": "no-blocks-key", "json": "{\"v\": 1}"},
+    {"name": "block-without-type", "json": "{\"v\": 1, \"blocks\": [{\"text\": \"Release\"}]}"},
+    {"name": "heading-without-text", "json": "{\"v\": 1, \"blocks\": [{\"type\": \"heading\", \"level\": 1}]}"},
+    {"name": "row-without-title", "json": "{\"v\": 1, \"blocks\": [{\"type\": \"list\", \"rows\": [{\"subtitle\": \"x\"}]}]}"},
+    {"name": "unknown-block-type", "json": "{\"v\": 1, \"blocks\": [{\"type\": \"chart\"}]}"},
+    {"name": "unknown-tone", "json": "{\"v\": 1, \"blocks\": [{\"type\": \"list\", \"rows\": [{\"title\": \"x\", \"tone\": \"red\"}]}]}"},
+    {"name": "cells-mismatch", "json": "{\"v\": 1, \"blocks\": [{\"type\": \"table\", \"columns\": [{\"title\": \"a\"}, {\"title\": \"b\"}], \"rows\": [[\"1\"]]}]}"},
+    {"name": "unknown-action-kind", "json": "{\"v\": 1, \"blocks\": [{\"type\": \"actions\", \"actions\": [{\"label\": \"x\", \"kind\": \"shell\"}]}]}"},
+    {"name": "target-without-title", "json": "{\"v\": 1, \"blocks\": [{\"type\": \"actions\", \"actions\": [{\"label\": \"x\", \"kind\": \"target\", \"target\": {\"intent\": \"y\"}}]}]}"}
+  ]
+}
