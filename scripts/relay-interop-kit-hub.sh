@@ -24,7 +24,7 @@
 # other reads, so neither waits out its timeouts. Exits 0 only when both pass.
 #
 # RELAY_INTEROP_DESKTOP=1 is the desktop host's run (relay client Phase 3b Task
-# 24): the Go half runs -run 'TestInterop_KitPhone(FollowsASwitch)?$' with
+# 24): the Go half runs -run '^TestInterop_KitPhoneFollowsASwitch$' with
 # -kit-desktop (the hub is a Mac's desktop host on both transports, its CloudKit
 # side served to the phone by the loopback store whose URL and token it writes
 # to ck.url in the handoff folder; the relay-only TestInterop_KitPhone skips),
@@ -137,7 +137,7 @@ case "${RELAY_INTEROP_DESKTOP:-0}" in
 	;;
 1)
 	DESKTOP=1
-	GO_RUN='TestInterop_KitPhone(FollowsASwitch)?$'
+	GO_RUN='^TestInterop_KitPhoneFollowsASwitch$'
 	;;
 *)
 	echo "relay-interop-kit-hub: RELAY_INTEROP_DESKTOP is 1 or 0" >&2

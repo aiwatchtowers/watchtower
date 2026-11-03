@@ -26,12 +26,15 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,9 +42,15 @@ import (
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit/bridgefake"
+	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
+
+	"google.golang.org/protobuf/proto"
 )
 
 var kitDir = flag.String("kit-dir", "", "handoff folder of the Kit phone run (make relay-interop-kit-hub sets it)")
@@ -467,4 +476,463 @@ func readZoneAll(ctx context.Context, t transport.Transport, zone string, each f
 			return since, nil
 		}
 	}
+}
+
+// ---- the transport switch both ways (relay client Phase 3b Task 20) ----
+//
+// TestInterop_KitPhoneFollowsASwitch runs with -kit-desktop (the script's
+// RELAY_INTEROP_DESKTOP=1): the hub is a Mac's desktop host on both
+// transports, its CloudKit side served to the Kit phone by the loopback
+// store. The handoff, beyond Task 13's pair.url / pair.sas / confirmed:
+//
+//	hub → phone  ck.url             the loopback store's URL and token (0600)
+//	hub → phone  free.url           the free phone's link code
+//	phone → hub  free.sas           its four-digit code
+//	hub → phone  free.confirmed     the owner confirmed it
+//	phone → hub  upgraded           switchReport: the upgrade's steps 1–5 ran,
+//	                                the free phone's forged record is written
+//	phone → hub  on.relay           both phones followed the move to the relay
+//	phone → hub  back.icloud        the phone asked for iCloud and followed the
+//	                                marker (its relay copy of the notice gone)
+//	phone → hub  too.soon           the relay again within 5 min was refused
+//	phone → hub  old.epoch          an action of a retired epoch was resealed
+//	phone → hub  lapse.done         the lapse moved the hub and the phone back
+//	hub → phone  <step>.ok          the hub's checks of <step> passed
+//	hub → phone  go.ok / go.fail    every check passed / the failed check's name
+//
+// Each phone step is answered by its .ok, or by go.fail.
+
+// switchReport is what the phone writes with each step (fields it does not
+// know yet are empty).
+type switchReport struct {
+	RelayDeviceID string   `json:"relay_device_id"`
+	Marks         []string `json:"marks"`
+	FreeMarks     []string `json:"free_marks"`
+	OldMark       string   `json:"old_mark"`
+	OldSeq        uint64   `json:"old_seq"`
+	LapseMarks    []string `json:"lapse_marks"`
+	AlertMark     string   `json:"alert_mark"`
+	Epoch         uint32   `json:"epoch"`
+	RetryAfter    int      `json:"retry_after_s"`
+}
+
+// jumpClock is the hub's clock: the real time plus an offset the test moves
+// (the anti-flap and the 7-day epoch retention, never waited out).
+type jumpClock struct{ off atomic.Int64 }
+
+func (c *jumpClock) now() time.Time { return time.Now().Add(time.Duration(c.off.Load())) }
+
+func (c *jumpClock) jump(d time.Duration) { c.off.Add(int64(d)) }
+
+// dropSavesInto deletes every save the hub makes into zone again at once,
+// until it is called with "".
+func (t *tappedTransport) dropSavesInto(zone string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.dropZone = zone
+}
+
+func (t *tappedTransport) droppedCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.dropped
+}
+
+// Save is the relay's save; a save into the drop zone is deleted at once
+// (the phone never reads it).
+func (t *tappedTransport) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	out, err := t.Transport.Save(ctx, items)
+	t.mu.Lock()
+	zone := t.dropZone
+	t.mu.Unlock()
+	if err != nil || zone == "" {
+		return out, err
+	}
+	var gone []transport.DeleteItem
+	for i, it := range items {
+		if it.Record.Zone() == zone && i < len(out) && out[i].Saved {
+			gone = append(gone, transport.DeleteItem{Name: it.Record.WireName()})
+		}
+	}
+	if len(gone) > 0 {
+		if _, derr := t.Transport.Delete(ctx, zone, gone); derr == nil {
+			t.mu.Lock()
+			t.dropped += len(gone)
+			t.mu.Unlock()
+		} else {
+			log.Printf("interop: dropping %d saves failed: %v", len(gone), derr)
+		}
+	}
+	return out, err
+}
+
+// SetReadersFrom is the relay's set_hub_readers, the readers kept.
+func (t *tappedTransport) SetReadersFrom(ctx context.Context, st *relayv1.AccountState, linked []string) error {
+	err := t.Transport.SetReadersFrom(ctx, st, linked)
+	if err == nil {
+		slotted := map[string]bool{}
+		for _, p := range st.GetPhones() {
+			slotted[p.GetPhoneDeviceId()] = true
+		}
+		var readers []string
+		for _, id := range linked {
+			if slotted[id] {
+				readers = append(readers, id)
+			}
+		}
+		t.mu.Lock()
+		t.readers = readers
+		t.mu.Unlock()
+	}
+	return err
+}
+
+func (t *tappedTransport) lastReaders() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.readers)
+}
+
+// step reads the phone's report for step, once written.
+func (k kitRun) step(name string) switchReport {
+	k.t.Helper()
+	var r switchReport
+	if err := json.Unmarshal([]byte(k.wait(name, kitStepWait)), &r); err != nil {
+		k.fail(name, "not a report: %v", err)
+	}
+	return r
+}
+
+// pushWait answers every send_alert RATE_LIMITED for 5 minutes without
+// sending it: the stand has no APNs key and would settle the push push_off at
+// once, while check 9 needs a push still waiting when the hub moves to iCloud
+// (TestSwitchToCloudKitResignalsOpenQueuedAlerts's phone half). Every other
+// op goes to the stand.
+type pushWait struct {
+	base http.RoundTripper
+}
+
+func (p *pushWait) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/v1/op") || r.Body == nil {
+		return p.base.RoundTrip(r)
+	}
+	body, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var req relayv1.Request
+	if proto.Unmarshal(body, &req) != nil || req.GetSendAlert() == nil {
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		return p.base.RoundTrip(r)
+	}
+	wait := uint32(300)
+	out, err := proto.Marshal(&relayv1.Response{Id: req.GetId(), Result: &relayv1.Response_Error{Error: &relayv1.Error{
+		Code: relayv1.ErrorCode_ERROR_CODE_RATE_LIMITED, RetryAfterS: &wait,
+	}}})
+	if err != nil {
+		return nil, err
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/x-protobuf"}},
+		Body: io.NopCloser(bytes.NewReader(out)), ContentLength: int64(len(out)), Request: r}, nil
+}
+
+// TestInterop_KitPhoneFollowsASwitch: the Kit phone links over iCloud (the
+// loopback store), upgrades to the relay and moves the hub there; the hub
+// moves back to iCloud at once, refuses the relay again within the
+// anti-flap, retires an epoch, and falls back to iCloud on the phone's
+// lapse. This side checks what only the hub sees (the stored relay id, the
+// readers, the switches and epochs, every action applied once) and that the
+// canary never crosses a tapped stream or a loopback request in the clear.
+func TestInterop_KitPhoneFollowsASwitch(t *testing.T) {
+	if *kitDir == "" || !*kitDesktop {
+		t.Skip("needs -kit-dir and -kit-desktop: run `make relay-interop-kit-hub RELAY=<relay checkout> RELAY_INTEROP_DESKTOP=1`")
+	}
+	k := kitRun{t: t, dir: *kitDir}
+	logs := &logTap{}
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	marks := &kitMarks{}
+	alerts := &pushSource{}
+	clock := &jumpClock{}
+	cycle := make(chan struct{}, 1)
+	h := startDesktopHub(t, interopOpts{
+		passEvery: time.Second, linkEvery: time.Second, clock: clock.now, cycle: cycle, away: alwaysAway{},
+		httpWrap: func(rt http.RoundTripper) http.RoundTripper { return &pushWait{base: rt} },
+		sources:  func(*state.Store) []hubslices.Source { return []hubslices.Source{alerts} },
+		register: func(d *actions.Dispatcher) {
+			d.Register(kitMarkKind, func(_ context.Context, r actions.Request) actions.Outcome {
+				var mark string
+				_ = json.Unmarshal(r.Action.Params["mark"], &mark)
+				c := kitCall{mark: mark}
+				if r.Action.ActionSeq != nil {
+					c.seq = *r.Action.ActionSeq
+				}
+				marks.mu.Lock()
+				marks.calls = append(marks.calls, c)
+				marks.mu.Unlock()
+				if strings.HasPrefix(mark, "wt-canary-alert-") {
+					alerts.set(t, workAlert("ask-t20"))
+				}
+				return actions.Outcome{Status: wire.StatusApplied}
+			}, actions.KindOptions{Nudges: []string{string(hubslices.KindAskAlert)}})
+		},
+	})
+	status, err := ReadStatus(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	url, token, loop := serveTappedCloudKitLoop(t, h.bridge)
+	k.writeCloudKitURL(url, token)
+
+	// 1. Both phones link over iCloud: the code, the phone's code, the owner.
+	phone := kitLink(t, k, h, "pair.url", "pair.sas", "confirmed")
+	free := kitLink(t, k, h, "free.url", "free.sas", "free.confirmed")
+
+	st, err := state.Open(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	device := func(id string) state.Device {
+		d, ok, err := st.Device(id)
+		if err != nil || !ok {
+			k.fail("device", "the phone is not a linked device: %v", err)
+		}
+		return d
+	}
+	meta := func(key string) string {
+		v, _, err := st.Meta(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	kr := testKeyring(t, h, st, clock.now)
+	current := func() uint32 {
+		e, err := kr.CurrentEpoch()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	linkedEpoch := current()
+
+	// 2. The upgrade: the stored relay id, the readers, the switch accepted;
+	// the free phone's forged record refused.
+	rep := k.step("upgraded")
+	if !within(time.Minute, func() bool { return device(phone).RelayDeviceID == rep.RelayDeviceID }) {
+		k.fail("relay_id", "the hub did not store the phone's proven relay id")
+	}
+	if !within(time.Minute, func() bool { return slices.Contains(h.transport().lastReaders(), rep.RelayDeviceID) }) {
+		k.fail("readers", "set_hub_readers never named the phone")
+	}
+	if !within(time.Minute, func() bool { return meta(switcher.MetaTransport) == string(transport.KindRelay) }) {
+		k.fail("switch_accepted", "the hub did not move to the relay")
+	}
+	if strings.Contains(logs.since(0), "not_paying") {
+		k.fail("switch_accepted", "the switch was refused not_paying")
+	}
+	if !within(time.Minute, func() bool { return strings.Contains(logs.since(0), "relay id ignored: key_mismatch") }) {
+		k.fail("forged_id", "the free phone's record naming another id was not refused")
+	}
+	if d := device(free); d.RelayDeviceID != "" {
+		k.fail("forged_id", "the free phone's record stored a relay id")
+	}
+	if device(phone).RelayDeviceID != rep.RelayDeviceID {
+		k.fail("forged_id", "the paying phone's relay id changed")
+	}
+	k.write("upgraded.ok", "")
+
+	// 3. On the relay: the new epoch acknowledged, the unechoed actions
+	// applied once, the free phone's actions never.
+	rep = k.step("on.relay")
+	relayEpoch := current()
+	if relayEpoch != linkedEpoch+1 || rep.Epoch != relayEpoch {
+		k.fail("relay_epoch", "hub epoch %d (linked in %d), the phone's %d", relayEpoch, linkedEpoch, rep.Epoch)
+	}
+	if !within(time.Minute, func() bool { return device(phone).AckedEpoch == relayEpoch }) {
+		k.fail("relay_ack", "the phone's epoch_ack{%d} was not recorded", relayEpoch)
+	}
+	appliedOnce(k, marks, "relay_resend", rep.Marks...)
+	appliedNever(k, marks, "free_not_applied", rep.FreeMarks...)
+	appliedOnce(k, marks, "alert_mark", rep.AlertMark)
+	// Step 4 next: the phone asks for iCloud; its relay copy of the notice
+	// is deleted the moment it is written.
+	h.transport().dropSavesInto(transport.MailboxZone(status.RelayDeviceID, rep.RelayDeviceID))
+	signalsBefore := signalFrames(h.bridge)
+	k.write("on.relay.ok", "")
+
+	// 4–5, 9. Back to iCloud at once, the notice's relay copy missed, the
+	// open alert signalled again on CloudKit once.
+	rep = k.step("back.icloud")
+	h.transport().dropSavesInto("")
+	if meta(switcher.MetaTransport) != string(transport.KindCloudKit) {
+		k.fail("back_icloud", "the hub is not on iCloud")
+	}
+	if h.transport().droppedCount() == 0 {
+		k.fail("missed_control", "no relay copy was deleted (the marker path is untested)")
+	}
+	if e := current(); e != relayEpoch+1 || rep.Epoch != e {
+		k.fail("icloud_epoch", "hub epoch %d, the phone's %d", e, rep.Epoch)
+	}
+	if n := signalFrames(h.bridge) - signalsBefore; n != 1 {
+		k.fail("alert_signal", "%d signal writes on CloudKit after the switch, want 1", n)
+	}
+	k.write("back.icloud.ok", "")
+
+	// 6. Too soon: refused, the hub stays; then the anti-flap and the
+	// 7-day retention pass on the hub's clock.
+	rep = k.step("too.soon")
+	if rep.RetryAfter <= 0 || rep.RetryAfter > 300 {
+		k.fail("too_soon", "retry_after_s %d", rep.RetryAfter)
+	}
+	if meta(switcher.MetaTransport) != string(transport.KindCloudKit) {
+		k.fail("too_soon", "the hub moved")
+	}
+	clock.jump(8 * 24 * time.Hour)
+	if !within(time.Minute, func() bool {
+		select {
+		case cycle <- struct{}{}:
+		default:
+		}
+		kept, err := kr.Retained()
+		return err == nil && !slices.Contains(kept, relayEpoch)
+	}) {
+		k.fail("retire", "epoch %d is still retained 8 days on", relayEpoch)
+	}
+	k.write("too.soon.ok", "")
+
+	// 7. The action sealed in the retired epoch: resealed, applied once
+	// under its own action_seq.
+	rep = k.step("old.epoch")
+	appliedOnce(k, marks, "old_epoch", rep.OldMark)
+	for _, c := range marks.all() {
+		if c.mark == rep.OldMark && c.seq != rep.OldSeq {
+			k.fail("old_epoch", "applied under action_seq %d, sealed under %d", c.seq, rep.OldSeq)
+		}
+	}
+	if !within(time.Minute, func() bool { return device(phone).AckedEpoch == relayEpoch+1 }) {
+		k.fail("icloud_ack", "the phone's epoch_ack{%d} was not recorded", relayEpoch+1)
+	}
+	k.write("old.epoch.ok", "")
+
+	// 8. The lapse: the relay again, then the phone's entitlement expires;
+	// the hub falls back to iCloud by entitlement_expired, nothing applied
+	// twice.
+	rep = k.step("lapse.done")
+	if meta(switcher.MetaTransport) != string(transport.KindCloudKit) || meta(switcher.MetaSwitchedBy) != wire.SwitchedByEntitlement {
+		k.fail("lapse", "transport %q by %q", meta(switcher.MetaTransport), meta(switcher.MetaSwitchedBy))
+	}
+	if e := current(); e != relayEpoch+3 || rep.Epoch != e {
+		k.fail("lapse_epoch", "hub epoch %d, the phone's %d", e, rep.Epoch)
+	}
+	appliedOnce(k, marks, "lapse_once", rep.LapseMarks...)
+	appliedOnce(k, marks, "all_once", append(append(rep.Marks, rep.OldMark, rep.AlertMark), rep.LapseMarks...)...)
+	if !within(time.Minute, func() bool { return device(phone).AckedEpoch == relayEpoch+3 }) {
+		k.fail("lapse_ack", "the phone's epoch_ack{%d} was not recorded", relayEpoch+3)
+	}
+
+	// 10. No canary in the clear: every tapped relay stream, every loopback
+	// request body.
+	all := append(append(append(append([]string{}, rep.Marks...), rep.FreeMarks...), rep.OldMark, rep.AlertMark), rep.LapseMarks...)
+	streams := append(h.tap.streams(), loop.requestBodies()...)
+	if len(loop.requestBodies()) == 0 {
+		k.fail("canary", "no loopback request was tapped (the check is blind)")
+	}
+	for i, s := range streams {
+		for _, mark := range all {
+			if mark != "" && bytes.Contains(s, []byte(mark)) {
+				k.fail("canary", "stream or body %d carries a canary in the clear", i)
+			}
+		}
+	}
+	k.write("go.ok", "")
+}
+
+// kitLink links one Kit phone over iCloud: the code written to urlFile,
+// the phone's code read from sasFile and compared, the owner's confirmation,
+// then okFile. It returns the phone's device id.
+func kitLink(t *testing.T, k kitRun, h *interopHub, urlFile, sasFile, okFile string) string {
+	t.Helper()
+	if err := h.ctl.Send(ControlRequest{Op: OpPair}); err != nil {
+		t.Fatal(err)
+	}
+	k.write(urlFile, h.next(link.EventQR).URL)
+	sas := h.nextWithin(link.EventSAS, kitSASWait)
+	if code := strings.TrimSpace(k.wait(sasFile, kitSASWait)); code != sas.Code {
+		k.fail("sas", "the phone's code differs from the hub's")
+	}
+	if err := h.ctl.Send(ControlRequest{Op: OpConfirm, Device: sas.DeviceID, Confirm: true}); err != nil {
+		t.Fatal(err)
+	}
+	if l := h.next(link.EventLinked); l.DeviceID != sas.DeviceID {
+		t.Fatalf("linked: %+v", l)
+	}
+	k.write(okFile, "")
+	return sas.DeviceID
+}
+
+// testKeyring is a keyring over the hub's sidecar on clock, for reads.
+func testKeyring(t *testing.T, h *interopHub, st *state.Store, clock func() time.Time) *identity.Keyring {
+	t.Helper()
+	fs := identity.FileStore{Path: filepath.Join(h.dir, identity.FileName)}
+	id, err := fs.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(id.Zero)
+	kr, err := identity.NewKeyring(id, st, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(kr.Wipe)
+	return kr
+}
+
+// appliedOnce: the handler ran exactly once for each mark.
+func appliedOnce(k kitRun, m *kitMarks, check string, want ...string) {
+	k.t.Helper()
+	count := func(mark string) int {
+		n := 0
+		for _, c := range m.all() {
+			if c.mark == mark {
+				n++
+			}
+		}
+		return n
+	}
+	for _, mark := range want {
+		if mark == "" {
+			k.fail(check, "an empty mark in the report")
+		}
+		if !within(time.Minute, func() bool { return count(mark) >= 1 }) {
+			k.fail(check, "a mark was never applied")
+		}
+		if n := count(mark); n != 1 {
+			k.fail(check, "a mark was applied %d times", n)
+		}
+	}
+}
+
+// appliedNever: the handler never ran for any of the marks.
+func appliedNever(k kitRun, m *kitMarks, check string, marks ...string) {
+	k.t.Helper()
+	for _, c := range m.all() {
+		if slices.Contains(marks, c.mark) {
+			k.fail(check, "an action of the free phone was applied")
+		}
+	}
+}
+
+// signalFrames counts the bridge requests naming a signal record.
+func signalFrames(f *bridgefake.Fake) int {
+	n := 0
+	for _, fr := range f.Frames() {
+		if bytes.Contains(fr, []byte(secure.SignalPrefix)) {
+			n++
+		}
+	}
+	return n
 }
