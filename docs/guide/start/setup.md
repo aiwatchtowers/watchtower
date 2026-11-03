@@ -2,6 +2,18 @@
 
 Setup is two screens, **Goals** then **Connect**, and it asks for nothing you must have. You can skip every source, connect later in Settings, and run setup again at any time.
 
+## Install Watchtower
+
+Watchtower needs a Mac with Apple Silicon on macOS 14 or later. Install it with Homebrew or with the install script; both put **Watchtower.app** in `/Applications` and the `watchtower` command-line tool on your PATH.
+
+```bash
+brew install --cask aiwatchtowers/tap/watchtower
+# or
+curl -fsSL https://raw.githubusercontent.com/aiwatchtowers/watchtower/main/scripts/install.sh | bash
+```
+
+The app updates itself either way, so `brew upgrade` leaves it alone. `brew uninstall --zap --cask watchtower` also removes your data and settings.
+
 ## What the Goals step decides
 
 Each goal turns on a fixed set of features; the goals are not permissions. All four start ticked, and unticking all of them means Workbench only.

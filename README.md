@@ -21,7 +21,13 @@
 curl -fsSL https://raw.githubusercontent.com/aiwatchtowers/watchtower/main/scripts/install.sh | bash
 ```
 
-This puts **Watchtower.app** in `/Applications` and the `watchtower` CLI on your PATH. Prefer a download? Get the latest build from [Releases](https://github.com/aiwatchtowers/watchtower/releases/latest).
+Or with [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask aiwatchtowers/tap/watchtower
+```
+
+Either way puts **Watchtower.app** in `/Applications` and the `watchtower` CLI on your PATH. Prefer a download? Get the latest build from [Releases](https://github.com/aiwatchtowers/watchtower/releases/latest).
 
 **You need:**
 
