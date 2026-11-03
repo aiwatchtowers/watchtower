@@ -74,7 +74,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub name <name>` | `name` |
 | `hub enable` / `hub disable` | `enabled` |
 | `hub pair [--stream]` | JSON lines: `{event: qr, url, expires_at}`, `{event: waiting}`, `{event: sas, device_id, name, code}`, `{event: linked, device_id}`, `{event: refused, reason}`; the owner's `{confirm: true\|false}` on stdin |
-| `hub desktop heartbeat` (darwin only) | `desktop_at` (the socket op's answer also carries `phone_contact_at`, RFC 3339, when a hub runs and a phone was ever in touch: this run's last phone write, else `hub_meta.phone_contact_at` stored each daemon cycle — Desktop's keep-awake input, Task 23) |
+| `hub desktop heartbeat` (darwin only) | `desktop_at` (the socket op's answer also carries `phone_contact_at`, RFC 3339, when a hub runs and a phone was ever in touch: this run's last admitted phone contact (an action past the gates, or a linked phone's device record at its `seen_at`, never later than now; a refused action or an unlink is none), else `hub_meta.phone_contact_at` stored each daemon cycle — Desktop's keep-awake input, Task 23) |
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat — with `--json` the refusal is exit 0 with `stored: false` and `error: no_transcriber`) | `recordings`, `stored`, `error` (refusals only) |
 | `hub recording claim --upload <id>` (a failed job claims again for the owner's Retry; `done` and `hub_moved` never) | `upload_id`, `audio_path`, `status` |
 | `hub recording list` (read only; refused under an agent marker) | `ready` (false: no queue to read yet) and `jobs`, each `upload_id`, `status`, `phase`, `percent`, `audio_path`, `event_id`, `started_at`, `error_class` |

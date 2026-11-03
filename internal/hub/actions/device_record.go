@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
@@ -41,7 +42,7 @@ type Links interface {
 // after it was applied, so a crash in between applies it again (the rewrite
 // is idempotent) and an older copy is refused (ErrRolledBack in FromPhone).
 // With no Links the record is left alone, as the Swift hub leaves it with no
-// link center.
+// link center. A record that is no unlink is a phone contact (Config.Contact).
 func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened) error {
 	if p.cfg.Links == nil {
 		return nil
@@ -54,6 +55,15 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 	if !strings.HasPrefix(o.Frame.ID, devicePrefix) || !sameID(d.DeviceID, b.id) {
 		log.Printf("hub: a device record of device %s names another phone: sender_mismatch", b.id)
 		return nil
+	}
+	if d.Unlinked == nil || !*d.Unlinked {
+		// The phone says when it was last in touch; an unlink is no
+		// contact, and a replayed old record is no contact now.
+		at := d.UpdatedAt.Time
+		if d.SeenAt != nil {
+			at = d.SeenAt.Time
+		}
+		p.contact(minTime(at, p.cfg.Clock()))
 	}
 	if d.LinkNonce != nil && *d.LinkNonce != "" && (d.Unlinked == nil || !*d.Unlinked) {
 		log.Printf("hub: device record of device %s carries a code: a link needs a hello, ignored", b.id)
@@ -69,4 +79,12 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		return nil // unlinked (by this record, or meanwhile): nothing to mark
 	}
 	return err
+}
+
+// minTime is the earlier of a and b.
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }

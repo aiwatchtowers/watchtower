@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/policy"
 )
 
 // Recording intake (Go hub spec §8 p. 4a, the Swift RelayProcessor's
@@ -29,6 +30,10 @@ const (
 	NotSupportedMessage  = "This host can't transcribe recordings. Your recording stays on your phone."
 	HeldMessage          = "Your Mac's transcriber isn't running. The recording waits on your phone."
 	recordingWriteFailed = "Your Mac could not save this recording."
+	// PolicyBlockedMessage answers an upload while the organization's
+	// MobileSync policy is workbench_only (#608): a phone recording is no
+	// workbench data. The Swift hub's MobileSyncPolicyError text.
+	PolicyBlockedMessage = "Your Mac could not save this recording: blocked by your organization's policy: phone recordings are not synced to this Mac"
 )
 
 // uploadIDRE keeps an upload id usable as a file name: the phone's UUID, with
@@ -58,7 +63,9 @@ func recFailed(reason, message string) RecordingOutcome {
 // size-checked, downloaded, decrypted by chunk into
 // <recordings dir>/<upload_id>.m4a (0600) and queued. A failure leaves no
 // file; a retried upload that is queued already is answered received again.
-// Nothing here logs a name, a path or a key.
+// Under the organization's MobileSync = workbench_only (Deps.Policy) an
+// upload is refused write_failed and nothing is written, as the Swift hub's
+// checkRecordingAllowed did (#608). Nothing here logs a name, a path or a key.
 func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) RecordingOutcome {
 	if h.d.Store == nil || h.d.RecordingsDir == "" {
 		return recFailed(actions.ReasonNotSupported, NotSupportedMessage)
@@ -101,11 +108,22 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 	case d.Header.TotalLength > MaxRecordingAssetBytes:
 		return recFailed(reasonInvalidParams, TooLargeMessage)
 	}
+	if h.d.Policy != nil && h.d.Policy() != policy.MobileAllowed {
+		return recFailed(reasonWriteFailed, PolicyBlockedMessage)
+	}
 	if err := os.MkdirAll(h.d.RecordingsDir, 0o700); err != nil {
 		log.Printf("hub recording: recordings dir unavailable")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
 	}
 	sealed := filepath.Join(h.d.RecordingsDir, "."+in.UploadID+".sealed")
+	// The Mac's side first: a recordings dir it cannot write is
+	// write_failed, never the phone's missing audio.
+	f, err := os.OpenFile(sealed, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		log.Printf("hub recording: recordings dir not writable")
+		return recFailed(reasonWriteFailed, recordingWriteFailed)
+	}
+	_ = f.Close()
 	defer func() { _ = os.Remove(sealed) }()
 	if err := in.Download(ctx, sealed); err != nil {
 		return recFailed(reasonNotFound, MissingAudioMessage)

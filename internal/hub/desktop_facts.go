@@ -76,12 +76,11 @@ func signedBuild(st Status) bool {
 	return st.Bridge != BridgeUnavailable && st.CloudKit.Account != string(transport.AccountNoEntitlement)
 }
 
-// phoneContact is when a phone was last in touch: this run's last write, or
-// the one stored by an earlier run (zero = never).
+// phoneContact is when a phone was last in touch: this run's last admitted
+// contact (noteContact), or the one stored by an earlier run (zero = never).
 func (h *hubRuntime) phoneContact() time.Time {
-	t := h.touched()
 	h.mu.Lock()
-	stored := h.storedContact
+	t, stored := h.lastContact, h.storedContact
 	h.mu.Unlock()
 	if stored.After(t) {
 		return stored
@@ -105,8 +104,8 @@ func (h *hubRuntime) loadPhoneContact() {
 // savePhoneContact stores this run's last contact when it is newer than the
 // stored one (each daemon cycle: one small write at most per cycle).
 func (h *hubRuntime) savePhoneContact() {
-	t := h.touched()
 	h.mu.Lock()
+	t := h.lastContact
 	newer := t.After(h.storedContact)
 	h.mu.Unlock()
 	if !newer {
