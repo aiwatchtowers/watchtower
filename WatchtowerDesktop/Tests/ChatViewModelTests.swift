@@ -1726,8 +1726,9 @@ extension ChatViewModelTests {
             let reserve = provider == .claude ? "codex" : "claude"
             let id = try await dbManager.dbPool.write { db in
                 let id = try TestDatabase.insertChatConversation(db)
-                try db.execute(sql: "UPDATE chat_conversations SET actual_provider = ?, actual_model = ? WHERE id = ?",
-                               arguments: [reserve, "actual-model", id])
+                try db.execute(sql: """
+                    UPDATE chat_conversations SET actual_provider = ?, actual_model = ?, routing_reason = 'quota_exhausted' WHERE id = ?
+                    """, arguments: [reserve, "actual-model", id])
                 return id
             }
             let runner = FakeCLIRunner(stdout: Data("""
@@ -1750,6 +1751,81 @@ extension ChatViewModelTests {
             XCTAssertEqual(vm.routingPresentation?.preview?.state, .fallback)
             XCTAssertFalse(vm.routingPresentation?.canUsePreferred == true)
             XCTAssertEqual(fakes.count, count)
+        }
+    }
+}
+
+extension ChatViewModelTests {
+    func testHistoricalActualAfterPreferenceChangeAndReadErrorHasNoQuotaCopy() async throws {
+        for provider in [AIProvider.claude, .codex] {
+            let historical = provider == .claude ? "codex" : "claude"
+            let id = try await dbManager.dbPool.write { db in
+                let id = try TestDatabase.insertChatConversation(db)
+                try db.execute(sql: """
+                    UPDATE chat_conversations SET actual_provider = ?, actual_model = 'historical-model', routing_reason = 'preferred'
+                    WHERE id = ?
+                    """, arguments: [historical, id])
+                return id
+            }
+            let runner = FakeCLIRunner(stdout: Data("""
+                {"preferred_provider":"\(provider.rawValue)","enabled":true,"revision":"saved-revision",
+                 "providers":[{"provider":"\(provider.rawValue)","state":"available"}]}
+                """.utf8))
+            let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: provider, cliRunner: runner, defaults: defaults)
+            vm.select(conversationID: id)
+            XCTAssertNil(vm.routingPresentation?.preview)
+            await vm.refreshRoutingStatus()
+            XCTAssertNil(vm.routingPresentation?.preview)
+            XCTAssertFalse(vm.routingPresentation?.canUsePreferred == true)
+            runner.shouldThrow = CancellationError()
+            await vm.refreshRoutingStatus()
+            XCTAssertNotNil(vm.routingStatusError)
+            XCTAssertNil(vm.routingPresentation?.preview)
+            XCTAssertTrue(vm.routingPresentation?.actual?.contains("historical-model") == true)
+        }
+    }
+
+    func testEagerActualWriteFailureShowsInExistingPersistenceStripAndClearsAfterRepair() async throws {
+        let id = try await dbManager.dbPool.write { db in
+            let id = try TestDatabase.insertChatConversation(db, provider: "claude")
+            try db.execute(sql: """
+                CREATE TRIGGER fail_initial_actual BEFORE UPDATE OF actual_provider ON chat_conversations
+                BEGIN SELECT RAISE(ABORT, 'actual metadata blocked'); END
+                """)
+            return id
+        }
+        let vm = try makeViewModel()
+        vm.select(conversationID: id)
+        let fake = try lastFake()
+        let driver = try XCTUnwrap(pool.client(for: id)?.driver)
+        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
+        fake.emit(.sessionReady(sessionID: nil, provider: "claude", model: "resolved-model", routing: metadata))
+        let observed = await waitForCondition { driver.actualProvider == "claude" }
+        XCTAssertTrue(observed)
+        await driver.writesSettled()
+        XCTAssertNil(vm.liveTurn)
+        XCTAssertTrue(vm.sessionPersistenceError?.contains("actual metadata blocked") == true)
+        XCTAssertNotNil(driver.actualPersistenceError as? DatabaseError, "retain the real SQLite cause")
+        try renderEagerPersistenceFailureIfRequested(vm)
+        try await dbManager.dbPool.write { try $0.execute(sql: "DROP TRIGGER fail_initial_actual") }
+        fake.emit(.sessionReady(sessionID: nil, provider: "claude", model: "repaired-model", routing: metadata))
+        let retried = await waitForCondition { driver.actualModel == "repaired-model" }
+        XCTAssertTrue(retried)
+        await driver.writesSettled()
+        XCTAssertNil(vm.sessionPersistenceError)
+        XCTAssertNil(driver.actualPersistenceError)
+    }
+
+    private func renderEagerPersistenceFailureIfRequested(_ vm: ChatViewModel) throws {
+        guard let path = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"] else { return }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let view = ChatErrorStrip(chatVM: vm).padding(Spacing.page).frame(width: 360).detailBackground()
+        let height = ViewRenderProbe.fittingHeight(view, width: 360)
+        let probe = ViewRenderProbe(size: NSSize(width: 360, height: height))
+        for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            try probe.png(view, appearance).write(to: directory.appendingPathComponent("provider-chat-storage-error-\(suffix).png"))
         }
     }
 }

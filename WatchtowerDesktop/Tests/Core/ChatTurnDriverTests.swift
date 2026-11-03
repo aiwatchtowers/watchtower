@@ -377,3 +377,35 @@ extension ChatTurnDriverTests {
         XCTAssertEqual(try row().model, "resolved-model")
     }
 }
+
+extension ChatTurnDriverTests {
+    func testEagerReadyStorageFailureIsRetainedAcrossBeginUntilActualSaveSucceeds() async throws {
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_actual BEFORE UPDATE OF actual_provider ON chat_conversations
+                BEGIN SELECT RAISE(ABORT, 'actual metadata blocked'); END
+                """)
+        }
+        let driver = makeDriver()
+        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
+        let ready = ChatEvent.sessionReady(sessionID: nil, provider: "codex", model: "resolved-model", routing: metadata)
+        driver.apply(ready)
+        await driver.writesSettled()
+        XCTAssertNil(driver.liveTurn)
+        XCTAssertTrue(driver.lastSessionError?.message.contains("actual metadata blocked") == true)
+        XCTAssertEqual(driver.lastSessionError?.code, .internalError)
+        let turn = driver.begin(messageID: messageID, turnID: "t")
+        XCTAssertTrue(turn.persistError?.contains("actual metadata blocked") == true)
+        await driver.writesSettled()
+        XCTAssertTrue(turn.persistError?.contains("actual metadata blocked") == true)
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER fail_actual") }
+        driver.apply(ready)
+        await driver.writesSettled()
+        XCTAssertNil(driver.lastSessionError)
+        XCTAssertNil(turn.persistError)
+        XCTAssertEqual(try row().model, "resolved-model")
+        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
+        await driver.writesSettled()
+        XCTAssertNil(driver.liveTurn)
+    }
+}

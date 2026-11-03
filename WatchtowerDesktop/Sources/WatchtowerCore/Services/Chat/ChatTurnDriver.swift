@@ -27,6 +27,12 @@ package final class ChatTurnDriver {
     package private(set) var actualModel: String?
     package private(set) var routing: ChatRoutingMetadata?
     package private(set) var lastSessionError: ChatSessionError?
+    /// An eager ready can fail before any turn exists. Keep the real storage
+    /// cause observable until an actual-metadata write succeeds.
+    package private(set) var actualPersistenceError: Error?
+    package var actualPersistenceErrorMessage: String? {
+        actualPersistenceError.map(Self.actualPersistenceMessage)
+    }
     /// The turn ended and its terminal write is under way: the turn can no
     /// longer be stopped, and no next turn starts until it landed.
     package private(set) var isFinishing = false
@@ -68,6 +74,7 @@ package final class ChatTurnDriver {
     package func begin(messageID: Int64, turnID: String) -> LiveTurn {
         let turn = LiveTurn(messageID: messageID, turnID: turnID, startedAt: clock())
         liveTurn = turn
+        turn.persistError = actualPersistenceErrorMessage
         // Eager pinned/off hosts already reported their resolved actual model.
         // Automatic preflight hosts must report a new selection for this turn.
         if routing?.mode == "pinned" || routing?.reason == "fallback_disabled",
@@ -155,14 +162,29 @@ package final class ChatTurnDriver {
         actualProvider = provider
         actualModel = model
         let (store, conversationID, projectID, turn) = (store, conversationID, projectID, liveTurn)
-        writes.start {
+        writes.start { [weak self] in
             do {
                 try await store.saveActual(conversationID: conversationID, messageID: turn?.messageID,
                                            provider: provider, model: model, routing: routing, projectID: projectID)
+                guard let self else { return }
+                let previous = self.actualPersistenceErrorMessage
+                self.actualPersistenceError = nil
+                if let previous {
+                    if self.lastSessionError?.message == previous { self.lastSessionError = nil }
+                    if turn?.persistError == previous { turn?.persistError = nil }
+                }
             } catch {
-                turn?.persistError = "Couldn't save the actual provider: \(error.localizedDescription)"
+                guard let self else { return }
+                self.actualPersistenceError = error
+                let message = Self.actualPersistenceMessage(error)
+                self.lastSessionError = ChatSessionError(turnID: nil, code: .internalError, message: message, retryable: false)
+                turn?.persistError = message
             }
         }
+    }
+
+    private static func actualPersistenceMessage(_ error: Error) -> String {
+        "Couldn't save the actual provider: \(error.localizedDescription)"
     }
 
     private func recordSession(_ sid: String?) {

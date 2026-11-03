@@ -79,3 +79,9 @@ extension DesignShotsTests {
         try renderShots(ProviderFallbackShotFixtures.runtimeShots)
     }
 }
+
+extension DesignShotsTests {
+    func testHistoricalActualOnlyShotsRender() throws {
+        try renderShots(ProviderFallbackShotFixtures.historicalActualShots)
+    }
+}

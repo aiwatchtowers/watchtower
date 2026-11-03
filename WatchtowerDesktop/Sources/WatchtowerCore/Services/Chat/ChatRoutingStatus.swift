@@ -73,7 +73,7 @@ package struct ChatRoutingPresentation {
     }
     package var preview: ProviderFallbackPreview? {
         let state: ProviderFallbackPreview.State
-        if !automatic { state = .pinned } else if actualProvider == preferred.other.rawValue.lowercased() {
+        if !automatic { state = .pinned } else if actualProvider == preferred.other.rawValue.lowercased(), reason == "quota_exhausted" {
             let preferredState = health?.provider(preferred.rawValue.lowercased())?.state
             state = health?.enabled == true && health?.preferredProvider == preferred.rawValue.lowercased()
                 && preferredState == "available" ? .recovered : .fallback

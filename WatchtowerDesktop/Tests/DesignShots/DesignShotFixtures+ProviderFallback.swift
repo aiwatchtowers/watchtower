@@ -123,6 +123,7 @@ extension ProviderFallbackShotFixtures {
 private struct RuntimeProviderChatShot: View {
     let preferred: ProviderFallbackPreview.Provider
     let state: ProviderFallbackPreview.State
+    var actualReason = "quota_exhausted"
     private static func ignoreAutomatic() {}
 
     private var model: ChatRoutingPresentation {
@@ -133,22 +134,21 @@ private struct RuntimeProviderChatShot: View {
         return ChatRoutingPresentation(preferred: preferred, automatic: state != .pinned,
                                        actualProvider: state == .pinned ? preferred.rawValue.lowercased() : preferred.other.rawValue.lowercased(),
                                        actualModel: state == .pinned ? "sample-pinned-model" : "sample-model",
-                                       reason: "quota_exhausted", health: health, busy: false)
+                                       reason: actualReason, health: health, busy: false)
     }
 
-    private var preview: ProviderFallbackPreview {
-        state == .stopped ? ProviderFallbackPreview(preferred: preferred, state: .stopped)
-            : model.preview ?? ProviderFallbackPreview(preferred: preferred, state: state)
+    private var preview: ProviderFallbackPreview? {
+        state == .stopped ? ProviderFallbackPreview(preferred: preferred, state: .stopped) : model.preview
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             Text(ProviderFallbackPreview.chatPolicyLabel).font(.headline)
-            Text(preview.chatPolicyValue).font(.caption)
-            Text(model.actual ?? preview.actualLabel).font(.caption).foregroundStyle(.secondary)
+            Text(preview?.chatPolicyValue ?? model.choice).font(.caption)
+            Text(model.actual ?? "").font(.caption).foregroundStyle(.secondary)
             if state == .stopped {
                 stoppedRow
-            } else {
+            } else if let preview {
                 ChatRoutingStatusView(preview: preview, onAction: state == .pinned ? nil : Self.ignoreAutomatic)
             }
             ChatModelPicker(provider: preferred == .claude ? .claude : .codex,
@@ -157,6 +157,7 @@ private struct RuntimeProviderChatShot: View {
                             automatic: state != .pinned, onSelectAutomatic: Self.ignoreAutomatic)
         }
         .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .detailBackground()
     }
 
@@ -167,5 +168,16 @@ private struct RuntimeProviderChatShot: View {
         let item = ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: 1)
         return ChatMessageRow(item: item, isLast: true, isEditing: false,
                               actions: ChatRowActions(regenerate: nil, retry: nil, reviewActions: { _ in }, continueStopped: nil))
+    }
+}
+
+extension ProviderFallbackShotFixtures {
+    static var historicalActualShots: [DesignShot] {
+        ProviderFallbackPreview.Provider.allCases.map { preferred in
+            DesignShot(name: "provider-chat-historical-\(preferred.rawValue.lowercased())-narrow",
+                       size: NSSize(width: 360, height: 0)) {
+                AnyView(RuntimeProviderChatShot(preferred: preferred, state: .recovered, actualReason: "preferred"))
+            }
+        }
     }
 }

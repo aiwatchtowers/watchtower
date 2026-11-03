@@ -167,7 +167,8 @@ struct ChatErrorStrip: View {
 
     var body: some View {
         // Nothing at all without an error, so a caller's padding adds no gap.
-        if chatVM.errorMessage != nil || chatVM.liveTurn?.persistError != nil || chatVM.actionFeed.lastError != nil {
+        if chatVM.errorMessage != nil || chatVM.liveTurn?.persistError != nil
+            || chatVM.sessionPersistenceError != nil || chatVM.actionFeed.lastError != nil {
             VStack(alignment: .leading, spacing: 6) {
                 if let error = chatVM.errorMessage {
                     Text(error)
@@ -179,6 +180,9 @@ struct ChatErrorStrip: View {
                 }
                 if let persist = chatVM.liveTurn?.persistError {
                     Text(persist).font(.caption).foregroundStyle(.red)
+                }
+                if let error = chatVM.sessionPersistenceError, error != chatVM.liveTurn?.persistError {
+                    Text(error).font(.caption).foregroundStyle(Tone.error)
                 }
                 if let err = chatVM.actionFeed.lastError {
                     Text(err).font(.caption).foregroundStyle(.red)

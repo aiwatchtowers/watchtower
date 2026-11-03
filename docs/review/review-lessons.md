@@ -2635,3 +2635,13 @@ Entry format:
 - weak-dimension: composition coverage; the sticky/recovery test asserted the residual defect as intent. External Codex transmission was unavailable after automatic approval rejection; toolkit APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source without rerunning scoped checks; full Gate B remains due after review convergence. [7]
 - rule-gap: no new binding rule needed; approved spec section 5 and the existing swallowed-error/absent-versus-error rules settle both findings.
 - outcome: TBD
+
+
+## 2026-11-03 — provider-fallback Desktop chat (#1491, Task 9) — verdict: changes-needed
+
+- contested: different preferred and historical actual providers do not prove quota or recovery. Reopening an automatic chat after a saved preference change is sufficient to produce that pair without any quota history; presentation must preserve the routing cause rather than infer it from inequality. [6]
+- false-positive: the test lane quality score of 8/10 is not a severity-8 coverage gap. Existing substantive persistence, host-retirement, read-only health and production-component render evidence remains useful. [7]
+- miss: the failure lane found two lifecycle gaps: eager actual-metadata writes capture no turn and silently lose storage errors, and Stop after a typed embedded quota event overrides the already-known failure with a plain partial row. Terminal semantic failures must survive later cancellation and reload. [6/9]
+- weak-dimension: composition coverage across ready-before-turn and typed-error-before-stream-EOF boundaries; presentation tests also encoded the unsupported quota inference. External diff transmission remained unavailable after automatic approval rejection; toolkit APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source and reported scoped validation without rerunning checks. [7]
+- rule-gap: no new binding rule needed; the swallowed-error rule explicitly makes the eager-write failure a blocker, and approved reason-code/partial/action contracts cover the other defects. Native capability ask remains open and its strict guard is outside these fixes.
+- outcome: TBD

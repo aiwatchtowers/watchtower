@@ -80,6 +80,9 @@ final class ChatViewModel {
     private(set) var isChangingRouting = false
     private(set) var reviewedActionIDs: [Int64] = []
     private(set) var reviewedMessageID: Int64?
+    var sessionPersistenceError: String? {
+        pool.client(for: conversationID)?.driver.actualPersistenceErrorMessage
+    }
     private(set) var routingStatus: ChatRoutingStatus?
     private(set) var routingStatusError: String?
     private var readingRoutingStatus = false

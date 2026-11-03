@@ -17,12 +17,12 @@ final class ChatRoutingPresentationTests: XCTestCase {
             XCTAssertEqual(view.preview?.copy.action, "Use \(preferred.rawValue)")
             XCTAssertTrue(view.canUsePreferred)
             let busy = ChatRoutingPresentation(preferred: preferred, automatic: true, actualProvider: reserve,
-                                               actualModel: "actual-model", reason: nil, health: health, busy: true)
+                                               actualModel: "actual-model", reason: "quota_exhausted", health: health, busy: true)
             XCTAssertFalse(busy.canUsePreferred)
             let unknown = ChatRoutingPresentation(preferred: preferred, automatic: true, actualProvider: reserve,
                                                   actualModel: nil, reason: nil, health: nil, busy: false)
-            XCTAssertEqual(unknown.preview?.state, .fallback)
-            XCTAssertFalse(unknown.preview?.copy.detail.contains("14:30") ?? true)
+            XCTAssertNil(unknown.preview)
+            XCTAssertFalse(unknown.canUsePreferred)
         }
     }
 
@@ -32,12 +32,33 @@ final class ChatRoutingPresentationTests: XCTestCase {
             {"provider":"claude","state":"quota_wait","next_probe_at":"2020-01-01T00:00:00.123456789Z"}]}
             """.utf8))
         let view = ChatRoutingPresentation(preferred: .claude, automatic: true, actualProvider: "codex",
-                                           actualModel: "real-codex-model", reason: nil, health: health, busy: false)
+                                           actualModel: "real-codex-model", reason: "quota_exhausted", health: health, busy: false)
         XCTAssertEqual(view.preview?.state, .fallback)
         XCTAssertFalse(view.canUsePreferred)
         let fresh = ChatRoutingPresentation(preferred: .claude, automatic: true, actualProvider: nil,
                                             actualModel: nil, reason: nil, health: health, busy: false)
         XCTAssertNil(fresh.actual)
         XCTAssertNil(fresh.preview)
+    }
+}
+
+extension ChatRoutingPresentationTests {
+    func testHistoricalActualAndChangedPreferenceDoNotInventQuotaOrRecovery() throws {
+        for preferred in ProviderFallbackPreview.Provider.allCases {
+            let health = try ChatRoutingStatus.parse(Data("""
+                {"preferred_provider":"\(preferred.rawValue.lowercased())","enabled":true,"revision":"new-revision",
+                 "providers":[{"provider":"\(preferred.rawValue.lowercased())","state":"available"}]}
+                """.utf8))
+            for reason in [nil, "", "preferred", "fallback_disabled", "unrecognized"] as [String?] {
+                for status in [nil, health] as [ChatRoutingStatus?] {
+                    let view = ChatRoutingPresentation(preferred: preferred, automatic: true,
+                                                       actualProvider: preferred.other.rawValue.lowercased(),
+                                                       actualModel: "historical-model", reason: reason, health: status, busy: false)
+                    XCTAssertNil(view.preview, "provider inequality is not quota evidence: \(reason ?? "nil")")
+                    XCTAssertFalse(view.canUsePreferred)
+                    XCTAssertEqual(view.actual, "Current provider: \(preferred.other.rawValue) · historical-model")
+                }
+            }
+        }
     }
 }

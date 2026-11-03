@@ -650,13 +650,15 @@ package final class EmbeddedChatEngine {
     private func endNow(_ current: RunningTurn) async -> TurnEnd {
         let turn = current.turn
         let text = turn.fullText
+        // A typed started-quota error is terminal even while its process is
+        // draining stdout. A later Stop must not erase its no-replay semantics.
+        if let failure = current.failure, !current.stopRequested || failure.code == .quotaExhausted {
+            return .ended(await failTurn(turn, text: text, failure: failure))
+        }
         if current.stopRequested {
             turn.finish(.interrupted, at: clock())
             await persistFinal(turn, text: text, status: "partial", failure: nil)
             return .ended(.stopped(messageID: turn.messageID))
-        }
-        if let failure = current.failure {
-            return .ended(await failTurn(turn, text: text, failure: failure))
         }
         // The reply must be on disk before postTurn acts on it.
         let store = store

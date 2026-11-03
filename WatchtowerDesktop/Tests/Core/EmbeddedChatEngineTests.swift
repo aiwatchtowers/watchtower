@@ -1120,3 +1120,48 @@ extension EmbeddedChatEngineTests {
         }
     }
 }
+
+extension EmbeddedChatEngineTests {
+    func testTypedQuotaBeforeStreamEOFStillWinsLaterStopAndReload() async throws {
+        for text in ["", "Partial before quota"] {
+            let engine = makeEngine()
+            XCTAssertTrue(engine.send("A new owner message"))
+            await engine.finished()
+            let failure = ChatSessionError(turnID: nil, code: .rateLimit, message: "Quota reached",
+                                           retryable: false, reason: "quota_exhausted")
+            ai.emit(.text(text), .failure(failure), .routing(provider: "codex", model: "consumed-after-quota", metadata: nil))
+            // A subsequent ordered metadata write proves the error was consumed,
+            // while the scripted process deliberately keeps stdout/EOF open.
+            let consumed = await waitForCondition { (try? self.rows().last?.model) == "consumed-after-quota" }
+            XCTAssertTrue(consumed)
+            XCTAssertTrue(engine.isStreaming)
+            let beforeStop = try XCTUnwrap(try rows().last)
+            let convID = conversationID
+            let actionID = try await pool.write { db in
+                try db.execute(sql: """
+                    INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status)
+                    VALUES ('fake_write', '{}', ?, ?, 'applied')
+                    """, arguments: [convID, beforeStop.turnID])
+                return db.lastInsertedRowID
+            }
+            let calls = ai.calls.count
+            engine.stop()
+            ai.finish() // release EOF only AFTER the later owner Stop
+            expectTrue(await waitIdle(engine))
+            let saved = try XCTUnwrap(try rows().last)
+            XCTAssertEqual(saved.text, text)
+            XCTAssertEqual(saved.status, text.isEmpty ? "error" : "partial")
+            XCTAssertEqual(saved.errorCode, "quota_exhausted")
+            XCTAssertEqual(saved.errorMessage, "Quota reached")
+            XCTAssertFalse(engine.canRetry)
+            engine.retry()
+            XCTAssertEqual(ai.calls.count, calls)
+            let reloaded = makeEngine()
+            XCTAssertEqual(reloaded.messages.last?.message.errorCode, "quota_exhausted")
+            reloaded.reviewActions(messageID: saved.id)
+            XCTAssertEqual(reloaded.reviewedActions.map(\.id), [actionID])
+            reloaded.retry()
+            XCTAssertEqual(ai.calls.count, calls)
+        }
+    }
+}

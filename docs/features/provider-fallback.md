@@ -293,3 +293,19 @@ next-check times come from metadata, while sample times remain in shot fixtures.
 reverse-provider catalog scenes. Tests cover argv, parser/driver/DB reload,
 embedded typed quota handling, action review without sending, explicit pins,
 sticky retirement and bounded warm sessions.
+
+Ready-before-turn storage failures retain their underlying error on the session
+and appear in the existing persistence error strip even without a live turn.
+The next turn carries the diagnostic until an actual-metadata write succeeds;
+repair clears only the matching diagnostic, preserving unrelated errors.
+
+An embedded typed started-quota event remains the terminal outcome if the owner
+presses Stop while stdout is still draining. The partial/error row keeps its
+quota code and action review after reload. Ordinary Stop behavior is unchanged.
+
+Historical actual/provider inequality alone never proves quota or recovery.
+The Go chat adapter retains the persisted routing cause across sticky turns and
+reopens, updating its in-memory provider/cause only after the DB write succeeds.
+Automatic quota/recovery cards require an affirmative quota cause; recovery also
+requires matching available local health. Unknown or ordinary historical causes
+show the actual label and any diagnostic without inventing a quota explanation.
