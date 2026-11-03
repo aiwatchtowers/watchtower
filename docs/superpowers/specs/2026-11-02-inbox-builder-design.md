@@ -129,7 +129,7 @@ Before sub-project C ships, measure background tokens per day of digests + track
 
 ## Contracts touched (inventory)
 
-TRACKS-01..07 (source changes from digests to raw windows; the guarantees stay), IDEA-01/02/05 (floors and provenance re-keyed from digest topics to messages), CATCHUP-01..04 (moves into an automation), BACKFILL-02 (digest half removed), knowledge-search KB source list, automations AUTO-* (new `blocks`, `folder`, `key` fields on `output.inbox`; new `return` and `approval` triggers; `concurrency: 1` required for living outputs and the raw window; capability `digests:read` removed), inbox-pulse INBOX-02/05/09 (the detector keeps its guarantees; its output moves from the Messages filter to the Waiting for me built-in, ask #952). Each change the owner has not explicitly approved is filed as its own ask before the sub-project's review.
+TRACKS-01..07 (source changes from digests to raw windows; the guarantees stay), IDEA-01/02/05 (floors and provenance re-keyed from digest topics to messages), CATCHUP-01..04 (moves into an automation), BACKFILL-02 (digest half removed), knowledge-search KB source list, automations AUTO-* (new `blocks`, `folder`, `key` fields on `output.inbox` and removal of a living output by key; new `return` and `approval` triggers; `concurrency: 1` required for living outputs and the raw window; capability `digests:read` removed), inbox-pulse INBOX-02/05/09 (the detector keeps its guarantees; its output moves from the Messages filter to the Waiting for me built-in, ask #952). Each change the owner has not explicitly approved is filed as its own ask before the sub-project's review.
 
 ## Sub-projects (order)
 
