@@ -48,7 +48,7 @@ func (g *CodexGenerator) SetIsolatedChild(dropEnv ...string) {
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
 func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage, _ string) (string, *digest.Usage, string, error) {
 	model := g.modelStrong
-	if s, ok := digest.SourceFromContext(ctx); ok && digest.TierForSource(s) == digest.TierLight {
+	if digest.TierForContext(ctx) == digest.TierLight {
 		model = g.modelLight
 	}
 
@@ -86,11 +86,15 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	codexBin := FindBinary(g.codexPath)
-	args, stdin, promptFile, err := buildImageArgs(codexBin, g.modelStrong, systemPrompt, userMessage, imagePath, dir)
+	model := g.modelStrong
+	if tier, ok := digest.ModelTierFromContext(ctx); ok && tier == digest.TierLight {
+		model = g.modelLight
+	}
+	args, stdin, promptFile, err := buildImageArgs(codexBin, model, systemPrompt, userMessage, imagePath, dir)
 	if err != nil {
 		return "", nil, err
 	}
-	result, usage, err := g.run(ctx, providers.Image, codexBin, g.modelStrong, args, stdin, dir, promptFile, systemPrompt+userMessage)
+	result, usage, err := g.run(ctx, providers.Image, codexBin, model, args, stdin, dir, promptFile, systemPrompt+userMessage)
 	return result, usage, err
 }
 
@@ -238,7 +242,7 @@ func noToolsArgs(profile providers.InvocationProfile, model, workDir string) ([]
 	}
 	override, _, _ := mcpOverride("", nil, nil, nil, owner, nil)
 	args := append(execArgs(model), "-c", `web_search="disabled"`, "-c", override)
-	for _, feature := range []string{"multi_agent", "image_generation", "skill_search", "hooks", "codex_hooks", "in_app_browser", "skill_mcp_dependency_install", "tool_suggest", "code_mode", "code_mode_host", "goals"} {
+	for _, feature := range []string{"shell_snapshot", "shell_snapshot_v2", "multi_agent", "image_generation", "skill_search", "hooks", "codex_hooks", "in_app_browser", "skill_mcp_dependency_install", "tool_suggest", "code_mode", "code_mode_host", "goals"} {
 		args = append(args, "-c", "features."+feature+"=false")
 	}
 	return args, nil

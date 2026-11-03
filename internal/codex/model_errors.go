@@ -53,7 +53,7 @@ func turnError(model, msg string) error {
 		Error  providers.FailureDetail `json:"error"`
 	}
 	if json.Unmarshal([]byte(msg), &body) != nil || (body.Type != "" && body.Type != "error") || body.Error.Message == "" {
-		return providers.CodexMessageFailure(msg, classifyTurn(model, msg, ""))
+		return providers.CodexModelMessageFailure(msg, model, classifyTurn(model, msg, ""))
 	}
 	var tags []string
 	if body.Error.Type != "" {

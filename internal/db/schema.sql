@@ -3553,7 +3553,10 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     duration_ms           INTEGER NOT NULL DEFAULT 0,
     ok                    INTEGER NOT NULL DEFAULT 1,
     automation_id         INTEGER,                             -- automations.id, no FK; NULL = not an automation run
-    automation_run_id     INTEGER                              -- automation_runs.id, no FK
+    automation_run_id     INTEGER,                             -- automation_runs.id, no FK
+    operation_id          TEXT NOT NULL DEFAULT '',
+    attempt               INTEGER NOT NULL DEFAULT 0,
+    config_revision       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);

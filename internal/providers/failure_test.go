@@ -180,3 +180,18 @@ func TestOptionalClaudeMetadataStaysConservative(t *testing.T) {
 	_ = requireCategory(t, ClaudeResultFailure("result", "success", true, nil, "API Error: 429 rate_limit_error", nil, cause), RateLimit)
 	_ = requireCategory(t, ClaudeResultFailure("result", "success", true, nil, "API Error: 4291 issue", nil, cause), Unknown)
 }
+
+func TestCodexNamedModelQuotaRequiresSelectedModel(t *testing.T) {
+	// Primary source: codex rust-v0.166.0 protocol/src/error.rs:691-708.
+	message := "You’ve hit your usage limit for GPT-5.6-Sol. Switch to another model now, or try again later."
+	f := requireCategory(t, CodexModelMessageFailure(message, "gpt-5.6-sol", errors.New("diagnostic")), Quota)
+	if f.Scope != "model" || f.Bucket != "gpt-5.6-sol" {
+		t.Fatalf("scope: %+v", f)
+	}
+	for _, model := range []string{"", "gpt-other", "codex", "gpt-reserve"} {
+		_ = requireCategory(t, CodexModelMessageFailure(message, model, errors.New("diagnostic")), Unknown)
+	}
+	for _, message := range []string{"You hit your spend cap set in your workspace. Increase your spend cap to continue.", "Your workspace is out of credits. Add credits to continue.", "You’ve hit your usage limit for gpt-5.6-sol. Ask billing.", "You’ve hit your usage limit for promo. Switch to another model now, or try again later."} {
+		_ = requireCategory(t, CodexModelMessageFailure(message, "gpt-5.6-sol", errors.New("diagnostic")), Unknown)
+	}
+}

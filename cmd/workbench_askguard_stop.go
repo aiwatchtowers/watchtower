@@ -442,7 +442,7 @@ func recordedQuestion(d stopDecision, v *askGuardVerdict, message string) db.Cha
 // terminal's session variable, and the message travels on stdin (as every
 // CLI generator's does).
 var askGuardGeneratorFactory = func(cfg *config.Config) digest.Generator {
-	gen := cliGenerator(cfg)
+	gen := legacyCLIGenerator(cfg)
 	if s, ok := gen.(interface{ SetIsolatedChild(...string) }); ok {
 		s.SetIsolatedChild(terminalSessionEnv)
 	}

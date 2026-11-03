@@ -58,6 +58,9 @@ type generatorWrapper interface {
 // wrappers (PooledGenerator, WithCallTimeout), ends in a generator that takes
 // images.
 func ImageCapable(g Generator) (ImageGenerator, bool) {
+	if c, ok := g.(interface{ ImageCapability() bool }); ok && !c.ImageCapability() {
+		return nil, false
+	}
 	if w, ok := g.(generatorWrapper); ok {
 		if _, ok := ImageCapable(w.wrappedGenerator()); !ok {
 			return nil, false
