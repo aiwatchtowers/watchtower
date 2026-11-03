@@ -28,7 +28,7 @@ The Mac is the hub. It publishes your data into your iCloud and applies the phon
 9. **iCloud is slowing sync down:** wait; it clears on its own.
 10. **Mobile is run by a newer Watchtower:** you opened an older Watchtower after an update moved the iPhone sync to the new version. This older app leaves the phone alone. Install the latest Watchtower and open it; the phone keeps its link.
 11. **Relay unavailable for <N> min.:** the Mac cannot reach the relay. Check the Mac's internet connection; phones keep their changes and send them when it is back.
-12. **This Mac's Relay storage is full (5 GB):** the Mac's space on the relay holds its recordings and transcripts, and new changes wait until older recordings are removed. Your data on the Mac is not affected.
+12. **This Mac's Relay storage is full (5 GB):** the Mac's space on the relay holds what your phones see, including each meeting transcript from the last 30 days. In Watchtower on the Mac, open each recording you no longer need and click **Delete**. The line clears at the Mac's next change that the relay accepts.
 13. **<phone>'s Relay mailbox is full:** the Mac's replies to that phone are piling up unread. Open Watchtower on that phone so it reads them.
 14. **Doesn't get updates: this Mac runs over Relay:** that phone has no Relay subscription. Subscribe on it, or switch the Mac to iCloud from a subscribed phone.
 15. **On this Mac's side, <N> actions from this phone are not applied yet:** the Mac holds them until the phone sends the ones before them. Open Watchtower on the phone and keep it online until the line goes away.
@@ -36,7 +36,7 @@ The Mac is the hub. It publishes your data into your iCloud and applies the phon
 
 ## How to check
 
-**Now** reads "Mac online" with a small age, and a waiting change leaves **Waiting for your Mac**. Over Relay, the Mac's **Relay** row reads "Connected · last change delivered <age> ago" and the phone's row shows no warning line.
+**Now** reads "Mac online" with a small age, and a waiting change leaves **Waiting for your Mac**. Over Relay, the Mac's **Relay** row reads "Connected · last change delivered <age> ago" (just "Connected" before the first change) and the phone's row shows no warning line.
 
 ## If it did not help
 
