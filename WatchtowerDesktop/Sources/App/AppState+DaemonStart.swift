@@ -7,6 +7,7 @@ extension AppState {
     func makeSharedConfig() -> ConfigService {
         let service = ConfigService()
         observedRoutingApplication = service.routingApplication
+        observedProviderConnection = service.providerConnection
         return service
     }
 

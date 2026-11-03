@@ -18,7 +18,8 @@ enum ProviderFallbackShotFixtures {
     private static func shot(
         _ state: ProviderFallbackPreview.State, preferred: ProviderFallbackPreview.Provider, narrow: Bool = false
     ) -> DesignShot {
-        let preview = ProviderFallbackPreview(preferred: preferred, state: state, nextCheck: "14:30")
+        let preview = ProviderFallbackPreview(preferred: preferred, state: state, nextCheck: "14:30",
+                                              chatTitle: "Quarterly planning", modelDescription: "Light: Default · Strong: Default")
         let suffix = preferred == .codex ? "-codex" : ""
         return DesignShot(name: "provider-fallback-\(state.rawValue)\(suffix)\(narrow ? "-narrow" : "")",
                           size: NSSize(width: narrow ? 360 : 640, height: 0)) {
@@ -73,33 +74,12 @@ private struct ProviderFallbackPreviewView: View {
     private var modelLine: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             Text(ProviderFallbackPreview.modelsLabel).font(.caption).foregroundStyle(.secondary)
-            Text(ProviderFallbackPreview.modelsValue).font(.caption)
+            Text(preview.modelDescription).font(.caption)
         }
     }
 
     private var status: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            Text(preview.copy.title).font(.headline).foregroundStyle(tone)
-            Text(preview.copy.detail).font(.body).fixedSize(horizontal: false, vertical: true)
-            if preview.copy.busy {
-                ProgressView().controlSize(.small).accessibilityLabel(preview.copy.title)
-            }
-            if let action = preview.copy.action {
-                Button(action) {}.buttonStyle(.kitPrimary)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.container))
-    }
-
-    private var tone: Color {
-        switch preview.copy.emphasis {
-        case .neutral: .secondary
-        case .success: Tone.success
-        case .warning: Tone.warning
-        case .error: Tone.error
-        }
+        ProviderFallbackStatus(copy: preview.copy) {}
     }
 }
 

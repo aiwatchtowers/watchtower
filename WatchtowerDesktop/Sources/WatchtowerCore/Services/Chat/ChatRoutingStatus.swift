@@ -7,8 +7,16 @@ package struct ChatRoutingStatus: Decodable, Equatable, Sendable {
         package let provider: String
         package let state: String
         package let nextProbeAt: Date?
+        package enum ManualCheck: Decodable, Equatable, Sendable {
+            case allowed, throttled
+            package init(from decoder: Decoder) throws {
+                self = try decoder.singleValueContainer().decode(Bool.self) ? .allowed : .throttled
+            }
+        }
+        package var manualAllowed: ManualCheck?
         enum CodingKeys: String, CodingKey {
             case provider, state
+            case manualAllowed = "manual_allowed"
             case nextProbeAt = "next_probe_at"
         }
     }
@@ -97,7 +105,10 @@ package struct ChatRoutingPresentation {
         } else if reason == "required_capability_missing" { state = .unsupported } else { return nil }
         let next = health?.provider(preferred.rawValue.lowercased())?.nextProbeAt?
             .formatted(date: .omitted, time: .shortened)
-        return ProviderFallbackPreview(preferred: preferred, state: state, nextCheck: next)
+        return ProviderFallbackPreview(preferred: preferred, state: state, nextCheck: next,
+                                       observedProvider: actualProvider.map { value in
+                                           ProviderFallbackPreview.Provider.allCases.first { $0.rawValue.lowercased() == value }?.rawValue ?? value
+                                       }, observedModel: actualModel)
     }
     package var canUsePreferred: Bool { preview?.state == .recovered && !busy }
 }

@@ -2662,6 +2662,16 @@ Entry format:
 - rule-gap: no new rule needed. Distinguish successful runtime publication from successful acknowledgement, and inspect identity races against the supported writer lifecycle before promoting hypothetical interleavings to defects. Native capability approval and later Settings/integration tasks remain outside this leaf.
 - outcome: TBD
 
+
+## 2026-11-03 — provider-fallback Settings (#1493, Task 11) — verdict: changes-needed
+
+- contested: an operation-origin flag must change on every new operation, not only on explicit tests. A completed test followed by a failed metadata check otherwise turns metadata Retry into another paid request. The test lane rated this specific missing transition 8; unlike an overall quality score, that maps to blocker under the judge contract. [6/7]
+- false-positive: missing direct Settings navigation and local HTTP integration cases alone do not establish another blocker; app-owned operation state and existing local helper/CLI coverage supply meaningful evidence. The later integration health hypothesis remains unverified and outside this leaf verdict. [7]
+- miss: the failure/privacy lane alone identified that cancelling and discarding a task loses the quit join handle. Cancellation starts cleanup; only awaiting completion proves the subprocess and its descendants have finished draining and reaping. Tests must cover invalidate before quit, not only quit of the currently retained task. [6/7]
+- weak-dimension: temporal composition coverage. Tests cover metadata then test and direct quit, but miss test then metadata and cancel/edit/save then quit. External diff transmission was unavailable after automatic approval rejection; toolkit APIs were unavailable, so three built-in independent lanes supplied evidence. Judge inspected frozen source and handoff without rerunning checks. [7]
+- rule-gap: no new binding rule needed; operation-specific Retry and cancel/reap requirements already cover both defects. Native capability ask remains open; no guard relaxation or broader integration behavior is authorized by these fixes.
+- outcome: TBD
+
 ## 2026-11-03 — feature/914-slack-team-usage (#915 Slack home team + `slack backfill` digest-coverage ledger, #916 Usage totals; 36 files +2075/−66; panel: prosecutor (10) + codex (4) + all three pr-review-toolkit specialists; judge verified against 9ba0650ed by reading, targeted `go test ./internal/sync ./cmd -run …` green) — verdict: changes-needed
 
 - contested (F1, held major, sent to the owner): a team-mismatched account fails every cycle until a Re-login, exactly like a revoked one, but it is not in INBOX-09's revoked carve-out, so it freezes the shared inbox watermark for every Slack account. For the documented "account #1 moved before #915" limit, the freeze never ends. The feature note picks the freeze on purpose, and freezing matches INBOX-09's literal text. Adding a carve-out would amend an Enforced contract, so the owner decides. **A new error class that by design repeats every cycle until the owner acts gets the same blast-radius check as the existing carve-outs.** [8]

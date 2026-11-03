@@ -101,11 +101,11 @@ final class AppState {
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
+    @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
     @ObservationIgnored weak var observedRoutingApplication: ProviderRoutingApplication?
     @ObservationIgnored lazy var sharedConfig = makeSharedConfig() {
-        didSet { observedRoutingApplication = sharedConfig.routingApplication }
+        didSet { observedRoutingApplication = sharedConfig.routingApplication; observedProviderConnection = sharedConfig.providerConnection }
     }
-
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
 
