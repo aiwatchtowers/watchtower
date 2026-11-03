@@ -433,42 +433,52 @@ func TestRunBackfillWindowChannels_OnlyTheListFromTheStart(t *testing.T) {
 	assert.Equal(t, BackfillWindowResult{Complete: true}, res, "an empty list digests nothing")
 }
 
-// A digest the caller does not ignore — one the daemon committed after the
-// caller decided, read under the digest lock — moves the start past its
-// period_to, so nothing it digested is digested again; one ending past the
-// window leaves the channel nothing to digest.
-func TestRunBackfillWindowChannels_ALaterDigestMovesTheStart(t *testing.T) {
+// A digest the caller does not ignore — one committed after the caller cut
+// its window, read under the digest lock — that covers the window's start
+// moves the start past its period_to, so nothing it digested is digested
+// again; one that starts inside the window holds the channel and leaves the
+// call incomplete, so nothing before it is skipped and the caller cuts it out
+// on its rerun; one covering the whole window leaves nothing to digest.
+func TestRunBackfillWindowChannels_ALaterDigest(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "1:C1", "alpha")
-	seedChannel(t, database, "1:C2", "beta")
 	seedUser(t, database, "U1", "alice", "Alice")
-	for _, ts := range []string{"600.000000", "700.000000", "900.000000"} {
-		seedMessage(t, database, "1:C1", ts, "U1", "alpha "+ts)
-		seedMessage(t, database, "1:C2", ts, "U1", "beta "+ts)
+	for _, ch := range []string{"alpha", "beta", "gamma"} {
+		seedChannel(t, database, "1:"+ch, ch)
+		for _, ts := range []string{"600.000000", "700.000000", "900.000000"} {
+			seedMessage(t, database, "1:"+ch, ts, "U1", ch+" "+ts)
+		}
 	}
-	_, err := database.UpsertDigest(db.Digest{ChannelID: "1:C1", Type: "channel", PeriodFrom: 550, PeriodTo: 700,
-		Summary: "daemon", MessageCount: 2, Model: "m"})
-	require.NoError(t, err)
-	_, err = database.UpsertDigest(db.Digest{ChannelID: "1:C2", Type: "channel", PeriodFrom: 800, PeriodTo: 1500,
-		Summary: "daemon", MessageCount: 1, Model: "m"})
-	require.NoError(t, err)
+	for _, d := range []struct {
+		ch       string
+		from, to float64
+	}{
+		{"1:alpha", 400, 700}, // covers the start
+		{"1:beta", 650, 800},  // starts inside the window
+		{"1:gamma", 450, 1500},
+	} {
+		_, err := database.UpsertDigest(db.Digest{ChannelID: d.ch, Type: "channel", PeriodFrom: d.from, PeriodTo: d.to,
+			Summary: "daemon", MessageCount: 2, Model: "m"})
+		require.NoError(t, err)
+	}
 
 	gen := &promptCapturingGenerator{responses: map[string]string{
-		"digest.channel_batch": batchAnswer("1:C1"),
+		"digest.channel_batch": batchAnswer("1:alpha"),
 		"digest.channel":       validDigestJSON(),
 	}}
 	p := backfillPipeline(t, database, gen)
 
-	res, _, err := p.RunBackfillWindowChannels(context.Background(), 1, 500, 1000, []string{"1:C1", "1:C2"}, nil)
+	res, _, err := p.RunBackfillWindowChannels(context.Background(), 1, 500, 1000, []string{"1:alpha", "1:beta", "1:gamma"}, nil)
 	require.NoError(t, err)
-	assert.True(t, res.Complete)
+	assert.False(t, res.Complete, "beta is held")
 	assert.Equal(t, 1, res.Digests)
 	joined := strings.Join(gen.prompts, "\n")
 	assert.Contains(t, joined, "alpha 900")
 	assert.NotContains(t, joined, "alpha 600", "inside the later digest")
 	assert.NotContains(t, joined, "alpha 700", "on the later digest's period_to")
-	assert.NotContains(t, joined, "beta", "a digest ending past the window covers the rest of it")
-	assert.Len(t, channelDigests(t, database, "1:C2"), 1)
+	assert.NotContains(t, joined, "beta", "a digest starting inside the window holds the channel")
+	assert.NotContains(t, joined, "gamma", "a digest covering the window leaves nothing")
+	assert.Len(t, channelDigests(t, database, "1:beta"), 1)
+	assert.Len(t, channelDigests(t, database, "1:gamma"), 1)
 }
 
 func TestRunBackfillWindow_MutedAndDMChannelsDoNotStall(t *testing.T) {

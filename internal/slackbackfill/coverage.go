@@ -35,11 +35,12 @@ func coveredChannels(digests []db.ChannelDigestPeriod, day *ledgerDay) map[strin
 }
 
 // laterPeriods returns, per channel, the periods of digests written after
-// the day was decided (id above digest_id_max).
+// the day was decided (id above digest_id_max) and not excluded: one the
+// decision itself saw and excluded held none of the day's messages.
 func laterPeriods(digests []db.ChannelDigestPeriod, day *ledgerDay) map[string][]span {
 	later := map[string][]span{}
 	for _, d := range digests {
-		if d.ID > day.DigestIDMax {
+		if d.ID > day.DigestIDMax && !slices.Contains(day.Excluded, d.ID) {
 			later[d.ChannelID] = append(later[d.ChannelID], span{d.From, d.To})
 		}
 	}

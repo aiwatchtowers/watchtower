@@ -215,6 +215,7 @@ type backfillScope struct {
 	errs       []error         // every failure of the call, in order
 	only       map[string]bool // nil = every channel; else only these, each loading (from, to] (RunBackfillWindowChannels)
 	ignore     map[int64]bool  // with only: the digests whose period does not move a channel's start
+	held       map[string]bool // with only: channels a digest starts inside the window of (scopedStart)
 }
 
 // inBackfill reports whether the pipeline is writing a backfill digest or

@@ -53,13 +53,14 @@ func TestCountTimes(t *testing.T) {
 // that the ledger did not exclude; a later digest (id above digest_id_max)
 // never covers it and is returned as a later period.
 func TestCoveredChannels(t *testing.T) {
-	day := &ledgerDay{Excluded: []int64{2}, DigestIDMax: 3}
+	day := &ledgerDay{Excluded: []int64{2, 5}, DigestIDMax: 3}
 	digests := []db.ChannelDigestPeriod{
 		{ID: 1, ChannelID: "1:C1"}, // covers C1
 		{ID: 2, ChannelID: "1:C2"}, // excluded: a gap digest
 		{ID: 3, ChannelID: "1:C2"}, // ...but this one, on the max, covers C2
 		{ID: 4, ChannelID: "1:C3"}, // written after the decision
 		{ID: 2, ChannelID: "1:C4"}, // excluded
+		{ID: 5, ChannelID: "1:C5"}, // committed during the decision and excluded by it: not a later period
 	}
 	assert.Equal(t, map[string]bool{"1:C1": true, "1:C2": true}, coveredChannels(digests, day))
 	assert.Empty(t, coveredChannels(nil, day))

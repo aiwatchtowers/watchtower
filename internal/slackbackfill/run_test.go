@@ -377,6 +377,34 @@ func TestRange_DigestCommittedBeforeTheLockIsNotDigestedAgain(t *testing.T) {
 	assert.NotContains(t, joined, "early-5", "the digest committed before the lock holds it")
 }
 
+// A digest committed between the cut and the lock that starts inside the
+// window holds the channel: the run asks for a rerun, which cuts the digest
+// out and digests what lies before and after it, once.
+func TestRange_DigestCommittedInsideTheWindowIsCutOutOnTheRerun(t *testing.T) {
+	f := newFixture(t)
+	day := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	at := func(h int) time.Time { return day.Add(time.Duration(h) * time.Hour) }
+	seedDigest(t, f.db, "1:C1", day.AddDate(0, 0, 5), day.AddDate(0, 0, 5).Add(time.Hour)) // the forward mark
+	f.fetch.onFetch = func(_, _ time.Time) error {
+		seedMessage(t, f.db, "1:C1", at(5), "before-5")
+		seedMessage(t, f.db, "1:C1", at(10), "inside-10")
+		seedMessage(t, f.db, "1:C1", at(15), "after-15")
+		return nil
+	}
+	r := f.newRun(t, false)
+	r.Digest = &racingDigester{Pipeline: f.pipe, before: func() { seedDigest(t, f.db, "1:C1", at(8), at(12)) }}
+	err := r.Range(context.Background(), day, day.Add(24*time.Hour))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "run it again")
+	assert.Zero(t, f.gen.calls())
+
+	require.NoError(t, f.runRange(t, day, day.Add(24*time.Hour)))
+	joined := fmt.Sprint(f.gen.prompts)
+	assert.Contains(t, joined, "before-5")
+	assert.Contains(t, joined, "after-15")
+	assert.NotContains(t, joined, "inside-10")
+}
+
 // m2: the rollup is marked pending before any digest is written. The model
 // fails on its second call (the rollup): the ledger on disk still says
 // rollup_pending, and a rerun rebuilds the rollup with no second digest.
