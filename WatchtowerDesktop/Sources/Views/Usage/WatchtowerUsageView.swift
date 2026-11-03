@@ -117,7 +117,7 @@ private struct UsageReportBody: View {
     // MARK: Totals
 
     private var totalsCard: some View {
-        let totals = report.watchtower.totals
+        let totals = report.pageTotal
         let gaps = LLMUsagePresentation.gaps(totals)
         return VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(alignment: .top, spacing: Spacing.wide) {
@@ -127,6 +127,9 @@ private struct UsageReportBody: View {
                 stat("Output", LLMUsagePresentation.tokens(totals.output))
                 stat("API-equivalent", LLMUsagePresentation.cost(totals))
             }
+            Text(LLMUsagePresentation.totalsScope)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if !gaps.isEmpty {
                 gapsLine(gaps)
                     .font(.caption)
@@ -157,7 +160,7 @@ private struct UsageReportBody: View {
 
     private var processCard: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
-            cardTitle("Watchtower collecting and processing")
+            sectionTitle("Watchtower collecting and processing", totals: report.watchtower.totals)
             UsageTableRow(name: "Process", cells: ["Calls", "Tokens", "Output", "Cost", "Per call"], isHeader: true)
             ForEach(LLMUsagePresentation.sorted(report.watchtower.rows)) { row in
                 UsageTableRow(
@@ -191,14 +194,8 @@ private struct UsageReportBody: View {
     // MARK: Your automations
 
     private var automationsCard: some View {
-        let totals = report.ownAutomations.totals
-        return VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(spacing: Spacing.small) {
-                cardTitle("Your automations")
-                Text("— \(LLMUsagePresentation.tokens(totals.tokens)) tokens · \(LLMUsagePresentation.cost(totals))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            sectionTitle("Your automations", totals: report.ownAutomations.totals)
             UsageTableRow(name: "Automation", cells: ["Runs", "Calls", "Tokens", "Output", "Cost"], isHeader: true)
             ForEach(LLMUsagePresentation.sorted(report.ownAutomations.rows)) { row in
                 UsageTableRow(name: row.name, cells: [
@@ -240,6 +237,18 @@ private struct UsageReportBody: View {
         Text(title)
             .font(.subheadline.weight(.semibold))
             .accessibilityAddTraits(.isHeader)
+    }
+
+    /// A section's title with its subtotal in grey.
+    private func sectionTitle(_ title: String, totals: LLMUsageTotals) -> some View {
+        HStack(spacing: Spacing.small) {
+            cardTitle(title)
+                .layoutPriority(1)
+            Text("— \(LLMUsagePresentation.sectionSummary(totals))")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
     }
 }
 
