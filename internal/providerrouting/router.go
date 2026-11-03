@@ -91,6 +91,9 @@ type Deferred struct {
 	Cause       error
 }
 
+// ProviderDeferred identifies this router-owned wait without importing the router in pipelines.
+func (d *Deferred) ProviderDeferred() bool { return true }
+
 func (d *Deferred) Error() string { return fmt.Sprintf("%s: %s", d.Provider, ErrDeferred) }
 func (d *Deferred) Unwrap() []error {
 	if d.Cause == nil {
