@@ -133,7 +133,7 @@ func aiTransportFailure(err error) bool {
 		switch failure.Category {
 		case providers.Transport, providers.Timeout, providers.Auth, providers.Overload, providers.RateLimit:
 			return true
-		case providers.Unknown: // preserve historical transport handling below
+		case providers.Unknown, providers.Quota: // preserve historical unavailable markers below
 		default:
 			return false
 		}

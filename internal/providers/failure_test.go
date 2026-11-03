@@ -24,7 +24,7 @@ func TestTerminalFailureCategories(t *testing.T) {
 		status int
 		want   ErrorCategory
 	}{
-		{"usage_limit_reached", 429, Quota}, {"rate_limit_error", 429, RateLimit}, {"server_overloaded", 503, Overload},
+		{"usage_limit_reached", 429, Quota}, {"usage_limit_reached", 401, Auth}, {"usage_limit_reached", 403, Policy}, {"rate_limit_error", 429, RateLimit}, {"server_overloaded", 503, Overload},
 		{"authentication_error", 401, Auth}, {"model_not_found", 404, Model}, {"policy_denied", 403, Policy},
 		{"context_length_exceeded", 400, ContextLimit}, {"error_max_turns", 0, Budget}, {"", 429, RateLimit},
 		{"quota_exceeded", 0, Unknown}, {"usage_not_included", 0, Unknown}, {"", 0, Unknown},

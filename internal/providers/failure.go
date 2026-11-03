@@ -99,12 +99,15 @@ func TerminalFailure(provider string, detail FailureDetail, status int, cause er
 	case "invalid_output", "error_max_structured_output_retries":
 		category = InvalidOutput
 	}
+	// A trusted HTTP authentication/authorization refusal wins over a
+	// conflicting quota code; it never admits quota-based routing.
+	if status == 401 {
+		category = Auth
+	} else if status == 403 {
+		category = Policy
+	}
 	if category == Unknown {
 		switch status {
-		case 401:
-			category = Auth
-		case 403:
-			category = Policy
 		case 429:
 			category = RateLimit
 		case 529, 503:

@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,6 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 )
 
@@ -222,5 +227,73 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 	}
 	if read("home") != home || read("transport") != "https://models.example.com/v1" || read("stdin") != "user-marker" {
 		t.Fatal("authentication/transport/stdin changed")
+	}
+}
+
+// The generator's normalized quota cause and the timeout decorator's legacy
+// retry marker have different consumers. Keep both for the actual 429 CLI
+// envelope, including older envelopes without the redundant nested type.
+func TestQuotaStatus429RetainsHistoricalMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		includeType bool
+	}{
+		{"legacy_without_inner_type", false},
+		{"with_inner_error_type", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"status": 429, "error": map[string]any{"type": "usage_limit_reached", "message": "quota exhausted"}}
+			if tc.includeType {
+				body["type"] = "error"
+			}
+			message, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := json.Marshal(map[string]any{"type": "turn.failed", "error": map[string]any{"message": string(message)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaf := NewCodexGenerator("m", "m", fakeCodexRun(t, string(event), "", 1))
+			leaf.SetIsolatedChild()
+			_, _, _, err = digest.WithCallTimeout(leaf, 5*time.Second).Generate(context.Background(), "", "request", "")
+			if !errors.Is(err, digest.ErrAICall) {
+				t.Errorf("lost historical unavailable marker: %v", err)
+			}
+			if !strings.Contains(logredact.Full(err), "status code 429") {
+				t.Errorf("lost structured HTTP diagnostic: %s", logredact.Full(err))
+			}
+			var failure *providers.Failure
+			if !errors.As(err, &failure) || failure.Category != providers.Quota {
+				t.Errorf("lost typed subscription quota: %+v", failure)
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Errorf("lost CLI exit cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestQuotaEnvelopeRejectsNonErrorTypes(t *testing.T) {
+	for _, innerType := range []string{"assistant", "tool"} {
+		t.Run(innerType, func(t *testing.T) {
+			body := map[string]any{"type": innerType, "status": 429, "error": map[string]any{"type": "usage_limit_reached", "message": "quota exhausted"}}
+			message, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := json.Marshal(map[string]any{"type": "turn.failed", "error": map[string]any{"message": string(message)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaf := NewCodexGenerator("m", "m", fakeCodexRun(t, string(event), "", 1))
+			leaf.SetIsolatedChild()
+			_, _, _, err = digest.WithCallTimeout(leaf, 5*time.Second).Generate(context.Background(), "", "request", "")
+			var failure *providers.Failure
+			if errors.As(err, &failure) && failure.Category == providers.Quota {
+				t.Fatalf("non-error payload established quota: %v", err)
+			}
+		})
 	}
 }

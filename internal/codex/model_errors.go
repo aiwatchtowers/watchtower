@@ -40,7 +40,9 @@ const (
 
 // turnError is the error for a failed codex turn with message msg. A JSON
 // envelope ({"type":"error","status":429,"error":{"type":…,"message":…}})
-// is unwrapped to its message, keeping its type and status in the text
+// is unwrapped to its message (older envelopes omit the redundant outer
+// type). Only a missing or explicit error type is accepted. Keep its type
+// and status in the text
 // ("codex error (rate_limit_error, status code 429): …") so digest's
 // aiUnavailable still sees rate limits and outages; a model refusal becomes
 // a *ModelUnavailableError.
@@ -50,7 +52,7 @@ func turnError(model, msg string) error {
 		Status int                     `json:"status"`
 		Error  providers.FailureDetail `json:"error"`
 	}
-	if json.Unmarshal([]byte(msg), &body) != nil || body.Type != "error" || body.Error.Message == "" {
+	if json.Unmarshal([]byte(msg), &body) != nil || (body.Type != "" && body.Type != "error") || body.Error.Message == "" {
 		return providers.CodexMessageFailure(msg, classifyTurn(model, msg, ""))
 	}
 	var tags []string
