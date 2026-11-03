@@ -23,12 +23,27 @@
 // no zone access rules beyond that: every device that may write a zone
 // reads and writes every zone.
 //
+// Pushes (relay push.ts/ops.ts at the pinned commit): register_push keeps a
+// phone's token (FORBIDDEN for a non-phone, UNSPECIFIED "invalid request" for
+// an empty or non-hex token or no env); send_alert is checked in the relay's
+// order after the vouch gate — FORBIDDEN for a caller that is not a hub,
+// UNSPECIFIED "not implemented" while SetPushOff(true) (no APNs key),
+// FORBIDDEN when the phone does not hold the hub in a slot,
+// ENTITLEMENT_INACTIVE when it does not pay, FORBIDDEN when it is not in the
+// hub's last set_hub_readers, RECORD_TOO_LARGE when the APNs body would pass
+// 4096 bytes, NOT_FOUND without a token — and an accepted alert is kept for
+// Alerts (no APNs is modelled). With SetAccountState the slot and paying
+// checks read the canned state (see holder). FailNextWith scripts any other
+// answer.
+//
 // Test-only: never imported by production code
 // (TestRelaytestIsImportedOnlyByTests).
 package relaytest
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +72,14 @@ const VouchTTL = 10 * time.Minute
 // maxMacs is the hubs one account may hold in its slots.
 const maxMacs = 3
 
+// The relay's push limits (apns.ts MAX_PAYLOAD_BYTES, the alert body around
+// the base64 envelope, ops.ts MAX_PUSH_TOKEN_CHARS).
+const (
+	maxPushPayload    = 4096
+	alertBodyOverhead = 67
+	maxPushTokenChars = 200
+)
+
 // writeTimeout bounds one pushed WebSocket frame.
 const writeTimeout = 5 * time.Second
 
@@ -69,9 +92,9 @@ type Server struct {
 	mu           sync.Mutex
 	ops          []string
 	reqs         []*relayv1.Request
-	frames       [][]byte                       // every op body, WebSocket frame and blob received
-	fail         map[string][]relayv1.ErrorCode // op → codes, one per call
-	failSave     map[string]relayv1.ErrorCode   // zone → code for the next save into it
+	frames       [][]byte                     // every op body, WebSocket frame and blob received
+	fail         map[string][]*relayv1.Error  // op → scripted errors, one per call
+	failSave     map[string]relayv1.ErrorCode // zone → code for the next save into it
 	zones        map[string]*zone
 	blobs        map[string][]byte
 	blobHeaders  []http.Header
@@ -79,6 +102,10 @@ type Server struct {
 	attZone      map[string]string
 	account      *relayv1.AccountState // answered verbatim to every get_account_state when set
 	readers      [][]string
+	hubReaders   map[string][]string // hub → its last set_hub_readers
+	pushTokens   map[string]string   // phone → its register_push token
+	pushOff      bool                // send_alert answers "not implemented"
+	alerts       []Alert             // accepted send_alert requests, in order
 	subscribed   []string
 	pageLimit    int
 	hideLength   bool                // blob GETs stream with no Content-Length
@@ -114,7 +141,7 @@ type pairing struct{ phone, mac string }
 func Start(t testing.TB) *Server {
 	t.Helper()
 	s := &Server{
-		fail: map[string][]relayv1.ErrorCode{}, failSave: map[string]relayv1.ErrorCode{}, zones: map[string]*zone{},
+		fail: map[string][]*relayv1.Error{}, hubReaders: map[string][]string{}, pushTokens: map[string]string{}, failSave: map[string]relayv1.ErrorCode{}, zones: map[string]*zone{},
 		blobs: map[string][]byte{}, attZone: map[string]string{},
 		pageLimit: 500, ready: make(chan struct{}),
 		kinds: map[string]relayv1.DeviceKind{}, pairings: map[string]pairing{},
@@ -150,9 +177,40 @@ func (s *Server) Hits() int64 { return s.hits.Load() }
 
 // FailNext makes the next call of op answer code.
 func (s *Server) FailNext(op string, code relayv1.ErrorCode) {
+	s.FailNextWith(op, errResp(code).GetError())
+}
+
+// FailNextWith makes the next call of op answer e as it is (its message and
+// retry_after_s included).
+func (s *Server) FailNextWith(op string, e *relayv1.Error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.fail[op] = append(s.fail[op], code)
+	s.fail[op] = append(s.fail[op], proto.Clone(e).(*relayv1.Error))
+}
+
+// Alert is one send_alert the fake accepted.
+type Alert struct {
+	Hub, Phone string
+	Envelope   []byte
+}
+
+// Alerts is every accepted send_alert, in order.
+func (s *Server) Alerts() []Alert {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Alert, len(s.alerts))
+	for i, a := range s.alerts {
+		out[i] = Alert{Hub: a.Hub, Phone: a.Phone, Envelope: slices.Clone(a.Envelope)}
+	}
+	return out
+}
+
+// SetPushOff makes send_alert answer UNSPECIFIED "not implemented", as a
+// relay with no APNs key does (the local stand).
+func (s *Server) SetPushOff(off bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pushOff = off
 }
 
 // FailNextSaveIn makes the next save with an item in zone answer code. With
@@ -386,8 +444,10 @@ func ok() *relayv1.Response {
 	return &relayv1.Response{Result: &relayv1.Response_Ok{Ok: &relayv1.Ok{}}}
 }
 
-func errResp(code relayv1.ErrorCode) *relayv1.Response {
-	return &relayv1.Response{Result: &relayv1.Response_Error{Error: &relayv1.Error{Code: code, Message: "fake"}}}
+func errResp(code relayv1.ErrorCode) *relayv1.Response { return errMsg(code, "fake") }
+
+func errMsg(code relayv1.ErrorCode, msg string) *relayv1.Response {
+	return &relayv1.Response{Result: &relayv1.Response_Error{Error: &relayv1.Error{Code: code, Message: msg}}}
 }
 
 // tokenPrefix makes a session token name its device.
@@ -414,7 +474,7 @@ func (s *Server) serveOp(w http.ResponseWriter, r *http.Request) {
 	var resp *relayv1.Response
 	if q := s.fail[op]; len(q) > 0 {
 		s.fail[op] = q[1:]
-		resp = errResp(q[0])
+		resp = &relayv1.Response{Result: &relayv1.Response_Error{Error: q[0]}}
 	} else if code, found := s.failSaveInLocked(caller, &req); found {
 		resp = errResp(code)
 	} else {
@@ -466,7 +526,12 @@ func (s *Server) handle(caller string, req *relayv1.Request) *relayv1.Response {
 		return s.changes(op.Changes)
 	case *relayv1.Request_SetHubReaders:
 		s.readers = append(s.readers, slices.Clone(op.SetHubReaders.GetPhoneDeviceIds()))
+		s.hubReaders[caller] = slices.Clone(op.SetHubReaders.GetPhoneDeviceIds())
 		return ok()
+	case *relayv1.Request_RegisterPush:
+		return s.registerPush(caller, op.RegisterPush)
+	case *relayv1.Request_SendAlert:
+		return s.sendAlert(caller, op.SendAlert)
 	case *relayv1.Request_GetAccountState:
 		return &relayv1.Response{Result: &relayv1.Response_AccountState{AccountState: s.accountState(caller)}}
 	case *relayv1.Request_OpenPairing:
@@ -540,6 +605,69 @@ func (s *Server) accountState(caller string) *relayv1.AccountState {
 		}
 	}
 	return st
+}
+
+// registerPush is a phone's register_push (ops.ts registerPush).
+func (s *Server) registerPush(caller string, r *relayv1.RegisterPushToken) *relayv1.Response {
+	if s.kinds[caller] != relayv1.DeviceKind_DEVICE_KIND_PHONE {
+		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+	}
+	tok := r.GetToken()
+	env := r.GetEnv()
+	if _, err := hex.DecodeString(tok); err != nil || tok == "" || len(tok) > maxPushTokenChars ||
+		(env != relayv1.PushEnv_PUSH_ENV_SANDBOX && env != relayv1.PushEnv_PUSH_ENV_PRODUCTION) {
+		return errMsg(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, "invalid request")
+	}
+	s.pushTokens[caller] = tok
+	return ok()
+}
+
+// sendAlert is a hub's send_alert, checked in the relay's order (ops.ts
+// requireKind, push.ts alertSender, the phone's enqueueAlert); the vouch
+// gate ran before it in handle.
+func (s *Server) sendAlert(caller string, a *relayv1.SendAlert) *relayv1.Response {
+	phone := a.GetPhoneDeviceId()
+	switch {
+	case !s.isHub(caller):
+		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+	case s.pushOff:
+		return errMsg(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, "not implemented")
+	}
+	held, paying := s.holder(phone, caller)
+	switch {
+	case !held:
+		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+	case !paying:
+		return errResp(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE)
+	case !slices.Contains(s.hubReaders[caller], phone):
+		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+	case alertBodyOverhead+base64.StdEncoding.EncodedLen(len(a.GetEnvelope())) > maxPushPayload:
+		return errMsg(relayv1.ErrorCode_ERROR_CODE_RECORD_TOO_LARGE, "record too large")
+	case s.kinds[phone] != relayv1.DeviceKind_DEVICE_KIND_PHONE || s.pushTokens[phone] == "":
+		return errMsg(relayv1.ErrorCode_ERROR_CODE_NOT_FOUND, "not found")
+	}
+	s.alerts = append(s.alerts, Alert{Hub: caller, Phone: phone, Envelope: slices.Clone(a.GetEnvelope())})
+	return ok()
+}
+
+// holder is push.ts:216–217's snapshot check: whether phone holds hub in a
+// slot, and whether it pays. With SetAccountState it reads the canned state:
+// the phone's SlotHolder (its Paying flag), for hub only when the state's
+// MacDeviceIds lists it (an empty list stands for the asking hub alone, as
+// get_account_state answers each hub its own holders).
+func (s *Server) holder(phone, hub string) (held, paying bool) {
+	if st := s.account; st != nil {
+		if macs := st.GetMacDeviceIds(); len(macs) > 0 && !slices.Contains(macs, hub) {
+			return false, false
+		}
+		for _, h := range st.GetPhones() {
+			if h.GetPhoneDeviceId() == phone {
+				return true, h.GetPaying()
+			}
+		}
+		return false, false
+	}
+	return slices.Contains(s.slots[phone], hub), s.pays(phone)
 }
 
 func (s *Server) openPairing(caller, mac string) *relayv1.Response {

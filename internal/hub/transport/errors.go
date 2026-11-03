@@ -32,4 +32,10 @@ var (
 	// no phone holds it in a slot, so only its pairing zones are open to it.
 	// Never a reason to register again; wait for a slot (Go hub design §7).
 	ErrNotVouched = errors.New("transport: the relay has not admitted this hub")
+	// ErrNoPushToken: the phone never registered a push token (send_alert's
+	// NOT_FOUND); it gets no push until it opens Watchtower once.
+	ErrNoPushToken = errors.New("transport: phone has no push token")
+	// ErrPushOff: the relay has no push provider configured (send_alert's
+	// UNSPECIFIED "not implemented").
+	ErrPushOff = errors.New("transport: relay pushes are off")
 )

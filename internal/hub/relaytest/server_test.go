@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -464,5 +465,35 @@ func TestZoneEventsArriveInSeqOrderAcrossWriters(t *testing.T) {
 			t.Fatalf("zone event %v after seq %d", zc, last)
 		}
 		last = zc.GetSeq()
+	}
+}
+
+// register_push takes a phone's hex token with an env and refuses a hub
+// (FORBIDDEN) or a malformed token (UNSPECIFIED "invalid request"), as the
+// relay does.
+func TestRegisterPushChecksKindAndToken(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	_, store := newPhone(t, srv, h)
+	reg := func(c *client.Client, tok string, env relayv1.PushEnv) error {
+		_, err := c.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RegisterPush{RegisterPush: &relayv1.RegisterPushToken{Token: tok, Env: env}}})
+		return err
+	}
+	addSlot(t, store, h) // a vouched hub, so the refusal is register_push's own
+	if err := reg(h.c, "ab12", relayv1.PushEnv_PUSH_ENV_SANDBOX); client.Code(err) != relayv1.ErrorCode_ERROR_CODE_FORBIDDEN {
+		t.Errorf("hub register_push: %v, want FORBIDDEN", err)
+	}
+	for _, c := range []struct {
+		tok string
+		env relayv1.PushEnv
+	}{{"", relayv1.PushEnv_PUSH_ENV_SANDBOX}, {"abc", relayv1.PushEnv_PUSH_ENV_SANDBOX}, {"zz", relayv1.PushEnv_PUSH_ENV_PRODUCTION}, {"ab12", relayv1.PushEnv_PUSH_ENV_UNSPECIFIED}} {
+		err := reg(store.C, c.tok, c.env)
+		var pe *client.Error
+		if !errors.As(err, &pe) || pe.E.GetCode() != relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED || pe.E.GetMessage() != "invalid request" {
+			t.Errorf("token %q env %v: %v, want invalid request", c.tok, c.env, err)
+		}
+	}
+	if err := reg(store.C, "ab12", relayv1.PushEnv_PUSH_ENV_PRODUCTION); err != nil {
+		t.Errorf("valid register_push: %v", err)
 	}
 }
