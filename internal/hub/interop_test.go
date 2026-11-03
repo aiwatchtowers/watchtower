@@ -200,6 +200,9 @@ type interopOpts struct {
 	register             func(*actions.Dispatcher)
 	sources              func(*state.Store) []hubslices.Source
 	away                 platform.Away
+	// httpWrap, when set, wraps the round tripper of the hub's relay HTTP
+	// client (the phone's is not wrapped).
+	httpWrap func(http.RoundTripper) http.RoundTripper
 }
 
 // interopHub is one Run on the stand.
@@ -261,6 +264,9 @@ func launchHub(t *testing.T, opts interopOpts, shared bool) *interopHub {
 	// The production relay transport, over the wire tap and seen through
 	// tappedTransport.
 	o.httpClient = h.tap.httpClient()
+	if opts.httpWrap != nil {
+		o.httpClient.Transport = opts.httpWrap(o.httpClient.Transport)
+	}
 	o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
 		tr, err := o.relayTransport(ctx, id, st, zones)
 		if err != nil {

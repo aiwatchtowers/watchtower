@@ -843,7 +843,7 @@ func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 		meta := proto.Clone(stored).(*relayv1.Record)
 		meta.Envelope = nil
 		res.Saved = append(res.Saved, meta)
-		s.zoneChangedLocked(caller, rec.GetZone(), z.seq)
+		s.zoneChangedLocked(caller, rec.GetZone(), z.seq, inlineRecord(sv, stored))
 	}
 	return &relayv1.Response{Result: &relayv1.Response_Save{Save: res}}
 }
@@ -864,7 +864,7 @@ func (s *Server) del(caller string, d *relayv1.Delete) *relayv1.Response {
 		if live(cur) {
 			z.seq++
 			z.recs[it.GetName()] = &relayv1.Record{Zone: d.GetZone(), Name: it.GetName(), RecordSeq: z.seq, Deleted: true}
-			s.zoneChangedLocked(caller, d.GetZone(), z.seq)
+			s.zoneChangedLocked(caller, d.GetZone(), z.seq, nil)
 		}
 	}
 	return &relayv1.Response{Result: &relayv1.Response_Delete{Delete: res}}
@@ -1000,15 +1000,30 @@ func (s *Server) liveControlLocked(device string, kind relayv1.ControlKind, deta
 	}
 }
 
-// zoneChangedLocked tells every other device's current socket subscribed
-// to zoneName that it changed (the writer is not told); s.mu is held.
-func (s *Server) zoneChangedLocked(writer, zoneName string, seq uint64) {
-	for device, c := range s.conns {
-		if device != writer && !c.closed && c.zones[zoneName] {
+// zoneChangedLocked tells every device's current socket subscribed to
+// zoneName that it changed, the writer's too, as the relay does; rec (nil =
+// none) goes inline; s.mu is held.
+func (s *Server) zoneChangedLocked(_, zoneName string, seq uint64, rec *relayv1.Record) {
+	for _, c := range s.conns {
+		if !c.closed && c.zones[zoneName] {
 			c.enqueueLocked(frame{b: eventFrame(&relayv1.Event{Kind: &relayv1.Event_ZoneChanged{
-				ZoneChanged: &relayv1.ZoneChanged{Zone: zoneName, Seq: seq}}})})
+				ZoneChanged: &relayv1.ZoneChanged{Zone: zoneName, Seq: seq, Record: rec}}})})
 		}
 	}
+}
+
+// maxInlineRecord is the largest envelope the relay carries in an event
+// (64 KiB).
+const maxInlineRecord = 64 << 10
+
+// inlineRecord is the record a save's event carries: the stored record when
+// the save wrote exactly one item that fits inline, as the relay does; nil
+// otherwise.
+func inlineRecord(sv *relayv1.Save, stored *relayv1.Record) *relayv1.Record {
+	if len(sv.GetItems()) != 1 || len(stored.GetEnvelope()) > maxInlineRecord {
+		return nil
+	}
+	return proto.Clone(stored).(*relayv1.Record)
 }
 
 // writeLoop writes c's queue in order until the socket ends or a write

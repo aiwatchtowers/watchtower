@@ -757,7 +757,7 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 			h.pairing(ctx, strings.TrimPrefix(ev.Zone, transport.PairZone("")))
 		case h.isMailbox(ev.Zone):
 			h.touch()
-			h.pass(ctx)
+			h.passEvent(ctx, ev)
 			if h.sw != nil {
 				// The other transport's mailbox may have news too (a
 				// switch back, an epoch_ack): its poll runs now.
@@ -809,6 +809,20 @@ func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 
 // pass is one processor pass, run again at once while it left records.
 func (h *hubRuntime) pass(ctx context.Context) {
+	h.runPass(ctx, nil)
+}
+
+// passEvent is the pass a mailbox event asks for: on the hosted relay only
+// that mailbox, read from the event (actions.Processor.PassEvent). It is not
+// the backstop: lastPass stays, so the timer's pass over every mailbox
+// still comes.
+func (h *hubRuntime) passEvent(ctx context.Context, ev transport.Event) {
+	h.runPass(ctx, &ev)
+}
+
+// runPass runs a mailbox pass (PassEvent for ev when set), again while the
+// batch limit left records, up to 10 times, then once more on a kick.
+func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) {
 	if h.ckAccountUnread() {
 		h.refreshCloudKitAccount(ctx) // the bridge may have come up since start
 	}
@@ -818,11 +832,20 @@ func (h *hubRuntime) pass(ctx context.Context) {
 	if h.sup.o.onPass != nil {
 		h.sup.o.onPass()
 	}
-	h.lastPass = h.sup.o.Clock()
+	if ev == nil || !h.processor().ReadsEvents() {
+		h.lastPass = h.sup.o.Clock()
+	}
 	defer h.sweepShares(ctx)
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
-		rep, err := h.processor().Pass(pctx)
+		var rep actions.PassReport
+		var err error
+		if ev != nil {
+			rep, err = h.processor().PassEvent(pctx, *ev)
+			ev = nil // what the batch limit left: a full pass
+		} else {
+			rep, err = h.processor().Pass(pctx)
+		}
 		cancel()
 		if err != nil {
 			h.observe(err)

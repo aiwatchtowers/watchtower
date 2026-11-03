@@ -150,6 +150,10 @@ type Control struct {
 // and republishes into the new account's zones. ZonesRecreated means the
 // CloudKit bridge created the hub's zones again after CloudKit said one was
 // gone (deleted on the server): the runtime republishes everything.
+// Seq is the zone's seq after the change the event announces (the hosted
+// relay's ZoneChanged; 0 = not known, pull). Inline is that change as a
+// one-record page (NewSeq = Seq) when the relay carried the record in the
+// event: a consumer whose cursor is right below it needs no read.
 // Events are best effort: a consumer still pulls on its own backstop timer.
 type Event struct {
 	Zone           string
@@ -159,6 +163,8 @@ type Event struct {
 	PullNow        bool
 	AccountChanged bool
 	ZonesRecreated bool
+	Seq            uint64
+	Inline         *Batch
 }
 
 // Transport is the record store under the sealer.

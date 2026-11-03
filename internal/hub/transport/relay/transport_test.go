@@ -458,10 +458,19 @@ func TestRelayTransport_ZoneChangedWithoutRecordMeansPull(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// A ZoneChanged with a record is a pull too (the record is not trusted as the state).
+	// A ZoneChanged with a record carries its seq and the record as a
+	// one-record page (PullEvent decides whether it saves a read).
 	h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{
-		Zone: h.data, Seq: 4, Record: &relayv1.Record{Zone: h.data, Name: "n", RecordSeq: 4}}}})
-	if ev := nextEvent(t, h.tr); ev.Zone != h.data || ev.Resync {
+		Zone: h.data, Seq: 4, Record: &relayv1.Record{Zone: h.data, Name: "n", Envelope: []byte{1}, RecordSeq: 4}}}})
+	ev = nextEvent(t, h.tr)
+	if ev.Zone != h.data || ev.Resync || ev.Seq != 4 || ev.Inline == nil || ev.Inline.NewSeq != 4 ||
+		len(ev.Inline.Changed) != 1 || ev.Inline.Changed[0].Name != "n" || ev.Inline.Changed[0].RecordSeq != 4 {
+		t.Fatalf("event: %+v", ev)
+	}
+	// A record written at another seq than the event's is not inline.
+	h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{
+		Zone: h.data, Seq: 6, Record: &relayv1.Record{Zone: h.data, Name: "n", RecordSeq: 5}}}})
+	if ev = nextEvent(t, h.tr); ev.Seq != 6 || ev.Inline != nil {
 		t.Fatalf("event: %+v", ev)
 	}
 	// Controls come through, mapped.
