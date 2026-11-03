@@ -259,11 +259,12 @@ The hub is Go (`internal/hub`, `Run`), started by the daemon. [go-hub.md](go-hub
 
 - **Desktop host** (a Mac with the app): the hub runs in `<data root>/.hub` once the owner turned Mobile on and any Swift hub state was adopted (`hub_meta.adopted_at`). It links over CloudKit whichever transport is active and reaches CloudKit only through `WatchtowerCloudBridge.app` (`<hub dir>/bridge.sock`, sealed envelopes and metadata only, no key).
 - **Headless host** (Linux, a Mac with only the CLI): relay only, live after `hub enable` (or `service install`), terminal pairing (`hub pair`). Guide: `docs/guide/features/headless-host.md`.
+- **The iCloud account** (as the Swift hub, ask #969 Q3; go-hub.md "Phase 3 — the iCloud account"). With no usable account the CloudKit side is held (`icloud.go`): while CloudKit is the active transport `hub status` reads `paused`/`no_icloud` and Settings → Mobile shows "Paused until iCloud is available on this Mac. It goes on by itself."; on the relay the hub keeps running. An account change or a zone deleted on the server (`Event{zones_recreated}`) wipes the published state (`state.WipeSyncState`) and republishes in full; a failed wipe is retried at each housekeeping run.
 - **The hosted relay** (`transport/relay`, the relay's Go client vendored by `make relay-go`, pinned in `transport/relay/VERSION`): the hub registers as `DEVICE_KIND_HUB`, is admitted once a paying phone vouched for it, writes `data/<hub>` and reads one mailbox per phone `relay/<hub>/<phone>`; with no paying phone it pauses (`needs_relay`).
 
 ### Linking
 
-`link.Center`: codes (`Issue`, `IssueCloudKit`), hellos (`HandleHello`, `HandleCloudKitHello`), the owner's confirmation (`Confirm`), keyboxes and grants (`Keyboxes`, `Grants`), `Allow` (`typing`, `permissions`, `start_sessions`), `Unlink` (rotates). Over the relay a new phone links through a pairing slot `pair/<slot>`; on CloudKit through the zone shares. The rules are those of End-to-end encryption → Pairing with the code.
+`link.Center`: codes (`Issue`, `IssueCloudKit`), hellos (`HandleHello`, `HandleCloudKitHello`), the owner's confirmation (`Confirm`), keyboxes and grants (`Keyboxes`, `Grants`), `Allow` (`typing`, `permissions`, `start_sessions`), `Unlink` (rotates). Over the relay a new phone links through a pairing slot `pair/<slot>`; on CloudKit through the zone shares. The rules are those of End-to-end encryption → Pairing with the code. An iCloud account change closes the old user's link (`link.Center.AccountChanged`).
 
 ### Slices and cadence
 
