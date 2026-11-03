@@ -2,167 +2,111 @@
   <img src="assets/banner.png" alt="Watchtower" width="400" />
 </p>
 
+<h3 align="center">Your work, your agents, one local Mac app.</h3>
+
 <p align="center">
-  A local AI assistant for your work on macOS.<br/>
-  Syncs Slack, Gmail, Calendar, Jira and Confluence locally, tells you what needs your attention, and works your tasks with you.
+  Watchtower reads your Slack, mail, calendar and Jira, tells you what needs you, and gives your Claude Code or Codex sessions a board to work from.<br/>
+  For developers who run coding agents, and for anyone drowning in work chat. Everything is stored on your Mac.
 </p>
 
-## What is Watchtower?
-
-Watchtower is a native macOS app that turns your work sources into an actionable, searchable knowledge base. A background daemon syncs Slack, Gmail, Google Calendar, Jira and Confluence into a local SQLite database, then AI pipelines distill them into briefings, digests, tracks, people cards and a memory the assistant draws on — all without leaving your desktop.
-
-```
-[Slack · Gmail · Calendar · Jira · Confluence] → [Local SQLite] → [AI Pipelines] → [Desktop App]
-                                                                        ↓
-                                                    Briefings · Catch-Up · Digests · Tracks
-                                                    People · Ideas · Memory · Knowledge search
-```
-
-**Key principles:** your data is stored locally in SQLite; it leaves your machine only as AI prompts to the provider you pick (the Claude Code or Codex CLI, or none with a local Ollama-compatible server), as writes you approve (Slack messages, Jira, Confluence), and as calls to external MCP servers you add yourself. Nothing is posted to Slack, Jira or Confluence without your Approve.
-
-## Features
-
-- **Daily Briefings** — a morning overview: what needs attention, your day, what happened
-- **Catch-Up** — a recap of the window you were away for
-- **Inbox** — a queue of decisions waiting on you: proposals from the chats and from Slack reaction commands (react with an emoji to turn a message into a task, idea or reminder)
-- **Targets** — your tasks, with an AI chat per target that proposes or applies changes
-- **Tracks** — narrative tracks of what is going on across conversations
-- **Digests** — channel summaries, daily rollups and weekly trends
-- **AI Chat** — ask about your work in natural language; it can draft and, after your Approve, send Slack messages or edit Confluence pages
-- **Workbench** — a folder-bound board that a Claude Code session works in an embedded terminal, with asks back to you and a code viewer
-- **Meetings** — recording, live transcription with speaker diarization, notes and meeting prep
-- **Ideas & Decisions** — ideas and decisions mined from your sources
-- **Memory** — a local vault of what the assistant has learned about your people, projects and work
-- **Knowledge search** — full-text search across messages, mail, Jira, Confluence pages, meetings and more
-- **Jira** — boards, workload, blockers, project map and releases
-- **People** — communication styles, roles and activity patterns
-- **Voice dictation** — dictate into the app's text fields, or capture a voice idea from anywhere with ⌃⌥D
-- **MCP server** — `watchtower mcp` exposes your data to any MCP client (read-only). See [docs/mcp-server.md](docs/mcp-server.md).
+<p align="center">
+  <a href="https://github.com/aiwatchtowers/watchtower/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aiwatchtowers/watchtower?sort=semver"></a>
+  <img alt="macOS 14+ on Apple Silicon" src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20Silicon-black?logo=apple">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/aiwatchtowers/watchtower"></a>
+</p>
 
 ## Install
-
-### One-liner (recommended)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aiwatchtowers/watchtower/main/scripts/install.sh | bash
 ```
 
-Installs the desktop app to `/Applications` and the `watchtower` CLI to your PATH.
+This puts **Watchtower.app** in `/Applications` and the `watchtower` CLI on your PATH. Prefer a download? Get the latest build from [Releases](https://github.com/aiwatchtowers/watchtower/releases/latest).
 
-### From source
+**You need:**
 
-Requires Go 1.26+, a Swift 6+ toolchain (Xcode 16+), macOS 14+.
+- A Mac with Apple Silicon (arm64) on macOS 14 or later.
+- An AI provider. Watchtower has no AI of its own and no API key to paste: it runs through [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the Codex CLI, installed and signed in, or through a local Ollama-compatible server you set up from the CLI first (`watchtower config set ai.provider ollama`). See [AI providers, models and cost](docs/guide/concepts/ai-providers-and-cost.md).
+
+Open the app and setup takes two screens: pick your goals, connect your sources (or skip them all and use only Workbench). Details are in [Set up Watchtower](docs/guide/start/setup.md).
+
+## For you if you work with coding agents
+
+You run Claude Code or Codex every day and want to stay in charge of what they do.
+
+- **Keep the plan when the session ends.** A workbench binds a folder to a board of targets; each session picks up a task and the board outlives every session. → [Workbench](docs/guide/features/workbench/README.md)
+- **Answer the agent only when it needs you.** It files an ask for a decision or a review and keeps working on what does not depend on you. You see one stack of what is waiting. → [Asks](docs/guide/features/workbench/asks.md)
+- **Review the change before it is committed.** Comment on lines of a session's diff and send them back as one round; the next round shows only what moved. Specs and plans get an independent AI reviewer first. → [Branch review](docs/guide/features/workbench/diff-review.md), [Spec review](docs/guide/features/workbench/spec-review.md)
+- **Know what your agents cost and fix the habit behind it.** Analytics totals tokens, cost, tools and errors per workbench; the coach proposes edits to your own agent setup and changes nothing until you accept. → [Agent analytics](docs/guide/features/agent-analytics.md), [Agent coach](docs/guide/features/agent-coach.md)
+- **Stay in one window.** Sessions run in an embedded terminal next to a code viewer with git marks, and they keep running through an app update or a **Keep Sessions and Quit**. → [Sessions](docs/guide/features/workbench/sessions.md), [Code viewer](docs/guide/features/workbench/code-viewer.md)
+
+## For you if work chat is eating your day
+
+You come back to hundreds of Slack messages, a full mailbox and back-to-back meetings.
+
+- **Start the day with one read.** A morning briefing and a day plan cover what needs you, your meetings and what happened in your channels. → [Briefings](docs/guide/features/briefings.md), [Day Plan](docs/guide/features/day-plan.md)
+- **Come back from time off without scrolling.** Catch Up recaps the stretch you were away: what happened and what is waiting on you. → [Catch Up](docs/guide/features/catch-up.md)
+- **See every decision waiting on you in one list.** The Inbox gathers your day, messages to answer, tracked requests, ideas and reminders; react to a Slack message with an emoji and a track, an idea or a draft issue comes back as a card. → [Inbox](docs/guide/features/inbox.md)
+- **Ask about your work, and act on it safely.** The AI chat knows your Slack, mail, Jira, Confluence and meetings. It can draft a Slack message, comment on a Jira issue or edit a Confluence page, and nothing is sent until you press Approve. → [AI chat](docs/guide/features/ai-chat.md), [Writing and changing things](docs/guide/features/ai-chat-actions.md)
+- **Leave meetings with a recap you did not write.** Record a call and get a transcript with speakers and a recap with action items; audio is transcribed on your Mac and never leaves it (macOS 14.4+). → [Meeting recording](docs/guide/features/meeting-recording.md)
+
+## Works with
+
+Slack (several workspaces), Gmail and Google Calendar (several accounts), Outlook and IMAP mail, Jira, Linear and Confluence. You can also add your own MCP servers as Quick Connections, and `watchtower mcp` serves your data to any MCP client. See [Sources and accounts](docs/guide/concepts/sources-and-accounts.md).
+
+## Privacy
+
+Watchtower has no account, no cloud service and no analytics of its own. Synced data, AI results, sign-ins, the search index and meeting transcription stay on your Mac. Data leaves it only:
+
+- as prompts to the AI provider you pick (none at all with a local Ollama-compatible server);
+- as writes you approve: a Slack message, a Jira change, a Confluence edit;
+- as calls to the sources you connect and to external MCP servers you add yourself.
+
+Nothing is posted to Slack, Jira or Confluence without your Approve. The full picture is in [Privacy](docs/guide/concepts/privacy.md).
+
+## How it works
+
+```
+[Slack · Mail · Calendar · Jira · Linear · Confluence] → [Local SQLite] → [AI pipelines] → [Desktop app]
+                                                                                ↓
+                                     Briefings · Catch Up · Inbox · Digests · People · Memory · Search
+```
+
+A background daemon syncs your sources into a local SQLite database, then runs its AI and indexing steps after each sync. The desktop app reads the same database and updates as data arrives. Each background feature can be switched off in **Settings → Features** or with `watchtower features`. More in [How Watchtower works](docs/guide/concepts/how-watchtower-works.md).
+
+## Documentation
+
+The [user guide](docs/guide/README.md) covers setup, every feature and troubleshooting. Reference pages:
+
+- [CLI reference](docs/guide/reference/cli.md): everything the app does is also a `watchtower` command, including headless use (`watchtower slack add`, `watchtower sync --daemon --detach`).
+- [Settings](docs/guide/reference/settings.md): what each Settings tab controls. The same settings live in `~/.config/watchtower/config.yaml` and can be changed with `watchtower config set <key> <value>`.
+- [Keyboard shortcuts](docs/guide/reference/keyboard-shortcuts.md) and the [glossary](docs/guide/reference/glossary.md).
+
+Your data lives in `~/.local/share/watchtower/<workspace>/` (database, logs, sign-ins); meeting recordings are in `~/Library/Application Support/Watchtower/recordings`.
+
+## Building from source
+
+Requires Go 1.26+, a Swift 6+ toolchain (Xcode 16+) and macOS 14+.
 
 ```bash
 git clone https://github.com/aiwatchtowers/watchtower.git
 cd watchtower
-make app          # Full release build → build/Watchtower.app (see "Rebuilding while the app runs")
-# or
-make app-dev      # Fast dev build
+make app-dev      # fast dev build (CLI + desktop) → build/Watchtower.app
+make app          # release build with notarization
 ```
 
-### Pre-built binaries
-
-Download from [Releases](https://github.com/aiwatchtowers/watchtower/releases) (macOS Apple Silicon).
-
-## Getting Started
-
-The user guide is in [docs/guide/README.md](docs/guide/README.md): setup, every feature, troubleshooting and reference.
-
-1. Open **Watchtower.app**. Setup takes two steps; everything in them can be skipped except the AI check in the first:
-   - **Goals** — pick what you want Watchtower for (work communication, tasks & Jira, meetings, development in Workbench). Continue unlocks once the AI check passes.
-   - **Connect** — connect Slack, Google (Gmail + Calendar) and Jira, or skip and do it later from Settings → Connections.
-2. The app starts the background daemon itself; data appears as the first sync runs.
-
-**Prerequisites:** an AI provider that `watchtower ai test` accepts — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the Codex CLI, installed and signed in (setup checks for these), or a local Ollama-compatible server set up beforehand from the CLI (`watchtower config set ai.provider ollama`, then `watchtower config set ai.models.strong <model>`).
-
-### Headless / CLI only
+Other targets:
 
 ```bash
-watchtower slack add                   # Connect a Slack workspace (OAuth in the browser)
-watchtower sync --daemon --detach      # Start the background daemon
-watchtower sync --stop                 # Stop it
-```
-
-## How It Works
-
-The daemon (`watchtower sync --daemon`) polls Slack and the other connected sources, then runs its AI and indexing phases after each sync: channel digests, tracks and rollups, people cards, inbox detection, reaction commands, ideas, memory, the knowledge index, and the daily briefing (once per day). Each phase can be switched off from Settings → Features or `watchtower features`.
-
-The desktop app reads the same SQLite database via GRDB and updates in real time.
-
-## Configuration
-
-Config file: `~/.config/watchtower/config.yaml`
-
-```yaml
-sync:
-  poll_interval: "15m"
-  workers: 5
-  initial_history_days: 30
-ai:
-  provider: "claude"      # claude | codex | ollama
-  models:
-    light: "haiku"        # optional per-tier overrides
-    strong: "opus"
-digest:
-  enabled: true
-  language: "English"
-briefing:
-  enabled: true
-  hour: 8
-```
-
-Settings are also editable from the desktop app (Settings window).
-
-## Data Storage
-
-| What | Where |
-|------|-------|
-| Database | `~/.local/share/watchtower/<workspace>/watchtower.db` |
-| Config | `~/.config/watchtower/config.yaml` |
-| Logs | `~/.local/share/watchtower/<workspace>/watchtower.log` |
-
-All data is local. SQLite with WAL mode for concurrent access. The desktop app and daemon share the same database.
-
-## CLI Reference
-
-The CLI provides access to most features and is required for the daemon:
-
-```bash
-watchtower slack add                  # Connect a Slack workspace
-watchtower sync [--daemon|--full]     # Sync data
-watchtower ask "<question>"           # AI query
-watchtower briefing                   # View daily briefing
-watchtower catchup                    # Recap a window you were away for
-watchtower inbox                      # Messages awaiting your response
-watchtower targets                    # Your tasks
-watchtower tracks                     # Narrative tracks
-watchtower digest                     # View digests
-watchtower people                     # People analytics
-watchtower ideas                      # Ideas & decisions registry
-watchtower memory                     # Inspect the assistant memory vault
-watchtower jira                       # Jira sites and boards
-watchtower workbench                  # Folder-bound workbench boards
-watchtower features                   # Turn features on and off
-watchtower ai test                    # Check the AI provider
-watchtower mcp                        # Read-only MCP server over stdio
-watchtower config set <key> <val>     # Configure
-watchtower feedback <good|bad> ...    # Rate AI output
-watchtower tune [--apply]             # Improve prompts from your ratings
-```
-
-## Development
-
-```bash
-make build        # Build Go CLI only
+make build        # Go CLI only
 make test         # Go tests
 make test-swift   # Swift tests
 make lint-all     # Go + Swift linting
-make app-dev      # Fast dev build (CLI + desktop)
-make app          # Release build with notarization
-make app-swap     # Finish a deferred swap (see below)
-make app-install  # Copy build/Watchtower.app to /Applications (INSTALL_DIR=...)
+make app-swap     # finish a deferred swap (see below)
+make app-install  # copy build/Watchtower.app to /Applications (INSTALL_DIR=...)
 ```
+
+Developer notes for each feature are in [docs/features/](docs/features/), and the repo conventions are in [CLAUDE.md](CLAUDE.md).
 
 ### Rebuilding while the app runs
 
