@@ -441,23 +441,73 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(bed.relayOps.count("addSlot"), 1)
     }
 
-    /// The request can leave the phone only once the row waits for its answer: a rejection read at once still ends it.
+    /// The row names the request before it is queued: a queue step that fails leaves `.requested` with the id and
+    /// `askQueued` false, and the next pass queues that same id; an answer read at once still ends the upgrade.
     func testTheRowAwaitsTheAnswerBeforeTheRequestCanLeave() async throws {
         let (bed, session) = try await upgradeBed()
         try await allowReader(bed)
-        await session.outbox.holdFlushes()
+        let upgrader = try XCTUnwrap(session.relayUpgrader)
+        let queue = upgrader.queue
+        upgrader.queue = { _, _ in throw QueueFault() }
 
         let outcome = await session.upgradeToRelay()
 
         XCTAssertEqual(outcome, .underWay(.requested))
-        let queued = try await session.store.reader.read { db in
-            try String.fetchAll(db, sql: "SELECT control_id FROM outbound_controls WHERE kind = 'transport_switch'")
-        }
-        XCTAssertEqual(queued, [try XCTUnwrap(try bed.row()?.link.relayUpgrade?.requestID)])
+        let named = try XCTUnwrap(try bed.row()?.link.relayUpgrade)
+        XCTAssertFalse(named.askQueued)
+        let id = try XCTUnwrap(named.requestID)
+        let none = try await queuedRequests(session)
+        XCTAssertTrue(none.isEmpty)
+
+        upgrader.queue = queue
+        await session.outbox.holdFlushes()
+        bed.clock.advance(31)
+        await bed.root.resumeRelayUpgrades()
+
+        let queued = try await queuedRequests(session)
+        XCTAssertEqual(queued, [id], "the same id")
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.askQueued, true)
         try await bed.writeRejection(RelayUpgrade.notPaying, on: .cloudKit)
         await fetch(bed, session)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notPaying)
         await session.outbox.releaseFlushes()
+    }
+
+    /// A restart after a refusal that decides nothing (the account read fails) is `.waiting`, not the old refusal, and
+    /// the resumer runs it once the relay answers.
+    func testARestartAfterARefusalThatDecidesNothingWaits() async throws {
+        let (bed, session) = try await requestedBed()
+        try await bed.writeRejection(RelayUpgrade.notPaying, on: .cloudKit)
+        await fetch(bed, session)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notPaying)
+        bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
+
+        let outcome = await session.upgradeToRelay()
+
+        XCTAssertEqual(outcome, .waiting)
+        bed.clock.advance(31)
+        await bed.root.resumeRelayUpgrades()
+        let upgrade = try XCTUnwrap(try bed.row()?.link.relayUpgrade)
+        XCTAssertNil(upgrade.refusal)
+        XCTAssertEqual(upgrade.step, .requested)
+    }
+
+    /// The same after a switch the hub has gone back from: `.waiting`, not `.switched`.
+    func testARestartAfterASwitchThatDecidesNothingWaits() async throws {
+        let (bed, session) = try await requestedBed()
+        try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+        let onRelay = try await bed.fetchAndFollow(session)
+        try await bed.writeSwitch(target: .cloudKit, epoch: 3, on: .relay)
+        let back = try await bed.fetchAndFollow(onRelay)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .switched)
+        bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
+
+        let outcome = await back.upgradeToRelay()
+
+        XCTAssertEqual(outcome, .waiting)
+        bed.clock.advance(31)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
     }
 
     func testTooSoonKeepsRetryAt() async throws {
@@ -663,6 +713,13 @@ final class RelayUpgradeWiringTests: XCTestCase {
         await session.outbox.drain()
     }
 
+    /// The `transport_switch` controls in the session's outbox queue, not written yet.
+    private func queuedRequests(_ session: HubSession) async throws -> [String] {
+        try await session.store.reader.read { db in
+            try String.fetchAll(db, sql: "SELECT control_id FROM outbound_controls WHERE kind = 'transport_switch'")
+        }
+    }
+
     /// Every `transport_switch` the phone wrote on iCloud, after the outbox's flush.
     private func switchRequests(_ bed: Bed, _ session: HubSession) async throws -> [ControlPayload] {
         await session.outbox.drain()
@@ -705,6 +762,9 @@ final class RelayUpgradeWiringTests: XCTestCase {
 
 /// A wait in a test that never ended.
 private struct WaitTimedOut: Error {}
+
+/// The queue step's failure in a test.
+private struct QueueFault: Error {}
 
 @MainActor
 extension Bed {

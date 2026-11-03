@@ -67,6 +67,18 @@ final class RelayUpgradeCopyTests: XCTestCase {
         XCTAssertNil(RelayUpgradeRefusal.notPaying.footnote)
     }
 
+    /// A record the first build of this task wrote has no `askQueued` (nor `macDeviceID`): it reads, and a request it
+    /// names counts as queued (that build queued before it named).
+    func testARecordWithoutAskQueuedReads() throws {
+        let named = try JSONDecoder().decode(
+            RelayUpgradeRecord.self, from: Data(#"{"step":"requested","requestID":"r-1","askedAgain":false,"slotSince":0}"#.utf8))
+        XCTAssertEqual(named.step, .requested)
+        XCTAssertTrue(named.askQueued)
+        XCTAssertTrue(named.holdsSlot)
+        let early = try JSONDecoder().decode(RelayUpgradeRecord.self, from: Data(#"{"step":"vouching","askedAgain":false}"#.utf8))
+        XCTAssertFalse(early.askQueued)
+    }
+
     /// Every refusal survives the `LinkRecord` JSON.
     func testRefusalsRoundTrip() throws {
         let refusals: [RelayUpgradeRefusal] = [

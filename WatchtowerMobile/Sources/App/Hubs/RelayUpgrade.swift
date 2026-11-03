@@ -198,6 +198,44 @@ struct RelayUpgradeRecord: Codable, Equatable, Sendable {
     /// waiting).
     var askQueued = false
 
+    init(
+        step: RelayUpgradeStep,
+        requestID: String? = nil,
+        retryAt: Date? = nil,
+        askedAgain: Bool = false,
+        refusal: RelayUpgradeRefusal? = nil,
+        slotSince: Date? = nil,
+        macDeviceID: String? = nil,
+        askQueued: Bool = false
+    ) {
+        self.step = step
+        self.requestID = requestID
+        self.retryAt = retryAt
+        self.askedAgain = askedAgain
+        self.refusal = refusal
+        self.slotSince = slotSince
+        self.macDeviceID = macDeviceID
+        self.askQueued = askQueued
+    }
+
+    /// A record an earlier build of this task wrote lacks `macDeviceID` and `askQueued`: that build queued the request
+    /// before it named it, so a named request is queued.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        step = try container.decode(RelayUpgradeStep.self, forKey: .step)
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
+        retryAt = try container.decodeIfPresent(Date.self, forKey: .retryAt)
+        askedAgain = try container.decodeIfPresent(Bool.self, forKey: .askedAgain) ?? false
+        refusal = try container.decodeIfPresent(RelayUpgradeRefusal.self, forKey: .refusal)
+        slotSince = try container.decodeIfPresent(Date.self, forKey: .slotSince)
+        macDeviceID = try container.decodeIfPresent(String.self, forKey: .macDeviceID)
+        askQueued = try container.decodeIfPresent(Bool.self, forKey: .askQueued) ?? (requestID != nil)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case step, requestID, retryAt, askedAgain, refusal, slotSince, macDeviceID, askQueued
+    }
+
     /// An unlink frees the Mac's slot (R14).
     var holdsSlot: Bool { slotSince != nil }
     /// The relay may hold the Mac's slot for this phone: `add_slot` succeeded, or may have (`addingSlot`).
@@ -263,6 +301,13 @@ final class RelayUpgrader {
     /// The owner asked for the upgrade and no pass has decided anything yet (no record written, no refusal): the
     /// resumer starts it. In memory only: a kill before the first decision forgets it, and the owner asks again.
     private var wanted = false
+    /// Queues the `transport_switch{relay}` named `id` in the session's ordered outbox; a test replaces it to fail the
+    /// queue step once.
+    var queue: @MainActor (HubSession, String) async throws -> Void = { session, id in
+        _ = try await session.outbox.enqueueSwitchRequest(target: .relay, id: id)
+    }
+    /// Set by a pass that started fresh: the record the row held then (nil for none).
+    private var freshFrom: RelayUpgradeRecord??
     private var stopped = false
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RelayUpgrade")
 
@@ -319,6 +364,7 @@ final class RelayUpgrader {
         let previous = last
         let pass = Task {
             _ = await previous?.value
+            self.freshFrom = nil
             let outcome = self.outcome(await self.pass(start: start))
             if outcome != .waiting { self.wanted = false }
             return outcome
@@ -327,9 +373,13 @@ final class RelayUpgrader {
         return pass
     }
 
+    /// The pass's outcome from the row it left. A fresh start that wrote nothing (the row still holds the record it
+    /// found: an old refusal, a switch the hub has gone back from, or none) decided nothing: `.waiting`.
     private func outcome(_ refusal: RelayUpgradeRefusal?) -> RelayUpgradeOutcome {
         if let refusal { return .refused(refusal) }
-        guard let upgrade = host?.followerLink(hubID: hubID)?.relayUpgrade else { return .waiting }
+        let current = host?.followerLink(hubID: hubID)?.relayUpgrade
+        if case .some(let found) = freshFrom, current == found { return .waiting }
+        guard let upgrade = current else { return .waiting }
         if let refusal = upgrade.refusal { return .refused(refusal) }
         return upgrade.step == .switched ? .switched : .underWay(upgrade.step)
     }
@@ -387,6 +437,7 @@ final class RelayUpgrader {
             // A first start, a start again after a refusal, or after a switch the hub has gone back from: from the
             // device record, a slot already held kept.
             upgrade = RelayUpgradeRecord(step: .namingRelayID, slotSince: stored?.slotSince, macDeviceID: stored?.macDeviceID)
+            freshFrom = .some(stored)
         }
         var run = Run(link: link, stored: stored, upgrade: upgrade)
 
@@ -489,7 +540,7 @@ final class RelayUpgrader {
     ) async -> RelayUpgradeRefusal? {
         guard let id = run.upgrade.requestID else { return nil }
         do {
-            _ = try await session.outbox.enqueueSwitchRequest(target: .relay, id: id)
+            try await queue(session, id)
         } catch ActionOutboxError.legacyPath {
             return end(.notSupported, &run)
         } catch {
