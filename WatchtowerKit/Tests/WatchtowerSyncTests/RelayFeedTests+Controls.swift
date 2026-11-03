@@ -276,6 +276,65 @@ extension RelayFeedTests {
         XCTAssertTrue(after.isEmpty)
     }
 
+    /// Relay client Phase 3b Task 19: `transport_switch_rejected` reaches the rejection handler (the session's upgrade)
+    /// with its reason and `retry_after_s`; once it returns true it is marked handled and deleted, and a second copy is
+    /// deleted unread.
+    func testSwitchRejectedReachesTheHandler() async throws {
+        let rig = try await OrderedRig.make()
+        let seen = ControlLog()
+        await rig.feed.setRejectionHandler { control in
+            await seen.add(control)
+            return true
+        }
+        let rejected = ControlPayload(
+            id: UUID().uuidString, kind: .transportSwitchRejected, deviceID: TestE2E.deviceID.uuidString,
+            hubID: TestE2E.hubID.uuidString, reason: "too_soon", retryAfterS: 240)
+        try await rig.hub.writeControl(rejected)
+
+        _ = try await rig.feed.pollOnce()
+
+        let handed = await seen.all
+        XCTAssertEqual(handed.map(\.id), [rejected.id])
+        XCTAssertEqual(handed.first?.reason, "too_soon")
+        XCTAssertEqual(handed.first?.retryAfterS, 240)
+        XCTAssertTrue(try rig.store.isControlHandled(id: rejected.id))
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertTrue(mailbox.isEmpty, "deleted once handled")
+
+        try await rig.hub.writeControl(rejected, expect: .none)
+        _ = try await rig.feed.pollOnce()
+        let again = await seen.all
+        XCTAssertEqual(again.count, 1, "a second copy is not handed again")
+        let afterCopy = try await rig.mailboxNames()
+        XCTAssertTrue(afterCopy.isEmpty, "the second copy is deleted unread")
+    }
+
+    /// A rejection handler that cannot decide yet (false) leaves the rejection in the mailbox, unmarked; the next
+    /// cycle hands it again.
+    func testUnhandledRejectionStaysInTheMailbox() async throws {
+        let rig = try await OrderedRig.make()
+        let answers = ControlLog()
+        await rig.feed.setRejectionHandler { control in
+            await answers.add(control)
+            return await answers.all.count > 1
+        }
+        let rejected = await rig.hub.control(.transportSwitchRejected)
+        try await rig.hub.writeControl(rejected)
+
+        _ = try await rig.feed.pollOnce()
+
+        XCTAssertFalse(try rig.store.isControlHandled(id: rejected.id))
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertEqual(mailbox, [try rig.wire(rejected)], "left for the next pass")
+
+        _ = try await rig.feed.pollOnce()
+        let handed = await answers.all.map(\.id)
+        XCTAssertEqual(handed, [rejected.id, rejected.id])
+        XCTAssertTrue(try rig.store.isControlHandled(id: rejected.id))
+        let after = try await rig.mailboxNames()
+        XCTAssertTrue(after.isEmpty)
+    }
+
     /// The phone's own `skip_to` reflects back through the shared zone: the hub reads and deletes it, never the phone.
     func testThePhonesOwnControlIsLeftForTheHub() async throws {
         let rig = try await OrderedRig.make()

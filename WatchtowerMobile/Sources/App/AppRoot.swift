@@ -112,6 +112,8 @@ final class AppRoot {
     @ObservationIgnored private let sideMailbox: SideMailboxTiming
     /// What this launch's side mailbox readers share: refused drains (sim rule 16), mailboxes read from the start.
     @ObservationIgnored private let sideLedger = SideDrainLedger()
+    /// The upgrades' clock (relay client Phase 3b Task 19): the 24 h reader wait, `retry_after_s`, the pass cadence.
+    @ObservationIgnored private let upgradeClock: @MainActor () -> Date
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     init(
@@ -124,9 +126,11 @@ final class AppRoot {
         linking: LinkingViewModel,
         startWork: BackgroundWork.Starter?,
         farewellDelivery: FarewellDelivery,
-        sideMailbox: SideMailboxTiming = .live
+        sideMailbox: SideMailboxTiming = .live,
+        upgradeClock: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.sideMailbox = sideMailbox
+        self.upgradeClock = upgradeClock
         self.env = env
         self.registry = registry
         self.paths = paths
@@ -335,6 +339,15 @@ final class AppRoot {
         await linking.resumePendingLink()
         await linking.resumePromotedLinks()
         await accountCheck()
+        await resumeRelayUpgrades()
+    }
+
+    /// Every hub's pending upgrade from iCloud to the relay goes on (at launch and on the return to the foreground);
+    /// a hub with none makes no relay call. Returns once each ran a pass.
+    func resumeRelayUpgrades() async {
+        for hubID in env.order {
+            await env.session(hubID)?.relayUpgrader?.resume()
+        }
     }
 
     /// The app became active (the scene's phase; a cold launch in the
@@ -354,6 +367,7 @@ final class AppRoot {
                 // A Relay Mac's farewell first, then its slot removal; then the confirmed links go on.
                 await linking.retrySlotRemovals()
                 await linking.resumePromotedLinks()
+                await resumeRelayUpgrades()
                 endWork?()
             }
             farewellRetry = nil
@@ -386,7 +400,11 @@ final class AppRoot {
     private func wire(_ session: HubSession) {
         let hubID = session.hubID
         session.onLinkSignal = { [weak self] signal in self?.handle(signal, hubID: hubID) }
-        session.onFetched = { [weak self] in self?.checkLink(hubID: hubID) }
+        session.onFetched = { [weak self, weak session] in
+            self?.checkLink(hubID: hubID)
+            // A pending upgrade goes on at the feed's cadence while the app is active (at most every 30 s).
+            if session?.isActive == true { session?.relayUpgrader?.resumeAfterFetch() }
+        }
         session.onKeyboxChanged = { [weak self] in
             guard let self, !self.isDemo else { return }
             let linking = self.linking
@@ -403,6 +421,10 @@ final class AppRoot {
         let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
         session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
         session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }
+        // The upgrade from iCloud to the relay (Phase 3b Task 19) and the hub's rejections of its request.
+        let upgrader = RelayUpgrader(session: session, follower: follower, host: self, now: upgradeClock)
+        session.attach(upgrader)
+        session.transportSignals.onRejection = { control in await upgrader.rejected(control) }
         // The mailbox on the hub's other transport (Task 12), only for a hub with both routes.
         if session.sideReader == nil, followerLink(hubID: hubID)?.otherRoute != nil {
             let factory = factory
@@ -420,6 +442,8 @@ final class AppRoot {
         session.onKeysAvailable = nil
         session.transportSignals.onControl = nil
         session.transportSignals.onMarker = nil
+        session.transportSignals.onRejection = nil
+        session.relayUpgrader?.stop()
     }
 
     private func handle(_ signal: LinkSignal, hubID: String) {
@@ -934,6 +958,9 @@ extension AppRoot: LinkHost {
         env.activate(record.hubID)
     }
 
+    /// The phone's `device` record for `hubID`. While the hub's link has an upgrade to the relay
+    /// (`LinkRecord.relayUpgrade`, Phase 3b Task 19) and the relay is available, it names this phone's relay id with
+    /// its proof (`RelayIDProof`, R22); else it is the record of an iCloud link, byte for byte.
     func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
         guard let session = env.session(hubID) else {
             Self.logger.warning("device record of a hub with no session: the default choices")
@@ -944,7 +971,28 @@ extension AppRoot: LinkHost {
                 updatedAt: now
             )
         }
-        return session.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
+        let payload = session.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
+        return withRelayID(payload, hubID: hubID)
+    }
+
+    /// `payload` with this phone's relay id, its `relay_auth` key and the key's signature, while the hub's link is
+    /// upgrading (or upgraded) to the relay; else `payload` as it is.
+    private func withRelayID(_ payload: DevicePayload, hubID: String) -> DevicePayload {
+        guard followerLink(hubID: hubID)?.relayUpgrade != nil, case .available = linking.relay.availability,
+              let hub = UUID(uuidString: hubID), let device = UUID(uuidString: payload.deviceID) else { return payload }
+        let claim: RelayIDClaim
+        do {
+            claim = try linking.relay.relayIDProof(hubID: hub, deviceID: device)
+        } catch {
+            Self.logger.error("device record without the relay id: no proof (\(String(describing: type(of: error)), privacy: .public))")
+            return payload
+        }
+        return DevicePayload(
+            deviceID: payload.deviceID, name: payload.name, model: payload.model, appVersion: payload.appVersion,
+            scope: payload.scope, userRecordName: payload.userRecordName, linkNonce: payload.linkNonce,
+            unlinked: payload.unlinked, typingRequested: payload.typingRequested, startSessions: payload.startSessions,
+            permissionsRequested: payload.permissionsRequested, seenAt: payload.seenAt, updatedAt: payload.updatedAt,
+            relayDeviceID: claim.relayDeviceID, relayAuthPub: claim.authPub, relayIDSig: claim.sig)
     }
 
     func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
@@ -1111,6 +1159,28 @@ extension AppRoot: LinkHost {
     }
 }
 
+// MARK: - The upgrade from iCloud to the relay (relay client Phase 3b Task 19)
+
+extension AppRoot: RelayUpgradeHost {
+    var upgradeRelay: any RelayLinkOps { linking.relay }
+
+    func rewriteDeviceRecord(hubID: String) async -> Bool {
+        guard let session = env.session(hubID), let device = session.linkedDevice else { return false }
+        let payload = devicePayload(hubID: hubID, for: device, linkNonce: nil, unlinked: false, now: Date())
+        do {
+            try await session.writeDeviceRecord(payload)
+            return true
+        } catch {
+            Self.logger.warning("device record not rewritten: \(String(describing: type(of: error)), privacy: .public)")
+            return false
+        }
+    }
+
+    func makeRelaySide(hubID: String, mac: String) throws -> SideTransport {
+        try factory.makeSide(hubID, .hostedRelay(macDeviceID: mac))
+    }
+}
+
 // MARK: - Following the hub's transport (relay client Phase 3 Task 11)
 
 extension AppRoot: TransportFollowerHost {
@@ -1177,6 +1247,8 @@ extension AppRoot: TransportFollowerHost {
             return
         }
         guard env.session(hubID) === old, old.route != row.link.route else { return }
+        // An upgrade's pass closes its relay transport first: the new session opens the same store.
+        await old.relayUpgrader?.idle()
         unwire(old)
         await old.shutDown()
         old.closeDatabases()

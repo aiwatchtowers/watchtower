@@ -39,6 +39,19 @@ protocol RelayLinkOps: Sendable {
     func close(slot: String) async
     /// `remove_slot` (`NOT_FOUND` counts as done).
     func removeSlot(mac: String) async throws
+    /// `add_slot` (an iCloud link upgraded to the relay, Phase 3b Task 19); `HostedRelayPairing.Refusal`, or the
+    /// client's error (`HUB_NOT_VOUCHED`, `NOT_FOUND`).
+    func addSlot(mac: String) async throws
+    /// The three relay fields of this phone's `device` record for `hubID` (`RelayIDProof`, R22): its relay id, its
+    /// `relay_auth` key and that key's signature, by the phone's relay identity.
+    func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim
+}
+
+/// A phone's claim of its relay id in its `device` record (`RelayIDProof.sign`).
+struct RelayIDClaim: Equatable, Sendable {
+    let relayDeviceID: String
+    let authPub: String
+    let sig: String
 }
 
 /// The relay while it is off: never asked, since nothing routes to it.
@@ -52,6 +65,8 @@ struct OffRelayLinkOps: RelayLinkOps {
     func promote(slot: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
     func close(slot: String) async {}
     func removeSlot(mac: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
+    func addSlot(mac: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
+    func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim { throw HostedRelayPairing.Refusal.unreachable }
 }
 
 /// The link flow's clock: the grant wait and the expiry check run on it.

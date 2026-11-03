@@ -99,7 +99,8 @@ final class LinkingViewModel {
     @ObservationIgnored private let keys: any PhoneKeyStore
     @ObservationIgnored private let clock: any LinkClock
     /// The relay's account ops (off: never asked).
-    @ObservationIgnored private let relay: any RelayLinkOps
+    /// The relay's account ops; the upgrade from iCloud (`RelayUpgrader`, through `AppRoot`) uses them too.
+    @ObservationIgnored let relay: any RelayLinkOps
     /// The code a failure's Try Again opens again (`LinkFailure.retryTitle`).
     @ObservationIgnored private var retryCode: URL?
     /// The code the inline slots screen goes on with after a removal.
@@ -866,12 +867,21 @@ final class LinkingViewModel {
     }
 
     /// An unlink of `row`: its farewell, the hub removed, and for a Relay link its slot freed afterwards (R14:
-    /// once the farewell left the queue or was kept, `remove_slot`; a failure is kept for a retry at launch).
-    /// Returns whether the slot is free (true for an iCloud link).
+    /// once the farewell left the queue or was kept, `remove_slot`; a failure is kept for a retry at launch). An
+    /// iCloud link whose upgrade to the relay got its slot (`add_slot`, Phase 3b Task 19) frees it the same way.
+    /// Returns whether the slot is free (true for an iCloud link that holds none).
     private func unlinkRow(_ row: HubRow) async -> Bool {
         report(LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
-        guard case let .hostedRelay(mac) = row.link.route, row.state == .linked else { return true }
+        guard row.state == .linked, let mac = Self.slotToFree(row.link) else { return true }
         return await removeRelaySlot(mac, keepOnFailure: true)
+    }
+
+    /// The relay Mac whose slot an unlink of `link` frees: a Relay link's, or an upgraded iCloud link's once its
+    /// `add_slot` succeeded; nil for any other link.
+    private static func slotToFree(_ link: LinkRecord) -> String? {
+        if case let .hostedRelay(mac) = link.route { return mac }
+        guard link.relayUpgrade?.holdsSlot == true else { return nil }
+        return link.relayMacDeviceID
     }
 
     /// Settings → Macs → Forget: a hub the Mac removed goes with no farewell

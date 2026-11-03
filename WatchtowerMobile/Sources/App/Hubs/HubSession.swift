@@ -117,15 +117,21 @@ enum HubLinkPresence: Equatable {
 }
 
 /// The transport follower's hooks on a session (relay client Phase 3 Task 11), set by `AppRoot.wire`: the feed's
-/// `transport_switched` / `hub_on_relay` controls and the hydrator's transport marker reach them; with none set,
-/// nothing is decided (false) and the feed keeps the control.
+/// `transport_switched` / `hub_on_relay` controls and the hydrator's transport marker reach them, and the feed's
+/// `transport_switch_rejected` reaches the upgrade (Phase 3b Task 19); with none set, nothing is decided (false) and
+/// the feed keeps the control.
 @MainActor
 final class TransportSignals {
     var onControl: (@MainActor (ControlPayload) async -> Bool)?
     var onMarker: (@MainActor (TransportMarker) async -> Bool)?
+    var onRejection: (@MainActor (ControlPayload) async -> Bool)?
 
     func control(_ control: ControlPayload) async -> Bool {
         await onControl?(control) ?? false
+    }
+
+    func rejection(_ control: ControlPayload) async -> Bool {
+        await onRejection?(control) ?? false
     }
 
     func marker(_ marker: TransportMarker) async -> Bool {
@@ -316,6 +322,9 @@ final class HubSession {
     /// The mailbox on the hub's other transport (relay client Phase 3 Task 12), set by `AppRoot.wire` for a hub with
     /// both routes; stopped with the session.
     @ObservationIgnored private(set) var sideReader: SideMailboxReader?
+    /// The hub's upgrade from iCloud to the relay (relay client Phase 3b Task 19), set by `AppRoot.wire`; nil for the
+    /// demo.
+    @ObservationIgnored private(set) var relayUpgrader: RelayUpgrader?
     /// On route `.relay`: since when this session's fetches find the relay unanswered (nil while it answers), on the
     /// session's clock: the start of an outage for the side reader's 60 s rule (sim rule 12).
     @ObservationIgnored private(set) var relayUnansweredSince: Date?
@@ -757,6 +766,8 @@ final class HubSession {
         await outbox.setHubID(hubID)
         // Before any fetch: the hub's switch controls reach the transport follower.
         await feed.setTransportHandler { [transportSignals] control in await transportSignals.control(control) }
+        // And the hub's answer to an upgrade's request reaches the upgrade.
+        await feed.setRejectionHandler { [transportSignals] control in await transportSignals.rejection(control) }
         // Every flush's outcome, the ones an enqueue or a `resend_from` starts included.
         await outbox.setFlushReportObserver { [weak self] report in
             Task { @MainActor in self?.outboxBacklog.lastFlushStopped = report.stoppedOn != nil }
@@ -1397,6 +1408,25 @@ final class HubSession {
     func attach(_ reader: SideMailboxReader) {
         sideReader = reader
         reader.start()
+    }
+
+    /// The upgrade from iCloud to the relay (relay client Phase 3b Task 19), set once by `AppRoot.wire`.
+    func attach(_ upgrader: RelayUpgrader) {
+        relayUpgrader = upgrader
+    }
+
+    /// Upgrades this iCloud link to the relay (steps 0–5 of Task 19): resumable, each step persisted on the hub's
+    /// `LinkRecord` before the next. A definite refusal ends it and is kept there for Phase 4's screen; nil while it
+    /// goes on or once switched. A session with no upgrade wired (the demo) cannot upgrade.
+    func upgradeToRelay() async -> RelayUpgradeRefusal? {
+        guard let relayUpgrader else { return .relayOff }
+        return await relayUpgrader.upgrade()
+    }
+
+    /// Saves the phone's `device` record `payload` (sealed) and sends it now.
+    func writeDeviceRecord(_ payload: DevicePayload) async throws {
+        try await secure.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
+        await sendNow()
     }
 
     /// On route `.relay`: `.available` while the relay answered this session's last op (a refusal is an answer);

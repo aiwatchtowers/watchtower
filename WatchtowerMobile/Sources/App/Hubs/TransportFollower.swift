@@ -28,7 +28,8 @@ protocol TransportFollowerHost: AnyObject {
 /// (from `ReplicaHydrator`); the policy decides, this class acts on the hub's session and registry row.
 ///
 /// State: the route and the transport left are the registry row's (`LinkRecord.transport`, `leftTransport`, with
-/// `switchedBy` and `switchedAt`); the newest epoch is the Keychain's. A move is made crash-safe by its order:
+/// `switchedBy` and `switchedAt`); the newest epoch is the Keychain's. A move to the relay, or a `requestAnswered`,
+/// ends a pending upgrade from iCloud as `switched` (`LinkRecord.relayUpgrade`, Phase 3b Task 19). A move is made crash-safe by its order:
 /// 1. the outbox stops writing (`holdFlushes`), then its unechoed actions are queued again for the new transport
 ///    (rule 13) or listed as Not delivered (R32);
 /// 2. the new route is written to the row, in one registry write;
@@ -146,6 +147,7 @@ final class TransportFollower {
         var listUndelivered = false
         var handled = false
         var decided = false
+        var answered = false
     }
 
     /// The commands gathered into one plan.
@@ -154,7 +156,9 @@ final class TransportFollower {
         for command in commands {
             switch command {
             case .mergeKeybox: plan.merge = true
-            case .requestAnswered: logger.notice("the hub answered on the transport the phone is on")
+            case .requestAnswered:
+                logger.notice("the hub answered on the transport the phone is on")
+                plan.answered = true
             case let .moveRoute(to, _, by, at): plan.move = (to, by, at)
             case .resendUnechoedOnNewTransport: plan.resend = true
             case .sendEpochAck(let epoch): plan.ack = epoch
@@ -204,8 +208,19 @@ final class TransportFollower {
         if plan.move != nil {
             host.moveSession(hubID: hubID)
         }
+        if plan.answered, !upgradeAnswered(host: host) { return false }
         if case .marker = input { return true }
         return plan.handled || plan.decided
+    }
+
+    /// The hub answered a pending upgrade's request for the transport it runs on (relay client Phase 3b Task 19): the
+    /// upgrade ends as `switched`. false when the row could not be written (the control is read again).
+    private func upgradeAnswered(host: any TransportFollowerHost) -> Bool {
+        guard var link = host.followerLink(hubID: hubID), var upgrade = link.relayUpgrade, upgrade.isPending,
+              upgrade.step == .requested else { return true }
+        upgrade.step = .switched
+        link.relayUpgrade = upgrade
+        return host.persistRoute(link)
     }
 
     /// Step 1: on a move the outbox stops writing; unechoed actions go back to the queue for the new transport, or
@@ -260,6 +275,13 @@ final class TransportFollower {
             guard let mac = link.relayMacDeviceID else { return false }
             moved.setRelay(mac: mac)
             moved.leftTransport = next.leftTransport
+            // An upgrade under way (or refused meanwhile) ends here: the hub is on the relay with this phone.
+            if var upgrade = moved.relayUpgrade, upgrade.step != .switched {
+                upgrade.step = .switched
+                upgrade.refusal = nil
+                upgrade.retryAt = nil
+                moved.relayUpgrade = upgrade
+            }
         case .cloudKit:
             moved.setCloudKit(left: next.leftTransport)
         }

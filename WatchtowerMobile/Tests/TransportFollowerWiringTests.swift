@@ -389,10 +389,16 @@ final class Bed {
     let cloud: RecordingCloud
     let keys: InMemoryPhoneKeyStore
     let relayOps: FakeRelayOps
-    let root: AppRoot
+    private(set) var root: AppRoot
     let registry: HubRegistry
     let clock: SideClock
     let sides: SideBuilds
+    /// The Mac's `relay_auth` public key (raw).
+    let macAuthPub: Data
+    /// What a relaunch builds the root from again (`relaunch`).
+    private let launch: Launch
+    /// The root's relay session (an empty origin's is off and never built).
+    var rootRelay: SharedRelaySession { launch.relay }
     /// The last `transport_switched` written.
     private(set) var switchID = ""
     private(set) var switchName = ""
@@ -408,7 +414,9 @@ final class Bed {
         root: AppRoot,
         registry: HubRegistry,
         clock: SideClock,
-        sides: SideBuilds
+        sides: SideBuilds,
+        macAuthPub: Data,
+        launch: Launch
     ) {
         self.fake = fake
         self.sockets = sockets
@@ -421,6 +429,20 @@ final class Bed {
         self.relayOps = relayOps
         self.root = root
         self.registry = registry
+        self.macAuthPub = macAuthPub
+        self.launch = launch
+    }
+
+    /// The root's parts, kept for a relaunch over the same registry, files, keys, settings and relay.
+    private struct Launch {
+        let paths: HubPaths
+        let factory: HubSessionFactory
+        let identity: DeviceIdentity
+        let defaults: UserDefaults
+        let relay: SharedRelaySession
+        let keys: InMemoryPhoneKeyStore
+        let looksAtWake: Bool
+        let stopLookCap: Duration
     }
 
     static func make(
@@ -428,7 +450,9 @@ final class Bed {
         on route: TransportKind,
         hubTransports: [String] = ["cloudkit", "relay"],
         looksAtWake: Bool = false,
-        stopLookCap: Duration = .seconds(10)
+        stopLookCap: Duration = .seconds(10),
+        macRelayID: Bool = true,
+        relayOff: Bool = false
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
@@ -468,7 +492,7 @@ final class Bed {
             hubID: TestE2E.hubID.uuidString, macName: "Work Mac", scope: .private, ownerName: "",
             userRecordName: "_owner-acme", nonce: "nonce", dataShareURL: nil, relayShareURL: nil,
             deviceID: TestE2E.deviceID.uuidString, linkedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            transport: .cloudKit, relayMacDeviceID: mac.deviceID, hubTransports: hubTransports
+            transport: .cloudKit, relayMacDeviceID: macRelayID ? mac.deviceID : nil, hubTransports: macRelayID ? hubTransports : nil
         )
         if route == .relay { link.setRelay(mac: mac.deviceID) }
         try registry.upsert(link, now: Date())
@@ -476,35 +500,64 @@ final class Bed {
             deviceID: TestE2E.deviceID.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
         let cloud = RecordingCloud()
         let sides = SideBuilds()
-        var factory = Self.factory(paths: paths, cloud: cloud, shared: shared, keys: keys, defaults: defaults)
-        factory.makeSide = Self.sideFactory(paths: paths, cloud: cloud, shared: shared, sides: sides)
+        // An empty origin: the root's relay is off, its parts never built (dark ship); the stand still has its relay.
+        let rootRelay = relayOff ? SharedRelaySession(config: RelayConfig.parse("")) { parts } : shared
+        var factory = Self.factory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, defaults: defaults)
+        factory.makeSide = Self.sideFactory(paths: paths, cloud: cloud, shared: rootRelay, sides: sides)
         let clock = SideClock()
-        let relayOps = FakeRelayOps(clock: FakeLinkClock(now: Date()))
+        let relayOps = FakeRelayOps(
+            clock: FakeLinkClock(now: Date()), availability: relayOff ? .off(.notConfigured) : .available(FakeRelayOps.origin))
+        let launch = Launch(
+            paths: paths, factory: factory, identity: identity, defaults: defaults, relay: rootRelay, keys: keys,
+            looksAtWake: looksAtWake, stopLookCap: stopLookCap)
+        let root = try Self.root(launch, registry: registry, relayOps: relayOps, clock: clock)
+        Self.tearDown(root, in: test)
+        return Bed(
+            fake: fake, sockets: sockets, phone: phone, mac: mac, cloud: cloud, keys: keys, relayOps: relayOps, root: root,
+            registry: registry, clock: clock, sides: sides, macAuthPub: macKey.publicKey.rawRepresentation, launch: launch)
+    }
+
+    /// The live root over `launch`'s parts, its links read.
+    private static func root(_ launch: Launch, registry: HubRegistry, relayOps: FakeRelayOps, clock: SideClock) throws -> AppRoot {
         let env = try AppEnvironment.live(
-            registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults, relay: shared
+            registry: registry, paths: launch.paths, factory: launch.factory, identity: launch.identity,
+            defaults: launch.defaults, relay: launch.relay
         ) { _ in }
         let root = AppRoot(
-            env: env, registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults,
+            env: env, registry: registry, paths: launch.paths, factory: launch.factory, identity: launch.identity,
+            defaults: launch.defaults,
             linking: LinkingViewModel(
-                access: FakeLinkAccess(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity,
-                keys: keys, clock: FakeLinkClock(now: Date()), relay: relayOps
+                access: FakeLinkAccess(log: LinkEventLog()), store: LinkStore(defaults: launch.defaults),
+                identity: launch.identity, keys: launch.keys, clock: FakeLinkClock(now: Date()), relay: relayOps
             ),
             startWork: nil,
             farewellDelivery: AppRoot.FarewellDelivery { _, _ in false },
             sideMailbox: SideMailboxTiming(
-                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }, looksAtWake: looksAtWake,
-                stopLookCap: stopLookCap)
-        )
+                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+                looksAtWake: launch.looksAtWake, stopLookCap: launch.stopLookCap)
+        ) { clock.now }
         root.linking.refreshLinks()
+        return root
+    }
+
+    private static func tearDown(_ root: AppRoot, in test: XCTestCase) {
         test.addTeardownBlock { @MainActor in
             for session in root.env.sessions.values {
                 await session.shutDown()
                 session.closeDatabases()
             }
         }
-        return Bed(
-            fake: fake, sockets: sockets, phone: phone, mac: mac, cloud: cloud, keys: keys, relayOps: relayOps, root: root,
-            registry: registry, clock: clock, sides: sides)
+    }
+
+    /// A relaunch: every session shut down and its files closed, then a new root over the same registry, files,
+    /// keys, settings, relay and clock (the relay ops' account is the server's, kept).
+    func relaunch(_ test: XCTestCase) async throws {
+        for session in root.env.sessions.values {
+            await session.shutDown()
+            session.closeDatabases()
+        }
+        root = try Self.root(launch, registry: registry, relayOps: relayOps, clock: clock)
+        Self.tearDown(root, in: test)
     }
 
     /// The side readers' transports on the other route's own store: CloudKit a `CloudSide` over `cloud` (its store's
@@ -636,11 +689,13 @@ final class Bed {
 
     // MARK: The scripted hub
 
-    func publishGrant(ordered: Bool) async throws {
+    /// This phone's grant (with the Mac's relay identity when `macRelay`, as a desktop host's) and a fresh heartbeat.
+    func publishGrant(ordered: Bool, macRelay: Bool = false) async throws {
         let grant = DeviceGrant(
             deviceID: TestE2E.deviceID.uuidString, hubID: hubID, name: "Colleague A's iPhone", scope: .private,
             linked: true, typingAllowed: true, startSessionsAllowed: true, mayStartSessions: true,
-            orderedActions: ordered ? 1 : nil)
+            orderedActions: ordered ? 1 : nil, transports: macRelay ? ["cloudkit", "relay"] : nil,
+            relayDeviceID: macRelay ? mac.deviceID : nil, relayAuthPub: macRelay ? WireBytes.base64URL(macAuthPub) : nil)
         // A heartbeat after `linkedAt`: the link came alive, so a `hub_on_relay` never ends it (Task 10).
         let now = Date()
         let heartbeat = HeartbeatPayload(
@@ -726,7 +781,7 @@ final class Bed {
         try await cloud.inner.save([try TestE2E.sealedDataRecord(plain, seq: TestPhone.nextSeqBlock())])
     }
 
-    private func writeControl(_ control: ControlPayload, on route: TransportKind) async throws {
+    func writeControl(_ control: ControlPayload, on route: TransportKind) async throws {
         let record = try sealedControl(control, to: TestE2E.deviceID)
         switch route {
         case .cloudKit: try await cloud.inner.save([record])

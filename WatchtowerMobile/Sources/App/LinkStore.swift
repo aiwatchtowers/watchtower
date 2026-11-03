@@ -49,6 +49,9 @@ struct LinkRecord: Codable, Equatable, Sendable {
     var switchedAt: Date?
     /// A transport the link left whose mailbox is still to drain (rule 15).
     var leftTransport: TransportKind?
+    /// An iCloud link's upgrade to the relay (relay client Phase 3b Task 19): its step, request and refusal. Absent in
+    /// every link saved before it and in every link that never upgraded. One this build cannot read reads as absent.
+    var relayUpgrade: RelayUpgradeRecord?
 
     /// A `.relay` transport needs `relayMacDeviceID` (it is the route).
     init(
@@ -68,7 +71,8 @@ struct LinkRecord: Codable, Equatable, Sendable {
         hubTransports: [String]? = nil,
         switchedBy: String? = nil,
         switchedAt: Date? = nil,
-        leftTransport: TransportKind? = nil
+        leftTransport: TransportKind? = nil,
+        relayUpgrade: RelayUpgradeRecord? = nil
     ) {
         precondition(transport != .relay || relayMacDeviceID != nil, Self.relayWithoutMac)
         self.hubID = hubID
@@ -88,6 +92,7 @@ struct LinkRecord: Codable, Equatable, Sendable {
         self.switchedBy = switchedBy
         self.switchedAt = switchedAt
         self.leftTransport = leftTransport
+        self.relayUpgrade = relayUpgrade
     }
 
     /// A `.relay` link without its Mac's relay id does not decode: the row is
@@ -111,6 +116,8 @@ struct LinkRecord: Codable, Equatable, Sendable {
         switchedBy = try container.decodeIfPresent(String.self, forKey: .switchedBy)
         switchedAt = try container.decodeIfPresent(Date.self, forKey: .switchedAt)
         leftTransport = try container.decodeIfPresent(TransportKind.self, forKey: .leftTransport)
+        // A newer build's step or refusal must not make the whole link unreadable.
+        relayUpgrade = try? container.decodeIfPresent(RelayUpgradeRecord.self, forKey: .relayUpgrade)
         if lacksRelayMac {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: Self.relayWithoutMac))
         }
@@ -139,11 +146,12 @@ struct LinkRecord: Codable, Equatable, Sendable {
         try container.encodeIfPresent(switchedBy, forKey: .switchedBy)
         try container.encodeIfPresent(switchedAt, forKey: .switchedAt)
         try container.encodeIfPresent(leftTransport, forKey: .leftTransport)
+        try container.encodeIfPresent(relayUpgrade, forKey: .relayUpgrade)
     }
 
     private enum CodingKeys: String, CodingKey {
         case hubID, macName, scope, ownerName, userRecordName, nonce, dataShareURL, relayShareURL, deviceID, linkedAt
-        case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport
+        case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport, relayUpgrade
     }
 
     private static let relayWithoutMac = "a relay link without its Mac's relay device id"
@@ -154,6 +162,14 @@ struct LinkRecord: Codable, Equatable, Sendable {
     mutating func setRelay(mac: String) {
         transport = .relay
         relayMacDeviceID = mac
+    }
+
+    /// Keeps the Mac's relay identity on a link that stays where it is (an iCloud link upgrading to the relay, after
+    /// its `add_slot`): the route does not change until the hub switches.
+    mutating func setRelayIdentity(mac: String, authPub: String?, transports: [String]?) {
+        relayMacDeviceID = mac
+        relayAuthPub = authPub
+        hubTransports = transports
     }
 
     /// Moves the link back to CloudKit (its scope's database), keeping the Mac's relay id so a later switch can
