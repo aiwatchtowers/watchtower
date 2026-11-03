@@ -817,6 +817,8 @@ func live(r *relayv1.Record) bool { return r != nil && !r.GetDeleted() }
 
 func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 	res := &relayv1.SaveResult{}
+	ch := changed{}
+	defer ch.announce(s, caller)
 	for i, it := range sv.GetItems() {
 		rec := it.GetRecord()
 		z := s.zone(rec.GetZone())
@@ -843,7 +845,7 @@ func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 		meta := proto.Clone(stored).(*relayv1.Record)
 		meta.Envelope = nil
 		res.Saved = append(res.Saved, meta)
-		s.zoneChangedLocked(caller, rec.GetZone(), z.seq)
+		ch.add(rec.GetZone(), z.seq, stored)
 	}
 	return &relayv1.Response{Result: &relayv1.Response_Save{Save: res}}
 }
@@ -851,6 +853,8 @@ func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 func (s *Server) del(caller string, d *relayv1.Delete) *relayv1.Response {
 	res := &relayv1.DeleteResult{}
 	z := s.zone(d.GetZone())
+	ch := changed{}
+	defer ch.announce(s, caller)
 	for i, it := range d.GetItems() {
 		cur := z.recs[it.GetName()]
 		if it.ExpectedSeq != nil && (!live(cur) || cur.GetRecordSeq() != it.GetExpectedSeq()) {
@@ -864,7 +868,7 @@ func (s *Server) del(caller string, d *relayv1.Delete) *relayv1.Response {
 		if live(cur) {
 			z.seq++
 			z.recs[it.GetName()] = &relayv1.Record{Zone: d.GetZone(), Name: it.GetName(), RecordSeq: z.seq, Deleted: true}
-			s.zoneChangedLocked(caller, d.GetZone(), z.seq)
+			ch.add(d.GetZone(), z.seq, nil)
 		}
 	}
 	return &relayv1.Response{Result: &relayv1.Response_Delete{Delete: res}}
@@ -1000,14 +1004,51 @@ func (s *Server) liveControlLocked(device string, kind relayv1.ControlKind, deta
 	}
 }
 
-// zoneChangedLocked tells every other device's current socket subscribed
-// to zoneName that it changed (the writer is not told); s.mu is held.
-func (s *Server) zoneChangedLocked(writer, zoneName string, seq uint64) {
-	for device, c := range s.conns {
-		if device != writer && !c.closed && c.zones[zoneName] {
+// zoneChangedLocked tells every device's current socket subscribed to
+// zoneName that it changed, the writer's too, as the relay does; rec (nil =
+// none) goes inline; s.mu is held.
+func (s *Server) zoneChangedLocked(_, zoneName string, seq uint64, rec *relayv1.Record) {
+	for _, c := range s.conns {
+		if !c.closed && c.zones[zoneName] {
 			c.enqueueLocked(frame{b: eventFrame(&relayv1.Event{Kind: &relayv1.Event_ZoneChanged{
-				ZoneChanged: &relayv1.ZoneChanged{Zone: zoneName, Seq: seq}}})})
+				ZoneChanged: &relayv1.ZoneChanged{Zone: zoneName, Seq: seq, Record: rec}}})})
 		}
+	}
+}
+
+// maxInlineRecord is the largest envelope the relay carries in an event
+// (64 KiB).
+const maxInlineRecord = 64 << 10
+
+// changed collects one write call's changes per zone, in zone order of
+// first write, so the call announces each zone once, as the relay does: one
+// ZoneChanged at the zone's last seq, with the record inline only when the
+// call wrote exactly that one record there (and it fits).
+type changed struct {
+	zones []string
+	last  map[string]uint64
+	recs  map[string][]*relayv1.Record // nil entries: deletes
+}
+
+func (c *changed) add(zone string, seq uint64, rec *relayv1.Record) {
+	if c.last == nil {
+		c.last, c.recs = map[string]uint64{}, map[string][]*relayv1.Record{}
+	}
+	if _, ok := c.last[zone]; !ok {
+		c.zones = append(c.zones, zone)
+	}
+	c.last[zone] = seq
+	c.recs[zone] = append(c.recs[zone], rec)
+}
+
+// announce sends the collected changes; s.mu is held.
+func (c *changed) announce(s *Server, writer string) {
+	for _, z := range c.zones {
+		var inline *relayv1.Record
+		if recs := c.recs[z]; len(recs) == 1 && recs[0] != nil && len(recs[0].GetEnvelope()) <= maxInlineRecord {
+			inline = proto.Clone(recs[0]).(*relayv1.Record)
+		}
+		s.zoneChangedLocked(writer, z, c.last[z], inline)
 	}
 }
 

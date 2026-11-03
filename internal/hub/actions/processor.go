@@ -97,6 +97,13 @@ type Processor struct {
 	// hub no longer holds (epoch.go): zone and wire name → RecordSeq;
 	// guarded by mu.
 	oldSeen map[string]uint64
+	// unread is the phones' own mailbox zones whose last read stopped on an
+	// error (a claim whose done transaction failed among them): their next
+	// event is read with Pull, never skipped as the hub's own writes, so the
+	// hub's own received echo of a begun action is read back and settled
+	// outcome_unknown (ownReceived). Guarded by mu; in memory only (a
+	// restart forgets the own writes too).
+	unread map[string]bool
 }
 
 // SetPaused pauses the processor (spec §7.3, a headless hub with no paying
@@ -142,10 +149,12 @@ func (p *Processor) ResumeFor(reason string) {
 // PassReport counts one pass: phone records read (opened), actions applied
 // (a final outcome committed, handler or not), repeats echoed again, actions
 // held, echoes queued, queued rows written, and phone records left for the
-// next pass by BatchLimit (> 0 means "run again now").
+// next pass by BatchLimit (> 0 means "run again now"). OwnEcho marks an
+// event pass that did nothing: the event stood only for the hub's own writes.
 type PassReport struct {
 	Read, Applied, Repeats, Held, Echoed, ControlsWritten int
 	Remaining                                             int
+	OwnEcho                                               bool
 }
 
 // NewProcessor returns a processor over c.
@@ -291,18 +300,16 @@ type pass struct {
 }
 
 // Pass reads every linked phone's mailbox from its stored change token,
-// handles each record, then writes the control queue. It is called on each
-// transport event and by the runtime's backstop timer. A zone's token is
+// handles each record, then writes the control queue. It is called by the
+// runtime's backstop timer and for each transport event PassEvent does not
+// narrow to one mailbox. A zone's token is
 // stored only once every record of the page was handled, so a pass that
 // stops (an error, a crash, the batch limit) re-reads from the old token
 // and the ledger makes the re-read safe.
 func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ps := &pass{budget: BatchLimit}
-	if p.batch > 0 {
-		ps.budget = p.batch
-	}
+	ps := p.newPass()
 	if p.paused.Load() {
 		return ps.report, nil
 	}
@@ -310,6 +317,103 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 	if err != nil {
 		return ps.report, err
 	}
+	return p.passBoxes(ctx, boxes, ps)
+}
+
+// EventPuller is a transport that reads a zone event itself (the hosted
+// relay's PullEvent): only that zone, from its stored token, skipping the
+// hub's own writes and taking a record the event carries inline without a
+// read; apply sees each page as in Puller.Pull. OwnWrites reports, with no
+// relay op, that ev stands only for the hub's own writes after the stored token.
+type EventPuller interface {
+	PullEvent(ctx context.Context, ev transport.Event, apply func(transport.Batch) error) error
+	OwnWrites(ev transport.Event) bool
+}
+
+// PassEvent is the pass a transport's zone event asks for. On a transport
+// that reads events itself (EventPuller), an event naming one linked phone's
+// own mailbox reads that mailbox only (its held actions next in line first,
+// as Pass does), then writes the control queues — or, when the event stands
+// only for the hub's own writes, does nothing (OwnEcho); a mailbox whose last
+// read stopped on an error is read with Pull, its own writes not skipped
+// (Processor.unread). Every other event — and
+// every other transport — runs Pass. The runtime's backstop timer still runs
+// Pass over every mailbox.
+func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassReport, error) {
+	ep, ok := p.cfg.Transport.(EventPuller)
+	if !ok || ev.Zone == "" {
+		return p.Pass(ctx)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ps := p.newPass()
+	if p.paused.Load() {
+		return ps.report, nil
+	}
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return ps.report, err
+	}
+	i := slices.IndexFunc(boxes, func(b mailbox) bool { return !b.shared && b.zone == ev.Zone })
+	if i < 0 {
+		return p.passBoxes(ctx, boxes, ps)
+	}
+	b := boxes[i]
+	unread := p.unread[b.zone]
+	if !unread && ep.OwnWrites(ev) {
+		// Nothing was written but by the hub: nothing to read, apply or
+		// write. The token moves past these seqs with the next read.
+		ps.report.OwnEcho = true
+		return ps.report, nil
+	}
+	err = p.drainHeldActive(ctx, b, ps)
+	if err == nil {
+		err = p.readMailboxWith(ctx, b, ps, func(apply func(transport.Batch) error) error {
+			if unread {
+				return p.pull(ctx, b.zone, apply)
+			}
+			return ep.PullEvent(ctx, ev, apply)
+		})
+	}
+	p.noteRead(b.zone, err)
+	errs := passError(b, err, nil)
+	written, _, err := p.flushAll(ctx)
+	ps.report.ControlsWritten = written
+	p.nudge(ps)
+	return ps.report, errors.Join(append(errs, err)...)
+}
+
+// noteRead records how the read of mailbox zone ended (Processor.unread);
+// p.mu is held.
+func (p *Processor) noteRead(zone string, err error) {
+	if err == nil {
+		delete(p.unread, zone)
+		return
+	}
+	if p.unread == nil {
+		p.unread = map[string]bool{}
+	}
+	p.unread[zone] = true
+}
+
+// ReadsEvents reports whether PassEvent can narrow an event to one mailbox
+// (the transport is an EventPuller); otherwise it is Pass.
+func (p *Processor) ReadsEvents() bool {
+	_, ok := p.cfg.Transport.(EventPuller)
+	return ok
+}
+
+// newPass is a pass with its budget (BatchLimit, or the test's).
+func (p *Processor) newPass() *pass {
+	ps := &pass{budget: BatchLimit}
+	if p.batch > 0 {
+		ps.budget = p.batch
+	}
+	return ps
+}
+
+// passBoxes is Pass over boxes; p.mu is held.
+func (p *Processor) passBoxes(ctx context.Context, boxes []mailbox, ps *pass) (PassReport, error) {
 	var errs []error
 	for _, g := range p.withHelloZone(byZone(boxes), false) {
 		if g.shared { // CloudKit's one RelayZone: read once for every phone (shared.go)
@@ -323,6 +427,7 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 			if err == nil {
 				err = p.readMailbox(ctx, b, ps)
 			}
+			p.noteRead(b.zone, err)
 			errs = passError(b, err, errs)
 		}
 	}
@@ -423,7 +528,14 @@ func (p *Processor) pull(ctx context.Context, zone string, apply func(transport.
 // stores no token for the page: the rest of it (a re-linked phone's new
 // records included) is read again next pass.
 func (p *Processor) readMailbox(ctx context.Context, b mailbox, ps *pass) error {
-	err := p.pull(ctx, b.zone, func(batch transport.Batch) error {
+	return p.readMailboxWith(ctx, b, ps, func(apply func(transport.Batch) error) error {
+		return p.pull(ctx, b.zone, apply)
+	})
+}
+
+// readMailboxWith is readMailbox over read, which hands apply b's pages.
+func (p *Processor) readMailboxWith(ctx context.Context, b mailbox, ps *pass, read func(apply func(transport.Batch) error) error) error {
+	err := read(func(batch transport.Batch) error {
 		ps.readAt = p.cfg.Clock()
 		for i, rec := range batch.Changed {
 			if ps.budget <= 0 {

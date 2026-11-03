@@ -116,8 +116,15 @@ type Transport struct {
 	accountKnown bool
 	// observe sees every save's result per zone (ObserveSaves; nil = none).
 	observe func(zone string, err error)
-	wg      sync.WaitGroup
+	// own is, per zone, the record seqs the hub's own saves got (ascending,
+	// at most ownCap): PullEvent skips them without a read.
+	own map[string][]uint64
+	wg  sync.WaitGroup
 }
+
+// ownCap bounds the own-write seqs kept per zone (a zone the hub writes but
+// never reads, the data zone, keeps only its last ones).
+const ownCap = 256
 
 var (
 	_ transport.Transport     = (*Transport)(nil)
@@ -256,7 +263,7 @@ func (t *Transport) pump(conn *client.Conn) {
 				// The client's marker after a reconnect (or a folded overflow).
 				t.refreshAccount()
 			}
-			t.emit(transport.Event{Zone: zc.GetZone(), Resync: resync})
+			t.emit(transport.Event{Zone: zc.GetZone(), Resync: resync, Seq: zc.GetSeq(), Inline: inlineOf(zc)})
 		case ev.GetControl() != nil:
 			c, ok := controlOf(ev.GetControl())
 			if !ok {
@@ -587,8 +594,9 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 		t.rereadZones(zones)
 		if f := t.observed(); f != nil {
 			// A whole-call refusal names every zone of the batch; the hub's
-			// mailbox writes are single-item saves (actions/control.go), so a
-			// mailbox quota is never put on another phone's mailbox.
+			// mailbox writes save one mailbox's queue per call
+			// (actions/control.go), so a mailbox quota is never put on another
+			// phone's mailbox.
 			for _, z := range zones {
 				f(z, err)
 			}
@@ -597,6 +605,11 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 	}
 	if err := saveOutcomes(resp.GetSave(), index, out); err != nil {
 		return nil, fmt.Errorf("relay: save: %w", err)
+	}
+	for i, it := range items {
+		if out[i].Saved {
+			t.noteOwn(it.Record.Zone(), out[i].RecordSeq)
+		}
 	}
 	if f := t.observed(); f != nil {
 		for i, it := range items {
@@ -768,7 +781,7 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 		if err := apply(b); err != nil {
 			return err
 		}
-		if err := t.o.Store.SetZoneToken(zone, b.NewSeq); err != nil {
+		if err := t.setToken(zone, b.NewSeq); err != nil {
 			return err
 		}
 		since = b.NewSeq
@@ -776,6 +789,135 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 			return nil
 		}
 	}
+}
+
+// PullEvent reads what zone event ev stands for, from the zone's stored
+// token, without a changes read where the event already says it all (zone
+// seqs grow by one per write, so the seqs between the token and ev.Seq are
+// exactly the writes not read yet):
+//   - ev.Seq at or below the token: already read, nothing to do;
+//   - every seq after the token up to ev.Seq is one the hub's own Save got:
+//     the token moves to ev.Seq, nothing is read (the relay tells the writer
+//     of its own writes too);
+//   - only ev.Seq is not the hub's own and the event carries its record
+//     inline: apply sees that one-record page, then the token moves to it.
+//
+// Anything else — a write by someone else in between, a record too large to
+// come inline, a delete, a resync marker (Seq 0), a zone never read (token
+// 0) — is Pull of that zone.
+//
+// Own seqs are noted when Save returns. An event can overtake that (a Save
+// from another goroutine whose event arrives first, a Save that failed as a
+// whole yet wrote): its seq is then not known as own and the zone is read —
+// a read too many, never a skip too many. A seq noted after the token passed
+// it is never looked at (firstForeign starts above the token) and goes with
+// the next setToken.
+func (t *Transport) PullEvent(ctx context.Context, ev transport.Event, apply func(transport.Batch) error) error {
+	zone := ev.Zone
+	since, err := t.o.Store.ZoneToken(zone)
+	if err != nil {
+		return err
+	}
+	if ev.Seq == 0 || since == 0 {
+		return t.Pull(ctx, zone, apply)
+	}
+	if ev.Seq <= since {
+		return nil
+	}
+	switch next := t.firstForeign(zone, since, ev.Seq); {
+	case next > ev.Seq:
+		return t.setToken(zone, ev.Seq)
+	case next == ev.Seq && ev.Inline != nil && ev.Inline.NewSeq == ev.Seq:
+		if err := apply(*ev.Inline); err != nil {
+			return err
+		}
+		return t.setToken(zone, ev.Seq)
+	}
+	return t.Pull(ctx, zone, apply)
+}
+
+// OwnWrites reports whether every seq after zone's stored token up to ev.Seq
+// is one the hub's own Save got (no relay op: the token is the sidecar's).
+// False for a resync marker, a zone never read and an event already read.
+func (t *Transport) OwnWrites(ev transport.Event) bool {
+	if ev.Seq == 0 {
+		return false
+	}
+	since, err := t.o.Store.ZoneToken(ev.Zone)
+	if err != nil || since == 0 || ev.Seq <= since {
+		return false
+	}
+	return t.firstForeign(ev.Zone, since, ev.Seq) > ev.Seq
+}
+
+// setToken stores zone's token and forgets the own-write seqs it passed.
+func (t *Transport) setToken(zone string, seq uint64) error {
+	if err := t.o.Store.SetZoneToken(zone, seq); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seqs := t.own[zone]
+	i, _ := slices.BinarySearch(seqs, seq+1)
+	if i == len(seqs) {
+		delete(t.own, zone)
+	} else {
+		t.own[zone] = seqs[i:]
+	}
+	return nil
+}
+
+// noteOwn remembers that the hub's own Save wrote zone's record at seq.
+func (t *Transport) noteOwn(zone string, seq uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.own == nil {
+		t.own = map[string][]uint64{}
+	}
+	seqs := t.own[zone]
+	i, found := slices.BinarySearch(seqs, seq)
+	if found {
+		return
+	}
+	seqs = slices.Insert(seqs, i, seq)
+	if len(seqs) > ownCap {
+		seqs = seqs[len(seqs)-ownCap:]
+	}
+	t.own[zone] = seqs
+}
+
+// firstForeign is the first seq in (since, upTo] the hub's own Save did not
+// get; upTo+1 when every one of them is its own.
+func (t *Transport) firstForeign(zone string, since, upTo uint64) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seqs := t.own[zone]
+	i, _ := slices.BinarySearch(seqs, since+1)
+	next := since + 1
+	for ; next <= upTo && i < len(seqs) && seqs[i] == next; i++ {
+		next++
+	}
+	return next
+}
+
+// inlineOf is the record a ZoneChanged carries as a one-record page at the
+// event's seq; nil when it carries none, or one written at another seq.
+func inlineOf(zc *relayv1.ZoneChanged) *transport.Batch {
+	r := zc.GetRecord()
+	if r == nil || zc.GetSeq() == 0 || r.GetRecordSeq() != zc.GetSeq() {
+		return nil
+	}
+	b := &transport.Batch{NewSeq: zc.GetSeq()}
+	if r.GetDeleted() {
+		b.Deleted = []string{r.GetName()}
+		return b
+	}
+	s := stored(r)
+	if s.Zone == "" {
+		s.Zone = zc.GetZone()
+	}
+	b.Changed = []transport.Stored{*s}
+	return b
 }
 
 // Download implements transport.Transport: get_download for the attachment

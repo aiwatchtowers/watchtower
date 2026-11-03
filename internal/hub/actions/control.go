@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -428,29 +429,114 @@ func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, faile
 	if err != nil {
 		return 0, 0, err
 	}
+	batch := make([]queuedRow, 0, len(rows))
 	for _, c := range rows {
 		rec, err := p.cfg.Opener.Requeue(zone, b.id, c.RecordName, c.Envelope)
 		if err != nil {
 			if !droppable(err) {
-				return written, failed, err
+				return 0, 0, err
 			}
 			// The phone could not open it either (its keys are gone): drop it.
 			log.Printf("hub: dropping queued %s %d: %s", c.Kind, c.ID, errClass(err))
 			if err := p.cfg.Store.ControlDone(c.ID); err != nil {
-				return written, failed, err
+				return 0, 0, err
 			}
 			continue
 		}
-		landed, err := p.writeQueued(ctx, b, c, rec)
-		if err != nil {
+		batch = append(batch, queuedRow{c: c, rec: rec, expect: expectOf(c)})
+	}
+	batch = collapseEchoes(batch)
+	for len(batch) > 0 {
+		n := min(len(batch), saveBatch)
+		w, f, err := p.writeQueued(ctx, b, batch[:n], true)
+		written, failed = written+w, failed+f
+		if err != nil || f > 0 {
 			return written, failed, err
 		}
-		if !landed {
-			return written, failed + 1, nil
-		}
-		written++
+		batch = batch[n:]
 	}
 	return written, failed, nil
+}
+
+// saveBatch is the most queued rows one Save carries (a long outage's queue
+// goes out in several, in order).
+const saveBatch = 50
+
+// queuedRow is one queued row to save: its control row, the record resealed
+// for the mailbox and the precondition it is written under. superseded is
+// the ids of the earlier echoes of the same record it stands for
+// (collapseEchoes), settled with it. landed marks a row already written, saved
+// again after a row re-saved ahead of it (writeQueued's tail): it stays
+// queued until that save lands, so a failed tail never leaves it ahead.
+type queuedRow struct {
+	c          state.Control
+	rec        secure.Record
+	expect     transport.Expect
+	superseded []int64
+	landed     bool
+}
+
+// expectOf is the transport precondition of queued row c.
+func expectOf(c state.Control) transport.Expect {
+	switch c.Expect {
+	case state.ExpectAbsent:
+		return transport.Expect{Mode: transport.ExpectAbsent}
+	case state.ExpectSeq:
+		return transport.Expect{Mode: transport.ExpectSeq, Seq: c.ExpectSeq}
+	}
+	return transport.Expect{Mode: transport.ExpectNone}
+}
+
+// collapseEchoes folds the queued echoes of one record (a held echo and the
+// final one, a received echo and the final one) into one row: the last
+// echo's content, at the last one's place in the queue, under the last one's
+// precondition when it names a record version (a repeat of a phone's newer
+// copy), else under the latest version an earlier one names (the final echo
+// of a held action, queued "replace the hub's own held echo", takes the
+// version the held echo was written over). So a phone's newer copy still
+// wins, and an earlier echo that already landed is the hub's own record,
+// written over (writeQueued). The
+// earlier rows leave the queue when that row is settled; until then they
+// stay, so a row that waits is folded the same way next time. A phone never
+// needs an intermediate echo once a later one is owed: one batch never
+// carries two writes of one record, so a partly written batch cannot leave an
+// older echo over a newer one.
+func collapseEchoes(rows []queuedRow) []queuedRow {
+	first := map[string]int{} // record name → index of its first echo
+	last := map[string]int{}
+	for i, r := range rows {
+		if r.c.Kind != queueEcho {
+			continue
+		}
+		if _, ok := first[r.c.RecordName]; !ok {
+			first[r.c.RecordName] = i
+		}
+		last[r.c.RecordName] = i
+	}
+	out := make([]queuedRow, 0, len(rows))
+	for i, r := range rows {
+		if r.c.Kind != queueEcho || first[r.c.RecordName] == last[r.c.RecordName] {
+			out = append(out, r)
+			continue
+		}
+		if i != last[r.c.RecordName] {
+			continue
+		}
+		var read *transport.Expect // the latest record version an earlier echo was written over
+		for j := first[r.c.RecordName]; j < i; j++ {
+			if e := rows[j]; e.c.Kind == queueEcho && e.c.RecordName == r.c.RecordName {
+				r.superseded = append(r.superseded, e.c.ID)
+				if e.expect.Mode == transport.ExpectSeq {
+					read = &e.expect
+				}
+			}
+		}
+		if r.expect.Mode != transport.ExpectSeq && read != nil {
+			r.expect = *read
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // refusedForGood reports a write the transport will never take, whatever the
@@ -466,58 +552,158 @@ func refusedForGood(err error) bool {
 	return errors.Is(err, transport.ErrRecordTooLarge) || errors.Is(err, transport.ErrForbidden)
 }
 
-// writeQueued saves one of b's queued rows; landed is false when it must
-// wait for the next pass (the row is marked failed with its error class). A
-// dropped row counts as landed: it is gone from the queue. A resend_from
-// dropped for good also forgets that its gap was asked, so the gap is asked
-// again rather than stalled.
-func (p *Processor) writeQueued(ctx context.Context, b mailbox, c state.Control, rec secure.Record) (landed bool, err error) {
-	expect := transport.Expect{Mode: transport.ExpectNone}
-	switch c.Expect {
-	case state.ExpectAbsent:
-		expect.Mode = transport.ExpectAbsent
-	case state.ExpectSeq:
-		expect = transport.Expect{Mode: transport.ExpectSeq, Seq: c.ExpectSeq}
+// writeQueued saves b's queued rows, in queue order, in one Save (the relay
+// writes a batch's items in request order, each on its own), and settles each
+// row by its outcome:
+//   - written: done;
+//   - a failed precondition over the hub's own identical record: it landed in
+//     an earlier, partly written batch — done;
+//   - a failed precondition over the hub's own older record at its name (an
+//     echo after the hub's held or received echo): written again over it,
+//     when retry is set; so the phone's feed keeps the queue order, every row
+//     after it that landed is written again too, after it (the tail Save), and
+//     leaves the queue only with that save;
+//   - any other failed precondition: the phone changed the record, and its
+//     copy is answered when read — done;
+//   - refused: notLanded.
+//
+// written counts the rows that left the queue, failed the rows that wait for
+// the next pass.
+//
+// A Save that fails as a whole may have written part of the batch (relay
+// proto, Save): nothing is settled, the first row is marked failed and the
+// mailbox waits for the next pass, which reads the mailbox before it writes
+// again; a row that did land then meets its own record (above). A
+// whole-batch refusal for good (a record too large, a forbidden mailbox)
+// names no row: the rows are then saved one at a time, so only the refused
+// one is dropped.
+func (p *Processor) writeQueued(ctx context.Context, b mailbox, rows []queuedRow, retry bool) (written, failed int, err error) {
+	if len(rows) == 0 {
+		return 0, 0, nil
 	}
-	for attempt := 0; ; attempt++ {
-		out, err := p.cfg.Transport.Save(ctx, []transport.SaveItem{{Record: rec, Expect: expect}})
-		if err == nil && len(out) != 1 {
-			err = errors.New("actions: save answered no outcome")
-		}
-		if err == nil && out[0].Refused != nil {
-			err = out[0].Refused
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return false, ctx.Err()
+	items := make([]transport.SaveItem, len(rows))
+	for i, r := range rows {
+		items[i] = transport.SaveItem{Record: r.rec, Expect: r.expect}
+	}
+	out, err := p.cfg.Transport.Save(ctx, items)
+	if err == nil && len(out) != len(rows) {
+		err = fmt.Errorf("actions: save answered %d outcomes for %d rows", len(out), len(rows))
+	}
+	if err != nil {
+		return p.batchFailed(ctx, b, rows, retry, err)
+	}
+	var tail []queuedRow
+	for i, o := range out {
+		r := rows[i]
+		if r.landed {
+			// Written before, saved again after a row re-saved ahead of it:
+			// it leaves the queue now, with the row it follows.
+			if err := p.settle(r); err != nil {
+				return written, failed, err
 			}
-			if refusedForGood(err) {
-				log.Printf("hub: dropping queued %s %d, refused for good: %s", c.Kind, c.ID, errClass(err))
-				if c.Kind == wire.ControlResendFrom {
-					return true, p.cfg.Store.DropResendFrom(c.ID, b.id.String())
-				}
-				return true, p.cfg.Store.ControlDone(c.ID)
-			}
-			if p.cfg.Switch != nil && errors.Is(err, transport.ErrEntitlementInactive) {
-				// Sim rule 16: the phone's relay entitlement lapsed. The
-				// switcher moves what is owed to it over CloudKit.
-				p.cfg.Switch.EntitlementInactive(p.cfg.Transport.Kind(), b.id.String())
-			}
-			return false, p.cfg.Store.ControlFailed(c.ID, errClass(err))
-		}
-		o := out[0]
-		if o.Saved {
-			return true, p.cfg.Store.ControlDone(c.ID)
-		}
-		// A failed precondition: an echo replaces the hub's own older record
-		// at its name (a held echo before the final one); anything else means
-		// the phone changed the record, and its copy is answered when read.
-		if c.Kind == queueEcho && attempt == 0 && o.Conflict != nil && p.ownRecord(b, o.Conflict) {
-			expect = transport.Expect{Mode: transport.ExpectSeq, Seq: o.Conflict.RecordSeq}
+			written++
 			continue
 		}
-		return true, p.cfg.Store.ControlDone(c.ID)
+		switch {
+		case o.Refused != nil:
+			landed, err := p.notLanded(b, r, o.Refused)
+			if err != nil {
+				return written, failed, err
+			}
+			if !landed {
+				failed++
+				continue
+			}
+		case o.Saved || (o.Conflict != nil && bytes.Equal(o.Conflict.Envelope, r.rec.Envelope())):
+			// Written now, or in an earlier, partly written batch.
+			if len(tail) > 0 {
+				seq := o.RecordSeq
+				if !o.Saved {
+					seq = o.Conflict.RecordSeq
+				}
+				r.expect, r.landed = transport.Expect{Mode: transport.ExpectSeq, Seq: seq}, true
+				tail = append(tail, r)
+				continue
+			}
+			if err := p.settle(r); err != nil {
+				return written, failed, err
+			}
+		case retry && r.c.Kind == queueEcho && o.Conflict != nil && p.ownRecord(b, o.Conflict):
+			r.expect = transport.Expect{Mode: transport.ExpectSeq, Seq: o.Conflict.RecordSeq}
+			tail = append(tail, r)
+			continue
+		default:
+			if err := p.settle(r); err != nil {
+				return written, failed, err
+			}
+		}
+		written++
 	}
+	w, f, err := p.writeQueued(ctx, b, tail, false)
+	return written + w, failed + f, err
+}
+
+// batchFailed handles a Save of rows that failed as a whole (see
+// writeQueued). A landed row of a tail stays queued as it is: the next pass
+// meets it as its own identical record, behind the row re-saved ahead of it.
+func (p *Processor) batchFailed(ctx context.Context, b mailbox, rows []queuedRow, retry bool, err error) (written, failed int, _ error) {
+	if ctx.Err() != nil {
+		return 0, 0, ctx.Err()
+	}
+	if len(rows) > 1 && refusedForGood(err) {
+		for i := range rows {
+			w, f, err := p.writeQueued(ctx, b, rows[i:i+1], retry)
+			written, failed = written+w, failed+f
+			if err != nil || f > 0 {
+				return written, failed, err
+			}
+		}
+		return written, failed, nil
+	}
+	for _, r := range rows {
+		if r.landed {
+			continue
+		}
+		landed, err := p.notLanded(b, r, err)
+		if landed {
+			return 1, 0, err
+		}
+		return 0, 1, err
+	}
+	return 0, 0, nil
+}
+
+// settle removes r's row and the echoes it superseded from the queue.
+func (p *Processor) settle(r queuedRow) error {
+	for _, id := range append([]int64{r.c.ID}, r.superseded...) {
+		if err := p.cfg.Store.ControlDone(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// notLanded settles a row the transport did not write: landed is false when
+// it must wait for the next pass (the row is marked failed with its error
+// class; the echoes it superseded stay with it). A row refused for good is
+// dropped and counts as landed: it is gone from the queue. A resend_from
+// dropped for good also forgets that its gap was asked, so the gap is asked
+// again rather than stalled.
+func (p *Processor) notLanded(b mailbox, r queuedRow, err error) (landed bool, serr error) {
+	c := r.c
+	if refusedForGood(err) {
+		log.Printf("hub: dropping queued %s %d, refused for good: %s", c.Kind, c.ID, errClass(err))
+		if c.Kind == wire.ControlResendFrom {
+			return true, p.cfg.Store.DropResendFrom(c.ID, b.id.String())
+		}
+		return true, p.settle(r)
+	}
+	if p.cfg.Switch != nil && errors.Is(err, transport.ErrEntitlementInactive) {
+		// Sim rule 16: the phone's relay entitlement lapsed. The switcher
+		// moves what is owed to it over CloudKit.
+		p.cfg.Switch.EntitlementInactive(p.cfg.Transport.Kind(), b.id.String())
+	}
+	return false, p.cfg.Store.ControlFailed(c.ID, errClass(err))
 }
 
 // ownRecord reports whether s is a record the hub wrote for b (one of its echoes).

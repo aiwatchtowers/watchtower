@@ -481,6 +481,14 @@ func (p *Phone) onEcho(rec transport.Stored, f secure.InnerFrame) error {
 	if err := json.Unmarshal(f.Payload, &a); err != nil {
 		return fmt.Errorf("hubtest: unreadable echo: %w", err)
 	}
+	if a.ActionSeq != nil && !finalStatus(a.Status) && finalStatus(p.Echoes[*a.ActionSeq].Status) &&
+		!slices.Contains(p.outbox, *a.ActionSeq) {
+		// An older echo of an action the phone already settled: a page read
+		// before the phone took the final echo from a write conflict
+		// (Send) still carries the held or received echo the final one
+		// replaced. The hub never goes back from a final outcome.
+		return nil
+	}
 	if a.ActionSeq == nil {
 		p.LegacyEchoes[a.ID] = a
 	} else {
@@ -488,8 +496,7 @@ func (p *Phone) onEcho(rec transport.Stored, f secure.InnerFrame) error {
 		p.wrote(*a.ActionSeq, rec.RecordSeq)
 		p.Read = append(p.Read, "echo:"+strconv.FormatUint(*a.ActionSeq, 10)+":"+a.Status)
 	}
-	switch a.Status {
-	case wire.StatusApplied, wire.StatusFailed, wire.StatusExpired, wire.StatusCancelled:
+	if finalStatus(a.Status) {
 		if a.ActionSeq != nil {
 			seq := *a.ActionSeq
 			p.outbox = slices.DeleteFunc(p.outbox, func(s uint64) bool { return s == seq })
@@ -500,6 +507,15 @@ func (p *Phone) onEcho(rec transport.Stored, f secure.InnerFrame) error {
 		return err
 	}
 	return nil
+}
+
+// finalStatus reports an echo status that settles the action.
+func finalStatus(s string) bool {
+	switch s {
+	case wire.StatusApplied, wire.StatusFailed, wire.StatusExpired, wire.StatusCancelled:
+		return true
+	}
+	return false
 }
 
 func (p *Phone) onControl(rec transport.Stored, f secure.InnerFrame) error {

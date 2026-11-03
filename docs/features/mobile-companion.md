@@ -272,7 +272,7 @@ The hub is Go (`internal/hub`, `Run`), started by the daemon. [go-hub.md](go-hub
 
 ### Actions and order
 
-`actions.Processor`: ordered actions per phone by `action_seq` (hold ahead of a gap, one `resend_from` per gap, `skip_to`), the exactly-once ledger keyed on the wire name, `received`/final echoes, the legacy unordered path for older phones, controls; the handlers in `actions/handlers` (asks, board, session start/stop/input/Interrupt, permission answers, chat and report requests, recording uploads). The mailbox pass runs every 30 s on the relay (events wake it sooner) and, on CloudKit, every 3 s for 10 minutes after a phone's last write or while a link waits, else every 30 s; a bridge push runs one at once.
+`actions.Processor`: ordered actions per phone by `action_seq` (hold ahead of a gap, one `resend_from` per gap, `skip_to`), the exactly-once ledger keyed on the wire name, `received`/final echoes, the legacy unordered path for older phones, controls; the handlers in `actions/handlers` (asks, board, session start/stop/input/Interrupt, permission answers, chat and report requests, recording uploads). The mailbox pass runs every 30 s on the relay over every phone's mailbox; a relay zone event in between reads only the mailbox it names, from the event when it carries the next record inline, and not at all for the hub's own echoes coming back (go-hub.md → Relay ops per action); a mailbox's queued echoes and controls go out in one save. On CloudKit it runs every 3 s for 10 minutes after a phone's last write or while a link waits, else every 30 s; a bridge push runs one at once.
 
 ### Switch and epochs
 

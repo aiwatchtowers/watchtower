@@ -200,6 +200,9 @@ type interopOpts struct {
 	register             func(*actions.Dispatcher)
 	sources              func(*state.Store) []hubslices.Source
 	away                 platform.Away
+	// httpWrap, when set, wraps the round tripper of the hub's relay HTTP
+	// client (the phone's is not wrapped).
+	httpWrap func(http.RoundTripper) http.RoundTripper
 }
 
 // interopHub is one Run on the stand.
@@ -261,6 +264,9 @@ func launchHub(t *testing.T, opts interopOpts, shared bool) *interopHub {
 	// The production relay transport, over the wire tap and seen through
 	// tappedTransport.
 	o.httpClient = h.tap.httpClient()
+	if opts.httpWrap != nil {
+		o.httpClient.Transport = opts.httpWrap(o.httpClient.Transport)
+	}
 	o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
 		tr, err := o.relayTransport(ctx, id, st, zones)
 		if err != nil {
@@ -469,7 +475,7 @@ func linkPhone(t *testing.T, h *interopHub) *linked {
 		t.Fatalf("sas for %s, want %s", sas.DeviceID, phone.ID())
 	}
 	var awaiting wire.Keybox
-	eventually(t, stepWait, "the awaiting keybox in the pair zone", func() bool {
+	eventuallyOnStand(t, stepWait, "the awaiting keybox in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -490,7 +496,7 @@ func linkPhone(t *testing.T, h *interopHub) *linked {
 	if l := h.next(link.EventLinked); l.DeviceID != phone.ID().String() {
 		t.Fatalf("linked: %+v", l)
 	}
-	eventually(t, stepWait, "the keys in the pair zone", func() bool {
+	eventuallyOnStand(t, stepWait, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -516,7 +522,7 @@ func linkPhone(t *testing.T, h *interopHub) *linked {
 		return err == nil && s.State == StateRunning && s.Reason == "" && s.Phones == 1
 	})
 	data := transport.DataZone(status.RelayDeviceID)
-	eventually(t, stepWait, "the device_grant in the data zone", func() bool {
+	eventuallyOnStand(t, stepWait, "the device_grant in the data zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(data)
 		if err != nil {
 			return false // not a reader yet: the next readers sync adds the phone
@@ -577,13 +583,31 @@ func queueMarked(t *testing.T, p *hubtest.Phone, mark string) uint64 {
 	return seq
 }
 
-// waitApplied syncs the phone until every seq has an applied echo.
+// standPoll is how often a wait that reads the stand polls it: the stand
+// limits each device to 50 ops/s (burst 100), and a phone polling faster
+// stays refused for good once its burst is spent.
+const standPoll = 100 * time.Millisecond
+
+// eventuallyOnStand is eventually for a cond that reads the stand.
+func eventuallyOnStand(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(standPoll)
+	}
+}
+
+// waitApplied syncs the phone until every seq has an applied echo. A sync
+// that fails part-way may still have taken the echoes in: they are checked
+// either way.
 func waitApplied(t *testing.T, p *hubtest.Phone, wait time.Duration, seqs ...uint64) {
 	t.Helper()
-	eventually(t, wait, fmt.Sprintf("applied echoes for %v", seqs), func() bool {
+	eventuallyOnStand(t, wait, fmt.Sprintf("applied echoes for %v", seqs), func() bool {
 		if _, err := p.Sync(); err != nil {
 			t.Logf("phone sync: %v", err)
-			return false
 		}
 		for _, s := range seqs {
 			if p.Echoes[s].Status != wire.StatusApplied {
@@ -623,7 +647,7 @@ func TestInterop_VouchedHubLinksAndPublishes(t *testing.T) {
 		return err == nil && len(devices) == 1 && !devices[0].RelayAdmittedAt.IsZero()
 	})
 	data := transport.DataZone(l.status.RelayDeviceID)
-	eventually(t, stepWait, "the heartbeat in the data zone", func() bool {
+	eventuallyOnStand(t, stepWait, "the heartbeat in the data zone", func() bool {
 		recs, err := l.phone.OpenData(data)
 		if err != nil {
 			return false
@@ -655,6 +679,11 @@ func TestInterop_ActionsInOrderWithEchoes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	defer func() {
+		if t.Failed() {
+			dumpOrder(t, h, p, m)
+		}
+	}()
 	waitApplied(t, p, 2*stepWait, 1, 2, 3, 4, 5)
 	resends := 0
 	for _, c := range p.Controls {
@@ -709,7 +738,7 @@ func TestInterop_ReconnectResubscribesAndPulls(t *testing.T) {
 		t.Fatal("the hub restarted instead of reconnecting")
 	}
 	a2 := queueMarked(t, p, "after-restart")
-	eventually(t, stepWait, "a2 written after the restart", func() bool {
+	eventuallyOnStand(t, stepWait, "a2 written after the restart", func() bool {
 		return p.Send(a2) == nil
 	})
 	waitApplied(t, p, stepWait, a2)

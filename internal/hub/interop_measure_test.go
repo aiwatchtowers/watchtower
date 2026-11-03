@@ -3,18 +3,28 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/relaytest"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
 )
 
@@ -39,8 +49,9 @@ const measureActions = 200
 func TestMeasure_HubLatencyOverTheStand(t *testing.T) {
 	const kind = "interop_measure"
 	var n atomic.Int64
+	ops := &opCounter{n: map[string]int{}, refused: map[string]int{}}
 	h := startHub(t, interopOpts{
-		passEvery: time.Second, linkEvery: time.Second,
+		passEvery: time.Second, linkEvery: time.Second, httpWrap: ops.wrap,
 		register: func(d *actions.Dispatcher) {
 			d.Register(kind, func(context.Context, actions.Request) actions.Outcome {
 				n.Add(1)
@@ -57,6 +68,7 @@ func TestMeasure_HubLatencyOverTheStand(t *testing.T) {
 		}
 	}
 	p := linkPhone(t, h).phone
+	ops.reset()
 	start := time.Now()
 	for i := 0; i < measureActions; i++ {
 		seq, err := p.Act(kind)
@@ -76,6 +88,7 @@ func TestMeasure_HubLatencyOverTheStand(t *testing.T) {
 		time.Sleep(gap)
 	}
 	t.Logf("measure: %d actions applied in %s (gap %s)", measureActions, time.Since(start).Round(time.Millisecond), gap)
+	ops.log(t, measureActions)
 	// The recorder flushes once a second; the last nudged save follows the
 	// last apply within the publisher's debounce.
 	time.Sleep(5 * time.Second)
@@ -166,5 +179,86 @@ func logCLI(t *testing.T, dir string, args ...string) {
 	}
 	if v.Rows != nil {
 		t.Logf("measure: %v → rows=%s", args, v.Rows)
+	}
+}
+
+// opCounter counts the hub's relay ops (POST /v1/op) by op name, and the
+// answers that carried a relay error by op and code: what an action costs
+// the hub on the relay (ask #976).
+type opCounter struct {
+	base    http.RoundTripper
+	mu      sync.Mutex
+	n       map[string]int
+	refused map[string]int
+}
+
+func (c *opCounter) wrap(rt http.RoundTripper) http.RoundTripper {
+	c.base = rt
+	return c
+}
+
+func (c *opCounter) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n, c.refused = map[string]int{}, map[string]int{}
+}
+
+func (c *opCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/v1/op") || r.Body == nil {
+		return c.base.RoundTrip(r)
+	}
+	body, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	op := "undecodable"
+	var req relayv1.Request
+	if proto.Unmarshal(body, &req) == nil {
+		op = relaytest.OpName(&req)
+	}
+	c.mu.Lock()
+	c.n[op]++
+	c.mu.Unlock()
+	res, err := c.base.RoundTrip(r)
+	if err != nil {
+		return res, err
+	}
+	out, rerr := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	res.Body = io.NopCloser(bytes.NewReader(out))
+	var resp relayv1.Response
+	if rerr == nil && proto.Unmarshal(out, &resp) == nil && resp.GetError() != nil {
+		c.mu.Lock()
+		c.refused[op+" "+resp.GetError().GetCode().String()]++
+		c.mu.Unlock()
+	}
+	return res, nil
+}
+
+// log reports the counts and the ops per action.
+func (c *opCounter) log(t *testing.T, actions int) {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	total := 0
+	names := make([]string, 0, len(c.n))
+	for k, v := range c.n {
+		total += v
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		t.Logf("measure: op=%s count=%d per_action=%.2f", k, c.n[k], float64(c.n[k])/float64(actions))
+	}
+	t.Logf("measure: ops total=%d per_action=%.2f", total, float64(total)/float64(actions))
+	refused := make([]string, 0, len(c.refused))
+	for k := range c.refused {
+		refused = append(refused, k)
+	}
+	sort.Strings(refused)
+	for _, k := range refused {
+		t.Logf("measure: refused op=%s count=%d", k, c.refused[k])
 	}
 }

@@ -32,7 +32,7 @@ One runtime (`internal/hub`, `Run`) inside the daemon joins these packages:
 | `internal/hub/identity` | The hub's keys (`hub_sig`, `hub_kx`, wrap key) in a 0600 file `<hub dir>/identity.key` in phase 1; the keyring (epochs, `K_data`/`K_alert`, the per-phone relay keys), wiped when the hub stops. |
 | `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`) — `memfake`, the in-memory relay/CloudKit stand-in for tests, and `cloudkit` (phase 3) — the client of `WatchtowerCloudBridge.app` over `<hub dir>/bridge.sock` (`bridge.proto`/`bridgepb`, frames pinned by `testdata/frames.json` for the Swift bridge; runtime zone names mapped onto `DataZone-<hub_id>`/`RelayZone-<hub_id>`, every phone on the one shared mailbox `relay/<relay id>/*`; the bridge's generation in `<hub dir>/bridge.generation` so a lost `bridge.db` resets cursors and refuses old tags), its `Supervisor` and the `bridgefake` test bridge. |
 | `internal/hub/link` | Linking: link codes, the pair zone hello, the awaiting keybox, the SAS confirmation (`Confirm(device, code, ok)`), grants (`typing`, `permissions`, `start_sessions`), unlink and the revoke hook. |
-| `internal/hub/actions` | The processor (ordered actions per phone by `action_seq`: hold ahead of a gap, one `resend_from` per gap, `skip_to`, the exactly-once ledger, `received`/final echoes, the legacy unordered path, controls, on CloudKit's shared `RelayZone` also the phone's `device-<id>` record through `link.Center.ApplyDeviceRecord`) and the dispatcher; the hosted relay keeps one mailbox per phone, read drain-then-read per phone as in phase 1, while the shared `RelayZone` (`actions/shared.go`) is read once per pass with every record routed to the phone its envelope's sender names (every linked phone with or without a relay id; a name naming another device than its sender is dropped as `sender_mismatch`; the hub's own records go to the phone whose key opens them; `control_queue` keyed `<zone>@<device>`, moved when a phone's mailbox changes shape; a failed phone's records wait for the next pass with the zone token held back; only a record whose own content fails is struck, and it is passed over after `MaxRecordStrikes` = 3 failures over at least `StrikeWindow` = 10 min — a store or transport error never strikes); `actions/handlers` holds every action handler (asks, board, session start/stop, session input and Interrupt, permission answers, chat/report requests, recording uploads). |
+| `internal/hub/actions` | The processor (ordered actions per phone by `action_seq`: hold ahead of a gap, one `resend_from` per gap, `skip_to`, the exactly-once ledger, `received`/final echoes, the legacy unordered path, controls, on CloudKit's shared `RelayZone` also the phone's `device-<id>` record through `link.Center.ApplyDeviceRecord`) and the dispatcher; the hosted relay keeps one mailbox per phone, read drain-then-read per phone as in phase 1 (a zone event reads only the mailbox it names, see Phase 4 → Relay ops per action), while the shared `RelayZone` (`actions/shared.go`) is read once per pass with every record routed to the phone its envelope's sender names (every linked phone with or without a relay id; a name naming another device than its sender is dropped as `sender_mismatch`; the hub's own records go to the phone whose key opens them; `control_queue` keyed `<zone>@<device>`, moved when a phone's mailbox changes shape; a failed phone's records wait for the next pass with the zone token held back; only a record whose own content fails is struck, and it is passed over after `MaxRecordStrikes` = 3 failures over at least `StrikeWindow` = 10 min — a store or transport error never strikes); `actions/handlers` holds every action handler (asks, board, session start/stop, session input and Interrupt, permission answers, chat/report requests, recording uploads). |
 | `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff — only the kinds an applied phone action nudges (`PublishNow`) skip the debounce; they are still held by the transport spacing and by a failed save's retry (the backoff, or the relay's `retry_after_s` after RATE_LIMITED, capped at `RetryRateLimitedMax` 60 s); a held kind keeps its time across the periodic full diff and Resume's full diff, which cover only the kinds not held —, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
 | `internal/hub/alerts` (phase 4) | The pusher: work alerts to the paying phones over the relay's `send_alert`, at most once per (alert key, phone), with the `alert_pushes` ledger (below). |
 | `internal/hub/measure` (phase 4) | `Recorder`: content-free latency samples (read → applied → slice saved) into `latency_samples`. |
@@ -556,6 +556,53 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   **Diagnostics**, a read-only sheet over `hub diagnostics --days 7 --json` (`MobileDiagnosticsModel`). The strings
   and their tones are in mobile-companion.md → Hub → Desktop over the hub.
 
+### Relay ops per action (ask #976)
+
+The relay limits each device to 50 ops/s (burst 100). A full pass per mailbox event read every linked phone's mailbox,
+and the hub's own echoes came back as events (the relay tells the writer too), so an applied action cost about six ops
+and a burst of 8–10 actions/s ran into `rate_limited`. Now:
+
+- **One mailbox per event.** `actions.Processor.PassEvent` reads only the phone's own mailbox the event names (its held
+  actions next in line first, as Pass does), then writes the queues; an event for any other zone, the shared
+  `RelayZone` or a transport that is not an `EventPuller` runs `Pass`. The runtime's 30 s backstop still runs `Pass`
+  over every mailbox, and an event pass does not move its timer. So a phone whose mailbox read failed is read again at
+  its own next event or the next backstop pass, not at another phone's event as before.
+- **No read when the event says it all** (`relay.Transport.PullEvent`; zone seqs grow by one per write, so the seqs
+  between the stored token and the event's `seq` are exactly the writes not read yet). Already read (`seq` ≤ token):
+  nothing. Every seq after the token is one the hub's own `Save` got (`OwnWrites`; kept per zone in memory, at most
+  256, forgotten once the token passes them; a restart forgets them and the hub reads again): the event pass does
+  nothing at all (`PassReport.OwnEcho`: no read, no queue write, and the runtime neither stamps a phone contact nor
+  kicks the other transport's poll); the token passes those seqs with the next read. Only the event's own seq is
+  someone else's and the relay carried the record inline (≤ 64 KiB, one-record saves): that one-record page is
+  applied, then the token moves. Anything else — another writer's seq in between, no inline record (a delete, a merged
+  event, a large record), the resync marker (seq 0), a zone never read (token 0) — is `Pull` of that zone. An own
+  write never stands for a write it may hide, and one whose event overtakes its `Save`'s answer is read, never
+  skipped. A mailbox whose last read stopped on an error (a claim whose done transaction failed among them) is read
+  with `Pull` at its next event, its own writes not skipped (`Processor.unread`), so the hub's own `received` echo of
+  a begun action is read back and settled `outcome_unknown`. `transport.Event` carries `Seq` and `Inline`.
+- **One save per mailbox.** `flushMailbox` writes the mailbox's queued echoes and controls in one `Save` (in queue
+  order, at most 50 rows per call) and settles each row by its outcome as before. The queued echoes of one record (a
+  held echo and the final one, a received echo and the final one) are folded into one row first — the last echo's
+  content at its place, under the last one's precondition when it names a record version, else the latest one an
+  earlier echo names — so one batch never writes a record twice and a partly written batch cannot leave an older echo
+  over a newer one; the folded rows leave the queue with it. An echo that meets the hub's own older record is
+  written over it in one more `Save`, together with every row after it that landed, so the phone's feed keeps the
+  queue order; a conflict with the hub's own identical record means it landed in an earlier, partly written batch
+  (done). A `Save` refused as a whole may have written part of the batch: nothing is settled, the first row is marked
+  failed, and the next pass reads the mailbox before it writes again. A whole-batch refusal for good is retried row
+  by row so only the refused row is dropped. The `received` echo of a claim still goes out before its handler runs.
+- **relaytest** sends one `ZoneChanged` per write call and zone (the zone's last seq, the record inline only when the
+  call wrote exactly that one record), to the writer too, as the relay does.
+
+Measured with `TestMeasure_HubLatencyOverTheStand` (200 actions, local stand, hub ops counted on its HTTP client; the
+1 s run includes the test's 1 s link and backstop cadence, about three reads and two other ops per second):
+
+| Run | ops/action before → after | `changes` | `save` | `rate_limited` lines | failed passes | p50/p90 `read_saved` |
+|---|---|---|---|---|---|---|
+| back to back | 5.87 → 2.83 | 3.71 → 1.19 | 1.98 → 1.50 | 299 → 0 | 147 → 0 | 90/257 → 83/144 ms |
+| back to back | 5.51 → 2.84 | 3.56 → 1.20 | 1.79 → 1.50 | 225 → 0 | 107 → 0 | 94/510 → 75/139 ms |
+| 1 s gap | 11.44 → 9.40 | 6.22 → 4.19 | 3.07 → 3.07 | 0 → 0 | 0 → 0 | 10/11 → 9/11 ms |
+
 ### Known limits (phase 4)
 
 - The push-off line appears only after a first `send_alert` and leaves with the 7-day prune.
@@ -563,8 +610,8 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   the phone's `register_push` and inline open (relay client spec Phase 4, plan Task 12).
 - `accepted` is not a delivery: the relay keeps at most 4 alerts in flight per phone and cancels the oldest, and APNs
   may drop one.
-- A save the relay refuses whole names every zone in its batch; the hub's mailbox writes are single-item saves, so in
-  practice only the refused phone is flagged.
+- A save the relay refuses whole names every zone in its batch; the hub's mailbox writes save one mailbox's queue per
+  call, so in practice only the refused phone is flagged.
 - An alert raised before the first readers sync succeeded, or between a phone's admission and the next readers sync,
   is not pushed to that phone (it still reaches the replica).
 - A crash during a switch toward CloudKit leaves queued pushes `pending`: they settle `expired`/`restart` at the next
