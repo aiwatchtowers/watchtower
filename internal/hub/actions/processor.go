@@ -48,6 +48,17 @@ type Config struct {
 	// while no phone is linked (link.Center.WantsHellos: a code open or a
 	// link urgent); nil reads it on every pass.
 	HelloWanted func() bool
+	// Latency takes the hub-side timing stamps (internal/hub/measure); nil
+	// records none. It is called after the deciding transaction committed,
+	// never inside one.
+	Latency Latency
+}
+
+// Latency is the processor's side of the latency samples (measure.Recorder):
+// an action applied on its first read, with the time its batch was read, the
+// time its outcome committed, the transport and the slice kinds it nudged.
+type Latency interface {
+	Applied(transport string, readAt, appliedAt time.Time, kinds []string)
 }
 
 // Processor reads the phones' mailboxes and applies their actions. Pass and
@@ -268,6 +279,9 @@ type pass struct {
 	// resent is the phones asked resend_from this pass for an action in an
 	// epoch the hub no longer holds (epoch.go): one ask per phone per pass.
 	resent map[secure.ID]bool
+	// readAt is when the transport handed the processor the page being
+	// handled (the latency samples' read time).
+	readAt time.Time
 }
 
 // Pass reads every linked phone's mailbox from its stored change token,
@@ -397,6 +411,7 @@ func (p *Processor) pull(ctx context.Context, zone string, apply func(transport.
 // records included) is read again next pass.
 func (p *Processor) readMailbox(ctx context.Context, b mailbox, ps *pass) error {
 	err := p.pull(ctx, b.zone, func(batch transport.Batch) error {
+		ps.readAt = p.cfg.Clock()
 		for i, rec := range batch.Changed {
 			if ps.budget <= 0 {
 				ps.report.Remaining += len(batch.Changed) - i
@@ -478,7 +493,7 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 	switch opened.Frame.Kind {
 	case kindAction:
 		ps.report.Read++
-		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, ps)
+		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt, readAt: ps.readAt}, opened, ps)
 	case kindControl:
 		ps.report.Read++
 		err = p.phoneControl(ctx, b, rec, opened, ps)

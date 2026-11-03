@@ -885,3 +885,144 @@ func TestPullerTransportOwnsTheCursor(t *testing.T) {
 		t.Errorf("the processor kept a cursor of its own: %d", tok)
 	}
 }
+
+// latencyCall is one Latency.Applied stamp.
+type latencyCall struct {
+	transport         string
+	readAt, appliedAt time.Time
+	kinds             []string
+}
+
+// fakeLatency records the stamps; probe (optional) runs inside each call.
+type fakeLatency struct {
+	calls []latencyCall
+	probe func()
+}
+
+func (f *fakeLatency) Applied(transport string, readAt, appliedAt time.Time, kinds []string) {
+	f.calls = append(f.calls, latencyCall{transport, readAt, appliedAt, slices.Clone(kinds)})
+	if f.probe != nil {
+		f.probe()
+	}
+}
+
+func TestAppliedActionGivesReadAppliedSample(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	lat := &fakeLatency{}
+	w.proc.cfg.Latency = lat
+	w.disp.Register("ask_answer", func(context.Context, Request) Outcome {
+		w.mu.Lock()
+		w.now = w.now.Add(40 * time.Millisecond)
+		w.mu.Unlock()
+		return Outcome{Status: wire.StatusApplied}
+	}, KindOptions{Nudges: []string{"owner_ask"}})
+	read := w.clock()
+	w.act("ask_answer")
+	w.pass()
+	if len(lat.calls) != 1 {
+		t.Fatalf("stamps %+v, want one", lat.calls)
+	}
+	c := lat.calls[0]
+	if c.transport != "relay" || !c.readAt.Equal(read) || c.appliedAt.Sub(c.readAt) != 40*time.Millisecond || !slices.Equal(c.kinds, []string{"owner_ask"}) {
+		t.Fatalf("stamp %+v", c)
+	}
+	// A failed outcome is no apply: no stamp.
+	w.disp.Register("ask_withdraw", w.recording(Outcome{Status: wire.StatusFailed, Reason: "ask_not_open"}), KindOptions{Nudges: []string{"owner_ask"}})
+	w.act("ask_withdraw")
+	w.pass()
+	if len(lat.calls) != 1 {
+		t.Fatalf("a failed action was stamped: %+v", lat.calls)
+	}
+}
+
+func TestSamplesTaggedWithTheActiveTransport(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		lat := &fakeLatency{}
+		w.proc.cfg.Latency = lat
+		w.act("test_noop")
+		w.pass()
+		if want := string(w.tr.Kind()); len(lat.calls) != 1 || lat.calls[0].transport != want {
+			t.Fatalf("stamps %+v, want one tagged %q", lat.calls, want)
+		}
+	})
+}
+
+func TestHeldThenAppliedGivesNoSample(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		lat := &fakeLatency{}
+		w.proc.cfg.Latency = lat
+		w.act("test_noop") // 1
+		gap, err := w.phone.Queue(w.phone.NewAction("test_noop"))
+		if err != nil { // 2 not sent yet
+			t.Fatal(err)
+		}
+		w.act("test_noop") // 3, held behind the gap
+		if r := w.pass(); r.Applied != 1 || r.Held != 1 {
+			t.Fatalf("first pass %+v", r)
+		}
+		if err := w.phone.Send(gap); err != nil {
+			t.Fatal(err)
+		}
+		w.settle()
+		w.wantCalls("test_noop:1", "test_noop:2", "test_noop:3")
+		// 1 and 2 applied on their first read; 3 applied from the held
+		// actions: no stamp.
+		if len(lat.calls) != 2 {
+			t.Fatalf("stamps %+v, want two (actions 1 and 2)", lat.calls)
+		}
+	})
+}
+
+func TestRepeatGivesNoSample(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		lat := &fakeLatency{}
+		w.proc.cfg.Latency = lat
+		w.act("test_noop")
+		w.settle()
+		if err := w.phone.WriteCopy(1); err != nil {
+			t.Fatal(err)
+		}
+		if r := w.pass(); r.Repeats != 1 {
+			t.Fatalf("pass %+v, want one repeat", r)
+		}
+		w.wantCalls("test_noop:1")
+		if len(lat.calls) != 1 {
+			t.Fatalf("stamps %+v, want only the first apply's", lat.calls)
+		}
+	})
+}
+
+// TestRecorderNeverWritesInsideAPassTransaction: the stamp is taken after the
+// deciding transaction committed, so a write from inside it (the recorder's
+// Flush) never waits on the pass's own write lock.
+func TestRecorderNeverWritesInsideAPassTransaction(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	// tryWrite starts a write transaction that gives up after 300 ms.
+	tryWrite := func() error {
+		ctx, cancel := context.WithTimeout(w.ctx, 300*time.Millisecond)
+		defer cancel()
+		return w.st.WithTx(ctx, func(*sql.Tx) error { return nil })
+	}
+	// The probe sees an open write transaction: inside one it fails.
+	if err := w.st.WithTx(w.ctx, func(*sql.Tx) error {
+		if tryWrite() == nil {
+			return errors.New("a write inside an open write transaction went through")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var probeErr error
+	lat := &fakeLatency{probe: func() { probeErr = errors.Join(probeErr, tryWrite()) }}
+	w.proc.cfg.Latency = lat
+	w.disp.Register("board_target_create", w.recording(Outcome{Status: wire.StatusApplied}), KindOptions{NonIdempotent: true, ReceivedEcho: true})
+	w.act("test_noop")
+	w.act("board_target_create")
+	w.pass()
+	if len(lat.calls) != 2 {
+		t.Fatalf("stamps %+v, want two", lat.calls)
+	}
+	if probeErr != nil {
+		t.Fatalf("a write from the stamp waited on a transaction: %v", probeErr)
+	}
+}

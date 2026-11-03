@@ -143,6 +143,10 @@ var sidecarColumns = map[string]string{
 	"held_uploads.upload_id": classID,
 	"held_uploads.device_id": classID,
 	"held_uploads.outcome":   classEnum,
+
+	// Content-free timings (00012): at is REAL and ms INTEGER (not listed).
+	"latency_samples.transport": classEnum,
+	"latency_samples.step":      classEnum,
 }
 
 // textual reports whether a declared column type may hold text or bytes

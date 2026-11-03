@@ -91,6 +91,16 @@ type Config struct {
 	// hub's relay-only rules re-read the account state on
 	// ENTITLEMENT_INACTIVE).
 	OnError func(error)
+	// Latency (nil = none) takes a stamp per kind a cycle saved or deleted
+	// records of (internal/hub/measure), after its state write committed.
+	Latency SaveLatency
+}
+
+// SaveLatency is the publisher's side of the latency samples
+// (measure.Recorder): kind saved on transport by a cycle that started at
+// startedAt, done at doneAt.
+type SaveLatency interface {
+	Saved(transport, kind string, startedAt, doneAt time.Time)
 }
 
 // CycleReport is what one cycle did. Skipped names records not published
@@ -400,6 +410,7 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 	p.cycleMu.Lock()
 	defer p.cycleMu.Unlock()
 	rep := CycleReport{Deferred: map[Kind]time.Time{}}
+	started := p.clock()
 	p.mu.Lock()
 	paused := p.paused
 	p.mu.Unlock()
@@ -453,6 +464,9 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		wrote, err := p.publishKind(ctx, k, srcs, &rep)
 		if wrote {
 			p.lastWrite[k] = now
+			if err == nil {
+				p.stampSaved(k, started)
+			}
 		}
 		if errors.Is(err, errEpochMoved) {
 			log.Printf("hub slices: epoch rotated while %s was sealed: the rest is resealed next cycle", k)
@@ -683,6 +697,14 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	}
 	rep.Deleted += len(deleted)
 	return wrote, nil
+}
+
+// stampSaved hands the latency recorder a kind this cycle wrote.
+func (p *Publisher) stampSaved(k Kind, started time.Time) {
+	if p.c.Latency == nil || p.c.Transport == nil {
+		return
+	}
+	p.c.Latency.Saved(string(p.c.Transport.Kind()), string(k), started, p.clock())
 }
 
 // alertSignals reports whether new alerts get a signal record: on CloudKit,
