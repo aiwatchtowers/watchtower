@@ -63,9 +63,36 @@ A run that waits on the owner — `ask()`, a write tool's `{wait: true}`, `sessi
 - **Divergence:** a mismatch, a clock read past the record, or a script that ends before its waiting call ends the run `failed`/`script` with "the recipe ran differently after the restart (step N); it was not resumed"; nothing was executed, and the next poll withdraws its open ask. A deadline, budget, memory or cancel interrupt during the replay keeps its own end. A stop during the replay (before the waiting call) records that life's active time and puts the run back to `waiting` with its old reason; the next start judges it again. The 16 MiB log cap counts the records of earlier daemon lives.
 - **v1 limits:** a crash during a replay leaves the run `running`, and the next start ends it `interrupted`. The base state of a resumed run is the committed state at the resume (another run of the same automation may have committed meanwhile). Guards: `TestAuto08_ResumeAtAskWait`, `TestAuto08_ResumeAtApprovalWait`, `TestAuto08_ResumeAtSessionWait`, `TestAuto08_DivergenceEndsTheRunWithoutExecuting`, `TestAuto08_ChangedRecipeIsNotResumed`, `TestAuto08_LargeResultMakesTheRunNotResumable`, `TestAuto08_TimeAndRandomReplay`, `TestAuto08_ResumedTokensNotDoubleCounted`, `TestAuto08_ResumedWaitKeepsItsPauseTimeout`, `TestAuto08_StopWhileRunningStillInterrupts`, `TestAuto08_ResumeAfterAgent`, `TestAuto08_ResumeAfterDefaultAgentChanged`, `TestAuto08_StopDuringReplayReturnsToWaiting`, `TestAuto08_DeadlineDuringReplayKeepsItsEnd`, `TestAuto08_ClockReadOverflowMakesTheRunNotResumable`, `TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed` (`internal/automations/replay_test.go`), `TestAuto08_ReplayLogCapCountsTheStoredLog` (`replay_internal_test.go`); `TestAuto08_RestartKeepsResumableWaitingRun`, `TestAuto08_ReplayLogDeletedOnFinish` (`internal/db/automation_run_replay_test.go`).
 
+**Provider-routing uncertainty (2026-11-03, Task 7):** a failed model call with
+unreported usage is charged an estimate of submitted input and available partial
+output. Its unknown remainder bars later model admission in that run. Completed
+SDK calls preserve this fact in `clock_json` as internal replay metadata v1
+(`version`, `reads`, `unknown_model_usage`); normal records remain byte-for-byte
+legacy clock arrays. The reader accepts legacy arrays, validates envelope fields,
+version, types and size, and restores the gate when replay reaches the marked
+completed step, before returning its cached value/error. Corrupt metadata fails
+closed; existing replay caps include the metadata. Results, errors, replay keys,
+step count, grants and waiting types are unchanged. Successful estimated usage
+and schema validation failures with known usage do not mark an unknown remainder.
+Guards: `TestRoutingUnknownUsageSurvivesPersistedReplay` closes/reopens the database
+across an actual ask wait; `TestSuccessfulPrimitiveRecordsUnknownUsageMetadata`
+covers a primitive returning success after catching a physical failure. Current
+slot primitives still run inline and gain no whole-recipe resume guarantee.
+
 ## Budgets
 
 Tokens, never dollars (D4). Per run: `budget.tokens` and `budget.minutes` of active time (snapshotted on the run). `BeforeCall` refuses a model call with `BudgetExceeded` when the remainder is ≤ 0; a call that crosses it interrupts the run (`budget_exceeded`). No daily cap across runs (D25, ask #294, which retired `automations.daily_budget_tokens`; a leftover key in `config.yaml` is ignored, and `error_kind='daily_cap'` stays in the CHECK but is no longer produced): each run is bounded only by its own token and time budget.
+
+With opt-in provider routing, `llm()` and isolated built-in model calls admit and
+debit every physical attempt, reserve serialized input across parallel workers,
+and retain one SDK step. Provider fallback and the existing JSON-schema retry
+share the run budget; active-time checks use the meter clock without rounding to
+whole minutes. Leaf and aggregate usage are counted once. Reported dollars remain
+provider-reported; estimated prices belong to the leaf ledger. CLI `agent()` may
+select an alternative from known health before its child starts, records actual
+provider/model, and never retries that started loop or its proposals. Quota does
+not replay `shell`, `mcp`, outputs, sessions, asks or the whole recipe. Details:
+[provider fallback](provider-fallback.md#automation-attempt-accounting-and-agent-preflight-task-7).
 
 ## Automation read tools (D2, D23)
 
