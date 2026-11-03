@@ -761,7 +761,7 @@ A phone that can use Relay never ends a link this way; it follows the switch (Ta
      2. **`remove_slot`, always**, whether the farewell went out or not, with Phase 2's `UNAVAILABLE` retry. A failure is kept as a `pending_slot_removals` row and retried at every launch until the relay answers `Ok` or `NOT_FOUND`; it is never dropped, except by a new link to the same Mac (below).
      - **Never `remove_slot` for a Mac a local link names.** The row is keyed by the Mac's relay id, and a retry after a re-link would free the new link's slot. So: the `.confirmed` write for that Mac deletes its `pending_slot_removals` row (and that hub's relay `pending_farewells` row); and the launch retry calls `remove_slot` only when no local link record names that Mac: no registry row, no `store.promoted` entry in any state, and no `store.pending` entry. When one does, the row is deleted instead. Test `testARelinkOfTheSameMacCancelsItsPendingSlotRemoval`.
      3. **Local state removed either way:** the hub's keys, session, directory and the `store.promoted` entry go at once, whatever steps 1 and 2 did.
-     4. **What the Mac learns.** The Go hub does not read `device` records yet (protocol §5.5), so the farewell is for later hubs. The Mac learns from the freed slot: its `get_account_state` no longer lists this phone in `phones`, so its readers sync drops the phone from `set_hub_readers` and the phone can no longer read the data zone. The phone stays in the hub's device list until the owner presses **Remove…** on the Mac (stated in the feature note's v1 limits); while the slot removal is still pending, the phone holds no keys or state any more, so nothing it could read reaches it.
+     4. **What the Mac learns.** The Go hub does not read `device` records on the relay path (protocol §5.5), so there the farewell is for later hubs. *(Superseded for iCloud: on `feature/go-hub`, `link.Center.ApplyDeviceRecord` applies device records read from CloudKit's shared `RelayZone` only, `internal/hub/actions/device_record.go:17-22`.)* The Mac learns from the freed slot: its `get_account_state` no longer lists this phone in `phones`, so its readers sync drops the phone from `set_hub_readers` and the phone can no longer read the data zone. The phone stays in the hub's device list until the owner presses **Remove…** on the Mac (stated in the feature note's v1 limits); while the slot removal is still pending, the phone holds no keys or state any more, so nothing it could read reaches it.
    - **Several promoted links at once are fine.** Each resume attaches its hub transport to the one `HostedRelaySession` (R2), so there is still one socket per device; the pairing-mode transport is not used after promote. Each promoted link already holds a relay slot, so `get_account_state`'s slot count (the pre-check before `open_pairing`) includes it; and it counts toward `HubRegistry.limit` (4 Macs on the phone) like a linked row, so a fifth code is refused with today's `.tooManyMacs`.
 
 **`LinkFailure` additions.** The copy lives in the model, from the Task 8 mockup:
@@ -997,7 +997,7 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
   3. it confirms over the control socket only when the code equals the hub's `sas.code`;
   4. it writes `confirmed`;
   5. it then waits for `actions.done`, checks `interop_mark` was applied for `action_seq` 1..3 in order and once each, checks the device's `acked_epoch` equals the hub's epoch and that the canary is absent from every tapped stream, and writes `go.ok`, or `go.fail` with the failed check's name;
-  6. it reads the farewell before `remove_slot` (handoff `farewell.sent` / `farewell.ok`), because at `bcca870` a hub that no slot holds is unvouched again and the relay answers its mailbox `changes` with `HUB_NOT_VOUCHED`; then it waits for `unlinked`. It checks, against the stand: the phone's `device-<DEVICE_ID>` record in its mailbox opens with the hub's opener and carries `unlinked: true` (the Go hub does not act on `device` records yet, protocol §5.5, so the check is that the farewell arrived intact); the hub's `get_account_state` no longer lists the phone in `phones`; writes `unlink.ok`;
+  6. it reads the farewell before `remove_slot` (handoff `farewell.sent` / `farewell.ok`), because at `bcca870` a hub that no slot holds is unvouched again and the relay answers its mailbox `changes` with `HUB_NOT_VOUCHED`; then it waits for `unlinked`. It checks, against the stand: the phone's `device-<DEVICE_ID>` record in its mailbox opens with the hub's opener and carries `unlinked: true` (the Go hub does not act on `device` records read on the relay, protocol §5.5, so the check on the stand is that the farewell arrived intact; on `feature/go-hub` it applies them from CloudKit's shared `RelayZone` only, `internal/hub/actions/device_record.go:17-22`); the hub's `get_account_state` no longer lists the phone in `phones`; writes `unlink.ok`;
   7. it waits for `readded`, checks the hub's `get_account_state` lists the phone again, and writes `go.done`.
 - Create: `scripts/relay-interop-kit-hub.sh`. It starts the stand as `relay-interop-kit.sh` does, starts the Go test in its own process group, runs `make kit-test FILTER=KitGoHubInteropTests` with `WATCHTOWER_RELAY_INTEROP_URL` and `WT_GO_HUB_INTEROP_DIR`, waits for both, and reaps both groups and wrangler on every path. Make target `relay-interop-kit-hub`.
 - Create: `WatchtowerKit/Tests/WatchtowerHostedRelayTests/Interop/KitGoHubInteropTests.swift`. It skips unless both variables are set.
@@ -1046,7 +1046,7 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
 - Modify: `docs/guide/features/iphone.md`. Add one bullet under **When it's empty or wrong**: **"<hub> works over Relay only"**. That hub (a Linux box or a Mac without the Watchtower app) links only over Relay, which this version of Watchtower for iPhone doesn't offer; link it from the Mac app instead if it has one. The bullet follows `docs/guide/WRITING.md`: bold for UI text, no internals. There is no Learn card: nothing new to learn until Phase 4.
 - Modify: `docs/features/relay-client.md`:
   - a Phase 3 section: identity and Keychain items (R1 of Phase 3), origin and entitlement, `RelayAvailability`, the shared session (R2), pairing mode and `HostedRelayPairing`, the link route rule (R4), the follower, the side reader, epochs (R8–R10), the interop and CI entry point;
-  - v1 limits updated: `testAttestUnsupportedStaysOnCloudKit` done; the dark ship; vouching proven on the stand (attestation off), a real assertion first on staging; a cancelled or unlinked relay link stays in the Go hub's device list until the owner removes it on the Mac (the Go hub reads no `device` records yet), although the freed slot already drops it from the readers; no pushes, so a backgrounded app on the relay waits for the foreground; the promote residual (R5). Task 17 removes the stalled-resync limit (`Changes.resync`).
+  - v1 limits updated: `testAttestUnsupportedStaysOnCloudKit` done; the dark ship; vouching proven on the stand (attestation off), a real assertion first on staging; a cancelled or unlinked relay link stays in the Go hub's device list until the owner removes it on the Mac (the Go hub reads no `device` records on the relay path; it applies them on iCloud only, `feature/go-hub` `actions/device_record.go:17-22`), although the freed slot already drops it from the readers; no pushes, so a backgrounded app on the relay waits for the foreground; the promote residual (R5). Task 17 removes the stalled-resync limit (`Changes.resync`).
 - Modify: `docs/features/mobile-companion.md`: linking (v4 codes, the relay pairing slot, the hello's `relay_device_id`), epochs (7-day retention, `epoch_ack`), the transport per hub and the follower (cite the protocol spec §7.6), and the per-route transport store file.
 - Modify: `CLAUDE.md` (the relay-client feature line names Phase 3a)
 - Modify: `docs/superpowers/specs/2026-10-29-relay-client-design.md`:
@@ -1182,7 +1182,7 @@ Task 10 maps these to `.needsOwner(reason)` (point 6) and handles `HUB_NOT_VOUCH
 - reads no relay mailbox for the phone (`actions/processor.go:232-243`);
 - does not name it in `set_hub_readers` (`link/relay.go:279`), or in pushes.
 
-Its tests never see this: the Go phone emulator puts `RelayDeviceID` in its device row directly (`hubtest/phone.go:183`). Spec §8's "the hub calls `set_hub_readers`" names no source for the phone's id. Task 23 closes the gap with one optional field in the phone's own `device` record. This is a contract addition, so it is Open decision 2.
+Its tests never see this: the Go phone emulator puts `RelayDeviceID` in its device row directly (`hubtest/phone.go:183`). Spec §8's "the hub calls `set_hub_readers`" names no source for the phone's id. Task 23 closes the gap: the phone's own `device` record carries the relay id, the `relay_auth` key and that key's signature. This is a contract addition, so it is Open decision 2.
 
 ### Base for Phase 3b (decided here, Open decision 1 confirms)
 
@@ -1199,7 +1199,7 @@ The other option keeps `feature/relay-client-next` free of Go hub code until the
 
 | # | Dependency | Status (2026-11-03) | Blocks |
 |---|---|---|---|
-| E8 | **The hub learns an iCloud link's relay device id.** No path in the merged Go hub. | **Not built**; Task 23 builds it (Go and Kit halves), Open decision 2 | Tasks 19, 20 |
+| E8 | **The hub learns an iCloud link's relay device id.** No path in the merged Go hub. | **Not built**; Task 23 builds it (Go half and Kit wire, with a proof of ownership), Open decision 2 | Tasks 19, 20 |
 | E9 | **Go hub Task 27** (`TestInterop_SwitchBothWays` with the Go phone emulator, the `/dev/entitlement` scenarios carried from Go hub Task 20). | **Waiting on us**: Task 24 provides the desktop host on the stand it can reuse; Task 20 is the Kit phone half | nothing for us: Task 20 does not wait for it |
 
 E3 and E4 are done (table above). E7 is unchanged: no production origin, so 3b ships dark too.
@@ -1208,7 +1208,7 @@ E3 and E4 are done (table above). E7 is unchanged: no production origin, so 3b s
 
 - **Dark ship holds.** With an empty origin, nothing in 3b constructs a relay object: no upgrade, no device-record relay id, no switch request. `testAnEmptyOriginBuildsNoRelayObject` stays green, and Task 19 adds `testAnEmptyOriginCannotUpgrade`. Release builds force `WATCHTOWER_RELAY_ORIGIN` empty, and there is still no App Attest entitlement in Release until Phase 4 (Task 2's `testReleaseCarriesNoOrigin`).
 - **No screen.** The upgrade's trigger (subscribing, the per-Mac transport choice) is Phase 4's (R13). Task 19 is model-level: every user text lives in its model and is pinned by a test, but no view shows it.
-- **Go.** Task 23 is the only 3b task that changes Go hub production code: one optional wire field and one store write, no sidecar migration (`devices.relay_device_id` exists). Tasks 20 and 24 add test-only Go files under `//go:build interop`. `go test ./internal/hub/...` stays green after every task.
+- **Go.** Task 23 is the only 3b task that changes Go hub production code: three optional wire fields, one proof check and one store write, with no sidecar migration (`devices.relay_device_id` exists). It is done in this plan's lane (Open decision 2, ask #977). Tasks 20 and 24 add test-only Go files under `//go:build interop`. `go test ./internal/hub/...` stays green after every task.
 - **Shared fixture.** `hub_contract_cases.json` is the union of both branches after Task 22. Each side's reader keeps reading its sections: Kit `HubContractFixtureTests`, Go `internal/hub/wire/contract_test.go`. A new section is read on both sides in the task that adds it.
 - **Inner loop** as Phase 3a; the Go tasks add `go test ./internal/hub/<pkg>` and `make lint-diff`. The full gate runs once, in Task 21.
 
@@ -1241,51 +1241,87 @@ E3 and E4 are done (table above). E7 is unchanged: no production origin, so 3b s
 - [ ] **Step 3:** `make lint-diff`, `make lint-swift`; the guard-file diff of Global Constraints is empty against `origin/main`.
 - [ ] **Step 4: Commit:** the merge commit, `Merge feature/go-hub into feature/relay-client-next (relay client Phase 3b base)`. The PR into `feature/relay-client-next` lists every resolved file and its rule.
 
-### Task 23: The phone tells the hub its relay id in its own device record (E8)
+### Task 23: The hub takes a proven relay id from a phone's device record (E8), Go half and Kit wire
 
-**Depends on:** Task 22. It can run in parallel with Task 24.
+**Depends on:** Task 22. It can run in parallel with Task 24. Task 19 builds on it: the phone's wiring (filling the fields, signing the proof) is Task 19's, so this task touches no phone source and every dependency is buildable in the order 22 → 23 → 19.
+
+This task changes Go hub production code inside this plan's lane (Open decision 2, ask #977).
+
+**Proof of ownership.** A relay id is only routing, but it decides who the hub names in `set_hub_readers`, whose mailbox it reads and who counts as paying (`payingByDevice`). A linked phone must not be able to claim another phone's id, least of all a paying one's. So the device record carries the phone's `relay_auth` public key and a signature by that key, and the hub checks both before it stores the id. What the hub already has and reuses:
+- the device record is opened and bound to its authenticated sender (`actions/device_record.go`: `handle` checks `device-<id>` against `sender_id`; then `ApplyDeviceRecord`'s `accepts`/creator gate), which proves the linked phone wrote it;
+- `identity.RelayDeviceID(pub)` (`internal/hub/identity/identity.go:82`), the hub's own derivation of an id from an Ed25519 key;
+- `crypto/ed25519.Verify`, used for the hub's own signatures.
+
+The phone's `relay_auth` is Ed25519 (`Curve25519.Signing`, `WatchtowerKit/Sources/WatchtowerHostedRelay/Identity/RelaySigner.swift:17`).
+
+The hello path stores a relay id with no such proof (`link/hello.go:227-231`). That is acceptable there: the hello is written into a pairing slot the relay opened for that phone's own `relay_auth`. A proof on the hello is noted in the feature note as a later hardening; 3b does not add it.
+
+**Proof bytes** (pinned by a shared vector): `msg = "watchtower/v1/relay-id" ‖ 0x00 ‖ hub_id (16 bytes, the UUID's bytes) ‖ device_id (16 bytes) ‖ relay_device_id (UTF-8, 52 bytes)`, and `relay_id_sig = Ed25519.sign(relay_auth, msg)`. In JSON, `relay_auth_pub` (32 bytes) and `relay_id_sig` (64 bytes) are unpadded base64url.
 
 **Files:**
-- Modify (Go): `internal/hub/wire/payloads.go`: `DevicePayload` gains `RelayDeviceID string \`json:"relay_device_id,omitempty"\``.
-- Modify (Go): `internal/hub/link/device_record.go`: `rewrite` stores the payload's relay id when `validRelayDeviceID` holds, it differs from the stored one, and no other device row holds it. In one transaction it sets `devices.relay_device_id` and clears `relay_admitted_at` (the admission stamp of `state/devices.go:64` then follows the account as for a relay link). It logs `phone <ID> named its relay id` (ids only, FILES-01). An invalid id, or one another phone holds, is logged and ignored, and the rest of the rewrite still applies.
+- Modify (Go): `internal/hub/wire/payloads.go`: `DevicePayload` gains `RelayDeviceID string \`json:"relay_device_id,omitempty"\``, `RelayAuthPub string \`json:"relay_auth_pub,omitempty"\`` and `RelayIDSig string \`json:"relay_id_sig,omitempty"\``.
+- Create (Go): `internal/hub/link/relay_id_proof.go`: `VerifyRelayIDProof(hubID, deviceID secure.ID, p wire.DevicePayload) (relayID string, ok bool)`. It checks that all three fields are present, `validRelayDeviceID(p.RelayDeviceID)`, `identity.RelayDeviceID(pub) == p.RelayDeviceID`, and `ed25519.Verify(pub, msg, sig)`.
+- Modify (Go): `internal/hub/link/device_record.go`. `rewrite` stores the id only when the proof verifies, the id differs from the stored one, and no other device row holds it:
+  - in one transaction it sets `devices.relay_device_id` and clears `relay_admitted_at`, so the admission stamp of `state/devices.go:64` then follows the account as for a relay link;
+  - it logs `phone <ID> named its relay id` (ids only, FILES-01);
+  - a missing, invalid or unproven id, or one another phone holds, is logged by class and ignored, and the rest of the rewrite still applies.
+
+  The device record is read on CloudKit's shared `RelayZone` only (`actions/device_record.go:17-22`), which is where an upgrading phone writes it.
 - Modify (Go): `internal/hub/state/devices.go`: `SetRelayDeviceIDTx(tx, device, relayID string) error`.
 - Modify (Go): `internal/hub/runtime.go` / `desktop_runtime.go`: after a device record named a new relay id, the next link upkeep runs `SyncReaders` and reads the account (`followAccount`) without waiting for its interval.
-- Modify (Kit): `WatchtowerKit/Sources/WatchtowerSync/Relay/DevicePayload.swift`: `relayDeviceID: String?`, `CodingKey` raw value `relayDeviceId` (RelayCoder, as `DeviceHello`). An invalid value decodes as nil (`RelayIDs.isValid`).
-- Modify (phone): `WatchtowerMobile/Sources/App/AppRoot.swift:937` (`devicePayload(hubID:for:linkNonce:unlinked:now:)`, the session-backed builder) fills `relayDeviceID` only while the hub's `LinkRecord` holds a relay upgrade in progress or done (Task 19 sets it), so a plain iCloud link's device record stays byte for byte as today.
-- Fixture: `hub_contract_cases.json` gains a `device_payload` section with three cases: `with_relay_id`, `without_relay_id`, `invalid_relay_id_reads_as_none`. It is read by `HubContractFixtureTests.testDevicePayloadRelayIDCases` and by `contract_test.go`'s `TestDevicePayloadCases`.
-- Test (Go): `internal/hub/link/device_record_test.go`, `internal/hub/switcher/switcher_test.go`, `internal/hub/wire/contract_test.go`
-- Test (Kit/phone): `HubContractFixtureTests`, `WatchtowerMobile/Tests/RelayUpgradeWiringTests.swift` (created in Task 19; this task adds `testTheDeviceRecordCarriesTheRelayIDOnlyDuringAnUpgrade`), `make mobile-gen`
+- Modify (Kit): `WatchtowerKit/Sources/WatchtowerSync/Relay/DevicePayload.swift`: `relayDeviceID`, `relayAuthPub`, `relayIDSig` (all `String?`), `CodingKey` raw values `relayDeviceId`, `relayAuthPub`, `relayIdSig` (RelayCoder, as `DeviceHello`). An invalid `relayDeviceID` decodes as nil (`RelayIDs.isValid`).
+- Create (Kit): `WatchtowerKit/Sources/WatchtowerHostedRelay/Identity/RelayIDProof.swift`: `RelayIDProof.message(hubID:deviceID:relayDeviceID:) -> Data` and `sign(_:hubID:deviceID:)`.
+- Fixture: `hub_contract_cases.json` gains a `device_payload` section. Each case carries `"proof": true|false`, and both sides assert it: Kit `HubContractFixtureTests.testDevicePayloadRelayIDCases`, Go `contract_test.go`'s `TestDevicePayloadCases`. The cases:
+  - `with_proven_relay_id`: from a fixed test seed, with the relay id derived from its key and the signature (Ed25519 signatures are deterministic, so the bytes are stable);
+  - `without_relay_id`;
+  - `invalid_relay_id_reads_as_none`;
+  - `wrong_key` (an id that is not the key's): `proof: false`;
+  - `bad_signature`: `proof: false`;
+  - `other_hub` (signed for another `hub_id`): `proof: false`.
+- Test (Go): `internal/hub/link/device_record_test.go`, `internal/hub/link/relay_id_proof_test.go`, `internal/hub/switcher/switcher_test.go`, `internal/hub/wire/contract_test.go`
+- Test (Kit): `HubContractFixtureTests`, `WatchtowerKit/Tests/WatchtowerHostedRelayTests/RelayIDProofTests.swift`
 
 **Interfaces:**
 ```go
 // wire
-type DevicePayload struct { …; RelayDeviceID string `json:"relay_device_id,omitempty"` }
+type DevicePayload struct { …; RelayDeviceID, RelayAuthPub, RelayIDSig string /* omitempty */ }
+// link
+func VerifyRelayIDProof(hubID, deviceID secure.ID, p wire.DevicePayload) (string, bool)
 // state
 func SetRelayDeviceIDTx(tx *sql.Tx, device, relayID string) error // clears relay_admitted_at in the same statement
 ```
+```swift
+public enum RelayIDProof {
+    public static func message(hubID: UUID, deviceID: UUID, relayDeviceID: String) -> Data
+    public static func sign(_ signer: any RelaySigner, hubID: UUID, deviceID: UUID) throws -> (relayDeviceID: String, authPub: String, sig: String)
+}
+```
 
 - [ ] **Step 1: Failing tests (Go):**
-  - `TestADeviceRecordGivesAnICloudLinkItsRelayID`;
-  - `TestAnInvalidRelayIDInADeviceRecordIsIgnored` (the name change in the same record still applies);
+  - `TestADeviceRecordWithAProofGivesAnICloudLinkItsRelayID`;
+  - `TestAnUnprovenRelayIDIsIgnored` (no key; a key that is not the id's; a bad signature; a signature for another hub or another device): each leaves `relay_device_id` empty, and the name change in the same record still applies;
+  - `TestAPhoneCannotClaimAPayingPhonesRelayID` (phone B's record names phone A's id with B's own key: refused by the key-to-id check; with A's key but no A signature: refused by the signature);
   - `TestARelayIDAnotherPhoneHoldsIsRefused`;
   - `TestADeviceRecordFromAnotherWriterNamesNoRelayID` (the `accepts`/creator gate comes first);
   - `TestTheUpgradedPhoneIsAReaderAfterItsRecord` (`relaytest` records `set_hub_readers`);
-  - `switcher`: `TestAnUpgradedPhoneIsPayingOnceItsRelayIDIsKnown` (before: `not_paying` with a readable account listing the relay id; after the record: accepted);
+  - `switcher`: `TestAnUpgradedPhoneIsPayingOnceItsRelayIDIsKnown` (before: `not_paying` with a readable account listing the relay id; after the proven record: accepted);
   - `TestFILES01_DeviceRecordRelayIDLogsNoNames`;
   - `TestDevicePayloadCases`.
-- [ ] **Step 2: Failing tests (Kit/phone):** `testDevicePayloadRelayIDCases`; `testTheDeviceRecordCarriesTheRelayIDOnlyDuringAnUpgrade` (with an empty origin it never does).
-- [ ] **Step 3: Run, expect failure:** `go test ./internal/hub/link ./internal/hub/switcher ./internal/hub/wire ./internal/hub/state`; `make kit-test FILTER=HubContractFixtureTests`.
+- [ ] **Step 2: Failing tests (Kit):** `testDevicePayloadRelayIDCases` (decode, plus the `proof` verdict through `RelayIDProof`); `RelayIDProofTests.testTheFixtureVectorSignsTheSameBytes` and `testTheMessageBindsHubDeviceAndRelayID`.
+- [ ] **Step 3: Run, expect failure:** `go test ./internal/hub/link ./internal/hub/switcher ./internal/hub/wire ./internal/hub/state`; `make kit-test FILTER='HubContractFixtureTests|RelayIDProofTests'`.
 - [ ] **Step 4: Implement.**
-- [ ] **Step 5: Run:** the Step 3 commands; `go test ./internal/hub/...`; `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='RelayUpgradeWiringTests|LinkingViewModelTests|HubRegistryTests'`.
+- [ ] **Step 5: Run:** the Step 3 commands; `go test ./internal/hub/...`; `make kit-test FILTER='DevicePayload|RelayAuthVectorTests'`.
 - [ ] **Step 6:** `make lint-diff`, `make lint-swift`.
-- [ ] **Step 7: Commit:** `feat: an iCloud link names its relay id in its device record, so the hub can admit and switch it (#1247)`
+- [ ] **Step 7: Commit:** `feat: the hub takes a phone's relay id from its device record when the relay key signs it (#1247)`
 
 ### Task 19: Upgrade an existing iCloud link to Relay (model only)
 
-**Depends on:** Tasks 22 and 23. It can run in parallel with Task 24.
+**Depends on:** Tasks 22 and 23 (strictly after 23: it fills 23's fields). It can run in parallel with Task 24.
 
 **Files:**
 - Create: `WatchtowerMobile/Sources/App/Hubs/RelayUpgrade.swift`: the upgrade's steps, state and copy.
+- Modify: `WatchtowerMobile/Sources/App/AppRoot.swift:937` (`devicePayload(hubID:for:linkNonce:unlinked:now:)`, the session-backed builder). It fills `relayDeviceID`, `relayAuthPub` and `relayIDSig` (`RelayIDProof.sign` with the phone's `KeychainRelayIdentity`) only while the hub's `LinkRecord.relayUpgrade` is set, so a plain iCloud link's device record stays byte for byte as today.
+- Modify: the unlink path of an iCloud hub (`AppRoot.swift` unlink, `HubRegistry.pendingSlotRemovals`). When `relayUpgrade` shows that `add_slot` succeeded, the unlink frees the slot as R14 does for a relay hub: the farewell first (here over iCloud), then `remove_slot`. A failure is kept as a `pending_slot_removals` row and retried at launch.
 - Modify: `WatchtowerMobile/Sources/App/LinkStore.swift`: `LinkRecord` gains optional `relayUpgrade: RelayUpgradeRecord?` (step, request control id, `retryAt`, refusal). It is JSON only, with no registry migration (as Tasks 10–12). It is absent in every link saved before and in every link that never upgraded.
 - Modify: `WatchtowerMobile/Sources/App/Hubs/HubSession.swift`: `upgradeToRelay()`, plus resuming at launch and foreground (the `PromotedLinkResumer` pattern of R5).
 - Modify: `WatchtowerKit/Sources/WatchtowerSync/Relay/RelayFeed.swift:368-371`: a `transport_switch_rejected` goes to a handler set by the session, instead of the Phase 1 log line "no switch was asked". It is still marked handled and deleted once; its second copy is deleted unread (as today).
@@ -1295,7 +1331,7 @@ func SetRelayDeviceIDTx(tx *sql.Tx, device, relayID string) error // clears rela
 
 **Interfaces:**
 ```swift
-enum RelayUpgradeStep: String, Codable { case namingRelayID, vouching, addingSlot, requested, switched }
+enum RelayUpgradeStep: String, Codable { case namingRelayID, vouching, addingSlot, awaitingReader, requested, switched }
 enum RelayUpgradeRefusal: Equatable, Codable {
     case noRelayIdentity            // the grant's relay pair is missing or not coherent (RelayIDs)
     case relayOff                   // RelayAvailability != .available (an empty origin included)
@@ -1313,10 +1349,16 @@ extension HubSession {
 
 **Steps of `upgradeToRelay()`.** Each step is persisted before the next starts, so a relaunch resumes at the step it stopped on. The order matters: the hub must know the relay id before the switch request reaches it.
 
-0. Refuse `.relayOff` unless `RelayAvailability == .available`. Refuse `.noRelayIdentity` unless the linked grant carries a coherent `relay_device_id`/`relay_auth_pub` (`LinkPayload.relayIdentityIsCoherent`). Refuse `.notPaying` if `HostedRelayPairing.accountState()` says not paying. Nothing is written before these checks.
+0. Refuse `.relayOff` unless `RelayAvailability == .available`. Refuse `.noRelayIdentity` unless the linked grant carries a coherent `relay_device_id`/`relay_auth_pub` (`LinkPayload.relayIdentityIsCoherent`). Then read `HostedRelayPairing.accountState()`, three-way like Task 11's `canUseRelay`:
+   - `.no`, the relay answered not paying: refuse `.notPaying`;
+   - `.unknown` (unreachable, `UNAVAILABLE`, attestation backoff): a no-op. Nothing is written, `upgradeToRelay()` returns `nil` with the step unchanged, and the resumer asks again at the next launch, foreground or feed pass (at most every 30 s while active);
+   - `.yes`: go on.
+
+   Nothing is written before these checks.
 1. **Name the relay id** (Task 23): rewrite the phone's own `device` record with `relayDeviceID`, and flush it on iCloud.
 2. **Vouch** for the hub (`HostedRelayPairing.vouch`, Task 18). Its refusals end the upgrade as `.vouch(_)`.
 3. **`add_slot`** for the hub's relay id. `HUB_NOT_VOUCHED` vouches again once, then repeats `add_slot` once. `SLOT_LIMIT` ends it as `.vouch(.slotsFull)`. After success, `LinkRecord.setRelay(mac:)` stores the hub's relay identity; the route stays `.cloudKit`.
+3a. **Wait to be a reader** (step `awaitingReader`). The hub may not have applied the device record and synced its readers yet, and a request sent now would be answered `not_paying`, which ends the upgrade. So the phone pulls `data/<mac>` on the relay through the hub's relay transport (shared socket, R2). `FORBIDDEN` is "not a reader yet", as in R5, and the pull is retried at the feed cadence (at most every 30 s while active, plus launch and foreground), with no time window. The first successful pull, even an empty one, shows three things: the hub stored the proven relay id, it named the phone in `set_hub_readers`, and the relay agreed that the phone holds the Mac's slot. Only then does step 4 run. The step is persisted, so a relaunch resumes the wait.
 4. **Request:** `enqueueSwitchRequest(target: .relay)` writes `transport_switch{target: relay}` in the iCloud mailbox. When the relay is reachable, the same control id is also written in the relay mailbox (rule 9's initiator write), through the hub's relay transport on the shared socket (R2), never a second socket.
 5. **Wait.** The phone stays on iCloud until one of these:
    - `transport_switched` toward the relay (Task 11's follower moves the route), or `requestAnswered` (the hub was already on the relay): step `switched`;
@@ -1332,6 +1374,10 @@ extension HubSession {
 
 - [ ] **Step 1: Failing tests** (`RelayUpgradeWiringTests`, on `FakeHostedRelay` and `InMemoryCloudTransport` with a scripted hub that writes sealed controls):
   - `testUpgradeNamesTheRelayIDThenVouchesAddsTheSlotAndAsks` (order asserted on the fake's op log and the iCloud mailbox);
+  - `testTheDeviceRecordCarriesAProvenRelayIDOnlyDuringAnUpgrade` (the proof verifies with `RelayIDProof`; without an upgrade, or with an empty origin, the record is byte for byte today's);
+  - `testTheSwitchIsAskedOnlyAfterTheFirstDataZoneRead` (the fake answers `FORBIDDEN` on `data/<mac>` twice and no `transport_switch` is written; then it lets the phone read, and the request follows; a relaunch in between resumes the wait);
+  - `testAnUnknownAccountStateIsANoOpAndRetried` (the account read fails: no write, no refusal, the step unchanged; the next pass reads `.yes` and goes on);
+  - `testUnlinkingAnUpgradingICloudLinkFreesItsSlot` (after `add_slot`, before the switch, an unlink frees the slot; a failed `remove_slot` is kept and retried at launch; an unlink before `add_slot` calls no relay op);
   - `testTheRequestGoesToBothMailboxesWithOneID`;
   - `testTheInitiatorStaysOnICloudUntilSwitched`;
   - `testSwitchedEndsTheUpgrade` and `testAnAnswerForTheTransportItIsOnEndsTheUpgrade` (`requestAnswered`);
@@ -1343,7 +1389,7 @@ extension HubSession {
   - `testAnEmptyOriginCannotUpgrade` (no Keychain item, no register, no device-record change);
   - `testVouchRefusalsEndTheUpgradeWithTheirReason`;
   - `testHubNotVouchedOnAddSlotVouchesAgainOnce`;
-  - `testARelaunchResumesAtItsStep` (one test per step: a step done is never repeated, the vouch excepted, since it expires in 10 min);
+  - `testARelaunchResumesAtItsStep` (one test per step, `awaitingReader` included: a step done is never repeated, the vouch excepted, since it expires in 10 min);
   - `testARejectionCopyOnTheOtherTransportIsDeletedUnread`;
   - `testALegacyPathHubIsNeverAsked` (no `ordered_actions`: `.notSupported` without a write, R9's rule that a legacy hub reads no controls).
 - [ ] **Step 2:** `RelayUpgradeCopyTests`: one assertion per text above. `RelayFeedTests+Controls`: `testSwitchRejectedReachesTheHandler`, `testUnhandledRejectionStaysInTheMailbox`.
@@ -1351,7 +1397,7 @@ extension HubSession {
 - [ ] **Step 4: Implement.**
 - [ ] **Step 5: Run:**
   - the Step 3 commands;
-  - `make kit-test FILTER='ActionOutbox|HostedRelayPairingTests|HostedRelayVouchTests|RelaySim'`;
+  - `make kit-test FILTER='ActionOutbox|HostedRelayPairingTests|HostedRelayVouchTests|RelayIDProofTests|RelaySim'`;
   - `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='TransportFollowerWiringTests|SideMailboxWiringTests|RelayAvailabilityTests|HubRegistryTests|LinkingViewModelTests'`.
 - [ ] **Step 6:** `make lint-swift`; guard check.
 - [ ] **Step 7: Commit:** `feat(mobile): upgrade an iCloud link to Relay — relay id, vouch, add_slot, transport_switch (model only) (#1247)`
@@ -1365,10 +1411,10 @@ Today's interop runs the hub as a headless host, relay only (`interop_test.go` `
 **Files:**
 - Create (Go, `//go:build interop`): `internal/hub/interop_desktop_test.go`.
   - `startDesktopHub(t, interopOpts) *interopHub` runs `Run` as a desktop host. It uses `Options.Desktop` with `newCloudKit` over a `bridgefake.Serve`d bridge, `transports ["cloudkit","relay"]`, and the relay on the stand through the same wire tap. The adoption gate is satisfied by a fresh sidecar plus `hub enable`, as `TestFreshDesktopHostStartsWhenEnabled`.
-  - `serveCloudKitLoop(t, *bridgefake.Fake) (url string)` serves the fake's `PhoneRecords` on `127.0.0.1:<random>` with a per-run token: `POST /changes {zone, since}`, `POST /save {zone, name, payload, expect}` (`absent` or the change tag), `POST /delete {zone, name, expect}`, `POST /accept-share`. `accept-share` records the Kit phone as a participant through `SetParticipants`, so `HandleCloudKitHello`'s creator check passes. It binds to loopback only, and every request without the token gets 403.
+  - `serveCloudKitLoop(t, *bridgefake.Fake) (url, token string)` serves the fake's `PhoneRecords` on `127.0.0.1:<random>` behind a per-run token (32 random bytes, `Authorization: Bearer`, R24): `POST /changes {zone, since}`, `POST /save {zone, name, payload, expect}` (`absent` or the change tag), `POST /delete {zone, name, expect}`, `POST /accept-share`. `accept-share` records the Kit phone as a participant through `SetParticipants`, so `HandleCloudKitHello`'s creator check passes. It binds to loopback only, and every request without the token gets 403.
   - Go hub Task 27 (`TestInterop_SwitchBothWays`, Go phone emulator) reuses `startDesktopHub`; it is filed on the Go hub board as ready.
 - Create (Kit testing target): `WatchtowerKit/Sources/WatchtowerHostedRelayTesting/LoopbackCloudTransport.swift`: `CloudSyncTransport` + `ConditionalTransport` over that endpoint. It is test-only and linked by no app target.
-- Modify: `scripts/relay-interop-kit-hub.sh`: `RELAY_INTEROP_DESKTOP=1` runs `-run 'TestInterop_KitPhone(FollowsASwitch)?$'` with the desktop host. The Go test hands `ck.url` to the Kit run through the existing handoff folder.
+- Modify: `scripts/relay-interop-kit-hub.sh`: `RELAY_INTEROP_DESKTOP=1` runs `-run 'TestInterop_KitPhone(FollowsASwitch)?$'` with the desktop host. The Go test hands `ck.url` (url and token, mode 0600) to the Kit run through the existing handoff folder.
 - Test: `scripts/tests/test-relay-interop-kit-hub.sh` (the new variable is passed through, and the default stays relay-only); Go `TestLoopbackRefusesWithoutTheToken` and `TestLoopbackListensOnLoopbackOnly` (interop tag); Kit `LoopbackCloudTransportTests` (against a `URLProtocol` stub: conditional save, delete, change paging).
 
 - [ ] **Step 1: Failing tests** (above).
@@ -1388,7 +1434,7 @@ Today's interop runs the hub as a headless host, relay only (`interop_test.go` `
 
 **Flow and checks:**
 1. Link the Kit phone over iCloud: a v4 code from `IssueCloudKit`, the hello in `RelayZone` (no relay id), the keybox, SAS. A second Kit phone is linked the same way, and is never upgraded (the free phone).
-2. **Upgrade:** the device record with the relay id, then `vouch` (attestation off on the stand), `add_slot`, and `transport_switch(relay)` on both mailboxes. Go checks: `devices.relay_device_id` stored; the phone in `set_hub_readers`; the switch accepted (not `not_paying`).
+2. **Upgrade:** the device record with the proven relay id, then `vouch` (attestation off on the stand), `add_slot`, the wait for the first successful `data/<mac>` read, and `transport_switch(relay)` on both mailboxes. The Go side checks that `devices.relay_device_id` is stored, the phone is in `set_hub_readers`, and the switch is accepted (not `not_paying`). Then the free phone writes a record that names the first phone's relay id with its own key: it is refused and nothing is stored.
 3. **On the relay:**
    - the phone follows `transport_switched` (the keybox opens, the epoch moves to e+1, `epoch_ack{e+1}` is recorded by the hub);
    - its unechoed actions (three, queued before the switch with a canary) are resent with the same envelope bytes, each applied once;
@@ -1435,16 +1481,16 @@ Today's interop runs the hub as a headless host, relay only (`interop_test.go` `
 ### Lanes (3b)
 
 - **Serial start:** Task 22 alone.
-- **Parallel after 22:** lane F (Task 23, then Task 19: 19 needs 23's `DevicePayload` field and phone hook) and lane G (Task 24), each in its own worktree.
+- **Parallel after 22:** lane F (Task 23, then Task 19: 19 fills 23's `DevicePayload` fields and signs its proof) and lane G (Task 24), each in its own worktree.
 - **Join:** Task 20 after 19, 23, 24; Task 21 last.
-- Tasks 19 and 23 both edit the phone's hub session code (`AppRoot.swift`, `HubSession.swift`), so they share lane F and are never parallel. Task 24 touches no phone source.
+- Tasks 23 and 24 touch no phone source; Task 19 is the only 3b task in `WatchtowerMobile/Sources`.
 
 ### Review Focus (3b)
 
-1. **The relay id reaches the hub before the switch request, and only from the phone itself.** A device record from another writer, an invalid id, or an id another phone holds changes nothing. The upgraded phone becomes a reader and counts as paying only after its record. Task 23: `TestADeviceRecordFromAnotherWriterNamesNoRelayID`, `TestARelayIDAnotherPhoneHoldsIsRefused`, `TestAnUpgradedPhoneIsPayingOnceItsRelayIDIsKnown`.
-2. **The upgrade never leaves a half-done link.** Each step is persisted before the next starts. A relaunch resumes and never repeats `add_slot` (a second slot replacement would count against the relay's 5 per 30 days). The route stays iCloud until `transport_switched`. Task 19: `testARelaunchResumesAtItsStep`, `testTheInitiatorStaysOnICloudUntilSwitched`.
+1. **The relay id reaches the hub before the switch request, and only with proof.** None of these changes anything: a device record from another writer, an id that is not its key's, a bad or other-hub signature, or an id another phone holds. The upgraded phone becomes a reader and counts as paying only after its record, and the phone asks for the switch only after it read `data/<mac>` once. Task 23: `TestAPhoneCannotClaimAPayingPhonesRelayID`, `TestAnUnprovenRelayIDIsIgnored`, `TestAnUpgradedPhoneIsPayingOnceItsRelayIDIsKnown`, the `device_payload` vector. Task 19: `testTheSwitchIsAskedOnlyAfterTheFirstDataZoneRead`.
+2. **The upgrade never leaves a half-done link or a leaked slot.** Each step is persisted before the next starts. A relaunch resumes and never repeats `add_slot` (a second slot replacement would count against the relay's 5 per 30 days). An unknown account state is a no-op, never a refusal. The route stays iCloud until `transport_switched`. Unlinking a hub that got a slot frees it. Task 19: `testARelaunchResumesAtItsStep`, `testAnUnknownAccountStateIsANoOpAndRetried`, `testTheInitiatorStaysOnICloudUntilSwitched`, `testUnlinkingAnUpgradingICloudLinkFreesItsSlot`.
 3. **Rejections.** Each of the four reasons ends in its own state. `retry_after_s` is kept, never guessed. Only `unavailable` retries by itself, and only once. A second copy is deleted unread. Task 19 tests, plus `RelayFeedTests+Controls`.
-4. **Dark ship.** An empty origin leaves the device record byte for byte, and no upgrade starts. Task 19: `testAnEmptyOriginCannotUpgrade`; Task 23: `testTheDeviceRecordCarriesTheRelayIDOnlyDuringAnUpgrade`.
+4. **Dark ship.** An empty origin leaves the device record byte for byte, and no upgrade starts. Task 19: `testAnEmptyOriginCannotUpgrade`, `testTheDeviceRecordCarriesAProvenRelayIDOnlyDuringAnUpgrade`.
 5. **The switch on the real hub.** The same bytes are resent; nothing is applied twice; the old mailbox is empty; a missed control is recovered from the marker; an old epoch is resealed under the same seq; the lapse falls back with nothing dropped silently. Task 20, steps 3–8.
 6. **The loopback store is test-only.** It is bound to 127.0.0.1, gated by a token, compiled only under `-tags interop` on the Go side, and linked by no app target on the Swift side. Task 24: `TestLoopbackRefusesWithoutTheToken`; Task 21's boundary `grep` adds `LoopbackCloudTransport` in `WatchtowerMobile/` and `WatchtowerDesktop/Sources` (no hits).
 7. **The merge kept both contracts.** Every fixture case of both branches is read by its side's test after Task 22, and `testAV4LinkIsRefusedAsNewerByTodaysPhone` is not back.
@@ -1452,17 +1498,24 @@ Today's interop runs the hub as a headless host, relay only (`interop_test.go` `
 ### Rulings (3b)
 
 - **R22. The phone's relay id travels in its own `device` record.**
-  - Why: the hub learns the id only from the hello today, and an iCloud link never sent one (E8). The device record is the phone's own signed, sender-bound record, which the hub already reads on both transports (protocol §5.5, `ApplyDeviceRecord`), so no new record kind is needed. It is persistent, so it also covers a phone that pays later while the hub is already on the relay. A field on `transport_switch` would be lost after one use and would not reach `set_hub_readers` before the request.
+  - Why: the hub learns the id only from the hello today, and an iCloud link never sent one (E8). The record carries a proof, the `relay_auth` key and its signature over `hub_id`, `device_id` and the id (Task 23), so no linked phone can claim another's id. The device record is the phone's own signed, sender-bound record, which the hub already reads on both transports (protocol §5.5, `ApplyDeviceRecord`), so no new record kind is needed. It is persistent, so it also covers a phone that pays later while the hub is already on the relay. A field on `transport_switch` would be lost after one use and would not reach `set_hub_readers` before the request.
   - Cost if wrong: one field moves to another record; Task 23 changes.
 - **R23. The upgrade runs before any switch screen.** The model and its texts land now. Phase 4's per-Mac choice calls `upgradeToRelay()`, and nothing in 3b starts it outside tests.
-- **R24. The Kit reaches the hub's CloudKit leg through a loopback test store.** The bridge protocol is the Mac app's and needs a signed CloudKit container, so a real iCloud leg cannot run in CI or on the stand. `bridgefake` is the store the Go hub's own CloudKit tests trust; exposing it over loopback keeps one store for both sides.
+- **R24. The Kit reaches the hub's CloudKit leg through a loopback test store.** The agent decided this; it is test-only and needs no owner decision.
+  - The server binds to 127.0.0.1 on a random port, and only under `-tags interop`.
+  - It requires a per-run token of 32 random bytes, sent as `Authorization: Bearer`. The token reaches the Kit through the handoff folder: `ck.url` holds the url and the token, with file mode 0600. A request without it gets 403.
+  - It serves only the bridgefake's phone-side store. No production binary and no app target links it. The bridge protocol is the Mac app's and needs a signed CloudKit container, so a real iCloud leg cannot run in CI or on the stand. `bridgefake` is the store the Go hub's own CloudKit tests trust; exposing it over loopback keeps one store for both sides.
   - Cost if wrong: the iCloud half of the switch is covered by the Go emulator and the phone's in-memory twins only, as Go hub Task 27 does now.
 - **R25. Two Kit ↔ Go hub harnesses stay in 3b.** They check different things (Task 22). Merging them is a later clean-up, not a 3b task.
 
 ### Open decisions for the owner (3b)
 
 1. **Base:** merge `feature/go-hub` into `feature/relay-client-next` (Task 22, recommended above), or keep the branches apart and build the hub from `feature/go-hub` for interop runs. The recommended way brings Go hub Phase 3 (manual gate M1–M5 not run) and Phase 4 into our branch. Neither reaches main before `feature/go-hub` does.
-2. **The hub learns an upgraded phone's relay id from its `device` record** (Task 23, R22). This is a contract addition: a new optional `relay_device_id` in the phone's device record, and a Go hub production change (one field, one store write). It also decides who writes the Go half: this plan's lane F (default), or the Go hub session. Refused → no iCloud link can move to Relay: the merged hub answers `not_paying`, never reads the phone's relay mailbox and never names it a reader.
+2. **Go hub production code in our lane (ask #977): the hub learns an upgraded phone's relay id from its `device` record** (Task 23, R22). Approving this approves two things:
+   - the contract: three new optional fields in the phone's device record (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`), the proof bytes and the shared vector, written into protocol §5.5;
+   - the code, which this plan's lane F writes and the Go hub session reviews: `wire.DevicePayload`, `link.VerifyRelayIDProof`, the store write in `device_record.go`, and a readers re-sync.
+
+   Refused → no iCloud link can move to Relay: the merged hub answers `not_paying`, never reads the phone's relay mailbox and never names it a reader. Refused only for the lane → Task 23 moves to the Go hub board, and Tasks 19 and 20 wait for it.
 3. **User texts for the hub's rejections** (model only until Phase 4, pinned by `RelayUpgradeCopyTests`). Proposals:
    - `not_paying`: "<Mac> stays on iCloud: Relay doesn't show a subscription for this iPhone yet. Try again in a few minutes."
    - `unavailable`: "<Mac> couldn't switch right now. Try again in a minute."
@@ -1470,7 +1523,7 @@ Today's interop runs the hub as a headless host, relay only (`interop_test.go` `
 
    The `too_soon` text comes from the approved mockup (section 3) and needs no new approval.
 4. **`unavailable` retries once by itself** after `retry_after_s` before its text shows (the hub's own comment asks the phone to ask again). Refused → the text shows at once and the person asks again.
-5. **Upgrade order and what it spends.** The device record goes first, then vouch, then `add_slot`, then the request. A `too_soon`, `not_paying` or `not_supported` after `add_slot` keeps the slot, which counts toward the 3 Macs, and the person can retry without spending a replacement. Refused → the phone removes the slot on these refusals, and each retry spends one of the relay's 5 replacements per 30 days.
+5. **The slot is kept after a refusal (ask #977).** The order is the device record, vouch, `add_slot`, the reader wait, then the request. When the hub refuses with `too_soon`, `not_paying`, `unavailable` or `not supported yet` after `add_slot`, **the phone keeps the slot**. It counts toward the 3 Macs, and a retry spends none of the relay's 5 replacements per 30 days. The slot is freed only when the person unlinks the Mac (Task 19's unlink path, as R14). Refused → the phone calls `remove_slot` on each of these refusals, and every retry spends one replacement.
 
 ---
 
@@ -1581,7 +1634,15 @@ These contract and behaviour changes are not approved yet. Approving this plan's
 7. **Unlink frees the relay slot (R14).** Unlinking a relay hub calls `remove_slot` after the farewell; a later add of another Mac counts toward the relay's 5 replacements per 30 days (the relay's rule, Worker `slots.ts`). The guide's unlink line says so when the relay ships to users (Phase 4). The registry keeps a relay hub's unsent farewell (`v3-relay`), so `HubRegistryTests.testAHostedRelayFarewellIsRefusedAndNothingIsKept` is replaced by `testARelayFarewellIsKept`. Refused → slots stay until Phase 4's slot screen, and three linked-then-unlinked Macs fill the subscription.
 8. **Relay links without iCloud (R19).** A relay-only link needs no Apple ID, and an iCloud account change does not end relay links. `CloudKitLinkAccess` joins and leaves nothing for a relay route, so `CloudKitLinkAccessTests.testAHostedRelayRouteIsRefused` is replaced by `testAHostedRelayRouteJoinsAndLeavesWithoutACall`. Refused → step 2 stays for every link.
 9. **Cross-plan interop ownership (R15).** This plan's Task 13 adds `internal/hub/interop_kit_test.go` (Go, test only, `-tags interop`) and `scripts/relay-interop-kit-hub.sh`, and runs link, vouch, promote, actions and unlink against the real Go hub on the stand at `bcca870`. It takes over Go hub Phase 2 Task 12's Kit half; that task keeps the headless-host checks. Refused → Task 13 shrinks to a Kit test against the Go phone emulator's expectations, and Go hub Phase 2 Task 12 keeps the whole interop.
-10. **Tasks 17 and 18 are now part of what this plan approves.** Relay `bcca870` (PR #5, deployed on staging) shipped vouched hubs and contains PR #3, so Task 17 pins it and Task 18 builds the phone's `vouch_hub` (`GetChallenge{VOUCH}` → assertion → `vouch_hub`, then promote within 10 min; the server's refusal order; a new nonce and assertion per retry; assertions serialized with login; the relay's hash vector), with vouch → promote in Task 10. Refused → Tasks 17 and 18 go back to drafts and Task 10 promotes without a vouch, which `bcca870` refuses with `HUB_NOT_VOUCHED`: no relay link would work. Tasks 19–21 stay drafts, not approved here; each is re-planned and approved when Go hub Phase 3 lands.
+10. **Tasks 17 and 18 are now part of what this plan approves.** Relay `bcca870` (PR #5, deployed on staging) shipped vouched hubs and contains PR #3, so Task 17 pins it and Task 18 builds the phone's `vouch_hub` (`GetChallenge{VOUCH}` → assertion → `vouch_hub`, then promote within 10 min; the server's refusal order; a new nonce and assertion per retry; assertions serialized with login; the relay's hash vector), with vouch → promote in Task 10. Refused → Tasks 17 and 18 go back to drafts and Task 10 promotes without a vouch, which `bcca870` refuses with `HUB_NOT_VOUCHED`: no relay link would work. Tasks 19–21 were drafts here; they are now re-planned in the Phase 3b section, which item 11 approves.
+
+11. **Phase 3b (Tasks 19–24, re-planned 2026-11-03).** This approves the Phase 3b section as written, its Rulings R22–R25, and its "Open decisions for the owner (3b)" 1–5 (ask #977). That includes:
+    - the merge of `feature/go-hub` into this branch (Task 22);
+    - the Go hub production change in our lane (Task 23);
+    - the protocol §5.5 change: the phone's `device` record gains `relay_device_id`, `relay_auth_pub` and `relay_id_sig`, and the hub stores the id only on a valid proof;
+    - in Task 19: the upgrade's order and its reader wait, the slot kept after a refusal, the rejection texts, and the one automatic `unavailable` retry.
+
+    Refused → each refused item changes the task its decision names. Refusing decision 2 leaves Tasks 19 and 20 without a hub that can admit an upgraded phone.
 
 Already approved, listed for reference only:
 
