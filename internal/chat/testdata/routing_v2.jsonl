@@ -1,0 +1,3 @@
+{"type":"session_ready","preferred_provider":"claude","routing_mode":"preferred_reserve"}
+{"type":"session_ready","model":"reserve-model","provider":"codex","preferred_provider":"claude","routing_mode":"preferred_reserve","reason":"quota_exhausted"}
+{"type":"error","turn_id":"turn-1","model":"reserve-model","provider":"codex","preferred_provider":"claude","routing_mode":"preferred_reserve","reason":"quota_exhausted","code":"rate_limit","message":"Subscription quota exhausted"}

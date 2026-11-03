@@ -36,9 +36,11 @@ struct SystemSettings: View {
         .safeAreaInset(edge: .bottom) {
             ConfigSaveBar(config: config) {
                 // The daemon reads privacy.purge_revoked_data only at startup.
-                guard config.lastSaveChangedPurge else { return }
-                await appState.accountDaemonPolicy.apply(using: LiveDaemonRestarter())?.value
-                await appState.accountPurgeCenter?.reloadStatus()
+                if config.lastSaveChangedPurge {
+                    await appState.accountDaemonPolicy.apply(using: LiveDaemonRestarter())?.value
+                    await appState.accountPurgeCenter?.reloadStatus()
+                }
+                await appState.chatViewModel?.refreshRoutingStatus()
             }
         }
     }

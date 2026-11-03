@@ -70,6 +70,11 @@ func (p policyCheckedProvider) QuerySync(ctx context.Context, systemPrompt, user
 // checkedAIClient is the configured provider's client behind a per-call
 // policy check, for the long-lived holders.
 func checkedAIClient(cfg *config.Config, dbPath string) ai.Provider {
+	if toolRoutingEnabled(cfg, "") {
+		return newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) {
+			return buildAIClient(actual, dbPath, ""), func() {}, nil
+		})
+	}
 	return policyCheckedProvider{inner: buildAIClient(cfg, dbPath, ""), provider: cfg.AI.Provider}
 }
 

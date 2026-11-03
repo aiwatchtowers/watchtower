@@ -424,7 +424,7 @@ enum DesignShotCatalog {
             DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
                 LLMUsageShotFixtures.progress()
             }
-        ] + ProviderFallbackShotFixtures.shots + CleanupShotFixtures.Frame.allCases.map { frame in
+        ] + ProviderFallbackShotFixtures.shots + ProviderFallbackShotFixtures.runtimeShots + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
                 CleanupShotFixtures.screen(frame)

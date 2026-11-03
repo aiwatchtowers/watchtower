@@ -63,6 +63,7 @@ package struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable, Equa
         turnID: String = "",
         status: String = "complete",
         provider: String? = nil,
+        model: String? = nil,
         errorCode: String? = nil,
         errorMessage: String? = nil
     ) {
@@ -75,7 +76,7 @@ package struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable, Equa
         self.turnID = turnID
         self.status = status
         self.provider = provider
-        model = nil
+        self.model = model
         tokensIn = nil
         tokensOut = nil
         self.errorCode = errorCode

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"testing"
@@ -186,4 +187,19 @@ func TestClaudeTranslatorInterruptFixtureCost(t *testing.T) {
 	require.NotNil(t, calls[1].ReportedCostUSD)
 	assert.InDelta(t, 0.011648, *calls[1].ReportedCostUSD, 1e-9, "the same session's init keeps the baseline")
 	assert.Equal(t, int64(56), calls[1].Output)
+}
+
+func TestClaudeTranslatorRoutingContextIsPerTurn(t *testing.T) {
+	sink := collectLedger(t)
+	tr := NewClaudeTranslator(fixedTurn("turn"))
+	for i := 1; i <= 2; i++ {
+		ctx := llmusage.WithAttempt(context.Background(), llmusage.Attempt{OperationID: strconv.Itoa(i), Number: 1, Revision: "routing-revision"}, nil)
+		tr.SetTurnContext(ctx)
+		_, err := tr.Feed([]byte(`{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2}}`))
+		require.NoError(t, err)
+	}
+	calls := sink.recorded()
+	require.Len(t, calls, 2)
+	require.Equal(t, "1", calls[0].OperationID)
+	require.Equal(t, "2", calls[1].OperationID)
 }

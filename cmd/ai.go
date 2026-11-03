@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/instructions"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
@@ -83,10 +84,17 @@ var aiTestCmd = &cobra.Command{
 // aiStreamEvent is a JSON line emitted by `watchtower ai query`.
 // Maps 1:1 to Swift StreamEvent enum.
 type aiStreamEvent struct {
-	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Type              string `json:"type"`
+	Text              string `json:"text,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
+	Error             string `json:"error,omitempty"`
+	Code              string `json:"code,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	Retryable         bool   `json:"retryable,omitempty"`
+	Provider          string `json:"provider,omitempty"`
+	Model             string `json:"model,omitempty"`
+	PreferredProvider string `json:"preferred_provider,omitempty"`
+	RoutingMode       string `json:"routing_mode,omitempty"`
 }
 
 func init() {
@@ -297,6 +305,11 @@ func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan
 	// event so the desktop drops the pre-tool preamble and renders only the
 	// answer that follows the tool call.
 	for chunk := range textCh {
+		if route := chunk.Routing; route != nil {
+			_ = enc.Encode(aiStreamEvent{Type: "routing", Provider: route.Provider, Model: route.Model,
+				PreferredProvider: route.PreferredProvider, RoutingMode: route.Mode, Reason: route.Reason})
+			continue
+		}
 		if chunk.ToolBoundary {
 			_ = enc.Encode(aiStreamEvent{Type: "reset"})
 			continue
@@ -314,7 +327,17 @@ func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan
 	// Check for errors
 	for err := range errCh {
 		if err != nil {
-			_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err)})
+			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
+			reason := ""
+			var failure *providers.Failure
+			if errors.Is(err, providerrouting.ErrDeferred) {
+				retry, reason = false, "quota_wait"
+			} else if errors.As(err, &failure) && failure.Category == providers.Quota {
+				retry, reason = false, "quota_exhausted"
+			} else if failure != nil && failure.Category == providers.Capability {
+				retry, reason = false, "required_capability_missing"
+			}
+			_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err), Code: code, Retryable: retry, Reason: reason})
 		}
 	}
 
@@ -486,7 +509,19 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 	for err := range errCh {
 		if err != nil {
 			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
-			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
+			reason := ""
+			var failure *providers.Failure
+			if errors.Is(err, providerrouting.ErrDeferred) {
+				retry = false
+				reason = "quota_wait"
+			} else if errors.As(err, &failure) && failure.Category == providers.Quota {
+				retry = false
+				reason = "quota_exhausted"
+			} else if failure != nil && failure.Category == providers.Capability {
+				retry = false
+				reason = "required_capability_missing"
+			}
+			_ = out.Emit(chat.Event{Reason: reason, Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
 			return
 		}
 	}

@@ -42,7 +42,9 @@ package struct EmbeddedStreamReducer: Sendable {
             return .sessionID(sid)
         case .error(let message):
             return .failed(message)
-        case .done:
+        case .failure(let error):
+            return .failed(error.message)
+        case .routing, .done:
             return .none
         }
     }

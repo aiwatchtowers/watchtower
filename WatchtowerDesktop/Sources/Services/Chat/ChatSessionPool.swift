@@ -115,6 +115,19 @@ final class ChatSessionPool {
         if let client = clients.removeValue(forKey: conversationID) { retire(client) }
     }
 
+    /// Explicit between-turn routing change: stop late metadata, await ONLY
+    /// this host's tracked retirement and writes, then the caller may reset sticky state.
+    func closeIdleAndWait(conversationID: Int64) async -> Bool {
+        guard clients[conversationID]?.isBusy != true else { return false }
+        let driver = clients[conversationID]?.driver
+        driver?.stopRecordingSession()
+        close(conversationID: conversationID)
+        let tasks = retirements.values.filter { $0.conversationID == conversationID }.map(\.task)
+        for task in tasks { await task.value }
+        await driver?.writesSettled()
+        return true
+    }
+
     /// A chat project's instructions, sources or files changed (or it was
     /// deleted): its sessions run on the old prompt, and none may record its
     /// session id again (the write just cleared the stored ones — a late
@@ -159,7 +172,19 @@ final class ChatSessionPool {
     /// next session replays the history). Only Claude
     /// sessions load claude.ai tools; the others are left alone.
     func retireIdleSessions() {
-        for (id, client) in clients where !client.isPending && client.config.provider == AIProvider.claude.rawValue {
+        for (id, client) in clients where !client.isPending && (client.config.automatic || client.config.provider == AIProvider.claude.rawValue) {
+            if client.isBusy {
+                client.retireAfterTurn(keepingSessionID: true)
+            } else {
+                close(conversationID: id)
+            }
+        }
+    }
+
+    /// A saved routing revision affects future clients. Pending hosts have not
+    /// loaded configuration; launched busy hosts finish before retirement.
+    func retireRoutingSessions() {
+        for (id, client) in clients where !client.isPending {
             if client.isBusy {
                 client.retireAfterTurn(keepingSessionID: true)
             } else {
