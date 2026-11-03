@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"io"
+	"log"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/sync"
 )
 
 // teamGuardEnv is an install whose account #1 holds the home team's data
@@ -262,4 +265,23 @@ func TestConnectSlackAccount_RepairWithoutMessagesOrWatermarkLeavesItAlone(t *te
 	acct, err = env2.db.GetSlackAccount(env2.id)
 	require.NoError(t, err)
 	assert.Empty(t, acct.SearchLastDate, "no watermark stays a first run")
+}
+
+// wireSlackSyncers hands each orchestrator its token file's team: the row is
+// on the home team but the token names another one, so the daemon's sync of
+// the account is refused before anything is written.
+func TestWireSlackSyncers_PassesTheTokenTeam(t *testing.T) {
+	database, _ := slackBackfillEnv(t, "T_HOME")
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	require.NoError(t, watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), 1).Save(
+		&watchtowerslack.Token{AccessToken: "xoxp-test", TeamID: "T_OTHER"}))
+
+	orchs := wireSlackSyncers(database, cfg, log.New(io.Discard, "", 0))
+	require.Len(t, orchs, 1)
+	err = orchs[0].Run(context.Background(), sync.SyncOptions{})
+	require.ErrorIs(t, err, sync.ErrSlackTeamMismatch)
+	has, herr := database.SlackAccountHasMessages(1)
+	require.NoError(t, herr)
+	assert.False(t, has, "nothing is synced for another team's token")
 }
