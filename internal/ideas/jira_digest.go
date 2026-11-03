@@ -2,11 +2,13 @@ package ideas
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 )
 
 // jiraIssuesPerAccountLimit bounds how many changed issues one pre-digest
@@ -271,9 +273,7 @@ func (p *Pipeline) runJiraDigests(ctx context.Context, bound time.Time) error {
 	for _, acct := range accounts {
 		if err := p.runJiraDigestAccount(ctx, acct, bound); err != nil {
 			p.logf("ideas: jira digest account %d: %v", acct.ID, err)
-			if firstErr == nil {
-				firstErr = err
-			}
+			firstErr = errors.Join(firstErr, err)
 		}
 	}
 	return firstErr
@@ -479,6 +479,17 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 // itself when there was nothing to mine), reading and writing no stored
 // floor.
 func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floor string, bound time.Time) (string, error) {
+	ctx, bound, window, err := p.prepareExtraction(ctx, "jira", acct.ID, floor, bound)
+	if err != nil {
+		return floor, err
+	}
+	if window != nil {
+		if window.Complete {
+			return window.Reached, nil
+		}
+		floor = window.From
+	}
+
 	beforeISO, err := p.passBeforeISO(acct.ID, bound)
 	if err != nil {
 		return floor, err
@@ -488,7 +499,7 @@ func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floo
 		return floor, fmt.Errorf("listing jira issues: %w", err)
 	}
 	if len(issues) == 0 {
-		return floor, nil
+		return floor, p.completeEmptyExtraction(ctx, floor)
 	}
 
 	commentsByIssue, err := p.gatherJiraComments(acct.ID, issues, floor)
@@ -506,18 +517,21 @@ func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floo
 		return floor, fmt.Errorf("no issue rendered from %d jira issues", len(issues))
 	}
 
+	if err := digest.Preflight(digest.WithSource(ctx, "ideas.digest_jira"), p.generator); err != nil {
+		return floor, err
+	}
 	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", what, block, "", tags)
 	if err != nil {
 		return floor, err
 	}
 
-	if err := p.insertStreamTopics(db.StreamDigest{
+	if err := p.commitExtraction(ctx, db.StreamDigest{
 		Source:     "jira",
 		AccountID:  acct.ID,
 		Scope:      "",
 		PeriodFrom: normalizeJiraStreamPeriod(floor),
 		PeriodTo:   normalizeJiraStreamPeriod(renderedTo),
-	}, topics, what); err != nil {
+	}, topics, what, renderedTo); err != nil {
 		return floor, err
 	}
 

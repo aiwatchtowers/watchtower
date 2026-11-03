@@ -68,11 +68,14 @@ func mustExecAll(t *testing.T, d *DB, stmts ...string) {
 // column read together with a source/kind column). A new such table must be
 // added here, or the guard fails.
 var accountTableSources = map[string][]string{
-	"history_backfill":  {"slack", "google", "jira"}, // source_kind slack | gmail | jira (imap is no purge source)
-	"stream_digests":    {"google", "jira", "linear"},
-	"reaction_commands": {"slack"},
-	"reaction_events":   {"slack"},
-	"reminders":         {"slack"},
+	"history_backfill":            {"slack", "google", "jira"}, // source_kind slack | gmail | jira (imap is no purge source)
+	"stream_digests":              {"google", "jira", "linear"},
+	"ideas_extraction_windows":    {"google", "jira"},
+	"history_backfill_considered": {"slack"},
+	"history_backfill_daily":      {"slack"},
+	"reaction_commands":           {"slack"},
+	"reaction_events":             {"slack"},
+	"reminders":                   {"slack"},
 }
 
 // slackNamespacedTables hold Slack rows keyed by "<account>:<raw id>"

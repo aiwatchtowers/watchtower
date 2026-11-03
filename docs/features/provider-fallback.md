@@ -96,7 +96,7 @@ and optional `people.team` summaries retain their existing cadence; routed provi
 unavailability does not start individual quality retries. Off/pinned nonquota
 batch failures keep the legacy individual fallback. Source synchronization
 continues independently. Other scheduled pipelines retain their own retry rules;
-ideas/history deferred integration is separate (Task 6).
+ideas/history integration is described below.
 
 ### Decisions
 
@@ -119,3 +119,42 @@ model, debiting a data attempt, or bypassing no-data/budget/throttle eligibility
 expected shutdown cancellation is benign. Pending people windows require positive
 ordered bounds and a present StartedAt; invalid descriptors remain errors and
 retain their bytes, while future StartedAt is accepted for clock skew.
+
+
+## Deferred extraction and history chunks (Task 6)
+
+Routed ideas Gmail/IMAP and Jira extraction pins each account's original input
+bounds in local SQLite metadata. Known provider waits make no model call;
+physical quota failures retain their leaf usage and leave the input floor
+unchanged. Account passes continue independently, and joined failures preserve
+ordinary material/storage causes. Linear extraction and ideas consolidation do
+not acquire this completion guarantee.
+
+Migration `00171_ideas_extraction_windows.sql` adds narrow primitive receipts,
+not a job queue. A successful extraction commits its optional stream digest,
+completion receipt and monotonic source floor in one transaction. Valid empty
+extraction saves a receipt without creating an unread empty stream digest.
+Historical chunk anchors retain the original effective lower floor even when a
+partial pass raises the live floor across the chunk boundary. A restart follows
+completed prefixes and retries missing passes. Source resets, account deletion,
+history reset and removal of saved stream output invalidate the corresponding
+receipts; current account/source eligibility remains enforced.
+
+History fetch still runs independently of AI health. Pure typed provider waits
+never age into poison strikes, never advance `history_backfill.reached_ts`, and
+never erase an older transport hold; other accounts continue their turns. The
+row-id scheduling cursor remains a fairness cursor, separate from reached data.
+Slack history keeps chunk-local considered receipts for declined channels,
+separate from forward channel marks. Existing saved channel output also proves
+its consumed prefix. Historical daily output and its account/chunk/day receipt
+commit atomically; newly arrived channel data cannot replay a saved day while
+another day waits. Scheduled `daily_attempt_id` receipts remain independent.
+
+Only opt-in routed primitives acquire these receipts; off/pinned paths retain
+their legacy cadence. Built-ins inherit only a covered primitive they actually invoke, without
+replaying a whole recipe. The current Idea finder calls `ideas.RunWith`
+(consolidation), not `RunStreamDigests`; it gains no extraction retry promise
+from that call. The shared router still excludes
+automation contexts until Task 7 installs attempt-budget integration: these
+primitives do not activate Automation SDK routing by themselves. Other pipelines
+are not advertised as durable deferred work.

@@ -105,6 +105,9 @@ func (s *purgeSteps) streamDigests(kind string, accountID int64, ids []int64) {
 		lo, hi := prefixRange(fmt.Sprintf("stream_digest:%d:", id))
 		s.del("stream digest documents", "kb_documents", `id >= ? AND id < ?`, lo, hi)
 	}
+	if kind == "gmail" || kind == "jira" {
+		s.del("extraction receipts", "ideas_extraction_windows", `source = ? AND account_id = ?`, kind, accountID)
+	}
 	s.del("stream digests", "stream_digests", `source = ? AND account_id = ?`, kind, accountID)
 }
 
@@ -264,6 +267,8 @@ func slackSteps(s *purgeSteps, id int64) {
 
 	s.knowledge("slack", fmt.Sprintf("slack:thread:%d:", id))
 	s.knowledge("slack", fmt.Sprintf("slack:day:%d:", id))
+	s.del("history daily receipts", "history_backfill_daily", `account_id = ?`, id)
+	s.del("history considered receipts", "history_backfill_considered", `account_id = ?`, id)
 	s.del("history backfill", "history_backfill", `source_kind = 'slack' AND account_id = ?`, id)
 }
 

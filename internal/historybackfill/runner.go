@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
 	"watchtower/internal/policy"
 )
@@ -219,6 +220,11 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	case <-bctx.Done(): // the Budget deadline passed: hold the chunk
 		return true, nil
 	default:
+	}
+	// A provider cooldown never becomes a poison strike, however old a
+	// pre-existing transport hold is. Fetch still ran, and other rows get a turn.
+	if digest.ProviderDeferred(err) {
+		return false, nil
 	}
 	if errors.Is(err, ErrHold) {
 		if row.HeldSince == nil {

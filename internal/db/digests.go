@@ -39,7 +39,23 @@ func (db *DB) DailyDigestAttemptCompleted(from, to float64, attemptID string) (b
 }
 
 func (db *DB) upsertDigest(d Digest, dailyAttemptID string) (int64, error) {
-	_, err := db.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd, daily_attempt_id)
+	id, err := upsertDigestRow(db.DB, d, dailyAttemptID)
+	if err != nil {
+		return 0, err
+	}
+	if d.Situations != "" && d.Situations != "[]" {
+		db.populateDigestParticipants(id, d.Situations)
+	}
+	return id, nil
+}
+
+type digestStore interface {
+	Exec(string, ...any) (sql.Result, error)
+	QueryRow(string, ...any) *sql.Row
+}
+
+func upsertDigestRow(store digestStore, d Digest, dailyAttemptID string) (int64, error) {
+	_, err := store.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd, daily_attempt_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, type, period_from, period_to) DO UPDATE SET
 			summary = excluded.summary,
@@ -64,15 +80,10 @@ func (db *DB) upsertDigest(d Digest, dailyAttemptID string) (int64, error) {
 	}
 	// LastInsertId is unreliable for ON CONFLICT DO UPDATE; query the row explicitly.
 	var id int64
-	err = db.QueryRow(`SELECT id FROM digests WHERE channel_id = ? AND type = ? AND period_from = ? AND period_to = ?`,
+	err = store.QueryRow(`SELECT id FROM digests WHERE channel_id = ? AND type = ? AND period_from = ? AND period_to = ?`,
 		d.ChannelID, d.Type, d.PeriodFrom, d.PeriodTo).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("getting digest id after upsert: %w", err)
-	}
-
-	// Auto-populate digest_participants from situations
-	if d.Situations != "" && d.Situations != "[]" {
-		db.populateDigestParticipants(id, d.Situations)
 	}
 
 	return id, nil
