@@ -75,7 +75,7 @@ func TestHeartbeatCarriesTheLastPhoneContact(t *testing.T) {
 	}
 	s.hub.st = s.st
 	r.advance(time.Minute)
-	s.hub.touch()
+	s.hub.noteContact(r.clock())
 	a := s.handle(ControlRequest{Op: OpDesktopHeartbeat}, nil)
 	if a.PhoneContactAt == nil || !a.PhoneContactAt.Equal(r.clock()) {
 		t.Fatalf("contact %v, want %v", a.PhoneContactAt, r.clock())

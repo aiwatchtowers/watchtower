@@ -84,6 +84,8 @@ type wiring struct {
 	// live is the sources' liveness over the port's host list (nil when the
 	// port cannot list: nothing is live).
 	live *liveness
+	// away nudges the work alerts when the owner leaves the Mac.
+	away *awayWatch
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -154,6 +156,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	if away == nil {
 		away = platform.NewAway()
 	}
+	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
 	set, err := sources.All(sources.Config{
@@ -353,6 +356,11 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 			w.live.run(ctx)
 		}()
 	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		w.away.run(ctx)
+	}()
 	h.trace("runners")
 	for _, r := range w.set.Runners {
 		h.wg.Add(1)

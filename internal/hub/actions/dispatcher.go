@@ -35,6 +35,13 @@ const (
 	// past the next expected action_seq. A skip only gives up actions the
 	// phone lost after a resend_from, never a jump across the counter.
 	MaxSkipAhead = 1 << 16
+	// HandlerTimeout bounds one handler call. The handler runs apart from
+	// the pass's cancellation (a stopped pass lets the record in flight
+	// finish), so this cap is what keeps a hub stop bounded. The Swift
+	// processor had no action timeout (only the 300 s recording ingest);
+	// two minutes is the runtime's per-pass operation timeout (opTimeout)
+	// and well above the handlers' own 30 s DefaultTimeout.
+	HandlerTimeout = 2 * time.Minute
 )
 
 // NonIdempotentKinds are claimed begun before their handler runs, so a hub

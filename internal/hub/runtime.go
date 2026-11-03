@@ -152,6 +152,9 @@ type hubRuntime struct {
 	unreachable bool
 	lastRelay   time.Time
 	lastTouch   time.Time // a phone's last write the hub saw (the active poll)
+	// lastContact: this run's last admitted phone contact (the processors'
+	// Config.Contact; the keep-awake input, desktop_facts.go).
+	lastContact time.Time
 	// storedContact: the last phone contact hub_meta holds (desktop_facts.go).
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
@@ -311,7 +314,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		Store: st, Transport: h.tr, Sealer: sealer, Opener: opener, Keys: h.kr, Dispatcher: d,
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
-		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos,
+		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos, Contact: h.noteContact,
 	}
 	if o.Desktop != nil {
 		// One processor per transport, the switcher their Switch; the
@@ -480,6 +483,16 @@ func (h *hubRuntime) phoneLinked() bool {
 func (h *hubRuntime) touch() {
 	h.mu.Lock()
 	h.lastTouch = h.sup.o.Clock()
+	h.mu.Unlock()
+}
+
+// noteContact records an admitted phone contact at at; an earlier time never
+// lowers the last one.
+func (h *hubRuntime) noteContact(at time.Time) {
+	h.mu.Lock()
+	if at.After(h.lastContact) {
+		h.lastContact = at
+	}
 	h.mu.Unlock()
 }
 

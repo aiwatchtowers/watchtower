@@ -106,6 +106,10 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 				return errBudget
 			}
 			if p.cfg.Hello != nil && isHello(rec) {
+				// A hello costs the budget (target 168): anyone holding a
+				// code can write them at will, and each costs public-key
+				// work, so a flood spreads over passes.
+				ps.budget--
 				if err := p.cfg.Hello(ctx, rec); err != nil {
 					if ctx.Err() != nil {
 						return ctx.Err()
