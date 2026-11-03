@@ -785,7 +785,7 @@ Runs the release command and reports its output.
 ```js
 const res = shell("make release");
 if (res.exit_code !== 0) {
-  output.report({ title: "Release failed", body: res.stderr });
+  output.report({ title: "Release failed", body: res.stderr || "" });
 } else {
   output.report({ title: "Release ran", body: res.stdout });
 }
