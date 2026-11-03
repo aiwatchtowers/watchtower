@@ -342,6 +342,7 @@ var cliNoContentCommands = map[string]bool{
 	"remind":                           true,
 	"session-host":                     true,
 	"slack add":                        true,
+	"slack backfill":                   true, // fetches into the database; prints counts only
 	"slack disable":                    true,
 	"slack enable":                     true,
 	"slack login":                      true,

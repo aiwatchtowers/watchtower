@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"watchtower/internal/db"
 )
 
 // maxBackfillPasses bounds the passes one RunBackfillWindow call makes over a
@@ -44,6 +46,38 @@ type BackfillWindowResult struct {
 // created or opened) is returned as an error. The returned usage is the sum of this call's own passes — never the
 // pipeline's shared counters, which the forward phase also feeds.
 func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, from, to float64) (BackfillWindowResult, *Usage, error) {
+	return p.runBackfillWindow(ctx, slackAccountID, from, to, nil, nil)
+}
+
+// RunBackfillWindowChannels is RunBackfillWindow limited to channels
+// (namespaced ids): the others' messages in the window are left as they are
+// (`slack backfill`, internal/slackbackfill). Each channel loads (from, to] —
+// a message on `from` belongs to the digest or day ending there — starting
+// after the channel's digests overlapping the window that run on from its
+// start, except those in ignore (digests the caller found to have seen none
+// of the window's messages: a forward digest spanning a sync gap); a channel
+// whose window another digest starts inside of is held, and the call is not
+// complete (scopedStart).
+// A call's passes advance on what the call itself considered, kept in memory
+// even under routing (no history_backfill_considered receipt: a later run
+// over the same window must see messages fetched since). An empty list
+// digests nothing and is complete.
+func (p *Pipeline) RunBackfillWindowChannels(ctx context.Context, slackAccountID int64, from, to float64, channels []string, ignore []int64) (BackfillWindowResult, *Usage, error) {
+	if len(channels) == 0 {
+		return BackfillWindowResult{Complete: true}, &Usage{}, nil
+	}
+	only := make(map[string]bool, len(channels))
+	for _, c := range channels {
+		only[c] = true
+	}
+	ignored := make(map[int64]bool, len(ignore))
+	for _, id := range ignore {
+		ignored[id] = true
+	}
+	return p.runBackfillWindow(ctx, slackAccountID, from, to, only, ignored)
+}
+
+func (p *Pipeline) runBackfillWindow(ctx context.Context, slackAccountID int64, from, to float64, only map[string]bool, ignore map[int64]bool) (BackfillWindowResult, *Usage, error) {
 	if !p.cfg.Digest.Enabled {
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
 	}
@@ -59,7 +93,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 	defer unlock()
 
 	p.loadCaches()
-	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator, ctx)}
+	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}, held: map[string]bool{}, accountID: slackAccountID, from: from, to: to, durable: RoutingEnabled(p.generator, ctx) && only == nil, only: only, ignore: ignore}
 	if scope.durable {
 		scope.considered, err = p.db.HistoryBackfillConsidered(slackAccountID, from, to)
 		if err != nil {
@@ -88,7 +122,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 		}
 		if len(windows) == 0 {
 			err := scope.failure(from, to)
-			res.Complete = err == nil
+			res.Complete = err == nil && len(scope.held) == 0
 			return res, usage, err
 		}
 		// advancesWindow's invariant, asserted per pass: a pass that moved no
@@ -178,22 +212,72 @@ func (p *Pipeline) backfillWindows(slackAccountID int64, from, to, fastForwardTS
 		return nil, fmt.Errorf("digest backfill: %w", err)
 	}
 	b := p.backfill
+	scoped := b.only != nil // RunBackfillWindowChannels
+	var digests map[string][]db.ChannelDigestPeriod
+	if scoped {
+		if digests, err = p.scopedDigests(slackAccountID, from, to, b.ignore); err != nil {
+			return nil, err
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	windows := make([]channelWindow, 0, len(candidates))
 	for _, c := range candidates {
-		if b.failed[c.ChannelID] {
+		if b.failed[c.ChannelID] || b.held[c.ChannelID] || (scoped && !b.only[c.ChannelID]) {
 			continue
 		}
-		since := max(from, c.LastDigestInRange, b.considered[c.ChannelID], fastForwardTS)
+		since := max(from, b.considered[c.ChannelID], fastForwardTS)
+		if scoped {
+			start, ok := scopedStart(since, digests[c.ChannelID])
+			if !ok {
+				b.held[c.ChannelID] = true
+				continue
+			}
+			since = start
+		} else {
+			since = max(since, c.LastDigestInRange)
+		}
 		if c.NewestInRange > since {
-			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since})
+			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since, afterSince: scoped})
 		}
 	}
 	if len(windows) == 0 {
 		return nil, nil
 	}
 	return p.filterDigestableChannels(windows), nil
+}
+
+// scopedDigests returns, per channel, its digests overlapping (from, to]
+// that are not in ignore, ordered by period_from. They are read under the
+// digest lock on every pass, so a digest committed after the caller cut its
+// window is seen.
+func (p *Pipeline) scopedDigests(slackAccountID int64, from, to float64, ignore map[int64]bool) (map[string][]db.ChannelDigestPeriod, error) {
+	all, err := p.db.ChannelDigestsOverlapping(slackAccountID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("digest backfill: %w", err)
+	}
+	out := map[string][]db.ChannelDigestPeriod{}
+	for _, d := range all {
+		if !ignore[d.ID] {
+			out[d.ChannelID] = append(out[d.ChannelID], d)
+		}
+	}
+	return out, nil
+}
+
+// scopedStart moves since past the digests (ordered by period_from) that run
+// on from it — the call's own, or one that covers the start. ok is false when
+// a digest starts after it: one committed since the caller cut the window,
+// whose period the load (since, to] would digest again; the channel waits for
+// the caller's next cut. A period ending past to leaves nothing to load.
+func scopedStart(since float64, digests []db.ChannelDigestPeriod) (start float64, ok bool) {
+	for _, d := range digests {
+		if d.From > since {
+			return since, false
+		}
+		since = max(since, d.To)
+	}
+	return since, true
 }
 
 // backfillProgressed reports whether any channel's window moved since the
@@ -224,6 +308,19 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 // RunBackfillRollupsForAccount gives each source chunk its own completion
 // receipts, while the daily output still summarizes workspace-global channels.
 func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int64, from, to float64) error {
+	return p.runBackfillRollups(ctx, account, from, to, true)
+}
+
+// RunBackfillDayRollups is RunBackfillRollups without the history backfill's
+// per-chunk completion receipts: `slack backfill` rebuilds a day's rollup
+// each time it writes new digests there, and a receipt from its earlier run
+// over the same day would skip the rebuild. A day whose rollup is newer than
+// every channel digest of the day is still left alone (dailyRollupNeeded).
+func (p *Pipeline) RunBackfillDayRollups(ctx context.Context, from, to float64) error {
+	return p.runBackfillRollups(ctx, 0, from, to, false)
+}
+
+func (p *Pipeline) runBackfillRollups(ctx context.Context, account int64, from, to float64, receipts bool) error {
 	if !p.cfg.Digest.Enabled {
 		return nil
 	}
@@ -236,9 +333,10 @@ func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int
 
 	p.loadCaches()
 	p.backfillRollups = true
+	p.backfillRollupReceipts = receipts && RoutingEnabled(p.generator, ctx)
 	p.backfillRollupFrom, p.backfillRollupTo = from, to
 	p.backfillRollupAccountID = account
-	defer func() { p.backfillRollups = false }()
+	defer func() { p.backfillRollups, p.backfillRollupReceipts = false, false }()
 
 	var errs []error
 	end := time.Unix(int64(to), 0).UTC()
@@ -247,7 +345,7 @@ func (p *Pipeline) RunBackfillRollupsForAccount(ctx context.Context, account int
 			errs = append(errs, err)
 			break
 		}
-		if RoutingEnabled(p.generator, ctx) {
+		if p.backfillRollupReceipts {
 			done, err := p.db.HistoryBackfillDailyCompleted(account, from, to, float64(d.Unix()))
 			if err != nil {
 				return err

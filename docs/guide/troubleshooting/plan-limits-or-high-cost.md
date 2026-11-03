@@ -16,7 +16,7 @@ If you enable a [reserve AI provider](../concepts/ai-providers-and-cost.md#a-res
 
 ## Fix
 
-1. Open **Usage → Watchtower** and pick **7 days**. The table lists each job by cost (by tokens where no cost is known), so the biggest is first; **Your automations** and **Chats and workbenches** are below it.
+1. Open **Usage → Watchtower** and pick **7 days**. The table lists each job by cost (by tokens where no cost is known), so the biggest is first; **Your automations** and **Chats and workbenches** are below it. The totals at the top add Watchtower, your automations and chats; each section's own share is next to its title.
 2. Switch off what you do not need in **Settings → Features**. The badges mark Heavy, Medium and Light. Turning off Slack Digests also leaves Tracks and People Cards with nothing to read, and Ideas with most of it.
 3. In **Statistics**, **Mute for AI** on noisy channels or bots. Muted channels are skipped by digests, tracks and the briefing.
 4. Lower the load per call: set **Light Model** and **Strong Model** in **Settings → System → AI**, or use Codex or a local Ollama model, which bills nothing.

@@ -555,3 +555,100 @@ func TestDigestTypeConstraint(t *testing.T) {
 		VALUES ('C1', 'invalid', 1000000.0, 2000000.0, 'test')`)
 	assert.Error(t, err)
 }
+
+// A digest's period (from, to] overlaps (100, 200] only when from < 200 and
+// to > 100: a digest ending exactly at 100 or starting exactly at 200 does
+// not. Another account's digest (prefix "11:") never shows.
+func TestChannelDigestsOverlapping_Boundaries(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, d := range []struct {
+		ch       string
+		from, to float64
+	}{
+		{"1:C1", 50, 100},  // ends on the range start: out
+		{"1:C1", 99, 101},  // in
+		{"1:C2", 199, 300}, // in
+		{"1:C2", 200, 300}, // starts on the range end: out
+		{"11:C3", 120, 130},
+	} {
+		_, err := db.UpsertDigest(Digest{ChannelID: d.ch, Type: "channel", PeriodFrom: d.from, PeriodTo: d.to, Summary: "s", Model: "m"})
+		require.NoError(t, err)
+	}
+	_, err = db.UpsertDigest(Digest{ChannelID: "", Type: "daily", PeriodFrom: 0, PeriodTo: 1000, Summary: "s", Model: "m"})
+	require.NoError(t, err)
+
+	got, err := db.ChannelDigestsOverlapping(1, 100, 200)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "1:C1", got[0].ChannelID)
+	assert.Equal(t, [2]float64{99, 101}, [2]float64{got[0].From, got[0].To})
+	assert.Equal(t, "1:C2", got[1].ChannelID)
+	assert.Equal(t, [2]float64{199, 300}, [2]float64{got[1].From, got[1].To})
+	assert.NotZero(t, got[0].ID)
+}
+
+func TestMaxDigestID(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	got, err := db.MaxDigestID()
+	require.NoError(t, err)
+	assert.Zero(t, got, "an empty table")
+	var last int64
+	for _, typ := range []string{"channel", "daily"} {
+		last, err = db.UpsertDigest(Digest{ChannelID: "1:C1", Type: typ, PeriodFrom: 1, PeriodTo: 2, Summary: "s", Model: "m"})
+		require.NoError(t, err)
+	}
+	got, err = db.MaxDigestID()
+	require.NoError(t, err)
+	assert.Equal(t, last, got)
+}
+
+func TestChannelMessageTimesInRange(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, m := range []struct{ ch, ts string }{
+		{"1:C1", "100.000001"}, // == from after the whole-second cut: out
+		{"1:C1", "150.000001"}, {"1:C1", "120.000001"},
+		{"1:C1", "200.000001"}, // == to: in
+		{"1:C2", "201.000001"}, // past to: out
+		{"11:C3", "150.000001"},
+	} {
+		_, err := db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', 'msg')", m.ch, m.ts)
+		require.NoError(t, err)
+	}
+	got, err := db.ChannelMessageTimesInRange(1, 100, 200)
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]float64{"1:C1": {120, 150, 200}}, got)
+}
+
+// The forward mark is the later of the newest channel digest's period_to and
+// digest_considered_ts; a channel with neither is absent.
+func TestChannelForwardMarks(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, id := range []string{"1:C1", "1:C2", "1:C3", "11:C4"} {
+		require.NoError(t, db.UpsertChannel(Channel{ID: id, Name: id, Type: "public"}))
+	}
+	for _, d := range []struct {
+		ch       string
+		from, to float64
+	}{{"1:C1", 100, 200}, {"1:C1", 200, 300}, {"1:C2", 100, 200}, {"11:C4", 100, 900}} {
+		_, err := db.UpsertDigest(Digest{ChannelID: d.ch, Type: "channel", PeriodFrom: d.from, PeriodTo: d.to, Summary: "s", Model: "m"})
+		require.NoError(t, err)
+	}
+	require.NoError(t, db.SetChannelDigestConsideredTS("1:C1", 250))
+	require.NoError(t, db.SetChannelDigestConsideredTS("1:C2", 400))
+
+	got, err := db.ChannelForwardMarks(1)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]float64{"1:C1": 300, "1:C2": 400}, got)
+}

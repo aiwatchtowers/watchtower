@@ -3,11 +3,13 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -393,7 +395,16 @@ func newBackfillOrchestrator(t *testing.T, database *db.DB, cfg *config.Config) 
 	t.Helper()
 	_, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T1", TeamName: "acme", TeamDomain: "acme"})
 	require.NoError(t, err)
-	srv := httptest.NewServer(testMux())
+	// team.info answers the row's own team: a full-sync fallback must not
+	// read as a sign-in into another team (#915).
+	mux := http.NewServeMux()
+	mux.Handle("/", testMux())
+	mux.HandleFunc("/team.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true,
+			"team": map[string]any{"id": "T1", "name": "acme", "domain": "acme"}})
+	})
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	o := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"), cfg, 1)
 	o.SetLogger(log.New(io.Discard, "", 0))
@@ -990,6 +1001,22 @@ func TestPhaseSlackSync_FirstSyncStartsBackfill(t *testing.T) {
 	rows, err = database.ListHistoryBackfills()
 	require.NoError(t, err)
 	assert.Empty(t, rows)
+}
+
+// #915: an account whose sync refused its team this cycle pauses its
+// backfill row like a revoked one, instead of holding chunks until MaxHold
+// turns the holds into strikes and skips.
+func TestHistoryBackfill_TeamMismatchPausesTheRow(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	o := newBackfillOrchestrator(t, database, d.config) // account #1 on T1
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T_HOME", Name: "home"}))
+	d.SetOrchestrators([]*sync.Orchestrator{o})
+	assert.Equal(t, historybackfill.AccountOK, d.accountState("slack", 1), "before any run")
+
+	syncErr, _ := d.phaseSlackSync(context.Background())
+	require.ErrorIs(t, syncErr, sync.ErrSlackTeamMismatch)
+	assert.True(t, o.TeamMismatch())
+	assert.Equal(t, historybackfill.AccountRevoked, d.accountState("slack", 1))
 }
 
 // stubMailSyncer is a mailSyncer whose Sync reports a scripted first sync.
