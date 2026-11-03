@@ -129,7 +129,10 @@ struct RelaySlotsModel: Equatable {
                 confirm: "Unlink", keep: "Cancel"
             )
         case .finishing:
-            return Ask(mac: row.id, title: MacsModel.cancelQuestion(row.name), message: nil, confirm: MacsModel.cancelLink, keep: MacsModel.keepTrying)
+            return Ask(
+                mac: row.id, title: MacsModel.cancelQuestion(row.name), message: nil,
+                confirm: MacsModel.cancelLink, keep: MacsModel.keepTrying
+            )
         case .unknown:
             return nil
         }
