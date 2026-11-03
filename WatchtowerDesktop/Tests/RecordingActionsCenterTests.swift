@@ -13,8 +13,11 @@ final class RecordingActionsCenterTests: XCTestCase {
 
     private var copied: [String] = []
 
-    private func makeCenter(noticeLifetime: Duration = .seconds(60)) -> RecordingActionsCenter {
-        RecordingActionsCenter(noticeLifetime: noticeLifetime) { [weak self] in self?.copied.append($0) }
+    private func makeCenter(
+        noticeLifetime: Duration = .seconds(60),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) -> RecordingActionsCenter {
+        RecordingActionsCenter(noticeLifetime: noticeLifetime, sleep: sleep) { [weak self] in self?.copied.append($0) }
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
@@ -139,10 +142,16 @@ final class RecordingActionsCenterTests: XCTestCase {
     }
 
     func testNoticeExpires() async {
-        let center = makeCenter(noticeLifetime: .milliseconds(20))
+        // The expiry timer is a gate the test opens, so the notice cannot
+        // vanish before the test has seen it, however loaded the machine is.
+        let (gate, opener) = AsyncStream<Void>.makeStream()
+        let center = makeCenter(noticeLifetime: .milliseconds(20)) { _ in
+            for await _ in gate { return }
+        }
         let service = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data("x".utf8)))
         center.copyTranscript(transcriptID: 5, service: service)
         await waitUntil { center.notice[5] != nil }
+        opener.yield()
         await waitUntil { center.notice[5] == nil }
     }
 
