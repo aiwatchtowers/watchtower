@@ -307,6 +307,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		Store: st, Keys: h.kr, Opener: opener, Host: hostInfo(o, name, authPub), Clock: o.Clock,
 		Publish: func(kinds ...string) {
 			pub.PublishSoon(toKinds(kinds)...)
+			h.devicesChanged(kinds)
 			h.kick(h.linkKick)
 			h.kick(h.soonKick)
 			if h.paying != nil {
@@ -315,6 +316,9 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 			}
 		},
 	})
+	// PROJ-16 (OD-2): a phone asking to type asks the owner through
+	// Desktop's macOS notice; a headless host has no watch stream.
+	h.center.OnTypingRequest(h.typingRequested)
 	d := actions.NewDispatcher()
 	actions.RegisterProbe(d)
 	if o.Register != nil {
@@ -1164,4 +1168,30 @@ func wipe(ctx context.Context, st *state.Store, tr transport.Transport, zone str
 		return
 	}
 	log.Printf("hub: %d published records deleted from the data zone", len(gone))
+}
+
+// devicesChanged tells Desktop's watch that the linked phones changed (a
+// link, an unlink from either side, a grant): kinds is what a link-center
+// change touched, and only device_grant counts. Desktop reads `hub status`
+// again (its phones count, Learn's "iPhone paired").
+func (h *hubRuntime) devicesChanged(kinds []string) {
+	if h.sup == nil {
+		return
+	}
+	for _, k := range kinds {
+		if k == link.KindDeviceGrant {
+			h.sup.notifyDesktop(ControlAnswer{Event: EventDevicesChanged, OK: true})
+			return
+		}
+	}
+}
+
+// typingRequested tells Desktop's watch that a linked phone newly asks to
+// type (PROJ-16, OD-2): its device id and display name, nothing else.
+// Desktop asks the owner with a macOS notice; a headless host has no watch.
+func (h *hubRuntime) typingRequested(device, name string) {
+	if h.sup == nil {
+		return
+	}
+	h.sup.notifyDesktop(ControlAnswer{Event: EventTypingRequest, OK: true, DeviceID: device, Name: name})
 }

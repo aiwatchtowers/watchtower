@@ -358,14 +358,6 @@ enum DesignShotCatalog {
             DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
                 LLMUsageShotFixtures.progress()
             },
-            // Settings → Mobile once a newer Watchtower runs the phone hub (go hub phase 3 Task 2):
-            // the Settings window's width and a narrow one.
-            DesignShot(name: "mobileSettingsMoved", size: NSSize(width: 640, height: 160)) {
-                MobileMovedShotFixtures.screen()
-            },
-            DesignShot(name: "mobileSettingsMoved-narrow", size: NSSize(width: 320, height: 180)) {
-                MobileMovedShotFixtures.screen()
-            },
             // The one-time v1-host restart (go hub phase 3 Task 19): the notice waiting, busy,
             // failed with Retry and narrow; the other workspaces' wait lines, wide and narrow.
             DesignShot(name: "hostRestartNotice", size: NSSize(width: 760, height: 64)) {
@@ -416,6 +408,9 @@ enum DesignShotCatalog {
         } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
             // The pairing sheet over `hub pair --json --stream`, mockup §11–§13.
             DesignShot(name: shot.rawValue, size: NSSize(width: 380, height: 400)) { MobileSettingsShotFixtures.pairing(shot) }
+        } + MobileDiagnosticsShotFixtures.Frame.allCases.map { frame in
+            // Settings → Mobile → Diagnostics (go hub phase 4 Task 9), mockup §22–§23.
+            DesignShot(name: frame.name, size: frame.size) { MobileDiagnosticsShotFixtures.screen(frame) }
         } + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {

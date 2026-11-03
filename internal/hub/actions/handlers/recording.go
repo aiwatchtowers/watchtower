@@ -63,9 +63,10 @@ func recFailed(reason, message string) RecordingOutcome {
 // size-checked, downloaded, decrypted by chunk into
 // <recordings dir>/<upload_id>.m4a (0600) and queued. A failure leaves no
 // file; a retried upload that is queued already is answered received again.
-// Under the organization's MobileSync = workbench_only (Deps.Policy) an
-// upload is refused write_failed and nothing is written, as the Swift hub's
-// checkRecordingAllowed did (#608). Nothing here logs a name, a path or a key.
+// Under the organization's MobileSync = workbench_only (Deps.Policy) every
+// upload, a retry of one received already included, is refused write_failed
+// and nothing is written (#608; ask #969 Q4 kept this Go order). Nothing
+// here logs a name, a path or a key.
 func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) RecordingOutcome {
 	if h.d.Store == nil || h.d.RecordingsDir == "" {
 		return recFailed(actions.ReasonNotSupported, NotSupportedMessage)
@@ -75,6 +76,14 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 	}
 	if !uploadIDRE.MatchString(in.UploadID) {
 		return recFailed(reasonInvalidParams, "This recording has no usable id.")
+	}
+	// MobileSync = workbench_only (#608): a phone recording is not workbench
+	// data. Every upload is refused before anything else is read, downloaded
+	// or written, a retry of one received already included (ask #969 Q4: the
+	// owner kept the Go order, not the Swift hub's check after the
+	// exactly-once ledger).
+	if h.d.Policy != nil && h.d.Policy() != policy.MobileAllowed {
+		return recFailed(reasonWriteFailed, PolicyBlockedMessage)
 	}
 	on, _, err := h.d.Store.Recordings()
 	if err != nil {
@@ -107,13 +116,6 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 		return recFailed(reasonNotFound, EmptyAudioMessage)
 	case d.Header.TotalLength > MaxRecordingAssetBytes:
 		return recFailed(reasonInvalidParams, TooLargeMessage)
-	}
-	// MobileSync = workbench_only (#608, ask #969 Q4): a phone recording is
-	// not workbench data. Checked where the Swift hub did, at the ingest:
-	// after the exactly-once checks (an upload received already is answered
-	// received again), before anything is downloaded or written.
-	if h.d.Policy != nil && h.d.Policy() != policy.MobileAllowed {
-		return recFailed(reasonWriteFailed, PolicyBlockedMessage)
 	}
 	if err := os.MkdirAll(h.d.RecordingsDir, 0o700); err != nil {
 		log.Printf("hub recording: recordings dir unavailable")

@@ -109,10 +109,8 @@ Spec: `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`. Contrac
 
 | Piece | Where |
 |---|---|
-| Payload and caps | `Services/MobileHub/Slices/SessionChatPayload.swift` |
-| Runner | `Services/MobileHub/Slices/SessionChatRunner.swift` |
-| Slice | `Services/MobileHub/Slices/SessionChatSlice.swift` |
-| Request handler | `Services/MobileHub/Handlers/SessionChatRequestHandler.swift` |
+| Payload, caps, runner and slice | `internal/hub/slices/sources/session_chat.go` (the Go hub; the Swift hub's `Services/MobileHub/` files were deleted in go hub plan 3 Task 24) |
+| Request handler | `internal/hub/actions/handlers/chat_request.go` |
 | Kit | `WatchtowerKit/Sources/WatchtowerKit/Models/SessionChat.swift`, `SessionChatRequestParams` in `WorkbenchActionParams.swift` |
 | Phone | `WatchtowerMobile/Sources/Features/Workbench/{WorkchatView,WorkchatModel,SessionChatView,SessionChatViewModel}.swift` |
 

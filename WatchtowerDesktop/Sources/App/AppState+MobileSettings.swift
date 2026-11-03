@@ -70,6 +70,10 @@ extension AppState {
         hubCenter = makeHubCenter(cliRunner)
         phoneRecordingQueue = replacePhoneRecordingQueue(phoneRecordingQueue, hub: hubCenter, dbPool: dbPool, cliRunner: cliRunner)
         hubCenter?.follow(workbenches: vm, agentStates: agentStates)
+        hubCenter?.onTypingRequest = { [weak self] in self?.hubTypingRequested(deviceID: $0, name: $1) }
+        hubCenter?.onBringForward = { [weak self] workbench, session in
+            Task { await self?.bringWorkbenchForward(projectID: workbench, sessionID: session) }
+        }
         hubCenter?.start()
         hubKeepAwake?.stop()
         hubKeepAwake = hubCenter.map { makeHubKeepAwake($0, dbPool: dbPool) }

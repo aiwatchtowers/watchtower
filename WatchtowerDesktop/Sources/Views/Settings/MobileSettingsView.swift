@@ -8,11 +8,14 @@ import WatchtowerCore
 struct MobileSettingsTab: View {
     @Environment(AppState.self) private var appState
     @State private var model: MobileSettingsModel?
+    /// Diagnostics, kept between openings: a second one shows the last read under the spinner.
+    @State private var diagnostics: MobileDiagnosticsModel?
+    @State private var showsDiagnostics = false
 
     var body: some View {
         Group {
             if let model {
-                MobileSettingsView(model: model)
+                MobileSettingsView(model: model, openDiagnostics: openDiagnostics)
             } else {
                 Color.clear
             }
@@ -23,6 +26,18 @@ struct MobileSettingsTab: View {
         .onChange(of: appState.hubCenter?.linksChanged) { Task { await model?.load() } }
         .onChange(of: appState.hubCenter?.statusEvents) { Task { await model?.load() } }
         .onChange(of: appState.hubAdoption?.state) { Task { await model?.load() } }
+        .sheet(isPresented: $showsDiagnostics) {
+            if let diagnostics {
+                MobileDiagnosticsView(model: diagnostics)
+                    .frame(minWidth: 560, idealWidth: 640, minHeight: 360, idealHeight: 440)
+                    .task { await diagnostics.load() }
+            }
+        }
+    }
+
+    private func openDiagnostics() {
+        if diagnostics == nil { diagnostics = MobileDiagnosticsModel(cli: ProcessCLIRunner.makeDefault()) }
+        showsDiagnostics = true
     }
 
     /// The hand-over's state when it takes the tab's place (checking, in
@@ -39,6 +54,7 @@ struct MobileSettingsTab: View {
 struct MobileSettingsView: View {
     typealias Copy = MobileSettingsModel
     let model: MobileSettingsModel
+    var openDiagnostics: () -> Void = {}
     /// Whether the Settings window is on screen; the reads repeat only then.
     @State private var windowVisible = true
 
@@ -92,11 +108,11 @@ struct MobileSettingsView: View {
             MobileOffSection(model: model, copy: Copy.offCopy(reason))
             MobileRecordingsSection(model: model)
         case .noPhones:
-            MobileHubSection(model: model)
+            MobileHubSection(model: model, openDiagnostics: openDiagnostics)
             MobilePhonesSection(model: model, rows: [])
             MobileRecordingsSection(model: model)
         case .phones(let rows):
-            MobileHubSection(model: model)
+            MobileHubSection(model: model, openDiagnostics: openDiagnostics)
             MobilePhonesSection(model: model, rows: rows)
             MobileRecordingsSection(model: model)
         }
@@ -194,6 +210,7 @@ private struct MobileCorpNotice: View {
 private struct MobileHubSection: View {
     typealias Copy = MobileSettingsModel
     let model: MobileSettingsModel
+    let openDiagnostics: () -> Void
 
     var body: some View {
         SettingsSection(title: Copy.sectionTitle) {
@@ -224,6 +241,7 @@ private struct MobileHubSection: View {
                 Toggle(Copy.keepAwakeTitle, isOn: Binding(get: { model.keepAwake }, set: { model.setKeepAwake($0) }))
                     .labelsHidden()
             }
+            MobileDiagnosticsEntryRow(open: openDiagnostics)
         }
     }
 
@@ -575,21 +593,5 @@ private struct MobileIndicatorLines: View {
             MobileHubLineText(line: line)
                 .fixedSize(horizontal: false, vertical: true)
         }
-    }
-}
-
-/// Settings → Mobile once a newer Watchtower runs the phone hub (spec §12.1):
-/// one section, one row with the model's line, no toggle (go hub phase 3
-/// Task 2; the guard and this view go with the Swift hub in Task 24).
-struct MobileMovedView: View {
-    let title: String
-    let message: String
-
-    var body: some View {
-        SettingsSection(title: title) {
-            SettingRow(title: message) { EmptyView() }
-        }
-        .padding(.vertical, Spacing.medium)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

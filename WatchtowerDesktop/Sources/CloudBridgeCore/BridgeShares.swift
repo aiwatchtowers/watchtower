@@ -46,9 +46,8 @@ public enum ZoneShareError: Error, Equatable {
 }
 
 /// The hub's zone-wide shares of its own `DataZone-<hub_id>` and `RelayZone-<hub_id>` in the Mac user's
-/// private database (mobile POC spec §2.3, multi-hub spec §3.4): moved here from the Swift hub's
-/// `ShareService.swift`, whose `CloudKitShareService` now wraps it, so the bridge (Go hub spec §6.2) and the
-/// Swift hub run the same share code until the Swift hub goes. Without the iCloud entitlement it never touches
+/// private database (mobile POC spec §2.3, multi-hub spec §3.4): moved here from the retired Swift hub's
+/// `ShareService.swift` for the bridge (Go hub spec §6.2). Without the iCloud entitlement it never touches
 /// `CKContainer`, which would crash: the account reads `.noEntitlement` and every other call throws
 /// `ZoneShareError.noEntitlement`. The CloudKit calls themselves need a signed build and a real account.
 public struct CloudKitZoneShares: Sendable {

@@ -26,9 +26,8 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class HubCenter {
-    /// The Core status; qualified while the Swift hub's own `HubStatus` lives
-    /// (removed with it in Task 24).
-    typealias Status = WatchtowerCore.HubStatus
+    /// The Core status, `watchtower hub status --json`.
+    typealias Status = HubStatus
 
     nonisolated static let heartbeatInterval: Duration = .seconds(30)
     nonisolated static let viewCoalesce: Duration = .milliseconds(250)
@@ -57,6 +56,11 @@ final class HubCenter {
     @ObservationIgnored var onWatchConnected: (() -> Void)?
     /// The hub queued a phone recording (`recording_queued`, the upload id only).
     @ObservationIgnored var onRecordingQueued: ((String) -> Void)?
+    /// A linked phone newly asks to type (PROJ-16, OD-2): its device id and
+    /// name, once per request (the hub decides "once").
+    @ObservationIgnored var onTypingRequest: ((_ deviceID: String, _ name: String) -> Void)?
+    /// A phone start asked to bring its workbench and session forward.
+    @ObservationIgnored var onBringForward: ((_ workbenchID: Int64, _ sessionID: Int64) -> Void)?
 
     @ObservationIgnored private let client: any HubControlClienting
     @ObservationIgnored private let cli: (any CLIRunnerProtocol)?
@@ -234,10 +238,16 @@ final class HubCenter {
                     onWatchConnected?()
                 case let .status(next):
                     watchedStatus(next)
-                case .switched, .pair(kind: "linked", deviceID: _):
+                case .switched, .pair(kind: "linked", deviceID: _), .devicesChanged:
+                    // The phones count (Learn's "iPhone paired") is the CLI status's.
                     linksChanged += 1
+                    refreshStatus()
                 case let .recordingQueued(uploadID):
                     if !uploadID.isEmpty { onRecordingQueued?(uploadID) }
+                case let .typingRequest(deviceID, name):
+                    onTypingRequest?(deviceID, name)
+                case let .bringForward(workbenchID, sessionID):
+                    onBringForward?(workbenchID, sessionID)
                 case .pair, .unknown:
                     break
                 }

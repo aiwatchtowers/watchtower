@@ -17,7 +17,7 @@ struct SettingsPatternPage: View {
 
     var body: some View {
         Sample("A settings page of a new window: titled sections on soft cards, no dividers, the one primary action trailing",
-               usage: "SettingsSection(title: \"Notifications\", footer: …) { SettingRow(title:caption:) { control } }") {
+               usage: "SettingsSection(title: \"Notifications\", caption: …, footer: …, isBusy: …) { SettingRow(title:caption:) { control } }") {
             VStack(alignment: .leading, spacing: Spacing.wide) {
                 SettingsSection(title: "General") {
                     SettingRow(title: "Launch at login") {
@@ -46,6 +46,11 @@ struct SettingsPatternPage: View {
                     SettingRow(title: "Sync to iPhone", caption: "Boards, sessions and asks on your phone") {
                         Toggle("Sync to iPhone", isOn: .constant(false)).labelsHidden()
                             .managedByOrganization(true)
+                    }
+                }
+                SettingsSection(title: "Timings", caption: "A caption under the title; isBusy: a read in flight.", isBusy: true) {
+                    SettingRow(title: "Phone action read → applied") {
+                        Text("p50 38 ms").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
                 }
                 SettingsSection(title: "Account") {

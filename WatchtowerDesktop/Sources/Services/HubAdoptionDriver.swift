@@ -56,29 +56,22 @@ struct HubAdoptionDeps {
 /// adopt --status --json`; Desktop never names the Swift hub's files.
 ///
 /// At launch the status is read first, unseen: with no Swift state nothing
-/// shows at all. A Swift state waiting for adoption gets the POLICY-03 wipe
-/// when `MobileSync = off`, then the driver waits for the v1-host restart
+/// shows at all. Otherwise the driver waits for the v1-host restart
 /// (`HostRestartStep.waitUntilSettled`, in this driver's own task, never on
 /// the launch path, nothing shown meanwhile). Then: the Kit store's keys are
-/// looked up (read only, never created) → the Swift hub stops and its
-/// storage closes → Desktop's own transcription of the pending phone
+/// looked up (read only, never created) → Desktop's own transcription of the pending phone
 /// recordings is cancelled → `hub adopt --settings-stdin` → `--keys-stdin`
 /// → on `adopted` (exit 0) the Desktop items are deleted →
 /// `--confirm-deleted`. Every call has a deadline. Each step is read back
 /// from the status at the next launch, so a kill anywhere resumes there.
-/// Any failure ends in `.failed(reason)` with Retry; the Swift hub stays off
-/// (never two hubs, no fallback).
+/// Any failure ends in `.failed(reason)` with Retry; this app runs no Swift
+/// hub (go hub plan 3 Task 24), so there is no fallback and never two hubs.
 @MainActor
 @Observable
 final class HubAdoptionDriver {
     struct Seams {
         /// Returns once the v1-host restart no longer needs the owner.
         var waitForHostRestart: @MainActor () async -> Void
-        /// `MobileSync = off` with a Swift state not adopted yet: the Swift
-        /// hub is built only to remove what it published (POLICY-03).
-        var policyOffWipe: @MainActor () async -> Void = {}
-        /// Stops the Swift hub; true once its storage is closed.
-        var stopSwiftHub: @MainActor () async -> Bool
         /// Cancels Desktop's own transcription of these phone recordings and
         /// returns once none of them runs (idempotent); their rows stay.
         var cancelPhoneRecordings: @MainActor ([String]) async -> Void
@@ -108,9 +101,6 @@ final class HubAdoptionDriver {
     static let permanentClasses: Set<String> = ["swift_schema", "swift_corrupt", "swift_hub_id"]
 
     private(set) var state: HubAdoptionState = .idle
-    /// A Swift state waits for adoption (the POLICY-03 wipe may build the
-    /// Swift hub for it, and for nothing else).
-    @ObservationIgnored private(set) var swiftStatePending = false
 
     @ObservationIgnored private let seams: Seams
     @ObservationIgnored private var inFlight: Task<HubAdoptionState, Never>?
@@ -164,8 +154,7 @@ final class HubAdoptionDriver {
         return result
     }
 
-    /// Reads the status unseen, wipes for POLICY-03 when it applies, waits
-    /// for the restart step, then runs the pass.
+    /// Reads the status unseen, waits for the restart step, then runs the pass.
     private func launchPass() async -> HubAdoptionState {
         guard let runner = seams.deps.runner else { return fail("no_cli") }
         let status: HubAdoptStatus
@@ -179,10 +168,7 @@ final class HubAdoptionDriver {
         case .finished:
             seams.settingsDelivered()
             return finish(.done)
-        case .adoptState:
-            swiftStatePending = true
-            await seams.policyOffWipe()
-        case .handOverKeys, .deleteDesktopKeys:
+        case .adoptState, .handOverKeys, .deleteDesktopKeys:
             break
         }
         await seams.waitForHostRestart()
@@ -193,7 +179,6 @@ final class HubAdoptionDriver {
     private func pass() async -> HubAdoptionState {
         state = .checking
         guard let runner = seams.deps.runner else { return fail("no_cli") }
-        var stopped = false
         for _ in 0..<Self.maxRounds {
             let status: HubAdoptStatus
             do {
@@ -203,7 +188,6 @@ final class HubAdoptionDriver {
             }
             switch status.next {
             case .nothing:
-                swiftStatePending = false
                 return finish(.notNeeded)
             case .finished:
                 return finish(.done)
@@ -211,19 +195,12 @@ final class HubAdoptionDriver {
                 state = .inProgress(step: status.step.isEmpty ? "copy" : status.step)
                 // The keys first, read only: without them nothing is imported.
                 if let failure = await probeKeys(hubID: status.hubID) { return fail(failure) }
-                if !stopped {
-                    // Never two hubs: hub adopt needs the Swift files closed,
-                    // and cannot see an idle open handle itself.
-                    guard await seams.stopSwiftHub() else { return fail("swift_busy") }
-                    stopped = true
-                }
                 let names = status.pendingRecordings.map(\.audioName)
                 await seams.cancelPhoneRecordings(names)
                 if let failure = await adoptState(runner) {
                     if Self.permanentClasses.contains(failure) { await seams.releasePhoneRecordings(names) }
                     return fail(failure)
                 }
-                swiftStatePending = false
                 await seams.phoneRecordingsAdopted(names)
             case .handOverKeys:
                 seams.settingsDelivered() // a kill after the state adoption, before the read
