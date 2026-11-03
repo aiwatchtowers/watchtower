@@ -138,7 +138,7 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 		rootCmd.SetErr(nil)
 		rootCmd.SetArgs(nil)
 		for _, c := range hubCmd.Commands() {
-			c.Flags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+			c.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 		}
 	})
 	return r
