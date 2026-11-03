@@ -17,7 +17,7 @@ type extractionWindowKey struct{}
 // Backfill keys include both bounds and the input floor. Replaying the drain
 // follows completed prefixes without repeating saved (even empty) model calls.
 func (p *Pipeline) prepareExtraction(ctx context.Context, source string, account int64, floor string, bound time.Time) (context.Context, time.Time, *db.IdeasExtractionWindow, error) {
-	if !digest.RoutingEnabled(p.generator) {
+	if !digest.RoutingEnabled(p.generator, ctx) {
 		return ctx, bound, nil, nil
 	}
 	key := "forward"
@@ -77,8 +77,8 @@ func emailExtractionFloor(w *db.IdeasExtractionWindow, floor float64) (float64, 
 
 // backfillExtractionStart keeps the original effective lower floor when a
 // partial drain raises a live floor across the chunk's starting boundary.
-func (p *Pipeline) backfillExtractionStart(source string, account int64, from, to time.Time, floor string) (string, error) {
-	if !digest.RoutingEnabled(p.generator) {
+func (p *Pipeline) backfillExtractionStart(source string, account int64, from, to time.Time, floor string, ctx context.Context) (string, error) {
+	if !digest.RoutingEnabled(p.generator, ctx) {
 		return floor, nil
 	}
 	w, err := p.db.ClaimIdeasExtractionWindow(db.IdeasExtractionWindow{Source: source, AccountID: account, Key: "chunk:" + from.UTC().Format(time.RFC3339Nano) + ":" + to.UTC().Format(time.RFC3339Nano), From: floor, To: to.UTC().Format(time.RFC3339Nano)})

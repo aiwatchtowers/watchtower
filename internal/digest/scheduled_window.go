@@ -23,7 +23,7 @@ type digestWindow struct {
 }
 
 func (p *Pipeline) runScheduledChannelWindows(ctx context.Context, windows []channelWindow, to float64) (int, *Usage, error) {
-	if !p.DeferredSchedule || !RoutingEnabled(p.generator) {
+	if !p.DeferredSchedule || !RoutingEnabled(p.generator, ctx) {
 		return p.runChannelWindows(ctx, windows, to)
 	}
 	path := filepath.Join(p.cfg.WorkspaceDir(), "digest_pending_window.json")

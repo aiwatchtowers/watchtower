@@ -32,7 +32,7 @@ func wireAutomations(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen 
 // daemon logger. A run the scheduler queues wakes the executor.
 func newDaemonAutomations(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) (*automations.Scheduler, *automations.Executor) {
 	clock := automations.RealClock{}
-	exec := automations.NewExecutor(database, automationBackends(cfg, database, gen), automations.ExecutorOptions{Logger: logger})
+	exec := automations.NewExecutor(database, routingBackends(cfg, database, gen), automations.ExecutorOptions{Logger: logger})
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), clock)
 	sched := automations.NewScheduler(database, ix, clock, exec.Wake)
 	sched.SetLogger(logger)

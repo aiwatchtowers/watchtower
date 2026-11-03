@@ -26,10 +26,10 @@ func (p *Pipeline) Preflight(ctx context.Context) error {
 func (p *Pipeline) windowPath() string {
 	return filepath.Join(p.cfg.WorkspaceDir(), "people_pending_window.json")
 }
-func (p *Pipeline) scheduledWindow(claim bool) (float64, float64, time.Time, error) {
+func (p *Pipeline) scheduledWindow(claim bool, contexts ...context.Context) (float64, float64, time.Time, error) {
 	from, to := p.currentWindow()
 	now := time.Now()
-	if !p.DeferredSchedule || !digest.RoutingEnabled(p.generator) || p.ForceRegenerate {
+	if !p.DeferredSchedule || !digest.RoutingEnabled(p.generator, contexts...) || p.ForceRegenerate {
 		return from, to, now, nil
 	}
 	data, err := os.ReadFile(p.windowPath())
@@ -58,12 +58,12 @@ func (p *Pipeline) scheduledWindow(claim bool) (float64, float64, time.Time, err
 	return from, to, now, nil
 }
 func (p *Pipeline) runScheduledWindow(ctx context.Context) (int, error) {
-	from, to, started, err := p.scheduledWindow(true)
+	from, to, started, err := p.scheduledWindow(true, ctx)
 	if err != nil {
 		return 0, err
 	}
 	p.RunStartedAt = time.Time{}
-	if p.DeferredSchedule && digest.RoutingEnabled(p.generator) && !p.ForceRegenerate {
+	if p.DeferredSchedule && digest.RoutingEnabled(p.generator, ctx) && !p.ForceRegenerate {
 		p.RunStartedAt = started
 	}
 	return p.RunForWindow(ctx, from, to)
@@ -72,8 +72,8 @@ func (p *Pipeline) runScheduledWindow(ctx context.Context) (int, error) {
 // AcknowledgeWindow is called only after the daemon durably writes its success
 // stamp, or discards a window with no eligible input. A crash before
 // acknowledgement reopens the same covered window.
-func (p *Pipeline) AcknowledgeWindow() error {
-	if !p.DeferredSchedule || !digest.RoutingEnabled(p.generator) || p.ForceRegenerate {
+func (p *Pipeline) AcknowledgeWindow(contexts ...context.Context) error {
+	if !p.DeferredSchedule || !digest.RoutingEnabled(p.generator, contexts...) || p.ForceRegenerate {
 		return nil
 	}
 	if err := os.Remove(p.windowPath()); err != nil && !errors.Is(err, os.ErrNotExist) {

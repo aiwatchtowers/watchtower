@@ -309,3 +309,57 @@ reopens, updating its in-memory provider/cause only after the DB write succeeds.
 Automatic quota/recovery cards require an affirmative quota cause; recovery also
 requires matching available local health. Unknown or ordinary historical causes
 show the actual label and any diagnostic without inventing a quota explanation.
+
+### Applying AI configuration
+
+The running daemon reloads saved AI routing without restarting its process or
+Workbench terminals. Each sync cycle and automation run captures one immutable
+routing generation before work begins. A started job keeps its provider, models,
+paths, context budget and attempt/deadline semantics; later jobs capture the
+published generation. SDK modules and agent preflight bind together. Persistent
+pipelines, the memory opener, scheduler, waiting runs, replay journals and history
+checkpoints retain their existing owners. All generator generations share one
+worker admission pool, including separately constructed coach and agent calls;
+lowering its limit waits for existing calls to drain.
+
+`ai routing-status` additionally reports `saved_version`, optional `application`
+(identity, normalized revision, saved file version, preferred provider and optional
+error), and `application_error` for unreadable/corrupt acknowledgement metadata.
+The acknowledgement is an owner-only atomic sidecar beside the existing daemon
+PID file. Readers require the existing confirmed kernel start identity and reject
+replaced/dead daemons. The saved file version includes the local file identity,
+mtime and size, so a delayed acknowledgement cannot confirm a later A→B→A Save.
+It is distinct from the normalized routing revision and is not a second routing
+hash. Unchanged acknowledgements do not rewrite the sidecar every poll.
+
+Publication precedes acknowledgement. A failed acknowledgement write does not
+roll running jobs back: Settings says the current background configuration is
+unconfirmed and labels any older acknowledgement as the last confirmed provider.
+Retry only reads current saved state; it never rewrites a captured Settings draft.
+Concurrent Saves supersede older in-flight results. Existing daemon-status
+observations revoke confirmation if the daemon stops; Retry validates the new
+run. A separate feature-save failure never strands routing in Applying. Explicit process provider
+pins remain effective and are reported as an apply error when they differ from
+the saved route, including a same-provider pin with an enabled reserve. Saved
+and effective pinned revisions remain distinct. Fallback itself never writes configuration.
+
+New automatic main-chat contexts read the latest preference. Warm launched hosts
+retire after their active turn on a routing-revision change; pending hosts keep
+FIFO admission and read configuration on launch. Compatibility never uses the
+observed actual provider. Embedded turns already start a fresh query process;
+new engines read the current configured preference and active turns keep theirs.
+
+An explicit `--workspace` on `ai routing-status` selects that workspace's daemon
+identity and acknowledgement; quota health remains installation-wide. Reloading
+Settings revokes both previous confirmation and pending responses, even within
+the same workspace. This does not launch metadata commands from ConfigService
+initialization: the current saved revision is confirmed by the explicit apply or
+Retry action. A later response from before Reload or daemon loss cannot restore
+an older confirmation.
+
+Generator decorators expose `GeneratorForContext` for optional-capability
+inspection. `digest.Preflight`, `RoutingEnabled` and `ImageCapable` inspect the
+job-selected generation; dynamic callers must pass their job context, including
+through nested pool/timeout wrappers. An enabled old job retains its durable
+receipts after reserve is disabled, and a disabled old job does not acquire
+routing/deferred semantics merely because a newer job enables it.

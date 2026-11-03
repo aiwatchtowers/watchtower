@@ -77,6 +77,7 @@ final class ConfigService {
     /// config only at startup, so Settings restarts it after such a Save.
     private(set) var lastSaveChangedPurge = false
     var parseError: String?
+    let routingApplication: ProviderRoutingApplication
 
     private let configPath: String
     /// Raw YAML dictionary — preserved for round-trip editing
@@ -98,7 +99,12 @@ final class ConfigService {
     }
 
     /// Test-friendly initializer accepting an explicit config file path.
-    init(configPath: String) {
+    init(configPath: String, routingRead: (() async throws -> ChatRoutingStatus)? = nil) {
+        routingApplication = ProviderRoutingApplication(read: routingRead ?? {
+            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+            let data = try await runner.run(args: ["--config", configPath, "ai", "routing-status"], timeout: 5)
+            return try ChatRoutingStatus.parse(data)
+        })
         self.configPath = configPath
         reload()
     }
@@ -121,6 +127,7 @@ final class ConfigService {
     }
 
     func reload() {
+        routingApplication.configurationReloaded()
         defer { resetModelEditTracking() }
         guard let str = readConfigText() else { return }
 
@@ -134,9 +141,7 @@ final class ConfigService {
                 }
                 return
             }
-            rawYAML = yaml
-
-            activeWorkspace = yaml["active_workspace"] as? String
+            adoptRawConfiguration(yaml)
 
             if let sync = yaml["sync"] as? [String: Any] {
                 syncInterval = sync["poll_interval"] as? String
@@ -218,6 +223,11 @@ final class ConfigService {
         } catch {
             parseError = error.localizedDescription
         }
+    }
+
+    private func adoptRawConfiguration(_ yaml: [String: Any]) {
+        rawYAML = yaml
+        activeWorkspace = yaml["active_workspace"] as? String
     }
 
     /// `calendar.enabled` is known to be off. False when config.yaml is
@@ -546,6 +556,7 @@ final class ConfigService {
         }
 
         try write(yaml)
+        routingApplication.saved()
 
         rawYAML = yaml
         lastSaveChangedPurge = purgeChanged
@@ -574,7 +585,7 @@ final class ConfigService {
 
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
-        "configPath", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "configPath", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
         "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
         "_providerBuckets", "_editedProviderBuckets", "editedModelTiers"
     ]
@@ -635,6 +646,18 @@ final class ConfigService {
         }
         return yaml
     }
+
+    /// Once disk Save succeeds, acknowledge routing even when an independent
+    /// feature/privacy operation fails. Keep that operation's error visible.
+    func saveAndApply(extraSave: (() async throws -> Void)? = nil) async throws {
+        try save()
+        var extraError: (any Error)?
+        do { try await extraSave?() } catch { extraError = error }
+        await applySavedRouting()
+        if let extraError { throw extraError }
+    }
+
+    func applySavedRouting() async { await routingApplication.applyLatest() }
 
     func openInEditor() {
         let url = URL(fileURLWithPath: configPath)

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"watchtower/internal/config"
 
 	"github.com/stretchr/testify/require"
 
@@ -56,4 +59,44 @@ func TestQueryV1RetainsActualAndStartedQuotaMetadata(t *testing.T) {
 		require.Equal(t, "quota_exhausted", failure.Reason)
 		require.False(t, failure.Retryable)
 	}
+}
+
+func TestRoutingStatusExplicitWorkspaceReadsThatDaemonOnly(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	oldWorkspace, oldRead := flagWorkspace, routingStatusApplication
+	defer func() { flagWorkspace, routingStatusApplication = oldWorkspace, oldRead }()
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	for _, workspace := range []string{"first", "second"} {
+		local := *cfg
+		local.ActiveWorkspace = workspace
+		require.NoError(t, os.MkdirAll(filepath.Dir(pidFilePath(&local)), 0700))
+		require.NoError(t, os.WriteFile(pidFilePath(&local), []byte("fake-"+workspace), 0600))
+		require.NoError(t, writeRoutingAck(routingAckPath(&local), routingApplication{Identity: "fake-" + workspace, Revision: workspace}))
+	}
+	routingStatusApplication = func(cfg *config.Config) (*routingApplication, error) {
+		return readRoutingAck(routingAckPath(cfg), func() (string, error) { data, err := os.ReadFile(pidFilePath(cfg)); return string(data), err })
+	}
+	before, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+	command, _, err := aiCmd.Find([]string{"routing-status"})
+	require.NoError(t, err)
+	output := &bytes.Buffer{}
+	command.SetContext(context.Background())
+	command.SetOut(output)
+	defer command.SetOut(nil)
+	for _, workspace := range []string{"second", "first"} {
+		flagWorkspace = workspace
+		output.Reset()
+		require.NoError(t, command.RunE(command, nil))
+		var status routingStatusOutput
+		require.NoError(t, json.Unmarshal(output.Bytes(), &status))
+		require.NotNil(t, status.Application)
+		require.Equal(t, workspace, status.Application.Revision)
+		require.Equal(t, "fake-"+workspace, status.Application.Identity)
+	}
+	after, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "workspace-scoped status never rewrites global configuration")
 }

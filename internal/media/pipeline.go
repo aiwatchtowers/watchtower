@@ -134,7 +134,7 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 		}
 	}
 	r.web = newWeb(check, imageDownloadTimeout)
-	r.ig, r.vision = digest.ImageCapable(p.Gen)
+	r.ig, r.vision = digest.ImageCapable(p.Gen, ctx)
 
 	var cursor db.MediaCursor
 	for {
@@ -169,7 +169,7 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 // an unavailable image too once a vision-capable provider is configured;
 // never a row deferred while it waits).
 func (p *Pipeline) HasPending(ctx context.Context) (bool, error) {
-	_, vision := digest.ImageCapable(p.Gen)
+	_, vision := digest.ImageCapable(p.Gen, ctx)
 	items, err := p.DB.ListPendingMedia(ctx, vision, p.now(), db.MediaCursor{}, 1)
 	if err != nil {
 		return false, err

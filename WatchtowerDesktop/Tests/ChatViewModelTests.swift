@@ -1829,3 +1829,26 @@ extension ChatViewModelTests {
         }
     }
 }
+
+extension ChatViewModelTests {
+    func testNewAutomaticContextReadsCurrentPreferenceWithoutChangingBusyHost() async throws {
+        var preferred = AIProvider.claude
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude,
+                               preferredProviderSource: { preferred }, defaults: defaults)
+        _ = await vm.newConversation()
+        await vm.send(text: "Keep the first turn running")
+        let old = try lastFake()
+        preferred = .codex
+        XCTAssertFalse(old.terminated)
+        XCTAssertFalse(old.hasExited)
+        _ = await vm.newConversation()
+        XCTAssertEqual(vm.selectedProvider, .codex)
+        XCTAssertTrue(vm.automaticRouting)
+        XCTAssertFalse(old.terminated, "new preference never cuts an active host")
+        await vm.send(text: "A new conversation")
+        let spawned = await waitForCondition { self.fakes.count == 2 }
+        XCTAssertTrue(spawned)
+        XCTAssertNil(try lastFake().argument(after: "--provider"))
+        XCTAssertEqual(old.turns.count, 1)
+    }
+}

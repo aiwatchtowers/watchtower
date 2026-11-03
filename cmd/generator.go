@@ -120,19 +120,19 @@ var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
 // ask/chat) deliberately does NOT get this wrapper: those calls are already
 // bounded by the user.
 func cliPooledGenerator(cfg *config.Config) (digest.Generator, func()) {
-	rawGen := digest.WithCallTimeout(checkedGenerator(cfg), digest.DaemonAICallTimeout)
 	poolSize := cfg.AI.Workers
 	if poolSize <= 0 {
 		poolSize = config.DefaultAIWorkers
 	}
 	pool := sessions.NewSessionPool(poolSize)
+	return pooledGeneratorFor(cfg, pool), pool.Close
+}
+
+func pooledGeneratorFor(cfg *config.Config, pool *sessions.SessionPool) digest.Generator {
+	rawGen := digest.WithCallTimeout(checkedGenerator(cfg), digest.DaemonAICallTimeout)
 	gen := digest.NewPooledGenerator(rawGen, pool)
-
-	sessionLogPath := filepath.Join(cfg.WorkspaceDir(), "sessions.log")
-	gen.SetSessionLog(sessions.NewSessionLog(sessionLogPath))
-
-	cleanup := func() { pool.Close() }
-	return routedGenerator(cfg, gen, pool, digest.DaemonAICallTimeout), cleanup
+	gen.SetSessionLog(sessions.NewSessionLog(filepath.Join(cfg.WorkspaceDir(), "sessions.log")))
+	return routedGenerator(cfg, digest.WithCallTimeout(gen, digest.DaemonAICallTimeout), pool, digest.DaemonAICallTimeout)
 }
 
 // newAIClient creates an ai.Provider for ask/chat commands, using the

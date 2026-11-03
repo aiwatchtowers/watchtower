@@ -181,6 +181,18 @@ final class ChatSessionPool {
         }
     }
 
+    /// A saved routing revision affects future clients. Pending hosts have not
+    /// loaded configuration; launched busy hosts finish before retirement.
+    func retireRoutingSessions() {
+        for (id, client) in clients where !client.isPending {
+            if client.isBusy {
+                client.retireAfterTurn(keepingSessionID: true)
+            } else {
+                close(conversationID: id)
+            }
+        }
+    }
+
     /// App quit: every session gets `close`, then one SIGTERM after the
     /// grace, then SIGKILL if it still lives; retirements already in flight
     /// are awaited too. Returns once every process is gone.

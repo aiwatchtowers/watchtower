@@ -28,7 +28,7 @@ type dailyWindow struct {
 // summaries retain their existing cadence and never acquire this descriptor.
 func (p *Pipeline) runScheduledDaily(ctx context.Context) error {
 	day := utcDayStart(time.Now())
-	if !p.DeferredSchedule || !RoutingEnabled(p.generator) {
+	if !p.DeferredSchedule || !RoutingEnabled(p.generator, ctx) {
 		return p.runDailyRollupForDate(ctx, day)
 	}
 	path := filepath.Join(p.cfg.WorkspaceDir(), "digest_pending_daily.json")

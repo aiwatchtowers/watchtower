@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/llmusage"
+	"watchtower/internal/sessions"
 )
 
 type coachCalls struct{ judge, propose int }
@@ -287,4 +288,40 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			require.Equal(t, calls[0].OperationID, calls[1].OperationID)
 		})
 	}
+}
+
+type coachAdmissionGenerator struct {
+	calls    int
+	provider string
+}
+
+func (g *coachAdmissionGenerator) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	g.calls++
+	return g.provider, nil, "", nil
+}
+func TestCoachGeneratorUsesJobSnapshotAndSharedAdmission(t *testing.T) {
+	d := newQuietDaemon(t)
+	pool := sessions.NewSessionPool(1)
+	defer pool.Close()
+	d.SetAIWorkerPool(pool)
+	snapshot := &config.Config{}
+	snapshot.AI.Provider = "codex"
+	oldFactory := coachGeneratorFactory
+	defer func() { coachGeneratorFactory = oldFactory }()
+	leaf := &coachAdmissionGenerator{}
+	coachGeneratorFactory = func(cfg *config.Config) digest.Generator { leaf.provider = cfg.AI.Provider; return leaf }
+	ctx := config.WithRoutingSnapshot(context.Background(), snapshot)
+	gen := d.coachGenerator(ctx)
+	worker, err := pool.Acquire(ctx)
+	require.NoError(t, err)
+	waiting, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	_, _, _, err = gen.Generate(waiting, "", "", "")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, leaf.calls)
+	pool.Release(worker)
+	text, _, _, err := gen.Generate(ctx, "", "", "")
+	require.NoError(t, err)
+	require.Equal(t, "codex", text)
+	require.Equal(t, 1, leaf.calls)
 }
