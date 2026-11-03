@@ -2608,3 +2608,13 @@ Entry format:
 - weak-dimension: crash coverage recreated a retained daily descriptor but backdated channel rows, leaving post-commit input arrival untested. External Codex diff transmission remained unavailable after automatic approval rejection; toolkit APIs were unavailable, and three built-in lanes supplied the panel evidence. Judge inspection was source-only; reported scoped checks were not independently rerun. [7]
 - rule-gap: no new binding rule needed; approved committed-output retry semantics and existing swallowed-error/absent-versus-invalid rules cover the defects. Full phase gates remain scheduled after Task 8.
 - outcome: TBD
+
+
+## 2026-11-03 — provider-fallback extraction/history (#1488, Task 6) — verdict: changes-needed
+
+- contested: a transactional monotonic floor update is insufficient when its caller still performs the legacy unconditional setter afterward. A retained forward claim can legitimately finish below a live floor advanced by historical extraction, so review the full wrapper-to-transaction-to-wrapper path for every source. [6/8]
+- false-positive: the test lane quality score of 8/10 is not a severity-8 coverage gap. Explicit receipt/floor rollback assertions, off/pinned metadata assertions and cursor checks are optional strengthening; existing rollback/cursor coverage supplies useful evidence. [7]
+- miss: the failure lane alone caught the outer Gmail/IMAP/Jira setters undoing the new monotonic transaction. Primitive-level higher-floor tests did not exercise the production account wrappers with a retained forward claim. [6/7]
+- weak-dimension: composition coverage; restart tests and transaction tests independently passed while the enclosing legacy write remained. External Codex diff transmission was unavailable after automatic approval rejection; specialist APIs were unavailable, with built-in equivalent lanes supplying evidence. Judge verified source and reported check evidence without rerunning checks. [7]
+- rule-gap: no new binding rule needed; the approved retained-progress contract and requirement correctness already cover the floor regression. Full phase gates remain scheduled after Task 8.
+- outcome: TBD

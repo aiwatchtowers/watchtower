@@ -695,7 +695,7 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, mb mailbox, bound 
 		return p.initEmailFloor(mb)
 	}
 	reached, err := p.emailDigestPass(ctx, mb, floor, bound)
-	if err != nil || reached == floor {
+	if err != nil || reached == floor || digest.RoutingEnabled(p.generator) {
 		return err
 	}
 	if err := p.setMailFloor(mb, reached); err != nil {
@@ -706,10 +706,9 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, mb mailbox, bound 
 
 // emailDigestPass mines one window of the account's mail above floor
 // (bounded by bound when non-zero) and returns the floor the pass reached —
-// floor itself when there was nothing to mine. It reads and writes no
-// stored floor: runEmailDigestAccount persists the result, and the history
-// backfill's drain keeps its own lowered floor in memory, so a process killed
-// mid-drain never leaves the live floor weeks back.
+// floor itself when there was nothing to mine. Routed passes atomically commit
+// output, completion and a monotonic live floor. Legacy passes leave persistence
+// to the caller. Historical drains never lower the live floor.
 func (p *Pipeline) emailDigestPass(ctx context.Context, mb mailbox, floor float64, bound time.Time) (float64, error) {
 	ctx, bound, window, err := p.prepareExtraction(ctx, mb.source, mb.id, fmt.Sprint(floor), bound)
 	if err != nil {

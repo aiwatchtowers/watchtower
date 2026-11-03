@@ -465,7 +465,7 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return p.initJiraFloor(acct)
 	}
 	reached, err := p.jiraDigestPass(ctx, acct, floor, bound)
-	if err != nil || reached == floor {
+	if err != nil || reached == floor || digest.RoutingEnabled(p.generator) {
 		return err
 	}
 	if err := p.db.SetIdeasJiraFloor(acct.ID, reached); err != nil {
@@ -476,8 +476,8 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 
 // jiraDigestPass is emailDigestPass' Jira sibling: it mines one window of
 // the account's issues above floor and returns the floor it reached (floor
-// itself when there was nothing to mine), reading and writing no stored
-// floor.
+// itself when there was nothing to mine). Routed passes atomically commit output,
+// completion and a monotonic live floor; legacy passes leave writes to the caller.
 func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floor string, bound time.Time) (string, error) {
 	ctx, bound, window, err := p.prepareExtraction(ctx, "jira", acct.ID, floor, bound)
 	if err != nil {

@@ -217,3 +217,104 @@ func TestForwardDeferredKeepsClaimedUpperBound(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, float64(base.Add(time.Hour).Unix()), floor)
 }
+
+// The production account wrapper must not undo its transaction's monotonic
+// floor when a retained forward claim completes below newer historical work.
+func TestForwardAccountWrapperRetainsHigherHistoricalFloor(t *testing.T) {
+	for _, source := range []string{"gmail", "imap", "jira"} {
+		for _, empty := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/empty=%t", source, empty), func(t *testing.T) {
+				d := newTestDB(t)
+				base := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+				bound := base.Add(90 * time.Minute)
+				higher := base.Add(2 * time.Hour)
+				older := base.Add(time.Hour)
+				var account int64
+				switch source {
+				case "gmail":
+					account = seedGoogleAccount(t, d, float64(time.Now().Unix()))
+					setIdeasEmailFloorRaw(t, d, account, float64(base.Unix()))
+				case "imap":
+					res, err := d.Exec(`INSERT INTO email_accounts(provider,email_address) VALUES('imap','imap@example.com')`)
+					require.NoError(t, err)
+					account, err = res.LastInsertId()
+					require.NoError(t, err)
+				case "jira":
+					account = seedJiraAccount(t, d)
+					older = older.Add(123 * time.Millisecond)
+					higher = higher.Add(456 * time.Millisecond)
+				}
+				floor := fmt.Sprint(base.Unix())
+				if source == "jira" {
+					floor = db.FormatJiraTime(base)
+				}
+				_, err := d.ClaimIdeasExtractionWindow(db.IdeasExtractionWindow{Source: source, AccountID: account, Key: "forward", From: floor, To: bound.Format(time.RFC3339Nano)})
+				require.NoError(t, err)
+				// Historical extraction committed after the forward input claim was retained.
+				switch source {
+				case "gmail":
+					setIdeasEmailFloorRaw(t, d, account, float64(higher.Unix()))
+				case "imap":
+					_, err = d.Exec(`UPDATE email_accounts SET ideas_email_floor=? WHERE id=?`, higher.Unix(), account)
+					require.NoError(t, err)
+				case "jira":
+					setIdeasJiraFloorRaw(t, d, account, db.FormatJiraTime(higher))
+				}
+				if !empty {
+					switch source {
+					case "gmail":
+						seedGmailMessageIdeas(t, d, account, "m1", "t1", "a@example.com", "A", "subject", "older pending input", older.Format(time.RFC3339))
+					case "imap":
+						_, err = d.Exec(`INSERT INTO imap_messages(account_id,uid,body_text,internal_date) VALUES(?,1,'older pending input',?)`, account, older.Format(time.RFC3339))
+						require.NoError(t, err)
+					case "jira":
+						seedJiraIssueIdeas(t, d, account, "WT-1", "WT", "older pending input", "Open", "new", "body", db.FormatJiraTime(older))
+					}
+				}
+				// This later input is already covered by the higher historical floor and
+				// lies outside the retained forward claim. The following cycle must exclude it.
+				switch source {
+				case "gmail":
+					seedGmailMessageIdeas(t, d, account, "m2", "t2", "a@example.com", "A", "subject", "already completed historical input", higher.Format(time.RFC3339))
+				case "imap":
+					_, err = d.Exec(`INSERT INTO imap_messages(account_id,uid,body_text,internal_date) VALUES(?,2,'already completed historical input',?)`, account, higher.Format(time.RFC3339))
+					require.NoError(t, err)
+				case "jira":
+					seedJiraIssueIdeas(t, d, account, "WT-2", "WT", "already completed historical input", "Open", "new", "body", db.FormatJiraTime(higher))
+				}
+				g := &routedStage1{}
+				g.reply = func(string) (string, error) { return `{"topics":[]}`, nil }
+				run := func() error {
+					p := New(d, testCfg(), g, testLogger())
+					if source == "jira" {
+						acct, e := d.GetJiraAccount(account)
+						require.NoError(t, e)
+						return p.runJiraDigestAccount(context.Background(), acct, time.Time{})
+					}
+					mb := gmailBox(account)
+					if source == "imap" {
+						mb = imapBox(account)
+					}
+					return p.runEmailDigestAccount(context.Background(), mb, time.Time{})
+				}
+				require.NoError(t, run())
+				if source == "jira" {
+					got, e := d.IdeasJiraFloor(account)
+					require.NoError(t, e)
+					require.Equal(t, db.FormatJiraTime(higher), got)
+				} else {
+					mb := gmailBox(account)
+					if source == "imap" {
+						mb = imapBox(account)
+					}
+					got, e := New(d, testCfg(), g, testLogger()).mailFloor(mb)
+					require.NoError(t, e)
+					require.Equal(t, float64(higher.Unix()), got)
+				}
+				calls := g.calls
+				require.NoError(t, run())
+				require.Equal(t, calls, g.calls, "next forward cycle must not mine already-completed historical input")
+			})
+		}
+	}
+}
