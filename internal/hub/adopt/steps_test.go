@@ -163,6 +163,40 @@ func TestAdoptAddsEveryMissingFoldedInColumn(t *testing.T) {
 	}
 }
 
+// twin of HubSyncStateWorkAlertsTests.testOldAlertedAsksRowsMigrateAsPushed:
+// a Swift file from a build before the work alerts keeps its alerted asks
+// in alerted_asks; adopted, each is a pushed ask-<id> work alert and the old
+// table is gone, so an ask alerted before never alerts again.
+func TestAdoptMigratesOldAlertedAsksAsPushed(t *testing.T) {
+	f := newFixtureIn(t, t.TempDir(), func(db *sql.DB) error {
+		for _, q := range []string{
+			`DROP TABLE work_alerts`,
+			`CREATE TABLE alerted_asks (ask_id INTEGER PRIMARY KEY, at REAL NOT NULL, generation INTEGER NOT NULL)`,
+			`INSERT INTO alerted_asks VALUES (7, 1800000000, 2)`,
+		} {
+			if _, err := db.Exec(q); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if res, err := f.run(t); err != nil || res.Step != StepDone {
+		t.Fatalf("Run = %+v %v", res, err)
+	}
+	db := f.goDB(t)
+	var seen, pushed float64
+	var gen int64
+	if err := db.QueryRow(`SELECT seen_at, pushed_at, generation FROM work_alerts WHERE key = 'ask-7'`).Scan(&seen, &pushed, &gen); err != nil {
+		t.Fatalf("ask-7 not migrated: %v", err)
+	}
+	if seen != 1_800_000_000 || pushed != 1_800_000_000 || gen != 2 {
+		t.Fatalf("ask-7 = seen %v pushed %v generation %d, want pushed at its alert time in generation 2", seen, pushed, gen)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM sqlite_master WHERE name = 'alerted_asks'`); n != 0 {
+		t.Fatal("the old table is kept")
+	}
+}
+
 // TestFoldedInMatchesTheSwiftAlters pins foldedIn to the Swift hub's ALTER
 // columns: the (name, type) pairs of HubSyncState+Keys.swift's
 // addMissingColumns calls and HubSyncState.swift's relay_processed pairs,

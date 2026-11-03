@@ -109,3 +109,50 @@ func TestEnsureMetaTimeKeepsTheFirstStampInSwiftForm(t *testing.T) {
 		t.Fatal("fraction form")
 	}
 }
+
+// twin of HubSyncStateWorkAlertsTests.testAPushNotesAnUnseenKeyAndLeavesOthersAlone.
+func TestNoteWorkAlerts_APushNotesAnUnseenKeyAndLeavesOthersAlone(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	t0 := time.Unix(1_800_000_000, 0).UTC()
+	if _, _, err := s.NoteWorkAlerts(ctx, []string{"ask-1"}, nil, t0); err != nil {
+		t.Fatal(err)
+	}
+	at := t0.Add(5 * time.Second)
+	_, marks, err := s.NoteWorkAlerts(ctx, []string{"ask-1", "ask-2"}, map[string]bool{"ask-2": true}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := marks["ask-2"]; !m.SeenAt.Equal(at) || !m.PushedAt.Equal(at) || m.Generation != 0 {
+		t.Fatalf("ask-2 = %+v: an unseen key pushed is noted seen and pushed at once", m)
+	}
+	if marks["ask-1"].Pushed() {
+		t.Fatalf("ask-1 = %+v: a key not named is not pushed", marks["ask-1"])
+	}
+}
+
+// twin of HubSyncStateWorkAlertsTests.testAPushMovesASeenRowToTheCurrentGeneration:
+// a row only seen in an earlier generation is pushed in the current one, so
+// the push is published; its first sighting stays.
+func TestNoteWorkAlerts_APushMovesASeenRowToTheCurrentGeneration(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	t0 := time.Unix(1_800_000_000, 0).UTC()
+	if _, _, err := s.NoteWorkAlerts(ctx, []string{"stop-3-1"}, nil, t0); err != nil {
+		t.Fatal(err)
+	}
+	// A generation bump that left the seen row behind (it outlived a reset).
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error { return SetMetaTx(tx, MetaSyncGeneration, "1") }); err != nil {
+		t.Fatal(err)
+	}
+	if _, marks, err := s.NoteWorkAlerts(ctx, nil, nil, t0); err != nil || marks["stop-3-1"].Generation != 0 {
+		t.Fatalf("before the push: %+v %v", marks["stop-3-1"], err)
+	}
+	gen, marks, err := s.NoteWorkAlerts(ctx, []string{"stop-3-1"}, map[string]bool{"stop-3-1": true}, t0.Add(9*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := marks["stop-3-1"]; gen != 1 || m.Generation != 1 || !m.SeenAt.Equal(t0) || !m.Pushed() {
+		t.Fatalf("gen %d stop-3-1 = %+v", gen, m)
+	}
+}
