@@ -56,6 +56,7 @@ type savePinned struct {
 	BudgetMinutes       int             `json:"budget_minutes"`
 	Missed              string          `json:"missed"`
 	Concurrency         int             `json:"concurrency"`
+	Artifacts           string          `json:"artifacts"` // "feed" or "living"
 	ApprovalHash        string          `json:"approval_hash"`
 	Widening            []string        `json:"widening"`
 	ExistingContentHash string          `json:"existing_content_hash"`
@@ -248,7 +249,7 @@ func normalizeSave(ctx context.Context, d Deps, raw json.RawMessage) (json.RawMe
 		TriggerKind: string(r.Trigger.Kind), TriggerSpec: json.RawMessage(spec),
 		Permissions: perms, Outputs: nonNil(m.Outputs()),
 		BudgetTokens: r.Budget.Tokens, BudgetMinutes: r.Budget.Minutes,
-		Missed: string(r.Missed), Concurrency: r.Concurrency,
+		Missed: string(r.Missed), Concurrency: r.Concurrency, Artifacts: string(r.Artifacts),
 		ApprovalHash: automations.ApprovalHash(r), Widening: wide,
 		ExistingContentHash: hash, PreviousRecipeText: previous, IsNew: !exists,
 	}

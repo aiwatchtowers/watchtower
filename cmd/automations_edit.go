@@ -59,12 +59,13 @@ type validateJSON struct {
 }
 
 // validateFieldsJSON is the approval hash's non-manifest fields (trigger,
-// missed, budget, concurrency; the manifest, scope and script have their own
+// missed, budget, concurrency, artifacts; the manifest, scope and script have their own
 // keys or are the text itself). Empty values are omitted.
 type validateFieldsJSON struct {
 	Trigger     string              `json:"trigger,omitempty"`
 	Missed      string              `json:"missed,omitempty"`
 	Concurrency string              `json:"concurrency,omitempty"`
+	Artifacts   string              `json:"artifacts,omitempty"` // "feed" or "living"
 	Budget      *validateBudgetJSON `json:"budget,omitempty"`
 }
 
@@ -127,7 +128,7 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 	}
 	v.OK, v.Name, v.ApprovalHash = true, r.Name, automations.ApprovalHash(r)
 	v.Fields = validateFieldsJSON{Trigger: triggerLine(r.Trigger), Missed: string(r.Missed),
-		Concurrency: strconv.Itoa(r.Concurrency), Budget: &validateBudgetJSON{Tokens: r.Budget.Tokens, Minutes: r.Budget.Minutes}}
+		Concurrency: strconv.Itoa(r.Concurrency), Artifacts: string(r.Artifacts), Budget: &validateBudgetJSON{Tokens: r.Budget.Tokens, Minutes: r.Budget.Minutes}}
 	v.Permissions = append(v.Permissions, m.Normalized()...)
 	v.Outputs = append(v.Outputs, slices.Compact(slices.Sorted(slices.Values(r.Outputs)))...)
 	var baseline []string

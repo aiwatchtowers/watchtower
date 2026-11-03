@@ -816,6 +816,21 @@ func TestAutomationsCLI_ValidateAgainstReportsChangesSinceConfirmed(t *testing.T
 	assert.Equal(t, []any{map[string]any{"field": "script", "old": "", "new": ""}}, v["changes"])
 }
 
+// TestAutomationsCLI_ValidateAgainstReportsArtifactsChange: feed → living is
+// a hashed change, listed like any other (AUTO-06, D26).
+func TestAutomationsCLI_ValidateAgainstReportsArtifactsChange(t *testing.T) {
+	c := newAutoCLI(t)
+	text := strings.Replace(autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000), "outputs: [report]", "outputs: [inbox]", 1)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash)
+
+	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "outputs: [inbox]", "outputs: [inbox]\nartifacts: living", 1))
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	require.Equal(t, true, v["ok"], v["errors"])
+	assert.Equal(t, true, v["changes_known"])
+	assert.Equal(t, []any{map[string]any{"field": "artifacts", "old": "feed", "new": "living"}}, v["changes"])
+}
+
 func TestAutomationsCLI_ValidateAgainstUnchangedHasEmptyChanges(t *testing.T) {
 	c := newAutoCLI(t)
 	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
@@ -1167,10 +1182,14 @@ func TestAutomationsCLI_ValidateJSONFields(t *testing.T) {
 			path := writeRecipe(t, t.TempDir(), "acme", recipe(c.trigger))
 			v := runAutomationsJSON(t, "validate", path)
 			require.Equal(t, true, v["ok"], "%v", v["errors"])
-			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2",
+			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2", "artifacts": "feed",
 				"budget": map[string]any{"tokens": float64(50000), "minutes": float64(3)}}, v["fields"])
 		})
 	}
+	living := "---\nname: Acme\ntrigger:\n  manual: true\noutputs: [inbox]\nartifacts: living\n---\n```js\nreturn 1\n```\n"
+	lv := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", living))
+	require.Equal(t, true, lv["ok"], "%v", lv["errors"])
+	assert.Equal(t, "living", lv["fields"].(map[string]any)["artifacts"])
 	bad := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", "broken"))
 	assert.Equal(t, map[string]any{}, bad["fields"])
 }
