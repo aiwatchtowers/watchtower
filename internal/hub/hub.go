@@ -719,7 +719,7 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())
 		st.Bridge = h.bridgeState()
 		st.CloudKit = h.cloudKitStatus()
-		st.Relay, st.PayingPhones, st.MailboxFullPhones = h.relayFacts(devices)
+		st.Relay, st.PayingPhones, st.MailboxFullPhones = h.relayFacts(devices, devErr == nil)
 	}
 	s.setStatus(st)
 }

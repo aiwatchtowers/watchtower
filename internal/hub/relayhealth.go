@@ -186,8 +186,9 @@ func (r *relayHealth) follow(connected bool, now time.Time) {
 
 // facts is the health as the status shows it, after following connected,
 // and the mailbox flags of the phones still linked (devices): an unlinked
-// phone's flag goes, from hub_meta too.
-func (r *relayHealth) facts(connected bool, devices []state.Device) (RelayHealth, []string) {
+// phone's flag goes, from hub_meta too. devicesRead false (the read of the
+// linked phones failed) keeps every flag: a failed read is not an unlink.
+func (r *relayHealth) facts(connected bool, devices []state.Device, devicesRead bool) (RelayHealth, []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.follow(connected, r.clock())
@@ -197,7 +198,7 @@ func (r *relayHealth) facts(connected bool, devices []state.Device) (RelayHealth
 	}
 	dropped := false
 	for id := range r.mailboxFull {
-		if !linked[id] {
+		if devicesRead && !linked[id] {
 			delete(r.mailboxFull, id)
 			dropped = true
 		}
@@ -267,8 +268,9 @@ func payingPhones(active transport.Kind, acct *relayv1.AccountState, known bool,
 
 // relayFacts is the running hub's relay indicators for the status: the
 // relay's health (nil without a relay), the paying phones (nil: unknown) and
-// the phones whose mailbox is full.
-func (h *hubRuntime) relayFacts(devices []state.Device) (*RelayHealth, []string, []string) {
+// the phones whose mailbox is full. devicesRead false (the linked phones
+// could not be read) keeps the mailbox flags and leaves paying unknown.
+func (h *hubRuntime) relayFacts(devices []state.Device, devicesRead bool) (*RelayHealth, []string, []string) {
 	rt := h.relayT()
 	if h.health == nil || rt == nil {
 		return nil, []string{}, []string{}
@@ -281,7 +283,7 @@ func (h *hubRuntime) relayFacts(devices []state.Device) (*RelayHealth, []string,
 		connected = !h.unreachable
 		h.mu.Unlock()
 	}
-	health, full := h.health.facts(connected, devices)
+	health, full := h.health.facts(connected, devices, devicesRead)
 	health.PushOff = h.health.pushOff()
 	var (
 		acct  *relayv1.AccountState
@@ -290,5 +292,5 @@ func (h *hubRuntime) relayFacts(devices []state.Device) (*RelayHealth, []string,
 	if a, ok := rt.(accountKnower); ok {
 		acct, known = a.KnownAccountState()
 	}
-	return &health, payingPhones(h.tr.Kind(), acct, known, devices), full
+	return &health, payingPhones(h.tr.Kind(), acct, known && devicesRead, devices), full
 }

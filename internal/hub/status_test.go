@@ -88,7 +88,7 @@ func (g *healthRig) mailbox(i int) string {
 func (g *healthRig) data() string { return transport.DataZone(g.hub) }
 
 func (g *healthRig) facts(connected bool) (RelayHealth, []string) {
-	return g.r.facts(connected, g.phones)
+	return g.r.facts(connected, g.phones, true)
 }
 
 // persisted is the hub_meta mailbox_full_phones list.
@@ -211,6 +211,30 @@ func TestUnlinkRemovesThePhoneFromMailboxFull(t *testing.T) {
 	}
 	if got := g.persisted(t); len(got) != 0 {
 		t.Fatalf("hub_meta = %v after the unlink", got)
+	}
+}
+
+// TestMailboxFullSurvivesAFailedDeviceRead: a failed read of the linked
+// phones is not an unlink — the flags stay, in memory and in hub_meta, and
+// the paying list stays unknown; the next good read drops an unlinked one.
+func TestMailboxFullSurvivesAFailedDeviceRead(t *testing.T) {
+	g := newHealthRig(t)
+	a, b := g.phones[0].ID, g.phones[1].ID
+	g.r.saved(g.mailbox(0), transport.ErrMailboxQuota)
+	g.r.saved(g.mailbox(1), transport.ErrMailboxQuota)
+	want := []string{a, b}
+	slices.Sort(want)
+	if _, full := g.r.facts(true, nil, false); !slices.Equal(full, want) {
+		t.Fatalf("after a failed device read: %v, want %v", full, want)
+	}
+	if got := g.persisted(t); !slices.Equal(got, want) {
+		t.Fatalf("hub_meta after a failed device read = %v, want %v", got, want)
+	}
+	if _, full := g.r.facts(true, g.phones[1:], true); !slices.Equal(full, []string{b}) {
+		t.Fatalf("after a good read without A: %v, want only B", full)
+	}
+	if got := g.persisted(t); !slices.Equal(got, []string{b}) {
+		t.Fatalf("hub_meta = %v, want only B", got)
 	}
 }
 
