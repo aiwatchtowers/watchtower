@@ -92,6 +92,10 @@ type Deps struct {
 	// is *handlers.AgentNotFoundError (the phone's claude_not_found /
 	// codex_not_found), any other exit the session's own end.
 	LaunchWatch time.Duration
+	// Hidden is the session ids waiting in the Desktop's Undo batch
+	// (PROJ-17): an open_existing start never reopens one and starts a new
+	// session instead. nil = none.
+	Hidden func() map[int64]bool
 
 	// host leases a session-host client (the port's own; nil = dial one
 	// per call).
@@ -411,7 +415,11 @@ func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, 
 		}
 	}
 	if target != nil && r.OpenExisting {
-		existing, found, err := latestTargetSession(ctx, d.DB, target.id, wb.id, r.Agent)
+		var hidden map[int64]bool
+		if d.Hidden != nil {
+			hidden = d.Hidden()
+		}
+		existing, found, err := latestTargetSession(ctx, d.DB, target.id, wb.id, r.Agent, hidden)
 		if err != nil {
 			release()
 			return nil, nil, res, err
@@ -902,21 +910,29 @@ type existingRow struct {
 
 // latestTargetSession is the target's most recently active session on the
 // workbench (TerminalSessionPolicy.sessionForTarget), of agent when one is
-// named.
-func latestTargetSession(ctx context.Context, q *db.DB, target, wb int64, agent string) (existingRow, bool, error) {
-	r := existingRow{workbench: wb}
-	err := q.QueryRowContext(ctx, `SELECT id, kind, folder_path, COALESCE(claude_session_id, '')
+// named, never one of hidden (the Desktop's Undo batch, PROJ-17).
+func latestTargetSession(ctx context.Context, q *db.DB, target, wb int64, agent string, hidden map[int64]bool) (existingRow, bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id, kind, folder_path, COALESCE(claude_session_id, '')
 		FROM terminal_sessions WHERE target_id = ? AND project_id = ? AND kind IN ('claude', 'codex')
 		  AND (? = '' OR kind = ?)
-		ORDER BY last_active_at DESC, id DESC LIMIT 1`, target, wb, agent, agent).
-		Scan(&r.id, &r.kind, &r.folder, &r.agentSessionID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, false, nil
-	}
+		ORDER BY last_active_at DESC, id DESC`, target, wb, agent, agent)
 	if err != nil {
-		return r, false, fmt.Errorf("reading target %d's sessions: %w", target, err)
+		return existingRow{}, false, fmt.Errorf("reading target %d's sessions: %w", target, err)
 	}
-	return r, true, nil
+	defer rows.Close()
+	for rows.Next() {
+		r := existingRow{workbench: wb}
+		if err := rows.Scan(&r.id, &r.kind, &r.folder, &r.agentSessionID); err != nil {
+			return existingRow{}, false, fmt.Errorf("reading target %d's sessions: %w", target, err)
+		}
+		if !hidden[r.id] {
+			return r, true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return existingRow{}, false, fmt.Errorf("reading target %d's sessions: %w", target, err)
+	}
+	return existingRow{}, false, nil
 }
 
 // reopen answers a target's existing session: running in the host already,

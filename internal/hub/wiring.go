@@ -141,6 +141,12 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	lateEcho func(context.Context, actions.Request, actions.Outcome) error,
 ) (*wiring, error) {
 	w := &wiring{}
+	// An open_existing start never reopens a session in the Desktop's Undo
+	// batch (PROJ-17), as the published sessions leave it out.
+	o.SessionStart.Hidden = func() map[int64]bool {
+		hidden, _ := h.sup.desktopView()
+		return hidden
+	}
 	port, err := w.sessionPort(context.Background(), o)
 	if err != nil {
 		return nil, err
