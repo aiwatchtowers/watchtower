@@ -273,7 +273,9 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			spool := filepath.Join(t.TempDir(), "calls.jsonl")
 			llmusage.SetSpoolPath(spool)
 			t.Cleanup(func() { llmusage.SetSpoolPath("") })
-			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), time.Second)
+			// A hang guard only: two shell stubs start in turn, which takes
+			// well over a second on a loaded machine.
+			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), 30*time.Second)
 			defer cancel()
 			text, _, _, err := coachGeneratorFactory(cfg).Generate(ctx, "", "request", "")
 			require.NoError(t, err)
