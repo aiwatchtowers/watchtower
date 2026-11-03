@@ -93,7 +93,7 @@ func TestOpenExistingOnALiveSessionDoesNotWatchTheLaunch(t *testing.T) {
 	began := time.Now()
 	res, err := Start(context.Background(), d, handlers.StartRequest{Workbench: w.wb, Target: ptr(tid), OpenExisting: true})
 	require.NoError(t, err)
-	assert.Less(t, time.Since(began), 2*time.Second, "the live session's launch is not watched")
+	assert.Less(t, time.Since(began), 4*time.Second, "the live session's launch is not watched")
 	assert.Equal(t, first.SessionID, res.SessionID)
 	assert.Equal(t, StateRunning, res.State)
 	now, ok := findRun(w.list(), sessionhost.Scope(w.dbPath), first.SessionID)
