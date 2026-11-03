@@ -371,6 +371,30 @@ func (p *Publisher) takeDirty() {
 	clear(p.nowDirty)
 }
 
+// fullKinds is what a full diff at now covers: nil (every kind) unless some
+// kind is held past now, else every kind with a source but those, which keep
+// their time. Holds that have run out are dropped.
+func (p *Publisher) fullKinds(now time.Time, held map[Kind]time.Time) []Kind {
+	waiting := false
+	for k, at := range held {
+		if now.Before(at) {
+			waiting = true
+		} else {
+			delete(held, k)
+		}
+	}
+	if !waiting {
+		return nil
+	}
+	out := []Kind{}
+	for _, k := range p.sourceKinds() {
+		if _, ok := held[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // retryWait is how long the kinds a failed cycle left wait: the relay's
 // retry_after_s after RATE_LIMITED (RetryFirst without one, at most
 // RetryRateLimitedMax), else the backoff, doubled from RetryFirst to RetryMax.
@@ -390,8 +414,9 @@ func retryWait(err error, backoff *time.Duration) time.Duration {
 // and every FullDiffEvery, the dirty kinds after their debounce, the kinds
 // the spacing rule deferred once it allows them, and the kinds a cycle did
 // not finish after a bounded backoff (RetryFirst doubling to RetryMax; the
-// relay's retry_after_s after RATE_LIMITED). A dirty kind held for its
-// spacing or a retry waits for that time.
+// relay's retry_after_s after RATE_LIMITED). A kind held for its spacing or
+// a retry waits for that time whatever marks it: a nudge, the periodic full
+// diff and Resume's full diff alike cover only the kinds not held.
 func (p *Publisher) Run(ctx context.Context) error {
 	held := map[Kind]time.Time{} // monotonic time each deferred or retried kind may go
 	nextFull := p.mono()
@@ -422,7 +447,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 		)
 		if full {
 			p.takeDirty()
-			clear(held)
+			kinds = p.fullKinds(now, held)
 			nextFull = now.Add(FullDiffEvery)
 		} else {
 			for _, k := range p.takeDue(now) {
@@ -441,10 +466,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 				}
 			}
 		}
-		if full || len(kinds) > 0 {
-			if full {
-				kinds = nil
-			}
+		if (full && kinds == nil) || len(kinds) > 0 {
 			rep, err := p.Cycle(ctx, kinds)
 			if ctx.Err() != nil {
 				return ctx.Err()

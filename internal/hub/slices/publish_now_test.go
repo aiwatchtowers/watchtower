@@ -175,11 +175,7 @@ func TestPublishNowWaitsOutAFailedSavesBackoff(t *testing.T) {
 
 // A RATE_LIMITED save waits the relay's retry_after_s, not the backoff.
 func TestRateLimitedSaveWaitsTheRelaysRetryAfter(t *testing.T) {
-	limited := func(after uint32) error {
-		return relay.MapError(&client.Error{E: &relayv1.Error{
-			Code: relayv1.ErrorCode_ERROR_CODE_RATE_LIMITED, RetryAfterS: &after,
-		}})
-	}
+	limited := rateLimited
 	r := newRig(t, transport.KindRelay)
 	r.tr.FailNext("save", limited(3))
 	src := &fakeSource{kind: "target"}
@@ -279,5 +275,70 @@ func TestPublishNowBurstOnCloudKitKeepsTheSpacing(t *testing.T) {
 		if i == len(got) || got[i].Sub(c) > CloudKitSpacing {
 			t.Fatalf("the change at +%v waited more than %v (saves %v)", c.Sub(changes[0]), CloudKitSpacing, got)
 		}
+	}
+}
+
+// rateLimited is the relay's RATE_LIMITED with retry_after_s.
+func rateLimited(after uint32) error {
+	return relay.MapError(&client.Error{E: &relayv1.Error{
+		Code: relayv1.ErrorCode_ERROR_CODE_RATE_LIMITED, RetryAfterS: &after,
+	}})
+}
+
+// A kind held by the relay's retry_after_s stays unsent across the periodic
+// full diff, which still publishes every other kind.
+func TestFullDiffKeepsARetryHold(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	held, other := &fakeSource{kind: "target"}, &fakeSource{kind: "workbench"}
+	held.set(item("1", `{"v":0}`))
+	other.set(item("1", `{"v":0}`))
+	ru := r.runFake(held, other)
+	ru.step(FullDiffEvery - time.Second)
+	r.tr.FailNext("save", rateLimited(30))
+	held.set(item("1", `{"v":1}`))
+	ru.publishNow("target") // fails at 59 s: held until 89 s
+	other.set(item("1", `{"v":1}`))
+	ru.step(time.Second) // the full diff at 60 s
+	if n := len(other.readTimes()); n != 2 {
+		t.Fatalf("the other kind read %d times by the full diff, want 2", n)
+	}
+	if n := len(held.readTimes()); n != 2 {
+		t.Fatalf("the held kind read %d times by the full diff, want 2 (start + the failed save)", n)
+	}
+	ru.step(29*time.Second - time.Millisecond)
+	if n := len(held.readTimes()); n != 2 {
+		t.Fatalf("the held kind read %d times before its retry_after_s ran out", n)
+	}
+	ru.step(time.Millisecond)
+	if n := len(held.readTimes()); n != 3 {
+		t.Fatalf("the held kind read %d times when its hold ran out, want 3", n)
+	}
+}
+
+// Resume's full diff does not lift a retry hold either.
+func TestResumeKeepsARetryHold(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	held, other := &fakeSource{kind: "target"}, &fakeSource{kind: "workbench"}
+	held.set(item("1", `{"v":0}`))
+	other.set(item("1", `{"v":0}`))
+	ru := r.runFake(held, other)
+	ru.step(RelaySpacing)
+	r.tr.FailNext("save", rateLimited(30))
+	held.set(item("1", `{"v":1}`))
+	ru.publishNow("target") // held for 30 s
+	ru.p.Pause()
+	ru.step(time.Second)
+	n := ru.ft.armedCount()
+	ru.p.Resume()
+	ru.settle(n)
+	if n := len(other.readTimes()); n != 2 {
+		t.Fatalf("the other kind read %d times by Resume's full diff, want 2", n)
+	}
+	if n := len(held.readTimes()); n != 2 {
+		t.Fatalf("Resume read the held kind: %d reads, want 2", n)
+	}
+	ru.step(29 * time.Second)
+	if n := len(held.readTimes()); n != 3 {
+		t.Fatalf("the held kind read %d times when its hold ran out, want 3", n)
 	}
 }
