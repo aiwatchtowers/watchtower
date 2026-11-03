@@ -144,6 +144,11 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 
 	var ledger *backfillLedger
 	if pipe != nil {
+		release, err := lockBackfillLedger(cfg.WorkspaceDir())
+		if err != nil {
+			return err
+		}
+		defer release()
 		if ledger, err = loadBackfillLedger(cfg.WorkspaceDir()); err != nil {
 			return err
 		}
@@ -267,10 +272,16 @@ func freezeDigestedChannelDays(database *db.DB, ledger *backfillLedger, accountI
 	changed := false
 	for d := from.UTC().Truncate(24 * time.Hour); d.Before(to); d = d.Add(24 * time.Hour) {
 		key := backfillLedgerKey(accountID, utcDayKey(d))
-		if ledger.Days[key] != nil {
-			continue
-		}
 		dayFrom, dayTo := float64(d.Unix()), float64(d.Add(24*time.Hour).Unix())
+		if known := ledger.Days[key]; known != nil {
+			stale, err := staleLedgerDay(database, known, dayFrom, dayTo)
+			if err != nil {
+				return err
+			}
+			if !stale {
+				continue
+			}
+		}
 		candidates, err := database.ChannelsWithMessagesInRange(accountID, dayFrom, dayTo)
 		if err != nil {
 			return err
@@ -292,6 +303,19 @@ func freezeDigestedChannelDays(database *db.DB, ledger *backfillLedger, accountI
 		return nil
 	}
 	return ledger.save()
+}
+
+// staleLedgerDay reports a frozen day whose covering digests are gone (an
+// account purge deleted the data, PURGE-02): the day is decided again from
+// what the database holds now, as for a first run.
+func staleLedgerDay(database *db.DB, day *backfillLedgerDay, dayFrom, dayTo float64) (bool, error) {
+	for _, c := range day.Covered {
+		has, err := database.ChannelDigestOverlaps(c, dayFrom, dayTo)
+		if err != nil || !has {
+			return err == nil, err
+		}
+	}
+	return false, nil
 }
 
 // backfillSlackDigests digests, day by day, the channels of the account that

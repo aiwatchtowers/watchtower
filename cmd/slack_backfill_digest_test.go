@@ -234,6 +234,42 @@ func TestBackfillSlackDigests_RerunRebuildsAPendingRollup(t *testing.T) {
 	assert.Equal(t, 2, countDigests(t, f.db, `channel_id = '1:C2'`), "no digest on top of the first run's")
 }
 
+// After an account purge deleted the covering digests, a frozen day is
+// decided again from what the database holds (PURGE-02: a re-login starts
+// over), so the refetched day is digested.
+func TestFreezeDigestedChannelDays_RedecidesADayWhoseDigestsAreGone(t *testing.T) {
+	f := newGapFixture(t)
+	f.freeze(t)
+	key := backfillLedgerKey(1, utcDayKey(f.day1))
+	require.Equal(t, []string{"1:C1"}, f.ledger.Days[key].Covered)
+
+	_, err := f.db.Exec(`DELETE FROM digests`)
+	require.NoError(t, err)
+	_, err = f.db.Exec(`DELETE FROM messages`)
+	require.NoError(t, err)
+	f.reload(t)
+	f.freeze(t)
+	assert.Empty(t, f.ledger.Days[key].Covered)
+
+	seedBackfillMessage(t, f.db, "1:C1", f.day1.Add(5*time.Hour), "c1-refetched")
+	digests, _, err := f.digest(t)
+	require.NoError(t, err)
+	assert.Equal(t, 1, digests)
+}
+
+// Two digesting runs in one workspace would overwrite each other's ledger.
+func TestLockBackfillLedger_OneRunAtATime(t *testing.T) {
+	dir := t.TempDir()
+	release, err := lockBackfillLedger(dir)
+	require.NoError(t, err)
+	_, err = lockBackfillLedger(dir)
+	require.ErrorIs(t, err, errBackfillRunning)
+	release()
+	again, err := lockBackfillLedger(dir)
+	require.NoError(t, err)
+	again()
+}
+
 func TestBackfillDays_SplitsOnUTCDaysClippedToTheChunk(t *testing.T) {
 	from := time.Date(2026, 3, 10, 22, 0, 0, 0, time.UTC)
 	to := from.Add(48 * time.Hour)

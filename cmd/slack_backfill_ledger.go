@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 )
 
 // slackBackfillLedgerFile keeps, per Slack account and UTC day, what
@@ -28,6 +29,28 @@ type backfillLedgerDay struct {
 type backfillLedger struct {
 	path string
 	Days map[string]*backfillLedgerDay `json:"days"` // key "<account>:<YYYY-MM-DD UTC>"
+}
+
+// errBackfillRunning refuses a second `slack backfill` with digests while
+// one runs in the workspace: each holds the ledger from load to its last
+// save, and two would overwrite each other's decisions.
+var errBackfillRunning = errors.New("another `watchtower slack backfill` is running in this workspace; run this one after it")
+
+// lockBackfillLedger takes the workspace's ledger lock for the whole
+// command (released on exit, or by release).
+func lockBackfillLedger(workspaceDir string) (release func(), err error) {
+	f, err := os.OpenFile(filepath.Join(workspaceDir, slackBackfillLedgerFile+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening the slack backfill lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, errBackfillRunning
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func loadBackfillLedger(workspaceDir string) (*backfillLedger, error) {
