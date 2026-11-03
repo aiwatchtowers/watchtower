@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -92,7 +93,7 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				req.Mode = providerrouting.PreferredReserve
 				reason = ""
 				if sticky == cfg.AI.Fallback.Provider {
-					req.Preferred, req.Mode = sticky, providerrouting.Pinned
+					req.Preferred, req.Reserve = sticky, cfg.AI.Provider
 					reason = "quota_exhausted"
 				}
 			}
@@ -103,38 +104,27 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				_, m := providers.ResolveModelsFor(cfg, p)
 				return m
 			}
-			req.Capable = func(p string, _ providers.InvocationProfile) bool {
+			req.CheckCapability = func(p string, _ providers.InvocationProfile) (bool, error) {
 				if p == "claude" {
-					return true
+					return true, nil
 				}
 				if requiredClaudeAI.mode.On || len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0 {
-					return false
+					return false, nil
 				}
-				if _, err := chat.InlineTextAttachments("", c.Attachments); err != nil {
-					return false
+				if supported, err := sessionTextAttachmentCapability(c.Attachments); err != nil || !supported {
+					return supported, err
 				}
-				if p != cfg.AI.Provider && !reserveConnectionsCapable(cfg, database, p) {
-					return false
+				if p != cfg.AI.Provider {
+					return reserveConnectionsCapable(cfg, database, p)
 				}
 
-				return p == "codex" || p == "ollama"
+				return p == "codex" || p == "ollama", nil
 			}
-			if sticky == cfg.AI.Fallback.Provider && mode != "pinned" && cfg.AI.Fallback.Enabled {
-				checked := req
-				checked.Mode = providerrouting.PreferredReserve
-				checked.Reserve = cfg.AI.Provider
-				selected, err := router.Select(ctx, checked)
-				if err != nil {
-					return req, reason, err
-				}
-				if selected != sticky {
-					return req, "quota_wait", &providerrouting.Deferred{Provider: sticky}
-				}
-			}
+
 			return req, reason, nil
 		},
 		Selected: func(p, m, reason string) error {
-			if mode != "pinned" && p == cfg.AI.Fallback.Provider {
+			if mode != "pinned" {
 				sticky = p
 			}
 			return database.SetChatActual(conv.ID, p, m, reason)
@@ -180,13 +170,25 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 
 // A connection omitted by Codex's existing env-isolation rules cannot be
 // silently dropped by a reserve selection. This performs no model/tool probe.
-func reserveConnectionsCapable(cfg *config.Config, database *db.DB, provider string) bool {
+func reserveConnectionsCapable(cfg *config.Config, database *db.DB, provider string) (bool, error) {
 	if provider != "codex" {
-		return true
+		return true, nil
 	}
 	conns, err := database.ListEnabledExternalConnections()
 	if err != nil {
-		return false
+		return false, fmt.Errorf("listing reserve Quick Connections: %w", err)
 	}
-	return len(codexEnvSkips(cfg, conns, os.Environ())) == 0
+	return len(codexEnvSkips(cfg, conns, os.Environ())) == 0, nil
+}
+
+func sessionTextAttachmentCapability(attachments []chat.Attachment) (bool, error) {
+	_, err := chat.InlineTextAttachments("", attachments)
+	if err == nil {
+		return true, nil
+	}
+	var rejection *chat.AttachmentError
+	if errors.As(err, &rejection) && rejection.RequiresClaude {
+		return false, nil
+	}
+	return false, fmt.Errorf("checking turn attachments: %w", err)
 }

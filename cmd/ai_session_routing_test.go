@@ -96,6 +96,7 @@ func TestAISessionRoutingPersistsStickyAcrossRestartAndManualPin(t *testing.T) {
 	}))
 	require.NoError(t, second.Close())
 	require.NoError(t, health.RecordQuota(ctx, providerhealth.AccountScope("claude", ""), &providers.Failure{Provider: "claude", Category: providers.Quota}))
+	require.NoError(t, health.RecordQuota(ctx, providerhealth.AccountScope("codex", ""), &providers.Failure{Provider: "codex", Category: providers.Quota}))
 	blocked := makeBackend()
 	require.ErrorIs(t, blocked.Turn(ctx, chat.Command{TurnID: "blocked", Text: "keep question"}, func(e chat.Event) { require.NotEqual(t, chat.EventTextDelta, e.Type) }), providerrouting.ErrDeferred)
 	require.NoError(t, blocked.Close())
@@ -209,4 +210,80 @@ func TestAISessionRoutingPolicyRefusalDoesNotPersistPin(t *testing.T) {
 	require.Equal(t, "preferred_reserve", conv.RoutingMode)
 	require.Empty(t, conv.Provider)
 	require.Empty(t, conv.ActualProvider)
+}
+
+func TestAISessionRoutingExhaustedReserveReturnsToRecoveredPreferredBeforeNewTurn(t *testing.T) {
+	for _, preferred := range []string{"claude", "codex"} {
+		t.Run(preferred, func(t *testing.T) {
+			cleanup := setupWatchTestEnv(t)
+			t.Cleanup(cleanup)
+			resetAISessionFlags(t)
+			policytest.Set(t, nil)
+			t.Setenv("ANTHROPIC_API_KEY", "test-key")
+			reserve := "codex"
+			if preferred == reserve {
+				reserve = "claude"
+			}
+			cfg, err := config.Load(flagConfig)
+			require.NoError(t, err)
+			cfg.AI.Provider = preferred
+			cfg.AI.ConfiguredProvider = preferred
+			cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+			cfg.AI.Providers = map[string]config.AIProviderConfig{preferred: {Models: config.AIModels{Strong: "preferred-model"}}, reserve: {Models: config.AIModels{Strong: "reserve-model"}}}
+			cfg.ClaudePath = filepath.Join(t.TempDir(), "claude")
+			require.NoError(t, os.WriteFile(cfg.ClaudePath, []byte(fakeSessionClaude), 0o755))
+			cfg.CodexPath = routingCLI(t, "codex", false)
+			path := filepath.Join(t.TempDir(), "chat.db")
+			database, err := db.Open(path)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = database.Close() })
+			_, err = database.Exec(`INSERT INTO chat_conversations(id,created_at,updated_at,actual_provider,actual_model) VALUES(1,1,1,?,'reserve-model')`, reserve)
+			require.NoError(t, err)
+			health, err := providerhealth.Installation()
+			require.NoError(t, err)
+			require.NoError(t, health.RecordQuota(context.Background(), providerhealth.AccountScope(reserve, ""), &providers.Failure{Provider: reserve, Category: providers.Quota}))
+			conv, err := database.GetChatConversation(1)
+			require.NoError(t, err)
+			cmd := &cobra.Command{}
+			cmd.SetErr(io.Discard)
+			cmd.Flags().String("model", "", "")
+			backend, err := routedSessionBackend(cmd, cfg, database, path, conv, "", nil, 0, nil, func() {})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = backend.Close() })
+			_, err = backend.Start(context.Background())
+			require.NoError(t, err)
+			turn := func(id string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				terminals := 0
+				require.NoError(t, backend.Turn(ctx, chat.Command{TurnID: id, Text: "new owner turn"}, func(e chat.Event) {
+					require.Equal(t, preferred, e.Provider)
+					require.Equal(t, "preferred-model", e.Model)
+					if e.Type == chat.EventTurnDone {
+						terminals++
+					}
+					require.NotEqual(t, chat.EventError, e.Type)
+				}))
+				require.Equal(t, 1, terminals)
+				actual, err := database.GetChatConversation(1)
+				require.NoError(t, err)
+				require.Equal(t, preferred, actual.ActualProvider)
+				require.Equal(t, "preferred-model", actual.ActualModel)
+			}
+			turn("recovered")
+			// Once reserve is healthy too, the same backend must remember that its
+			// actual moved to preferred, rather than returning to the old sticky reserve.
+			root, err := config.AppSupportDir()
+			require.NoError(t, err)
+			require.NoError(t, os.Rename(filepath.Join(root, "provider-health"), filepath.Join(root, "prior-health")))
+			turn("stay-on-recovered")
+			require.NoError(t, backend.Close())
+			require.NoError(t, database.Close())
+			database, err = db.Open(path)
+			require.NoError(t, err)
+			actual, err := database.GetChatConversation(1)
+			require.NoError(t, err)
+			require.Equal(t, preferred, actual.ActualProvider)
+		})
+	}
 }

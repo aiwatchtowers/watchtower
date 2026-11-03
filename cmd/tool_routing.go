@@ -23,7 +23,7 @@ type toolRouteProvider struct {
 	router          *providerrouting.Router
 	build           func(*config.Config) (ai.Provider, func(), error)
 	readFolder      string
-	capable         func(string) bool
+	capable         func(string) (bool, error)
 	mu              sync.Mutex
 	nativeProviders map[string]toolNativeSession
 }
@@ -63,11 +63,14 @@ func (p *toolRouteProvider) request(sessionID string) providerrouting.Request {
 			_, m := providers.ResolveModelsFor(p.cfg, id)
 			return m
 		},
-		Capable: func(id string, _ providers.InvocationProfile) bool {
-			if p.capable != nil && !p.capable(id) {
-				return false
+		CheckCapability: func(id string, _ providers.InvocationProfile) (bool, error) {
+			if p.capable != nil {
+				supported, err := p.capable(id)
+				if err != nil || !supported {
+					return supported, err
+				}
 			}
-			return id == "claude" || id == "codex"
+			return id == "claude" || id == "codex", nil
 		}}
 }
 func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(context.Context, ai.Provider, providerrouting.Attempt) (providerrouting.Result, error)) (providerrouting.Result, error) {

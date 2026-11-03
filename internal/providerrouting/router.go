@@ -46,8 +46,10 @@ type Request struct {
 	Model                 func(provider string, tier digest.Tier) string
 	Identity              func(provider string) string // Reliable account metadata only; empty = installation.
 	Capable               func(provider string, profile providers.InvocationProfile) bool
-	InputBytes            int // Actual serialized input submitted by an isolated text leaf.
-	Hook                  AttemptHook
+	// CheckCapability distinguishes unsupported capabilities from operational failures.
+	CheckCapability func(provider string, profile providers.InvocationProfile) (bool, error)
+	InputBytes      int // Actual serialized input submitted by an isolated text leaf.
+	Hook            AttemptHook
 }
 type Attempt struct {
 	OperationID               string
@@ -274,6 +276,16 @@ func modelQuota(f *providers.Failure, model string) bool {
 }
 
 func (r *Router) capability(req Request, p string) error {
+	if req.CheckCapability != nil {
+		supported, err := req.CheckCapability(p, req.Profile)
+		if err != nil {
+			return fmt.Errorf("checking %s capabilities: %w", p, err)
+		}
+		if !supported {
+			return providers.CapabilityError(p, req.Profile, errors.New("provider does not support the required invocation profile"))
+		}
+	}
+
 	if req.Capable != nil && !req.Capable(p, req.Profile) {
 		return providers.CapabilityError(p, req.Profile, errors.New("provider does not support the required invocation profile"))
 	}

@@ -203,8 +203,8 @@ pin pair. `actual_provider`, `actual_model` and `routing_reason` record the chos
 attempt independently of the global preference. `SetChatRouting` is a manual
 selection and clears the previous actual pair. A chosen reserve remains sticky
 across turns and DB reopen; recovery of the preferred alone does not switch that
-conversation back. A known exhausted sticky reserve ends the pending turn without
-starting another provider. A new conversation starts from configured preferred.
+conversation back. If the sticky reserve is exhausted, a new automatic turn may select recovered
+preferred after policy and capability checks; if both are waiting, no child starts. A new conversation starts from configured preferred.
 Explicit CLI provider/model flags, including the default model, are pins.
 
 Auto-enabled sessions defer the warm child until the pending turn is known.

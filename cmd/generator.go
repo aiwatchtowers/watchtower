@@ -181,13 +181,13 @@ func buildAIClient(cfg *config.Config, dbPath, modelOverride string) ai.Provider
 func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
 	if toolRoutingEnabled(cfg, aiFlagModel) {
 		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath) })
-		routed.capable = func(provider string) bool {
+		routed.capable = func(provider string) (bool, error) {
 			if provider == cfg.AI.Provider || aiFlagTools != "chat" {
-				return true
+				return true, nil
 			}
 			database, err := db.Open(dbPath)
 			if err != nil {
-				return false
+				return false, fmt.Errorf("opening reserve capability database: %w", err)
 			}
 			defer database.Close()
 			return reserveConnectionsCapable(cfg, database, provider)
