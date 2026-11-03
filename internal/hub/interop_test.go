@@ -42,6 +42,7 @@ import (
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit/bridgefake"
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/wire"
@@ -215,6 +216,10 @@ type interopHub struct {
 	ctl    *ControlClient
 	cancel context.CancelFunc
 	done   chan error
+
+	// bridge is a desktop host's CloudKit bridge (startDesktopHub); nil on a
+	// headless hub.
+	bridge *bridgefake.Fake
 
 	mu sync.Mutex
 	tr *tappedTransport // the transport of the hub's current start
