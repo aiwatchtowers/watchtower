@@ -392,7 +392,10 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
 - **The Swift hub is deleted** (Task 24). `Services/MobileHub/`, `MobileHubMovedGuard`, `OwnerAwayCenter`/`OwnerAwayPolicy`
   (Go: `internal/hub/platform`, `TestAwayFromThePolicy`) and the tray's CloudKit push forwarding are gone. Each Swift
   hub test is mapped in the Task 24 PR (spec §13 "Ported guards"): most have a Go twin, the obsolete ones are listed
-  with their reasons, and the rows without a twin wait on ask #969. `HubKeyringVectorTests` stays as a standalone ChaChaPoly check of the Swift
+  with their reasons. The two POLICY-03 guards on the `MobileSync = off` wipe of a Swift state not yet handed over
+  (`testRetiredOffWipesAPendingSwiftStateAndKeepsSetting`, `testRetiredWipeNeverCreatesOrRepairsKeys`) are retired with no
+  Go twin (owner decision, ask #969 Q1): nothing wipes what the Swift hub published to iCloud before the hand-over; those
+  records stay in iCloud until the owner handles them (v1 limit). `HubKeyringVectorTests` stays as a standalone ChaChaPoly check of the Swift
   vector `internal/hub/identity/testdata/swift-keyring.json`. Learn's "iPhone paired" signal reads `phones` from
   `hub status --json`.
 
