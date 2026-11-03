@@ -108,6 +108,10 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 	case d.Header.TotalLength > MaxRecordingAssetBytes:
 		return recFailed(reasonInvalidParams, TooLargeMessage)
 	}
+	// MobileSync = workbench_only (#608, ask #969 Q4): a phone recording is
+	// not workbench data. Checked where the Swift hub did, at the ingest:
+	// after the exactly-once checks (an upload received already is answered
+	// received again), before anything is downloaded or written.
 	if h.d.Policy != nil && h.d.Policy() != policy.MobileAllowed {
 		return recFailed(reasonWriteFailed, PolicyBlockedMessage)
 	}

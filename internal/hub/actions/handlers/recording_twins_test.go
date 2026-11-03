@@ -56,9 +56,16 @@ func TestRecordingRefusedUnderWorkbenchOnly(t *testing.T) {
 	mode := policy.MobileWorkbenchOnly
 	e.h.d.Policy = func() string { return mode }
 
-	out := e.h.IntakeRecording(context.Background(), e.upload("u-1", []byte("audio")))
+	in := e.upload("u-1", []byte("audio"))
+	downloaded := false
+	dl := in.Download
+	in.Download = func(c context.Context, dst string) error { downloaded = true; return dl(c, dst) }
+	out := e.h.IntakeRecording(context.Background(), in)
 	if out.Status != wire.StatusFailed || out.Reason != reasonWriteFailed || out.Message != PolicyBlockedMessage {
 		t.Fatalf("outcome %+v, want the policy refusal", out)
+	}
+	if downloaded {
+		t.Fatal("a refused upload was downloaded")
 	}
 	if names := e.files(); len(names) != 0 {
 		t.Fatalf("files left: %v", names)
@@ -67,5 +74,27 @@ func TestRecordingRefusedUnderWorkbenchOnly(t *testing.T) {
 	mode = policy.MobileAllowed
 	if out := e.h.IntakeRecording(context.Background(), e.upload("u-2", []byte("audio"))); out.Status != wire.StatusReceived {
 		t.Fatalf("allowed: %+v", out)
+	}
+}
+
+// The Swift order (ask #969 Q4 default): the policy is checked at the
+// ingest, after the exactly-once checks, so a retry of an upload received
+// before the policy turned workbench_only is answered received again, not
+// refused, and no second recording is queued.
+func TestRecordingReceivedAgainUnderWorkbenchOnly(t *testing.T) {
+	e := newRecEnv(t)
+	e.beat(e.now)
+	mode := policy.MobileAllowed
+	e.h.d.Policy = func() string { return mode }
+	if out := e.h.IntakeRecording(context.Background(), e.upload("u-1", []byte("audio"))); out.Status != wire.StatusReceived {
+		t.Fatalf("first upload: %+v", out)
+	}
+	before := e.files()
+	mode = policy.MobileWorkbenchOnly
+	if out := e.h.IntakeRecording(context.Background(), e.upload("u-1", []byte("audio"))); out.Status != wire.StatusReceived {
+		t.Fatalf("retry under workbench_only: %+v, want received again", out)
+	}
+	if after := e.files(); len(after) != len(before) {
+		t.Fatalf("files %v -> %v", before, after)
 	}
 }

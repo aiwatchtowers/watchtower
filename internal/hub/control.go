@@ -457,7 +457,7 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return s.setEnabled(false)
 	case OpName:
 		name := strings.TrimSpace(r.Name)
-		if name == "" || len([]rune(name)) > wire.MaxMacNameLength {
+		if name == "" || wire.ClipMacName(name) != name {
 			return ControlAnswer{Error: ErrClassBadRequest}
 		}
 		if err := s.st.SetMeta(state.MetaDisplayName, name); err != nil {

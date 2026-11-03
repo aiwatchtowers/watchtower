@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/rivo/uniseg"
@@ -55,19 +54,22 @@ type LinkPayload struct {
 // keys first, then the rest. A key that is absent or null is missing.
 var restLinkKeys = []string{"hub_id", "mac_name", "nonce", "iat", "exp"}
 
-// ClipMacName clips to MaxMacNameLength grapheme clusters, as the Kit does
-// (a Swift String's prefix): an emoji joined with ZWJ, or a letter with its
-// combining marks, is never cut apart.
-func ClipMacName(s string) string {
-	if uniseg.GraphemeClusterCount(s) <= MaxMacNameLength {
-		return s
+// ClipMacName clips to MaxMacNameLength grapheme clusters, as the Kit's
+// LinkPayload and HeartbeatPayload and the Swift HubIdentity.clipMacName do
+// (String.prefix): an emoji ZWJ sequence or a letter with its combining
+// marks is never cut apart.
+func ClipMacName(s string) string { return ClipGraphemes(s, MaxMacNameLength) }
+
+// ClipGraphemes is Swift's String(s.prefix(n)): the first n grapheme
+// clusters of s, no ellipsis; a cluster is never split.
+func ClipGraphemes(s string, n int) string {
+	end, rest, state := 0, s, -1
+	for i := 0; i < n && rest != ""; i++ {
+		var cluster string
+		cluster, rest, _, state = uniseg.FirstGraphemeClusterInString(rest, state)
+		end += len(cluster)
 	}
-	var b strings.Builder
-	g := uniseg.NewGraphemes(s)
-	for n := 0; n < MaxMacNameLength && g.Next(); n++ {
-		b.WriteString(g.Str())
-	}
-	return b.String()
+	return s[:end]
 }
 
 // URL renders the code.
