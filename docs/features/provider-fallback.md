@@ -208,9 +208,10 @@ preferred after policy and capability checks; if both are waiting, no child star
 Explicit CLI provider/model flags, including the default model, are pins.
 
 Auto-enabled sessions defer the warm child until the pending turn is known.
-`Router.Select` checks shared known health, policy and capabilities before
-construction/start; `Router.Run` then wraps exactly one pinned, never-retried
-turn, including the warm startup. A typed terminal event's internal `Cause` is
+`Router.Select` checks policy, then shared known health, then the available
+candidate's capabilities before construction/start. A healthy candidate missing
+a required capability fails without switching merely for capability.
+`Router.Run` then wraps exactly one pinned, never-retried turn, including the warm startup. A typed terminal event's internal `Cause` is
 observed even when the backend returns nil. A newly discovered quota preserves
 partial text and action rows, records health, and ends that turn with
 `retryable=false`. A later new turn can choose reserve. Cancellation retires an

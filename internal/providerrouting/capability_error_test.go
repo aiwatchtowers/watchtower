@@ -53,3 +53,55 @@ func TestCapabilityCheckPreservesOperationalErrorsAndPolicyOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectChecksCapabilitiesOnlyForAvailableCandidate(t *testing.T) {
+	for _, scenario := range []string{"blocked", "healthy", "both-wait", "policy", "pinned"} {
+		t.Run(scenario, func(t *testing.T) {
+			health := providerhealth.New(t.TempDir(), nil)
+			if scenario != "healthy" {
+				require.NoError(t, health.RecordQuota(context.Background(), providerhealth.AccountScope("codex", ""), &providers.Failure{Provider: "codex", Category: providers.Quota}))
+			}
+			if scenario == "both-wait" {
+				require.NoError(t, health.RecordQuota(context.Background(), providerhealth.AccountScope("claude", ""), &providers.Failure{Provider: "claude", Category: providers.Quota}))
+			}
+			calls := map[string]int{}
+			req := Request{Preferred: "codex", Reserve: "claude", Mode: PreferredReserve, Profile: providers.ToolPreflight, CheckCapability: func(provider string, _ providers.InvocationProfile) (bool, error) {
+				calls[provider]++
+				return provider == "claude", nil
+			}}
+			router := &Router{Health: health, Allowed: func(string) error { return nil }}
+			if scenario == "policy" {
+				router.Allowed = func(provider string) error {
+					return providers.WithFailure(provider, providers.Policy, errors.New("policy refusal"))
+				}
+			}
+			if scenario == "pinned" {
+				req.Mode = Pinned
+			}
+			actual, err := router.Select(context.Background(), req)
+			switch scenario {
+			case "blocked":
+				require.NoError(t, err)
+				require.Equal(t, "claude", actual)
+				require.Zero(t, calls["codex"])
+				require.Equal(t, 1, calls["claude"])
+			case "healthy", "pinned":
+				var failure *providers.Failure
+				require.ErrorAs(t, err, &failure)
+				require.Equal(t, providers.Capability, failure.Category)
+				require.Equal(t, 1, calls["codex"])
+				require.Zero(t, calls["claude"])
+			case "both-wait":
+				require.ErrorIs(t, err, ErrDeferred)
+				require.Empty(t, calls)
+			case "policy":
+				var failure *providers.Failure
+				require.ErrorAs(t, err, &failure)
+				require.Equal(t, providers.Policy, failure.Category)
+				require.Empty(t, calls)
+			default:
+				t.Fatal("unknown scenario")
+			}
+		})
+	}
+}
