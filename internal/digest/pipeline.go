@@ -212,7 +212,7 @@ type backfillScope struct {
 	considered map[string]float64
 	failed     map[string]bool
 	errs       []error         // every failure of the call, in order
-	only       map[string]bool // nil = every channel; else only these (RunBackfillWindowChannels)
+	only       map[string]bool // nil = every channel; else only these, each loading (from, to] (RunBackfillWindowChannels)
 }
 
 // inBackfill reports whether the pipeline is writing a backfill digest or
