@@ -24,12 +24,12 @@ Watchtower has no telemetry and no crash reporting service (ask #996). The only 
 
 ### One source: `watchtower diagnostics`
 
-A new read-only command `watchtower diagnostics [--json] [--app-version <v>]` composes the summary; the Desktop shows its `text` verbatim and builds no line of its own. Go owns every input (config, provider resolution, features registry, every account table, Quick Connections, policy, daemon pid, `pipeline_runs`, goose version, log files) and the new error classifier; a Swift composer would be a Go↔Swift dual path over a dozen readers. A user without the app window gets the same text from the terminal.
+A new read-only command `watchtower diagnostics [--json] [--app-version <v>] [--iphone on|off]` composes the summary; the Desktop shows its `text` verbatim and builds no line of its own. Go owns every input (config, provider resolution, features registry, every account table, Quick Connections, policy, daemon pid, `pipeline_runs`, goose version, log files) and the new error classifier; a Swift composer would be a Go↔Swift dual path over a dozen readers. A user without the app window gets the same text from the terminal.
 
 **What it writes: nothing of Watchtower's.** Exactly:
 - a no-op `PersistentPreRunE` (no `ensureSchemaFormat`: no schema upgrade, no config rewrite); the config is loaded by the command itself and its absence or a parse error is reported, not fatal;
 - `Execute()` skips `sweepStaleTemp()` when the role is `cli:diagnostics`;
-- the database is opened with `db.OpenExisting(path, 500 ms)` (no migration, `query_only`; see Time budget) and `lockmetrics.Configure("")` right after, so no `dblock.jsonl` line;
+- the database is opened with the new `db.OpenExistingContext(ctx, path, 500 ms)` (no migration, `query_only`; see Time budget) and `lockmetrics.Configure("")` right after, so no `dblock.jsonl` line;
 - the one remaining effect: SQLite may create the database's `-wal`/`-shm` sidecars when no other process has them open (it removes them again on close). The database's content never changes.
 
 Test `TestDiagnostics_WritesNothing`: a config with `db.schema_format` below current, a database with a pending migration, a stale temp file matching `fsutil.StaleTempPatterns`; after the run the config bytes, the database file's hash, the goose version and the stale temp file are unchanged, and the data directory listing equals the one before except for the database's own `-wal`/`-shm`.
@@ -50,7 +50,7 @@ Recent errors (last 20):
   <yyyy-MM-dd HH:mmZ>  <phase>  <class>
 Crash: none in the logs | <n> in the logs, last after <yyyy-MM-dd HH:mmZ>, in <place> | <n> in the logs, last time unknown, in <place>
 Logs: watchtower.log <size> · daemon.log <size> (not attached)
-Database: schema <goose version> · <size> · managed by organization: yes|no
+Database: schema <goose version> · <size> · managed by organization: yes|no|unknown
 ```
 
 - **Recent errors.** The last 20 `pipeline_runs` rows with `status = 'error'` (time = `finished_at` in UTC, phase = `pipeline`, class), plus the last sync result in `last_sync.json` when it failed (phase `sync`). Never the text. No rows: `Recent errors: none`.
@@ -80,14 +80,43 @@ Database: schema <goose version> · <size> · managed by organization: yes|no
 | Crash, Logs | `unknown (no config)` (the log files live in the workspace) | printed |
 | Database | `unknown (no config)` | `unknown (no database)` / `unknown (database busy)` |
 
+### Inputs, and what each does when it fails
+
+Every line is built by its own function run through `safeLine`, which recovers a panic and prints `unknown (internal error)` for that line only. No input runs an external program: verified 2026-11-04 that `internal/config`, `internal/providers`, `internal/features` and `internal/policy` contain no `exec.Command`/`exec.LookPath`; the provider line reads config fields only and never resolves models by calling a CLI.
+
+| Input | What it reads | Missing / failed / slow → printed text | Test |
+|---|---|---|---|
+| Build info | `cmd.Version`, `Commit`, `BuildFlavor` (→ `default`/`corp`), `--app-version` | cannot fail; no `--app-version` (terminal) → the `· app …` part is left out | `TestDiagnostics_VersionLine` |
+| macOS, chip | `unix.Sysctl("kern.osproductversion")`, `unix.Sysctl("machdep.cpu.brand_string")` (syscalls) | error → `macOS unknown` / chip `Other` (the form's option) | `TestDiagnostics_SysctlFailure` (seam) |
+| Config | `config.Load(flagConfig)`: one local file | missing → `Config: none (not set up)`; parse error → `unreadable (parse)`; permission → `unreadable (permission)`; else `unreadable (other)`. Config-dependent lines then per the table above | `TestDiagnostics_NoConfig`, `TestDiagnostics_BrokenConfig`, `TestDiagnostics_UnreadableConfig` |
+| AI provider, reserve | `cfg.AI.Provider`, `cfg.AI.Fallback` (fields only) | empty provider → `AI: not set up` (JSON `provider`: `Not set up yet`) | `TestDiagnostics_AILine` |
+| Features | `features.All()` + config, as `features list` does (no database) | cannot block; a panic → `unknown (internal error)` | `TestDiagnostics_FeaturesLine` |
+| Accounts, Quick Connections | own `QueryContext`: `SELECT status, count(*) … GROUP BY status` per account table, `count(*)` of `external_connections` | no database → `unknown (no database)`; deadline → `unknown (database busy)`; a missing table (older schema) → that kind `unknown` while the others print | `TestDiagnostics_SourcesLine`, `TestDiagnostics_SourcesMissingTable` |
+| iPhone companion | `--iphone on|off`, passed by the Desktop, which owns the flag (`mobileSyncEnabled` in its own defaults — Go cannot read it) | absent (terminal) → the part is left out | `TestDiagnostics_IPhoneFlag` |
+| Policy | `policy.Current()`: the cgo CoreFoundation reader of the managed-preferences domain (local, cached 30 s) | no reader installed or read error → `managed by organization: unknown` | `TestDiagnostics_PolicyUnknown` (`policytest`) |
+| Daemon | `daemon.FindProcess(<workspace>/daemon.pid)` (file + signal 0), `<workspace>/last_sync.json` (read + parse) | no pid file / dead pid → `stopped`; `last_sync.json` missing or unparsable → `last cycle unknown` | `TestDiagnostics_DaemonStopped`, `TestDiagnostics_LastSyncUnreadable` |
+| Recent errors | own `QueryContext` on `pipeline_runs`, plus `last_sync.json` | no rows → `none`; no database / deadline → `unknown (no database)` / `unknown (database busy)` | `TestDiagnostics_RecentErrors`, busy tests below |
+| Error class | `diagnostics.ErrorClass` (pure) | cannot fail; unknown wording → `other` | `TestErrorClass` |
+| Schema, size | own `QueryContext`: `SELECT max(version_id) FROM goose_db_version`; `os.Stat` of the file | no goose table → `schema unknown`; deadline → `unknown (database busy)`; stat error → size left out | `TestDiagnostics_DatabaseLine` |
+| Log sizes | `os.Stat` of `watchtower.log`, `daemon.log` | missing → `<file> missing`; other error → `<file> unreadable` | `TestDiagnostics_LogMissing`, `TestDiagnostics_LogUnreadable` |
+| Crash | streamed reads of `watchtower.log.1`, `watchtower.log`, `daemon.log` | file missing/unreadable → skipped; all three → `Crash: unknown (no logs)`; 2 s budget hit → `(scan stopped after <N> MB)` | crash tests in Failure modes |
+| Any input | — | panic → `unknown (internal error)`; still running at the 8 s hard stop → `unknown (timed out)` | `TestDiagnostics_LinePanicIsContained`, `TestDiagnostics_HardStop` |
+
 ### Time budget
 
 The Desktop kills the command after 10 s (`CLIRunnerProtocol.run(args:timeout:)`), so the command must always finish well before that, however busy the database is. SQLite's `busy_timeout` applies per statement, and the command runs many statements, so a per-statement limit alone could add up past 10 s.
 
-- **One database deadline.** All database work — the open's ping and every query — runs under one `context.WithTimeout` of **4 s**, started before the open. The busy timeout per statement is **500 ms**, so a statement that is waiting when the deadline passes ends at most 500 ms later: the database part takes ≤ 4.5 s. When the deadline passes, the statement in flight and every database line not yet computed print `unknown (database busy)`; lines already computed stay.
+- **One database deadline.** All database work — the open's ping and every query — runs under one `context.WithTimeout` of **4 s**, started before the open. The busy timeout per statement is **500 ms**. When the deadline passes, the statement in flight and every database line not yet computed print `unknown (database busy)`; lines already computed stay.
+- **How the deadline reaches SQLite (verified 2026-11-04).** `db.OpenExisting` calls `Ping()` with no context, and the existing read helpers take none, so the command does not reuse them:
+  - `internal/db/db.go`: `openExistingDSN(dbPath, dsn)` becomes `openExistingDSN(ctx, dbPath, dsn)` and calls `d.PingContext(ctx)` (the pool's `pragmaConnector.Connect(ctx)` already receives that context). New exported `OpenExistingContext(ctx, dbPath, busy)`. `OpenExisting` and `OpenExistingRW` pass `context.Background()` — the same behaviour as today for their callers (`cmd/workbench_asks_cli.go`, `workbench_spec_review.go`, `workbench_askguard.go` ×2, `workbench_askguard_stop.go` ×2, `workbench_session_feed.go`, `usage_llm.go`, `internal/agentlogdb/totals.go`, and the four `OpenExistingRW` callers). No other function in `internal/db` changes.
+  - The four reads (accounts, Quick Connections, `pipeline_runs`, goose version) are the command's own `QueryContext` calls in `cmd/diagnostics.go`; no shared helper gains a context parameter.
+  - The driver honours the context: `internal/sqlcipher/sqlite3.go` runs a statement in a goroutine and calls `sqlite3_interrupt` on `ctx.Done()` (exec ~l.2481, rows ~l.2698). Its own comment says the interrupt is racy and can miss between `sqlite3_*` calls; the statement then finishes on its own, bounded by the 500 ms busy timeout plus the query's own time (small aggregate reads).
+  - **If a call ignores the context anyway**, the database stage runs in its own goroutine and the command stops waiting for it at 4.5 s: the lines it has not delivered print `unknown (database busy)` and the command goes on; the stranded goroutine dies with the process.
+  - The database part therefore takes ≤ 4.5 s.
 - **Log scan:** its own 2 s budget (above).
-- **The rest** (process start, config, `sysctl`, pid file, `last_sync.json`, `stat` of logs and the database file): no network and no locks, ≤ 0.5 s.
+- **The rest** (process start, config, `sysctl`, policy read, pid file, `last_sync.json`, `stat` of logs and the database file): local, no network, no locks, no external programs, ≤ 0.5 s.
 - **Total:** 0.5 + 4.5 + 2 = **7 s worst case**, leaving 3 s to the Desktop's 10 s for process launch and JSON decoding. The database and the log scan run one after the other (no shared lock, but sequential keeps the arithmetic simple and the CPU low).
+- **Hard stop.** Whatever an input does (a hung local file read, a bug), the lines are built in a worker goroutine and the command prints what it has at **8 s** — missing lines `unknown (timed out)` — and exits 0, still inside the app's 10 s.
 
 A busy database is real even in WAL mode: a writer holding `locking_mode = EXCLUSIVE`, or WAL recovery after a crash, makes readers wait. Test `TestDiagnostics_BusyDatabaseFinishesInTime`: another connection takes an exclusive lock (`PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE`) and holds it; the command finishes in under 5 s of database time and under 7.5 s total, exits 0, prints `unknown (database busy)` for Sources, Recent errors and Database, and every non-database line normally. A second test, `TestDiagnostics_DeadlineMidway`, uses a fake reader seam whose queries sleep 1.5 s each: the lines computed before the deadline are printed, the rest say `unknown (database busy)`, and the total stays under 7.5 s.
 
@@ -177,6 +206,8 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 
 - `bug_report.yml` field ids and dropdown option labels ↔ `ReportProblemLink` keys ↔ the Go `chip`/`provider`/`sources` mappings. Go `TestDiagnostics_FormOptions` parses `.github/ISSUE_TEMPLATE/bug_report.yml` and checks every value the mapping can emit is an option; Swift `testLinkKeysMatchForm` checks the keys against the same file's ids.
 - CLI start-up: `diagnostics` joins the no-op `PersistentPreRunE` commands and the `sweepStaleTemp` skip in `Execute()`; a change to `ensureSchemaFormat`, `Execute()` or `OpenExisting`'s lock-metrics wiring must keep `TestDiagnostics_WritesNothing` green.
+- Desktop arguments: the sheet runs `watchtower diagnostics --json --app-version <CFBundleShortVersionString> --iphone <on|off from mobileSyncEnabled and the policy's MobileSync>`; Swift `testDiagnosticsArguments` pins them.
+- `internal/db.OpenExistingContext` ↔ `OpenExisting`/`OpenExistingRW` share `openExistingDSN`; their callers keep `context.Background()`.
 - Corp rule: Go's `flavor` output (`""`/`dev` → `default`, else `corp`) ↔ Swift `HubIdentity.flavor(buildFlavor:)`, which the sheet uses directly (it must decide even when the CLI failed). Pinned on both sides by a shared case table `report_problem_flavor_cases.json`.
 - Crash scan ↔ `cmd/logfile.go` (where the daemon's stderr lands, rotation name `.1`, the log timestamp layout) and the Go runtime's crash header.
 - `ErrorClass` markers ↔ provider error wording.
@@ -212,8 +243,9 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 | 18 | Screenshots and videos are not part of the report (the form's own hint covers them) | decided by agent |
 | 19 | Rename the Settings → Logs "Crash Log" tab to **Startup Log**, caption `What the daemon wrote before the Sync Log opened. Crashes are in the Sync Log.` — panics have gone to `watchtower.log` since the stderr redirect, so the old label sends people to the wrong file while they are reporting a problem | decided by agent |
 | 20 | Error classifier: fixed order, HTTP codes only in a status form, unknown wordings → `other` | decided by agent |
-| 21 | One 4 s deadline for all database reads with a 500 ms per-statement busy timeout, a 2 s log-scan budget, 7 s worst case inside the app's 10 s | ask #1028 (owner asked for one overall budget; the numbers decided by agent) |
+| 21 | One 4 s deadline for all database reads with a 500 ms per-statement busy timeout (new `db.OpenExistingContext` + the command's own `QueryContext` reads, a 4.5 s stop-waiting fallback), a 2 s log-scan budget, 7 s worst case and an 8 s hard stop inside the app's 10 s | ask #1028 (owner asked for one overall budget; the numbers decided by agent) |
 | 22 | Every crash variant names its place; no `watchtower/` frame → `location unknown` | ask #1028 |
+| 23 | Per-input failure behaviour, a panic contained per line, no input runs an external program; the iPhone flag comes from the Desktop as `--iphone` | ask #1030 (owner asked for the coverage; the specifics decided by agent) |
 
 **Contracts touched:** DIAG-01 (new) and the `watchtower diagnostics` `--json` keys (`text`, `version`, `macos`, `chip`, `provider`, `sources`, `flavor`) — approved in ask #1026. FILES-01 is not changed; decision 4 relies on its limits (logs still carry `<acct>:<id>`). No other inventory contract is touched.
 
