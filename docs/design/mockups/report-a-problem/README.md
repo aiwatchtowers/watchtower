@@ -9,6 +9,7 @@ Real SwiftUI renders of `ReportProblemShotFixtures` (`WatchtowerDesktop/Tests/De
 | Collecting (loading, busy) | ![](report-problem-collecting-light.png) | ![](report-problem-collecting-dark.png) |
 | Ready, nothing typed (empty) | ![](report-problem-empty-light.png) | ![](report-problem-empty-dark.png) |
 | Ready, typed | ![](report-problem-filled-light.png) | ![](report-problem-filled-dark.png) |
+| Database busy (lines with `unknown (database busy)`) | ![](report-problem-busy-light.png) | ![](report-problem-busy-dark.png) |
 | Diagnostics failed, Retry (error) | ![](report-problem-failed-light.png) | ![](report-problem-failed-dark.png) |
 | Opened, sheet stays | ![](report-problem-opened-light.png) | ![](report-problem-opened-dark.png) |
 | Link too long, Copy Report | ![](report-problem-tooLong-light.png) | ![](report-problem-tooLong-dark.png) |

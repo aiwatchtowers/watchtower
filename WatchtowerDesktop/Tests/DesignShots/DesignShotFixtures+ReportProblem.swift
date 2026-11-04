@@ -9,7 +9,7 @@ import SwiftUI
 @MainActor
 enum ReportProblemShotFixtures {
     enum Frame: String, CaseIterable {
-        case collecting, empty, filled, failed, opened, tooLong, browserFailed, saveFailed, corp
+        case collecting, empty, filled, busy, failed, opened, tooLong, browserFailed, saveFailed, corp
     }
 
     static var shots: [DesignShot] {
@@ -33,7 +33,8 @@ enum ReportProblemMockCopy {
     static let title = "Report a Problem"
     static let intro = "Tell us what went wrong. Watchtower sends nothing itself: "
         + "you review everything below and submit it on GitHub yourself."
-    static let corpIntro = "This is your organization's build. Save the diagnostics and send the file to your IT team."
+    static let corpIntro = "This is your organization's build. Save the diagnostics to a file to share them."
+    static let corpPlaceholder = "Steps to reproduce, what you expected, and what happened instead."
     static let whatHappened = "What happened?"
     static let placeholder = "What you did, what you expected, what you saw instead."
     static let typeToContinue = "Describe the problem to continue."
@@ -76,6 +77,22 @@ enum ReportProblemMockCopy {
     Database: schema 166 · 1.2 GB · managed by organization: \(corp ? "yes" : "no")
     """ }
     static let partial = "Watchtower app 0.27.0\nmacOS 15.5"
+
+    static let busySample = """
+    Watchtower 0.27.0 (commit 1a2b3c4, flavor: default) · app 0.27.0
+    macOS 15.5 · Apple M3
+    Config: ok
+    AI: Claude Code · reserve Codex, automatic
+    Features on: briefing, tracks, knowledge-search, people
+    Sources: unknown (database busy) · iPhone companion on
+    Daemon: running · last cycle 4 min ago, done
+    Recent errors (last 20):
+      pipeline runs unknown (database busy)
+      2026-11-04 09:40Z  sync        network
+    Crash: none in the logs
+    Logs: watchtower.log 4 MB · daemon.log 12 KB (not attached)
+    Database: schema unknown (database busy) · 1.2 GB · managed by organization: no
+    """
 }
 
 private struct ReportProblemSheetMock: View {
@@ -121,7 +138,7 @@ private struct ReportProblemSheetMock: View {
                     .scrollContentBackground(.hidden)
                     .frame(height: 72)
                 if text.isEmpty {
-                    Text(Copy.placeholder).foregroundStyle(.tertiary).padding(.leading, Spacing.small)
+                    Text(isCorp ? Copy.corpPlaceholder : Copy.placeholder).foregroundStyle(.tertiary).padding(.leading, Spacing.small)
                 }
             }
             .padding(Spacing.regular)
@@ -153,7 +170,7 @@ private struct ReportProblemSheetMock: View {
                         Button(Copy.retry) {}.buttonStyle(.kitSecondary)
                     }
                 default:
-                    Text(Copy.sample(corp: isCorp))
+                    Text(frame == .busy ? Copy.busySample : Copy.sample(corp: isCorp))
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
