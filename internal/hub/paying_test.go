@@ -2,8 +2,13 @@ package hub
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +20,7 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/secure"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -873,5 +879,67 @@ func TestUnpromotedPhoneCostsOneReadPerTick(t *testing.T) {
 	}
 	if n := rc.sets.Load() - sets; n != 0 {
 		t.Fatalf("%d readers sets over %d ticks of an unpromoted phone", n, ticks)
+	}
+}
+
+// After a proven record moved a relay id, the paying state follows it: the
+// account's slot counts for the prover and no longer for the old row
+// (payingByDevice, what transport_switch's not_paying reads).
+func TestAMovedRelayIDPaysForItsProver(t *testing.T) {
+	st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	id, err := identity.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := func() time.Time { return time.Unix(1_800_000_000, 0).UTC() }
+	kr, err := identity.NewKeyring(id, st, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := key.Public().(ed25519.PublicKey)
+	relayID := identity.RelayDeviceID(pub)
+	stale, prover := "AAAAAAAA-0000-4000-8000-000000000001", "AAAAAAAA-0000-4000-8000-000000000002"
+	if err := st.WithTx(t.Context(), func(tx *sql.Tx) error {
+		if err := state.LinkDevice(tx, state.Device{ID: stale, Name: "Old", Scope: wire.ScopePrivate, LinkedAt: now(), RelayDeviceID: relayID}); err != nil {
+			return err
+		}
+		return state.LinkDevice(tx, state.Device{ID: prover, Name: "New", Scope: wire.ScopePrivate, LinkedAt: now().Add(time.Second)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	center := link.NewCenter(link.Config{Store: st, Keys: kr, Opener: secure.NewOpener(kr, kr), Clock: now})
+	acct := &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: relayID, Paying: true}}}
+	r := &accountReader{
+		read:    func(context.Context) (*relayv1.AccountState, error) { return acct, nil },
+		vouched: func() bool { return true },
+		clock:   now,
+	}
+	h := &hubRuntime{sup: &supervisor{o: Options{Clock: now}}, st: st, acct: r}
+	before, err := h.payingByDevice(t.Context())
+	if err != nil || !before[stale] || before[prover] {
+		t.Fatalf("before the record: %v %v", before, err)
+	}
+	proverID, err := secure.ParseID(prover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := base64.RawURLEncoding
+	d := wire.DevicePayload{DeviceID: prover, Name: "New", Scope: wire.ScopePrivate, StartSessions: true,
+		RelayDeviceID: relayID, RelayAuthPub: enc.EncodeToString(pub),
+		RelayIDSig: enc.EncodeToString(ed25519.Sign(key, link.RelayIDProofMessage(kr.HubID(), proverID, relayID)))}
+	if err := center.ApplyDeviceRecord(t.Context(), prover, link.DeviceRecord{Payload: d}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := h.payingByDevice(t.Context())
+	if err != nil || !after[prover] || after[stale] {
+		t.Fatalf("after the record: %v %v", after, err)
 	}
 }

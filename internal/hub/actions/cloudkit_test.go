@@ -2,13 +2,18 @@ package actions
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
 
 	"watchtower/internal/hub/hubtest"
+	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
@@ -477,5 +482,60 @@ func TestHygieneAgesOutHellosWithNoPhoneLinked(t *testing.T) {
 	}
 	if names := w.zoneNames(); len(names) != 0 {
 		t.Fatalf("left in the zone: %v", names)
+	}
+}
+
+// A device record's proof carries no time, so a re-read zone must not replay
+// it: the old row's record, delivered again after its id moved to the newer
+// prover, does not take the id back, and the rest of the record still applies.
+func TestARedeliveredDeviceRecordDoesNotMoveARelayIDBack(t *testing.T) {
+	w := newWorld(t, kindShared)
+	old, prover := w.phone, w.addPhone()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := key.Public().(ed25519.PublicKey)
+	id := identity.RelayDeviceID(pub)
+	proven := func(ph *hubtest.Phone) wire.DevicePayload {
+		return wire.DevicePayload{DeviceID: ph.ID().String(), Name: "Test Phone", Scope: "private", StartSessions: true,
+			RelayDeviceID: id, RelayAuthPub: base64.RawURLEncoding.EncodeToString(pub),
+			RelayIDSig: base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, link.RelayIDProofMessage(w.keys.HubID(), ph.ID(), id)))}
+	}
+	holder := func(ph *hubtest.Phone) string {
+		t.Helper()
+		d, ok, err := w.st.Device(ph.ID().String())
+		if err != nil || !ok {
+			t.Fatalf("device %v %v", ok, err)
+		}
+		return d.RelayDeviceID
+	}
+	name, err := old.WriteDeviceRecord(proven(old), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if got := holder(old); got != id {
+		t.Fatalf("the old phone's proof: %q", got)
+	}
+	first, ok := w.stored(name)
+	if !ok {
+		t.Fatal("the old phone's record is not in the zone")
+	}
+	if _, err := prover.WriteDeviceRecord(proven(prover), ""); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if got := holder(prover); got != id || holder(old) != "" {
+		t.Fatalf("the move: prover %q old %q", got, holder(old))
+	}
+	if _, err := w.fake.Write(old.Zone(), name, first.Envelope, transport.Expect{Mode: transport.ExpectNone}); err != nil {
+		t.Fatal(err)
+	}
+	if r := w.pass(); r.Read != 1 {
+		t.Fatalf("the re-delivery was not read: %+v", r)
+	}
+	if got := holder(prover); got != id || holder(old) != "" {
+		t.Fatalf("the re-delivery moved the id: prover %q old %q", got, holder(old))
 	}
 }
