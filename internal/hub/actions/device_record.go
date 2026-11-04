@@ -69,6 +69,16 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		log.Printf("hub: device record of device %s carries a code: a link needs a hello, ignored", b.id)
 		return p.markRead(ctx, b, rec, o)
 	}
+	if o.Verdict == secure.Same {
+		// This version was already decided and marked, whether it applied or
+		// was ignored (ApplyDeviceRecord returns nil for both). A re-delivery
+		// (a re-read zone) must not replay an old proof, which would take a
+		// relay id back from the phone it moved to. The proof carries no time;
+		// the mark is what dates it. So a proof ignored once, for a creator
+		// check that could not read the owner, waits for the phone's next
+		// rewrite under a new seq (a new upgrade start), not for a re-read.
+		d.RelayDeviceID, d.RelayAuthPub, d.RelayIDSig = "", "", ""
+	}
 	shares, _ := p.cfg.Transport.(transport.Shares)
 	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares}
 	if err := p.cfg.Links.ApplyDeviceRecord(ctx, b.id.String(), r); err != nil {

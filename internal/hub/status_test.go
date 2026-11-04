@@ -214,6 +214,24 @@ func TestUnlinkRemovesThePhoneFromMailboxFull(t *testing.T) {
 	}
 }
 
+// A flag belongs to a phone through its relay id: a row whose id moved to its
+// prover has no mailbox any more, so no save to that mailbox can ever clear
+// its flag. The flag goes at the next read, from hub_meta too; the other
+// phone's stays.
+func TestAMovedRelayIDTakesTheOldRowsMailboxFlagAway(t *testing.T) {
+	g := newHealthRig(t)
+	a, b := g.phones[0].ID, g.phones[1].ID
+	g.r.saved(g.mailbox(0), transport.ErrMailboxQuota)
+	g.r.saved(g.mailbox(1), transport.ErrMailboxQuota)
+	g.phones[0].RelayDeviceID = "" // the id moved off phone A's row
+	if _, full := g.facts(true); !slices.Equal(full, []string{b}) {
+		t.Fatalf("full = %v after %s lost its id, want only %s", full, a, b)
+	}
+	if got := g.persisted(t); !slices.Equal(got, []string{b}) {
+		t.Fatalf("hub_meta = %v, want only %s", got, b)
+	}
+}
+
 // TestMailboxFullSurvivesAFailedDeviceRead: a failed read of the linked
 // phones is not an unlink — the flags stay, in memory and in hub_meta, and
 // the paying list stays unknown; the next good read drops an unlinked one.

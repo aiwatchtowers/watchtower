@@ -241,8 +241,9 @@ func (c *Center) unlock() {
 }
 
 // OnRelayIDNamed sets fn, called with a phone's device id (upper case) after
-// a change commits in which its device record named a new relay id
-// (ApplyDeviceRecord): the readers and the account state are due again.
+// a change commits in which its device record named a new relay id or took
+// its stored id off another row (ApplyDeviceRecord): the readers and the
+// account state are due again.
 // Call it before the center is used.
 func (c *Center) OnRelayIDNamed(fn func(device string)) {
 	c.mu.Lock()

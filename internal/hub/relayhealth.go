@@ -185,20 +185,22 @@ func (r *relayHealth) follow(connected bool, now time.Time) {
 }
 
 // facts is the health as the status shows it, after following connected,
-// and the mailbox flags of the phones still linked (devices): an unlinked
-// phone's flag goes, from hub_meta too. devicesRead false (the read of the
-// linked phones failed) keeps every flag: a failed read is not an unlink.
+// and the mailbox flags of the phones still linked with a relay id (devices):
+// the flag of an unlinked phone, or of a row whose id moved to the phone that
+// proved it, goes, from hub_meta too (no save to its mailbox could clear it).
+// devicesRead false (the read of the linked phones failed) keeps every flag:
+// a failed read is not an unlink.
 func (r *relayHealth) facts(connected bool, devices []state.Device, devicesRead bool) (RelayHealth, []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.follow(connected, r.clock())
-	linked := map[string]bool{}
+	hasMailbox := map[string]bool{}
 	for _, d := range devices {
-		linked[d.ID] = true
+		hasMailbox[d.ID] = d.RelayDeviceID != ""
 	}
 	dropped := false
 	for id := range r.mailboxFull {
-		if devicesRead && !linked[id] {
+		if devicesRead && !hasMailbox[id] {
 			delete(r.mailboxFull, id)
 			dropped = true
 		}

@@ -36,7 +36,7 @@ type Device struct {
 	AckedEpoch uint32
 	// RelayAdmittedAt is when the relay first listed this phone as holding
 	// the hub in a slot (zero = not yet). Read only: MarkRelayAdmitted
-	// writes it, LinkDevice clears it.
+	// writes it; LinkDevice, SetRelayDeviceIDTx and ClearRelayDeviceIDTx clear it.
 	RelayAdmittedAt time.Time
 	// RelayLapsedAt is set while the phone's relay entitlement is lapsed
 	// and the hub stays on the relay (sim rule 16). RelaySkipSeq and
@@ -44,7 +44,8 @@ type Device struct {
 	// actions sent before it (never applied): ordered ones by action_seq
 	// (the highest the hub saw at or during the lapse), legacy ones by the
 	// lapse's time. Read only: LapseRelay, RaiseRelaySkipSeq and
-	// EndRelayLapse write them, LinkDevice clears them.
+	// EndRelayLapse write them, LinkDevice clears them, and
+	// ClearRelayDeviceIDTx ends a running lapse.
 	RelayLapsedAt   *time.Time
 	RelaySkipBefore *time.Time
 	RelaySkipSeq    uint64
@@ -175,6 +176,24 @@ func SetRelayDeviceIDTx(tx *sql.Tx, device, relayID string) error {
 		return ErrNoDevice
 	}
 	return nil
+}
+
+// ClearRelayDeviceIDTx takes relayID off every linked phone but keep, in the
+// caller's transaction, with what stands on it: the admission stamp (the slot
+// was the id's) and a running relay lapse, which only a paying read through
+// that id could end. It returns how many phones lost the id. The skip marks
+// stay: they only ever cut off records sent before a lapse.
+func ClearRelayDeviceIDTx(tx *sql.Tx, relayID, keep string) (int, error) {
+	res, err := tx.Exec(`UPDATE devices SET relay_device_id = NULL, relay_admitted_at = NULL, relay_lapsed_at = NULL
+		WHERE relay_device_id = ? AND device_id <> ? COLLATE NOCASE`, relayID, keep)
+	if err != nil {
+		return 0, fmt.Errorf("clearing a device's relay id: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("clearing a device's relay id: %w", err)
+	}
+	return int(n), nil
 }
 
 // LapseRelay marks device lapsed on the relay as of at (sim rule 16), in the
