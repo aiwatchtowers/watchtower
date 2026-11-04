@@ -7,6 +7,8 @@ Setup is two screens, **Goals** then **Connect**, and it asks for nothing you mu
 Watchtower needs a Mac with Apple Silicon on macOS 14 or later. Install it with Homebrew or with the install script; both put **Watchtower.app** in `/Applications` and the `watchtower` command-line tool on your PATH.
 
 ```bash
+brew tap aiwatchtowers/tap
+brew trust --tap aiwatchtowers/tap
 brew install --cask aiwatchtowers/tap/watchtower
 # or
 curl -fsSL https://raw.githubusercontent.com/aiwatchtowers/watchtower/main/scripts/install.sh | bash

@@ -5,6 +5,8 @@
 ## Install
 
 ```bash
+brew tap aiwatchtowers/tap
+brew trust --tap aiwatchtowers/tap
 brew install --cask aiwatchtowers/tap/watchtower
 ```
 

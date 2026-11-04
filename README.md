@@ -24,6 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/aiwatchtowers/watchtower/main/scrip
 Or with [Homebrew](https://brew.sh):
 
 ```bash
+brew tap aiwatchtowers/tap
+brew trust --tap aiwatchtowers/tap
 brew install --cask aiwatchtowers/tap/watchtower
 ```
 

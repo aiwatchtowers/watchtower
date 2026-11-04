@@ -2,8 +2,7 @@ cask "watchtower" do
   version "0.26.5"
   sha256 "fa9c207e2a48bfcf27ce1179fb4f6e3f046ee8052ae7d9bb1b1c69c52e89f4a7"
 
-  url "https://github.com/aiwatchtowers/watchtower/releases/download/v#{version}/Watchtower-#{version}-arm64.zip",
-      verified: "github.com/aiwatchtowers/watchtower/"
+  url "https://github.com/aiwatchtowers/watchtower/releases/download/v#{version}/Watchtower-#{version}-arm64.zip"
   name "Watchtower"
   desc "Reads Slack, mail, calendar and Jira and gives coding agents a board"
   homepage "https://aiwatchtowers.com/"
