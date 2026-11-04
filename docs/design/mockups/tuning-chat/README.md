@@ -35,9 +35,8 @@ sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
 | Statistics with unread Codex sessions: a quiet line under the title | §4.7 | `tuning-chat-codex-unread-{light,dark}.png` |
 
 "Analytics off" has no shot: **Tune** is hidden, as the coach sections are.
-When the panel leaves the pane narrow, the header's controls wrap under the
-period; the spec covers it in §4.4 Narrow scope ("the pane header wraps the
-filter under the period picker").
+When the panel leaves the pane narrow, the period picker and **Tune** wrap
+onto a second line under the agent filter, as spec §4.4 Narrow scope says.
 
 Render only these shots:
 
