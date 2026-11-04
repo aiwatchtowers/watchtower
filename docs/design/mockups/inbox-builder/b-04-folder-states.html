@@ -74,6 +74,27 @@
 
 <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
   <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Write refused</div>
+    <div class="mockup-body" style="line-height:1.9">
+      <div>📥 Inbox</div><div style="padding-left:14px">✅ Needs approval</div>
+      <div style="padding-left:14px">🚩 Release</div>
+      <div style="padding-left:14px">📁 <input class="mock-input" value="Release" style="width:150px"></div>
+      <small style="color:#d33">a folder named "Release" already exists here</small><br>
+      <small>The field stays open; nothing was written. Shot: <code>inbox-b-menu-write-refused</code>.</small>
+    </div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Folder read failed</div>
+    <div class="mockup-body" style="line-height:1.6">
+      <small style="color:#d33">database is locked</small><br>
+      <b>● Waiting for me</b> · 4 waiting<br><b>● Weekly mail roundup</b><br>
+      <small>The previous list stays; the next read clears the line. Shot: <code>inbox-b-read-failed</code>.</small>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
+  <div class="mockup" style="flex:1; min-width:260px">
     <div class="mockup-header">Save sheet: new folder</div>
     <div class="mockup-body"><small>The editor chat suggested a folder; the save sheet lists it.</small><br>
       New folder: Release, in Inbox<br><button class="mock-button">Cancel</button> <button class="mock-button">Save and Turn On</button><br>

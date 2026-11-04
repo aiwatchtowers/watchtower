@@ -7,7 +7,7 @@
 - [`b-01-inbox-menu.html`](../../design/mockups/inbox-builder/b-01-inbox-menu.html) — the folder menu, the root selected, the artifact ⋯ menu, the folder ⋯ menu, the root ⋯ menu, the Idea finder entry's ⋯ and a failed ⋯ entry on the artifact header.
 - [`b-02-needs-approval.html`](../../design/mockups/inbox-builder/b-02-needs-approval.html) — Needs approval: recipe card, native fallback card, failed action with Retry / Dismiss, reminder, recipe cards only, built-in upgrade notice, recipe off, built-in stopped (its own Turn On), last run failed, Turn On failed, empty.
 - [`b-03-waiting-for-me.html`](../../design/mockups/inbox-builder/b-03-waiting-for-me.html) — Waiting for me rows with native actions: idle, busy, write failed, Reply composer / refused / waiting, not yet run, empty; `track` and `idea` ref rows.
-- [`b-04-folder-states.html`](../../design/mockups/inbox-builder/b-04-folder-states.html) — empty root, empty folder, new folder, drag, move in progress, the menu changed (reload), delete, hidden folders shown, CLI unavailable, Move to folder ▸, the save sheet's new-folder line and its "folder was not created" line.
+- [`b-04-folder-states.html`](../../design/mockups/inbox-builder/b-04-folder-states.html) — empty root, empty folder, new folder, drag, move in progress, the menu changed (reload), a refused write, a failed read, delete, hidden folders shown, CLI unavailable, Move to folder ▸, the save sheet's new-folder line and its "folder was not created" line.
 
 `02-inbox-menu.html` from the brainstorm predates ask #947 (its entries are automations); the B mockups draw folders that many automations write into.
 
@@ -188,7 +188,7 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 
 **Menus:**
 
-- **Artifact ⋯** (from the artifact header and the list row's context menu): **Run Now**, **Edit What It Collects…**, **Edit the Look…**, **Schedule…**, **Move to Folder ▸** (the tree, current folder checked), **Turn Off**, **Run History**, **Delete…**. Each calls the existing verb: `AutomationsViewModel.runNow` (built-ins: `automations run <id>`), A's `AppState.openAutomationEditor(_:step:)` with `.collects` / `.look` / `.schedule`, `inbox folders route`, `AutomationsViewModel.setEnabled` (built-ins: `features disable <id>`), the Automations tab's run history for the automation (`AutomationsViewModel.open(automationID:runID:)`), `AutomationsViewModel.delete` behind today's confirmation. A built-in has no **Delete…**; `needs-approval` has no **Move to Folder**; a built-in without Run Now (`Entry.RunNow` false) has none. Done / Dismiss stay on the card as today.
+- **Artifact ⋯** (from the artifact header and the list row's context menu): **Run Now**, **Edit What It Collects…**, **Edit the Look…**, **Schedule…**, **Move to Folder ▸** (the tree, current folder checked), **Turn Off**, **Run History**, **Delete…**. Each calls the existing verb: `automations run <id>` (`AutomationsCLI.run`), A's `AppState.openAutomationEditor(_:step:)` with `.collects` / `.look` / `.schedule`, `inbox folders route`, `automations disable <id>` (`AutomationsCLI.setEnabled`; built-ins: `AppState.setBuiltinEnabled(<feature ids>, on: false)`, i.e. `features disable`), the Automations tab's run history for the automation (`AutomationsViewModel.open(automationID:runID:)`), `automations delete <id>` (`AutomationsCLI.delete`) behind today's confirmation. The Inbox calls the throwing CLI wrappers, not `AutomationsViewModel.runNow`/`setEnabled`/`delete`, so a failure is this press's own and shows on the artifact header *(those report into the tab-wide `lastError`, and `runNow`'s `false` also means busy)*. A built-in has no **Delete…**; `needs-approval` has no **Move to Folder**; a built-in without Run Now (`Entry.RunNow` false) has none. Done / Dismiss stay on the card as today.
 - **Folder ⋯** (owner folder; also its context menu): **Rename…**, **Icon ▸**, **New Folder Inside**, **Hide** / **Show**, **Delete…** (inline confirmation: "Delete “Release”? Its 2 folders, 3 automations and 5 artifacts move to Inbox.").
 - **Root ⋯**: **Learned Rules**, **Assistant Profile** (both open in the reading pane, as `InboxAuxPane.learnedRules` / `.profile` do today), **Show Hidden Folders**, **New Folder**. **Find Ideas in Past Messages…** moves to the Idea finder entry's ⋯ (today it sits in the Ideas filter's menu).
 - **Needs approval ⋯**: **Edit the Look…**, **Turn Off** / **Turn On**, **Run History**.
@@ -210,7 +210,7 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Needs approval, off | "Showing approvals in the standard card — Needs approval is off." + **Turn On** |
 | Needs approval, built-in stopped | "Showing approvals in the standard card — Needs approval was stopped after a run that would not end." + its own **Turn On** (resumes the stopped built-in) |
 | Needs approval, last run failed | "Showing approvals in the standard card — the last run failed." + **Run History** |
-| Needs approval, Turn On failed | the CLI's message under the note; the note stays |
+| Needs approval, Turn On failed | the reason the Turn On returned under the note (both buttons call `AppState.setBuiltinEnabled(["approval-cards"], on: true)`, the built-in card's Turn On: the `features enable` or daemon restart error, or "Feature changes are being applied in Settings — try again"); the note stays. Never read from `FeatureManagerService.loadError`, which other screens share |
 | Row busy | the row's buttons disabled, progress at its trailing edge |
 | Row write failed | the row stays, red error line, **Retry** |
 | Reply composer open | one-line field under the row, **Propose Reply** / **Cancel**, the line "Goes to Needs approval — nothing is sent until you approve it" |
@@ -224,6 +224,8 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Move in progress | the menu read-only, the moved folder dimmed in its new place |
 | Folder delete confirmation | inline under the folder row |
 | Hidden folders shown | dimmed rows with a "Hidden" caption |
+| Menu write refused | the inline field or row stays with the CLI's message under it (e.g. a duplicate title); the tree unchanged |
+| Folder read failed | the previous tree and list stay; today's strip error line |
 | CLI unavailable | menu edits disabled with "The watchtower CLI isn't available" (`CLIRunnerError.binaryNotFound`), reading still works |
 | Artifact ⋯ entry failed | the CLI's text on the artifact header |
 | Save sheet, new folder | "New folder: Release, in Inbox" |
@@ -327,6 +329,11 @@ Errors (exit 1, message on stderr, nothing written): `the Inbox menu changed —
 | A native row write fails | the row stays with its error and **Retry** |
 | A Reply proposal is refused | the composer stays open with the CLI's message; no row written |
 | The CLI is missing | menu and row writes disabled with the message; reading works |
+| A folder write is refused (validation, database busy) or its answer does not decode | the CLI's message under the field or row; nothing assumed written (an undecodable answer re-reads the tree) |
+| Turn On on the Needs approval note fails | the reason under the note; the note stays |
+| An artifact ⋯ entry fails | the error on the artifact header; the artifact unchanged |
+| The approval hook's wake fails | logged (ids only); the queued run starts at the next wake or cycle |
+| The Desktop's folder read fails | the previous tree and list stay with today's strip error line |
 | An older database without the folder tables | the Desktop reads a root-only tree; nothing crashes |
 
 ## Inventory contracts touched
