@@ -17,9 +17,14 @@ enum ReportProblemShotFixtures {
             DesignShot(name: "report-problem-\(frame.rawValue)", size: NSSize(width: 600, height: 0)) {
                 AnyView(ReportProblemSheetMock(frame: frame))
             }
-        } + [DesignShot(name: "report-problem-filled-narrow", size: NSSize(width: 360, height: 0)) {
-            AnyView(ReportProblemSheetMock(frame: .filled))
-        }]
+        } + [
+            DesignShot(name: "report-problem-filled-narrow", size: NSSize(width: 360, height: 0)) {
+                AnyView(ReportProblemSheetMock(frame: .filled))
+            },
+            DesignShot(name: "report-problem-settings-entry", size: NSSize(width: 480, height: 0)) {
+                AnyView(ReportProblemSettingsEntryMock())
+            }
+        ]
     }
 }
 
@@ -27,7 +32,7 @@ enum ReportProblemShotFixtures {
 enum ReportProblemMockCopy {
     static let title = "Report a Problem"
     static let intro = "Tell us what went wrong. Watchtower sends nothing itself: "
-        + "you review everything below and send it yourself."
+        + "you review everything below and submit it on GitHub yourself."
     static let corpIntro = "This is your organization's build. Save the diagnostics and send the file to your IT team."
     static let whatHappened = "What happened?"
     static let placeholder = "What you did, what you expected, what you saw instead."
@@ -42,7 +47,6 @@ enum ReportProblemMockCopy {
     static let discussions = "A question, not a problem? Ask in Discussions"
     static let cancel = "Cancel"
     static let save = "Save Diagnostics…"
-    static let email = "Email"
     static let open = "Open GitHub Issue"
     static let done = "Done"
     static let opened = "Opened in your browser. Finish the issue there; this window keeps your text until you press Done."
@@ -50,6 +54,9 @@ enum ReportProblemMockCopy {
     static let copyReport = "Copy Report"
     static let browserFailed = "Could not open your browser. Copy the link and paste it into a browser."
     static let copyLink = "Copy Link"
+    static let logsSection = "Logs"
+    static let openLogs = "Open Logs"
+    static let menuItem = "Report a Problem…"
     static let saveFailed = "Could not save the file: you do not have permission to save in that folder."
 
     static func sample(corp: Bool) -> String { """
@@ -64,7 +71,7 @@ enum ReportProblemMockCopy {
       2026-11-04 09:12Z  gmail-sync  auth
       2026-11-04 08:42Z  gmail-sync  auth
       2026-11-03 22:10Z  digests     timeout
-    Crash: no panic in the logs
+    Crash: none in the logs
     Logs: watchtower.log 4 MB · daemon.log 12 KB (not attached)
     Database: schema 166 · 1.2 GB · managed by organization: \(corp ? "yes" : "no")
     """ }
@@ -181,7 +188,7 @@ private struct ReportProblemSheetMock: View {
         }
     }
 
-    private var afterOpen: Bool { frame == .opened || frame == .tooLong || frame == .browserFailed }
+    private var afterOpen: Bool { [.opened, .tooLong, .browserFailed].contains(frame) }
     private var canSend: Bool { !text.isEmpty && frame != .collecting }
 
     private var buttons: some View {
@@ -204,8 +211,28 @@ private struct ReportProblemSheetMock: View {
         } else {
             Button(afterOpen ? Copy.done : Copy.cancel) {}.buttonStyle(.kitQuiet)
             Button(Copy.save) {}.buttonStyle(.kitSecondary).disabled(frame == .collecting)
-            Button(Copy.email) {}.buttonStyle(.kitSecondary).disabled(!canSend)
             Button(Copy.open) {}.buttonStyle(.kitPrimary).disabled(!canSend)
         }
+    }
+}
+
+/// Settings → System → Logs with the second entry point (design-only).
+private struct ReportProblemSettingsEntryMock: View {
+    private typealias Copy = ReportProblemMockCopy
+
+    var body: some View {
+        SettingsSection(title: Copy.logsSection) {
+            HStack(spacing: Spacing.regular) {
+                Button {} label: { Label(Copy.openLogs, systemImage: "doc.text") }
+                    .buttonStyle(.kitSecondary)
+                Button {} label: { Label(Copy.menuItem, systemImage: "exclamationmark.bubble") }
+                    .buttonStyle(.kitSecondary)
+                Spacer(minLength: 0)
+            }
+        }
+        .controlSize(.small)
+        .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .detailBackground()
     }
 }

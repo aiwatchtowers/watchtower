@@ -16,5 +16,6 @@ Real SwiftUI renders of `ReportProblemShotFixtures` (`WatchtowerDesktop/Tests/De
 | Save failed | ![](report-problem-saveFailed-light.png) | ![](report-problem-saveFailed-dark.png) |
 | Corporate build, Save only | ![](report-problem-corp-light.png) | ![](report-problem-corp-dark.png) |
 | Narrow (360 pt) | ![](report-problem-filled-narrow-light.png) | ![](report-problem-filled-narrow-dark.png) |
+| Settings → System → Logs entry | ![](report-problem-settings-entry-light.png) | ![](report-problem-settings-entry-dark.png) |
 
 Re-render: `cd WatchtowerDesktop && DESKTOP_SHOTS_DIR=<dir> swift test --filter DesignShotsTests/testReportProblemShotsRender`.
