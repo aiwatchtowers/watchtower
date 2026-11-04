@@ -47,7 +47,7 @@
 | Desktop indicators, `send_alert`, hub latency samples and `hub phones` `alerts` are built. | `docs/features/go-hub.md`, Phase 4 | No Desktop or hub production task here. |
 | `handlers.NudgeTable` maps action kind → slice kinds. | `internal/hub/actions/handlers/nudge.go` | Task 14 pins the phone's table to it with a shared fixture and a test-only Go reader. |
 
-**Settled before this plan:** ask #1005 is answered: a proven relay-id record moves the id from another row of the hub to the proving row. That fix lands separately on `feature/relay-client-next`, and this plan treats it as done, so no task waits for it. On 2026-11-04 that PR (#667) is still open, so it is a row in Launch conditions and Task 17 Step 6b reports its state: without it an upgrade after a stale row (3b final review, I1) keeps getting `not_paying`. The hello's relay-id proof stays deferred (3b decision 6, ask #980).
+**Settled before this plan:** ask #1005 is answered: a proven relay-id record moves the id from another row of the hub to the proving row. That fix is merged into `feature/relay-client-next` (PR #667), so no task waits for it. The hello's relay-id proof stays deferred (3b decision 6, ask #980).
 
 ## Owner-only steps (named, never faked)
 
@@ -129,7 +129,7 @@ Every piece of state these tasks write, each writer, and who wins.
 
 ## Launch conditions
 
-Phase 4 merges into `feature/relay-client-next` without these. Relay does not turn on for users (a Release origin) until each is closed. Board targets for G1–G3 are created after this review round.
+Phase 4 merges into `feature/relay-client-next` without these. Relay does not turn on for users (a Release origin) until each is closed. G1–G3 are on the board under the umbrella target's group for the Go hub's launch conditions.
 
 | Condition | Owner |
 |---|---|
@@ -137,7 +137,6 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | G2, a desktop hub after a move with the old phone gone: checked, and fixed if needed | Go hub session |
 | G3, the duplicate alert at a switch: fixed or accepted (Open decision 10) | Go hub session, owner's ruling |
 | The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together**, pinned by the `device_payload` fixture case on both sides | Go hub session, approved by name in Open decision 1 |
-| PR #667, a proven relay id moves to the row that proved it (ask #1005): merged | Relay client session |
 | The Learn card `iphone-relay-subscribe`, and the "not in the current version" line out of `iphone-relay.md`, in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
@@ -1057,7 +1056,7 @@ struct LatencyDiagnosticsModel: Equatable {
   - `grep -rn 'workers.dev\|relay-staging' -- . ':!*.lock'` finds no URL in tracked files outside the relay docs' placeholders;
   - `WATCHTOWER_RELAY_ORIGIN` is still empty in `Base.xcconfig` and forced empty for Release.
 - [ ] **Step 6a: Signed Release archive:** `make mobile-archive > "${TMPDIR:-/tmp}/p4-archive.log" 2>&1; echo "exit=$?"` with the owner's `Signing.xcconfig`. CI is unsigned and cannot see this. A signing failure naming App Attest before the portal step is the expected result: record it in the PR body. **Pre-main condition:** `feature/relay-client-next` does not merge into main until this command gives `exit=0` (owner-only step 3, Open decision 2).
-- [ ] **Step 6b: Launch conditions:** copy the section's table into the PR body with each row's state; `gh pr view 667 --json state` for its row.
+- [ ] **Step 6b: Launch conditions:** copy the section's table into the PR body with each row's state.
 - [ ] **Step 7: Interop** (local, recorded in the PR description): `make relay-interop-kit RELAY=…`, `make relay-interop-kit-hub RELAY=…`, `make relay-interop-kit-hub RELAY=… RELAY_INTEROP_DESKTOP=1`, with a clean relay worktree at the `VERSION` commit. The third run's step 8 exercises the lapse the policy now decides (Task 3). The stand has no App Store or APNs, so purchases and pushes stay manual.
 - [ ] **Step 8: Shots:** `make mobile-shots SIM='iPhone 17 Pro'`. Compare S01–S54 with mockup section 8 in light, dark and narrow; list every difference in the PR description.
 - [ ] **Step 9: Commit** gate fixes, if any: `fix: relay client Phase 4 gate (#1243, #1244, #1246)`. The PR into `feature/relay-client-next` carries the manual checks below, unrun.
