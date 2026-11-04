@@ -80,7 +80,9 @@ private struct ReportProblemSheetMock: View {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text(Copy.whatHappened).font(.headline)
                 ZStack(alignment: .topLeading) {
-                    TextEditor(text: .constant(text)).font(.body).scrollContentBackground(.hidden)
+                    TextEditor(text: .constant(text))
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
                         .frame(height: 72)
                     if text.isEmpty {
                         Text(Copy.placeholder).foregroundStyle(.tertiary).padding(.leading, Spacing.small)
@@ -124,7 +126,9 @@ private struct ReportProblemSheetMock: View {
                         Button(Copy.retry) {}.buttonStyle(.kitSecondary)
                     }
                 default:
-                    Text(Copy.sample).font(.caption.monospaced()).textSelection(.enabled)
+                    Text(Copy.sample)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
