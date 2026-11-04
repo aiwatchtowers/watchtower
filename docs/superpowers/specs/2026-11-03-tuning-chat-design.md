@@ -50,6 +50,20 @@ Anti-goals (a failure even if it works):
 - A `TuningChat` controller (`@Observable`, the `AutomationEditorChat` shape) owns the engine and an `AgentActionFeed` for this conversation, and calls `markShown`/`markHidden`.
 - Conversations: chat rows of context type `analytics_tuning`, one context per workbench. **New** starts another one, and the picker lists the last 10. They also appear in the Chats panel under the workbench project, as embedded chats do today.
 
+**Failure paths on the surface.** Each path has a test, named in §5.
+
+| What fails | What happens | Who writes, who wins |
+|---|---|---|
+| The MCP child (`mcp --chat --surface tuning`) exits mid-turn | The tool call returns an error to the provider, and the turn ends with the engine's existing error line and **Retry**. A proposal row committed before the exit stays and shows in the feed on its next read. On Retry the same proposal is refused by fingerprint as "already proposed as #N", so no second card appears. | The proposal row comes from the MCP child. The fingerprint UNIQUE decides. |
+| The provider process dies, or the Desktop quits mid-turn | The interrupted turn is handled as embedded chats handle it today: the owner's message is kept and the answer is marked interrupted. On reopen the conversation replays from the database, with no `--resume` (CHAT-04). | Chat rows are written by the Desktop only. |
+| The CLI does not know the `tuning` surface (a stale CLI binary) | `mcp` refuses an unknown surface at start, and the panel shows the engine's start error with **Retry**. No turn is sent. | — |
+| The provider changes to ollama mid-conversation | The next turn runs as `.draftOnly`, and the panel shows the "tuning tools need Claude or Codex" line. Existing cards stay actionable, because Accept and Run go through the CLI, not the chat. | — |
+| The bulk-read limit is hit (READ-01) | The read tool refuses in plain words, and the chat says so. The session key is `conversation:<id>`, so **New** starts a fresh budget. | — |
+| A tool names a workbench, prompt, skill or input that is gone | The tool returns "not found" as a tool error. Nothing is written. | — |
+| The workbench is deleted while the panel is open | The Analytics pane leaves that workbench, and the panel closes with it. The conversations follow the embedded-chat rule for a deleted context. | — |
+| Accept is pressed on a card while the chat proposes an edit to the same destination | Accept and the new proposal race on the "one open proposal per destination text" rule. Accept's compare-and-set moves the first proposal out of OPEN, and the new proposal is then checked against the changed file, so its `find` either matches once or is refused. | Accept runs in the CLI, the proposal in the MCP child. The compare-and-set and the validation order decide. |
+| The same conversation is open on a second screen | `EmbeddedChatCenter` keeps one engine per conversation, as today, and a second view attaches to it. | Chat rows are written by the Desktop only. |
+
 ### 4.2 Tools on `tuning`
 
 Read tools (all `CompanyData` where they return content, within the bulk-read limits):
@@ -149,13 +163,22 @@ Every visible string (folded accepted line, too-few-inputs line, figures line, s
 ### 4.7 Codex sessions in agent analytics
 
 - `agentlogdb` migration: the `agent` CHECK on `agent_log_files` and `agent_log_sessions` becomes `IN ('claude','codex')` (table rebuild, one transaction). The Go side takes the agent from `agentkind`, and `storeSlice` gets the agent as a parameter.
-- Discovery: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (honouring `CODEX_HOME`). Ownership comes from the cwd of the first `turn_context` (fallback: `session_meta.cwd`) through the same `OwnerFolder` rule as Claude's home cwd. Files are walked newest first, and each scan reads the day directories since the last stored mtime minus one day.
+- Discovery: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (honouring `CODEX_HOME`), plus a compressed `rollout-*.jsonl.zst` if the builder finds Codex writes that name (it confirms it on real files and pins it in the discovery test).
+- **Compressed rollouts.** Codex can store a rollout as zstd (`sessionfeed` today sees the frame magic `28 b5 2f fd` and reads nothing). The importer never reads by byte offset into such a file. Instead:
+  - The magic at offset 0 is checked on every scan, not only the first one, because a file can be compressed in place after Watchtower already read part of it as JSONL.
+  - A compressed file is read whole through `github.com/klauspost/compress/zstd` (a new pure-Go dependency), capped at 64 MB of decompressed text. Above the cap the file is skipped and counted as `too_large` in the import report.
+  - Its stored offset counts decompressed bytes. It is read again whole only when its size or mtime changes.
+  - A file that moved from plain to compressed, at the same path or under the `.zst` name, imports no twice-counted rows: the dedupe key below is the session id plus an ordinal, not a byte offset or a path.
+  - A corrupt or truncated frame stores nothing from that file. The file is marked `unreadable` with the error class only (FILES-01), and the next scan tries it again only if its size or mtime changed.
+  - `sessionfeed` gets the same decoder through `codexrollout`, so the Workchat of a compressed Codex session stops being empty. That is a side effect, and `sessionfeed`'s existing tests stay as they are.
+- Ownership comes from the cwd of the first `turn_context` (fallback: `session_meta.cwd`) through the same `OwnerFolder` rule as Claude's home cwd. Files are walked newest first, and each scan reads the day directories since the last stored mtime minus one day.
 - **Excluded:** sessions whose `session_meta.originator` is the exec kind. Every Watchtower child (`codex exec` for digests, spec review, automation `agent()`) is that kind and runs with the owner's `CODEX_HOME`, so it lands in the same folder. The owner's own `codex exec` runs are left out too (v1 limit). The guide's Analytics page says it in one line ("Codex runs started with `codex exec` are not counted"), and the pane's agent filter has the same line as its help text. The builder confirms the originator values on real files and pins them in a parser test fixture written from scratch (no real content).
-- **Sub-agents.** A rollout whose `session_meta` names a parent thread (Codex's sub-agent threads, `thread_source`/`source` marking a spawned agent) is never an owner session: it is stored as a sub-agent of its parent (`agent_log_subagents`, events under the parent's session, `agent_id` = the child thread), the twin of Claude's `subagents/agent-*.jsonl`. The exec exclusion is decided on the root thread only, so the children of an interactive session count and the children of an exec run do not. Tokens are taken only from each file's own `token_count` deltas, and the builder confirms on real files that a parent's totals do not include its children's (a fixture pins it); if they do, the parent's deltas are used and children contribute tool and time rows only. A child whose parent file is not found yet is held (not stored) until the next scan, then stored on its own as a sub-agent of an unknown parent after 24 h.
+- **Sub-agents.** A rollout whose `session_meta` names a parent thread (Codex's sub-agent threads, `thread_source`/`source` marking a spawned agent) is never an owner session: it is stored as a sub-agent of its parent (`agent_log_subagents`, events under the parent's session, `agent_id` = the child thread), the twin of Claude's `subagents/agent-*.jsonl`. The exec exclusion is decided on the root thread only, so the children of an interactive session count and the children of an exec run do not. Tokens are taken only from each file's own `token_count` deltas, and the builder confirms on real files that a parent's totals do not include its children's (a fixture pins it); if they do, the parent's deltas are used and children contribute tool and time rows only. A child whose parent file is not found yet is held: nothing is stored, and the file row is marked `held`. Every scan looks for the parent again. A child is stored only once its root thread is found and is not exec. A held child whose parent is still missing after 7 days is marked `orphan_skipped`, and its rows are never stored. That way an orphaned child of an exec run can never show up in the owner's analytics, at the price of losing the rare interactive child whose parent file was deleted (v1 limit). The import report counts `held` and `orphan_skipped`. If the parent appears after a child was skipped, the skipped child stays skipped.
 - **One decoder.** `internal/sessionfeed` already reads rollouts (`ParseCodex` for the dialog, `LocateCodex`). The line envelope and payload types move into a leaf package `internal/codexrollout` (types, a line decoder, `Locate`), used by both `sessionfeed` and `agentlog`; each keeps its own projection. `sessionfeed`'s tests stay green unchanged.
 - `agentlog.ParseCodex(r, offset, opts) ParseResult` maps the file to the same rows:
   - An `api_call` per `token_count` delta (`last_token_usage`; `cached_input_tokens` → cache read; `cache_write_input_tokens` → cache write 5m). The model comes from the current `turn_context`.
-  - An `owner_turn` per `task_started` with a user `message`. `tool` events come from `function_call`/`custom_tool_call` paired by `call_id`, with the outcome from the output. `turn_aborted` with reason interrupted → `outcome = interrupted`, and compaction → `compaction`.
+  - **Two rollout dialects.** `codexrollout` decodes both: the legacy one (`event_msg` `user_message` / `agent_message`) and the paginated one (`event_msg` `item_completed` / `item_started` with a `UserMessage` / `AgentMessage` item, and `turn_started` beside `task_started`), as `sessionfeed` already does. A file may mix the two. `response_item` and `compacted` lines repeat the same text and are not counted again.
+  - An `owner_turn` per turn that has a user message in either dialect: the first `user_message` or `UserMessage` item after a `task_started`/`turn_started`. A turn that carries both dialects counts once. A user message with no turn start before it opens its own turn. `tool` events come from `function_call`/`custom_tool_call` paired by `call_id`, with the outcome from the output. `turn_aborted` with reason interrupted → `outcome = interrupted`, and compaction → `compaction`.
   - Denials are classified only where the output text matches Codex's denial wording. That wording is pinned in a fixture, and anything else is `ok`.
   - The dedupe key is `codex:<session id>:<ordinal>`. `ParserVersion` is per agent.
 - Cost: price rows for the Codex models in `internal/pricing`, with a Codex-shaped cost (input, cached input, cache write, output; reasoning output counted as output). An unknown model gives cost 0 and `cost_estimated` as today, never a guess.
@@ -177,6 +200,39 @@ Every visible string (folded accepted line, too-few-inputs line, figures line, s
 ## 5. Contracts and tests (beyond those named above)
 
 - Pinned `tuning` actions contract (Go and Swift twins). Every new tool goes into `buildToolRegistry` with `CompanyData` marked, so the `UndecidedReadTools` guard stays green.
+- Surface failure paths (§4.1 table), one test per row:
+  - The MCP child is killed after a proposal commits: the row survives, and the retried call is refused as "already proposed as #N".
+  - An interrupted turn replays from the database without `--resume`.
+  - A stale CLI's unknown-surface refusal reaches the panel as the start error with Retry (Swift).
+  - A provider switch to ollama makes the next turn draft-only.
+  - The read limit refuses a tool and resets on a new conversation.
+  - A gone workbench, prompt, skill or input gives "not found" and writes nothing.
+  - A deleted workbench closes the panel and drops the engine.
+  - Accept racing a new proposal on the same destination ends in one outcome only: the new proposal is either validated against the changed file or refused.
+  - A second screen attaches to the same engine.
+- Read-tool edge cases (table tests in the tools package):
+  - An empty period, a workbench with no sessions, and a period with only one agent: no agent filter in the JSON, and no "Claude Code only" note when there are no Codex rows.
+  - `agent: codex` with no Codex data returns empty sections, not an error.
+  - An unknown `agent`, a negative or zero `days`, or `days` beyond the 90-day retention is refused or clamped as the report's CLI does.
+  - `list_prompt_inputs` for a prompt with no captures, and `get_prompt_input` for an input removed between list and get.
+  - `get_skill` on a symlinked, oversized or non-UTF-8 skill, and on a skill present in both Codex folders (only the copy Codex reads is returned).
+  - `get_agent_instructions` when `~/.codex/AGENTS.md` or the Codex rules file is missing (budget shown, text empty).
+  - `list_coach_proposals` includes declined chat proposals.
+- Proposal-tool edge cases:
+  - `find` matching zero or two times, in part of a line, or across CRLF line ends.
+  - `replace` that grows the file past its budget.
+  - An empty `title` or `why`.
+  - A `destination` that does not fit the arguments: `prompt_id` missing for a prompt addition, `skill` missing for a skill destination, a pack skill sent to a user-skill destination.
+  - A Codex allow line that the Codex twin of `SafeAllowRule` refuses.
+  - `propose_prompt_replay` with fewer than 3 eligible inputs, with `input_ids` naming an ineligible or removed input, and with an addition over 600 runes.
+  - `get_prompt_replay` on a discarded or stale replay.
+- Codex parser edge cases:
+  - A file truncated mid-line: the partial line waits for the next scan.
+  - A `token_count` with no `last_token_usage`.
+  - A `turn_context` arriving after the first `token_count`: model unknown, cost 0, estimated.
+  - Both dialects in one file, a turn with both dialects, and a user message with no turn start.
+  - A plain file compressed in place between two scans, a `.zst` copy beside the plain one, a corrupt zstd frame, and a frame over the 64 MB cap.
+  - A held child whose parent arrives on the next scan, an exec root's child, and a child still orphaned after 7 days (`orphan_skipped`, nothing stored).
 - `ValidateChatProposal`: a table test for each refusal, plus "a chat proposal does not take a weekly slot but blocks the same destination text".
 - File destinations: a symlink, an oversized file, a non-UTF-8 file and a missing skill are each refused. Accept and Rollback round-trip. A change made after the re-read gives stale. A rollback of a created `AGENTS.md` leaves it empty.
 - Pack overlay: the rendered digest is not drift, an upgrade carries the overlay, a hand-edited copy is untouched, and the overlay block has a fixed position.
@@ -229,3 +285,6 @@ Phases 1, 2 and 4 are independent and can run in parallel lanes. Phase 3 needs 1
 | D20 | Codex sub-agent rollouts are stored under their parent; exec is decided on the root thread | agent's call (review round 1) |
 | D21 | One rollout decoder (`internal/codexrollout`) shared by `sessionfeed` and `agentlog` | agent's call (review round 1) |
 | D22 | A Codex skill present in both folders: only the copy Codex reads is editable | agent's call (review round 1) |
+| D23 | Compressed (zstd) Codex rollouts are read whole through `klauspost/compress/zstd` (a new dependency), capped at 64 MB decompressed, and the magic is checked on every scan | agent's call (owner comment, ask #1004) |
+| D24 | Both rollout dialects (legacy `user_message`, paginated `item_completed`) are decoded, and a turn counts once | agent's call (owner comment, ask #1004) |
+| D25 | A Codex sub-agent whose parent is not found within 7 days is never stored (`orphan_skipped`), so an exec run's child can never leak into analytics | agent's call (owner comment, ask #1004; replaces the earlier 24 h "store as unknown parent") |
