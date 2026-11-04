@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -152,7 +153,13 @@ func TestHoldTempFile_KeepsTheFileUntilRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release := HoldTempFile(path)
+	release, err := HoldTempFile(path)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if held, perr := mayBeHeld(path); !held || perr != nil {
+		t.Fatalf("mayBeHeld = %v, %v; want held by the flock", held, perr)
+	}
 	out, err := exec.Command("/bin/sh", "-c", `cat "$0"; cat "$0"`, path).Output()
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +175,38 @@ func TestHoldTempFile_KeepsTheFileUntilRelease(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("file still there: %v", err)
 	}
-	HoldTempFile("")() // no-op
+	noop, err := HoldTempFile("")
+	if err != nil {
+		t.Fatalf("hold of \"\": %v", err)
+	}
+	noop()
+}
+
+// A file the hold cannot open is still removed on release, and the error
+// says it is unshielded without naming it (it reaches a log).
+func TestHoldTempFile_UnshieldedStillRemoved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a 0000 file")
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	path, err := WritePrivateTemp(SystemPromptTempPrefix+"*.txt", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	release, err := HoldTempFile(path)
+	if err == nil {
+		t.Fatal("want an unshielded error for a file the hold cannot open")
+	}
+	if strings.Contains(err.Error(), filepath.Base(path)) {
+		t.Errorf("error names the file: %v", err)
+	}
+	release()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file still there: %v", err)
+	}
 }
 
 // The sweep never takes a held file, however old (a long codex run, or a
@@ -186,7 +224,10 @@ func TestHoldTempFile_SweepSkipsAHeldFile(t *testing.T) {
 	if err := os.Chtimes(path, stale, stale); err != nil {
 		t.Fatal(err)
 	}
-	release := HoldTempFile(path)
+	release, err := HoldTempFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer release()
 	if n, err := SweepStaleTemp(10*time.Minute, time.Now()); err != nil || n != 0 {
 		t.Fatalf("sweep removed %d (%v), want the held file kept", n, err)
@@ -224,7 +265,8 @@ func TestHoldTempFile_SweepSkipsAHeldFile(t *testing.T) {
 }
 
 // The probe fails closed: a stale prompt file the sweep cannot open (so
-// cannot tell whether a live process holds it) is kept, not removed.
+// cannot tell whether a live process holds it) is kept, not removed, and
+// the sweep reports the probe failure.
 func TestSweepStaleTemp_KeepsAFileItCannotProbe(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root opens a 0000 file")
@@ -243,8 +285,15 @@ func TestSweepStaleTemp_KeepsAFileItCannotProbe(t *testing.T) {
 	if err := os.Chtimes(path, stale, stale); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := SweepStaleTemp(10*time.Minute, time.Now()); err != nil || n != 0 {
-		t.Fatalf("sweep removed %d (%v), want the unprobeable file kept", n, err)
+	n, err := SweepStaleTemp(10*time.Minute, time.Now())
+	if n != 0 {
+		t.Fatalf("sweep removed %d, want the unprobeable file kept", n)
+	}
+	if err == nil || !strings.Contains(err.Error(), "probing") {
+		t.Fatalf("err = %v, want the probe failure reported", err)
+	}
+	if strings.Contains(err.Error(), filepath.Base(path)) {
+		t.Errorf("error names the file: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("file swept: %v", err)

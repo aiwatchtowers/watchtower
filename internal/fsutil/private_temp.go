@@ -28,19 +28,24 @@ const SystemPromptTempPrefix = "wt-system-prompt-"
 // than once, so defer it. "" gives a no-op. The kernel drops the lock when
 // the holder dies, so a killed process's file is swept as a leftover once
 // it is stale. The descriptor is close-on-exec, so the child never inherits
-// the lock. If the file cannot be opened or locked, it is still removed on
-// release, only no longer shielded from the sweep.
-func HoldTempFile(path string) (release func()) {
+// the lock. If the file cannot be opened or locked, release still removes
+// it, and err (never naming the file) says it is not shielded from the
+// sweep, for the caller to log.
+func HoldTempFile(path string) (release func(), err error) {
 	if path == "" {
-		return func() {}
+		return func() {}, nil
 	}
 	var held *os.File
-	if f, err := openNoBlock(path); err == nil {
-		if flockNB(int(f.Fd()), syscall.LOCK_SH) == nil {
+	f, err := openNoBlock(path)
+	if err == nil {
+		if err = flockNB(int(f.Fd()), syscall.LOCK_SH); err == nil {
 			held = f
 		} else {
 			_ = f.Close()
+			err = fmt.Errorf("locking a held temp file: %w", err)
 		}
+	} else {
+		err = fmt.Errorf("opening a held temp file: %w", unwrapPath(err))
 	}
 	var once sync.Once
 	return func() {
@@ -50,25 +55,42 @@ func HoldTempFile(path string) (release func()) {
 				_ = held.Close() // closing drops the flock
 			}
 		})
+	}, err
+}
+
+// unwrapPath strips the *fs.PathError around err, so an error that reaches
+// a log carries the errno, never the temp file's name.
+func unwrapPath(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
 	}
+	return err
 }
 
 // mayBeHeld reports whether a live process may still use path: true when
 // another holder has a flock on it (HoldTempFile) and, failing closed, when
 // the probe cannot tell — the file cannot be opened or locked for any
-// reason but its being gone. The sweep then keeps the file and retries at
-// a later start.
-func mayBeHeld(path string) bool {
+// reason but its being gone. err is that probe failure (nil for a plain
+// hold), for the sweep to report: the file is kept, and a later sweep
+// retries it.
+func mayBeHeld(path string) (held bool, err error) {
 	f, err := openNoBlock(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return !errors.Is(err, fs.ErrNotExist)
+		return true, unwrapPath(err)
 	}
 	defer func() { _ = f.Close() }()
-	if err := flockNB(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return true
+	switch err := flockNB(int(f.Fd()), syscall.LOCK_EX); {
+	case errors.Is(err, syscall.EWOULDBLOCK):
+		return true, nil
+	case err != nil:
+		return true, err
 	}
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	return false
+	return false, nil
 }
 
 // openNoBlock opens path read-only without blocking: a FIFO swapped in
@@ -133,8 +155,14 @@ func sweepDir(dir string, match func(name string) bool, skipHeld bool, olderThan
 		if now.Sub(info.ModTime()) < olderThan {
 			continue
 		}
-		if skipHeld && mayBeHeld(filepath.Join(dir, e.Name())) {
-			continue
+		if skipHeld {
+			held, err := mayBeHeld(filepath.Join(dir, e.Name()))
+			if err != nil {
+				errs = append(errs, fmt.Errorf("probing a stale temp file, kept: %w", err))
+			}
+			if held {
+				continue
+			}
 		}
 		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			errs = append(errs, err)

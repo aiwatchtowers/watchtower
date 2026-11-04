@@ -2681,3 +2681,12 @@ Entry format:
 - weak-dimension: 6. The digest-coverage tests pin the happy decisions. The edges were never tried: the day after the range, a range above the forward mark, the move/repair partial days and a digests-off prior run.
 - rule-gap (candidate, dim 6): *a ledger that freezes a decision "before any fetch" must also cover every day the fetch can touch (search widening included) and every earlier run that fetched without deciding.*
 - outcome: TBD
+
+## 2026-11-04 — fix/codex-prompt-file-lifetime (PR #669: codex `model_instructions_file` held until codex exits via `fsutil.HoldTempFile` shared flock; stale-temp sweep skips held files and fails closed on an unprobeable one; `RemoveOnce`/`OnFirstWrite` removed; CHAT-04 Observable amended under an owner ask; panel: prosecutor (6) + codex (0) + all three pr-review-toolkit specialists; judge verified 21d35d755 by reading, PR open) — verdict: approve
+
+- contested: `HoldTempFile` drops open/flock errors on the floor (raised by 3 lanes). Held minor, not a §9 blocker: the doc comment declares the best-effort fallback, the degraded state is the pre-PR "unshielded but removed on release" behaviour, and a later failure still surfaces as a codex error. It does lose the cause, so returning a `held` bool for a one-time log is the cheap fix. [9]
+- false-positive: none dismissed outright. The test lane's "release after reap on cancel/error" gap (6) is real coverage debt but not a defect: the hold is deferred before `reap`, so LIFO reaps the child before removal on every return path. [7]
+- miss: only the prosecutor caught the stale CLAUDE.md index summary ("removed at its first output") after the inventory and feature note were amended. A grep for the overturned phrase across CLAUDE.md, not only `docs/`, is the mechanical check. [8]
+- weak-dimension: 7. The library-level hold test passes with a lock-less `HoldTempFile`, and the codex-level guard never runs a sweep mid-run, so the composition "sweep while codex is running" is proven only by the fsutil sweep test. Codex could not run tests in its read-only sandbox. [7]
+- rule-gap (candidate, dim 8): *when a change overturns a contract that a CLAUDE.md index entry summarises, update that summary line in the same change. The inventory and feature note alone leave the agent-facing index wrong.*
+- outcome: TBD

@@ -13,7 +13,6 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/digest"
-	"watchtower/internal/fsutil"
 	"watchtower/internal/providers"
 )
 
@@ -284,7 +283,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// it at the first output line fails the next request ("failed to
 		// load workspace requirements"); the hold also keeps the stale-temp
 		// sweep off it during a long run. It is removed on every return.
-		defer fsutil.HoldTempFile(promptFile)()
+		defer holdPromptFile(promptFile)()
 
 		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
 		cmd.Stdin = strings.NewReader(promptStdin)
@@ -420,7 +419,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if err != nil {
 		return "", nil, err
 	}
-	defer fsutil.HoldTempFile(promptFile)() // see Query
+	defer holdPromptFile(promptFile)() // see Query
 
 	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
 	cmd.Stdin = strings.NewReader(promptStdin)

@@ -106,7 +106,7 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 // reports no usage; every run is recorded (recordCodexCall), failures too.
 func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationProfile, codexBin, model string, args []string, stdin, dir, promptFile, prompt string) (_ string, _ *digest.Usage, err error) {
 	defer func() { err = providers.ContextFailure("codex", ctx, providers.ProcessFailure("codex", err)) }()
-	defer fsutil.HoldTempFile(promptFile)()
+	defer holdPromptFile(promptFile)()
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
