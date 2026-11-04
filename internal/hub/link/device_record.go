@@ -55,8 +55,15 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 		}
 		return fmt.Errorf("reading a phone's link: %w", err)
 	}
-	if !accepts(row, r) || !acceptsCreator(row.Scope, storedUser, r.Creator) ||
-		!c.deviceCreatorMatches(ctx, r) {
+	if !accepts(row, r) || !acceptsCreator(row.Scope, storedUser, r.Creator) {
+		log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
+		return nil
+	}
+	matches, err := c.deviceCreatorMatches(ctx, r)
+	if err != nil {
+		return err // no decision: the record is read again next pass
+	}
+	if !matches {
 		log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
 		return nil
 	}
@@ -107,14 +114,25 @@ func acceptsCreator(scope, storedUser, creator string) bool {
 
 // deviceCreatorMatches is the Swift creatorMatches for a device record: a
 // shared phone's record was created by the user it names, a private phone's
-// by the Mac's user (creatorMatches, the owner read through r.Shares).
-func (c *Center) deviceCreatorMatches(ctx context.Context, r DeviceRecord) bool {
+// by the Mac's user (creatorMatches, the owner read through r.Shares). An
+// owner read that fails on a transport that can name the owner is no answer:
+// ErrOwnerUnreadable, so the caller leaves the record undecided. A transport
+// that cannot name it (no CloudUser) is a refusal, as before.
+func (c *Center) deviceCreatorMatches(ctx context.Context, r DeviceRecord) (bool, error) {
 	owner := ""
 	if r.Payload.Scope == wire.ScopePrivate && r.Creator != "" && r.Creator != transport.CurrentUserCreator && r.Shares != nil {
 		owner = c.owner(ctx, r.Shares)
+		if _, canName := r.Shares.(transport.CloudUser); canName && owner == "" {
+			return false, ErrOwnerUnreadable
+		}
 	}
-	return creatorMatches(r.Payload, r.Creator, owner)
+	return creatorMatches(r.Payload, r.Creator, owner), nil
 }
+
+// ErrOwnerUnreadable says the Mac's iCloud user could not be read just now, so a
+// device record's creator could not be checked. The record is not decided;
+// the processor leaves it unmarked and reads it again next pass.
+var ErrOwnerUnreadable = errors.New("link: the Mac's iCloud user is unreadable")
 
 // rewrite is ApplyDeviceRecord's rewrite of a linked phone.
 func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayload) error {
