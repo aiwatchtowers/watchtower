@@ -42,6 +42,50 @@
   </div>
 </div>
 
+<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Move in progress</div>
+    <div class="mockup-body" style="line-height:1.9">
+      <div>📥 Inbox</div><div style="padding-left:14px">✅ Needs approval</div>
+      <div style="padding-left:14px; opacity:.5">🚩 Release acme 2.0 ⟳</div>
+      <div style="padding-left:14px">👥 Team</div>
+      <small>The menu is read-only until the move returns; the folder sits dimmed in its new place. Shot: <code>inbox-b-menu-move-pending</code>.</small>
+    </div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Hidden folders shown</div>
+    <div class="mockup-body" style="line-height:1.9">
+      <div>📥 Inbox</div><div style="padding-left:14px">✅ Needs approval</div>
+      <div style="padding-left:14px">🚩 Release acme 2.0</div>
+      <div style="padding-left:14px; opacity:.5">📦 Old sprint <small>Hidden</small></div>
+      <small>After the root's ⋯ Show Hidden Folders. Shot: <code>inbox-b-menu-hidden-shown</code>.</small>
+    </div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">CLI unavailable</div>
+    <div class="mockup-body" style="line-height:1.9">
+      <div>📥 Inbox</div><div style="padding-left:14px">✅ Needs approval</div><div style="padding-left:14px">🚩 Release acme 2.0</div>
+      <div style="opacity:.5">＋ New Folder</div><div style="opacity:.5">＋ New Artifact…</div>
+      <small style="color:#d93">The watchtower CLI isn't available</small><br>
+      <small>Menu edits and drag are off; reading works. Shot: <code>inbox-b-menu-cli-unavailable</code>.</small>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Save sheet: new folder</div>
+    <div class="mockup-body"><small>The editor chat suggested a folder; the save sheet lists it.</small><br>
+      New folder: Release, in Inbox<br><button class="mock-button">Cancel</button> <button class="mock-button">Save and Turn On</button><br>
+      <small>Shot: <code>inbox-b-save-new-folder</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Folder not created after save</div>
+    <div class="mockup-body"><small style="color:#d33">Saved. The folder was not created: the Inbox menu changed — reload it and try again.</small> <button class="mock-button">Try Again</button><br>
+      <small>The recipe stays saved; Try Again re-reads the menu first. Shot: <code>inbox-b-save-folder-failed</code>.</small></div>
+  </div>
+</div>
+
 <div class="mockup" style="margin-top:16px">
   <div class="mockup-header">Move to Folder ▸ (artifact ⋯)</div>
   <div class="mockup-body" style="line-height:1.8">

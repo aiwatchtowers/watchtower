@@ -4,10 +4,10 @@
 
 **Mockups** (HTML, sample data only; the native DesignShotCatalog shots are the plan's Task 1 and replace them as the reference once the owner has looked at them):
 
-- [`b-01-inbox-menu.html`](../../design/mockups/inbox-builder/b-01-inbox-menu.html) — the folder menu, the root selected, the artifact ⋯ menu, the folder ⋯ menu and the root ⋯ menu.
-- [`b-02-needs-approval.html`](../../design/mockups/inbox-builder/b-02-needs-approval.html) — Needs approval: recipe card, native fallback card, failed action with Retry / Dismiss, reminder, recipe off, empty.
-- [`b-03-waiting-for-me.html`](../../design/mockups/inbox-builder/b-03-waiting-for-me.html) — Waiting for me rows with native actions: idle, busy, write failed, not yet run, empty.
-- [`b-04-folder-states.html`](../../design/mockups/inbox-builder/b-04-folder-states.html) — empty root, empty folder, new folder, drag, the menu changed (reload), delete, Move to folder ▸.
+- [`b-01-inbox-menu.html`](../../design/mockups/inbox-builder/b-01-inbox-menu.html) — the folder menu, the root selected, the artifact ⋯ menu, the folder ⋯ menu, the root ⋯ menu, the Idea finder entry's ⋯ and a failed ⋯ entry on the artifact header.
+- [`b-02-needs-approval.html`](../../design/mockups/inbox-builder/b-02-needs-approval.html) — Needs approval: recipe card, native fallback card, failed action with Retry / Dismiss, reminder, recipe cards only, built-in upgrade notice, recipe off, built-in stopped (its own Turn On), last run failed, Turn On failed, empty.
+- [`b-03-waiting-for-me.html`](../../design/mockups/inbox-builder/b-03-waiting-for-me.html) — Waiting for me rows with native actions: idle, busy, write failed, Reply composer / refused / waiting, not yet run, empty; `track` and `idea` ref rows.
+- [`b-04-folder-states.html`](../../design/mockups/inbox-builder/b-04-folder-states.html) — empty root, empty folder, new folder, drag, move in progress, the menu changed (reload), delete, hidden folders shown, CLI unavailable, Move to folder ▸, the save sheet's new-folder line and its "folder was not created" line.
 
 `02-inbox-menu.html` from the brainstorm predates ask #947 (its entries are automations); the B mockups draw folders that many automations write into.
 
@@ -204,7 +204,13 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Owner folder, empty | "Nothing in Release yet" + "Move an automation here from its ⋯ menu, or make a new one. **New Artifact…**" (key `inboxFolder`) |
 | Needs approval, empty | "Nothing waits for your approval" (key `inboxApprovals`) |
 | Needs approval, native fallback | native cards; the off / stopped / failed note when that is the cause |
+| Needs approval, recipe cards | every approval drawn by the recipe, actions added by the Desktop |
 | Needs approval, mixed | native card(s) above recipe cards |
+| Needs approval, upgrade notice | today's built-in notice card with **Retry**, first |
+| Needs approval, off | "Showing approvals in the standard card — Needs approval is off." + **Turn On** |
+| Needs approval, built-in stopped | "Showing approvals in the standard card — Needs approval was stopped after a run that would not end." + its own **Turn On** (resumes the stopped built-in) |
+| Needs approval, last run failed | "Showing approvals in the standard card — the last run failed." + **Run History** |
+| Needs approval, Turn On failed | the CLI's message under the note; the note stays |
 | Row busy | the row's buttons disabled, progress at its trailing edge |
 | Row write failed | the row stays, red error line, **Retry** |
 | Reply composer open | one-line field under the row, **Propose Reply** / **Cancel**, the line "Goes to Needs approval — nothing is sent until you approve it" |
@@ -212,11 +218,16 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Messages stand-in with Reply | the Messages legacy entry's message card shows **Reply…** like a Waiting for me row |
 | Reply waiting for approval | the row stays with the caption "Reply waiting for approval", **Reply…** disabled |
 | Waiting for me, not yet run | the Messages legacy entry in its place |
+| Waiting for me, empty | "Nobody is waiting on you" |
 | Menu changed (CAS) | the reload line under the menu |
 | Drag in progress | drop indicator; refused drop has none |
+| Move in progress | the menu read-only, the moved folder dimmed in its new place |
 | Folder delete confirmation | inline under the folder row |
 | Hidden folders shown | dimmed rows with a "Hidden" caption |
 | CLI unavailable | menu edits disabled with "The watchtower CLI isn't available" (`CLIRunnerError.binaryNotFound`), reading still works |
+| Artifact ⋯ entry failed | the CLI's text on the artifact header |
+| Save sheet, new folder | "New folder: Release, in Inbox" |
+| Folder not created after save | "Saved. The folder was not created: <reason>" + **Try Again** |
 
 ## Moving today's Inbox into folders
 
