@@ -212,7 +212,7 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Needs approval, last run failed | "Showing approvals in the standard card — the last run failed." + **Run History** |
 | Needs approval, off note's Turn On failed | the reason under the off note (both buttons call `AppState.setBuiltinEnabled(["approval-cards"], on: true)`, the built-in card's Turn On: the `features enable` error, or "Feature changes are being applied in Settings — try again"); the note stays. Never read from `FeatureManagerService.loadError`, which other screens share |
 | Needs approval, stopped note's Turn On failed | the reason `resumeStoppedBuiltin` returned, under the stopped note; the note stays |
-| Needs approval, turned on but not restarted | the note leaves once the feature reads on; the app-wide daemon banner keeps "The background sync did not restart: …" with **Retry** until a start or restart succeeds (`setBuiltinEnabled` sets `daemonStartFailure`) |
+| Needs approval, turned on but not restarted | the note leaves once the feature reads on; the app-wide daemon banner keeps "The background sync did not restart: …" with **Retry** until a start or restart succeeds (`setBuiltinEnabled` sets `daemonStartFailure` from the restart's own error; see Decisions, pending owner confirmation) |
 | Row busy | the row's buttons disabled, progress at its trailing edge |
 | Row write failed | the row stays, red error line, **Retry** |
 | Reply composer open | one-line field under the row, **Propose Reply** / **Cancel**, the line "Goes to Needs approval — nothing is sent until you approve it" |
@@ -440,6 +440,7 @@ Swift (`make test-swift FILTER=…`, Core where possible):
 - A pending Reply disables the row's Reply — agent's call: one reply proposal per item at a time, no duplicates in Needs approval.
 - Reply is a native action of the `inbox_item` kind wherever such a ref row is drawn, and also on the Messages legacy entry's card while it stands in for Waiting for me — agent's call (ask #457 review): the approved Reply must not vanish before Waiting for me's first run or after a failed one; the legacy card otherwise stays today's pane.
 - Native wins over a recipe action of the same kind per `ref` kind, incl. A's `target` on track and idea rows — agent's call.
+- Daemon banner after a failed restart on any built-in Turn On — **pending owner confirmation (plan B review ask)**: when a built-in's Turn On enables its feature but the daemon restart fails, `AppState.setBuiltinEnabled` sets the app-wide daemon banner ("The background sync did not restart: …" with **Retry**) from the restart's own error. It lives in `setBuiltinEnabled`, so the Automations tab's built-in cards change too: today that failure is only the card's line. Why: the Needs approval note leaves once the feature reads on, and the failure must stay visible until a restart succeeds.
 
 ## Contract with sub-project A
 
