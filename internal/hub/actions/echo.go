@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -238,7 +239,7 @@ func errClass(err error) string {
 		{secure.ErrWrongSender, "wrong_sender"}, {secure.ErrWrongHub, "wrong_hub"},
 		{secure.ErrNameMismatch, "name_mismatch"}, {secure.ErrRolledBack, "rolled_back"},
 		{secure.ErrEpochNotAccepted, "epoch_not_accepted"}, {secure.ErrNoRelayKey, "no_relay_key"},
-		{secure.ErrAuthenticationFailed, "authentication_failed"},
+		{secure.ErrAuthenticationFailed, "authentication_failed"}, {link.ErrOwnerUnreadable, "owner_unreadable"},
 	}
 	for _, c := range classes {
 		if errors.Is(err, c.err) {
