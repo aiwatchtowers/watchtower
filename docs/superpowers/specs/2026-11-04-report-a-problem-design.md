@@ -29,7 +29,7 @@ A new read-only command `watchtower diagnostics [--json] [--app-version <v>]` co
 **What it writes: nothing of Watchtower's.** Exactly:
 - a no-op `PersistentPreRunE` (no `ensureSchemaFormat`: no schema upgrade, no config rewrite); the config is loaded by the command itself and its absence or a parse error is reported, not fatal;
 - `Execute()` skips `sweepStaleTemp()` when the role is `cli:diagnostics`;
-- the database is opened with `db.OpenExisting(path, 2 s)` (no migration, `query_only`) and `lockmetrics.Configure("")` right after, so no `dblock.jsonl` line;
+- the database is opened with `db.OpenExisting(path, 500 ms)` (no migration, `query_only`; see Time budget) and `lockmetrics.Configure("")` right after, so no `dblock.jsonl` line;
 - the one remaining effect: SQLite may create the database's `-wal`/`-shm` sidecars when no other process has them open (it removes them again on close). The database's content never changes.
 
 Test `TestDiagnostics_WritesNothing`: a config with `db.schema_format` below current, a database with a pending migration, a stale temp file matching `fsutil.StaleTempPatterns`; after the run the config bytes, the database file's hash, the goose version and the stale temp file are unchanged, and the data directory listing equals the one before except for the database's own `-wal`/`-shm`.
@@ -48,7 +48,7 @@ Sources: <Kind> <n> ok|<k> needs sign-in|<k> error|purged … ; Quick Connection
 Daemon: running|stopped · last cycle <age> ago, done|error|running
 Recent errors (last 20):
   <yyyy-MM-dd HH:mmZ>  <phase>  <class>
-Crash: none in the logs | <n> in the logs, last after <yyyy-MM-dd HH:mmZ> | time unknown, in <pkg.Func>
+Crash: none in the logs | <n> in the logs, last after <yyyy-MM-dd HH:mmZ>, in <place> | <n> in the logs, last time unknown, in <place>
 Logs: watchtower.log <size> · daemon.log <size> (not attached)
 Database: schema <goose version> · <size> · managed by organization: yes|no
 ```
@@ -66,7 +66,7 @@ Database: schema <goose version> · <size> · managed by organization: yes|no
   9. `other` — everything else.
 
   A bare number never matches (a status form is `(status|http|status code)[ :=]*NNN` or `NNN <reason phrase>`). Unknown wordings fall to `other`. Table test `TestErrorClass`: each class, an id-like `…401…` that is not a status (→ `other`), and an order case (`timeout` + `401` → `timeout`).
-- **Crash.** Streams, line by line, `watchtower.log.1`, `watchtower.log` and `daemon.log` (each scanned whole, under one 2 s budget for all three; current files are ≤ 20 MiB, an old unbounded `daemon.log` is the reason for the budget). A crash is a line that **starts** with `panic: ` or `fatal error: ` (no timestamp prefix, so a logged "panic:" inside a message never counts) followed within 5 lines by a `goroutine <n> [` header. Its time is the timestamp of the nearest preceding timestamped line in the same file ("after" that time); none → `time unknown`. Its place is the first following frame line starting with `watchtower/`. The newest is chosen by that time; ties and unknown times by file order — `watchtower.log` (newest), then `watchtower.log.1`, then `daemon.log`. Budget exhausted: the line ends with `(scan stopped after <N> MB)`. The panic message is never printed.
+- **Crash.** Streams, line by line, `watchtower.log.1`, `watchtower.log` and `daemon.log` (each scanned whole, under one 2 s budget for all three; current files are ≤ 20 MiB, an old unbounded `daemon.log` is the reason for the budget). A crash is a line that **starts** with `panic: ` or `fatal error: ` (no timestamp prefix, so a logged "panic:" inside a message never counts) followed within 5 lines by a `goroutine <n> [` header. Its time is the timestamp of the nearest preceding timestamped line in the same file ("after" that time); none → `time unknown`. Its place (`<place>`) is the function of the first frame line in that goroutine trace starting with `watchtower/` (e.g. `watchtower/internal/sync.(*Syncer).run`); when the trace has none (a crash inside the Go runtime or a library) the place is `location unknown`. Every variant names the place, so the line is always `…, in <function>` or `…, in location unknown`. The newest is chosen by that time; ties and unknown times by file order — `watchtower.log` (newest), then `watchtower.log.1`, then `daemon.log`. Budget exhausted: the line ends with `(scan stopped after <N> MB)`. The panic message is never printed.
 - **Never printed:** workspace name, account/team/site names and domains, emails, ids, channel/project/space names, Quick Connection and automation names, paths, raw flavor, model output, error text, log lines.
 - **Partial output.** Each line is computed on its own; a failing reader prints `unknown (<reason>)` on its line and the command still exits 0.
 
@@ -79,6 +79,17 @@ Database: schema <goose version> · <size> · managed by organization: yes|no
 | Recent errors | `unknown (no config)` | `unknown (no database)` / `unknown (database busy)` |
 | Crash, Logs | `unknown (no config)` (the log files live in the workspace) | printed |
 | Database | `unknown (no config)` | `unknown (no database)` / `unknown (database busy)` |
+
+### Time budget
+
+The Desktop kills the command after 10 s (`CLIRunnerProtocol.run(args:timeout:)`), so the command must always finish well before that, however busy the database is. SQLite's `busy_timeout` applies per statement, and the command runs many statements, so a per-statement limit alone could add up past 10 s.
+
+- **One database deadline.** All database work — the open's ping and every query — runs under one `context.WithTimeout` of **4 s**, started before the open. The busy timeout per statement is **500 ms**, so a statement that is waiting when the deadline passes ends at most 500 ms later: the database part takes ≤ 4.5 s. When the deadline passes, the statement in flight and every database line not yet computed print `unknown (database busy)`; lines already computed stay.
+- **Log scan:** its own 2 s budget (above).
+- **The rest** (process start, config, `sysctl`, pid file, `last_sync.json`, `stat` of logs and the database file): no network and no locks, ≤ 0.5 s.
+- **Total:** 0.5 + 4.5 + 2 = **7 s worst case**, leaving 3 s to the Desktop's 10 s for process launch and JSON decoding. The database and the log scan run one after the other (no shared lock, but sequential keeps the arithmetic simple and the CPU low).
+
+A busy database is real even in WAL mode: a writer holding `locking_mode = EXCLUSIVE`, or WAL recovery after a crash, makes readers wait. Test `TestDiagnostics_BusyDatabaseFinishesInTime`: another connection takes an exclusive lock (`PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE`) and holds it; the command finishes in under 5 s of database time and under 7.5 s total, exits 0, prints `unknown (database busy)` for Sources, Recent errors and Database, and every non-database line normally. A second test, `TestDiagnostics_DeadlineMidway`, uses a fake reader seam whose queries sleep 1.5 s each: the lines computed before the deadline are printed, the rest say `unknown (database busy)`, and the total stays under 7.5 s.
 
 ### The sheet
 
@@ -147,10 +158,11 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 | CLI exits non-zero / bad JSON | failed with the exit code / "could not be read" | `testNonZeroExit`, `testUndecodableJSON` |
 | Link in failed state | `version` + `macos` only, no `chip`/`provider`/diagnostics | `ReportProblemLinkTests.testFailedStateLink` |
 | Config missing / broken | exit 0; `Config:` says which; lines per the table above | Go `TestDiagnostics_NoConfig`, `TestDiagnostics_BrokenConfig` |
-| Database missing or locked | lines per the table above | Go `TestDiagnostics_NoDatabase`, `TestDiagnostics_LockedDatabase` |
+| Database missing | lines per the table above | Go `TestDiagnostics_NoDatabase` |
+| Database busy (held write lock, slow queries) | one 4 s database deadline + 500 ms per statement; unfinished database lines `unknown (database busy)`; the command ends in ≤ 7 s, inside the app's 10 s, so the report keeps every other line | Go `TestDiagnostics_BusyDatabaseFinishesInTime` (exclusive lock held by another connection; total < 7.5 s), `TestDiagnostics_DeadlineMidway` (fake slow reader); Swift `testBusyDatabaseLinesShown` (a CLI answer with `database busy` lines is shown as ready, not failed) |
 | Log file missing / unreadable | `Logs:` says `missing` / `unreadable` for that file; the crash scan skips it | Go `TestDiagnostics_LogMissing`, `TestDiagnostics_LogUnreadable` |
 | Large log | whole files streamed, 2 s budget, `(scan stopped after <N> MB)` when hit | Go `TestDiagnostics_PanicDeeperThan256KB` (panic at the start of a 5 MB file is found), `TestDiagnostics_ScanBudget` (injected clock) |
-| Crash shapes | `panic:`/`fatal error:` + `goroutine` header counted; a timestamped log line containing `panic:` not; time from the preceding timestamped line or `time unknown`; newest by time, then file order | Go `TestDiagnostics_CrashRuntimeHeaders`, `TestDiagnostics_IgnoresLoggedPanicText`, `TestDiagnostics_CrashTimeFromPrecedingLine`, `TestDiagnostics_CrashOrderAcrossFiles` |
+| Crash shapes | `panic:`/`fatal error:` + `goroutine` header counted; a timestamped log line containing `panic:` not; time from the preceding timestamped line or `last time unknown`; place = first `watchtower/` frame or `location unknown`; newest by time, then file order | Go `TestDiagnostics_CrashRuntimeHeaders`, `TestDiagnostics_IgnoresLoggedPanicText`, `TestDiagnostics_CrashTimeAndPlace` (time known + place), `TestDiagnostics_CrashTimeUnknownWithPlace` (no preceding timestamp), `TestDiagnostics_CrashLocationUnknown` (runtime-only trace, time known), `TestDiagnostics_CrashTimeAndLocationUnknown`, `TestDiagnostics_NoCrash` (`none in the logs`), `TestDiagnostics_CrashOrderAcrossFiles` |
 | URL too long (incl. Cyrillic, CJK) | steps 2–3 + too-long notice | `ReportProblemLinkTests` (above) |
 | Browser does not open | notice + Copy Link; sheet stays | `testBrowserFailureOffersCopyLink` |
 | GitHub errors after the browser opened | sheet still open with the text; Open again | `testSheetStaysOpenAfterOpen` |
@@ -190,7 +202,7 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 | 8 | Discussions link in the sheet for questions | decided by agent (target #1527 names Discussions) |
 | 9 | One user field. The form's Steps and Expected stay on GitHub: the form requires and shows them anyway, so more fields in the sheet would duplicate it; the placeholder asks for all three; the GitHub link carries the text whole unless the budget's step 3 cuts it (then Copy Report has it whole), and Save always writes it whole | decided by agent |
 | 10 | On CLI failure the Desktop adds macOS from `ProcessInfo` (a one-line read, no mapping); the chip is left for the user (one click on the form) because mapping it in Swift would duplicate Go's table | decided by agent |
-| 11 | Crash: runtime headers only, time from the preceding log line, whole-file streaming scan under a 2 s budget, newest by time then file order | decided by agent |
+| 11 | Crash: runtime headers only, time from the preceding log line, place = first `watchtower/` frame or `location unknown` in every variant, whole-file streaming scan under a 2 s budget, newest by time then file order | decided by agent |
 | 12 | Budget on the encoded URL (6 000), three-step shortening, 2 000-character field cap | decided by agent |
 | 13 | Clipboard written only by explicit Copy buttons | decided by agent |
 | 14 | The sheet stays open after Open and keeps the text until Done; nothing kept after it closes | decided by agent |
@@ -200,6 +212,8 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 | 18 | Screenshots and videos are not part of the report (the form's own hint covers them) | decided by agent |
 | 19 | Rename the Settings → Logs "Crash Log" tab to **Startup Log**, caption `What the daemon wrote before the Sync Log opened. Crashes are in the Sync Log.` — panics have gone to `watchtower.log` since the stderr redirect, so the old label sends people to the wrong file while they are reporting a problem | decided by agent |
 | 20 | Error classifier: fixed order, HTTP codes only in a status form, unknown wordings → `other` | decided by agent |
+| 21 | One 4 s deadline for all database reads with a 500 ms per-statement busy timeout, a 2 s log-scan budget, 7 s worst case inside the app's 10 s | ask #1028 (owner asked for one overall budget; the numbers decided by agent) |
+| 22 | Every crash variant names its place; no `watchtower/` frame → `location unknown` | ask #1028 |
 
 **Contracts touched:** DIAG-01 (new) and the `watchtower diagnostics` `--json` keys (`text`, `version`, `macos`, `chip`, `provider`, `sources`, `flavor`) — approved in ask #1026. FILES-01 is not changed; decision 4 relies on its limits (logs still carry `<acct>:<id>`). No other inventory contract is touched.
 
