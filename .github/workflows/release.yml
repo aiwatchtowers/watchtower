@@ -4,13 +4,20 @@ name: Release
 # pass that feature-branch CI skips. Artifact builds (app bundle, DMG,
 # signing) stay local via scripts/build-app.sh — this workflow only decides
 # whether the tagged commit is fit to ship.
+#
+# A published GitHub release also runs bump-homebrew-cask, which points the
+# Homebrew tap (aiwatchtowers/homebrew-tap) at the new ZIP. The gate jobs run
+# on the tag push only.
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
 
 jobs:
   go-release-gate:
     name: Go Release Gate
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     # A hang must fail the gate, not run to GitHub's 6 h default. The step
     # budgets (code index 20 + coverage 25 = 45) plus ~10 for setup and
@@ -52,6 +59,7 @@ jobs:
   # -race), in parallel: the unsharded pass outgrew one 40-minute step.
   go-release-race:
     name: Go Release Race (${{ matrix.shard }}/3)
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -81,6 +89,7 @@ jobs:
   # failed on mlx-swift's swift-tools-version 6.3.
   swift-test:
     name: Swift Test
+    if: github.event_name == 'push'
     # macos-26: its image carries Xcode 26.4+ (Swift 6.3). The pinned mlx-swift
     # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load.
@@ -131,3 +140,45 @@ jobs:
         timeout-minutes: 10
         working-directory: .
         run: make test-swift-strict-pool
+
+  # Rewrites version and sha256 in the tap's Casks/watchtower.rb once the
+  # release assets are up. Public releases only: flavored (corp) builds never
+  # become GitHub releases, and prereleases are skipped. No HOMEBREW_TAP_TOKEN
+  # (a fine-grained PAT with Contents read/write on the tap) = a warning, not
+  # a failure. The cask's template lives in packaging/homebrew-tap/.
+  bump-homebrew-cask:
+    name: Bump Homebrew Cask
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Update aiwatchtowers/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; the Homebrew cask was not bumped to $TAG"
+            exit 0
+          fi
+          version="${TAG#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected tag $TAG"; exit 1; }
+          zip="Watchtower-${version}-arm64.zip"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p checksums.txt -D "$RUNNER_TEMP"
+          sha=$(awk -v f="$zip" '$2 == f { print $1 }' "$RUNNER_TEMP/checksums.txt")
+          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no SHA-256 for $zip in checksums.txt"; exit 1; }
+          tap="$RUNNER_TEMP/homebrew-tap"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/aiwatchtowers/homebrew-tap.git" "$tap"
+          cd "$tap"
+          sed -i -E "s/^  version \"[^\"]*\"$/  version \"$version\"/; s/^  sha256 \"[^\"]*\"$/  sha256 \"$sha\"/" Casks/watchtower.rb
+          grep -qx "  version \"$version\"" Casks/watchtower.rb && grep -qx "  sha256 \"$sha\"" Casks/watchtower.rb \
+            || { echo "::error::Casks/watchtower.rb has no version/sha256 line to rewrite"; exit 1; }
+          if git diff --quiet; then
+            echo "Cask already at $version"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qam "watchtower $version"
+          git push origin HEAD
