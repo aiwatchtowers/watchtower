@@ -174,37 +174,82 @@ Every visible string (folded accepted line, too-few-inputs line, figures line, s
     - `state_since TEXT`: when the file entered its current state, the start of the orphan clock;
     - `error_class TEXT`: the class only, never text (FILES-01);
     - `parse_state TEXT`: the Codex resume state below, JSON, NULL for Claude;
-    - `cwd TEXT` and `project_id INTEGER`: the Codex file's header cwd and the workbench that owns it (NULL = none). There is no foreign key: adoption is by live id, as in #849.
+    - `project_id INTEGER`: the workbench that owns a Codex file (NULL = none). There is no foreign key: adoption is by live id, as in #849. No cwd is stored for any Codex file (AGENTLOG-04 amendment below).
     - `compressed INTEGER NOT NULL DEFAULT 0`: whether the bytes on disk are a zstd frame.
+    - `verified_at TEXT` and `complete INTEGER NOT NULL DEFAULT 0`, used for compressed files only.
+      - `verified_at`: the on-disk size and mtime that passed the whole-frame check, as `size:mtime`.
+      - `complete`: the last slice reached the end of the decompressed text.
+      - Today an unfinished file is marked by clearing its mtime. A compressed file keeps its on-disk size and mtime, so it needs these explicit fields.
   - Existing Claude rows get `state = 'ok'` and NULLs.
   - The test seeds every agentlogdb table, runs the migration, and checks that the row count of **every** table, children included, is unchanged and that `read_offset` values are kept.
   - The Go side takes the agent from `agentkind`, and `storeSlice` gets the agent as a parameter. `state`, `state_since`, `error_class` and `parse_state` are written in the same transaction as the offset compare-and-set, so a slice and its resume state land together or not at all.
 - Discovery: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (honouring `CODEX_HOME`), plus a compressed `rollout-*.jsonl.zst` if the builder finds Codex writes that name (it confirms it on real files and pins it in the discovery test).
 - **Compressed rollouts.** Codex can store a rollout as zstd (`sessionfeed` today sees the frame magic `28 b5 2f fd` and reads nothing). The importer never reads by byte offset into such a file. Instead:
   - The magic at offset 0 is checked on every scan, not only the first one, because a file can be compressed in place after Watchtower already read part of it as JSONL.
-  - A compressed file is read whole through `github.com/klauspost/compress/zstd` (a new pure-Go dependency), capped at 64 MB of decompressed text. Above the cap the file is skipped and marked `too_large`. The report gets a key `codex_unread`. It counts the files in state `too_large` or `unreadable` that have `project_id` = this workbench and a file mtime inside the period. A file's owner is known only once its header is read, as described under "File registry" below. A file whose header cannot be read at all has no owner: it is counted only in the install-wide import report (`agents scan --json` `unreadable_unowned`), never on a workbench's pane. A test covers all three cases: an owned file too large, an owned file damaged after its header, and a file damaged in its header. When it is above 0, the pane shows a quiet line at the top of Statistics: "2 Codex sessions were not read: too large or damaged." The text lives in `AgentAnalyticsFormat`, and the mockup is `tuning-chat-codex-unread`.
+  - A compressed file is read whole through `github.com/klauspost/compress/zstd` (a new pure-Go dependency), capped at 64 MB of decompressed text. Above the cap the file is skipped and marked `too_large`. The report gets a key `codex_unread`. It counts the files in state `too_large` or `unreadable` that have `project_id` = this workbench, a file mtime inside the period, and no stored rows. A file's owner is known only once its header is read, as described under "File registry" below. A file whose header cannot be read at all has no owner: it is counted only in the install-wide import report (`agents scan --json` `unreadable_unowned`), never on a workbench's pane. A test covers all three cases: an owned file too large, an owned file damaged after its header, and a file damaged in its header. When it is above 0, the pane shows a quiet line at the top of Statistics: "2 Codex sessions were not read: too large or damaged." The text lives in `AgentAnalyticsFormat`, and the mockup is `tuning-chat-codex-unread`.
+  - **Verified before the first write.** Before any slice of a compressed file is parsed, the whole frame is streamed once, with no parsing and nothing stored. That pass checks the zstd checksum, the end of the frame and the 64 MB cap.
+    - If any of these fails, nothing from this version of the file is written. It becomes `unreadable` or `too_large`.
+    - If the pass succeeds, `verified_at` = the on-disk `size:mtime`, and slicing starts.
+    - Because a failure is always found before the first slice, there is no partial session that is also counted in `codex_unread`.
+    - Exception: a file that was verified, imported, and later changed on disk and failed the check. Its earlier rows stay, because they were valid data. The file becomes `unreadable`, and `codex_unread` counts only files with **no** stored rows, so this one does not show on the pane. The import report counts every such file.
   - Its stored `read_offset` counts decompressed bytes, while `size` and `mtime` stay the on-disk ones, and `compressed = 1`.
-  - Resume follows its own rule, because `resumePoint`'s size-versus-offset comparison does not apply to a compressed file. If the size and mtime on disk equal the stored ones and the last slice reached the end, the file is unchanged. If they are equal and the file is not finished (a budget stop), the next scan streams the frame, discards the first `read_offset` decompressed bytes, and goes on in slices, so every scan gets further than the last one. If they differ, the file is read again from 0 and the dedupe key drops what is already stored.
-  - Test: a compressed file read over three scans with a budget stop after each slice gives the same rows as a single read.
+  - **Resume.** `resumePoint`'s size-versus-offset comparison does not apply to a compressed file, so it has its own rule:
+    - `size:mtime` on disk equals `verified_at` and `complete = 1`: the file is unchanged and is not opened.
+    - It equals `verified_at` and `complete = 0` (a budget stop): no check again. The scan streams the frame, discards the first `read_offset` decompressed bytes and goes on in slices, so every scan gets further than the last one.
+    - It differs from `verified_at`: the file is checked again. If it passes, it is read from 0, and the dedupe key drops what is already stored.
+  - Tests:
+    - A compressed file read over three scans, with a budget stop after each slice, gives the same rows as a single read and ends with `complete = 1`.
+    - A frame damaged near its end, and a frame over the cap, store no rows at all.
+    - A file that is verified, imported, then replaced by a damaged one keeps its rows and is not counted in `codex_unread`.
   - A file that moved from plain to compressed, at the same path or under the `.zst` name, imports no twice-counted rows: the dedupe key below is the session id plus an ordinal, not a byte offset or a path.
-  - A corrupt or truncated frame stores nothing from that file. The file is marked `unreadable` with the error class only (FILES-01), and the next scan tries it again only if its size or mtime changed.
+  - A corrupt or truncated frame is caught by the check above, so nothing from that version is stored. The file is marked `unreadable` with the error class only (FILES-01), and the next scan tries it again only if its size or mtime changed.
   - Only the analytics importer reads compressed rollouts. `sessionfeed` (Workchat) and `internal/terminal` keep today's behaviour: a compressed file yields nothing, `LocateCodex` and `findCodexRollout` match `.jsonl` only, and `TestParseCodex_SkipsZstd` and its `terminal` twin stay unchanged. Teaching Workchat to read compressed rollouts is a separate change, with its own large-file and damaged-file states and mockups. It is a v1 limit and becomes a backlog target when this spec is approved.
-- Ownership comes from the cwd of the first `turn_context` (fallback: `session_meta.cwd`) through the same `OwnerFolder` rule as Claude's home cwd. Every scan lists **all** rollout files under `sessions/`, because there is no day window: a resumed session can append to a file in an old day folder. The existing missing sweep therefore sees a complete listing, and a budget stop never marks unlisted files missing (the `present` rule in `scan.go`).
-- **File registry, so a file is opened once.** Unlike Claude's per-project folders, `sessions/` holds every Codex session on the Mac, including the many `codex exec` runs Watchtower itself starts. The Codex listing therefore runs once per scan for the whole install, not once per workbench, and each file is handled by its `agent_log_files` row:
-  - **A new path.** Only the header is read: `session_meta` and the first `turn_context`. For a compressed file the frame is streamed up to the header and no further. The header gives `cwd`, the originator and the parent thread.
-    - An exec root gets the state `excluded`.
-    - A cwd that no workbench owns gets `foreign`.
-    - Otherwise the file gets `project_id` through `OwnerFolder` and proceeds as `ok` or `held`.
-    - A header that cannot be read makes the file `unreadable`, with no owner.
-  - **`excluded`, `foreign` and `unreadable` rows** are not opened again while their size and mtime stay the same, so a heavy `sessions/` folder costs one stat per file per scan.
-  - When the owner's set of workbench folders changes (a fingerprint in `agent_log_meta`), `foreign` rows are re-matched from their stored `cwd` without opening the files.
-  - **An excluded file that grows** stays `excluded`: the originator never changes within a session.
-  - Test: a second scan over 500 fixture files opens none of them; a new workbench adopts a `foreign` row without opening it.
+- **AGENTLOG-04 amendment (ask #1013).** Codex keeps every session on the Mac in one folder, so a file's owner is known only from inside it. The amended contract, word for word in `docs/inventory/agent-analytics.md`:
+  - Claude Code transcripts: unchanged (slug folders only, never through a symlink, any other project's transcripts never opened).
+  - Codex rollouts: Watchtower may read the **header** of any rollout under `sessions/` — the `session_meta` line and the first `turn_context`, at most the first 64 KB of text (for a compressed file, streamed up to that point and no further). It reads nothing past the header unless the file belongs to a workbench with analytics on.
+  - For a file no such workbench owns, only its path, size, mtime, state and `state_since` are stored. No cwd, no originator, no text, no session row.
+  - Nothing is opened at all while no workbench has analytics on (the phase is inert, as today).
+  - New guards: `TestScanCodex_HeaderOnlyForForeign` (a counting opener proves no byte past the header cap is read from a foreign file), `TestScanCodex_ForeignStoresNoContent` (the foreign row's `project_id`, `parse_state`, `error_class` are NULL and no session, event or subagent row exists) and `TestScanCodex_NothingOpenedWhenAnalyticsOff`. The three Claude guards stay as they are.
+- **Ownership.** The cwd of the first `turn_context` (fallback: `session_meta.cwd`) is matched through the same `OwnerFolder` longest-wins rule as Claude's home cwd, over the folders and worktree roots of **every** workbench (the worktree roots from `git worktree list` and the `terminal_session_worktrees` ledger, as `Scan` computes them today).
+  - The longest match has analytics on: the file gets its `project_id` and proceeds as `ok` or `held`.
+  - The longest match has analytics off, or nothing matches: the file is `foreign`. A nested workbench with analytics off therefore keeps its sessions out of its parent's analytics, as Claude's longest-wins rule does.
+  - A header with no `session_meta` inside the 64 KB cap is `unreadable` (class `no_header`) with no owner, and is tried again when its size or mtime changes. A brand-new file is usually only growing, so it is picked up on a later pass.
+- **The Codex pass.** `sessions/` holds every Codex session on the Mac, including the many `codex exec` runs Watchtower itself starts, so it is listed once per cycle for the whole install, not once per workbench.
+  - A new function `agentlog.ScanCodex(ctx, main, al, o) (*CodexResult, error)` does it. `Scan` (per workbench) stays Claude-only, apart from reading the pass's completeness for its progress row (below).
+  - `phaseAgentAnalytics` calls `ScanCodex` first, then `Scan` for each enabled workbench. The cycle budget (`agentAnalyticsBudget`, 30 s) is split into `len(ids) + 1` equal shares, and the Codex pass takes one. A missing Codex folder (`CODEX_HOME` unset and no `~/.codex/sessions`) makes the pass a no-op that counts as complete.
+  - `agents scan --workbench N` runs the Codex pass too, before its Claude scan, unbounded as today. The pass writes rows for every enabled workbench, not only N: ownership needs the whole listing.
+  - Every pass lists **all** rollout files under `sessions/` with a stat each, because there is no day window: a resumed session can append to a file in an old day folder. The missing sweep runs over that listing, and only when the walk itself finished without an error. A budget stop never marks unlisted files missing (the `present` rule in `scan.go`).
+  - A pass is **complete** when every listed file reached a state for its current size and mtime (`ok` read to the end, or a final non-`ok` state) before the budget ran out. A pass stopped by the budget or by ctx is `Incomplete`. The orphan clock (sub-agents below) fires only after a complete pass.
+  - The result goes into `agent_log_meta`: `codex_pass_complete` (0/1), `codex_pending` (listed files not yet at a state for their current size and mtime) and `codex_pass_at`.
+- **Import progress.** `agent_log_import` stays one row per workbench, and its meaning widens. `complete` = the workbench's Claude scan was complete **and** the last Codex pass was complete. `files_stored` counts its Claude transcripts plus its Codex files (`project_id` = N, state `ok`). So the pane's "importing" state stays on while old Codex history is still being read, even when the Claude part is done. `agents scan --json` gains `codex: {listed, pending, complete, excluded, foreign, held, orphan_skipped, unreadable_unowned}`.
+- **File registry, so a file is opened once.** Each listed file is handled by its `agent_log_files` row:
+  - **A new path.** Only the header is read. It gives the cwd, the originator and the parent thread. The cwd and the originator are used and not stored.
+    - An exec root gets `excluded`.
+    - A file with a parent thread waits for its root (sub-agents below).
+    - Otherwise ownership decides: `ok`/`held` with `project_id`, or `foreign`.
+    - A header that cannot be read makes the file `unreadable` with no owner.
+  - **`excluded`, `foreign` and `unreadable` rows** are not opened again while their size and mtime stay the same, so a heavy `sessions/` folder costs one stat per file per pass.
+  - **An excluded file that grows** stays `excluded`: the originator never changes within a session. A `foreign` file that grows has its header read again, because the cwd is not stored.
+  - **The owner fingerprint.** `agent_log_meta.codex_owner_fingerprint` is a hash of every workbench's id, folder, analytics flag and worktree roots. When it differs from the one the last pass used, every `foreign` row goes back to "new path" and its header is read once more. This covers a new workbench, analytics turned on, a folder moved, and an external worktree that becomes known later (created outside the folder and first seen in the ledger). The cost is one header read per foreign file per change, which is rare. `ok` rows keep their `project_id` and follow the existing #849 adoption (by live id; a deleted workbench's rows are adopted by a later workbench on the same folder). Analytics turned **off** stores nothing new, and rows already stored stay, as today.
+  - Tests:
+    - A second pass over 500 fixture files opens none of them.
+    - A workbench with analytics off: its file stays `foreign` with nothing past the header read. Turning analytics on changes the fingerprint, and the next pass reads the header once and imports the file.
+    - A new workbench adopts a file that was `foreign`.
+    - An external worktree recorded in the ledger after the first pass adopts its file on the next pass.
+    - A nested workbench with analytics off keeps its file out of its parent's analytics.
+    - A file with only `session_meta` written so far, then grown, is read once it grows.
 - **Excluded:** sessions whose `session_meta.originator` is the exec kind. Every Watchtower child (`codex exec` for digests, spec review, automation `agent()`) is that kind and runs with the owner's `CODEX_HOME`, so it lands in the same folder. The owner's own `codex exec` runs are left out too (v1 limit). The guide's Analytics page says it in one line ("Codex runs started with `codex exec` are not counted"), and the pane's agent filter has the same line as its help text. The builder confirms the originator values on real files and pins them in a parser test fixture written from scratch (no real content).
-- **Sub-agents.** A rollout whose `session_meta` names a parent thread (Codex's sub-agent threads, `thread_source`/`source` marking a spawned agent) is never an owner session: it is stored as a sub-agent of its parent (`agent_log_subagents`, events under the parent's session, `agent_id` = the child thread), the twin of Claude's `subagents/agent-*.jsonl`. The exec exclusion is decided on the root thread only, so the children of an interactive session count and the children of an exec run do not. Tokens are taken only from each file's own `token_count` deltas, and the builder confirms on real files that a parent's totals do not include its children's (a fixture pins it); if they do, the parent's deltas are used and children contribute tool and time rows only. A child whose root is not decided yet is held. Nothing is stored, and the file row is marked `held` with `state_since` = the scan that first held it (not the file's mtime).
-  - "Decided" means the root thread's file has been read up to its `session_meta`. The parent is looked up by thread id in the scan's full listing; the id is in the filename.
-  - When the parent is listed but not read yet (a first import of old history, or a budget stop), the child just waits. The clock keeps running, but it can only fire on a complete scan.
-  - A held child becomes `orphan_skipped` only when both hold: a complete scan (not `Incomplete`) finished without its parent's id in the listing, and `state_since` is more than 7 days old. Its rows are never stored.
+- **Sub-agents.** A rollout whose `session_meta` names a parent thread (Codex's sub-agent threads, `thread_source`/`source` marking a spawned agent) is never an owner session: it is stored as a sub-agent of its parent (`agent_log_subagents`, events under the parent's session, `agent_id` = the child thread), the twin of Claude's `subagents/agent-*.jsonl`. The exec exclusion is decided on the root thread only, so the children of an interactive session count and the children of an exec run do not. Tokens are taken only from each file's own `token_count` deltas, and the builder confirms on real files that a parent's totals do not include its children's (a fixture pins it); if they do, the parent's deltas are used and children contribute tool and time rows only. A child whose root is not decided yet is held. Nothing is stored, and the file row is marked `held` with `state_since` = the Codex pass that first held it (not the file's mtime).
+  - **Owner.** A child always belongs to its root's owner: it takes the root's `project_id` and state and never decides by its own cwd. A child running in another folder (a worktree, `/tmp`) still counts toward its parent's cost.
+  - **"Decided"** means the root's file row is `ok` **and** the root's `agent_log_sessions` row exists, so its first slice is stored. Inside one Codex pass, root files (no parent thread) are read before children, so a child usually finds its root in the same pass.
+  - The parent is looked up by thread id in the scan's full listing; the id is in the filename.
+  - **A root in a final non-`ok` state.** No 7-day wait applies:
+    - The root is `excluded` (exec): the child gets `excluded`.
+    - The root is `foreign`: the child gets `foreign`.
+    - The root is `too_large` or `unreadable`, which includes a damaged header: the child gets `orphan_skipped` on that same pass.
+    - The child is looked at again whenever its root's state changes. For example, the damaged root is replaced by a good file and becomes `ok`, and the child then imports.
+  - When the parent is listed but not read yet (a first import of old history, or a budget stop), the child just waits. The clock keeps running, but it can only fire after a complete Codex pass.
+  - A held child becomes `orphan_skipped` only when both hold: a complete Codex pass (not `Incomplete`) finished without its parent's id in the listing, and `state_since` is more than 7 days old. Its rows are never stored.
   - An `orphan_skipped` child is checked again whenever its parent's id later shows up in a listing. It is then imported like any child: stored if the root is not exec, dropped if it is.
   - So an exec run's child never reaches the owner's analytics. The only loss is a child whose parent file is gone for good (v1 limit).
   - The import report counts `held` and `orphan_skipped`.
@@ -238,7 +283,7 @@ Every visible string (folded accepted line, too-few-inputs line, figures line, s
 | `skill_pack_overlays` + pack copies | Accept/Rollback (CLI), re-render by `integrate`/daemon drift check | the overlay row is the truth; a re-render is idempotent; a hand-edited copy is left alone |
 | `prompt_inputs` | every pipeline process; purge, deletion pass, private trigger, daemon retention | inserts never conflict; deletes win (a removed row is gone even if captured a moment later from the same old data, which is then removed on the next pass) |
 | `prompt_replays` | MCP tool (propose), CLI (run), daemon (stale sweep), Desktop (discard) | compare-and-set on `state` |
-| `agent_log_*` codex rows | daemon `phaseAgentAnalytics`, `agents scan` | the existing import lock and dedupe key |
+| `agent_log_*` codex rows, `agent_log_meta` codex keys | daemon `phaseAgentAnalytics`, `agents scan` (CLI); both run the Codex pass | there is no import lock today and none is added. Event rows: the per-slice offset compare-and-set and the dedupe key, as for Claude. A file row's `state` and `project_id` change by compare-and-set on the size, mtime and state the pass saw; the loser leaves the row and sees it again on its next pass. The meta keys are last writer wins: both passes saw the same listing, and the next pass corrects a stale value |
 
 ## 5. Contracts and tests (beyond those named above)
 
@@ -281,9 +326,17 @@ Every visible string (folded accepted line, too-few-inputs line, figures line, s
   - Mid-file resume: one rollout read in slices of 3 lines (`batchRows` lowered in the test) and, separately, across two scans, gives the same rows, model, cost and keys as one whole read. A missing or corrupt `parse_state` re-reads from 0 with no duplicates. An open tool call that spans a slice boundary still pairs.
   - A resumed session that appends to a file in an old day folder is picked up by the next scan.
   - The full listing: a budget stop leaves unread files not missing.
+  - Sub-agents:
+    - A child whose cwd is another folder counts in its parent's workbench.
+    - A child read in the same pass as its root, which is listed after it, imports in that pass.
+    - A child of a root whose session row is missing yet (the root stopped by the budget before its first slice) stays `held`.
+    - A child of a `too_large` root, or of a root with a damaged header, becomes `orphan_skipped` at once, and imports once the root becomes `ok`.
+    - A child of an `excluded` root, or of a `foreign` root, takes that state.
   - Migration 00003 keeps the row count of every agentlogdb table, the child tables included, and keeps `read_offset`.
   - A compressed file is resumed across scans after a budget stop and still reaches the end.
-  - The file registry: a second scan opens no `excluded` or `foreign` file, and a new workbench adopts a `foreign` row without opening it.
+  - The file registry and ownership: the tests listed under "File registry" in §4.7, and the three new AGENTLOG-04 guards.
+  - Import progress: a workbench whose Claude scan is complete while the Codex pass is `Incomplete` keeps `agent_log_import.complete = 0`. It becomes 1 after a complete pass. A failure after committed slices (the store refuses the second slice) keeps the first slice's rows and offset, counts the file in `failed_files`, and the next pass resumes from that offset.
+  - Two passes at once (daemon and `agents scan`) over the same files store each event once and end with the same file states.
   - `codex_unread`: an owned too-large file, an owned file damaged after its header, and a file with a damaged header (counted only in `unreadable_unowned`).
   - `sessionfeed` and `terminal` still skip a compressed rollout, with their tests unchanged.
 - `ValidateChatProposal`: a table test for each refusal, plus "a chat proposal does not take a weekly slot but blocks the same destination text".
@@ -299,14 +352,15 @@ Every visible string (folded accepted line, too-few-inputs line, figures line, s
 - A feature note `docs/features/tuning-chat.md` and a CLAUDE.md index line.
 - Guide: the Analytics page gets a Tuning section, the Codex sessions and the exec limit, and a Learn card.
 - `docs/features/agent-coach.md`: origin `chat` and the new destinations. `agent-analytics.md`: Codex. `llm-usage-ledger.md`: purpose `prompts.replay`.
-- Inventory: amendments to COACH-01 (new destinations, chat origin without the weekly gates), AGENTLOG (codex) and DEV-04 (the pack overlay renders into the shipped digest), plus a new contract for prompt input capture and removal.
+- Inventory: amendments to COACH-01 (new destinations, chat origin without the weekly gates), AGENTLOG (the agent column and the exec exclusion, ask #999), **AGENTLOG-04** (Codex rollout headers may be read; a file no enabled workbench owns stores only path, size, mtime and state, never a cwd or text; the three new guards; ask #1013) and DEV-04 (the pack overlay renders into the shipped digest), plus a new contract for prompt input capture and removal.
+- `docs/features/agent-analytics.md`: the Codex pass, its budget share, `agent_log_import`'s widened `complete`, and the `agents scan --json` `codex` keys.
 
 ## 7. Phasing (for the plan)
 
 1. Capture + `prompt_inputs` + removal hooks (Go).
 2. Coach: chat origin, `ValidateChatProposal`, new file destinations, Codex rules, pack overlays (Go).
 3. `tuning` surface + read and proposal tools + replay CLI and sweep (Go).
-4. `codexrollout` (moving `sessionfeed` and `terminal` onto it; zstd for analytics only) + Codex file registry + parser with resume state + agentlogdb migration 00003 (foreign keys off) + report agent filter and `codex_unread` (Go).
+4. `codexrollout` (moving `sessionfeed` and `terminal` onto it; zstd for analytics only) + `ScanCodex` pass, its budget share and import progress + Codex file registry with the owner fingerprint + parser with resume state + agentlogdb migration 00003 (foreign keys off) + report agent filter and `codex_unread` (Go).
 5. Desktop: panel, `TuningChat`, cards, A/B card, agent filter, DesignShots (Swift).
 6. Docs, guide, inventory.
 
@@ -340,8 +394,9 @@ Phases 1, 2 and 4 are independent and can run in parallel lanes. Phase 3 needs 1
 | D22 | A Codex skill present in both folders: only the copy Codex reads is editable | agent's call (review round 1) |
 | D23 | Compressed (zstd) Codex rollouts are read whole through `klauspost/compress/zstd` (a new dependency), capped at 64 MB decompressed, and the magic is checked on every read; a file over the cap or damaged is counted in `codex_unread` and named on the pane | agent's call (owner comment, ask #1004) — owner approves in this review |
 | D24 | Both rollout dialects (legacy `user_message`, paginated `item_completed`) are decoded, and a turn counts once | agent's call (owner comment, ask #1004) |
-| D25 | A Codex sub-agent whose parent is absent from complete scans for 7 days after it was first held is not stored (`orphan_skipped`), so an exec run's child can never leak into analytics; it is imported if the parent shows up later. Cost: a child whose parent file is gone for good is lost | agent's call (owner comment, ask #1004; replaces the earlier 24 h "store as unknown parent") — owner approves in this review |
+| D25 | A Codex sub-agent whose parent is absent from complete Codex passes for 7 days after it was first held is not stored (`orphan_skipped`), so an exec run's child can never leak into analytics; it is imported if the parent shows up later. Cost: a child whose parent file is gone for good is lost | agent's call (owner comment, ask #1004; replaces the earlier 24 h "store as unknown parent") — owner approves in this review |
 | D26 | `ai query` checks `--surface` itself, and the tuning rules tell the model what to say when no tuning tool is present (a stale CLI) | agent's call (spec review, ask #1006) |
 | D27 | Codex discovery lists every rollout file each scan (stat only) instead of a day window, because a resumed session can append to an old day folder | agent's call (spec review, ask #1006) |
 | D28 | One rollout decoder (types, dialects, magic check, `Locate`) for all three readers (`sessionfeed`, `terminal`, `agentlog`); only analytics decompresses zstd. Workchat and the prompt reader keep skipping compressed files (unchanged behaviour); reading them there is a later backlog target | agent's call (spec review, ask #1008; extends D21) |
-| D29 | Codex files are listed once per scan for the whole install and remembered in `agent_log_files` (`foreign`, `excluded`, with `cwd` and `project_id`), so each file's header is read once | agent's call (spec review, ask #1008) |
+| D29 | Codex files are listed once per cycle for the whole install (`ScanCodex`, one budget share) and remembered in `agent_log_files` (`foreign`, `excluded`, `project_id`); a change of the owner fingerprint (folders, worktree roots, analytics flags) re-reads foreign headers | agent's call (spec review, asks #1008 and #1010) |
+| D30 | AGENTLOG-04 amended: Watchtower may read the header (≤ 64 KB) of any Codex rollout to find its owner; a file no workbench with analytics on owns stores only path, size, mtime and state, never a cwd or text | ask #1013 |
