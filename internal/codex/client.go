@@ -2,7 +2,6 @@ package codex
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -280,11 +279,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			return
 		}
 		// codex refuses a pipe for model_instructions_file (it stats the
-		// file), so the prompt is a 0600 file that lives only until codex's
-		// first output line — it has read the file by then — and is removed
-		// on every return as well.
-		removePrompt := fsutil.RemoveOnce(promptFile)
-		defer removePrompt()
+		// file), so the prompt is a 0600 file. It is held until codex exits:
+		// codex re-reads it for every model request of the run, so removing
+		// it at the first output line fails the next request ("failed to
+		// load workspace requirements"); the hold also keeps the stale-temp
+		// sweep off it during a long run. It is removed on every return.
+		defer fsutil.HoldTempFile(promptFile)()
 
 		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
 		cmd.Stdin = strings.NewReader(promptStdin)
@@ -327,7 +327,6 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		var terminal error
 
 		for scanner.Scan() {
-			removePrompt()
 			line := scanner.Text()
 			if line == "" {
 				continue
@@ -421,8 +420,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if err != nil {
 		return "", nil, err
 	}
-	removePrompt := fsutil.RemoveOnce(promptFile) // see Query
-	defer removePrompt()
+	defer fsutil.HoldTempFile(promptFile)() // see Query
 
 	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
 	cmd.Stdin = strings.NewReader(promptStdin)
@@ -435,7 +433,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	start := time.Now()
-	output, err := outputRemovingPrompt(cmd, removePrompt)
+	output, err := cmd.Output()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {
@@ -456,15 +454,6 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 
 	return result, usage, nil
-}
-
-// outputRemovingPrompt is cmd.Output with removePrompt run at the child's
-// first stdout write, when codex has read its model_instructions_file.
-func outputRemovingPrompt(cmd *exec.Cmd, removePrompt func()) ([]byte, error) {
-	var out bytes.Buffer
-	cmd.Stdout = fsutil.OnFirstWrite(&out, removePrompt)
-	err := cmd.Run()
-	return out.Bytes(), err
 }
 
 // InvocationProfile marks the reviewer's distinct readonly runtime. Ordinary

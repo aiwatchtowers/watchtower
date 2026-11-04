@@ -4,8 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // useRealVersionProbe restores the real `codex --version` probe for one
@@ -179,16 +182,18 @@ func TestPromptArgs_RefusesAnUnquotablePath(t *testing.T) {
 
 // codex refuses a pipe for model_instructions_file (it stats the file:
 // "model instructions file is empty: /dev/fd/3", codex-cli 0.145.0), so the
-// prompt is a 0600 file — gone once codex has printed its first line, while
-// the child still runs, and never left behind. The fake reads the file
-// twice (stat, then read) before any output, as codex does.
-func TestPromptFile_GoneAfterFirstOutput(t *testing.T) {
+// prompt is a 0600 file. codex re-reads that file for every model request,
+// not only at start-up: removed at the first output line, the next request
+// of the same run fails ("failed to load workspace requirements",
+// codex-cli 0.159.2). So the file lives while the child runs and is never
+// left behind. The fake reads the file before any output and again after
+// it, as codex does across its requests.
+func TestPromptFile_KeptUntilCodexExits(t *testing.T) {
 	useRealVersionProbe(t)
-	tmp := t.TempDir()
 	const marker = "SYS-MARKER-once"
-	script := filepath.Join(t.TempDir(), "fake-codex")
 	body := `#!/bin/sh
 [ "$1" = "--version" ] && { echo "codex-cli 0.145.0"; exit 0; }
+echo $$ > "$WT_TEST_PID_FILE"
 file=""
 for a in "$@"; do case "$a" in model_instructions_file=*) file=${a#model_instructions_file=}; file=${file#\"}; file=${file%\"} ;; esac; done
 cat > /dev/null
@@ -197,29 +202,78 @@ reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"
 case "$first$second" in *` + marker + `*` + marker + `*) ;; *) reply unread ;; esac
 echo '{"type":"thread.started","thread_id":"t"}'
 sleep 0.5
-[ -e "$file" ] && reply present
+case "$(cat "$file" 2>/dev/null)" in *` + marker + `*) reply present ;; esac
 reply gone
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name string
+		run  func(ctx context.Context, script string) (string, error)
+	}{
+		{"client", func(ctx context.Context, script string) (string, error) {
+			c := NewClient("m", "", script)
+			c.SetProcessGroup(true)
+			out, _, err := c.QuerySync(ctx, "sys "+marker, "hi", "")
+			return out, err
+		}},
+		{"client stream", func(ctx context.Context, script string) (string, error) {
+			c := NewClient("m", "", script)
+			c.SetProcessGroup(true)
+			chunks, errs, sids := c.Query(ctx, "sys "+marker, "hi", "")
+			go func() {
+				for range sids {
+				}
+			}()
+			var out strings.Builder
+			for chunk := range chunks {
+				out.WriteString(chunk.Text)
+			}
+			return out.String(), <-errs
+		}},
+		{"generator", func(ctx context.Context, script string) (string, error) {
+			g := NewCodexGenerator("m", "m", script)
+			g.SetIsolatedChild()
+			out, _, _, err := g.Generate(ctx, "sys "+marker, "hi", "")
+			return out, err
+		}},
 	}
-	t.Setenv("TMPDIR", tmp)
-	for name, run := range map[string]func() (string, error){
-		"client": func() (string, error) {
-			out, _, err := NewClient("m", "", script).QuerySync(context.Background(), "sys "+marker, "hi", "")
-			return out, err
-		},
-		"generator": func() (string, error) {
-			out, _, _, err := NewCodexGenerator("m", "m", script).Generate(context.Background(), "sys "+marker, "hi", "")
-			return out, err
-		},
-	} {
-		out, err := run()
-		if err != nil || out != "gone" {
-			t.Errorf("%s: output = %q, %v; want gone", name, out, err)
-		}
-		if entries, _ := os.ReadDir(tmp); len(entries) != 0 {
-			t.Errorf("%s: %d file(s) left in the temp dir", name, len(entries))
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("TMPDIR", tmp)
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			t.Setenv("WT_TEST_PID_FILE", pidFile)
+			script := filepath.Join(t.TempDir(), "fake-codex")
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// The stub leads its own process group and exits by itself in half
+			// a second. Whatever path the call took (reply, timeout, failure),
+			// kill the group if it is still alive and wait until it is gone.
+			t.Cleanup(func() {
+				b, _ := os.ReadFile(pidFile)
+				pgid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+				if pgid <= 0 || syscall.Kill(-pgid, 0) == syscall.ESRCH {
+					return
+				}
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				deadline := time.Now().Add(10 * time.Second)
+				for syscall.Kill(-pgid, 0) != syscall.ESRCH {
+					if time.Now().After(deadline) {
+						t.Errorf("stub process group %d still alive", pgid)
+						return
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			out, err := tc.run(ctx, script)
+			if err != nil || out != "present" {
+				t.Errorf("output = %q, %v; want present (the file must outlive codex's first output)", out, err)
+			}
+			if entries, _ := os.ReadDir(tmp); len(entries) != 0 {
+				t.Errorf("%d file(s) left in the temp dir", len(entries))
+			}
+		})
 	}
 }

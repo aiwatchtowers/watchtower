@@ -99,14 +99,14 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 }
 
 // run starts codex with args in dir and parses its JSONL reply. promptFile
-// (the 0600 model_instructions_file, "" for none) is removed at codex's first
-// output, or when run returns: codex refuses a pipe there (see Client.Query).
+// (the 0600 model_instructions_file, "" for none) is held while codex runs
+// and removed when run returns, not earlier: codex re-reads it for every
+// model request (see Client.Query).
 // prompt is the call's prompt text, for the ledger's estimate when codex
 // reports no usage; every run is recorded (recordCodexCall), failures too.
 func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationProfile, codexBin, model string, args []string, stdin, dir, promptFile, prompt string) (_ string, _ *digest.Usage, err error) {
 	defer func() { err = providers.ContextFailure("codex", ctx, providers.ProcessFailure("codex", err)) }()
-	removePrompt := fsutil.RemoveOnce(promptFile)
-	defer removePrompt()
+	defer fsutil.HoldTempFile(promptFile)()
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
@@ -132,7 +132,7 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	start := time.Now()
-	output, err := outputRemovingPrompt(cmd, removePrompt)
+	output, err := cmd.Output()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {

@@ -56,34 +56,6 @@ func AttachPayloads(cmd *exec.Cmd, contents ...string) ([]FDPayload, func(), err
 // waitPayloadWriters blocks until every payload writer has returned.
 func waitPayloadWriters() { payloadWriters.Wait() }
 
-// RemoveOnce returns a func that removes path the first time it is called
-// (a no-op for ""). For a CLI that refuses a pipe (codex stats its
-// model_instructions_file, so it gets a WritePrivateTemp file): the caller
-// calls it at the child's first stdout output, when the file has been read,
-// and again once the child has exited.
-func RemoveOnce(path string) func() {
-	var once sync.Once
-	return func() {
-		if path != "" {
-			once.Do(func() { _ = os.Remove(path) })
-		}
-	}
-}
-
-// OnFirstWrite wraps w so that fn runs once, right before the first write.
-func OnFirstWrite(w io.Writer, fn func()) io.Writer { return &firstWriter{w: w, fn: fn} }
-
-type firstWriter struct {
-	w    io.Writer
-	fn   func()
-	once sync.Once
-}
-
-func (f *firstWriter) Write(p []byte) (int, error) {
-	f.once.Do(f.fn)
-	return f.w.Write(p)
-}
-
 // PayloadPath is the path AttachPayloads gives the i-th payload of a cmd
 // with no other ExtraFiles, for argv built before the cmd exists.
 func PayloadPath(i int) string { return fmt.Sprintf("/dev/fd/%d", 3+i) }
