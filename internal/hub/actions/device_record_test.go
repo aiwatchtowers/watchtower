@@ -2,10 +2,15 @@ package actions
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"testing"
 
+	"watchtower/internal/hub/hubtest"
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
@@ -251,5 +256,108 @@ func TestDeviceRecordCreatorCheck(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// flakyOwner is ownerMailbox whose owner read fails while down is set.
+type flakyOwner struct {
+	ownerMailbox
+	down *bool
+}
+
+func (f flakyOwner) OwnerUser(ctx context.Context) (string, error) {
+	if *f.down {
+		return "", transport.ErrUnavailable
+	}
+	return f.ownerMailbox.OwnerUser(ctx)
+}
+
+// proofRecord is a device record for ph naming a rename and a proven relay
+// id; it returns the payload and the id.
+func proofRecord(t *testing.T, w *world, ph *hubtest.Phone, name string) (wire.DevicePayload, string) {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := key.Public().(ed25519.PublicKey)
+	id := identity.RelayDeviceID(pub)
+	return wire.DevicePayload{DeviceID: ph.ID().String(), Name: name, Scope: wire.ScopePrivate, StartSessions: true,
+		UpdatedAt:     wire.Time{Time: w.clock()},
+		RelayDeviceID: id, RelayAuthPub: base64.RawURLEncoding.EncodeToString(pub),
+		RelayIDSig: base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, link.RelayIDProofMessage(w.keys.HubID(), ph.ID(), id)))}, id
+}
+
+// A failed owner read is no decision: the record stays unmarked, the pass
+// reports the failure by class, and the next pass applies the record in full
+// (name and relay id proof), the proof not stripped by the replay guard. A
+// failing record holds back only its own phone's later records.
+func TestDeviceRecordOwnerReadFailureIsRetried(t *testing.T) {
+	const owner = "_owner-user"
+	w := newWorld(t, kindShared)
+	down := true
+	w.proc.cfg.Transport = flakyOwner{ownerMailbox{sharedMailbox{w.fake}, owner}, &down}
+	other := w.addPhone()
+	w.phone.Creator = owner // a real user name: the owner read decides
+	w.setStoredUser(w.phone, owner)
+	before := w.device(w.phone).RelayDeviceID
+	d, id := proofRecord(t, w, w.phone, "Renamed")
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	od := wire.DevicePayload{DeviceID: other.ID().String(), Name: "Other Renamed", Scope: wire.ScopePrivate,
+		UpdatedAt: wire.Time{Time: w.clock()}}
+	if _, err := other.WriteDeviceRecord(od, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.proc.Pass(w.ctx); err == nil {
+		t.Fatal("a failed owner read was not reported")
+	}
+	if got := w.device(w.phone); got.Name != "Test Phone" || got.RelayDeviceID != before {
+		t.Fatalf("applied on a failed owner read: %+v", got)
+	}
+	if got := w.device(other).Name; got != "Other Renamed" {
+		t.Fatalf("one phone's failure held back another's record: %q", got)
+	}
+	down = false
+	w.pass()
+	got := w.device(w.phone)
+	if got.Name != "Renamed" || got.RelayDeviceID != id {
+		t.Fatalf("the retry did not apply in full: name %q relay %q", got.Name, got.RelayDeviceID)
+	}
+	if w.pass().Applied != 0 || w.device(w.phone).Name != "Renamed" {
+		t.Fatal("the decided record came again")
+	}
+}
+
+// A creator that really is not the owner stays a refusal: marked, not retried.
+func TestDeviceRecordCreatorMismatchIsMarked(t *testing.T) {
+	w := newWorld(t, kindShared)
+	down := false
+	w.proc.cfg.Transport = flakyOwner{ownerMailbox{sharedMailbox{w.fake}, "_owner-user"}, &down}
+	w.phone.Creator = "_stranger"
+	w.setStoredUser(w.phone, "_stranger")
+	before := w.device(w.phone).RelayDeviceID
+	d, _ := proofRecord(t, w, w.phone, "Renamed")
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if got := w.device(w.phone); got.Name != "Test Phone" || got.RelayDeviceID != before {
+		t.Fatalf("a stranger's record applied: %+v", got)
+	}
+	// Marked: the owner read failing now changes nothing, the pass is clean.
+	down = true
+	w.pass()
+}
+
+// setStoredUser sets the user record name stored at ph's link.
+func (w *world) setStoredUser(ph *hubtest.Phone, user string) {
+	w.t.Helper()
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE devices SET user_record_name = ? WHERE device_id = ?`, user, ph.ID().String())
+		return err
+	}); err != nil {
+		w.t.Fatal(err)
 	}
 }
