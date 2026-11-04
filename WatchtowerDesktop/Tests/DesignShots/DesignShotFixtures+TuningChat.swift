@@ -16,6 +16,8 @@ enum TuningChatShotFixtures {
         case proposalStale = "proposal-stale"
         case abProposed = "ab-proposed", abRunning = "ab-running", abDone = "ab-done", abFailed = "ab-failed"
         case abTooFew = "ab-too-few", noTools = "no-tools", narrow
+        /// The provider switched to ollama mid-conversation (§4.1): the open card keeps its buttons.
+        case noToolsMidway = "no-tools-midway"
 
         /// Which fixture coach backs the state.
         var coachVariant: String {
@@ -53,6 +55,9 @@ enum TuningChatShotFixtures {
             },
             DesignShot(name: "tuning-chat-statistics-claude-only", size: NSSize(width: 900, height: 590)) {
                 statistics()
+            },
+            DesignShot(name: "tuning-chat-codex-unread", size: NSSize(width: 900, height: 590)) {
+                statistics(codexUnread: true)
             }
         ]
     }
@@ -67,7 +72,7 @@ enum TuningChatShotFixtures {
 
     /// The Statistics blocks with Codex sessions in the period: the blocks
     /// that read Claude Code facts only say so (§4.7).
-    static func statistics() -> AnyView {
+    static func statistics(codexUnread: Bool = false) -> AnyView {
         do {
             let overview = try JSONDecoder().decode(AgentReportOverview.self, from: fixture("agent-report-overview"))
             let actions = AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in },
@@ -75,6 +80,11 @@ enum TuningChatShotFixtures {
             return AnyView(VStack(alignment: .leading, spacing: Spacing.page) {
                 TuningAnalyticsHeader(tuneOn: false)
                 SectionHeader(title: "Statistics", systemImage: "chart.bar")
+                if codexUnread {
+                    Text(TuningChatTexts.codexUnread)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 AgentAnalyticsContextView(context: overview.context, actions: actions).claudeOnly()
                 AgentAnalyticsSkillsView(skills: overview.skills).claudeOnly()
             }
@@ -203,6 +213,7 @@ enum TuningChatTexts {
     ]
     static let loading = "Reading this workbench's analytics…"
     static let placeholder = "Ask about cost, prompts, skills or instructions…"
+    static let codexUnread = "2 Codex sessions were not read: too large or damaged."
     static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → AI"
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     static let accepted = "Accepted · measuring for 14 days"
@@ -354,6 +365,11 @@ private struct TuningPanelShot: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .defaultScrollAnchor(isFresh ? .top : .bottom)
+            if state == .noToolsMidway {
+                TuningFeed.noToolsCard
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.bottom, Spacing.regular)
+            }
             composer
         }
     }
@@ -378,7 +394,8 @@ private struct TuningPanelShot: View {
     private var conversation: String {
         switch state {
         case .streaming, .error: "Which prompt costs the most?"
-        case .proposal, .proposalAccepting, .proposalAccepted, .proposalStale: "review-pr reads every file"
+        case .proposal, .proposalAccepting, .proposalAccepted, .proposalStale, .noToolsMidway:
+            "review-pr reads every file"
         default: "Digests miss the decision owner"
         }
     }
@@ -418,7 +435,8 @@ private struct TuningFeed: View {
                     ProgressView().controlSize(.small)
                     Text(TuningChatTexts.loading).font(.callout).foregroundStyle(.secondary)
                 }
-            case .noTools: noTools
+            case .noTools: fresh(starters: false); Self.noToolsCard
+            case .noToolsMidway: fresh(starters: false); skillTurn(folded: false)
             case .streaming: streaming
             case .error: turnError
             case .proposal, .proposalAccepting, .proposalStale: skillTurn(folded: false)
@@ -457,8 +475,7 @@ private struct TuningFeed: View {
         }
     }
 
-    @ViewBuilder private var noTools: some View {
-        fresh(starters: false)
+    static var noToolsCard: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Label(TuningChatTexts.noTools, systemImage: "wrench.and.screwdriver")
                 .font(.callout)

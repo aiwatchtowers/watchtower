@@ -30,11 +30,14 @@ sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
 | A/B failed: "Stopped after 4 of 10 calls", Retry | §4.4, §4.6 | `tuning-chat-ab-failed-{light,dark}.png` |
 | A/B too few inputs: answer plus a quiet notice, no card | §4.6 | `tuning-chat-ab-too-few-{light,dark}.png` |
 | No tools (ollama): Open Settings | §4.1, §4.4 | `tuning-chat-no-tools-{light,dark}.png` |
+| No tools midway: provider switched to ollama mid-conversation, the open card keeps Accept / Decline, no-tools line above the composer | §4.1, §4.4 | `tuning-chat-no-tools-midway-{light,dark}.png` |
 | Narrow: panel at 360 pt, evidence above the buttons, outputs stacked | §4.4 | `tuning-chat-narrow-{light,dark}.png` |
+| Statistics with unread Codex sessions: a quiet line under the title | §4.7 | `tuning-chat-codex-unread-{light,dark}.png` |
 
 "Analytics off" has no shot: **Tune** is hidden, as the coach sections are.
 When the panel leaves the pane narrow, the header's controls wrap under the
-period.
+period; the spec covers it in §4.4 Narrow scope ("the pane header wraps the
+filter under the period picker").
 
 Render only these shots:
 
@@ -52,7 +55,5 @@ Product changes made with the mockups:
 - `CoachProposalCardView`: when the footer does not fit on one line, the
   evidence moves to its own line above the buttons.
 
-Known gaps, visible in these shots:
-
-- The stale line comes from `CoachCenter`: "The text changed since — this
-  proposal is closed". The spec asks for "The file changed since — ask again".
+Known gaps: none. The stale line is `CoachCenter`'s existing text ("The text
+changed since — this proposal is closed"), which the spec keeps.
