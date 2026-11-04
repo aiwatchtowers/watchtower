@@ -904,7 +904,8 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	h.sup.poke()
 }
 
-// relayIDNamed follows a linked phone's device record naming a new relay id:
+// relayIDNamed follows a linked phone's device record naming a new relay id,
+// or taking its stored id off another row:
 // the link upkeep runs now and its short-retry window opens, and the account
 // state is read afresh (the reader's unvouched window is dropped), so
 // set_hub_readers names the phone and its admission stamp and paying state

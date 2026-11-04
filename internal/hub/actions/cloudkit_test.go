@@ -487,7 +487,8 @@ func TestHygieneAgesOutHellosWithNoPhoneLinked(t *testing.T) {
 
 // A device record's proof carries no time, so a re-read zone must not replay
 // it: the old row's record, delivered again after its id moved to the newer
-// prover, does not take the id back, and the rest of the record still applies.
+// prover, does not take the id back, and the rest of the record still applies
+// (the name the hub changed in between returns to the record's).
 func TestARedeliveredDeviceRecordDoesNotMoveARelayIDBack(t *testing.T) {
 	w := newWorld(t, kindShared)
 	old, prover := w.phone, w.addPhone()
@@ -529,6 +530,12 @@ func TestARedeliveredDeviceRecordDoesNotMoveARelayIDBack(t *testing.T) {
 	if got := holder(prover); got != id || holder(old) != "" {
 		t.Fatalf("the move: prover %q old %q", got, holder(old))
 	}
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE devices SET name = 'Changed' WHERE device_id = ? COLLATE NOCASE`, old.ID().String())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := w.fake.Write(old.Zone(), name, first.Envelope, transport.Expect{Mode: transport.ExpectNone}); err != nil {
 		t.Fatal(err)
 	}
@@ -537,5 +544,41 @@ func TestARedeliveredDeviceRecordDoesNotMoveARelayIDBack(t *testing.T) {
 	}
 	if got := holder(prover); got != id || holder(old) != "" {
 		t.Fatalf("the re-delivery moved the id: prover %q old %q", got, holder(old))
+	}
+	if d, _, err := w.st.Device(old.ID().String()); err != nil || d.Name != "Test Phone" {
+		t.Fatalf("the rest of the re-delivered record was not applied: name %q, %v", d.Name, err)
+	}
+}
+
+// The upgrade's real walk: the phone's device record was read before, so its
+// first proof comes on a record that already has a mark, at a higher seq. The
+// replay guard strips only an identical re-delivery, never this.
+func TestAProofOnARewrittenDeviceRecordIsApplied(t *testing.T) {
+	w := newWorld(t, kindShared)
+	ph := w.phone
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := key.Public().(ed25519.PublicKey)
+	id := identity.RelayDeviceID(pub)
+	d := wire.DevicePayload{DeviceID: ph.ID().String(), Name: "Test Phone", Scope: "private", StartSessions: true}
+	if _, err := ph.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	if r := w.pass(); r.Read != 1 {
+		t.Fatalf("the plain record was not read: %+v", r)
+	}
+	d.RelayDeviceID, d.RelayAuthPub = id, base64.RawURLEncoding.EncodeToString(pub)
+	d.RelayIDSig = base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, link.RelayIDProofMessage(w.keys.HubID(), ph.ID(), id)))
+	if _, err := ph.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	if r := w.pass(); r.Read != 1 {
+		t.Fatalf("the rewritten record was not read: %+v", r)
+	}
+	row, ok, err := w.st.Device(ph.ID().String())
+	if err != nil || !ok || row.RelayDeviceID != id {
+		t.Fatalf("the proof on a rewrite: id %q linked %v, %v", row.RelayDeviceID, ok, err)
 	}
 }
