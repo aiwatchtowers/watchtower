@@ -788,7 +788,8 @@ const stalePipelineRunError = "interrupted: the process running it exited before
 
 // staleTempAge is how old a prompt temp file or an extract spool file must
 // be before the startup sweep removes it: a live call removes its own long
-// before (fsutil.StaleTempPatterns, extract.StaleTempAge).
+// before, or holds a long-lived one, which the sweep skips (fsutil.HoldTempFile;
+// fsutil.StaleTempPatterns, extract.StaleTempAge).
 const staleTempAge = 10 * time.Minute
 
 // sweepStaleTemp removes what a killed process left holding the owner's

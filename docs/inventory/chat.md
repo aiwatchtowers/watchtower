@@ -132,8 +132,9 @@ connection secrets travels over an inherited pipe as well
 backend's argv is flags and `/dev/fd` paths only (`--model`,
 `--no-session-persistence`, etc.; never `--resume`), and the codex-backed
 turn hands codex the system prompt as a 0600 `model_instructions_file`
-(only its path on argv; codex refuses a pipe there, so the file is removed
-at codex's first output) and the replay + user text on stdin (`codex exec -`),
+(only its path on argv; codex refuses a pipe there; codex re-reads the file
+for every model request, so it is held — under a flock the stale-temp sweep
+skips — until codex exits, then removed) and the replay + user text on stdin (`codex exec -`),
 never as `-c developer_instructions=...` or a positional prompt.
 `ai session`'s own argv (the Swift session-launch side) carries only
 ids and names (`--conversation`, `--provider`, `--model`, `--surface`,
@@ -248,6 +249,8 @@ child is never started without it.
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`)
 
 ## Changelog
+
+- 2026-11-04 (fix: codex prompt file lifetime, owner approved ask #481): **CHAT-04** Observable amended, no guard relaxed; the "nothing on argv" rule is unchanged. codex re-reads its `model_instructions_file` for every model request of a run, so removing it at codex's first output failed the next request ("failed to load workspace requirements", codex-cli 0.159.2) and every codex-provider call with tools broke. The file now lives until codex exits (`fsutil.HoldTempFile`, a deferred release in `codex.Client.Query`/`QuerySync` and `codex.CodexGenerator.run`); its holder's shared flock keeps `fsutil.SweepStaleTemp` off it. `TestPromptFile_GoneAfterFirstOutput` is replaced by `TestPromptFile_KeptUntilCodexExits` (the fake re-reads the file after its first output; no file left after return); `TestHoldTempFile_SweepSkipsAHeldFile` covers the sweep. Trade-off: a process killed mid-run leaves the 0600 file until the 10-minute sweep. Feature note: `docs/features/files-outside-db.md`.
 
 - 2026-10-26 (Chats panel, spec `docs/superpowers/specs/2026-10-26-chats-panel-design.md`): note only — the tab's name changed (AI Chat → Chats) and `chat_conversations.read_at` was added (migration 00161). No guard changed or relaxed.
 - 2026-10-25 (board #604 Stage A, ask #571): **CHAT-04** strengthened; two guard assertions changed shape, the "nothing on argv" assertions are unchanged. Prompts and secret MCP configs reach the claude child over inherited pipes (`fsutil.AttachPayloads`, `/dev/fd/N`), so `TestChat04_ClaudeArgvCarriesNoContent` now asserts `/dev/fd` paths and that no prompt temp file exists, where it used to assert a 0600 temp file. No Claude Code session store exists (`--no-session-persistence` on every claude call, G11): `TestChat04_ClaudeArgsOnResume` is replaced by `TestChat04_ClaudeArgsNeverResume` (no spawn, first or after a crash, carries `--resume`; each gets `--system-prompt-file`), and the Swift `testChat04SessionArgvNeverCarriesContent` gains a no-`--resume` check. **CHAT-01**: the contract holds, one guard's shape changed. A respawned session replays the history from the database instead of resuming, so `testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes` (name kept) now asserts that the next turn carries `replay: true` and no `--resume`; before saving a turn's rows the view model awaits the session driver's writes, so the replay holds a stopped reply's last save (`testSendAfterAStopReplaysTheStoppedReplysSavedText`). Embedded chats no longer store or resume a session id either: every turn sends the system prompt plus `EmbeddedChatReplay`'s block. The queued embedded-chat draft moved from UserDefaults to `chat_queued_drafts` (migration 00157), legacy keys imported once. Feature note: `docs/features/files-outside-db.md`.
