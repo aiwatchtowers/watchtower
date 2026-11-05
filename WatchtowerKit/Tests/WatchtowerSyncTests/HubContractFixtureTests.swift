@@ -231,6 +231,27 @@ final class HubContractFixtureTests: XCTestCase {
         XCTAssertTrue(RelayIDs.isValid(try XCTUnwrap(decoded.relayDeviceID)))
     }
 
+    /// The "When work stops" switch in a device record (Open decision 1, option A): written only when true, an absent
+    /// or false value reads as on. The Go half reads the same bytes when it lands (Launch conditions), and this case
+    /// moves into `device_payload` with it: `TestDevicePayloadCases` re-marshals every case there through
+    /// `wire.DevicePayload`, which does not know the key yet.
+    func testDevicePayloadWorkAlertsOff() throws {
+        let fixtureCase = try XCTUnwrap(load()["device_payload_kit_only"]?.first { $0["name"] as? String == "work_alerts_off" })
+        let payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+        XCTAssertTrue(payload.workAlertsOff)
+        let encoded = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(payload), encoding: .utf8))
+        XCTAssertEqual(encoded, fixtureCase["relay_coder"] as? String)
+
+        let on = DevicePayload(
+            deviceID: payload.deviceID, name: payload.name, model: payload.model, appVersion: payload.appVersion,
+            scope: payload.scope, userRecordName: payload.userRecordName, typingRequested: payload.typingRequested,
+            startSessions: payload.startSessions, updatedAt: payload.updatedAt, workAlertsOff: false
+        )
+        XCTAssertFalse(on.workAlertsOff)
+        let onBytes = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(on), encoding: .utf8))
+        XCTAssertFalse(onBytes.contains("work_alerts_off"), "written only when true")
+    }
+
     /// A device record's relay identity (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`), read and written as
     /// the Go `wire.DevicePayload` does; an invalid id reads as none. `RelayIDProof.verify` gives each case's `proof`,
     /// the verdict of the Go hub's `link.VerifyRelayIDProof`.

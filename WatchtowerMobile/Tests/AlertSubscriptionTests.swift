@@ -1,4 +1,5 @@
 import CloudKit
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -166,6 +167,56 @@ final class AlertSubscriptionTests: XCTestCase {
         await registrar.apply(enabled: false)
         let deleted = await saver.deleted
         XCTAssertEqual(deleted, [AskAlertSubscription.subscriptionID(hubID: hubID)], "even before this launch saved it")
+    }
+
+    // MARK: - The switch on the relay (Open decision 1, option A)
+
+    /// The phone's `device` records in the bed's cloud, opened; the in-memory store keeps a record name's last save.
+    private func deviceRecords(_ bed: Bed) async throws -> [DevicePayload] {
+        let changes = try await TestPhone.transport(over: bed.cloud.inner).changes(in: .relay, since: nil)
+        return try changes.changed.filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+    }
+
+    /// A bed whose phone-wide switch (the app group's) comes back on when the test ends.
+    private func alertsBed(relayOff: Bool = false) async throws -> Bed {
+        let bed = try await Bed.make(self, on: .cloudKit, relayOff: relayOff)
+        let env = bed.root.env
+        addTeardownBlock { @MainActor in
+            for session in env.sessions.values { session.deviceSettings.workAlerts = true }
+        }
+        await env.waitForBoot()
+        return bed
+    }
+
+    /// While the relay is available the phone-wide switch reaches each hub's `device` record, while it is off only.
+    func testTheSwitchIsInEveryHubsDeviceRecordWhileOff() async throws {
+        let bed = try await alertsBed()
+
+        await bed.root.env.setWorkAlerts(false)
+        var written = try await deviceRecords(bed)
+        XCTAssertEqual(written.last?.workAlertsOff, true)
+
+        await bed.root.env.setWorkAlerts(true)
+        written = try await deviceRecords(bed)
+        let on = try XCTUnwrap(written.last)
+        XCTAssertFalse(on.workAlertsOff)
+        let encoded = try RelayCoder.makeEncoder().encode(on)
+        XCTAssertFalse(String(bytes: encoded, encoding: .utf8)?.contains("work_alerts_off") ?? true, "absent when on")
+    }
+
+    /// The dark ship: with an empty origin the switch writes no record and the record is today's, byte for byte.
+    func testAnEmptyOriginWritesNoWorkAlertsOff() async throws {
+        let bed = try await alertsBed(relayOff: true)
+        let session = try bed.session()
+        let before = try await deviceRecords(bed)
+
+        await bed.root.env.setWorkAlerts(false)
+        let after = try await deviceRecords(bed)
+        XCTAssertEqual(after.map(\.updatedAt), before.map(\.updatedAt), "the switch writes nothing")
+        let device = try XCTUnwrap(session.linkedDevice)
+        let payload = bed.root.devicePayload(hubID: bed.hubID, for: device, linkNonce: nil, unlinked: false, now: Date())
+        XCTAssertFalse(payload.workAlertsOff)
     }
 
     /// The extension makes no relay call and links no relay target (Phase 4 global constraint).

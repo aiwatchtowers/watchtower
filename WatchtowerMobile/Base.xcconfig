@@ -25,6 +25,10 @@ WT_RELAY_PRODUCT_ID = com.aiwatchtowers.watchtower.relay.monthly
 WT_TERMS_URL =
 WT_PRIVACY_URL =
 
+// The APNs environment the relay pushes to (Info.plist WTPushEnvironment, read by RelayConfig): the sandbox here, and
+// production for Release in project.yml, matching each configuration's aps-environment.
+WT_PUSH_ENV = sandbox
+
 // Optional signing overrides: Signing.xcconfig (gitignored — copy
 // Signing.xcconfig.template) re-enables signing with a real DEVELOPMENT_TEAM
 // for device/archive builds. `#include?` silently skips a missing file, so the

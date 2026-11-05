@@ -236,6 +236,27 @@ final class DeviceSettings {
         }
     }
 
+    /// Whether the `device` record says the alerts switch is off (`work_alerts_off`), which the hub needs to skip a
+    /// relay alert: set while the relay is available (`AppEnvironment.add`). With an empty origin the record is
+    /// today's, byte for byte.
+    @ObservationIgnored var reportsWorkAlertsOff = false
+
+    /// The alerts switch moved: the hub hears it in a new `device` record. A failed write is logged and clears the
+    /// last write's stamp, so the next return to the foreground sends it (`touchIfStale`); the switch stays as set, its
+    /// truth being the phone's. Any other write says it too.
+    func sendWorkAlertsChange() async {
+        guard reportsWorkAlertsOff, linkedDevice != nil else { return }
+        let prior = lastWrite
+        let write = Task { [weak self] in
+            await prior?.value
+            guard let self, await writeDeviceRecord() != nil else { return }
+            Self.logger.warning("alerts switch not sent; the next return to the foreground tries again")
+            defaults.removeObject(forKey: keys.lastDeviceWrite)
+        }
+        lastWrite = write
+        await write.value
+    }
+
     /// The `device` record for the current choices, or nil while unlinked.
     func devicePayload() -> DevicePayload? {
         linkedDevice.map { devicePayload(for: $0, linkNonce: nil, unlinked: false, now: now()) }
@@ -257,7 +278,8 @@ final class DeviceSettings {
             startSessions: startSessions,
             permissionsRequested: permissionsRequested,
             seenAt: unlinked ? nil : now,
-            updatedAt: now
+            updatedAt: now,
+            workAlertsOff: reportsWorkAlertsOff && !workAlerts
         )
     }
 

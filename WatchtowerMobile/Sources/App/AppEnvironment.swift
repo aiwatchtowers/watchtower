@@ -122,6 +122,7 @@ final class AppEnvironment {
     /// scene phase the others have and its role.
     func add(_ session: HubSession) {
         sessions[session.hubID] = session
+        if case .available = relay.availability { session.deviceSettings.reportsWorkAlertsOff = true }
         unopenedHubIDs.remove(session.hubID)
         if !order.contains(session.hubID) {
             order.append(session.hubID)
@@ -355,7 +356,10 @@ final class AppEnvironment {
     /// registered or removed.
     func setWorkAlerts(_ enabled: Bool) async {
         for session in sessions.values { session.deviceSettings.workAlerts = enabled }
-        for session in sessions.values { await session.alertRegistrar?.apply(enabled: enabled) }
+        for session in sessions.values {
+            await session.alertRegistrar?.apply(enabled: enabled)
+            await session.deviceSettings.sendWorkAlertsChange()
+        }
     }
     var workbenchReplica: WorkbenchReplicaModel { activeSession.workbenchReplica }
     var calendarReplica: CalendarReplicaModel { activeSession.calendarReplica }

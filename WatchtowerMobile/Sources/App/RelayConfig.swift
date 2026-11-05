@@ -15,11 +15,14 @@ struct RelayConfig: Equatable, Sendable {
     /// The Terms and Privacy pages the subscription screen links to (`https` only); nil = no link.
     var termsURL: URL?
     var privacyURL: URL?
+    /// The APNs environment this build's `aps-environment` names, for `register_push`; nil = unset, and no token is sent.
+    var pushEnvironment: RelayPushEnvironment?
 
     static let infoPlistKey = "WTRelayOrigin"
     static let productIDKey = "WTRelayProductID"
     static let termsURLKey = "WTTermsURL"
     static let privacyURLKey = "WTPrivacyURL"
+    static let pushEnvironmentKey = "WTPushEnvironment"
 
     init(origin: RelayOrigin?, productID: String? = nil, termsURL: URL? = nil, privacyURL: URL? = nil) {
         self.origin = origin
@@ -33,7 +36,13 @@ struct RelayConfig: Equatable, Sendable {
         config.productID = value(bundle.object(forInfoDictionaryKey: productIDKey) as? String)
         config.termsURL = url(bundle.object(forInfoDictionaryKey: termsURLKey) as? String)
         config.privacyURL = url(bundle.object(forInfoDictionaryKey: privacyURLKey) as? String)
+        config.pushEnvironment = pushEnvironment(bundle.object(forInfoDictionaryKey: pushEnvironmentKey) as? String)
         return config
+    }
+
+    /// `sandbox` or `production`; anything else → nil.
+    static func pushEnvironment(_ raw: String?) -> RelayPushEnvironment? {
+        value(raw).flatMap(RelayPushEnvironment.init(rawValue:))
     }
 
     /// A trimmed build-setting value; empty or still holding an unexpanded `$(` → nil.
