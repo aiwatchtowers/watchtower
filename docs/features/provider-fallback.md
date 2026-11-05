@@ -393,7 +393,10 @@ without the nonce (matched case-insensitively) fails as `invalid_output`
 (with a content-free stderr line) and the owner-readable error "Codex
 answered but ignored Watchtower's instructions. Update the Codex CLI, or
 check its config, and test again.", so a broken system-prompt path fails the
-test. The MCP tool mount is not part of
+test. The Desktop shows that message after a bare "Connection test failed."
+(`ProviderConnection.testFailureMessage`: an `invalid_output` message names
+its own next step, so the generic "Retry the explicit test…" advice that
+precedes every other failure is left out). The MCP tool mount is not part of
 the probe (it stays tool-less); the
 opt-in `scripts/check-codex-features.sh --live` covers it with a real codex
 run. Its additive `--cli-path` override is test-only;

@@ -54,6 +54,16 @@ package enum ChatMessageQueries {
         guard db.changesCount > 0 else { throw ChatContextGoneError() }
     }
 
+    /// An embedded reply's token counts, and its model when the usage names one.
+    package static func saveEmbeddedUsage(_ db: Database, messageID: Int64, usage: ChatUsage) throws {
+        try db.execute(sql: "UPDATE chat_messages SET tokens_in = ?, tokens_out = ? WHERE id = ?",
+                       arguments: [usage.tokensIn, usage.tokensOut, messageID])
+        guard db.changesCount > 0 else { throw ChatContextGoneError() }
+        if !usage.model.isEmpty {
+            try db.execute(sql: "UPDATE chat_messages SET model = ? WHERE id = ?", arguments: [usage.model, messageID])
+        }
+    }
+
     package static func finalizeEmbedded(
         _ db: Database, messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?
     ) throws {

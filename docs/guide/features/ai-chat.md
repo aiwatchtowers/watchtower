@@ -49,7 +49,7 @@ action: chat:How do I make an automation that runs every Monday?
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
-**Other assistant chats.** The same chat appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** and the setup assistant in Settings, without attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals; the others are draft-only. At most three replies across all of them run at once; a fourth shows **Queued**.
+**Other assistant chats.** The same chat, steps included, appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** and the setup assistant in Settings, without attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals; the others are draft-only. At most three replies across all of them run at once; a fourth shows **Queued**.
 
 **Questions about Watchtower itself.** The assistant searches this guide (built into the app, so it matches your version) and links the section it used; if the guide has nothing on it, it says so. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
 
