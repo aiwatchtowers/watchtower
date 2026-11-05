@@ -77,8 +77,8 @@ type Config struct {
 
 // Eligible is the push targets among the linked devices: a relay device id
 // that the account state lists in a slot with paying set (a paying phone
-// holding the hub is one of its readers, SetReadersFrom). Sorted by device
-// id.
+// holding the hub is one of its readers, SetReadersFrom) and whose "When work
+// stops" switch is on (Device.WorkAlertsOff). Sorted by device id.
 func Eligible(devices []state.Device, acct *relayv1.AccountState) []Target {
 	paying := map[string]bool{}
 	for _, h := range acct.GetPhones() {
@@ -88,7 +88,7 @@ func Eligible(devices []state.Device, acct *relayv1.AccountState) []Target {
 	}
 	var out []Target
 	for _, d := range devices {
-		if d.RelayDeviceID != "" && paying[d.RelayDeviceID] {
+		if d.RelayDeviceID != "" && !d.WorkAlertsOff && paying[d.RelayDeviceID] {
 			out = append(out, Target{DeviceID: d.ID, RelayID: d.RelayDeviceID})
 		}
 	}

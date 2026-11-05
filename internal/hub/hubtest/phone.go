@@ -371,6 +371,32 @@ func (p *Phone) WriteDeviceRecord(d wire.DevicePayload, id string) (string, erro
 	return name, err
 }
 
+// WriteForgedDeviceRecord writes d as a device record naming sender in its
+// envelope header, sealed with this phone's own key material: what a device
+// holding someone else's id but not its keys could write.
+func (p *Phone) WriteForgedDeviceRecord(d wire.DevicePayload, sender secure.ID) (string, error) {
+	payload, err := wire.Marshal(d)
+	if err != nil {
+		return "", err
+	}
+	id := "device-" + sender.String()
+	prefix, rest, _ := strings.Cut(id, "-")
+	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, prefix, rest)
+	key, err := secure.RelayKey(p.kx, p.cfg.HubKX, p.nonce, p.cfg.Hub, sender, p.cfg.Epoch, secure.PhoneToHub)
+	if err != nil {
+		return "", err
+	}
+	defer clear(key)
+	p.envSeq++
+	env, err := secure.SealSymmetric(secure.InnerFrame{Kind: "device", ID: id, Payload: payload}, secure.ClassRelayToHub, key,
+		p.cfg.Hub, sender, p.cfg.Epoch, p.envSeq, secure.Context{Zone: secure.ZoneRelay, WireName: name}, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	_, err = p.cfg.Transport.Write(p.zone, name, env, transport.Expect{Mode: transport.ExpectNone})
+	return name, err
+}
+
 // WriteUpload writes a recording_upload record recupload-<id> (payload is the
 // upload's JSON) with its sealed asset attached, if nothing holds the name.
 func (p *Phone) WriteUpload(id string, payload []byte, asset *secure.AssetDescriptor, sealed []byte) (string, error) {

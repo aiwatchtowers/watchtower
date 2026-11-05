@@ -382,7 +382,8 @@ func linkURL(t *testing.T, js string) string {
 	return "watchtower://link?d=" + base64.RawURLEncoding.EncodeToString([]byte(js))
 }
 
-// TestDevicePayloadCases pins a device record's relay id fields (Task 23):
+// TestDevicePayloadCases pins a device record's relay id fields (Task 23) and
+// its "When work stops" switch (work_alerts_off, Open decision 1, option A):
 // Go reads and writes the Kit's bytes, and the hub's proof check
 // (link.VerifyRelayIDProof) gives each case's `proof` verdict, which the Kit's
 // RelayIDProof.verify gives too.
@@ -417,8 +418,17 @@ func TestDevicePayloadCases(t *testing.T) {
 			}
 		})
 	}
+	for _, c := range f.DevicePayload {
+		if c.Name != "work_alerts_off" {
+			continue
+		}
+		var p wire.DevicePayload
+		require.NoError(t, json.Unmarshal(c.JSON, &p))
+		require.NotNil(t, p.WorkAlertsOff, "Go reads the Kit's key")
+		require.True(t, *p.WorkAlertsOff)
+	}
 	for _, n := range []string{"with_proven_relay_id", "without_relay_id", "invalid_relay_id_reads_as_none",
-		"wrong_key", "bad_signature", "other_hub"} {
+		"wrong_key", "bad_signature", "other_hub", "work_alerts_off"} {
 		require.True(t, names[n], "missing case %s", n)
 	}
 }

@@ -111,9 +111,19 @@ func RecordSeen(tx *sql.Tx, wire, sender string, epoch uint32, seq uint64) error
 // RelaySeen reads the rollback mark for (wire, sender); ok is false when none
 // was recorded.
 func (s *Store) RelaySeen(wire, sender string) (epoch uint32, seq uint64, ok bool, err error) {
+	return relaySeen(s.db.QueryRow(`SELECT epoch, seq FROM relay_seen WHERE wire_name = ? AND sender_id = ? COLLATE NOCASE`,
+		wire, sender))
+}
+
+// RelaySeenTx is RelaySeen in the caller's transaction.
+func RelaySeenTx(tx *sql.Tx, wire, sender string) (epoch uint32, seq uint64, ok bool, err error) {
+	return relaySeen(tx.QueryRow(`SELECT epoch, seq FROM relay_seen WHERE wire_name = ? AND sender_id = ? COLLATE NOCASE`,
+		wire, sender))
+}
+
+func relaySeen(row *sql.Row) (epoch uint32, seq uint64, ok bool, err error) {
 	var e, q int64
-	err = s.db.QueryRow(`SELECT epoch, seq FROM relay_seen WHERE wire_name = ? AND sender_id = ? COLLATE NOCASE`,
-		wire, sender).Scan(&e, &q)
+	err = row.Scan(&e, &q)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, false, nil
 	}

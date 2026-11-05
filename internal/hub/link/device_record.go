@@ -18,11 +18,26 @@ import (
 // processor read it: the payload, already bound to the record's
 // authenticated sender, the record's CloudKit creator (Stored.Creator, ""
 // when the transport gives none) and the transport it came from, whose
-// CloudUser names the Mac's iCloud user (nil: unknown).
+// CloudUser names the Mac's iCloud user (nil: unknown). Hosted says it came
+// from the phone's own mailbox on the hosted relay, where no record has a
+// creator: its authority is the envelope, sealed under a key only this phone
+// and the hub derive, and the relay's rule that only they reach the mailbox
+// (as for actions there; owner decision, ask #1056).
 type DeviceRecord struct {
 	Payload wire.DevicePayload
 	Creator string
 	Shares  transport.Shares
+	Hosted  bool
+	// Stands, first in the rewrite's or the unlink's transaction, returns an
+	// error unless the link this record was read under still stands, which rolls
+	// it back. Nil: no check.
+	Stands func(tx *sql.Tx) error
+	// Claim, next in the rewrite's transaction, decides this version of the
+	// record and writes its rollback mark, so record and mark commit together:
+	// each transport has its own processor, and the rollback check ran when this
+	// one was opened. False: a newer version got there first, and nothing
+	// applies. An error rolls the rewrite back. Nil: always applies.
+	Claim func(tx *sql.Tx) (bool, error)
 }
 
 // ApplyDeviceRecord applies a linked phone's own rewrite of its device
@@ -55,23 +70,25 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 		}
 		return fmt.Errorf("reading a phone's link: %w", err)
 	}
-	if !accepts(row, r) || !acceptsCreator(row.Scope, storedUser, r.Creator) {
+	if !accepts(row, r) {
 		log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
 		return nil
 	}
-	matches, err := c.deviceCreatorMatches(ctx, r)
-	if err != nil {
-		return err // no decision: the record is read again next pass
-	}
-	if !matches {
-		log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
-		return nil
+	if !r.Hosted {
+		matches, err := c.deviceCreatorMatches(ctx, r)
+		if err != nil {
+			return err // no decision: the record is read again next pass
+		}
+		if !matches || !acceptsCreator(row.Scope, storedUser, r.Creator) {
+			log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
+			return nil
+		}
 	}
 	if r.Payload.Unlinked != nil && *r.Payload.Unlinked {
 		log.Printf("hub link: phone %s unlinked itself", strings.ToUpper(device))
-		return c.unlinkItself(ctx, r.Shares, device)
+		return c.unlinkItself(ctx, r.Shares, device, r.Stands)
 	}
-	return c.rewrite(ctx, device, r.Payload)
+	return c.rewrite(ctx, device, r)
 }
 
 // unlinkItself is a phone's own unlink through BeginRemove: on CloudKit
@@ -79,8 +96,8 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 // pass already runs off any owner request, so it waits for the share
 // calls here), elsewhere it is Unlink. A participant removal that failed is
 // left to the sweep.
-func (c *Center) unlinkItself(ctx context.Context, shares transport.Shares, device string) error {
-	finish, err := c.BeginRemove(ctx, device)
+func (c *Center) unlinkItself(ctx context.Context, shares transport.Shares, device string, stands func(*sql.Tx) error) error {
+	finish, err := c.beginRemove(ctx, device, stands)
 	if errors.Is(err, state.ErrNoDevice) {
 		return nil
 	}
@@ -135,12 +152,24 @@ func (c *Center) deviceCreatorMatches(ctx context.Context, r DeviceRecord) (bool
 var ErrOwnerUnreadable = errors.New("link: the Mac's iCloud user is unreadable")
 
 // rewrite is ApplyDeviceRecord's rewrite of a linked phone.
-func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayload) error {
+func (c *Center) rewrite(ctx context.Context, device string, r DeviceRecord) error {
+	p := r.Payload
 	c.mu.Lock()
 	defer c.unlock()
 	var asked, typingRevoked, permsRevoked, changed, relayNamed, relayMoved bool
 	var askedName, relayRefused string
 	err := c.st.WithTx(ctx, func(tx *sql.Tx) error {
+		if r.Stands != nil {
+			if err := r.Stands(tx); err != nil {
+				return err
+			}
+		}
+		if r.Claim != nil {
+			claimed, err := r.Claim(tx)
+			if err != nil || !claimed {
+				return err
+			}
+		}
 		var (
 			name, storedRelay                       string
 			typingAllowed, typingReq                bool
@@ -169,11 +198,12 @@ func (c *Center) rewrite(ctx context.Context, device string, p wire.DevicePayloa
 		// setGrant does; a request alone decides nothing.
 		decided := revokeTyping || revokePerms || p.StartSessions != startAllowedNow
 		_, err = tx.Exec(`UPDATE devices SET name = ?, start_sessions_allowed = ?,
-			typing_requested = ?, permissions_requested = ?,
+			typing_requested = ?, permissions_requested = ?, work_alerts_off = ?,
 			typing_allowed = typing_allowed AND NOT ?, permissions_allowed = permissions_allowed AND NOT ?,
 			decided_at = CASE WHEN ? THEN ? ELSE decided_at END
 			WHERE device_id = ? COLLATE NOCASE`,
-			newName, p.StartSessions, p.TypingRequested, permsWanted, revokeTyping, revokePerms,
+			newName, p.StartSessions, p.TypingRequested, permsWanted, p.WorkAlertsOff != nil && *p.WorkAlertsOff,
+			revokeTyping, revokePerms,
 			decided, secs(c.now()), device)
 		if err != nil {
 			return err

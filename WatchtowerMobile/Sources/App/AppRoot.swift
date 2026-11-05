@@ -82,6 +82,8 @@ final class AppRoot {
     /// nil holds nothing (tests).
     @ObservationIgnored private let startWork: BackgroundWork.Starter?
     @ObservationIgnored private let farewellDelivery: FarewellDelivery
+    /// One push of a session's send queue after `linked`'s record; tests replace it.
+    @ObservationIgnored var sendLinkedQueue: @MainActor (_ session: HubSession) async -> Void = { await $0.sendNow() }
     /// The removal running per hub: a second one for the same hub waits
     /// for it and counts nothing.
     @ObservationIgnored private var removals: [String: Task<LocalWipe, Never>] = [:]
@@ -626,8 +628,9 @@ final class AppRoot {
             session.onKeyboxChanged = nil
             session.onKeysAvailable = nil
             var farewellKept = false
+            var farewellOut = false
             if let farewell {
-                farewellKept = await deliver(farewell, through: session, of: rows.first { $0.hubID == hubID })
+                (farewellKept, farewellOut) = await deliver(farewell, through: session, of: rows.first { $0.hubID == hubID })
             }
             let stoppedCapture = await session.recorder.stopForWipe()
             // After the shutdown the boot (and its launch recovery) has
@@ -644,7 +647,8 @@ final class AppRoot {
                 notSent: Self.pendingActionCount(session) + handover.lost,
                 stoppedRecording: handover.stoppedCaptureKept,
                 problem: handover.problem,
-                farewellKept: farewellKept
+                farewellKept: farewellKept,
+                farewellOut: farewellOut
             )
             // The last read of its databases is done: closed before their
             // files go (or before the next launch's orphan pass opens them).
@@ -689,15 +693,15 @@ final class AppRoot {
     /// the sealed record for `row`'s hub in the registry (#143) before the
     /// wait, so a kill during it keeps it too, then waits until it has left
     /// the send queue (`FarewellDelivery`) and stops keeping it. Returns
-    /// whether it stays kept (still queued at the cap); false once it went
-    /// out, or when it could not be queued or kept (logged).
-    private func deliver(_ record: CloudRecord, through session: HubSession, of row: HubRow?) async -> Bool {
+    /// whether it stays kept (still queued at the cap) and whether it went
+    /// out; neither when it could not be queued or kept (logged).
+    private func deliver(_ record: CloudRecord, through session: HubSession, of row: HubRow?) async -> (kept: Bool, out: Bool) {
         let sealed: CloudRecord
         do {
             sealed = try await session.saveSealing(record)
         } catch {
             Self.logger.warning("unlinked record not queued: \(error.localizedDescription, privacy: .public)")
-            return false
+            return (false, false)
         }
         let kept = keepFarewell(sealed, of: row)
         let delivery = farewellDelivery
@@ -708,10 +712,10 @@ final class AppRoot {
         )
         if sent {
             if let kept { dropFarewell(kept) }
-            return false
+            return (false, true)
         }
         Self.logger.warning("unlinked record still queued when the hub went: kept to send again")
-        return kept != nil
+        return (kept != nil, false)
     }
 
     /// Pushes a send queue (`send`) until `isPending` reads false, again
@@ -998,6 +1002,11 @@ extension AppRoot: LinkHost {
         _ = await session.adoption?.value
         await session.setLinkedDevice(device, writesAllowed: true)
         env.activate(record.hubID)
+        // The hub's switch starts on with every link, and the hello carries none it keeps. The link screen waits on
+        // this function, so only the save is awaited: a dead network holds the send, not the screen.
+        if !session.deviceSettings.workAlerts, await session.deviceSettings.sendWorkAlertsChange() {
+            Task { [sendLinkedQueue] in await sendLinkedQueue(session) }
+        }
     }
 
     /// The phone's `device` record for `hubID`. While the hub's link has an upgrade to the relay

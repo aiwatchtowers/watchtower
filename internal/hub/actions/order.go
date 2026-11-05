@@ -48,12 +48,8 @@ var errRelinked = errors.New("actions: the phone was re-linked or unlinked meanw
 // while the link b was read under still stands (errRelinked otherwise).
 func (p *Processor) decide(ctx context.Context, b mailbox, fn func(*sql.Tx) error) error {
 	return p.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		nonce, ok, err := state.LinkNonceTx(tx, b.id.String())
-		if err != nil {
+		if err := standsTx(tx, b); err != nil {
 			return err
-		}
-		if !ok || nonce != b.link {
-			return errRelinked
 		}
 		return fn(tx)
 	})

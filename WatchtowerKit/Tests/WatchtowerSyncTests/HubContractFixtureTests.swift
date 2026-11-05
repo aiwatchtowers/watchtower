@@ -232,11 +232,9 @@ final class HubContractFixtureTests: XCTestCase {
     }
 
     /// The "When work stops" switch in a device record (Open decision 1, option A): written only when true, an absent
-    /// or false value reads as on. The Go half reads the same bytes when it lands (Launch conditions), and this case
-    /// moves into `device_payload` with it: `TestDevicePayloadCases` re-marshals every case there through
-    /// `wire.DevicePayload`, which does not know the key yet.
+    /// or false value reads as on. `TestDevicePayloadCases` reads the same bytes through `wire.DevicePayload`.
     func testDevicePayloadWorkAlertsOff() throws {
-        let fixtureCase = try XCTUnwrap(load()["device_payload_kit_only"]?.first { $0["name"] as? String == "work_alerts_off" })
+        let fixtureCase = try XCTUnwrap(load()["device_payload"]?.first { $0["name"] as? String == "work_alerts_off" })
         let payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
         XCTAssertTrue(payload.workAlertsOff)
         let encoded = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(payload), encoding: .utf8))
@@ -259,7 +257,7 @@ final class HubContractFixtureTests: XCTestCase {
         let cases = try XCTUnwrap(load()["device_payload"])
         XCTAssertEqual(cases.map { $0["name"] as? String }, [
             "with_proven_relay_id", "without_relay_id", "invalid_relay_id_reads_as_none", "wrong_key", "bad_signature",
-            "other_hub"
+            "other_hub", "work_alerts_off"
         ])
         for fixtureCase in cases {
             let name = try XCTUnwrap(fixtureCase["name"] as? String)

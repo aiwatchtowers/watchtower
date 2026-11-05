@@ -446,11 +446,23 @@ final class LinkStore {
         }
     }
 
+    /// Hub ids whose unreadable entry was logged: one line per hub per store; a clean read of the hub re-arms it.
+    private var loggedUnreadable: Set<String> = []
+    private let loggedLock = NSLock()
+    /// Called with the hub id when its unreadable entry is logged (tests).
+    var onUnreadableLogged: ((String) -> Void)?
+
     private func promotedEntries() -> [String: PromotedEntry] {
         let entries = read([String: PromotedEntry].self, key: Keys.promoted) ?? [:]
-        let unreadable = entries.values.filter { $0.link == nil }.count
-        if unreadable > 0 {
-            Self.logger.error("unreadable promoted links skipped: \(unreadable, privacy: .public)")
+        let unreadable = Set(entries.filter { $0.value.link == nil }.keys)
+        let fresh = loggedLock.withLock { () -> [String] in
+            let new = unreadable.subtracting(loggedUnreadable)
+            loggedUnreadable = unreadable
+            return new.sorted()
+        }
+        for hubID in fresh {
+            Self.logger.error("unreadable promoted link skipped: \(hubID, privacy: .private)")
+            onUnreadableLogged?(hubID)
         }
         return entries
     }
@@ -476,6 +488,17 @@ final class LinkStore {
         guard all[link.hubID] != nil else { return }
         all[link.hubID] = link
         promoted = all
+    }
+
+    /// The owner's own removal of `hubID` (Unlink, Forget): its promoted entry this build cannot read goes too, so a
+    /// later build that could read it does not bring the removed Mac back. Never a readable entry (those go through
+    /// `removePromoted`) and never another hub's. The only deletion of an unreadable entry.
+    func removeUnreadablePromoted(_ hubID: String) {
+        let entries = promotedEntries()
+        guard let entry = entries[hubID], entry.link == nil else { return }
+        var rest = entries
+        rest[hubID] = nil
+        write(rest.isEmpty ? nil : rest, key: Keys.promoted)
     }
 
     func removePromoted(_ hubID: String) {
