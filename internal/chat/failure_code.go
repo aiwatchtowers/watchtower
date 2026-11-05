@@ -64,3 +64,14 @@ func ClassifyFailure(err error) (code, reason string, retryable bool) {
 	}
 	return row.code, row.reason, row.retryable
 }
+
+// failureEvent is the error event of a turn that failed with err: its code,
+// routing reason and retry hint from ClassifyFailure, the full message for
+// the owner, and err kept as the event's private Cause.
+func failureEvent(turnID string, err error) Event {
+	code, reason, retry := ClassifyFailure(err)
+	event := errorEvent(turnID, code, logredact.Full(err), retry)
+	event.Reason = reason
+	event.Cause = err
+	return event
+}

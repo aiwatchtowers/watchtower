@@ -21,7 +21,7 @@ claude/chat image pass
 claude/chat interrupt-text pass
 claude/chat interrupt-tool pass
 claude/chat multi-turn-replay pass
-claude/chat no-completion gap:L12
+claude/chat no-completion pass
 claude/chat oversized-line pass
 claude/chat pdf pass
 claude/chat plain-answer pass
@@ -55,7 +55,7 @@ claude/stream fail-model pass
 claude/stream fail-overload pass
 claude/stream fail-quota pass
 claude/stream fail-rate-limit pass
-claude/stream no-completion gap:L12
+claude/stream no-completion pass
 claude/stream oversized-line pass
 claude/stream plain-answer pass
 claude/stream quick-connection-tool pass
