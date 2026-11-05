@@ -698,7 +698,7 @@ final class RelayAccountCenter {
         }
         guard isCurrent(transaction), !refusedIDs.contains(transaction.id), !settledIDs.contains(transaction.id) else { return }
         // Ask to Buy approved in the process that pressed Buy: the press's own row, past the read and the claim.
-        if purchase == .pending, !transaction.isRenewal {
+        if purchase == .pending, !transaction.isRenewal, let token = transaction.appAccountToken, await ownAccountID() == token {
             _ = await submit(transaction, byPress: true, tracksCharge: true)
             await read()
             return

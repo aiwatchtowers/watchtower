@@ -266,6 +266,27 @@ final class RelayAccountClaimTests: XCTestCase {
         XCTAssertEqual(centerB.phase, .moved)
     }
 
+    /// `.pending` is still standing and another phone on the Apple ID buys: that row is not this press's approval.
+    func testAnotherPhonesPurchaseIsNoApproval() async throws {
+        let (a, b, token, centerA) = try await twoPhones()
+        let centerB = try await restore(on: b, token: token)
+        await moved(centerA, a)
+        a.store.purchaseResult = .pending
+        await centerA.buy()
+        XCTAssertEqual(centerA.purchase, .pending)
+        let reads = a.reads
+        let sent = a.submitted.count
+
+        a.store.emit(a.row(id: 9, token: UUID()))
+        try await a.until("the row's read") { a.reads > reads }
+
+        XCTAssertEqual(a.submitted.count, sent)
+        XCTAssertEqual(centerA.purchase, .pending)
+        XCTAssertEqual(centerA.claim, .movedAway)
+        await centerB.refresh()
+        XCTAssertNotEqual(centerB.phase, .moved)
+    }
+
     func testAKilledFirstPurchaseStillSubmitsAndClaims() async throws {
         let (bed, token) = try await registeredBed()
         let row = bed.row(token: token)
