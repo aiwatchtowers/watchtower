@@ -72,11 +72,13 @@ func NewSandbox(env *Env, modules []Module) (*Sandbox, error) {
 	}
 	s.prog = prog
 	env.Journal.adoptClock(env.Meter.clock)
-	env.Ctx, s.cancel = context.WithCancel(env.Ctx) //nolint:gosec // G118: s.cancel is called by Run and Interrupt when the run ends
+	ctx, cancel := context.WithCancel(env.Ctx)
+	env.Ctx = ctx
 	if err := s.setup(modules); err != nil {
-		s.cancel()
+		cancel()
 		return nil, err
 	}
+	s.cancel = cancel // called by Run and Interrupt when the run ends
 	return s, nil
 }
 

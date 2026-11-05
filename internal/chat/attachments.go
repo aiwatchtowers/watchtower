@@ -104,38 +104,37 @@ func loadAttachment(a Attachment, textOnly bool) (loadedAttachment, error) {
 	if name == "" {
 		name = filepath.Base(a.Path)
 	}
-	// reject mirrors loadAttachment's results so each check is one return.
-	reject := func(reason string) (loadedAttachment, error) { //nolint:unparam // matches loadAttachment's results for `return reject(...)`
-		return loadedAttachment{}, &AttachmentError{Name: name, Reason: reason}
+	reject := func(reason string) error {
+		return &AttachmentError{Name: name, Reason: reason}
 	}
 	if !filepath.IsAbs(a.Path) {
-		return reject("path is not absolute")
+		return loadedAttachment{}, reject("path is not absolute")
 	}
 	f, size, reason := openRegularNoFollow(a.Path)
 	if reason != "" {
-		return reject(reason)
+		return loadedAttachment{}, reject(reason)
 	}
 	defer func() { _ = f.Close() }()
 	head, err := readHead(f)
 	if err != nil {
-		return reject(errUnreadable)
+		return loadedAttachment{}, reject(errUnreadable)
 	}
 	kind, media, limit, ok := classifyAttachment(http.DetectContentType(head), a.Mime)
 	if !ok {
-		return reject(fmt.Sprintf("unsupported file type %q (images, PDFs and text files only)", a.Mime))
+		return loadedAttachment{}, reject(fmt.Sprintf("unsupported file type %q (images, PDFs and text files only)", a.Mime))
 	}
 	if textOnly && kind != kindText {
 		return loadedAttachment{}, &AttachmentError{Name: name, Reason: "images and PDFs need the Claude provider", RequiresClaude: true}
 	}
 	if size > limit {
-		return reject(fmt.Sprintf("file is %d bytes; the limit for this type is %d", size, limit))
+		return loadedAttachment{}, reject(fmt.Sprintf("file is %d bytes; the limit for this type is %d", size, limit))
 	}
 	data, reason := readCapped(f, limit)
 	if reason != "" {
-		return reject(reason)
+		return loadedAttachment{}, reject(reason)
 	}
 	if kind == kindText && !utf8.Valid(data) {
-		return reject("text file is not UTF-8")
+		return loadedAttachment{}, reject("text file is not UTF-8")
 	}
 	return loadedAttachment{kind: kind, mediaType: media, name: name, data: data}, nil
 }
