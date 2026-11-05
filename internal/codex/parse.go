@@ -37,6 +37,12 @@ type CodexUsage struct {
 	OutputTokens      int `json:"output_tokens"`
 }
 
+// freshInput is the input not served from codex's cache: InputTokens minus
+// CachedInputTokens, clamped to [0, InputTokens].
+func (t *CodexUsage) freshInput() int {
+	return t.InputTokens - min(max(t.CachedInputTokens, 0), t.InputTokens)
+}
+
 // add sums u into the receiver.
 func (t *CodexUsage) add(u *CodexUsage) {
 	t.InputTokens += u.InputTokens

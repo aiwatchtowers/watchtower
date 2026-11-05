@@ -88,11 +88,14 @@ func ModelAttemptUsage(a providerrouting.Attempt, o providerrouting.Outcome) Mod
 	}
 	var u ModelUsage
 	for _, c := range o.Calls {
-		in := c.Input + c.CacheRead + c.CacheWrite5m + c.CacheWrite1h
+		// The budget counts fresh input plus output on every provider:
+		// cache reads and writes stay in the leaf ledger only, as on the
+		// unrouted path (claude's input_tokens, codex's freshInput).
+		in := c.Input
 		// Non-estimated leaf facts include authoritative reported zeros and
 		// children that never started. Only unknown/estimated zeros need input
 		// and partial-output estimation here.
-		if in+c.Output == 0 && c.Estimated {
+		if in+c.CacheRead+c.CacheWrite5m+c.CacheWrite1h+c.Output == 0 && c.Estimated {
 			estimate := modelUsage(nil, a.InputBytes, len(o.Result.Text))
 			in, c.Output, c.Estimated = estimate.InputTokens, estimate.OutputTokens, true
 		}

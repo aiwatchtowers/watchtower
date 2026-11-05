@@ -153,10 +153,14 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	}
 	recordCodexCall(ctx, model, start, reported, ran, prompt, result, true)
 
+	// claude's shape (digest.Usage): InputTokens without the cached part,
+	// TotalAPITokens with it, so a run budget debits the same quantity on
+	// either provider (docs/features/automations.md "Budgets").
 	digestUsage := &digest.Usage{
-		Model:        model,
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
+		Model:          model,
+		InputTokens:    usage.freshInput(),
+		OutputTokens:   usage.OutputTokens,
+		TotalAPITokens: usage.InputTokens,
 	}
 
 	return result, digestUsage, nil
@@ -326,8 +330,8 @@ func recordCodexCall(ctx context.Context, model string, start time.Time, u *Code
 	c := llmusage.Call{Provider: "codex", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok && ran}
 	switch {
 	case u != nil:
-		cached := int64(min(u.CachedInputTokens, u.InputTokens))
-		c.Input, c.CacheRead, c.Output = int64(u.InputTokens)-cached, cached, int64(u.OutputTokens)
+		fresh := int64(u.freshInput())
+		c.Input, c.CacheRead, c.Output = fresh, int64(u.InputTokens)-fresh, int64(u.OutputTokens)
 	case ran:
 		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
 	}

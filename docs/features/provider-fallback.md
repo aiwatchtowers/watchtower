@@ -170,7 +170,9 @@ same run budget and one dense SDK step per call. A legacy generator or primitive
 that never enters routing keeps its aggregate accounting; routed calls do not
 also debit that aggregate. Cooldown/admission refusals create no synthetic leaf.
 
-Leaf facts take precedence over aggregate result usage. Authoritative non-estimated
+Leaf facts take precedence over aggregate result usage. An attempt debits a leaf
+call's fresh `Input` plus `Output`; its cache reads and writes stay in the leaf
+ledger only, matching the unrouted path ([automation budgets](automations.md#budgets)). Authoritative non-estimated
 zeros remain zero, including parsed zero-usage envelopes and children that never
 started. Missing usage is estimated
 from the submitted system/user input and available partial output, marked
