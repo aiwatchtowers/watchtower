@@ -111,7 +111,8 @@ targets:
           # No relay in Release: the origin is forced empty here, which beats
           # any xcconfig value (a local Signing.xcconfig included).
           WATCHTOWER_RELAY_ORIGIN: ""
-          # The relay's APNs environment; Debug keeps Base.xcconfig's sandbox.
+          # The relay's APNs environment; Debug keeps Base.xcconfig's sandbox. Production is what
+          # App Store export rewrites aps-environment to; see Base.xcconfig.
           WT_PUSH_ENV: production
           # The Debug file with the App Attest environment fixed to production;
           # enabling App Attest on the App ID is the owner's portal step.

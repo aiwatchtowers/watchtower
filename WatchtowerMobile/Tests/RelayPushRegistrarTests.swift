@@ -124,6 +124,28 @@ final class RelayPushRegistrarTests: XCTestCase {
         guard case .sent = registrar.state else { return XCTFail("\(registrar.state)") }
     }
 
+    /// An event landing during a send that then fails is not lost; a failure with no event still waits.
+    func testAnEventDuringAFailingSendRetriesOnceItEnds() async throws {
+        for event in ["reachable", "foreground"] {
+            let wire = Wire()
+            wire.failing = true
+            wire.holding = true
+            let registrar = registrar(wire)
+            registrar.foreground()
+            registrar.tokenArrived(token)
+            try await poll({ wire.gate != nil }, "the send never began")
+
+            if event == "reachable" { registrar.reachable() } else { registrar.foreground() }
+            XCTAssertEqual(wire.sent.count, 1, event)
+            wire.holding = false
+            wire.failing = true
+            wire.release()
+            await settled(registrar)
+            XCTAssertEqual(wire.sent.count, 2, "\(event): retried once")
+            XCTAssertEqual(registrar.state, .failed, event)
+        }
+    }
+
     func testANewTokenIsSentAgain() async {
         let wire = Wire()
         let registrar = registrar(wire)
@@ -312,9 +334,23 @@ final class RelayPushRegistrarTests: XCTestCase {
         XCTAssertNotEqual(AppDelegate.pushScope(["aps": ["content-available": 1], "ck": ["cid": "x"]]), .hostedRelay)
     }
 
+    /// The tests call `wireRelayPush` by hand; the live root is the one the app runs.
+    func testTheLiveRootWiresTheRegistrar() throws {
+        let source = try Self.source("Sources/App/AppRoot.swift")
+        let live = try XCTUnwrap(source.range(of: "static func live() throws -> AppRoot"), "no AppRoot.live")
+        let demo = try XCTUnwrap(source.range(of: "static func demo("), "no AppRoot.demo")
+        XCTAssertLessThan(live.lowerBound, demo.lowerBound)
+        XCTAssertTrue(
+            source[live.lowerBound..<demo.lowerBound].contains("root.wireRelayPush(environment: relayConfig.pushEnvironment)"))
+    }
+
     private static func appSource() throws -> String {
+        try source("Sources/App/WatchtowerMobileApp.swift")
+    }
+
+    private static func source(_ path: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let url = root.appendingPathComponent("Sources/App/WatchtowerMobileApp.swift")
+        let url = root.appendingPathComponent(path)
         guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("the sources are out of reach") }
         return try String(contentsOf: url, encoding: .utf8)
     }

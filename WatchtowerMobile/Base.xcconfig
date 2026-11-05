@@ -26,7 +26,9 @@ WT_TERMS_URL =
 WT_PRIVACY_URL =
 
 // The APNs environment the relay pushes to (Info.plist WTPushEnvironment, read by RelayConfig): the sandbox here, and
-// production for Release in project.yml, matching each configuration's aps-environment.
+// production for Release in project.yml. Both entitlements files say aps-environment = development; App Store export
+// rewrites it to production, so an exported build's token is production. A Release build run from Xcode keeps
+// development: the relay drops its token on BadDeviceToken (a developer-only limit).
 WT_PUSH_ENV = sandbox
 
 // Optional signing overrides: Signing.xcconfig (gitignored — copy

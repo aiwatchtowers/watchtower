@@ -243,9 +243,11 @@ final class DeviceSettings {
 
     /// The alerts switch moved: the hub hears it in a new `device` record. A failed write is logged and clears the
     /// last write's stamp, so the next return to the foreground sends it (`touchIfStale`); the switch stays as set, its
-    /// truth being the phone's. Any other write says it too.
-    func sendWorkAlertsChange() async {
-        guard reportsWorkAlertsOff, linkedDevice != nil else { return }
+    /// truth being the phone's. Any other write says it too. Returns whether a write ran: the caller then sends it,
+    /// since a relay route's save only queues.
+    @discardableResult
+    func sendWorkAlertsChange() async -> Bool {
+        guard reportsWorkAlertsOff, linkedDevice != nil else { return false }
         let prior = lastWrite
         let write = Task { [weak self] in
             await prior?.value
@@ -255,6 +257,7 @@ final class DeviceSettings {
         }
         lastWrite = write
         await write.value
+        return true
     }
 
     /// The `device` record for the current choices, or nil while unlinked.

@@ -15,7 +15,8 @@ struct RelayConfig: Equatable, Sendable {
     /// The Terms and Privacy pages the subscription screen links to (`https` only); nil = no link.
     var termsURL: URL?
     var privacyURL: URL?
-    /// The APNs environment this build's `aps-environment` names, for `register_push`; nil = unset, and no token is sent.
+    /// The APNs environment this build's token belongs to, for `register_push`; nil = unset, and no token is sent. Release
+    /// says `production` though its entitlements file says `development`: App Store export rewrites `aps-environment`.
     var pushEnvironment: RelayPushEnvironment?
 
     static let infoPlistKey = "WTRelayOrigin"

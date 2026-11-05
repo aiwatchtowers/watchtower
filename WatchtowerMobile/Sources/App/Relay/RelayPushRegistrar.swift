@@ -12,7 +12,7 @@ import WatchtowerHostedRelay
 ///
 /// A launch into the background (a push) sends nothing until its first `foreground()`, as the account center's first
 /// pass waits for it: a process iOS never brings forward leaves the relay with the token the last open sent. A failure
-/// stays owed, for the next `reachable()` or `foreground()`; there is no timer.
+/// stays owed, for the next `reachable()` or `foreground()`, one that landed during the send included; there is no timer.
 ///
 /// Built only while the relay is available (`AppRoot.wireRelayPush`): with an empty origin nothing here exists.
 @MainActor
@@ -39,6 +39,8 @@ final class RelayPushRegistrar {
     private var sentToken: String?
     /// The app has been active in this process.
     private var foregrounded = false
+    /// A `reachable()` or `foreground()` landed during the running send: if it fails, it retries once it ends.
+    private var eventDuringSend = false
 
     init(
         availability: RelayAvailability,
@@ -77,11 +79,13 @@ final class RelayPushRegistrar {
 
     /// `.reachable(true)`, forwarded by the account center (the one reader of the session's events).
     func reachable() {
+        eventDuringSend = sending != nil
         sendIfOwed()
     }
 
     func foreground() {
         foregrounded = true
+        eventDuringSend = sending != nil
         sendIfOwed()
     }
 
@@ -98,8 +102,10 @@ final class RelayPushRegistrar {
                 Self.logger.error("\(Self.failureLog(error), privacy: .public)")
             }
             sending = nil
-            // A token that changed during the send; the same token after a failure waits for the next event.
-            if self.token != token { sendIfOwed() }
+            // A token that changed during the send, or an event that landed in it; else a failure waits for the next event.
+            let retry = eventDuringSend || self.token != token
+            eventDuringSend = false
+            if retry { sendIfOwed() }
         }
     }
 
