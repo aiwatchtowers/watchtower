@@ -1,6 +1,10 @@
 import AppKit
+import os
 import UniformTypeIdentifiers
 import WatchtowerCore
+
+/// Print… and the exports' failures (the panel shows a notice too).
+let artifactExportLog = Logger(subsystem: Constants.bundleID, category: "artifact-export")
 
 struct ArtifactActionOutcome: Equatable {
     var copied = false
@@ -73,6 +77,7 @@ enum ArtifactExporter {
             do {
                 try wordData(markdown: draft.content, title: draft.title).write(to: url, options: .atomic)
             } catch {
+                artifactExportLog.error("Export as Word failed: \(error.localizedDescription, privacy: .private)")
                 onError("Export failed: \(error.localizedDescription)")
             }
         }

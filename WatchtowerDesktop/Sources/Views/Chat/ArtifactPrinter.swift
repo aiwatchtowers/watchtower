@@ -10,8 +10,12 @@ import WebKit
 @MainActor
 final class ArtifactPrinter: NSObject {
     private static var jobs: Set<ArtifactPrinter> = []
-    /// A4 at 72 dpi less the default margins; WebKit paginates from the
-    /// view's width, and a zero-size view prints blank pages.
+    /// The layout size the page is laid out at before printing. WebKit
+    /// paginates from the view's width (a zero-size view prints blank
+    /// pages); horizontal pagination is `.fit`, so this width is scaled to
+    /// the paper's printable width. 540 pt is US Letter (612 pt) less two
+    /// half-inch margins, near A4's 595 pt less the same (523 pt); the
+    /// height only has to be non-zero (vertical pagination is automatic).
     private static let pageFrame = NSRect(x: 0, y: 0, width: 540, height: 760)
 
     private let coordinator = SandboxedHTMLView.Coordinator()
@@ -19,6 +23,9 @@ final class ArtifactPrinter: NSObject {
     private let onError: (String) -> Void
     private var webView: WKWebView?
     private var started = false
+    /// Finishes the job when the page never finishes loading.
+    private var loadTimeout: Task<Void, Never>?
+    private static let loadTimeoutDuration: Duration = .seconds(15)
 
     private init(title: String, onError: @escaping (String) -> Void) {
         self.title = title
@@ -29,7 +36,10 @@ final class ArtifactPrinter: NSObject {
     /// artifact that cannot be printed (`ArtifactPrint.canPrint`).
     static func print(_ draft: ArtifactDraft, window: NSWindow?, onError: @escaping (String) -> Void) {
         guard let page = ArtifactPrint.printPage(for: draft) else { return }
-        guard let window else { return onError("Print failed: no window to show the print panel in.") }
+        guard let window else {
+            artifactExportLog.error("Print failed: no window to show the print panel in")
+            return onError("Print failed: no window to show the print panel in.")
+        }
         let job = ArtifactPrinter(title: draft.title, onError: onError)
         jobs.insert(job)
         job.start(page, window: window)
@@ -39,14 +49,25 @@ final class ArtifactPrinter: NSObject {
         webView = SandboxedHTMLView.makeWebView(coordinator: coordinator, frame: Self.pageFrame)
         coordinator.onLoaded = { [weak self, weak window] webView in
             guard let self else { return }
-            guard let window else { return self.finish(error: nil) } // the chat closed meanwhile
+            guard let window else { // the chat closed meanwhile
+                artifactExportLog.notice("Print dropped: the window closed before the page loaded")
+                return self.finish(error: nil)
+            }
             self.run(webView, window: window)
         }
         coordinator.onFailed = { [weak self] message in
-            guard let self, !self.started else { return }
+            guard let self else { return }
+            guard !self.started else { // the print panel is up; its run ends the job
+                return artifactExportLog.error("Print page failed under the print panel: \(message, privacy: .public)")
+            }
             self.finish(error: "Print failed: \(message)")
         }
         coordinator.show(.page(page), token: 0)
+        loadTimeout = Task { [weak self] in
+            try? await Task.sleep(for: Self.loadTimeoutDuration)
+            guard !Task.isCancelled, let self, !self.started else { return }
+            self.finish(error: "Print failed: the page did not finish loading.")
+        }
     }
 
     private func run(_ webView: WKWebView, window: NSWindow) {
@@ -73,11 +94,18 @@ final class ArtifactPrinter: NSObject {
     @objc private func printOperationDidRun(
         _ operation: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?
     ) {
+        // false also when the owner cancelled the panel: no notice for it.
+        if !success { artifactExportLog.notice("Print operation ended without printing (cancelled or failed)") }
         finish(error: nil)
     }
 
     private func finish(error: String?) {
-        if let error { onError(error) }
+        if let error {
+            artifactExportLog.error("\(error, privacy: .public)")
+            onError(error)
+        }
+        loadTimeout?.cancel()
+        loadTimeout = nil
         coordinator.cancel()
         coordinator.onLoaded = nil
         coordinator.onFailed = nil

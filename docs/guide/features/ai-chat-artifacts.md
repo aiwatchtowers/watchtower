@@ -68,7 +68,9 @@ action: nav:chat
 
 A document or HTML page has **Print…** in the panel's toolbar, and **⌘P** does the same while it is shown. It opens the standard macOS print panel; choose **Save as PDF** from its **PDF** menu to keep a PDF. A document prints as formatted text, an HTML page as it renders, still with no internet access. Both wait until the artifact is fully written.
 
-A document also has **Export as Word…**, which saves it as a `.docx` file with its headings, lists and tables. **Export…** still saves the Markdown.
+A slide deck prints one slide per page. A deck made before this version may print only the slide on screen; ask the chat for the deck again to get one that prints whole.
+
+A document also has **Export as Word…**, which saves it as a `.docx` file with its headings and text. Tables come out as rows of plain paragraphs and lists as bullet lines; to keep a table as a table, export the table artifact as CSV. **Export…** still saves the Markdown.
 
 ### Publishing to claude.ai
 <!-- learn

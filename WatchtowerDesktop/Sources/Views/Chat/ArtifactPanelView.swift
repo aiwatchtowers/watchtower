@@ -33,6 +33,27 @@ struct ArtifactPanelView: View {
             Divider()
             toolbar
         }
+        // A notice belongs to the artifact it was raised on.
+        .onChange(of: shownArtifact) { notice = nil }
+    }
+
+    /// Which artifact and version the panel shows.
+    private var shownArtifact: ShownArtifact {
+        ShownArtifact(model: ObjectIdentifier(model), version: model.selectedVersion)
+    }
+
+    private struct ShownArtifact: Equatable {
+        let model: ObjectIdentifier
+        let version: Int?
+    }
+
+    /// Sets the notice of an action that answers later (a panel, a print
+    /// job) only while the same artifact is still shown.
+    private func noticeForShown() -> (String) -> Void {
+        let raisedOn = shownArtifact
+        return { message in
+            if shownArtifact == raisedOn { notice = message }
+        }
     }
 
     private var header: some View {
@@ -130,17 +151,17 @@ struct ArtifactPanelView: View {
                 Button("Edit") { model.beginEdit() }.disabled(model.liveDraft != nil)
                 Button("Copy") { run(.copy(draft.content)) }
                 Button("Export…") {
-                    ArtifactExporter.export(draft) { notice = $0 }
+                    ArtifactExporter.export(draft, onError: noticeForShown())
                 }
                 if ArtifactPrint.offersWord(draft) {
-                    Button("Export as Word…") { ArtifactExporter.exportWord(draft) { notice = $0 } }
+                    Button("Export as Word…") { ArtifactExporter.exportWord(draft, onError: noticeForShown()) }
                         .disabled(!ArtifactPrint.canExportWord(draft))
                 }
                 if ArtifactPrint.offersPrint(draft) {
                     // ⌘P while the panel shows a printable artifact; the
                     // print panel's PDF menu saves it as a PDF.
                     Button("Print…") {
-                        ArtifactPrinter.print(draft, window: NSApp.keyWindow ?? NSApp.mainWindow) { notice = $0 }
+                        ArtifactPrinter.print(draft, window: NSApp.keyWindow ?? NSApp.mainWindow, onError: noticeForShown())
                     }
                     .keyboardShortcut("p", modifiers: .command)
                     .disabled(!ArtifactPrint.canPrint(draft))
