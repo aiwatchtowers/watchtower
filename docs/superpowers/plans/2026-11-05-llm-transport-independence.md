@@ -132,7 +132,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 
 **Depends on:** G1 (shared reader in `internal/codex/stream.go`), N4 (signed off).
 **Contracts:** AUTO-08 (amendment text from the spec's §5, changelog citing asks #507 and #514); SPECREVIEW-01 note.
-**Risk:** medium. Depending on the spike, the package may stop for the owner (N5).
+**Risk:** medium. N5 decided in ask #522: the cap counts the rollout's `token_count` events.
 
 **Files:**
 - Modify: `internal/codex/stream.go` (`turnCounter`), `internal/codex/client.go` (`SetMaxTurns`, which cancels the group when turn N+1 starts and returns a `budget` failure), `cmd/automations_backends.go` (codex `agent()` gets `SetMaxTurns(automationAgentMaxTurns)`), `cmd/workbench_spec_review.go` (codex reviewer gets `SetMaxTurns(specreview.MaxTurns)`), `docs/inventory/automations.md`, `docs/inventory/spec-review.md` (note), `docs/features/automations.md`.
@@ -144,7 +144,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - a `budget` `*providers.Failure` whose message is "stopped after N model turns", the same category as Claude's `error_max_turns` (`internal/providers/failure.go:91`).
 - Consumes: the `streamline` reader from G1.
 
-- [ ] **Step 0 (spike, first):** Record live `codex exec --json` runs with tools on: a prompt that makes the model call two tools in parallel, a prompt that makes it call tools in three consecutive responses, and a text-only answer. Look for one response's calls executed one after another, i.e. item A started and completed before item B of the same response started, cross-checked against the same run's rollout `token_count` count in a throwaway `CODEX_HOME`. Write the scrubbed recordings to `internal/codex/testdata/`. **If serial execution is seen, stop G2 and report to the controller for the owner (N5); do not build the rollout counter. The lane then continues with G4, which shares files with G2 but not this decision; G2 resumes after the owner's answer, rebased on G4.**
+- [ ] **Step 0 (spike, first):** Record live `codex exec --json` runs with tools on: a prompt that makes the model call two tools in parallel, a prompt that makes it call tools in three consecutive responses, and a text-only answer. Look for one response's calls executed one after another, i.e. item A started and completed before item B of the same response started, cross-checked against the same run's rollout `token_count` count in a throwaway `CODEX_HOME`. Write the scrubbed recordings to `internal/codex/testdata/`. **Already answered:** A1's live recording showed serial execution, and the owner decided in ask #522 (N5) to count `token_count` events in the run's rollout. Re-run the spike only to confirm on the current codex, then build the rollout counter for both `agent()` and the codex spec reviewer: drop `--ephemeral`, private temp `CODEX_HOME` deleted after the run, stream rule as a logged fallback when the rollout is unreadable. Tests: `TestTurnCounter_RolloutTokenCountIsOneTurnPerResponse` (serial calls of one response = 1 turn), `TestCodexAgent_StopsAtCapFromRollout`, `TestCodexSpecReview_StopsAtMaxTurnsFromRollout`, `TestCodexAgent_TempHomeRemovedAfterRun`, `TestTurnCounter_UnreadableRolloutFallsBackToStream`.
 - [ ] **Step 1:** Failing tests:
   - `TestTurnCounter_ParallelCallsAreOneTurn`;
   - `TestTurnCounter_ConsecutiveResponsesCount` (three responses, one tool each, gives 3);
