@@ -116,11 +116,12 @@ Every piece of state these tasks write, each writer, and who wins.
 | `RelayAccountCenter.updateRequired` (memory only) | `.unsupportedVersion` and `.attestation(.updateRequired)` set it; `.reachable(true)` clears it | The last event, serially from the one events reader. |
 | `RelayAccountCenter.unconfirmed` (memory only) | the submit path, from a press, the sweep or `updates()` | The last answer, serially on the main actor. The next sweep recomputes it from `Transaction.unfinished`, so StoreKit is the truth after a restart. |
 | `relay.wasPaying` (app defaults, one flag for the ended and moved banners) | the center sets it on a paying read; the banner's **OK** clears it | One main-actor writer. A paying read after **OK** sets it again, which is right: a new subscription can end again. |
+| `relay.holdsSubscription` (app defaults; unset, true or false) | the center: true on a paying read or an entitlement answer, false on `moved` or `SUBSCRIPTION_MOVED` | One main-actor writer, the last answer wins. Unset until the first such answer. It decides only what the automatic paths send: true any row, unset only a row whose `appAccountToken` is this account, false none; a press always sends. |
 | `submit_transaction` of one transaction | the purchase flow, the `Transaction.updates` listener, the launch's `Transaction.unfinished` sweep | One flight per transaction id in the center (the second caller joins). The relay treats a repeat as idempotent (`retryOf`). `finish()` runs once, after the first entitlement answer. |
 | `relay.account` Keychain item | the center's first `register` | `add`, never `write`: a lost race reads the winner's. |
 | `LinkRecord.transportRequest`, `.hubOnRelayAt`, `.relayUpgrade`, `.transport` | `HubSession.requestTransport`, `RelayUpgrader`, `TransportFollower`, the lapse command, the unlink | Compare-and-set on the record (as Phase 3b). The hub's answer through the follower wins over a local request; an unlink deletes the record and any write after it is a no-op. |
 | Which transport a Mac is on | any paying phone, `entitlement_expired` | The hub: the last accepted switch, with the 5-minute rule toward the relay. The phone only follows (sim rule 11). |
-| `transport_switch` for one hub on the phone | the owner's choice, the banner's **Switch to iCloud**, a lapse | One open request per hub. A lapse replaces a pending request toward the relay (the same rule as the hub's "superseding"). A second press is disabled while one runs. |
+| `transport_switch` for one hub on the phone | the owner's choice, the banner's **Switch to iCloud**, a lapse | One open request per hub. A lapse leaves `relayUpgrade` alone: it runs only on a relay route, where the record is already `.switched`, and an upgrade running on iCloud at a lapse is refused by the hub (`not_paying`). A second press is disabled while one runs. |
 | Outbox rows and `action_seq` | one session per hub | Unchanged (Phase 1). |
 | APNs token on the relay | this phone only | The last `register_push` wins; each is idempotent. |
 | `latency_pending`, `latency_samples` | the hub's session in the app, per hub replica | One writer per replica. The extension never writes. Diagnostics reads through `ReplicaStore`'s reader. A row settled twice is a no-op (`DELETE … RETURNING` in one transaction). |
@@ -497,7 +498,7 @@ The hub answers in the mailbox where it read the request, so while a request is 
   - `testUnavailableAsksOnceMoreThenEnds`;
   - `testNotSupportedEndsTheRequest`;
   - `testALegacyHubIsNeverAsked` (`.notOrdered`, nothing written);
-  - `testALapseReplacesAPendingUpgradeRequest` (the hub's "superseding" rule on our side: `relayUpgrade` ends, the slot kept);
+  - `testALapseLeavesASwitchedUpgradeRecordAlone` (final review: the superseding path cannot run on a relay route; the slot is kept);
   - `testHubOnRelayIsKeptAndClearedByAMoveBack`;
   - `testAnUnlinkDuringARequestWinsAndNothingIsWrittenAfter`;
   - `testAnOpenRequestReadsTheICloudMailboxWhileTheRelayAnswers`;
@@ -1211,7 +1212,7 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | A relay-only hub is never asked for iCloud on a lapse | spec §8; decided by the agent for "no request" |
 | `macReachable` is the heartbeat check; locked keys read as reachable | decided by the agent |
 | Subscribe opens a pushed screen from Macs, a sheet from Now | decided by the agent |
-| A lapse replaces a pending upgrade request, the slot kept | decided by the agent, mirrors the hub's "superseding" and ask #977 (slot kept) |
+| A lapse does not touch `relayUpgrade`: on a relay route it is already `.switched`, the slot kept | decided by the agent, final review; replaces "a lapse replaces a pending upgrade request", which could not run; ask #977 (slot kept) |
 | A request toward iCloud waits 24 h, then a refusal the owner can leave; an owner's request is withdrawn, a lapse's is kept | decided by the agent, the 3b reader wait's limit; Open decision 15 |
 | The alert registrar targets the hub's CloudKit route on any transport | decided by the agent; Open decision 18 |
 | `transport_switch` toward iCloud goes on both transports with one id, the iCloud copy written directly | spec §9, relay design §4.2 p. 2 |
@@ -1225,7 +1226,12 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | An upgrade running when the subscription lapses is refused by the hub (`not_paying`) and shows Phase 3b's refusal; the superseding path looks unreachable on an iCloud route | decided by the agent, Task 5 |
 | A store failure is `PurchaseState.storeFailed`, S57, "The App Store didn't finish. Nothing changed; you can try again."; a cancelled sign-in is not a failure | decided by the agent, Task 6; pending ask #1040 (the list) |
 | The center's first pass runs from `foreground()`, not `start()`, so a push launch stays frugal | decided by the agent, Task 6, amends its brief's "at launch and each foreground" |
-| An expiry control and `.entitlementInactive` sweep before they read, so an unsent renewal cannot lapse Macs | decided by the agent, Task 6; pending ask #1040 (the list) |
+| An expiry control and `.entitlementInactive` sweep before they read, so an unsent renewal cannot lapse Macs. Amended below for a phone with a claim | decided by the agent, Task 6; pending ask #1040 (the list) |
+| Only a press moves the subscription: the automatic paths send by `relay.holdsSubscription` (true any row; unset only a row whose `appAccountToken` is this account, the killed first purchase; false none), a press always sends, and a skipped row stays unfinished with no `unconfirmed`. The relay moves a subscription on any fresh submit from the transaction's token's account or the original one (`submitInOrder`), so a moved phone's renewal took it back and two phones ping-ponged at each renewal, burning the 3-a-month limit | decided by the agent, final review. A wiped phone heals at its first paying read. Limit: on a phone with the claim false, a purchase approved later (Ask to Buy) or killed before its submit waits for a press (**Restore Purchases**) |
+| A phone with a claim reads first on every automatic path (`pass()`, the expiry signals, `updates()`): a move stops there; otherwise it sends, then reads again if it sent anything. A free answer lapses only after that, and a paying read still corrects an expiry control. A failed read sends nothing: it says nothing about a move, and the next pass sends | decided by the agent, final review; amends "sweep before they read" |
+| A restore that does not reach the relay is S46 ("Couldn't reach Relay. You weren't charged." **Try Again**), which runs the restore again: its transaction is not in `Transaction.unfinished`, so nothing would re-send it | decided by the agent, final review; replaces S26 on that path |
+| A lapse pass checks the phase before each hub, so a paying read during it moves no further Mac | decided by the agent, final review |
+| Now's banner reads `LinkingViewModel.links`, and its clock runs only on a relay route that stopped answering: a Release user with no relay pays nothing recurring | decided by the agent, final review; replaces "5 s row read: follow-up gate" |
 | A paying read corrects an expiry control, so no lapse; a failed read after a control still lapses | decided by the agent, Task 6's review, amends its brief's "refresh, then lapse" |
 | A non-nil `unconfirmed` wins over `.storeFailed`, `.pending`, `.noSubscriptionFound` and `.accountFailed`, so a charged owner never reads false text | decided by the agent, Tasks 6 and 9, overrides their "What shows" |
 | `updateRequired` stops a sale, not an answer: it overrides `.idle`, `.loadingProduct`, `.ready`, `.productFailed`, `.storeFailed`, `.noSubscriptionFound`, `.accountFailed`; S43 shows with no press and no `unconfirmed`; order: running press, paying, unconfirmed, latch, result | decided by the agent, Task 9, corrected in its fix round; pending ask #1040 (the list) |
