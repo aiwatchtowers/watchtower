@@ -17,7 +17,7 @@ extension ArtifactAction {
 /// holds: the canonical form (`blocks.marshal`, no HTML escaping) and a
 /// reply's `data` (`json.Marshal`: HTML-escaped, keys sorted). Both escape
 /// `"` and `\`, write `\b \f \n \r \t` as such, other control characters as
-/// `\u00XX`, U+2028/U+2029 as ` `/` `, and leave `/` alone.
+/// `\u00XX`, U+2028/U+2029 as `\u2028`/`\u2029`, and leave `/` alone.
 enum GoJSON {
     /// The action's canonical JSON: Go `db.InboxAction`'s fields in their
     /// struct order, empty ones omitted (`omitempty`), `data` copied as stored.
