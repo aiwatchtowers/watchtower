@@ -74,6 +74,8 @@ final class RelayAccountCenter {
         case refused, transferLimit, notImplemented, updateRequired
     }
 
+    private enum Press { case buy, restore }
+
     /// What one `get_account_state` came to.
     private enum ReadOutcome {
         /// No answer.
@@ -95,6 +97,8 @@ final class RelayAccountCenter {
     }
 
     private(set) var phase: Phase = .checking
+    /// The last product a load found, for the frames with **Subscribe** that carry none of their own (S45, S57).
+    private(set) var product: RelayProduct?
     /// What an owner's press is doing.
     private(set) var purchase: PurchaseState = .idle
     private(set) var updateRequired = false
@@ -139,7 +143,8 @@ final class RelayAccountCenter {
     @ObservationIgnored private var refusedIDs: Set<UInt64> = []
     /// Answered with an entitlement and finished in this process.
     @ObservationIgnored private var settledIDs: Set<UInt64> = []
-    @ObservationIgnored private var product: RelayProduct?
+    /// The press `retryAccount()` repeats.
+    @ObservationIgnored private var lastPress = Press.buy
     /// Only the newest read writes: a slower older answer, or one a control overtook, is dropped.
     @ObservationIgnored private var readGeneration = 0
 
@@ -285,9 +290,17 @@ final class RelayAccountCenter {
         purchase = found.map(PurchaseState.ready) ?? .productFailed
     }
 
+    /// S22's **Retry**, and **Load the Price** on S45 and S57 with no price, where `loadProduct()` alone would leave the result standing. The press
+    /// replaces the result. A running press stays: `screenClosed()` and `loadProduct()` both leave it.
+    func reloadProduct() async {
+        screenClosed()
+        await loadProduct()
+    }
+
     /// `accountID` (the press is the first use) → the App Store → `submit` → `finish` on an entitlement → the read.
     func buy() async {
         guard !pressRunning else { return }
+        lastPress = .buy
         purchase = .buying
         guard let token = await pressAccountID() else { return }
         do {
@@ -314,6 +327,7 @@ final class RelayAccountCenter {
     func restore() async {
         guard !pressRunning else { return }
         let prior = purchase
+        lastPress = .restore
         purchase = .restoring
         guard await pressAccountID() != nil else { return }
         do {
@@ -323,11 +337,22 @@ final class RelayAccountCenter {
             }
             await confirm([transaction])
         } catch RelayStoreError.cancelled {
-            // A load does not write during a press, so S21 would stay with none running. `.idle`: the open screen loads.
-            purchase = prior == .loadingProduct ? product.map(PurchaseState.ready) ?? .idle : prior
+            // A load does not write during a press, so S21 would stay with none running; and the account just answered, so
+            // S46 would no longer be true. `.idle`: the open screen loads.
+            let stale = prior == .loadingProduct || prior == .accountFailed
+            purchase = stale ? product.map(PurchaseState.ready) ?? .idle : prior
         } catch {
             Self.logger.error("relay account: restore failed: \(Self.code(error), privacy: .public)")
             purchase = .storeFailed
+        }
+    }
+
+    /// **Try Again** on S46: the press that stopped at the account, run again. A failed Restore never becomes a purchase.
+    func retryAccount() async {
+        guard purchase == .accountFailed else { return }
+        switch lastPress {
+        case .buy: await buy()
+        case .restore: await restore()
         }
     }
 

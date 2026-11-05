@@ -281,6 +281,91 @@ final class MacTransportWiringTests: XCTestCase {
         XCTAssertEqual(MacDetailView.grant(of: link, session: session)?.runsOrderedActions, true)
     }
 
+    // MARK: - The subscription screen
+
+    func testSubscribeRowsOpenTheSubscriptionScreen() async throws {
+        let origin = RelayAvailability.available(try RelayOrigin("https://relay.example.com"))
+        // The Relay card: S01, S06, S55.
+        var opened = 0
+        let cards: [RelayCardModel?] = [
+            RelayCardModel(availability: origin, phase: .free(ended: false), unconfirmedPurchase: false),
+            RelayCardModel(availability: origin, phase: .free(ended: true), unconfirmedPurchase: false),
+            RelayCardModel(availability: origin, phase: .free(ended: false), unconfirmedPurchase: true)
+        ]
+        for card in cards {
+            let action = try XCTUnwrap(card?.action)
+            XCTAssertEqual(action, .openSubscription)
+            RelaySubscriptionPress.card(action, center: nil) { opened += 1 }
+        }
+        XCTAssertEqual(opened, cards.count)
+
+        // The Connection row: S10.
+        let (bed, session) = try await upgradeBed()
+        let row = try XCTUnwrap(try model(bed, session, phase: .free(ended: false)).rows.first)
+        XCTAssertEqual(row.action, .openSubscription)
+        var routed: [String] = []
+        MacDetailView.route(
+            try XCTUnwrap(row.action), openSubscription: { routed.append("subscription") }, manageMacs: { routed.append("macs") },
+            start: { _ in routed.append("started") }
+        )
+        XCTAssertEqual(routed, ["subscription"])
+    }
+
+    func testTheMovedCardRestoresOnTheSubscriptionScreen() async throws {
+        let bed = AccountBed()
+        let token = try await bed.register()
+        let center = bed.makeCenter()
+        center.start()
+        await center.foreground()?.value
+        bed.emit(.control(kind: .subscriptionMoved, detail: ""))
+        while center.phase != .moved { await Task.yield() }
+        let origin = RelayAvailability.available(try RelayOrigin("https://relay.example.com"))
+        let card = try XCTUnwrap(RelayCardModel(availability: origin, phase: center.phase, unconfirmedPurchase: false))
+        XCTAssertEqual(card.action, .restore, "S41")
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        bed.store.productResult = product
+        func shown() -> RelaySubscriptionModel {
+            RelaySubscriptionModel(
+                purchase: center.purchase, unconfirmed: center.unconfirmed, phase: center.phase,
+                config: RelayConfig(origin: nil), product: center.product
+            )
+        }
+
+        bed.store.parkRestore()
+        var opened = 0
+        let first = try XCTUnwrap(RelaySubscriptionPress.card(try XCTUnwrap(card.action), center: center) { opened += 1 })
+        XCTAssertEqual(opened, 1, "the screen opens with the press, not after it")
+        while !bed.store.restoreIsParked { await Task.yield() }
+        XCTAssertEqual(shown().primary?.title, "Restoring…", "S44")
+        XCTAssertFalse(shown().showsRestore)
+        bed.store.releaseRestore()
+        await first.value
+        XCTAssertEqual(bed.store.restoreCalls, 1)
+        XCTAssertEqual(shown().line, "No subscription found on this Apple ID.", "S45")
+        XCTAssertEqual(shown().primary?.title, "Subscribe — $4.99 / month", "S45 still sells: the press loaded the price")
+
+        center.screenClosed()
+        bed.store.restoreResult = bed.row(token: token)
+        bed.fake.failNext("submitTransaction", with: .invalidTransaction)
+        await RelaySubscriptionPress.card(.restore, center: center) {}?.value
+        XCTAssertEqual(shown().line, "Relay couldn't confirm this purchase. Try Restore Purchases.", "S27")
+        XCTAssertEqual(shown().primary?.action, .manageSubscription)
+        XCTAssertTrue(shown().showsRestore)
+    }
+
+    func testTheCardsRetryReadsTheAccountAndOpensNothing() async throws {
+        let bed = AccountBed()
+        try await bed.register()
+        let center = bed.makeCenter()
+        center.start()
+        await center.foreground()?.value
+        let reads = bed.ops.filter { $0 == "getAccountState" }.count
+        var opened = 0
+        await RelaySubscriptionPress.card(.retry, center: center) { opened += 1 }?.value
+        XCTAssertEqual(opened, 0)
+        XCTAssertEqual(bed.ops.filter { $0 == "getAccountState" }.count, reads + 1)
+    }
+
     // MARK: - Helpers
 
     private func model(

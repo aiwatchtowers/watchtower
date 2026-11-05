@@ -15,7 +15,7 @@ struct RelayCardModel: Equatable {
         case openSubscription
         /// Read the account again.
         case retry
-        /// Restore Purchases, then the subscription screen (Task 9 wires the push).
+        /// Restore Purchases, on the subscription screen (`RelaySubscriptionPress`).
         case restore
     }
 

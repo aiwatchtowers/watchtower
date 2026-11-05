@@ -13,18 +13,28 @@ struct MacDetailView: View {
     let hubID: String
     /// A model to show in place of the live one (the screenshot tour's frames); its actions do nothing.
     private let modelOverride: MacTransportModel?
-    private let openSubscription: () -> Void
 
     @State private var pressing: MacTransportModel.Action?
     @State private var asking: MacsModel.Ask?
     @State private var showsSlots = false
+    @State private var showsSubscription = false
 
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "MacDetail")
 
-    init(hubID: String, model: MacTransportModel? = nil, openSubscription: @escaping () -> Void = {}) {
+    init(hubID: String, model: MacTransportModel? = nil) {
         self.hubID = hubID
         modelOverride = model
-        self.openSubscription = openSubscription
+    }
+
+    /// Where a press goes: the two rows that open a screen, or the work on the hub.
+    static func route(
+        _ action: MacTransportModel.Action, openSubscription: () -> Void, manageMacs: () -> Void, start: (MacTransportModel.Action) -> Void
+    ) {
+        switch action {
+        case .openSubscription: openSubscription()
+        case .manageMacs: manageMacs()
+        case .chooseRelay, .chooseICloud, .tryAgain: start(action)
+        }
     }
 
     /// Only the link flow's own work holds Forget back: a switch waiting for a closed Mac never does.
@@ -46,6 +56,7 @@ struct MacDetailView: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             content(now: context.date)
         }
+        .navigationDestination(isPresented: $showsSubscription) { RelaySubscriptionView() }
         .onChange(of: linking.links.contains { $0.hubID == hubID }) { _, stillLinked in
             if !stillLinked { dismiss() }
         }
@@ -115,19 +126,14 @@ struct MacDetailView: View {
 
     private func press(_ action: MacTransportModel.Action) {
         guard modelOverride == nil else { return }
-        switch action {
-        case .openSubscription:
-            openSubscription()
-        case .manageMacs:
-            showsSlots = true
-        case .chooseRelay, .chooseICloud, .tryAgain:
+        Self.route(action, openSubscription: { showsSubscription = true }, manageMacs: { showsSlots = true }, start: { action in
             guard pressing == nil, let session = env.session(hubID) else { return }
             pressing = action
             Task {
                 await MacTransportPress.run(action, session: session, center: env.relayAccount)
                 pressing = nil
             }
-        }
+        })
     }
 
     // MARK: - The section

@@ -371,6 +371,53 @@ final class ScreenshotTourTests: XCTestCase {
 
         rows += try await captureDiagnostics(host: host)
         rows += try await captureConnection(host: host, origin: origin, now: now) { macLink($0, $1, relay: $2) }
+        rows += try await captureSubscription(host: host)
+        return rows
+    }
+
+    /// S20–S29, S42–S46, S57: the subscription screen in each state of Task 1's table, each light, dark and narrow, handed to
+    /// the view (`RelaySubscriptionView(model:)`).
+    private func captureSubscription(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        let config = RelayConfig(
+            origin: nil, termsURL: URL(string: "https://example.com/terms"), privacyURL: URL(string: "https://example.com/privacy")
+        )
+        let frames: [(String, String, RelayAccountCenter.PurchaseState)] = [
+            ("S20", "subscription-loaded", .ready(product)),
+            ("S21", "subscription-loading", .loadingProduct),
+            ("S22", "subscription-error", .productFailed),
+            ("S23", "subscription-buying", .buying),
+            ("S24", "subscription-confirming", .confirming),
+            ("S44", "subscription-restoring", .restoring),
+            ("S45", "subscription-none-found", .noSubscriptionFound),
+            ("S46", "subscription-account-failed", .accountFailed),
+            ("S25", "subscription-pending", .pending),
+            ("S26", "subscription-not-reached", .boughtNotConfirmed),
+            ("S27", "subscription-refused", .refused),
+            ("S28", "subscription-transfer-limit", .transferLimit),
+            ("S42", "subscription-no-purchases", .notImplemented),
+            ("S43", "subscription-app-too-old", .updateRequired),
+            ("S29", "subscription-done", .done),
+            ("S57", "subscription-store-failed", .storeFailed)
+        ]
+        // A Restore pressed before any load found a price.
+        let noPrice: [(String, String, RelayAccountCenter.PurchaseState)] = [
+            ("S45b", "subscription-none-found-no-price", .noSubscriptionFound),
+            ("S57b", "subscription-store-failed-no-price", .storeFailed)
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (number, slug, purchase, price) in frames.map({ ($0.0, $0.1, $0.2, Optional(product)) }) + noPrice.map({ ($0.0, $0.1, $0.2, nil) }) {
+            let model = RelaySubscriptionModel(
+                purchase: purchase, unconfirmed: nil, phase: .free(ended: false), config: config, product: price
+            )
+            try await host.captureThree(
+                "\(number)-\(slug)", NavigationStack { RelaySubscriptionView(model: model) }, narrowScroll: Self.toTheEnd
+            )
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "RelaySubscriptionView", source: "Features/Settings/RelaySubscriptionView.swift",
+                reached: "bare stack, the subscription screen, light/dark/narrow"
+            ))
+        }
         return rows
     }
 

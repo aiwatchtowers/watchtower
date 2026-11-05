@@ -18,13 +18,12 @@ struct MacsView: View {
     private let initialCancel: MacsModel.FinishingRow?
     /// A card to show in place of the environment's (the screenshot tour's frames); its actions do nothing.
     private let cardOverride: RelayCardModel?
-    /// Opens the subscription screen (Task 9 wires it); the card's `.openSubscription` and `.restore` end here.
-    private let openSubscription: () -> Void
+    /// The subscription screen is pushed: the card's `.openSubscription` and `.restore` end here.
+    @State private var showsSubscription = false
 
-    init(cancelling: MacsModel.FinishingRow? = nil, card: RelayCardModel? = nil, openSubscription: @escaping () -> Void = {}) {
+    init(cancelling: MacsModel.FinishingRow? = nil, card: RelayCardModel? = nil) {
         initialCancel = cancelling
         cardOverride = card
-        self.openSubscription = openSubscription
     }
 
     /// The Relay card: only while the relay is available and its account center was built (never on a dark build).
@@ -37,13 +36,7 @@ struct MacsView: View {
     }
 
     private func act(_ action: RelayCardModel.Action) {
-        switch action {
-        case .openSubscription: openSubscription()
-        case .retry: Task { await env.relayAccount?.refresh() }
-        case .restore:
-            Task { await env.relayAccount?.restore() }
-            openSubscription()
-        }
+        RelaySubscriptionPress.card(action, center: env.relayAccount) { showsSubscription = true }
     }
 
     var body: some View {
@@ -52,6 +45,7 @@ struct MacsView: View {
             list(env.hubListItems(linking.links, unreadable: linking.unreadableHubIDs, now: context.date))
         }
         .navigationTitle("Macs")
+        .navigationDestination(isPresented: $showsSubscription) { RelaySubscriptionView() }
         .toolbar {
             if linking.links.count > 1 {
                 ToolbarItem(placement: .primaryAction) { EditButton() }
@@ -157,7 +151,7 @@ struct MacsView: View {
         let row = linking.links.first { $0.hubID == item.id }
         if Self.opensDetail(account: env.relayAccount, availability: env.relay.availability, row: row, session: env.session(item.id)) {
             NavigationLink {
-                MacDetailView(hubID: item.id, openSubscription: openSubscription)
+                MacDetailView(hubID: item.id)
             } label: {
                 HubListRow(item: item)
             }
