@@ -217,7 +217,8 @@ func (p *Processor) repeat(ctx context.Context, b mailbox, r record, o secure.Op
 }
 
 // hold keeps an action that arrived ahead of a gap, echoes it held and asks
-// for the gap once: resend_from(last+1) unless that gap was already asked.
+// for the gap once: resend_from(last+1) unless that gap was already asked and
+// the ask is younger than ResendAskAgainAfter.
 func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, seq uint64, dev state.Device, plain string, ps *pass) error {
 	echo, err := p.sealEcho(b, r.name, plain, a, Outcome{Status: wire.StatusHeld}, r.expect)
 	if err != nil {
@@ -225,7 +226,8 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 	}
 	from := dev.LastAppliedActionSeq + 1
 	var resend *queued
-	if dev.ResendRequestedFrom != from {
+	now := p.cfg.Clock()
+	if dev.ResendRequestedFrom != from || now.Sub(dev.ResendRequestedAt) >= ResendAskAgainAfter {
 		q, err := p.sealResendFrom(b, from)
 		if err != nil {
 			return err
@@ -249,7 +251,7 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 		if err := state.Enqueue(tx, resend.control(b.queue)); err != nil {
 			return err
 		}
-		return state.SetResendRequested(tx, device, from)
+		return state.SetResendRequested(tx, device, from, now)
 	}); err != nil {
 		return err
 	}
@@ -564,6 +566,6 @@ func (p *Processor) reaskHeld(ctx context.Context, b mailbox, seq, from uint64) 
 		if err := state.Enqueue(tx, q.control(b.queue)); err != nil {
 			return err
 		}
-		return state.SetResendRequested(tx, device, from)
+		return state.SetResendRequested(tx, device, from, p.cfg.Clock())
 	})
 }

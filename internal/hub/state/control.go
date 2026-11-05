@@ -101,7 +101,7 @@ func (s *Store) DropResendFrom(id int64, device string) error {
 		if _, err := tx.Exec(`DELETE FROM control_queue WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("removing a control: %w", err)
 		}
-		if err := SetResendRequested(tx, device, 0); err != nil && !errors.Is(err, ErrNoDevice) {
+		if err := SetResendRequested(tx, device, 0, time.Time{}); err != nil && !errors.Is(err, ErrNoDevice) {
 			return err
 		}
 		return nil
@@ -136,7 +136,7 @@ func OweOver(tx *sql.Tx, device, from, to, echoKind, resendKind string) (int64, 
 	if n, err := res.RowsAffected(); err != nil {
 		return 0, err
 	} else if n > 0 {
-		if err := SetResendRequested(tx, device, 0); err != nil && !errors.Is(err, ErrNoDevice) {
+		if err := SetResendRequested(tx, device, 0, time.Time{}); err != nil && !errors.Is(err, ErrNoDevice) {
 			return 0, err
 		}
 	}

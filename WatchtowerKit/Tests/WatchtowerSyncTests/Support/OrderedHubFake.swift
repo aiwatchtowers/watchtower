@@ -6,7 +6,8 @@ import WatchtowerE2ETesting
 /// and `control.go` rules, nothing more (relay sim rules 2, 4, 5, 6).
 ///
 /// - Every action record it reads is echoed over its own version (`.seq`): the next one (`last + 1`) is applied and
-///   echoed `applied`, then the held ones that follow; a repeat (`seq <= last`) is echoed `applied` again; one ahead
+///   echoed `applied`, then the held ones that follow; a repeat (`seq <= last`) is echoed `applied` again (`expired`
+///   when a `skip_to` passed it); one ahead
 ///   of a gap is held, echoed `held`, and the gap is asked once: `resend_from(last + 1)`.
 /// - A phone `skip_to(m)` naming this phone and this hub, with `m <= last + 1 + 65536`, moves `last` to `m - 1` when
 ///   that moves it forward, then drains the held actions. Every control it reads is deleted under its version.
@@ -42,6 +43,8 @@ actor OrderedHubFake {
 
     private var held: [UInt64: Held] = [:]
     private var resendRequestedFrom: UInt64?
+    /// The seqs a `skip_to` passed: a late copy of one is answered `expired`, as the Go hub's ledger does.
+    private var skipped: Set<UInt64> = []
     private var token: CloudChangeToken?
 
     init(inner: InMemoryCloudTransport, keys: TestHubKeyProvider = TestE2E.hub(), device: UUID = TestE2E.deviceID) {
@@ -92,7 +95,7 @@ actor OrderedHubFake {
               let seq = action.actionSeq, action.status == .pending
         else { return }
         if seq <= lastApplied {
-            _ = try await echo(action, status: .applied, over: record.recordSeq)
+            _ = try await echo(action, status: skipped.contains(seq) ? .expired : .applied, over: record.recordSeq)
         } else if seq > lastApplied + 1 {
             let version = try await echo(action, status: .held, over: record.recordSeq)
             held[seq] = Held(action: action, version: version)
@@ -144,7 +147,10 @@ actor OrderedHubFake {
            control.kind == .skipTo, let m = control.seq, m > 0,
            control.deviceID == device.uuidString, control.hubID == hubID.uuidString,
            m <= lastApplied + 1 + Self.maxSkipAhead {
-            if m > lastApplied + 1 { lastApplied = m - 1 }
+            if m > lastApplied + 1 {
+                skipped.formUnion((lastApplied + 1)..<m)
+                lastApplied = m - 1
+            }
             skipsHonoured.append(m)
             try await drainHeld()
         }
@@ -197,6 +203,7 @@ struct OrderedRig {
     static func make(
         ordered: Bool = true,
         hubID: String? = TestE2E.hubID.uuidString,
+        route: HubRoute = .cloudKit(.private),
         onActionApplied: (@Sendable () async -> Void)? = nil,
         onHubOnRelay: (@Sendable () async -> Void)? = nil
     ) async throws -> Self {
@@ -205,7 +212,7 @@ struct OrderedRig {
         let recorder = RecordingConditionalTransport(inner: inner)
         let phone = TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: recorder)
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
-        let outbox = ActionOutbox(transport: phone, store: store, deviceID: TestE2E.deviceID.uuidString) { base }
+        let outbox = ActionOutbox(transport: phone, store: store, deviceID: TestE2E.deviceID.uuidString, route: route) { base }
         if ordered { try await outbox.enableOrderedActions() }
         await outbox.setHubID(hubID)
         let clock: @Sendable () -> Date = { base }

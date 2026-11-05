@@ -58,6 +58,7 @@ extension ReplicaStore {
     static let actionSeqNextKey = "action_seq_next"
     /// The highest epoch an `epoch_ack` was queued for (relay client Phase 3): a lower or equal one never is.
     static let epochAckKey = "epoch_ack_epoch"
+    static let resendFloorKey = "resend_floor"
     /// How long a handled hub control id is remembered (sim "Bounded state").
     static let handledControlRetention: TimeInterval = 15 * 86_400
 
@@ -345,14 +346,39 @@ extension ReplicaStore {
     /// Queues a sealed control behind those already queued; an id already queued is a no-op.
     func enqueueControl(_ control: QueuedControl) throws {
         try writer.write { db in
-            try db.execute(
-                sql: """
-                    INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                arguments: [
-                    control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
-                ])
+            try Self.insertControl(db, control)
+        }
+    }
+
+    // MARK: The gap the hub asked for
+
+    /// The start of the gap the hub asked for with `resend_from` and has had no answer on, or nil. Kept in
+    /// `replica_meta` (an unlink drops the replica with it), never lowered: the hub's next expected seq only grows.
+    func resendFloor() throws -> UInt64? {
+        try writer.read { db in try Self.meta(db, Self.resendFloorKey).flatMap { UInt64($0) } }
+    }
+
+    func raiseResendFloor(_ seq: UInt64) throws {
+        try writer.write { db in
+            let current = try Self.meta(db, Self.resendFloorKey).flatMap { UInt64($0) } ?? 0
+            try Self.setMeta(db, Self.resendFloorKey, String(max(current, seq)))
+        }
+    }
+
+    /// A final echo of `seq` means the hub's order passed it: an ask at or below it is answered.
+    func closeResendFloor(atOrBelow seq: UInt64) throws {
+        try writer.write { db in
+            guard let floor = try Self.meta(db, Self.resendFloorKey).flatMap({ UInt64($0) }), floor <= seq else { return }
+            try db.execute(sql: "DELETE FROM replica_meta WHERE key = ?", arguments: [Self.resendFloorKey])
+        }
+    }
+
+    /// Queues the `skip_to` that answers the ask and closes it in one transaction: a kill leaves either the ask (the
+    /// next pass seals the skip again) or the queued control, never neither and never two.
+    func queueSkip(_ control: QueuedControl) throws {
+        try writer.write { db in
+            try Self.insertControl(db, control)
+            try db.execute(sql: "DELETE FROM replica_meta WHERE key = ?", arguments: [Self.resendFloorKey])
         }
     }
 
@@ -368,14 +394,7 @@ extension ReplicaStore {
             if let acked = try Self.ackedEpoch(db), epoch <= acked { return false }
             try db.execute(
                 sql: "DELETE FROM outbound_controls WHERE kind = ?", arguments: [ControlKind.epochAck.rawValue])
-            try db.execute(
-                sql: """
-                    INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                arguments: [
-                    control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
-                ])
+            try Self.insertControl(db, control)
             try Self.setMeta(db, Self.epochAckKey, String(epoch))
             return true
         }
@@ -452,6 +471,17 @@ extension ReplicaStore {
     private static func pruneHandledControls(_ db: Database, before date: Date) throws {
         try db.execute(
             sql: "DELETE FROM handled_controls WHERE handled_at < ?", arguments: [date.timeIntervalSince1970])
+    }
+
+    private static func insertControl(_ db: Database, _ control: QueuedControl) throws {
+        try db.execute(
+            sql: """
+                INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
+            ])
     }
 
     private static func nextActionSeq(_ db: Database) throws -> UInt64 {
