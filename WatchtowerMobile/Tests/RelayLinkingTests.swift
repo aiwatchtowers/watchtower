@@ -673,7 +673,7 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(pending.deadline, Date(timeIntervalSince1970: TimeInterval(payload.exp) + LinkingViewModel.expiryGrace))
         XCTAssertEqual(pending.relaySlot, "slot-1")
         flow.cancel()
-        await flow.value
+        try await flow.value(within: 60, "flow")
     }
 
     // MARK: - After the owner confirmed: the live flow
@@ -1386,7 +1386,7 @@ final class RelayLinkingTests: XCTestCase {
         try await poll { model.phase == .waiting(macName: "build-box") }
         host.slotRemovals = [mac.deviceID]
         flow.cancel()
-        await flow.value
+        try await flow.value(within: 60, "flow")
         await makeModel().retrySlotRemovals()
         XCTAssertTrue(host.slotRemovals.isEmpty)
         XCTAssertEqual(relay.count("removeSlot"), 0, "the pending link names the Mac")
@@ -1462,8 +1462,8 @@ final class RelayLinkingTests: XCTestCase {
         try await poll({ !model.resumer.isLive(hub) }, "the cancel never fenced the attempt")
         XCTAssertFalse(relay.ops.contains { $0.hasPrefix("removeSlot") }, "the cancel waits for the running attempt")
         relay.release("promote")
-        let freed = await cancel.value
-        await resume.value
+        let freed = try await cancel.value(within: 60, "cancel")
+        try await resume.value(within: 60, "resume")
 
         XCTAssertTrue(freed)
         XCTAssertEqual(relay.ops.filter { $0.hasPrefix("promote") || $0.hasPrefix("removeSlot") },
@@ -1489,8 +1489,8 @@ final class RelayLinkingTests: XCTestCase {
         let removal = Task { await model.removeFromSlots(self.mac.deviceID) }
         try await poll({ !model.resumer.isLive(hub) }, "the removal never fenced the attempt")
         host.parksPrepare = false
-        await removal.value
-        await resume.value
+        try await removal.value(within: 60, "removal")
+        try await resume.value(within: 60, "resume")
 
         XCTAssertTrue(host.linkedCalls.isEmpty, "linked never ran after the cancel")
         XCTAssertNil(host.row(hub))

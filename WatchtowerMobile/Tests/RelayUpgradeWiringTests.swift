@@ -219,7 +219,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         // The Mac's id with another key: not coherent.
         let other = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
         try await publishGrant(bed, relayDeviceID: bed.mac.deviceID, relayAuthPub: WireBytes.base64URL(other))
-        await bed.fetch(session)
+        try await bed.fetch(session)
         let outcome8 = await session.upgradeToRelay()
         XCTAssertEqual(outcome8.refusal, .noRelayIdentity)
 
@@ -360,7 +360,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(asked.count, 1, "not asked again")
         _ = session
         try await bed.writeRejection(RelayUpgrade.notPaying, on: .cloudKit)
-        await fetch(bed, relaunched)
+        try await fetch(bed, relaunched)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notPaying, "the answer still reaches the upgrade")
     }
 
@@ -384,9 +384,9 @@ final class RelayUpgradeWiringTests: XCTestCase {
     func testTheInitiatorStaysOnICloudUntilSwitched() async throws {
         let (bed, session) = try await requestedBed()
 
-        await fetch(bed, session)
+        try await fetch(bed, session)
         bed.clock.advance(31)
-        await fetch(bed, session)
+        try await fetch(bed, session)
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertTrue(bed.root.env.session(hubID) === session)
@@ -440,7 +440,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await requestedBed()
 
         try await bed.writeSwitch(target: .cloudKit, epoch: 1, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
 
         XCTAssertTrue(try Bed.handled(session, bed.switchID))
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
@@ -495,7 +495,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(queued, [id], "the same id")
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.askQueued, true)
         try await bed.writeRejection(RelayUpgrade.notPaying, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notPaying)
         await session.outbox.releaseFlushes()
     }
@@ -505,7 +505,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
     func testARestartAfterARefusalThatDecidesNothingWaits() async throws {
         let (bed, session) = try await requestedBed()
         try await bed.writeRejection(RelayUpgrade.notPaying, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notPaying)
         bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
 
@@ -541,7 +541,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await requestedBed()
 
         try await bed.writeRejection(RelayUpgrade.tooSoon, retryAfter: 240, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
 
         let retryAt = bed.clock.now.addingTimeInterval(240)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .tooSoon(retryAt: retryAt))
@@ -558,7 +558,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await requestedBed()
 
         try await bed.writeRejection(RelayUpgrade.notPaying, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
 
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notPaying)
         XCTAssertTrue(bed.relayOps.slots.contains(bed.mac.deviceID), "the slot is kept")
@@ -569,7 +569,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await requestedBed()
 
         try await bed.writeRejection(RelayUpgrade.unavailable, retryAfter: 60, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
         XCTAssertNil(try bed.row()?.link.relayUpgrade?.refusal)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.retryAt, bed.clock.now.addingTimeInterval(60))
 
@@ -585,7 +585,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.requestID, again.last?.id)
 
         try await bed.writeRejection(RelayUpgrade.unavailable, retryAfter: 60, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .unavailable)
         bed.clock.advance(120)
         await bed.root.resumeRelayUpgrades()
@@ -597,7 +597,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await requestedBed()
 
         try await bed.writeRejection("reason_from_a_newer_hub", retryAfter: 60, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
         XCTAssertNil(try bed.row()?.link.relayUpgrade?.refusal)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.retryAt, bed.clock.now.addingTimeInterval(60),
                        "one automatic new request, not left at .requested")
@@ -608,7 +608,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(again.count, 2, "asked once more")
 
         try await bed.writeRejection("reason_from_a_newer_hub", retryAfter: 60, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .unavailable)
         XCTAssertEqual(
             RelayUpgradeRefusal.unavailable.message(macName: "Work Mac", now: bed.clock.now),
@@ -619,7 +619,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let (bed, session) = try await requestedBed()
 
         try await bed.writeRejection(RelayUpgrade.notSupported, on: .cloudKit)
-        await fetch(bed, session)
+        try await fetch(bed, session)
 
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notSupported)
         XCTAssertEqual(
@@ -632,7 +632,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let rejection = try await bed.writeRejection(RelayUpgrade.unavailable, retryAfter: 60, on: .cloudKit)
         try await bed.writeControl(rejection, on: .relay)
 
-        await fetch(bed, session)
+        try await fetch(bed, session)
         XCTAssertTrue(try Bed.handled(session, rejection.id))
         bed.clock.advance(31)
         await bed.root.resumeRelayUpgrades()
@@ -708,7 +708,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let session = try bed.session()
         await session.waitForBoot()
         try await bed.publishGrant(ordered: ordered, macRelay: macRelay)
-        await fetch(bed, session)
+        try await fetch(bed, session)
         await session.epochAckWork?.value
         await session.outbox.drain()
         let onOrderedPath = try await session.outbox.orderedActions()
@@ -756,8 +756,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
     }
 
     /// One fetch, then the passes it started.
-    private func fetch(_ bed: Bed, _ session: HubSession) async {
-        await bed.fetch(session)
+    private func fetch(_ bed: Bed, _ session: HubSession) async throws {
+        try await bed.fetch(session)
         await session.relayUpgrader?.idle()
         await session.outbox.drain()
     }

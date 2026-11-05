@@ -229,7 +229,7 @@ final class ScreenshotTourTests: XCTestCase {
         try await poll({ slotsRelay.isParked("removeSlot") }, "the removal is running")
         try await shot("R08", "relay-slots-removing", slots, "sheet, a removal running", RelaySlotsView {}.environment(slotsLinking))
         slotsRelay.release("removeSlot")
-        await removal.value
+        try await removal.value(within: 60, "removal")
         try await shot("R09", "relay-slots-remove-error", slots, "sheet, the removal failed", RelaySlotsView {}.environment(slotsLinking))
 
         try await captureRelayMacs(now: now) { number, slug, reached, view, settle in
@@ -260,7 +260,7 @@ final class ScreenshotTourTests: XCTestCase {
             AnyView(NavigationStack { MacsView() }.environment(busy)), .milliseconds(600)
         )
         busyRelay.release("vouch")
-        await attempt.value
+        try await attempt.value(within: 60, "attempt")
 
         let (failed, _, failedHost) = try relayLinking(.promoted, now: now)
         failedHost.prepareError = CocoaError(.fileReadCorruptFile)
@@ -683,7 +683,7 @@ final class ScreenshotTourTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in session.stop() }
         try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the outbox demo booted")
-        await session.outboxWork?.value
+        try await session.outboxWork?.value(within: 60, "session.outboxWork")
         let now = Date()
         try await DemoSeed.loadOutboxDemo(
             outbox: session.outbox, now: now,
@@ -732,7 +732,7 @@ final class ScreenshotTourTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in session.stop() }
         try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the demo booted")
-        await session.outboxWork?.value
+        try await session.outboxWork?.value(within: 60, "session.outboxWork")
         try await session.outbox.enableOrderedActions()
         await transport.refuse(.unreachable)
         let workbench = DemoSeed.acmeID

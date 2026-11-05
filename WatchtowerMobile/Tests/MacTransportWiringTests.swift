@@ -176,7 +176,7 @@ final class MacTransportWiringTests: XCTestCase {
         let session = try bed.session()
         await session.waitForBoot()
         try await bed.publishGrant(ordered: false)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         let outcome = await session.requestTransport(reason: nil)
         XCTAssertEqual(outcome, .refused(.notOrdered), "the press this row must not offer")
         XCTAssertNil(try bed.row()?.link.transportRequest)
@@ -211,7 +211,7 @@ final class MacTransportWiringTests: XCTestCase {
         await session.outbox.drain()
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
         try await bed.writeRejection(RelayUpgrade.notSupported, on: .cloudKit)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         await session.relayUpgrader?.idle()
         let line = "Work Mac can't switch to Relay. Update Watchtower on the Mac."
         XCTAssertEqual(try model(bed, session).rows.first?.line, line)
@@ -386,7 +386,7 @@ final class MacTransportWiringTests: XCTestCase {
         let session = try bed.session()
         await session.waitForBoot()
         try await bed.publishGrant(ordered: true, macRelay: true)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         await session.epochAckWork?.value
         await session.outbox.drain()
         return (bed, session)

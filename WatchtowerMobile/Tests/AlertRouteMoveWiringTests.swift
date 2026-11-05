@@ -263,7 +263,7 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         try await poll({ parts.saver.calls == [.save] }, "the save was tried and failed")
 
         try await parts.bed.publishBriefings(["41"], on: .relay)
-        await parts.bed.fetch(session)
+        try await parts.bed.fetch(session)
         XCTAssertEqual(try parts.bed.briefings(session), [SliceKind.briefing.recordName(id: "41")], "the link keeps working")
         XCTAssertEqual(try parts.bed.row()?.link.transport, .relay)
         XCTAssertTrue(parts.bed.root.env.session(parts.bed.hubID) === session, "the session stands")
@@ -282,7 +282,7 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         try await poll({ parts.saver.calls == [.save, .delete] }, "the old session's delete is at CloudKit")
 
         try await parts.bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await parts.bed.fetch(first)
+        try await parts.bed.fetch(first)
         try await poll({ registrar.idleCalls > 0 }, "the move reached the old registrar")
         // A wait that returned at once would run on to the new session with no suspension: this would see it.
         await drainMainActor()
@@ -312,7 +312,7 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         try await poll({ parts.saver.calls == [.save, .delete] }, "the old session's delete hangs at CloudKit")
 
         try await parts.bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await parts.bed.fetch(first)
+        try await parts.bed.fetch(first)
         try await poll({ parts.bed.root.env.session(parts.bed.hubID) !== first }, "the move went on past the cap")
         // Released either way: a move with no cap would otherwise never end.
         parts.saver.release()
@@ -334,7 +334,7 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         let parked = Task { await registrar.apply(enabled: true) }
         try await poll({ parts.saver.calls == [.save, .save] }, "a save is at CloudKit")
         try await parts.bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await parts.bed.fetch(first)
+        try await parts.bed.fetch(first)
         try await poll({ registrar.idleCalls > 0 }, "the move waits for the registrar")
 
         let hubID = parts.bed.hubID
@@ -358,7 +358,7 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         let registrar = try XCTUnwrap(first.alertRegistrar)
 
         try await parts.bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay)
-        await parts.bed.fetch(first)
+        try await parts.bed.fetch(first)
         await parts.bed.root.routeMoves[parts.bed.hubID]?.value
         await settle(registrar)
 
