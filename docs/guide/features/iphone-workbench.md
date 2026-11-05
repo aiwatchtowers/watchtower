@@ -10,7 +10,7 @@ You leave your desk while an agent works through a target. On the phone you foll
 
 The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text, subagents and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the Mac** above them.
 
-A Claude Code session takes your line while it works and reads it at its next step. A Codex session takes no lines or **Finish** from the phone: write to it on the Mac. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
+A Claude Code session takes your line while it works and reads it at its next step. A Codex session shows no field on the phone yet: write to it on the Mac. If the Mac refuses a line, the line shows the Mac's reason, for example **Codex sessions can't take messages from the phone yet. Type it on the Mac.** Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
 
 ## Using it
 
