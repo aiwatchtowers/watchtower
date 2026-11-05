@@ -284,15 +284,16 @@ final class ArtifactBlocksTests: XCTestCase {
 
 /// The Kit against `internal/automations/blocks/testdata/blocks_cases.json`
 /// (Go is its only writer, plan Task 13): every Go-canonical document
-/// decodes, each block action's hash and press order are Go's, refs come in
-/// document order, and newer versions are unsupported. The fixture keeps a
-/// card's own actions only as script input, so their labels are checked
-/// and their hashes are not (no stored form to decode).
+/// decodes with the card's stored actions (`card_actions`, as
+/// `automation_outputs.actions_json` holds them), every action's hash and
+/// press order are Go's, refs come in document order, and newer versions
+/// are unsupported.
 extension ArtifactBlocksTests {
     private struct GoCase {
         let name: String
         let canonical: String
-        let cardLabels: [String]
+        /// The card's own actions, decoded from the stored `card_actions`.
+        let cardActions: [ArtifactAction]
         let labels: [String]
         let hashes: [String]
         /// Every list row's `ref` in the canonical document, in order.
@@ -312,17 +313,22 @@ extension ArtifactBlocksTests {
     private static func goCases() throws -> [GoCase] {
         let valid = try XCTUnwrap(try goFixture()["valid"] as? [[String: Any]])
         return try valid.map { item in
-            let input = try XCTUnwrap(item["input"] as? [String: Any])
             let canonical = try XCTUnwrap(item["canonical"] as? String)
             let document = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(canonical.utf8)) as? [String: Any])
             let rows = (document["blocks"] as? [[String: Any]] ?? []).flatMap { $0["rows"] as? [Any] ?? [] }
             let refs = rows.compactMap { ($0 as? [String: Any])?["ref"] as? [String: Any] }.map {
                 Samples.Ref(kind: $0["kind"] as? String ?? "", id: ($0["id"] as? NSNumber)?.int64Value ?? 0)
             }
+            let name = try XCTUnwrap(item["name"] as? String)
+            guard case let .actions(cardActions) = ArtifactDocument.decodeActions(
+                try XCTUnwrap(item["card_actions"] as? String)) else {
+                XCTFail("\(name): Go's stored card actions do not decode")
+                throw XCTSkip("undecodable card actions")
+            }
             return GoCase(
-                name: try XCTUnwrap(item["name"] as? String),
+                name: name,
                 canonical: canonical,
-                cardLabels: (input["actions"] as? [[String: Any]] ?? []).map { $0["label"] as? String ?? "" },
+                cardActions: cardActions,
                 labels: try XCTUnwrap(item["actions"] as? [String]),
                 hashes: try XCTUnwrap(item["action_hashes"] as? [String]),
                 refs: refs
@@ -347,23 +353,26 @@ extension ArtifactBlocksTests {
         }
     }
 
-    /// Go `FlattenActions`: the card's own labels first (from the input),
-    /// then each block action in the order the Kit flattens them.
+    /// Go `FlattenActions`: the card's own actions first, then each block
+    /// action in the order the Kit flattens them.
     func testFlattenedOrderMatchesGo() throws {
-        for goCase in try Self.goCases() {
-            let blockLabels = try decoded(goCase).flattenedActions(cardActions: []).map(\.label)
-            XCTAssertEqual(goCase.cardLabels + blockLabels, goCase.labels, goCase.name)
+        let cases = try Self.goCases()
+        XCTAssertTrue(cases.contains { !$0.cardActions.isEmpty })
+        for goCase in cases {
+            let labels = try decoded(goCase).flattenedActions(cardActions: goCase.cardActions).map(\.label)
+            XCTAssertEqual(labels, goCase.labels, goCase.name)
         }
     }
 
-    /// `ArtifactAction.hash` is Go `blocks.ActionHash` for every block action
-    /// (escaping, field order, omitted empties, `data` bytes and workbench forms).
+    /// `ArtifactAction.hash` is Go `blocks.ActionHash` for every action, the
+    /// card's own and the blocks' (escaping — the stored card actions are
+    /// HTML-escaped, the hashed form is not —, field order, omitted empties,
+    /// `data` bytes and workbench forms).
     func testActionHashMatchesGo() throws {
         var checked = 0
         for goCase in try Self.goCases() {
-            let actions = try decoded(goCase).flattenedActions(cardActions: [])
-            let goHashes = Array(goCase.hashes.dropFirst(goCase.cardLabels.count))
-            XCTAssertEqual(actions.map(\.hash), goHashes, goCase.name)
+            let actions = try decoded(goCase).flattenedActions(cardActions: goCase.cardActions)
+            XCTAssertEqual(actions.map(\.hash), goCase.hashes, goCase.name)
             checked += actions.count
         }
         XCTAssertGreaterThanOrEqual(checked, 10)
@@ -416,7 +425,7 @@ extension ArtifactBlocksTests {
                 case .actions: blocks.insert("actions")
                 }
             }
-            kinds.formUnion(document.flattenedActions(cardActions: []).map(Self.kindName))
+            kinds.formUnion(document.flattenedActions(cardActions: goCase.cardActions).map(Self.kindName))
         }
         XCTAssertEqual(blocks, ["heading", "text", "list", "table", "person", "metrics", "link", "actions"])
         XCTAssertEqual(kinds, ["open", "chat", "agent", "reply", "target"])
