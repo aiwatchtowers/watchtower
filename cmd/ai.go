@@ -439,12 +439,21 @@ func runConnectionProbe(ctx context.Context, provider string, gen digest.Generat
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(text, nonce) {
+	// Case-insensitive: a model that lowercases the nonce still saw it.
+	if !strings.Contains(strings.ToLower(text), strings.ToLower(nonce)) {
 		stderrLogf("ai test: the codex answer (%d chars) lacks the system prompt's nonce", len(text))
-		return providers.WithFailure("codex", providers.InvalidOutput, errors.New("the answer lacks the system prompt's nonce"))
+		return providers.WithFailure("codex", providers.InvalidOutput, errProbeNonceMissing)
 	}
 	return nil
 }
+
+// errProbeNonceMissing is the codex probe's answer without its nonce: codex
+// ran, but the system prompt did not reach the model.
+var errProbeNonceMissing = errors.New("the answer lacks the system prompt's nonce")
+
+// probeNonceMissingText is the owner-facing text for errProbeNonceMissing;
+// error_code stays invalid_output.
+const probeNonceMissingText = "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
 
 // The Desktop boundary contains classifications, never arbitrary child stderr,
 // owner paths, tokens or managed-configuration contents.
@@ -457,6 +466,9 @@ func connectionTestCode(err error) providers.ErrorCategory {
 }
 
 func connectionTestError(err error) string {
+	if errors.Is(err, errProbeNonceMissing) {
+		return probeNonceMissingText
+	}
 	var failure *providers.Failure
 	if errors.As(err, &failure) {
 		return "Provider request failed (" + string(failure.Category) + ")."

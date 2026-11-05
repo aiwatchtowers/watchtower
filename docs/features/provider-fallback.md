@@ -389,8 +389,10 @@ now invokes the canonical isolated no-tools batch leaf: no owner startup hooks,
 MCP tools or shell snapshots. For codex the request carries a system prompt
 naming a fresh nonce, delivered the way every codex call delivers it (the
 `model_instructions_file`, or stdin on a codex too old for one), and an answer
-without the nonce fails as `invalid_output` (with a content-free stderr line), so
-a broken system-prompt path fails the test. The MCP tool mount is not part of
+without the nonce (matched case-insensitively) fails as `invalid_output`
+(with a content-free stderr line) and the owner-readable error "Codex answered
+but ignored Watchtower's instructions. Update the Codex CLI, or check its
+config, and test again.", so a broken system-prompt path fails the test. The MCP tool mount is not part of
 the probe (it stays tool-less); the
 opt-in `scripts/check-codex-features.sh --live` covers it with a real codex
 run. Its additive `--cli-path` override is test-only;
