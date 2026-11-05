@@ -144,6 +144,12 @@ final class AppEnvironment {
         if let registrar = sessions[hubID]?.alertRegistrar {
             Task { await registrar.apply(enabled: false) }
         }
+        dropSession(hubID)
+    }
+
+    /// `remove` for a hub still linked (a route move whose new session could not be built): its push subscription
+    /// stays, so the hub's alerts go on reaching the phone while it is unopened.
+    func dropSession(_ hubID: String) {
         if activeHubID == hubID {
             retained = sessions[hubID]
             activeHubID = nil

@@ -660,7 +660,12 @@ final class HubSession {
         wake: (any PushWake)?
     ) -> AlertSubscriptionRegistrar? {
         guard kind == .live, let wake else { return nil }
-        let target = link.map { $0.offersCloudKit ? $0.cloudKitRoute : nil } ?? route
+        let target: HubRoute?
+        if let link {
+            target = link.offersCloudKit ? link.cloudKitRoute : nil
+        } else {
+            target = route
+        }
         guard let target, target.cloudKitScope != nil else { return nil }
         return AlertSubscriptionRegistrar(hubID: hubID, route: target, wake: wake)
     }

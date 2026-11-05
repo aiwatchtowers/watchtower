@@ -108,12 +108,16 @@ final class AlertRouteMoveWiringTests: XCTestCase {
     private func harness(
         on route: TransportKind,
         hubTransports: [String] = ["cloudkit", "relay"],
-        failing: (any Error)? = nil
+        macRelayID: Bool = true,
+        relayOff: Bool = false,
+        failing: (any Error)? = nil,
+        refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Harness {
         let saver = AlertSaver()
         saver.fail(with: failing)
         let wake = SpyWake(saver: saver)
-        let bed = try await Bed.make(self, on: route, hubTransports: hubTransports, alertWake: wake)
+        let bed = try await Bed.make(
+            self, on: route, hubTransports: hubTransports, macRelayID: macRelayID, relayOff: relayOff, alertWake: wake, refusing: refusing)
         let env = bed.root.env
         addTeardownBlock { @MainActor in
             for session in env.sessions.values { session.deviceSettings.workAlerts = true }
@@ -122,12 +126,25 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         return Harness(bed: bed, saver: saver, wake: wake)
     }
 
-    /// The app leaves the foreground and comes back; the session's registrar has then run what it was asked.
+    /// The app leaves the foreground and comes back; the session's registrar has then run the request the return made.
     private func foreground(_ session: HubSession) async throws {
+        let registrar = try XCTUnwrap(session.alertRegistrar)
+        let before = registrar.requests
         session.setActive(false)
         session.setActive(true)
-        try await Task.sleep(for: .milliseconds(100))
-        await session.alertRegistrar?.idle()
+        try await poll({ registrar.requests > before }, "the return asked the registrar")
+        await registrar.idle()
+    }
+
+    /// The main actor runs what was already queued on it, a task `AppEnvironment.remove` started included, then the
+    /// registrar's runs end.
+    private func settle(_ registrar: AlertSubscriptionRegistrar) async {
+        await drainMainActor()
+        await registrar.idle()
+    }
+
+    private func drainMainActor() async {
+        for _ in 0..<10 { await Task.yield() }
     }
 
     // MARK: - The route
@@ -190,6 +207,21 @@ final class AlertRouteMoveWiringTests: XCTestCase {
 
     // MARK: - Retries
 
+    /// What every Release build has: no relay id, no list of transports, relay off. One save, on the CloudKit route.
+    func testAReleaseShapedLinkSavesOnceAndNotOnForeground() async throws {
+        let parts = try await harness(on: .cloudKit, macRelayID: false, relayOff: true)
+        let link = try XCTUnwrap(parts.bed.row()?.link)
+        XCTAssertNil(link.relayMacDeviceID)
+        XCTAssertNil(link.hubTransports)
+        let session = try parts.bed.session()
+        await session.waitForBoot()
+        try await poll({ parts.saver.calls == [.save] }, "saved at the boot")
+        XCTAssertEqual(parts.wake.routes, [.cloudKit(.private)])
+
+        try await foreground(session)
+        XCTAssertEqual(parts.saver.calls, [.save], "no save on a foreground")
+    }
+
     func testAFailedSaveIsRetriedOnForeground() async throws {
         let parts = try await harness(on: .relay, failing: CKError(.networkUnavailable))
         let session = try parts.bed.session()
@@ -251,8 +283,9 @@ final class AlertRouteMoveWiringTests: XCTestCase {
 
         try await parts.bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
         await parts.bed.fetch(first)
-        // Long enough for a move that does not wait to have built the new session.
-        try await Task.sleep(for: .milliseconds(500))
+        try await poll({ registrar.idleCalls > 0 }, "the move reached the old registrar")
+        // A wait that returned at once would run on to the new session with no suspension: this would see it.
+        await drainMainActor()
         XCTAssertTrue(parts.bed.root.env.session(parts.bed.hubID) === first, "no new session while the old call runs")
         XCTAssertEqual(parts.saver.calls, [.save, .delete])
 
@@ -263,6 +296,76 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         XCTAssertFalse(next === first, "the move went on")
         await next.waitForBoot()
         try await poll({ parts.saver.calls == [.save, .delete, .save] }, "the new session's save comes after the delete")
+    }
+
+    /// A hung CloudKit call holds a move only up to the cap: past it the hub goes on, with a new session.
+    func testAHungCallDoesNotHoldTheMovePastTheCap() async throws {
+        let parts = try await harness(on: .cloudKit)
+        let first = try await parts.bed.orderedSession()
+        try await poll({ parts.saver.calls == [.save] }, "saved at the boot")
+        let registrar = try XCTUnwrap(first.alertRegistrar)
+        XCTAssertEqual(registrar.idleCap, .seconds(10), "the same bound as the session's outbox drain")
+        registrar.idleCap = .milliseconds(50)
+
+        parts.saver.parkNext()
+        let parked = Task { await registrar.apply(enabled: false) }
+        try await poll({ parts.saver.calls == [.save, .delete] }, "the old session's delete hangs at CloudKit")
+
+        try await parts.bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+        await parts.bed.fetch(first)
+        try await poll({ parts.bed.root.env.session(parts.bed.hubID) !== first }, "the move went on past the cap")
+        // Released either way: a move with no cap would otherwise never end.
+        parts.saver.release()
+        await parked.value
+        await parts.bed.root.routeMoves[parts.bed.hubID]?.value
+        XCTAssertEqual(try parts.bed.session().route, .hostedRelay(macDeviceID: parts.bed.mac.deviceID))
+    }
+
+    /// The owner removes the hub while a move waits for the old registrar: the hub does not come back, and nothing
+    /// saves the subscription after the removal's delete.
+    func testAnUnlinkDuringTheWaitEndsTheMove() async throws {
+        let parts = try await harness(on: .cloudKit, failing: CKError(.networkUnavailable))
+        let first = try await parts.bed.orderedSession()
+        try await poll({ parts.saver.calls == [.save] }, "the boot's save failed")
+        parts.saver.fail(with: nil)
+        let registrar = try XCTUnwrap(first.alertRegistrar)
+
+        parts.saver.parkNext()
+        let parked = Task { await registrar.apply(enabled: true) }
+        try await poll({ parts.saver.calls == [.save, .save] }, "a save is at CloudKit")
+        try await parts.bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
+        await parts.bed.fetch(first)
+        try await poll({ registrar.idleCalls > 0 }, "the move waits for the registrar")
+
+        let hubID = parts.bed.hubID
+        let removal = Task { await parts.bed.root.removeHub(hubID, keepRecordings: true, farewell: nil) }
+        try await poll({ (try? parts.bed.row()) == nil }, "the row is gone")
+        parts.saver.release()
+        await parked.value
+        _ = await removal.value
+        await parts.bed.root.routeMoves[hubID]?.value
+        await settle(registrar)
+
+        XCTAssertNil(parts.bed.root.env.session(hubID), "the hub does not come back")
+        XCTAssertEqual(parts.saver.calls, [.save, .save, .delete], "nothing saves it after the removal's delete")
+    }
+
+    /// A return from the relay whose session cannot be built: the hub is still linked, so its subscription stays.
+    func testAFailedRebuildKeepsTheSubscription() async throws {
+        let parts = try await harness(on: .relay) { $0.cloudKitScope != nil }
+        let first = try await parts.bed.orderedSession()
+        try await poll({ parts.saver.calls == [.save] }, "saved at the relay session's boot")
+        let registrar = try XCTUnwrap(first.alertRegistrar)
+
+        try await parts.bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay)
+        await parts.bed.fetch(first)
+        await parts.bed.root.routeMoves[parts.bed.hubID]?.value
+        await settle(registrar)
+
+        XCTAssertNil(parts.bed.root.env.session(parts.bed.hubID), "left unopened")
+        XCTAssertTrue(parts.bed.root.env.unopenedHubIDs.contains(parts.bed.hubID))
+        XCTAssertEqual(try parts.bed.row()?.state, .linked)
+        XCTAssertEqual(parts.saver.calls, [.save], "no delete for a hub still linked")
     }
 
     // MARK: - A shared-scope phone

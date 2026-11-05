@@ -29,6 +29,12 @@ final class AlertSubscriptionRegistrar {
         self.wake = wake
     }
 
+    /// How long `idle()` waits at most.
+    var idleCap: Duration = .seconds(10)
+    /// `apply` and `idle()` calls so far: a test awaits them.
+    private(set) var requests = 0
+    private(set) var idleCalls = 0
+
     /// The newest requested state.
     private var desired = false
     /// The last queued run: runs go one at a time, so a save and a delete never overlap at CloudKit.
@@ -37,6 +43,7 @@ final class AlertSubscriptionRegistrar {
     /// Queues the change and returns when it (or a newer one that overtook it) has run. The newest request wins:
     /// each run applies `desired`, not the value it was asked with.
     func apply(enabled: Bool) async {
+        requests += 1
         desired = enabled
         let prior = lastRun
         let run = Task { [weak self] in
@@ -47,9 +54,35 @@ final class AlertSubscriptionRegistrar {
         await run.value
     }
 
-    /// Returns once no run is queued or at CloudKit: a route move waits for it, so the old session's call never
-    /// overlaps the new session's.
+    /// Returns once no run is queued or at CloudKit, or at `idleCap`: a route move waits for it, so the old session's
+    /// call does not overlap the new session's, and a hung call never holds the hub on a stopped session. A call cut off
+    /// this way may overlap the new session's; the two agree unless the owner flipped the switch meanwhile, and the
+    /// next launch or toggle heals that.
     func idle() async {
+        idleCalls += 1
+        let cap = idleCap
+        let finished = OSAllocatedUnfairLock(initialState: false)
+        var timer: Task<Void, Never>?
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let finish: @Sendable () -> Void = {
+                if finished.withLock({ done in defer { done = true }; return !done }) { continuation.resume() }
+            }
+            Task {
+                await self.runsEnded()
+                finish()
+            }
+            timer = Task {
+                try? await Task.sleep(for: cap)
+                if !Task.isCancelled {
+                    Self.logger.notice("alert subscription wait cut off at a route move")
+                }
+                finish()
+            }
+        }
+        timer?.cancel()
+    }
+
+    private func runsEnded() async {
         while let run = lastRun {
             await run.value
             if lastRun == run { return }
