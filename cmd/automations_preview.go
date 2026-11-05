@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -65,7 +68,12 @@ func runAutomationsPreview(cmd *cobra.Command, _ []string) error {
 	deps.Backends = func() automations.Backends {
 		return automationBackends(cfg, database, automationsDryRunGenerator(cfg))
 	}
-	res, err := authoring.EvaluateDraft(cmd.Context(), deps, text, target)
+	// The Desktop's Stop terminates this process: the cancelled context
+	// ends the in-flight model child too, instead of leaving it to spend
+	// tokens (as `dry-run` does).
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	res, err := authoring.EvaluateDraft(ctx, deps, text, target)
 	if err != nil {
 		return err
 	}
