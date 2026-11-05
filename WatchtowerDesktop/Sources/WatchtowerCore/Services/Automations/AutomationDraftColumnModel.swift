@@ -209,22 +209,12 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             changes = []
             shellWarning = nil
         }
-        if let shown, let fields = shown.fields {
-            itemsAreChanges = !isNew && confirmedText != nil && shown.changesKnown
-            hashedItems = itemsAreChanges
-                ? shown.changes.map { change in
-                    AutomationSaveConfirmationRow.Item(
-                        field: AutomationHashedField(changeField: change.field),
-                        text: AutomationChangePresentation.line(change, workbenchName: workbenchName)
-                    )
-                }
-                : Self.valueItems(shown, fields: fields, when: when, whenDetail: whenDetail, eachRun: eachRun,
-                                  mayDo: mayDo, sends: sends,
-                                  artifacts: artifacts, workbenchName: workbenchName)
-        } else {
-            itemsAreChanges = false
-            hashedItems = []
-        }
+        (itemsAreChanges, hashedItems) = Self.hashedItems(
+            shown, isNew: isNew, confirmedText: confirmedText,
+            boxes: Boxes(when: when, whenDetail: whenDetail, eachRun: eachRun, mayDo: mayDo, sends: sends,
+                         artifacts: artifacts),
+            workbenchName: workbenchName
+        )
         changeNote = hashedItems.isEmpty || isNew || itemsAreChanges ? nil
             : confirmedText == nil ? AutomationChangePresentation.firstConfirmation
             : AutomationChangePresentation.unknownChanges
@@ -290,20 +280,50 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
     package static let feedLine = "A new card each run"
     package static let livingLine = "One card per key, kept current"
 
+    /// The boxes' words the pinned row's value lines reuse.
+    private struct Boxes {
+        let when: String
+        let whenDetail: String?
+        let eachRun: String
+        let mayDo: [AutomationCardPresentation.PermissionLine]
+        let sends: [String]
+        let artifacts: String?
+    }
+
+    /// The pinned row's lines (`itemsAreChanges`, `hashedItems`): an edit
+    /// with a known diff lists its changes in the Changed box's words;
+    /// anything else every field with its value; none while the boxes show
+    /// no values.
+    private static func hashedItems(
+        _ shown: AutomationsCLI.ValidateResult?,
+        isNew: Bool,
+        confirmedText: String?,
+        boxes: Boxes,
+        workbenchName: (Int64) -> String?
+    ) -> (Bool, [AutomationSaveConfirmationRow.Item]) {
+        guard let shown, let fields = shown.fields else { return (false, []) }
+        guard !isNew, confirmedText != nil, shown.changesKnown else {
+            return (false, valueItems(shown, fields: fields, boxes: boxes, workbenchName: workbenchName))
+        }
+        return (true, shown.changes.map { change in
+            AutomationSaveConfirmationRow.Item(
+                field: AutomationHashedField(changeField: change.field),
+                text: AutomationChangePresentation.line(change, workbenchName: workbenchName)
+            )
+        })
+    }
+
     /// Each hashed field with its value, in the boxes' words, for a recipe
     /// with nothing to compare (new, never confirmed, unknown diff).
     private static func valueItems(
         _ shown: AutomationsCLI.ValidateResult,
         fields: AutomationsCLI.ValidateResult.Fields,
-        when: String,
-        whenDetail: String?,
-        eachRun: String,
-        mayDo: [AutomationCardPresentation.PermissionLine],
-        sends: [String],
-        artifacts: String?,
+        boxes: Boxes,
         workbenchName: (Int64) -> String?
     ) -> [AutomationSaveConfirmationRow.Item] {
         typealias Item = AutomationSaveConfirmationRow.Item
+        let (when, whenDetail, eachRun, mayDo, sends, artifacts) =
+            (boxes.when, boxes.whenDetail, boxes.eachRun, boxes.mayDo, boxes.sends, boxes.artifacts)
         let concurrency = Int(fields.concurrency) ?? 1
         var items = [
             Item(field: .scope, text: "Scope: "
