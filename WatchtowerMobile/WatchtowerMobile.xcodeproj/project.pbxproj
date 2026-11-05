@@ -94,6 +94,7 @@
 		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
+		46A5780712E8154F7DC024D1 /* RelayAccountCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9A200E0C0E91AC3826112E9 /* RelayAccountCenter.swift */; };
 		46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */; };
 		4775CC25932238F3DE9B47AE /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		49581B2DB8F7B23814B73BBA /* MacsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACB75AFB86CD8FA28BE4C1B3 /* MacsView.swift */; };
@@ -202,6 +203,7 @@
 		BA607823AC1A146724C0F666 /* AgendaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D576A6CEC011983BF063A3B7 /* AgendaView.swift */; };
 		BB09A6BF6F1DDFEFA3D4EE89 /* MetricHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56918895035C3877F703E1A9 /* MetricHistory.swift */; };
 		BB7B446082CF5A851F4A972D /* WorkbenchSessionsOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06939E899729BD12C86EE8EE /* WorkbenchSessionsOrderTests.swift */; };
+		BBFA0AEAFD6FEEE331DF0501 /* RelayAccountFakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4E25A38357841D623051CAD /* RelayAccountFakes.swift */; };
 		BC527F67856FEBEE8A0EC37D /* WorkchatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E34FE8AB2E6D5D3AE4DF1B07 /* WorkchatView.swift */; };
 		BE065B6613140A83D5C37021 /* LinkingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07F0B15A0983525BEC4E560 /* LinkingViewModelTests.swift */; };
 		BF5B5153A31D5D65C21505E4 /* NextMeetingCardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C5E4E06D5EE190C29F3F741 /* NextMeetingCardModel.swift */; };
@@ -247,6 +249,7 @@
 		E2D1DF70951969EA75CEBE0C /* WorkbenchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9759126D122152063D8BFFD8 /* WorkbenchModels.swift */; };
 		E4011CFC35072FB026DCAAF3 /* SessionDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97CC9289784B65CCD3F4654A /* SessionDetailViewModel.swift */; };
 		E63A4444EF067CDCA69793F2 /* ScreenshotHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DA83C1670B014AE0EEE9F63 /* ScreenshotHost.swift */; };
+		E71B2EE05544775FA79A23B3 /* RelayAccountCenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DBFBABAF7726F52DECC669E /* RelayAccountCenterTests.swift */; };
 		E7DE12EAE4EFFFD44D70F46D /* DemoTourTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525B421389B4DBB63C7176F8 /* DemoTourTests.swift */; };
 		E81881EA20B31F4E1CD0CD62 /* AppRoot+Tour.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFBDE583D367BAA93581D5BA /* AppRoot+Tour.swift */; };
 		E82759D734B8F4E2ECEB8B6D /* AskViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B954B0B07DB7C38EB952181 /* AskViewModel.swift */; };
@@ -432,6 +435,7 @@
 		790EDA0792AA0F8934CF6925 /* TransportRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportRequest.swift; sourceTree = "<group>"; };
 		7BDF7C4C729D997505169333 /* WorkbenchListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchListView.swift; sourceTree = "<group>"; };
 		7C16FF4E0A505B91DDC1D96D /* MacsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacsModel.swift; sourceTree = "<group>"; };
+		7DBFBABAF7726F52DECC669E /* RelayAccountCenterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountCenterTests.swift; sourceTree = "<group>"; };
 		7DFB18941483AAB533E516E7 /* CalendarReplicaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarReplicaModel.swift; sourceTree = "<group>"; };
 		7FEBD186F3494D8757690A20 /* HubRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubRegistryTests.swift; sourceTree = "<group>"; };
 		8060EE68F5A9E7FAEA29B27B /* RelayAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAvailability.swift; sourceTree = "<group>"; };
@@ -488,6 +492,7 @@
 		A820B1A89DE510D37F5A947F /* RelaySlotsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySlotsModel.swift; sourceTree = "<group>"; };
 		A823E1CEA4B6D46AB737DB8D /* BatteryReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryReport.swift; sourceTree = "<group>"; };
 		A8F8031BEE354E1EDC067BB7 /* DesignSystemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystemTests.swift; sourceTree = "<group>"; };
+		A9A200E0C0E91AC3826112E9 /* RelayAccountCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountCenter.swift; sourceTree = "<group>"; };
 		A9EFFB06891AF9EDE0CC8C3F /* LinkRoutePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkRoutePolicyTests.swift; sourceTree = "<group>"; };
 		AAA14E305E070B3FD7ECFBC9 /* LinkingFakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkingFakes.swift; sourceTree = "<group>"; };
 		AABA83461C8013610E3BDCB4 /* WelcomeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeTests.swift; sourceTree = "<group>"; };
@@ -554,6 +559,7 @@
 		E1BEF5D37AF70BBF7FB6C533 /* HubPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubPaths.swift; sourceTree = "<group>"; };
 		E1E165BA99AF507DD1630888 /* FakeAppAttest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeAppAttest.swift; sourceTree = "<group>"; };
 		E34FE8AB2E6D5D3AE4DF1B07 /* WorkchatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatView.swift; sourceTree = "<group>"; };
+		E4E25A38357841D623051CAD /* RelayAccountFakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountFakes.swift; sourceTree = "<group>"; };
 		E87EB2750CF04CA690B2E098 /* HubBootTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubBootTests.swift; sourceTree = "<group>"; };
 		EA88CC67A10A74097B033DF8 /* ObservationHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservationHealth.swift; sourceTree = "<group>"; };
 		EAE19619029A8B7286D78A2B /* HubSwitcherChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSwitcherChip.swift; sourceTree = "<group>"; };
@@ -628,6 +634,7 @@
 		06E287479C34D04981022E9D /* Relay */ = {
 			isa = PBXGroup;
 			children = (
+				A9A200E0C0E91AC3826112E9 /* RelayAccountCenter.swift */,
 				A10DA8E631B66AD5BEE3D7E6 /* RelaySubscriptionStore.swift */,
 				BB51D5844D98DDBFB3E2B8C3 /* StoreKitRelayStore.swift */,
 			);
@@ -706,6 +713,7 @@
 				528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */,
 				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
 				8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */,
+				7DBFBABAF7726F52DECC669E /* RelayAccountCenterTests.swift */,
 				02B852FCD6E9355C7959F0B8 /* RelayAvailabilityTests.swift */,
 				AADFE51E10312348E5F30CA4 /* RelayConfigTests.swift */,
 				A6E4EA3D2A7BAFFCDB7ADE84 /* RelayKeychainDeviceTests.swift */,
@@ -1061,6 +1069,7 @@
 				0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */,
 				ADAA24B2C4477589205240AF /* RecorderFakes.swift */,
 				969707F44E25F0FBE5F438D3 /* Relay.storekit */,
+				E4E25A38357841D623051CAD /* RelayAccountFakes.swift */,
 				93AAD7B9BB253AC098F3229D /* RelayFakes.swift */,
 				9DA83C1670B014AE0EEE9F63 /* ScreenshotHost.swift */,
 				9C13A9C2FF59FED5376EB90C /* SubscriptionFakes.swift */,
@@ -1359,6 +1368,7 @@
 				6612C16C080C84633E82CA43 /* RecordingView.swift in Sources */,
 				63F458A70788063BE8CE64C1 /* RecordingsListModel.swift in Sources */,
 				9C610711EE9CC1868303C95B /* RecordingsListView.swift in Sources */,
+				46A5780712E8154F7DC024D1 /* RelayAccountCenter.swift in Sources */,
 				74660644B09F174D9D3AB2D1 /* RelayAvailability.swift in Sources */,
 				80B0BD82A7280A1574E94711 /* RelayConfig.swift in Sources */,
 				101109CA3EF803BB9B5F5FFA /* RelaySlotsModel.swift in Sources */,
@@ -1466,6 +1476,8 @@
 				598F0F750CFB3F8CF52F078F /* RecordingHoldTests.swift in Sources */,
 				2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */,
 				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
+				E71B2EE05544775FA79A23B3 /* RelayAccountCenterTests.swift in Sources */,
+				BBFA0AEAFD6FEEE331DF0501 /* RelayAccountFakes.swift in Sources */,
 				EB6C1E544928D2257B444103 /* RelayAvailabilityTests.swift in Sources */,
 				EB01A6AEB40A0DE003CF5A15 /* RelayConfigTests.swift in Sources */,
 				00E171B38EA7C54433CC1031 /* RelayFakes.swift in Sources */,

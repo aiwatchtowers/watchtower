@@ -149,6 +149,35 @@ final class StoreKitRelayStoreTests: XCTestCase {
         XCTAssertGreaterThan(bought.expiresAt, Date())
     }
 
+    func testAUserCancelThrownByThePurchaseIsCancelled() async throws {
+        let result = try await StoreKitRelayStore.purchaseResult { throw StoreKitError.userCancelled }
+        XCTAssertEqual(result, .cancelled)
+    }
+
+    func testAUserCancelThrownByTheRestoreIsCancelled() async {
+        do {
+            try await StoreKitRelayStore.syncing { throw StoreKitError.userCancelled }
+            XCTFail("no throw")
+        } catch {
+            XCTAssertEqual(error as? RelayStoreError, .cancelled)
+        }
+    }
+
+    func testAnyOtherStoreThrowPassesThrough() async {
+        do {
+            _ = try await StoreKitRelayStore.purchaseResult { throw StoreKitError.notEntitled }
+            XCTFail("no throw")
+        } catch {
+            XCTAssertNil(error as? RelayStoreError)
+        }
+        do {
+            try await StoreKitRelayStore.syncing { throw StoreKitError.notEntitled }
+            XCTFail("no throw")
+        } catch {
+            XCTAssertNil(error as? RelayStoreError)
+        }
+    }
+
     func testARowWithNoExpiryIsNotATransaction() {
         XCTAssertNil(StoreKitRelayStore.map(
             id: 1, originalID: 1, jws: "x", revocationDate: nil, isRenewal: false, expirationDate: nil

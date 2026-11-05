@@ -257,6 +257,8 @@ final class AppRoot {
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live(transports: transports)
         )
+        let productID = RelayConfig.from(bundle: .main).productID
+        root.wireRelayAccount { productID.map { StoreKitRelayStore(productID: $0) } }
         root.launch { Set([store.pending?.link.hubID].compactMap { $0 } + store.promoted.keys + store.unreadablePromotedHubIDs) }
         return root
     }
@@ -293,6 +295,17 @@ final class AppRoot {
             startWork: nil,
             farewellDelivery: FarewellDelivery { _, _ in false }
         )
+    }
+
+    /// Builds and starts the Relay account center, only while the relay is available: with an empty origin `makeStore`
+    /// is never called, so nothing touches StoreKit.
+    func wireRelayAccount(makeStore: () -> (any RelaySubscriptionStore)?) {
+        guard case .available = env.relay.availability, let store = makeStore() else { return }
+        let center = RelayAccountCenter(link: .live(env.relay), store: store, defaults: defaults) { [weak env] in
+            env.map { Array($0.sessions.values) } ?? []
+        }
+        env.relayAccount = center
+        center.start()
     }
 
     /// The launch's clean-up: links saved before encryption go first (their
@@ -359,6 +372,7 @@ final class AppRoot {
     /// meanwhile joins it. Returns the retry (a test awaits it).
     @discardableResult
     func becameActive() -> Task<Void, Never> {
+        env.relayAccount?.foreground()
         if let farewellRetry { return farewellRetry }
         let retry = Task {
             await launched?.value
@@ -856,6 +870,8 @@ extension AppRoot: LinkHost {
 
     func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
+        // A finished relay link: its identity exists, so the account center starts with no relaunch.
+        if case .hostedRelay = route { env.relayAccount?.identityAppeared() }
         // The launch's orphan pass never deletes the files of a hub being
         // linked (a cold launch by a link URL); a removal of this hub still
         // running decides what is left; a kept farewell being sent again
@@ -1179,6 +1195,8 @@ extension AppRoot: RelayUpgradeHost {
     func rewriteDeviceRecord(hubID: String) async -> Bool {
         guard let session = env.session(hubID), let device = session.linkedDevice else { return false }
         let payload = devicePayload(hubID: hubID, for: device, linkNonce: nil, unlinked: false, now: upgradeClock())
+        // An upgrade's first step made the relay identity (the record's proof): the account center starts with no relaunch.
+        env.relayAccount?.identityAppeared()
         do {
             try await session.writeDeviceRecord(payload)
             return true

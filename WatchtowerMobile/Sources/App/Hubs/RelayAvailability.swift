@@ -126,6 +126,19 @@ final class SharedRelaySession: @unchecked Sendable {
         }
     }
 
+    /// Whether this phone already holds a `relay_auth` key. Reads the Keychain and creates nothing; false while `.off`.
+    func hasIdentity() throws -> Bool {
+        guard case .available = availability, let parts else { return false }
+        if isBuilt { return true }
+        return try KeychainRelayIdentity(backend: parts.keychain, group: parts.keychainGroup).existingSigner() != nil
+    }
+
+    /// The relay account on the session (built first, so the identity is created on first use); nil while `.off`.
+    func account() throws -> HostedRelayAccount? {
+        guard let session = try session(), let parts else { return nil }
+        return HostedRelayAccount(session: session, identity: KeychainRelayIdentity(backend: parts.keychain, group: parts.keychainGroup))
+    }
+
     /// The device record's relay fields for `hubID` and `deviceID`, signed by this phone's `relay_auth` key (the
     /// session is built first); nil while the relay is `.off`.
     func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim? {

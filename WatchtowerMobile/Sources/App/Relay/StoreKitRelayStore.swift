@@ -24,16 +24,18 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
         guard let product = try await Product.products(for: [productID]).first else {
             throw RelayStoreError.productUnavailable
         }
-        switch try await product.purchase(options: [.appAccountToken(accountToken)]) {
-        case .success(let verification):
-            guard let transaction = take(verification) else { return .unverified }
-            return .purchased(transaction)
-        case .pending:
-            return .pending
-        case .userCancelled:
-            return .cancelled
-        @unknown default:
-            return .cancelled
+        return try await Self.purchaseResult {
+            switch try await product.purchase(options: [.appAccountToken(accountToken)]) {
+            case .success(let verification):
+                guard let transaction = take(verification) else { return .unverified }
+                return .purchased(transaction)
+            case .pending:
+                return .pending
+            case .userCancelled:
+                return .cancelled
+            @unknown default:
+                return .cancelled
+            }
         }
     }
 
@@ -46,7 +48,7 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
     }
 
     func restore() async throws -> RelayTransaction? {
-        try await AppStore.sync()
+        try await Self.syncing { try await AppStore.sync() }
         guard let verification = await Transaction.currentEntitlement(for: productID) else { return nil }
         return take(verification)
     }
@@ -71,6 +73,25 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
     }
 
     // MARK: - Mapping
+
+    /// A purchase whose thrown `StoreKitError.userCancelled` is the plain `.cancelled`; any other throw goes on.
+    static func purchaseResult(_ body: () async throws -> RelayPurchaseResult) async throws -> RelayPurchaseResult {
+        do {
+            return try await body()
+        } catch StoreKitError.userCancelled {
+            return .cancelled
+        }
+    }
+
+    /// `AppStore.sync()`, whose thrown `StoreKitError.userCancelled` is `RelayStoreError.cancelled`: the seam's word
+    /// for it, as only this file imports StoreKit.
+    static func syncing(_ body: () async throws -> Void) async throws {
+        do {
+            try await body()
+        } catch StoreKitError.userCancelled {
+            throw RelayStoreError.cancelled
+        }
+    }
 
     /// A verified transaction as a `RelayTransaction`, remembered for `finish`. Unverified → nil, with a code only.
     private func take(_ verification: VerificationResult<StoreKit.Transaction>) -> RelayTransaction? {
@@ -105,4 +126,6 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
 
 enum RelayStoreError: Error, Equatable {
     case productUnavailable
+    /// The owner cancelled the App Store sign-in of a restore.
+    case cancelled
 }
