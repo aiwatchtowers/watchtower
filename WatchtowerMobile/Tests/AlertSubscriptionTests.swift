@@ -257,6 +257,82 @@ final class AlertSubscriptionTests: XCTestCase {
         XCTAssertEqual(tasks.ended.count, 1, "and the task ended")
     }
 
+    /// A permission request on a relay route reaches the relay at once, with no pull (G1): it would wait for the
+    /// session's next fetch otherwise.
+    func testOnARelayRouteAToggleIsSentAtOnce() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let env = bed.root.env
+        await env.waitForBoot()
+        let saves = { bed.fake.log.filter { if case .save = $0 { true } else { false } }.count }
+        let before = saves()
+
+        await env.deviceSettings.setPermissionsRequested(true)
+
+        XCTAssertGreaterThan(saves(), before, "the record reached the relay")
+    }
+
+    /// A new link or a re-link starts the hub's column at "on", so a phone whose switch is off says so at once; the
+    /// extension has no switch check of its own.
+    func testALinkWithTheSwitchOffWritesOneRecord() async throws {
+        let bed = try await alertsBed()
+        let session = try XCTUnwrap(bed.root.env.session(bed.hubID))
+        let device = try XCTUnwrap(session.linkedDevice)
+        let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
+        session.deviceSettings.workAlerts = false
+
+        try await bed.root.linked(record, device: device)
+
+        let written = try await deviceRecords(bed)
+        XCTAssertEqual(written.last?.workAlertsOff, true)
+    }
+
+    /// The link screen waits on `linked`: a dead network holds the send, not the screen. The record is saved by then.
+    func testALinkWithTheSwitchOffDoesNotWaitOnItsSend() async throws {
+        let bed = try await alertsBed()
+        let session = try XCTUnwrap(bed.root.env.session(bed.hubID))
+        let device = try XCTUnwrap(session.linkedDevice)
+        let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
+        session.deviceSettings.workAlerts = false
+        var sendStarted = false
+        var released = false
+        bed.root.sendLinkedQueue = { _ in
+            sendStarted = true
+            while !released {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+
+        var returned = false
+        let link = Task {
+            try await bed.root.linked(record, device: device)
+            returned = true
+        }
+        for _ in 0..<600 where !returned || !sendStarted {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(sendStarted, "the send still runs")
+        XCTAssertTrue(returned, "linked waited on the blocked send")
+        let written = try await deviceRecords(bed)
+        XCTAssertEqual(written.last?.workAlertsOff, true, "saved before it returned")
+
+        released = true
+        try await link.value
+    }
+
+    func testALinkWithTheSwitchOnWritesNoRecord() async throws {
+        let bed = try await alertsBed()
+        let session = try XCTUnwrap(bed.root.env.session(bed.hubID))
+        let device = try XCTUnwrap(session.linkedDevice)
+        let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
+        let before = try await deviceRecords(bed)
+
+        try await bed.root.linked(record, device: device)
+
+        let after = try await deviceRecords(bed)
+        XCTAssertEqual(after.count, before.count)
+        XCTAssertEqual(after.last?.updatedAt, before.last?.updatedAt)
+    }
+
     /// The dark ship: with an empty origin the switch writes no record and the record is today's, byte for byte.
     func testAnEmptyOriginWritesNoWorkAlertsOff() async throws {
         let bed = try await alertsBed(relayOff: true)

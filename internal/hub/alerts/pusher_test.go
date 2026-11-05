@@ -1108,3 +1108,21 @@ func TestConcurrentStopWaitsForTheFirst(t *testing.T) {
 	<-first
 	<-second
 }
+
+// A phone whose "When work stops" switch is off is no target, paying or not;
+// its neighbours stay.
+func TestEligibleSkipsAPhoneWithWorkAlertsOff(t *testing.T) {
+	devices := []state.Device{
+		{ID: "phone-a", RelayDeviceID: "relay-a", WorkAlertsOff: true},
+		{ID: "phone-b", RelayDeviceID: "relay-b"},
+	}
+	acct := &relayv1.AccountState{Phones: []*relayv1.SlotHolder{
+		{PhoneDeviceId: "relay-a", Paying: true},
+		{PhoneDeviceId: "relay-b", Paying: true},
+	}}
+	got := Eligible(devices, acct)
+	want := []Target{{DeviceID: "phone-b", RelayID: "relay-b"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Eligible = %v; want %v", got, want)
+	}
+}

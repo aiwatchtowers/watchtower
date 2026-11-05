@@ -19,8 +19,8 @@ import (
 
 // Go twins of the Swift hub's device-record tests (RelayProcessor →
 // MobileLinkCenter.handleDevice: MobileLinkCenterTests+Permissions,
-// +StartSessions and the typing-request tests), on CloudKit's shared mailbox:
-// the relay path reads no device records.
+// +StartSessions and the typing-request tests), on CloudKit's shared mailbox;
+// the hosted relay's path is in device_record_relay_test.go.
 
 // onShared runs fn on the shared CloudKit mailbox.
 func onShared(t *testing.T, fn func(t *testing.T, w *world)) {
@@ -171,18 +171,6 @@ func TestDeviceRecordInAnotherScopeIsIgnored(t *testing.T) {
 			t.Fatalf("epoch %d → %d (%v)", epoch, now, err)
 		}
 	})
-}
-
-// The relay path is phase 1's: a device record in a phone's own relay
-// mailbox is read with no effect, an unlink in it included.
-func TestDeviceRecordOnTheRelayChangesNothing(t *testing.T) {
-	w := newWorld(t, transport.KindRelay)
-	unlinked := true
-	w.rewrite(wire.DevicePayload{Unlinked: &unlinked})
-	w.rewrite(wire.DevicePayload{TypingRequested: true, Name: "Renamed"})
-	if d := w.device(w.phone); d.Name != "Test Phone" || d.TypingRequested {
-		t.Fatalf("device %+v", d)
-	}
 }
 
 // ownerMailbox is the shared mailbox on a transport that names the Mac's

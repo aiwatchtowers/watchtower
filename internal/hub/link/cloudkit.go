@@ -1034,7 +1034,7 @@ func (c *Center) acceptedBothShares(ctx context.Context, s transport.Shares, use
 // the phone already unlinked (the gate refuses it at once); Unlink marked
 // the sweep pending and due, so the next pass removes it.
 func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device string) error {
-	user, err := c.unlinkForRemoval(ctx, device)
+	user, err := c.unlinkForRemoval(ctx, device, nil)
 	if err != nil {
 		return err
 	}
@@ -1051,7 +1051,13 @@ func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device 
 // remove: a failed removal is logged, and the sweep Unlink marked pending
 // removes the participant at a later pass.
 func (c *Center) BeginRemove(ctx context.Context, device string) (finish func(ctx context.Context, s transport.Shares), err error) {
-	user, err := c.unlinkForRemoval(ctx, device)
+	return c.beginRemove(ctx, device, nil)
+}
+
+// beginRemove is BeginRemove with stands checked in the unlink's transaction
+// (DeviceRecord.Stands; nil: no check).
+func (c *Center) beginRemove(ctx context.Context, device string, stands func(*sql.Tx) error) (finish func(ctx context.Context, s transport.Shares), err error) {
+	user, err := c.unlinkForRemoval(ctx, device, stands)
 	if err != nil {
 		return nil, err
 	}
@@ -1065,7 +1071,7 @@ func (c *Center) BeginRemove(ctx context.Context, device string) (finish func(ct
 
 // unlinkForRemoval unlinks device and returns its iCloud user when it was
 // a shared-scope phone ("" otherwise), read before the unlink removed it.
-func (c *Center) unlinkForRemoval(ctx context.Context, device string) (string, error) {
+func (c *Center) unlinkForRemoval(ctx context.Context, device string, stands func(*sql.Tx) error) (string, error) {
 	var scope, user string
 	err := c.st.ReadTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`SELECT scope, user_record_name FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(&scope, &user)
@@ -1077,7 +1083,7 @@ func (c *Center) unlinkForRemoval(ctx context.Context, device string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("link: reading a phone: %w", err)
 	}
-	if err := c.Unlink(device); err != nil {
+	if err := c.unlink(device, stands); err != nil {
 		return "", err
 	}
 	if scope != wire.ScopeShared {

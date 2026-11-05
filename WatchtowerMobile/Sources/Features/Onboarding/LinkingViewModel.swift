@@ -98,6 +98,8 @@ final class LinkingViewModel {
     /// The phone's E2E keys: the device identity and each hub's link.
     @ObservationIgnored private let keys: any PhoneKeyStore
     @ObservationIgnored private let clock: any LinkClock
+    /// `retryFarewells` sent a kept relay farewell: `retrySlotRemovals` gives it `farewellReadPause`.
+    @ObservationIgnored private var relayFarewellResent = false
     /// The relay's account ops (off: never asked).
     /// The relay's account ops; the upgrade from iCloud (`RelayUpgrader`, through `AppRoot`) uses them too.
     @ObservationIgnored let relay: any RelayLinkOps
@@ -874,9 +876,32 @@ final class LinkingViewModel {
         // The owner's removal also takes the hub's promoted entry this build cannot read (#1499), first: a kill
         // after it leaves the row to unlink again, and nothing a later build could resume.
         store.removeUnreadablePromoted(row.hubID)
-        report(LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
+        let wipe = await endLink(row, farewell: true, keepRecordings: true)
+        report(LinkNotice.after(wipe, macName: row.link.macName), removed: row.hubID)
         guard row.state == .linked, let mac = Self.slotToFree(row.link) else { return true }
+        if wipe.farewellOut, case .hostedRelay = row.link.route {
+            await pauseForTheFarewell(beforeFreeing: mac)
+            if localLinkNames(mac) { // linked again meanwhile: the slot is that link's
+                host?.forgetSlotRemoval(mac)
+                return true
+            }
+        }
         return await removeRelaySlot(mac, keepOnFailure: true)
+    }
+
+    /// The relay refuses the hub's mailbox read once the slot is gone, so a farewell that went out over the relay gets
+    /// this long to be read (G1, ask #1056). A closed hub does not read it: its row stays until the owner removes it.
+    private static let farewellReadPause: Duration = .seconds(3)
+
+    /// Waits `farewellReadPause` with the slot removal already kept, so an app killed here frees the slot at its next
+    /// launch. A cancelled wait just ends: the caller frees the slot anyway.
+    private func pauseForTheFarewell(beforeFreeing mac: String) async {
+        host?.keepSlotRemoval(mac)
+        do {
+            try await clock.sleep(for: Self.farewellReadPause)
+        } catch {
+            Self.logger.notice("the pause before a slot removal was cancelled")
+        }
     }
 
     /// The relay Mac whose slot an unlink of `link` frees: a Relay link's, or an upgrading iCloud link's once its
@@ -995,6 +1020,8 @@ final class LinkingViewModel {
                 host.dropFarewell(hubID)
             } else if await !host.resendFarewell(farewell) {
                 continue
+            } else if !iCloud {
+                relayFarewellResent = true
             }
             // The resend awaited: a link of this hub begun meanwhile has its own shares. A Relay link has none.
             guard iCloud, !isLinked(hubID) else { continue }
@@ -1424,6 +1451,9 @@ extension LinkingViewModel {
                 sent = await host.resendFarewell(farewell)
             }
         }
+        if sent, case .hostedRelay = route {
+            await pauseForTheFarewell(beforeFreeing: link.macDeviceID)
+        }
         let freed = await removeRelaySlot(link.macDeviceID, keepOnFailure: true)
         if freed, !sent, host.pendingFarewells().contains(where: { $0.hubID == hubID && $0.route == route }) {
             Self.logger.notice("relay farewell undeliverable after slot removal")
@@ -1455,6 +1485,15 @@ extension LinkingViewModel {
     /// slot). A slot freed leaves its Mac's relay farewell undeliverable: it is dropped.
     func retrySlotRemovals() async {
         guard let host else { return }
+        let owesPause = relayFarewellResent
+        relayFarewellResent = false
+        if owesPause, !host.pendingSlotRemovals().isEmpty {
+            do {
+                try await clock.sleep(for: Self.farewellReadPause)
+            } catch {
+                Self.logger.notice("the pause before the kept slot removals was cancelled")
+            }
+        }
         for mac in host.pendingSlotRemovals() {
             if localLinkNames(mac) {
                 host.forgetSlotRemoval(mac)

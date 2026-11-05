@@ -907,11 +907,10 @@
       "kit": {
         "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
       }
-    }
-  ],
-  "device_payload_kit_only": [
+    },
     {
       "name": "work_alerts_off",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
       "json": {
         "app_version": "1.0",
         "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
@@ -924,7 +923,9 @@
         "user_record_name": "_owner0000",
         "work_alerts_off": true
       },
-      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\",\"work_alerts_off\":true}"
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\",\"work_alerts_off\":true}",
+      "proof": false,
+      "kit": {}
     }
   ],
   "heartbeat": [

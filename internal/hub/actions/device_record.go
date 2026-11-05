@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
@@ -18,8 +19,8 @@ import (
 // device-<DEVICE_ID> in its mailbox, rewritten by the phone whenever its name
 // or one of its toggles changes, never deleted by the hub. The Swift hub's
 // RelayProcessor hands it to MobileLinkCenter.handleDevice; here the link
-// center applies it (link.Center.ApplyDeviceRecord). Read in CloudKit's
-// shared RelayZone only: the relay path is unchanged.
+// center applies it (link.Center.ApplyDeviceRecord). Read in CloudKit's shared
+// RelayZone and in a phone's own mailbox on the hosted relay.
 
 const (
 	kindDevice   = "device"
@@ -38,9 +39,10 @@ type Links interface {
 // (a linked phone writing another's unlink or start-sessions choice is
 // dropped) — and a payload carrying a link nonce asks for a link, which only
 // a hello makes. The link center checks the record against the link (scope and CloudKit creator)
-// and applies an unlink or a rewrite. The record's rollback mark commits
-// after it was applied, so a crash in between applies it again (the rewrite
-// is idempotent) and an older copy is refused (ErrRolledBack in FromPhone).
+// and applies an unlink or a rewrite. A rewrite's rollback mark commits with
+// it (claimTx); a record ignored by those checks is marked after, so a crash
+// in between decides it again, and an older copy is refused (ErrRolledBack in
+// FromPhone).
 // With no Links the record is left alone, as the Swift hub leaves it with no
 // link center. A record that is no unlink is a phone contact (Config.Contact).
 func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened) error {
@@ -80,8 +82,13 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		d.RelayDeviceID, d.RelayAuthPub, d.RelayIDSig = "", "", ""
 	}
 	shares, _ := p.cfg.Transport.(transport.Shares)
-	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares}
+	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares, Hosted: !b.shared,
+		Stands: func(tx *sql.Tx) error { return standsTx(tx, b) },
+		Claim:  func(tx *sql.Tx) (bool, error) { return claimTx(tx, b, rec.Name, o) }}
 	if err := p.cfg.Links.ApplyDeviceRecord(ctx, b.id.String(), r); err != nil {
+		if errors.Is(err, errRelinked) {
+			return nil // read under a link that no longer stands: nothing applied
+		}
 		if o.Verdict == secure.Same && errors.Is(err, link.ErrOwnerUnreadable) {
 			return nil // decided and marked already: nothing to do, nothing to hold
 		}
@@ -92,6 +99,32 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		return nil // unlinked (by this record, or meanwhile): nothing to mark
 	}
 	return err
+}
+
+// standsTx is errRelinked unless the link b was read under still stands.
+func standsTx(tx *sql.Tx, b mailbox) error {
+	nonce, linked, err := state.LinkNonceTx(tx, b.id.String())
+	if err != nil {
+		return err
+	}
+	if !linked || nonce != b.link {
+		return errRelinked
+	}
+	return nil
+}
+
+// claimTx decides o in the record's own transaction: a newer version marked by
+// now (the other transport's processor got there after o was opened) wins, so
+// false. Otherwise o's mark is written and commits with the record.
+func claimTx(tx *sql.Tx, b mailbox, wireName string, o secure.Opened) (bool, error) {
+	epoch, seq, seen, err := state.RelaySeenTx(tx, wireName, o.Sender.String())
+	if err != nil {
+		return false, err
+	}
+	if seen && secure.CompareVersion(epoch, seq, o.Epoch, o.Seq) == secure.Older {
+		return false, nil
+	}
+	return true, mark(tx, b, wireName, o)
 }
 
 // minTime is the earlier of a and b.

@@ -130,7 +130,7 @@ Every piece of state these tasks write, each writer, and who wins.
 
 ## Hub gaps for the Go hub session (not our tasks)
 
-- **G1. Device records on the relay.** The hub reads `device` records only in CloudKit's shared `RelayZone` (the v1 limit in `docs/features/relay-client.md`). A name change, a typing or permission request and a relay-only farewell never arrive once the phone is on the relay, so permission requests break there. Phase 4 makes this reachable by paying phones. Open decision 1 depends on it.
+- **G1. Device records on the relay. Closed (board #1534, ask #1056).** It read `device` records only in CloudKit's shared `RelayZone` (the v1 limit in `docs/features/relay-client.md`). A name change, a typing or permission request and a relay-only farewell never arrive once the phone is on the relay, so permission requests break there. Phase 4 makes this reachable by paying phones. Open decision 1 depends on it.
 - **G2. A move with the old phone gone.** On a subscription move the old account's slots are revoked with no `SLOT_REMOVED` and no `ENTITLEMENT_EXPIRED`. The old phone's own `transport_switch(cloudkit, entitlement_expired)` (Task 5) covers the normal case. If that phone is wiped, nothing tells a desktop hub, whose `PayingWatch` pause applies to headless hosts only. To check there: does a desktop host with no paying phone left move to CloudKit by itself? If not, a free second phone waits on it until the owner acts.
 - **G3. Duplicate alert at a switch.** `Publisher.Resignal` writes a zone-wide signal, so a phone that got the relay push can get the CloudKit push as well. Phone-side the second cannot be suppressed (Open decision 10).
 - **G4. A `push_off` alert at a switch to iCloud.** Task 20's review of Phase 3b found that an alert with `push_off` gets no CloudKit signal after a switch, and left it for the Go hub. Task 18's "every open alert" holds only for alerts the hub signals, so such an alert reaches the phone on its next sync, with no notification. To check there: is that the intent of `push_off`? Until then it is a v1 limit.
@@ -141,16 +141,16 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 
 | Condition | Owner |
 |---|---|
-| G1, device records on the relay | Go hub session |
+| G1, device records on the relay: **closed** (board #1534, ask #1056; a closed hub still misses a farewell, a v1 limit in `docs/features/relay-client.md`) | Go hub session |
 | G2, a desktop hub after a move with the old phone gone: checked, and fixed if needed | Go hub session |
 | G3, the duplicate alert at a switch: **closed**, accepted as a v1 limit (Open decision 10, ask #1038) | owner's ruling |
 | G4, a `push_off` alert at a switch to iCloud: **closed**, accepted as a v1 limit (ask #1054) | owner's ruling |
 | #1537, a hello lost on a failed owner read: fixed | Go hub session |
-| The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together.** The same change moves the fixture case `work_alerts_off` from `device_payload_kit_only` into `device_payload` in `hub_contract_cases.json`, adds it to the exact-name list in `HubContractFixtureTests` and points `testDevicePayloadWorkAlertsOff` at the new section, so `device_payload` pins it on both sides | Go hub session, approved by name in Open decision 1 |
+| **Closed (board #1534).** The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together.** The same change moves the fixture case `work_alerts_off` from `device_payload_kit_only` into `device_payload` in `hub_contract_cases.json`, adds it to the exact-name list in `HubContractFixtureTests` and points `testDevicePayloadWorkAlertsOff` at the new section, so `device_payload` pins it on both sides | Go hub session, approved by name in Open decision 1 |
 | The Learn cards `iphone-relay-subscribe`, `iphone-alerts-relay` and `headless-host-run`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), and `iphone-alerts.md`'s "will ask the Mac to stop sending" reworded to the present once the Go half and G1 are in, in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
-| Manual checks M1–M10 on staging | Owner, Open decision 14 |
+| Manual checks M1–M11 on staging (M11 added by G1, #1534) | Owner, Open decision 14 |
 
 ## Lanes
 
@@ -943,7 +943,7 @@ final class RelayPushRegistrar {
 
 **Failure classes.** The Mac closed: no pushes come; the data waits. Failure midway: owed and retried. A restart: a new process sends once more, which is the spec's "at every launch". A build whose `aps-environment` differs from `WTPushEnvironment` (a Release build run from Xcode): the relay drops the token on `BadDeviceToken`, and Desktop shows the no-token line; a developer-only v1 limit.
 
-**The switch.** With Open decision 1's option A the phone writes `work_alerts_off: true` in its `device` record while the switch is off, and the hub skips `send_alert` (Go hub, G1). The record is sealed and content-free, and an old hub ignores it. Until the hub reads it (Launch conditions), the switch stops iCloud alerts only.
+**The switch.** With Open decision 1's option A the phone writes `work_alerts_off: true` in its `device` record while the switch is off, and the hub skips `send_alert` (Go hub, G1, closed). The record is sealed and content-free, and an old hub ignores it.
 
 - [ ] **Step 1: Failing tests:**
   - `testTheTokenIsSentOnceAsHexWithItsEnvironment`;
@@ -1173,6 +1173,7 @@ They need what only the owner can provide (see "Owner-only steps") or a physical
 - **M8. The goal.** Settings → Diagnostics on a good network: Relay p50 under 500 ms.
 - **M9. Confirmations and screens** that shots cannot capture on iOS 26 or the demo hides: Forget This Mac's layout and confirmation, Cancel Link; the banners' subscription sheet and its **Close**; **Manage Subscription** opens Apple's subscriptions page (`https://apps.apple.com/account/subscriptions`).
 - **M10. Xcode-signed builds:** `WTPushEnvironment` matches the signed `aps-environment`; a mismatch shows Desktop's no-token line.
+- **M11. A real unlink.** Unlink a Mac on a relay route with the Mac open, on staging: the Mac's device list loses the phone within seconds and the slot is free. Nothing else runs `unlinkRow` against the Worker: the interop run measures the Kit's flush, and the phone's order is tested on a fake clock.
 
 ## Decisions
 
@@ -1241,7 +1242,7 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | A retry on a result with no price reads **Load the Price** (S45b, S57b) | decided by the agent, Task 9; ask #1040 |
 | An iCloud row with no `ordered_actions` on a relay route is disabled and reuses `.notOrdered`'s text (S12b), replacing a first ruling's new string | decided by the agent, Task 8 |
 | The registrar's foreground gate stands against the spec's "at every launch": a token waits for the next open | decided by the agent, Task 13 |
-| `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case | decided by the agent, Task 13; the move is in Launch conditions |
+| (Closed with the Go half, the case is in `device_payload` now.) `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case | decided by the agent, Task 13; the move is in Launch conditions |
 | A push launch opens no socket until the first activation: new Task 19; a tap launch can connect at activation rather than in the boot | decided by the agent, Tasks 13 and 19; ask #1040 |
 | `AlertSubscriptionRegistrar.idle()` is capped at 10 s, like `outboxDrainCap`, against its brief's "no cap": a hung CloudKit call must not leave a stopped session with no error | decided by the agent, Task 18; ask #1040 |
 | New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again | decided by the agent, Task 10 |

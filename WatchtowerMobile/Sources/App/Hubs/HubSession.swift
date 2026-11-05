@@ -732,6 +732,9 @@ final class HubSession {
     /// adoption, the launch fetch, the outbox sweep, launch recovery): held
     /// from here, before a push can end its own work, until it is done.
     private func startBoot(_ startWork: BackgroundWork.Starter?, notifications: NotificationCenter) {
+        if case .hostedRelay? = route {
+            deviceSettings.sendAfterWrite = { [weak self] in await self?.sendNow() }
+        }
         endBootWork = startWork?("app-boot")
         adoption = Task { await adoptHeld() }
         unlockObserver = NotificationToken(

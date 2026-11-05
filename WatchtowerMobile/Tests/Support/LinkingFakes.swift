@@ -360,7 +360,8 @@ final class FakeLinkHost: LinkHost {
         }
         return LocalWipe(
             notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem,
-            farewellKept: farewell != nil && keepsFarewell
+            farewellKept: farewell != nil && keepsFarewell,
+            farewellOut: farewell != nil && !keepsFarewell
         )
     }
 
