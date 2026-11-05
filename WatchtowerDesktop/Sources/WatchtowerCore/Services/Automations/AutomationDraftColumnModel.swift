@@ -218,7 +218,8 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
                         text: AutomationChangePresentation.line(change, workbenchName: workbenchName)
                     )
                 }
-                : Self.valueItems(shown, fields: fields, when: when, eachRun: eachRun, mayDo: mayDo, sends: sends,
+                : Self.valueItems(shown, fields: fields, when: when, whenDetail: whenDetail, eachRun: eachRun,
+                                  mayDo: mayDo, sends: sends,
                                   artifacts: artifacts, workbenchName: workbenchName)
         } else {
             itemsAreChanges = false
@@ -295,6 +296,7 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
         _ shown: AutomationsCLI.ValidateResult,
         fields: AutomationsCLI.ValidateResult.Fields,
         when: String,
+        whenDetail: String?,
         eachRun: String,
         mayDo: [AutomationCardPresentation.PermissionLine],
         sends: [String],
@@ -310,7 +312,8 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
                     : mayDo.map(\.text).joined(separator: "; "))),
             Item(field: .outputs, text: "Sends: " + (sends.isEmpty ? "Nothing" : sends.joined(separator: "; "))),
             Item(field: .script, text: scriptLine),
-            Item(field: .trigger, text: "When: " + when),
+            // The detail carries an event trigger's `where` filter: hashed too.
+            Item(field: .trigger, text: "When: " + when + (whenDetail.map { " · " + $0 } ?? "")),
             Item(field: .missed, text: fields.missed == "skip" ? "Missed while asleep: skip"
                 : "Missed while asleep: run once"),
             Item(field: .budget, text: "Each run: " + eachRun),

@@ -425,6 +425,21 @@ final class AutomationDraftColumnModelTests: XCTestCase {
             let new = model(validated: try validated(fields: Self.livingFields))
             XCTAssertEqual(new.visibleFields(on: step), Set(AutomationHashedField.allCases), "new, \(step)")
         }
+        // The text, not only the field: an event trigger's `where` filter is
+        // hashed, so it is on screen with the trigger at a press on any step.
+        let event = Self.livingFields.replacingOccurrences(
+            of: #""trigger":"schedule: 0 9 * * 1-5""#,
+            with: #""trigger":"event: slack.new_messages where account=\"acme\"""#
+        )
+        XCTAssertNotEqual(event, Self.livingFields, "the fixture's trigger was replaced")
+        let new = model(validated: try validated(fields: event))
+        let filter = #"Where account="acme""#
+        XCTAssertEqual(new.whenDetail, filter, "When it runs shows it in the When box")
+        for step in AutomationEditorStep.allCases where !step.shownFields.contains(.trigger) {
+            let row = try XCTUnwrap(new.confirmationRow(on: step), "\(step)")
+            let trigger = try XCTUnwrap(row.items.first { $0.field == .trigger }, "\(step)")
+            XCTAssertEqual(trigger.text, "When: \(new.when) · \(filter)", "\(step)")
+        }
     }
 
     /// The row lists only what the step does not show, in the Changed box's
