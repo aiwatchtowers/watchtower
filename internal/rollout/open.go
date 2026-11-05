@@ -21,12 +21,8 @@ const MaxDecompressed int64 = 256 << 20
 // ErrTooLarge means a compressed rollout expands past MaxDecompressed.
 var ErrTooLarge = errors.New("rollout: decompressed size over the cap")
 
-// Magic opens a zstd frame.
-var Magic = []byte{0x28, 0xb5, 0x2f, 0xfd}
-
-// IsCompressed reports whether head, the first bytes of a file, opens a zstd
-// frame.
-func IsCompressed(head []byte) bool { return bytes.HasPrefix(head, Magic) }
+// magic opens a zstd frame.
+var magic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 
 // Open opens the rollout at path for reading. A plain file comes back as the
 // *os.File itself at offset 0 (so it can still seek and ReadAt) and
@@ -43,15 +39,17 @@ func open(path string, limit int64) (io.ReadCloser, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	head := make([]byte, len(Magic))
+	head := make([]byte, len(magic))
 	n, err := f.ReadAt(head, 0)
 	if err != nil && !errors.Is(err, io.EOF) {
 		_ = f.Close()
 		return nil, false, err
 	}
-	if !IsCompressed(head[:n]) {
+	if !bytes.Equal(head[:n], magic) {
 		return f, false, nil
 	}
+	// The decoder's memory cap is the shipped cap even when a test passes a
+	// smaller output limit: a small frame may still declare a larger window.
 	dec, err := zstd.NewReader(f,
 		zstd.WithDecoderConcurrency(1),
 		zstd.WithDecoderLowmem(true),
@@ -84,10 +82,14 @@ func (d *decoded) Read(p []byte) (int, error) {
 	if d.left < 0 {
 		return n + int(d.left), ErrTooLarge
 	}
-	if errors.Is(err, zstd.ErrDecoderSizeExceeded) {
-		// A frame that declares a size past the cap fails before any byte.
+	if errors.Is(err, zstd.ErrDecoderSizeExceeded) || errors.Is(err, zstd.ErrWindowSizeExceeded) {
+		// A frame that declares a size or window past the cap fails before
+		// any byte.
 		d.left = -1
 		return n, ErrTooLarge
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, fmt.Errorf("rollout: decode: %w", err)
 	}
 	return n, err
 }

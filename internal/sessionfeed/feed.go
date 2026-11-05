@@ -179,8 +179,9 @@ func parseFile(c Conversation, start int64) (*Result, error) {
 
 // parseCodexFile parses a rollout, plain or zstd-compressed, from byte offset
 // start. A compressed rollout's offsets count decompressed bytes; one that
-// does not decode, or expands past rollout.MaxDecompressed, yields no
-// entries and is counted under Unknown "<zstd>", like before it was read.
+// does not decode yields no entries and is counted under Unknown "<zstd>",
+// like before it was read; one that expands past rollout.MaxDecompressed
+// under "<zstd-too-large>".
 func parseCodexFile(c Conversation, start int64) (*Result, error) {
 	rc, compressed, err := rollout.Open(c.Path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -191,26 +192,34 @@ func parseCodexFile(c Conversation, start int64) (*Result, error) {
 	}
 	defer func() { _ = rc.Close() }()
 	if !compressed {
-		seeker, ok := rc.(io.Seeker)
-		if !ok {
-			return nil, fmt.Errorf("transcript %s: not seekable", filepath.Base(c.Path))
-		}
-		if _, err := seeker.Seek(start, io.SeekStart); err != nil {
+		// rollout.Open returns a plain file as itself.
+		if _, err := rc.(*os.File).Seek(start, io.SeekStart); err != nil {
 			return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
 		}
 		return ParseCodex(rc, start, c.AgentSessionID)
 	}
-	if _, err := io.CopyN(io.Discard, rc, start); err == nil {
-		if res, err := ParseCodex(rc, start, c.AgentSessionID); err == nil {
+	_, err = io.CopyN(io.Discard, rc, start)
+	if errors.Is(err, io.EOF) {
+		// A cursor past the end reads nothing, as on a plain file.
+		return &Result{Offset: start, Unknown: map[string]int{}}, nil
+	}
+	if err == nil {
+		var res *Result
+		if res, err = ParseCodex(rc, start, c.AgentSessionID); err == nil {
 			return res, nil
 		}
 	}
-	return &Result{Offset: start, Unknown: map[string]int{"<zstd>": 1}}, nil
+	key := "<zstd>"
+	if errors.Is(err, rollout.ErrTooLarge) {
+		key = "<zstd-too-large>"
+	}
+	return &Result{Offset: start, Unknown: map[string]int{key: 1}}, nil
 }
 
 // subagentMarkers lists a conversation's subagents for the feed: Claude's
 // from the sidecar meta files, Codex's from the rollout's live agents (the
-// same set FindSubagent opens). An unreadable rollout lists none.
+// same set FindSubagent opens, bounded to the live window). A rollout with no
+// readable activity lists none.
 func subagentMarkers(c Conversation) []Entry {
 	if !c.Codex {
 		return metaMarkers(strings.TrimSuffix(c.Path, ".jsonl"), c.AgentSessionID)

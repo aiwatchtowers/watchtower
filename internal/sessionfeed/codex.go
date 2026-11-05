@@ -2,7 +2,6 @@ package sessionfeed
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,12 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentlog"
-	"watchtower/internal/rollout"
 )
-
-// zstdMagic opens a zstd frame. Files are decompressed by rollout.Open before
-// they reach ParseCodex; a reader still holding a frame is not parsed.
-var zstdMagic = rollout.Magic
 
 var codexIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
@@ -50,16 +44,10 @@ type codexEvent struct {
 // `event_msg` `user_message` / `agent_message`. `response_item` and
 // `compacted` lines repeat that text and are skipped. r carries rollout text:
 // a compressed file is decompressed by the caller (rollout.Open, as Build
-// does); raw zstd bytes yield nothing (counted under Unknown "<zstd>").
+// does).
 func ParseCodex(r io.Reader, startOffset int64, conv string) (*Result, error) {
 	res := &Result{Offset: startOffset, Unknown: map[string]int{}}
 	br := bufio.NewReaderSize(r, 64<<10)
-	if startOffset == 0 {
-		if head, _ := br.Peek(len(zstdMagic)); bytes.Equal(head, zstdMagic) {
-			res.Unknown["<zstd>"]++
-			return res, nil
-		}
-	}
 	for {
 		lineStart := res.Offset
 		raw, n, complete, err := agentlog.NextLine(br, maxLineBytes)

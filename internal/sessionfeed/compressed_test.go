@@ -3,7 +3,9 @@ package sessionfeed
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -73,8 +75,13 @@ func TestParseCodex_CompressedRolloutGivesEntries(t *testing.T) {
 	assert.Empty(t, again.Entries, "a cursor at the end reads nothing new")
 	assert.Equal(t, got.Cursor, again.Cursor)
 
+	past, err := Build([]Conversation{c}, &Cursor{Conv: "A", Offset: int64(len(raw)) + 10}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, past.Entries, "a cursor past the end reads nothing, as on a plain file")
+	assert.Empty(t, past.Unknown)
+
 	// A frame that does not decode stays disclosed, not a failed feed.
-	bad := codexRolloutFile(t, append(append([]byte{}, zstdMagic...), "not a frame\n"...))
+	bad := codexRolloutFile(t, []byte("\x28\xb5\x2f\xfdnot a frame\n"))
 	res, err := Build([]Conversation{bad}, nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, res.Entries)
@@ -99,9 +106,55 @@ func TestLiveLine_CompressedRollout(t *testing.T) {
 	assert.Equal(t, "go test", activity.Summary)
 }
 
+func TestLiveLine_CompressedRolloutPastWindowIsPartial(t *testing.T) {
+	pad := liveRec("event_msg", map[string]any{"type": "agent_message", "message": strings.Repeat("x", 1<<20)})
+	lines := []string{liveRec("event_msg", map[string]any{"type": "task_started"})}
+	for range 5 {
+		lines = append(lines, pad)
+	}
+	lines = append(lines, liveRec("response_item", map[string]any{"type": "custom_tool_call", "name": "functions.exec", "call_id": "c1", "input": `await tools.exec_command({cmd:"go test"})`}))
+	c := codexLiveFixture(t, lines...)
+	compressInPlace(t, c.Path)
+	live, err := LiveOf(c, false, liveNow)
+	require.NoError(t, err)
+	assert.Equal(t, "unknown", live.AgentsState, "a tail cut of the decompressed text is partial")
+	require.NotNil(t, live.Current)
+	assert.Equal(t, "go test", live.Current.Summary)
+}
+
+func TestStreamTail(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		limit    int64
+		want     string
+		wantCut  bool
+	}{
+		{"shorter than the limit", "a\nb\n", 10, "a\nb\n", false},
+		{"exactly the limit", "a\nb\n", 4, "a\nb\n", false},
+		{"cut mid-line drops the partial head", "first line\nsecond\nthird\n", 12, "third\n", true},
+		{"cut on a line start still drops it", "aaaa\nbbbb\ncccc\n", 10, "cccc\n", true},
+		{"no newline after the cut", "aaaaaaaaaaaaaaaaaaaa", 5, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, cut, err := streamTail(iotest.OneByteReader(strings.NewReader(tc.in)), tc.limit)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+			assert.Equal(t, tc.wantCut, cut)
+		})
+	}
+	// Many chunks past twice the limit: the kept tail matches a plain cut.
+	in := strings.Repeat("0123456789abcdef\n", 20000)
+	got, cut, err := streamTail(strings.NewReader(in), 1000)
+	require.NoError(t, err)
+	assert.True(t, cut)
+	want := in[len(in)-1000:]
+	want = want[strings.IndexByte(want, '\n')+1:]
+	assert.Equal(t, want, string(got))
+}
+
 func TestFeed_CodexSubagentsListed(t *testing.T) {
-	for _, compressed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "plain", true: "compressed"}[compressed], func(t *testing.T) {
+	for name, compressed := range map[string]bool{"plain": false, "compressed": true} {
+		t.Run(name, func(t *testing.T) {
 			c := codexLiveFixture(t,
 				liveRec("event_msg", map[string]any{"type": "user_message", "message": "check the files"}),
 				liveRec("event_msg", map[string]any{"type": "collab_agent_spawn_end", "new_thread_id": liveChild, "status": "running", "prompt": "check files"}),

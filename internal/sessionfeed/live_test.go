@@ -136,7 +136,7 @@ func TestLiveCodexCompletedToolAndIncompleteTail(t *testing.T) {
 }
 
 func TestLiveUnavailableInputsNeverReportZeroAgents(t *testing.T) {
-	for _, raw := range []string{"", "{broken}\n", "{\"type\":\"future_record\"}\n", string(zstdMagic) + "compressed\n"} {
+	for _, raw := range []string{"", "{broken}\n", "{\"type\":\"future_record\"}\n", "\x28\xb5\x2f\xfdcompressed\n"} {
 		c := liveFile(t, false)
 		require.NoError(t, os.WriteFile(c.Path, []byte(raw), 0600))
 		live, err := LiveOf(c, false, liveNow)

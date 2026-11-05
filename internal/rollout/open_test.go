@@ -74,7 +74,7 @@ func TestRolloutOpen_CompressedDecodesInMemory(t *testing.T) {
 }
 
 func TestRolloutOpen_CorruptFrameIsAnError(t *testing.T) {
-	_, compressed, err := readAll(t, writeFile(t, append(append([]byte{}, Magic...), "not a frame"...)), MaxDecompressed)
+	_, compressed, err := readAll(t, writeFile(t, []byte("\x28\xb5\x2f\xfdnot a frame")), MaxDecompressed)
 	assert.True(t, compressed)
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, ErrTooLarge))

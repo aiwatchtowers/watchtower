@@ -86,10 +86,10 @@ func readTailCut(path string, limit int64) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	defer rc.Close()
-	f, plain := rc.(*os.File)
-	if compressed || !plain {
+	if compressed {
 		return streamTail(rc, limit)
 	}
+	f := rc.(*os.File) // rollout.Open returns a plain file as itself
 	st, err := f.Stat()
 	if err != nil {
 		return nil, false, err
@@ -105,17 +105,18 @@ func readTailCut(path string, limit int64) ([]byte, bool, error) {
 	return dropPartialHead(buf, start > 0), start > 0, nil
 }
 
-// streamTail keeps the last limit bytes of r while reading it through.
+// streamTail keeps the last limit bytes of r while reading it through, and
+// reports whether r held more than that.
 func streamTail(r io.Reader, limit int64) ([]byte, bool, error) {
 	var buf []byte
+	var total int64
 	chunk := make([]byte, 64<<10)
-	cut := false
 	for {
 		n, err := r.Read(chunk)
 		buf = append(buf, chunk[:n]...)
-		if over := int64(len(buf)) - limit; over > 0 && int64(len(buf)) >= 2*limit {
-			buf = append(buf[:0], buf[over:]...)
-			cut = true
+		total += int64(n)
+		if int64(len(buf)) >= 2*limit { // bounds memory; the final cut is below
+			buf = append(buf[:0], buf[int64(len(buf))-limit:]...)
 		}
 		if errors.Is(err, io.EOF) {
 			break
@@ -124,10 +125,10 @@ func streamTail(r io.Reader, limit int64) ([]byte, bool, error) {
 			return nil, false, err
 		}
 	}
-	if over := int64(len(buf)) - limit; over > 0 {
-		buf = buf[over:]
-		cut = true
+	if int64(len(buf)) > limit {
+		buf = buf[int64(len(buf))-limit:]
 	}
+	cut := total > limit
 	return dropPartialHead(buf, cut), cut, nil
 }
 
