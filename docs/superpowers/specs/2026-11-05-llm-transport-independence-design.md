@@ -1,7 +1,7 @@
 # LLM transport independence
 
-**Status:** decisions A–D and the zstd dependency pinned by the owner in ask #507 (2026-11-05); the spec itself is in review. Nothing here is implemented.
-**Base:** `feature/transport-neutral`, branched from `feature/codex-parity`, which fixed nine codex parity defects. Every one of those defects sat in a seam this design closes.
+**Status:** decisions A–D pinned by the owner in ask #507, the codex Error state in ask #499 and the budget meaning in ask #488; three items wait for the owner's sign-off in this review (Needs owner sign-off). Spec review round 1 (ask #511) applied. Nothing here is implemented.
+**Base:** `feature/transport-neutral`, branched from `feature/codex-parity`, which fixed nine codex parity defects. Every one of those defects sat in a seam this design closes. `feature/transport-neutral` merges back into `feature/codex-parity`, which ships to `main` in PR #686 (§6).
 **Date:** 2026-11-05.
 **Related:** [provider fallback](2026-11-02-provider-fallback-design.md) (its `InvocationProfile`, router and health stay; this design feeds the router's capability checks), [model and provider registry](../../features/model-provider-registry.md), [chat redesign](../../features/chat-redesign.md), [Codex as a Workbench agent](../../features/workbench.md), [LLM usage ledger](../../features/llm-usage-ledger.md).
 
@@ -42,13 +42,24 @@ The owner answered ask #507 on 2026-11-05. Each decision is pinned; the packages
 
 | ID | Question | Decision |
 |---|---|---|
-| A | Codex has no "max turns" switch: what bounds a Codex `agent()` call and the Codex spec reviewer? | **Option 1.** Watchtower counts the tool calls in the Codex stream and stops the run at the same cap Claude gets: 12 (`automationAgentMaxTurns`) for `agent()`, `specreview.MaxTurns` for the reviewer. AUTO-08 is amended (§5). |
+| A | Codex has no "max turns" switch: what bounds a Codex `agent()` call and the Codex spec reviewer? | **Option 1.** Watchtower counts in the Codex stream and stops the run at the same cap Claude gets: 12 (`automationAgentMaxTurns`) for `agent()`, `specreview.MaxTurns` (40) for the reviewer. Review round 1 pinned the unit: a cap counts **model turns** (model responses), as Claude's `--max-turns` and runtime B's `MaxIterations` do, not tool calls; parallel tool calls of one response are one turn. The counting rule is in §3.4. AUTO-08 is amended (§5). |
 | B | Where do Ollama and HTTP providers stand? | **Option 1.** A full transport under the same contract suite, with an honest, smaller capability row (no images, no file reading, no Quick Connections unless L8 closes it). The UI says what is missing before Send. |
 | C | Where does Watchtower watch a Codex session for failures and interrupts? | **Option 1.** The session host, which owns the terminals and keeps running while the app is closed. The Desktop poll from #959 stays only as the bridge described in G5. |
 | D | Codex Workbench sessions have no analytics. | **Option 1.** Build a Codex rollout importer for agent analytics and the coach (G8). AGENTLOG-04 is amended to allow `$CODEX_HOME/sessions` under the same workbench-only rule. |
-| Z | A zstd decoder as a new Go dependency | **Accepted** (implied by D and G6). |
+| #499 | A failed or interrupted Codex turn in a Workbench session | **Option A.** A failed codex turn read from the rollout becomes PROJ-11's Error state (`waiting` + `agent_failed_at`/`agent_error`), the same state a Claude `StopFailure` writes; a codex `Interrupt` hook ends an interrupted turn as `waiting`. Shipped as the bridge in #959; G5 moves the pull into the session host (decision C). |
+| #488 | What an automation's token budget counts | Fresh input + output per model call, on every provider and both the direct and the routed path; cache reads and writes are not debited. This design keeps that meaning unchanged (§3.2, AUTO-08). |
 
 Options not taken: for A, no cap or a shorter time budget; for B, background-only or outside the suite; for C, the daemon once per cycle or the Desktop only; for D, Claude-only analytics with an honest pane.
+
+## Needs owner sign-off
+
+These were decided by the design, not by the owner. They are not accepted until the owner signs them off in this review.
+
+| ID | Item | Proposal | Why |
+|---|---|---|---|
+| N1 | A zstd decoder as a new Go dependency | Add one pure-Go zstd decoder (decode only) to `go.mod`, used by the rollout readers (`internal/sessionfeed`, `internal/terminal`, the G8 importer, the G5 watch) | Compressed codex rollouts are otherwise unreadable: no feed, title, failure signal or analytics for them (S7, S9). Decisions C and D depend on it for compressed files; without it those files stay "not watched" / not imported, disclosed |
+| N2 | A table-rebuild migration of `terminal_sessions` when a fourth agent kind is added | Keep `CHECK(kind IN ('claude','codex','shell'))` and widen it by the `add-migration` rebuild (one transaction, foreign keys off) the day a new kind lands; nothing is rebuilt now | The CHECK keeps a typo out of the column; dropping it would trade that for one cheaper future migration |
+| N3 | Existing `llm_calls` rows labelled `http` | No migration and no rewrite. Runtime B records `ollama` from A3 on; `watchtower usage llm` reads a stored `http` as `ollama`, because every `http` row ever written came from runtime B, whose only base URL is `ai.ollama_url` (its three callers: `cmd/ai_session.go:226`, `cmd/generator.go:221`, `cmd/automations_backends.go:463`). The mapping goes when the 90-day retention has aged the last such row out; a future non-Ollama server gets its own label, never `http` | One line in one reader, history untouched, and spool lines from an older process are covered the same way. A rewrite migration would also need the spool importer to map |
 
 ## How we will know it is done
 
@@ -183,7 +194,7 @@ The protocol v2 vocabulary is the canonical event model: `session_ready`, `turn_
 Consequences:
 - The AUTO-08 meter reads `Tokens.Input` everywhere, with no behaviour change after ask #488.
 - An adapter without a cache split (OpenAI-compatible `prompt_tokens`) fills `Input` whole and leaves the cache fields zero, as AUTO-08 already says.
-- One provider label per backend in the ledger: runtime B over Ollama records `ollama`, not `http`. `http` stays for a non-Ollama OpenAI-compatible server. This amends LLMUSAGE-01's provider values (§5).
+- One provider label per backend in the ledger: runtime B over Ollama records `ollama`, not `http`. Existing `http` rows are read as `ollama` by `watchtower usage llm` (N3, pending sign-off); `http` is retired as a label. This amends LLMUSAGE-01's provider values (§5).
 
 ### 3.3 Capabilities, declared per transport
 
@@ -199,7 +210,7 @@ Add `Caps Capabilities` to the registry row `providers.Provider` (`internal/prov
 | `images`, `pdfs` | bool | yes, yes | images yes (L6), pdfs no | no |
 | `web_search` | bool | yes | yes once L5 is fixed, else no | no |
 | `read_folder` | none / tools / shell_sandbox | tools | shell_sandbox | none (L9: refuse) |
-| `turn_cap` | native / counted / none | native | counted (decision A) | native (`agentloop` `MaxIterations`) |
+| `turn_cap` | native / counted / none (unit: model turns, §3.4) | native (`--max-turns`) | counted from the stream (decision A) | native (`agentloop` `MaxIterations`) |
 | `interrupt` | in_turn / kill_turn | in_turn (warm) | kill_turn | kill_turn |
 | `warm_session` | bool | yes | no (replay) | no (replay) |
 | `claude_ai_tools` | bool | yes | no | no |
@@ -213,8 +224,8 @@ Rules:
   - Swift `toolsAvailable`, `readsFiles`, the claude.ai pool recycle, the Quick Connections notice and attachment preflight read `capabilities`.
 - **`InvocationProfile` stays.** It describes what a call needs. `Caps` describes what a transport offers. The router's `CheckCapability` becomes `Caps` ⊇ the profile's needs.
 - **Honest degradation.** A missing capability is refused before the call with `providers.CapabilityError` and an owner-readable line, and the UI shows it before Send. Examples:
-  - the attach button is disabled with "Images need a provider that reads images";
-  - Workchat on a session without mid-turn input shows "Sends when the agent finishes".
+  - the attach button is disabled with a reason (mockup U1, §3.7);
+  - Workchat on a session without mid-turn input says so before Send (U2).
   It is never silently dropped (L9) or failed after Send (L6).
 - **Policy first.** `AllowedAIProviders` (POLICY-02) still filters before capabilities. A capability never makes a forbidden provider reachable.
 
@@ -228,6 +239,18 @@ Rules:
   - The optional-method probes (`processGroupConfigurable`, `mcpConfigurable`, `externalMCPConfigurable`, `readFolderConfigurable`, `SetIsolatedChild`, `EmitToolEvents`) become an options struct passed to the constructor. The dead `SetStdinOnly` probe is deleted.
   - `*codex.Client` type assertions disappear. The env-skip for Quick Connections becomes an option, `ChildEnv`.
   - To avoid an import cycle, constructors are registered by the adapter packages' `init`-free wiring in `cmd`. The registry holds function values, and only `cmd/transport_wiring.go` imports the adapters.
+- **Turn cap: one unit on every transport (decision A).** The unit is a **model turn**: one model response.
+  - Claude: `--max-turns N` lets the CLI make N model responses; the next ends the run with `subtype=error_max_turns`, which `providers` already classifies as `budget` (`internal/providers/failure.go:91`). `automationAgentMaxTurns` is documented as bounding "an agent() loop's model calls" (`cmd/automations_backends.go:121`). Parallel `tool_use` blocks in one assistant message are one turn.
+  - Runtime B: `agentloop` `MaxIterations` counts model calls (`internal/agentloop/client.go:174`).
+  - Codex `exec --json` has no per-response event: `turn.started`/`turn.completed` wrap the whole owner turn, and in between come `item.started`/`item.updated`/`item.completed` for `reasoning`, `agent_message` and the tool items (`mcp_tool_call`, `command_execution`, `web_search`, `file_change`; `internal/codex/stream.go:142`). A model response's tool calls must all return before the next response can start, so the stream marks a response boundary as "a model-produced item after the previous response's tool results came back". The rule, as a state machine over the stream (`codex.turnCounter` in `internal/codex/stream.go`):
+    - `turn.started` → `turns = 1`, `open = 0`, `returned = false`;
+    - a tool item's start (or its `item.completed` when no start was seen) → if `returned && open == 0`: `turns++`, `returned = false`; then `open++`;
+    - a tool item's `item.completed` → `open--`, `returned = true`;
+    - a `reasoning` or `agent_message` item's first event → if `returned && open == 0`: `turns++`, `returned = false`;
+    - when `turns` would become `cap + 1`, the counter cancels the process group before the item runs, and the run ends with a `budget` failure carrying "stopped after N model turns", exactly as Claude's `error_max_turns` does.
+    So two tool calls started before either returns (parallel calls of one response) are one turn; a response with no tools after a tool response is a new turn; text-only answers are one turn.
+  - Evidence: codex rollouts (structure only, read on a development machine; nothing copied) carry one `token_usage_record` and one `event_msg` `token_count` per model response, each right after that response's `function_call` items and before their `function_call_output`. That confirms the boundary sits between a tool result and the next model item. The `exec --json` stream itself has no such marker.
+  - Residual risk, checked by a spike first in G2: if codex ever runs two calls of **one** response one after the other (start A, A returns, start B), the stream rule counts B as a new turn. It can only over-count, so the run stops earlier than Claude would, never later. If the spike records that shape, `agent()` switches to the exact counter: drop `--ephemeral` for its run (its `CODEX_HOME` is already a private temp dir, `cmd/automations_backends.go` `codexAgentHome`) and count `token_count` events in that rollout. The spec reviewer keeps the stream rule, because a rollout in the owner's `CODEX_HOME` would appear in their codex history.
 
 ### 3.5 Workbench sessions get an adapter
 
@@ -245,6 +268,19 @@ New package `internal/sessionagent`, the session-side twin of the registry. It a
   - pull: an adapter's `Watch`. For codex this is the rollout's last turn (`task_complete` with an error → a `StopFailure`-equivalent event; `turn_aborted` → `Interrupt`). The reader is the fix in flight's `sessionfeed.CodexLastTurn`.
   Both sources feed the single `recordAgentState` / `agentStateFor` path, with the existing guarantees: the time order holds, and a payload whose session id differs from the stored one writes nothing.
 - **Where pull runs (decision C):** the session host (`internal/sessionhost`), which already owns the PTY and outlives the app. A rollout watch per hosted codex session (stat-poll every 2 s while `working`) writes through `workbench session-state`'s code path. The Desktop poll from #959 is the bridge until then; afterwards it serves only a session on the local-PTY fallback (PROJ-20), which the session host does not own (G5). Both writers go through `recordAgentState(…, onlyFrom: working)` stamped with the rollout line's time, so a double report writes once.
+- **When the rollout cannot be read, the row never stays silently `working`.** The watch (and the #959 bridge, through the same `sessionfeed.CodexLastTurn`, which returns a typed reason instead of "not failed") handles each case:
+
+  | Case | Detected by | What happens | Gives up |
+  |---|---|---|---|
+  | No path yet (`agent_transcript_path` NULL before codex's SessionStart) | the row | not armed; the row's state comes from hooks only, as today | — (armed by the SessionStart write) |
+  | File missing | `ENOENT` on stat | retry each tick; once, look it up by session id under `$CODEX_HOME/sessions` (`sessionfeed.LocateCodex`) | after 30 s missing → `unwatched: missing` |
+  | Path stale or rotated (resume, fork, compact onto another file; file replaced) | the row's `agent_transcript_path` changed, or the inode changed, or the size shrank | re-read the row each tick; reopen from the start and read only the tail after the current turn's start time | never on its own; a rotation is not a failure |
+  | Permission denied | `EACCES`/`EPERM` | — | at once → `unwatched: permission` |
+  | zstd before G6 / N1 | the magic bytes | — | at once → `unwatched: compressed` |
+  | Truncated or partial | last line without a newline; an undecodable line | an incomplete last line is left for the next tick; undecodable lines are counted | an undecodable tail for 3 ticks in a row → `unwatched: unreadable` |
+  | Watcher down (session host restarted, local-PTY fallback without the app) | the host's adoption at start (PROJ-20) re-arms every hosted codex row | the bridge poll covers a fallback session while the app runs | — |
+
+  `unwatched` is written to two new nullable columns, `terminal_sessions.agent_watch_issue` (`missing`/`permission`/`compressed`/`unreadable`) and `agent_watch_issue_at` (next free migration, mirrored in `schema.sql` and the Swift test schema), by the same code path, only over a `working` codex row. The next hook event for the row (a prompt, a tool, a Stop, a SessionStart with a new path) clears it and re-arms the watch. The Desktop and the phone (`SessionAgentStatus`, the hub's `resolveState`) show "Working · not watched" with the reason (mockup U6) instead of a plain Working. One log line per row and issue, with the row id and the issue class only, no path (FILES-01). The watch also stops at the row's `finished_at`, deletion or a non-`working` state.
 - **Session capabilities**, from `Adapter.Caps()`:
   - `state_events` (the set it reports);
   - `failure_signal` (hook / pull / none);
@@ -258,16 +294,74 @@ New package `internal/sessionagent`, the session-side twin of the registry. It a
   They reach Swift and the phone through a shared fixture `agent_capabilities.json`, embedded in Go and copied into the Kit, with a Go↔Swift dual-path test in the style of POLICY-02's `policy_cases.json`.
 - **Consumers ask `Caps`, not `kind`:**
   - `WorkchatModel.holdsUntilIdle` = `!midturn_input` (S5);
-  - the hub's `session_input` and `permission` handlers refuse with a new reason, `not_supported`, and the copy "Codex sessions can't take messages from the phone yet". This replaces `sessionGoneMessage` (S4);
+  - the hub's `session_input` and `permission` handlers refuse with a new reason, `not_supported`, and an owner-readable `message`. This replaces `sessionGoneMessage` (S4). Compatibility with an older phone:
+    - The Kit's `ActionReason` is a closed enum (`WatchtowerKit/Sources/WatchtowerSync/Relay/ActionReason.swift`), but the decoder maps an unknown raw value to `nil` instead of failing (`ActionRequestPayload.swift:170`, `ReplicaStore+PendingActions.swift:143`), and a failed line renders the hub's `errorMessage` (`WatchtowerMobile/Sources/Features/Workbench/SessionInputSender.swift`, `case (.failed, _)`). So an older phone shows the hub's message for `not_supported` and nothing breaks; the message itself is the fallback.
+    - A newer Kit adds `case notSupported = "not_supported"` so it can, for example, hide a retry. Release order: the hub change needs no order (older phones read the message); per the house practice of ask #232 the phone build with the new case ships first or together with the Mac release;
   - `session-probe` uses `Probe` (S6).
-- **One known schema step.** `terminal_sessions.kind` has `CHECK(kind IN ('claude','codex','shell'))`, so a new agent kind needs a table-rebuild migration (the `add-migration` dance). This is accepted and named in the end state below; the CHECK is not dropped.
+- **One known schema step.** `terminal_sessions.kind` has `CHECK(kind IN ('claude','codex','shell'))`, so a new agent kind needs a table-rebuild migration (the `add-migration` dance). The proposal keeps the CHECK and pays that migration when a kind is added; it waits for the owner's sign-off (N2).
 
 ### 3.6 End state
 
 **Adding a fourth transport means writing one adapter, adding one capability row, and passing the contract suite.** Concretely:
 - **Model transport:** an adapter package; a `providers.Provider` row with `Caps` and constructors in `cmd/transport_wiring.go`; recorded fixtures; the suite green with every unsupported cell asserted.
-- **Workbench agent:** a `sessionagent.Adapter`; the `terminal_sessions.kind` migration; the Swift `AgentKind` case and `AgentInputProfile` row; fixtures; the suite green.
+- **Workbench agent:** a `sessionagent.Adapter`; the `terminal_sessions.kind` migration (N2); the Swift `AgentKind` case and `AgentInputProfile` row; fixtures; the suite green.
 - **Nothing else.** No consumer file changes, and the guard test (§4.4) enforces that.
+
+### 3.7 New UI states
+
+Every state below is built from the design kit (`docs/design/desktop-style-guide.md`) and registered in `DesignShotCatalog` on fixture data before review. Copy is final unless the review changes it.
+
+**U1. Attach not available** (L6). `ChatComposerField`'s paperclip stays visible but disabled (`.kitIcon(isOn: false)` with `.disabled`), its `.help` gives the reason. A dropped or pasted image is not added; the reason shows as one `.caption` line in `.secondary` in the composer's existing `routingState` column (`ChatComposerView`).
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │ Current provider: Codex · gpt-6-sol                          │  .caption .secondary
+    │ Images and PDFs need a provider that reads them.             │  .caption .secondary
+    │ ┌──────────────────────────────────────────────────────────┐ │
+    │ │ (⌀📎)  Ask anything…                                    ⏎ │ │  paperclip .kitIcon, disabled
+    │ └──────────────────────────────────────────────────────────┘ │
+    └──────────────────────────────────────────────────────────────┘
+
+**U2. Workchat without mid-turn input** (S5). While the agent works, the `WorkchatComposer` shows one `.caption2` `.secondary` line above the field; a sent line keeps today's dashed queued bubble with `queuedCaption(holdsUntilIdle: true)`.
+
+    Codex takes your message when this turn ends.                  .caption2 .secondary
+    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+      also check the migration        dashed bubble (Radius.container)
+    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    Queued · sends when the agent stops · Cancel                   .caption2, Cancel .link
+
+**U3. Ollama provider line, no routing card** (L11). `routingPresentation` is built from the provider's display name and `capabilities` instead of `ProviderFallbackPreview.Provider`. A provider without a `reserve_peer` gets the line only; `ChatRoutingStatusView` (the routing card) appears only for a provider with one. The missing capabilities follow as one `.caption` `.secondary` line.
+
+    Current provider: Ollama · llama3.1                             .caption .secondary
+    No images, file reading or Quick Connections with this provider.  .caption .secondary
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 📎  Ask anything…                                          ⏎ │
+    └──────────────────────────────────────────────────────────────┘
+
+**U4. Codex in the Analytics pane** (S9, decision D). `AgentAnalyticsPaneView` lists codex sessions beside Claude Code ones; each session row (`.kitRow`) carries an agent `OutlineTag` ("Codex" / "Claude Code", from `agentkind` display names). Cost reads "no price" in `.secondary` for a model without a price. A block the rollout cannot fill (Context, Skills) shows a one-line "Not measured for Codex sessions" caption inside its `.card()`, never an empty chart.
+
+    Sessions                                                     SectionHeader
+    ┌──────────────────────────────────────────────────────────────┐
+    │ Fix login redirect   [Claude Code]   42 min   $1.80          │ .kitRow + OutlineTag
+    │ Migrate cache keys   [Codex]         31 min   no price       │ .kitRow + OutlineTag
+    └──────────────────────────────────────────────────────────────┘
+    Context                                                      SectionHeader
+    ┌──────────────────────────────────────────────────────────────┐
+    │ Not measured for Codex sessions.                             │ .card(), .caption .secondary
+    └──────────────────────────────────────────────────────────────┘
+
+**U5. Phone: not supported** (S4). The phone's line row takes the existing failed state of `SessionInputSender` (`LineRow`, `.failed(message)`), whose text is the hub's `message`; the colour comes from `Tone` in `WatchtowerDesign`. The composer stays hidden for a session whose `midturn_input` and idle input are both off, so this text appears only on a race (the session's agent changed) or an older phone.
+
+    ┌──────────────────────────────────────┐
+    │ also check the migration             │
+    │ ⚠ Codex sessions can't take messages │  failed LineRow, Tone.warning
+    │   from the phone yet. Type it on the │
+    │   Mac.                               │
+    └──────────────────────────────────────┘
+
+**U6. Working · not watched** (§3.5). The sessions panel row and the session strip show the Working state with a `.caption` suffix; the phone's session row the same text. The tooltip names the reason.
+
+    ● Working · not watched                                         Chip(Tone.status working) + .caption .secondary
+      tooltip: Watchtower can't read this Codex session's log (compressed). Watching starts again with the next prompt.
 
 ## 4. The contract test suite
 
@@ -293,13 +387,14 @@ A scenario lists the levels it applies to and the capabilities it `Requires`.
 | timeout and context kill | the process group is reaped: no pid of the fake's grandchild survives (checked with `kill(pid, 0)` until ESRCH) |
 | usage with cache | the split matches the fixture; `tokens_in` = fresh + cache; the AUTO-08 debit = fresh + output |
 | multi-turn replay | turn 2 on a replay transport carries turn 1's text, step summaries and re-attached text files; on a warm transport the child is reused |
-| turn cap | at `cap + 1` tool calls the run stops with `budget`, whether the cap is `native` or `counted` (decision A: 12 for `agent()`, `specreview.MaxTurns` for the reviewer) |
+| turn cap (one unit) | the same fixture shapes on every transport: (a) N responses each with one tool call; (b) one response with three parallel tool calls; (c) a text-only answer. Asserts: (a) stops with `budget` exactly when response N+1 starts; (b) counts **one** turn on every transport; (c) one turn. Claude by its `error_max_turns` fixture, runtime B by `MaxIterations`, codex by the stream rule (§3.4); decision A's caps 12 / `specreview.MaxTurns` |
 | image / PDF / read-folder / web search | supported → used; unsupported → `CapabilityError` before any child starts |
 
 Workbench sessions use the same table style, at the level of `sessionagent.Adapter` + `recordAgentState` over a temp DB:
 - prompt → working; tool → working; permission → approval; stop → waiting;
 - failure → waiting + `agent_failed_at`, from a hook (claude) or a pull (codex rollout);
 - interrupt → waiting;
+- rollout unreadable (missing, permission, compressed, truncated, rotated) → the §3.5 table, never a plain `working` after the give-up time;
 - subagent start/stop counts;
 - SessionStart startup/resume/clear/compact;
 - a foreign session id writes nothing; an older event writes nothing;
@@ -350,14 +445,14 @@ Both use a **ratchet baseline** (`llmtransport_allow.txt`): every current hit is
 | CHAT-02 | Strengthened: the guards run through the suite on every chat backend (warm claude, codex, runtime B), not only the Claude translator and one codex test |
 | CHAT-03 | Wording: "Session reaps the `claude` child" becomes "the backend's child process group, any transport". The guards gain suite rows |
 | CHAT-04 | Kept; the shared runner and the fake's argv assertion now cover every transport |
-| AUTO-08 | Ask #507, decision A: an `agent()` call stops at 12 turns on every CLI transport; on Codex the cap counts tool calls from the event stream and stops the process group at the 13th start (`budget`). The token meaning is unchanged (ask #488). New guard: a contract-suite row per transport |
-| LLMUSAGE-01 | Provider values: runtime B over Ollama records `ollama`. `knownNonLLMExec` entries move with the runner. Recording stays at the leaf |
-| PROJ-11 | The Codex mapping table gains the pull events (rollout failure → failure write, `turn_aborted`/`Interrupt` → waiting) and the single `sessionagent` entry point. The "Codex v1 limits" lose "no Error state" and the blind probe |
+| AUTO-08 | Ask #507, decision A: an `agent()` call stops at 12 model turns on every transport (Claude `--max-turns`, runtime B `MaxIterations`, Codex the stream rule of §3.4, which stops the process group when the 13th model turn starts, `budget`); parallel tool calls of one response are one turn. The token meaning is unchanged (ask #488). New guard: the contract-suite "turn cap" rows per transport |
+| LLMUSAGE-01 | Provider values: runtime B over Ollama records `ollama`; a stored `http` is reported as `ollama` (N3, pending sign-off). `knownNonLLMExec` entries move with the runner. Recording stays at the leaf |
+| PROJ-11 | Ask #499 option A: the Codex mapping table gains the pull events (rollout failure → failure write, `turn_aborted`/`Interrupt` → waiting) and the single `sessionagent` entry point; "never show a stale state" gains the `unwatched` rule (§3.5: never a silent `working`). The "Codex v1 limits" lose "no Error state" and the blind probe |
 | PROJ-16 | The heading's "Claude Code session" becomes "a session whose agent takes input from the phone (`midturn_input`/idle input caps)". A refused kind gets `not_supported`, not "not found" |
 | PROJ-21 | The same, by `permission_wait`. Codex stays refused until a spike shows codex's `PermissionRequest` hook can hold and answer |
-| FEED-01 / FEED-02 | Kept. Reading a zstd rollout decompresses in memory only and writes nothing (S7); the zstd dependency is accepted (ask #507) |
+| FEED-01 / FEED-02 | Kept. Reading a zstd rollout decompresses in memory only and writes nothing (S7); the zstd dependency waits for sign-off (N1) |
 | AGENTLOG-04 | Ask #507, decision D: besides `~/.claude/projects`, rollouts under `$CODEX_HOME/sessions` are read, only for a codex `terminal_sessions` row of the workbench (its stored `agent_transcript_path`, or a rollout whose session id matches the row and whose cwd is the workbench folder or one of its worktree roots, longest folder wins), never through a symlink. AGENTLOG-01/02/05/06 hold unchanged for codex; a codex model without a price shows tokens and 'no price', as the ledger does |
-| SPECREVIEW-01 | Kept (read-only reviewer); decision A adds the counted `specreview.MaxTurns` cap on codex |
+| SPECREVIEW-01 | Kept (read-only reviewer, ephemeral run); decision A adds the `specreview.MaxTurns` model-turn cap on codex by the stream rule |
 | POLICY-02 / POLICY-03 | Kept; the policy filters before capabilities |
 | New LLMTRANSPORT-01 | Consumers decide by capability; every adapter passes the suite with no skipped cell |
 
@@ -365,21 +460,21 @@ PLANUSAGE-01..03 are untouched: the Claude plan stays an account feature.
 
 ## 6. Work packages
 
-The gaps come first. Each package is one lane, with its own worktree and one PR into `feature/transport-neutral`, per the house rules. Packages with no dependencies can run in parallel.
+The gaps come first. Each package is one lane in its own worktree and branch. A lane is reviewed and then merged into `feature/transport-neutral` (no PR for a lane). `feature/transport-neutral` merges back into `feature/codex-parity`, which ships to `main` in PR #686; only that merge into `main` goes through a PR, with the owner's approval. Packages with no dependencies can run in parallel.
 
 | # | Package | Depends on | Touches | Risk |
 |---|---|---|---|---|
 | G1 | **claude one-shot line reader** (L1): the claude one-shot `Query` moves onto the shared 64 MiB skip-oversize reader extracted from codex, stdout drained before `Wait` (L2 is fixed by #957; group-only `ConfigureChild` moves to A4) | — | `internal/ai/client.go`, `internal/codex/stream.go` (extract the reader) | low |
-| G2 | **codex turn cap** (L3, L4), decision A: count `tool_start`s in the codex stream, cancel the group at the cap, report `budget` | — | `internal/codex/client.go`/`stream.go` (count tool starts, cancel the group at N), `cmd/automations_backends.go`, `cmd/workbench_spec_review.go`, `docs/inventory/automations.md` | medium (AUTO-08 amendment) |
+| G2 | **codex turn cap** (L3, L4), decision A: `codex.turnCounter` (§3.4) counts model turns in the stream, cancels the group when turn N+1 starts, reports `budget`. Starts with a spike recording a codex response with parallel tool calls (and checking for serial execution of one response's calls) into the fixtures | — | `internal/codex/client.go`/`stream.go`, `cmd/automations_backends.go`, `cmd/workbench_spec_review.go`, `docs/inventory/automations.md` | medium (AUTO-08 amendment; spike outcome may add the rollout counter for `agent()`) |
 | G3 | **runtime B / ollama stream parity** (L7, L9, L10): usage chunk, typed failures (`providers/ollama_failure.go`), `--read-folder` refused with a capability error, `CodeForFailure` | — | `internal/agentloop`, `internal/ollama`, `internal/providers`, `internal/chat/turn_backend.go`, `cmd/ai.go` | low |
 | G4 | **codex chat images and web search** (L5, L6 Go half): codex `Query` takes `--image` for image attachments; web search on or off explicitly, matching the prompt | — (spike first: `codex exec --image` with tools and MCP) | `internal/codex/client.go`, `internal/chat/attachments.go`, `cmd/ai_session.go`, `internal/chat/prompt*.go` | medium (live check needed) |
-| G5 | **codex session failure and interrupt** (S1, S2, S6), decision C. Phase 1: land #959 (Desktop poll + `Interrupt` hook) as the bridge. Phase 2: the session host watches each hosted codex session's rollout and writes the failure and interrupt events; the Desktop poll then runs only for a local-PTY-fallback session (PROJ-20) and is otherwise off | #959 merged (`fix/codex-tail-sessionwait`) | `internal/sessionfeed/codex_turn.go`, `cmd/workbench_session_probe.go`, `cmd/workbench_session_state.go`, `internal/sessionhost` (or `internal/daemon`), `SessionBackgroundProber.swift` (removal) | medium (PROJ-11) |
-| G6 | **zstd rollouts and codex feed parity** (S7, S8), with the shared rollout decoder G8 reuses | — (dependency accepted) | `internal/sessionfeed/{codex,live,feed}.go`, `internal/terminal/codex_rollout.go`, `go.mod` | low |
-| G7 | **honest phone and Workchat for codex** (S3, S4, S5, S10): `not_supported` reason and copy; spike codex mid-turn input and `PermissionRequest` answer; enable what the spike proves | — | `internal/hub/actions/handlers/{session_input,permission}.go`, Swift `SessionInputHandlers.swift`, `PermissionAnswerHandlers.swift`, `WorkchatModel.swift`, phone copy | medium (PROJ-16/21 wording) |
-| G8 | **codex rollout importer** (S9), decision D: parse rollouts into `agentlog` sessions and events (`Agent: "codex"`, tokens from `token_count` events, tool calls, owner turns), discover them under AGENTLOG-04 as amended, attach them to codex rows (a `CodexTerminalSessionIDs` twin of `ClaudeTerminalSessionIDs`), so `agentreport`, the Analytics pane and the coach's metrics include codex; codex models without a price stay unpriced | G6 (zstd reader); A5 for the final wiring through the adapter's `Transcript` (the parser can start in parallel) | new `internal/agentlog/codex.go`, `internal/agentlog/discover.go`, `internal/agentlog/scan.go`, `internal/db/workbench_agent_analytics.go`, `internal/coach` (reads agentlog; no change expected), Swift Analytics copy, `docs/inventory/agent-analytics.md` | high (new parser, AGENTLOG-04) |
+| G5 | **codex session failure and interrupt** (S1, S2, S6), decision C, ask #499. Phase 1: land #959 (Desktop poll + `Interrupt` hook) as the bridge. Phase 2: the session host watches each hosted codex session's rollout and writes the failure and interrupt events, with the §3.5 unreadable-rollout table and the `agent_watch_issue` columns (migration); the Desktop poll then runs only for a local-PTY-fallback session (PROJ-20) and is otherwise off | #959 merged (`fix/codex-tail-sessionwait`) | `internal/sessionfeed/codex_turn.go`, `cmd/workbench_session_probe.go`, `cmd/workbench_session_state.go`, `internal/sessionhost`, `internal/db/migrations` + `schema.sql`, `SessionBackgroundProber.swift`, `SessionAgentStatus`, hub `resolveState`, phone session row (U6) | medium (PROJ-11, migration) |
+| G6 | **zstd rollouts and codex feed parity** (S7, S8), with the shared rollout decoder G8 and G5 reuse | N1 signed off (S8 can start without it) | `internal/sessionfeed/{codex,live,feed}.go`, `internal/terminal/codex_rollout.go`, `go.mod` | low |
+| G7 | **honest phone and Workchat for codex** (S3, S4, S5, S10): `not_supported` reason with its message (old-phone fallback, §3.5), Kit `ActionReason.notSupported`, U2 and U5; spike codex mid-turn input and `PermissionRequest` answer; enable what the spike proves | — | `internal/hub/actions/handlers/{session_input,permission,deps}.go`, Swift `SessionInputHandlers.swift`, `PermissionAnswerHandlers.swift`, `WorkchatModel.swift`, `WorkchatComposer.swift`, Kit `ActionReason.swift`, phone `SessionInputSender.swift` | medium (PROJ-16/21 wording; phone ships first or with the Mac) |
+| G8 | **codex rollout importer** (S9), decision D: parse rollouts into `agentlog` sessions and events (`Agent: "codex"`, tokens from `token_count` events, tool calls, owner turns), discover them under AGENTLOG-04 as amended, attach them to codex rows (a `CodexTerminalSessionIDs` twin of `ClaudeTerminalSessionIDs`), so `agentreport`, the Analytics pane and the coach's metrics include codex; codex models without a price stay unpriced | G6 (zstd reader); A5 for the final wiring through the adapter's `Transcript` (the parser can start in parallel) | new `internal/agentlog/codex.go`, `internal/agentlog/discover.go`, `internal/agentlog/scan.go`, `internal/db/workbench_agent_analytics.go`, `internal/coach` (reads agentlog; no change expected), Swift Analytics pane (U4), `docs/inventory/agent-analytics.md` | high (new parser, AGENTLOG-04) |
 | A1 | **contract suite harness + fixtures + matrix golden**, recording today's truth (the current gaps show as `unsupported` or failing rows marked `gap:Lx` in the golden) | — | new `internal/transporttest`, `scripts/record-transport-fixtures.sh`, `internal/chat/testdata/scrub_fixtures.py` | low; can start day one in parallel with G1–G8 |
-| A2 | **capability rows**: `providers.Capabilities`, `ai models --json` / `session_ready` `capabilities`, consumers and Swift read them (L6 UI half, L11, the Swift name checks); hand tables replaced | A1 (the matrix reads `Caps`) | `internal/providers`, `cmd/ai_session*.go`, `cmd/tool_routing.go`, `cmd/automations_backends.go`, `internal/providerrouting/router.go`, `internal/chat/attachments.go`, Swift `AIModelCatalog`, `ChatEvent`, `TargetChatViewModel`, `AutomationEditorChatSurface`, `CodeQuestionSurface`, `ChatSessionPool`, `QuickConnectionsProviderNotice`, `ChatViewModel`, composer | medium (touches the fallback router: coordinate with #1480) |
-| A3 | **usage block** `llmusage.Tokens` embedded in `ai.Usage`/`TurnUsage`/`digest.Usage`, the v2 `usage` keys, one provider label | A1 | `internal/llmusage`, `internal/ai`, `internal/digest`, `internal/codex`, `internal/ollama`, `internal/agentloop`, `internal/chat`, `internal/automations/attempt_meter.go`, Swift `ChatEvent` | medium (many files, no behaviour change) |
+| A2 | **capability rows, one source for Go and Swift**: `providers.Capabilities` (incl. `reserve_peer`) exposed in `ai models --json` and `session_ready` `capabilities`; Go consumers and Swift read them (L6 UI half U1, L11 U3, the Swift name checks); hand tables replaced. Swift's re-implemented fallback-pair rules (`ConfigService.selectPreferredProvider`/`reserveModel`/`validateAISelection`, `Services/ConfigService.swift:295-341,405-415`, and `ProviderFallbackPreview.Provider`) read `reserve_peer` and `capabilities` from `AIModelCatalog` instead of hard-coding claude↔codex; a Go↔Swift dual-path test pins that Swift decides nothing the table does not say | A1 (the matrix reads `Caps`) | `internal/providers`, `cmd/ai_session*.go`, `cmd/tool_routing.go`, `cmd/automations_backends.go`, `internal/providerrouting/router.go`, `internal/chat/attachments.go`, Swift `AIModelCatalog`, `ChatEvent`, `ConfigService`, `ProviderSettings`, `ProviderFallbackPreview`, `ProviderSettingsHealth`, `TargetChatViewModel`, `AutomationEditorChatSurface`, `CodeQuestionSurface`, `ChatSessionPool`, `QuickConnectionsProviderNotice`, `ChatViewModel`, `ChatComposerView`, `ChatComposerField` | medium (touches the fallback router: coordinate with #1480) |
+| A3 | **usage block** `llmusage.Tokens` embedded in `ai.Usage`/`TurnUsage`/`digest.Usage`, the v2 `usage` keys, one provider label (and the N3 reader mapping once signed off) | A1 | `internal/llmusage`, `internal/ai`, `internal/digest`, `internal/codex`, `internal/ollama`, `internal/agentloop`, `internal/chat`, `internal/automations/attempt_meter.go`, Swift `ChatEvent` | medium (many files, no behaviour change) |
 | A4 | **one factory + options struct**, the switches and probes removed, `ConfigureChild` group-only (`SetProcessGroup` gone) | A2 | `internal/ai/client.go`, `cmd/generator.go`, `cmd/ai.go`, `cmd/ai_session.go`, `cmd/workbench_spec_review.go`, `internal/daemon/coach.go`, `cmd/coach.go`, `cmd/automations_backends.go`, new `cmd/transport_wiring.go` | medium (wide, mechanical) |
 | A5 | **`internal/sessionagent`**: adapters, `Event` (moved `hookEvent`), `Caps`, `agent_capabilities.json` dual path | G5, A1 | `cmd/workbench_*` hook entry points, `internal/devpack`, `internal/agentkind`, `internal/sessionfeed`, `internal/terminal`, Swift `AgentKind`, Kit | high (PROJ-11/12/13 guards must stay green) |
 | A6 | **LLMTRANSPORT-01 guard** (Go + Swift) with a full baseline, then shrink it in A2/A4/A5 | — (land early); shrinkage after A2, A4, A5 | `internal/transporttest` (or `internal/providers`) test, `Tests/Core`, `docs/inventory/llm-transport.md`, `docs/inventory/README.md` | low |
