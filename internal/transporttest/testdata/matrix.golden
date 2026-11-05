@@ -117,9 +117,9 @@ codex/stream read-folder pass
 codex/stream timeout-kill pass
 codex/stream tool-failed pass
 codex/stream tool-ok pass
-codex/stream turn-cap-parallel pass
+codex/stream turn-cap-parallel gap:L3
 codex/stream turn-cap-sequential gap:L3
-codex/stream turn-cap-text pass
+codex/stream turn-cap-text gap:L3
 codex/stream two-messages pass
 codex/stream usage-cache pass
 ollama/batch fail-auth gap:L10
@@ -164,7 +164,7 @@ runtime-b/chat pdf unsupported
 runtime-b/chat plain-answer gap:L7
 runtime-b/chat timeout-kill pass
 runtime-b/chat tool-failed pass
-runtime-b/chat tool-ok pass
+runtime-b/chat tool-ok gap:L7
 runtime-b/chat two-messages gap:L7
 runtime-b/chat usage-cache unsupported
 runtime-b/chat web-search unsupported
@@ -179,7 +179,7 @@ runtime-b/stream plain-answer gap:L7
 runtime-b/stream read-folder gap:L9
 runtime-b/stream timeout-kill pass
 runtime-b/stream tool-failed pass
-runtime-b/stream tool-ok pass
+runtime-b/stream tool-ok gap:L7
 runtime-b/stream turn-cap-parallel pass
 runtime-b/stream turn-cap-sequential pass
 runtime-b/stream turn-cap-text pass

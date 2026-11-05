@@ -137,15 +137,17 @@ func (c Caps) Has(want Cap) bool {
 
 // Adapter is one transport as the suite drives it: through today's public
 // constructors, configured the way production configures them. A nil level
-// function means the transport has no such level (no cell).
+// function means the transport has no such level (no cell). The wiring
+// mirrors cmd's by hand, so a task that changes how cmd configures a
+// transport (a turn cap, web search, a new option) changes the matching
+// adapter here in the same change and flips its cells.
 type Adapter struct {
-	Name     string // the matrix name prefix
-	Fixtures string // testdata/<Fixtures>/
-	Caps     Caps
-	Batch    func(r *run) digest.Generator
-	Stream   func(r *run) chat.Querier
-	Chat     func(r *run) chat.Backend
-	Session  *sessionAgent
+	Name    string // the matrix name prefix and the testdata/<Name>/ fixture dir
+	Caps    Caps
+	Batch   func(r *run) digest.Generator
+	Stream  func(r *run) chat.Querier
+	Chat    func(r *run) chat.Backend
+	Session *sessionAgent
 }
 
 func (a *Adapter) levels() []Level {
@@ -175,7 +177,7 @@ const (
 // adapters is every transport of the suite.
 var adapters = []*Adapter{
 	{
-		Name: "claude", Fixtures: "claude",
+		Name: "claude",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "split",
 			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
 			Interrupt: "in_turn", WarmSession: true, ChildProcess: true,
@@ -195,6 +197,7 @@ var adapters = []*Adapter{
 			}
 			if r.maxTurns > 0 {
 				c.SetMaxTurns(r.maxTurns)
+				r.capApplied = true
 			}
 			return c
 		},
@@ -209,7 +212,7 @@ var adapters = []*Adapter{
 		Session: claudeSession,
 	},
 	{
-		Name: "codex", Fixtures: "codex",
+		Name: "codex",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "message", Usage: "split",
 			Images: true, WebSearch: true, ReadFolder: "shell_sandbox", TurnCap: "counted",
 			Interrupt: "kill_turn", ChildProcess: true,
@@ -230,7 +233,7 @@ var adapters = []*Adapter{
 		Session: codexSession,
 	},
 	{
-		Name: "ollama", Fixtures: "ollama",
+		Name:  "ollama",
 		Caps:  Caps{Tools: "none", TextStream: "token", Usage: "totals", ReadFolder: "none", TurnCap: "none", Interrupt: "kill_turn"},
 		Batch: func(r *run) digest.Generator { return ollama.NewGenerator(fakeModel, fakeModel, r.serverURL()) },
 		// `ai query --read-folder` on ollama builds the same client: the
@@ -238,7 +241,7 @@ var adapters = []*Adapter{
 		Stream: func(r *run) chat.Querier { return ollama.NewClient(fakeModel, r.serverURL()) },
 	},
 	{
-		Name: "runtime-b", Fixtures: "runtime-b",
+		Name: "runtime-b",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "final", Usage: "totals",
 			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn"},
 		Stream: func(r *run) chat.Querier { return runtimeB(r) },
@@ -272,6 +275,7 @@ func runtimeB(r *run) *agentloop.Client {
 	c := agentloop.NewClientWithOptions(fakeModel, r.serverURL(), reg,
 		tools.Binding{Surface: "main", ConversationID: r.conv, TurnID: "t2"},
 		agentloop.Options{MaxIterations: r.maxTurns})
+	r.capApplied = r.maxTurns > 0
 	c.EmitToolEvents()
 	return c
 }
@@ -284,6 +288,9 @@ type run struct {
 	fakeLog    string // the fake CLI's invocation log
 	readFolder string // set: a read-folder run
 	maxTurns   int
+	// capApplied is set by an adapter that put maxTurns in force (a codex
+	// client has no turn cap yet: L3).
+	capApplied bool
 
 	srvOnce sync.Once
 	srv     *fakeServer
@@ -328,7 +335,16 @@ func (r *run) requests() []string {
 // turn t2 persisted. The conversation is r.conv after the first call.
 func (r *run) chatDB() *db.DB {
 	r.dbOnce.Do(func() {
-		r.db = db.OpenTestDB(r.t)
+		path := filepath.Join(r.dir, "chat.db")
+		raw, err := os.ReadFile(migratedDB(r.t))
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		writeFile(r.t, path, string(raw))
+		if r.db, err = db.Open(path); err != nil {
+			r.t.Fatal(err)
+		}
+		r.t.Cleanup(func() { _ = r.db.Close() })
 		res, err := r.db.Exec(`INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('', 1, 1)`)
 		if err != nil {
 			r.t.Fatal(err)
@@ -363,59 +379,110 @@ type launch struct {
 
 func readLaunches(t *testing.T, path string) []launch {
 	t.Helper()
+	l, _ := readFakeLog(t, path)
+	return l
+}
+
+// readFakeLog reads the fake CLI's log: its launches (with their
+// grandchildren) and the errors it exited on.
+func readFakeLog(t *testing.T, path string) (out []launch, fakeErrors []string) {
+	t.Helper()
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	var out []launch
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
 	for sc.Scan() {
 		var line struct {
 			launch
-			Grandchild int `json:"grandchild"`
+			Grandchild int    `json:"grandchild"`
+			FakeError  string `json:"fake_error"`
 		}
-		if json.Unmarshal(sc.Bytes(), &line) != nil {
+		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
+			t.Errorf("fake log line %q: %v", sc.Text(), err)
 			continue
 		}
 		switch {
+		case line.FakeError != "":
+			fakeErrors = append(fakeErrors, line.FakeError)
 		case line.Grandchild > 0 && len(out) > 0:
 			out[len(out)-1].Grandchildren = append(out[len(out)-1].Grandchildren, line.Grandchild)
 		case line.PID > 0:
 			out = append(out, line.launch)
 		}
 	}
-	return out
+	return out, fakeErrors
 }
 
 // fakeServer replays a fixture as an OpenAI-compatible endpoint: section n
-// answers the n-th request (the last repeats). Directives: "#! status N",
-// "#! sleep D", "#! hang" (until the request is cancelled); every other
-// non-comment line is written as a body line and flushed.
+// answers the n-th request (the last repeats; sections split as the fake
+// CLI splits them, fakecli/main.go). Directives: "#! status N", "#! sleep
+// D", "#! hang" (until the request is cancelled), and the CLI's "#! exit
+// N", which over HTTP answers 599; "#! stderr" is the CLI's only. Every
+// other non-comment line is written as a body line and flushed. An unknown
+// or unparsable directive fails the cell.
 type fakeServer struct {
 	*httptest.Server
 	mu   sync.Mutex
 	reqs []string
 }
 
-func newFakeServer(t *testing.T, fixture string) *fakeServer {
+// httpStep is one parsed line of a fakeServer section.
+type httpStep struct {
+	status int           // > 0: set the status
+	sleep  time.Duration // > 0: sleep
+	hang   bool
+	line   string // a body line when the others are zero
+}
+
+func parseHTTPFixture(t *testing.T, fixture string) [][]httpStep {
+	t.Helper()
 	raw, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sections [][]string
-	sections = append(sections, nil)
+	sections := [][]httpStep{nil}
 	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.TrimSpace(line) == "#! next-invocation" {
+		directive, isDirective := strings.CutPrefix(line, "#!")
+		name, arg, _ := strings.Cut(strings.TrimSpace(directive), " ")
+		var step httpStep
+		switch {
+		case isDirective && name == "next-invocation":
 			sections = append(sections, nil)
 			continue
+		case isDirective && name == "status":
+			if step.status, err = strconv.Atoi(arg); err != nil || step.status < 100 {
+				t.Fatalf("%s: bad status %q", fixture, arg)
+			}
+		case isDirective && name == "exit":
+			step.status = 599
+		case isDirective && name == "sleep":
+			if step.sleep, err = time.ParseDuration(arg); err != nil {
+				t.Fatalf("%s: bad sleep %q", fixture, arg)
+			}
+		case isDirective && name == "hang":
+			step.hang = true
+		case isDirective && name == "stderr":
+			continue
+		case isDirective:
+			t.Fatalf("%s: directive %q has no HTTP meaning", fixture, name)
+		case strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "":
+			continue
+		default:
+			step.line = line
 		}
-		sections[len(sections)-1] = append(sections[len(sections)-1], line)
+		sections[len(sections)-1] = append(sections[len(sections)-1], step)
 	}
+	return sections
+}
+
+func newFakeServer(t *testing.T, fixture string) *fakeServer {
+	sections := parseHTTPFixture(t, fixture)
 	s := &fakeServer{}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, _ := io.ReadAll(req.Body)
@@ -425,26 +492,19 @@ func newFakeServer(t *testing.T, fixture string) *fakeServer {
 		s.mu.Unlock()
 		status := http.StatusOK
 		var out []string
-		for _, line := range sections[min(n, len(sections)-1)] {
-			directive, isDirective := strings.CutPrefix(line, "#!")
+		for _, step := range sections[min(n, len(sections)-1)] {
 			switch {
-			case isDirective:
-				name, arg, _ := strings.Cut(strings.TrimSpace(directive), " ")
-				switch name {
-				case "status":
-					status, _ = strconv.Atoi(arg)
-				case "sleep":
-					d, _ := time.ParseDuration(arg)
-					time.Sleep(d)
-				case "hang":
-					w.WriteHeader(status)
-					writeLines(w, out)
-					<-req.Context().Done()
-					return
-				}
-			case strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "":
+			case step.status > 0:
+				status = step.status
+			case step.sleep > 0:
+				time.Sleep(step.sleep)
+			case step.hang:
+				w.WriteHeader(status)
+				writeLines(w, out)
+				<-req.Context().Done()
+				return
 			default:
-				out = append(out, line)
+				out = append(out, step.line)
 			}
 		}
 		w.WriteHeader(status)
@@ -485,13 +545,17 @@ type Outcome struct {
 	Alive []bool
 	// Session is the session level's result.
 	Session *sessionResult
+	// FakeErrors are what the fake CLI rejected (argv, stdin, a directive).
+	FakeErrors []string
+	// CapApplied says the adapter put the scenario's turn cap in force.
+	CapApplied bool
 }
 
-func driveBatch(ctx context.Context, r *run, a *Adapter, _ *Scenario, o *Outcome) {
+func driveBatch(ctx context.Context, r *run, a *Adapter, o *Outcome) {
 	o.Text, o.Usage, _, o.Err = a.Batch(r).Generate(ctx, sysPrompt, userPrompt, "")
 }
 
-func driveStream(ctx context.Context, r *run, a *Adapter, _ *Scenario, o *Outcome) {
+func driveStream(ctx context.Context, r *run, a *Adapter, o *Outcome) {
 	textCh, errCh, sidCh := a.Stream(r).Query(ctx, sysPrompt, userPrompt, "")
 	for c := range textCh {
 		o.Events = append(o.Events, chat.ChunkEvents("t2", c)...)
@@ -570,53 +634,60 @@ func runCell(t *testing.T, a *Adapter, s *Scenario, level Level) *Outcome {
 	if level == LevelSession {
 		return &Outcome{Session: a.Session.run(t, s)}
 	}
-	r := newRun(t, fixturePath(t, a, s, level))
+	path, _ := fixturePath(t, a, s, level)
+	r := newRun(t, path)
 	r.maxTurns = s.Fixture.MaxTurns
 	if s.Fixture.ReadFolder {
 		r.readFolder = r.workDir()
 	}
 	timeout := 10 * time.Second
+	if raceEnabled {
+		timeout = 40 * time.Second
+	}
 	if s.Fixture.Drive == driveTimeout {
 		timeout = 1500 * time.Millisecond
 	}
+	r.chatDB() // set up before the run's deadline starts
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	ledger.take()
 	o := &Outcome{}
 	switch level {
 	case LevelBatch:
-		driveBatch(ctx, r, a, s, o)
+		driveBatch(ctx, r, a, o)
 	case LevelStream:
-		driveStream(ctx, r, a, s, o)
+		driveStream(ctx, r, a, o)
 	case LevelChat:
 		driveChat(ctx, r, a, s, o)
 	case LevelSession:
 		t.Fatal("a session cell has no LLM run") // handled above
 	}
-	o.Launches = readLaunches(t, r.fakeLog)
+	o.Launches, o.FakeErrors = readFakeLog(t, r.fakeLog)
+	o.CapApplied = r.capApplied
 	o.Requests = r.requests()
 	o.Calls = ledger.take()
 	return o
 }
 
 // fixturePath is testdata/<transport>/<file>.<level>.jsonl when it exists,
-// else testdata/<transport>/<file>.jsonl, else the shared "never started"
-// fixture (an unsupported cell must not start anything).
-func fixturePath(t *testing.T, a *Adapter, s *Scenario, level Level) string {
+// else testdata/<transport>/<file>.jsonl; found is false when neither does,
+// and the path is then the shared "never started" fixture (an unsupported
+// cell must not start anything).
+func fixturePath(t *testing.T, a *Adapter, s *Scenario, level Level) (path string, found bool) {
 	t.Helper()
-	dir := filepath.Join("testdata", a.Fixtures)
+	dir := filepath.Join("testdata", a.Name)
 	for _, name := range []string{s.Fixture.File + "." + string(level) + ".jsonl", s.Fixture.File + ".jsonl"} {
 		p, err := filepath.Abs(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(p); err == nil {
-			return p
+			return p, true
 		}
 	}
 	p, err := filepath.Abs(filepath.Join("testdata", "never_started.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return p
+	return p, false
 }

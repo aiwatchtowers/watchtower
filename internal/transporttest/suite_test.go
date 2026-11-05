@@ -73,6 +73,13 @@ func runMain(m *testing.M) int {
 		return 1
 	}
 	realHome, realCodexHome = os.Getenv("HOME"), os.Getenv("CODEX_HOME")
+	// A WATCHTOWER_* variable of the developer's shell (a config path, an
+	// agent marker) must not reach the adapters or their children.
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "WATCHTOWER_") {
+			_ = os.Unsetenv(name)
+		}
+	}
 	_ = os.Setenv("HOME", home)
 	_ = os.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	llmusage.SetSink(ledger)
@@ -107,8 +114,8 @@ func (s *captureSink) take() []llmusage.Call {
 }
 
 // pidGone reports whether pid no longer exists, polling kill(pid, 0) until
-// ESRCH for at most wait. A zombie of ours counts as gone once reaped by
-// the adapter; the fakes are never our direct children.
+// ESRCH for at most wait. A fake the adapter started but never waited for
+// stays a zombie and reads as not gone.
 func pidGone(pid int, wait time.Duration) bool {
 	deadline := time.Now().Add(wait)
 	for {

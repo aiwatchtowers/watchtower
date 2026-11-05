@@ -1,3 +1,4 @@
+# expect-first I’ll find the Watchtower tool
 {"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
 {"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll find the Watchtower tool and call `get_target` with ID `999999` once.\n"}}

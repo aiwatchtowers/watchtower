@@ -50,6 +50,7 @@ var knownNonLLMExec = map[string]string{
 	"extract.(*helperOCR).run":           "the Vision OCR helper",
 	"extract.runCodesign":                "codesign --verify of the OCR helper",
 	"gitbin.run":                         "git",
+	"main.spawnGrandchild":               "the transport contract suite's fake CLI (internal/transporttest/fakecli) starting its own copy to hold stdout",
 	"media.runSips":                      "sips image conversion",
 	"oauthpage.openURL":                  "/usr/bin/open of an OAuth page",
 	"ownerconfirm.codesign":              "codesign of the Desktop app",

@@ -123,8 +123,10 @@ type sessionResult struct {
 	OpenTurns []int
 	// PullErr is the pull signal's error for a step only it reports.
 	PullErr error
-	// WatchIssue is the row's agent_watch_issue after the steps (§3.5).
-	WatchIssue string
+	// WatchIssue is the row's agent_watch_issue after the steps (§3.5);
+	// WatchColumn is false while the column does not exist (before G5).
+	WatchIssue  string
+	WatchColumn bool
 	// WaitStatus and WaitReason are an automation session() wait's end,
 	// filled by the stepAutomationWait pull.
 	WaitStatus, WaitReason string
@@ -306,6 +308,9 @@ func (e *sessionEnv) payload(c hookCall) []byte {
 // A PermissionRequest hook holds its prompt open for an answer, so it runs
 // in the background until the cell ends.
 func (e *sessionEnv) fire(c hookCall) {
+	if len(e.hooks[c.event]) == 0 {
+		e.t.Fatalf("no %s hook is installed", c.event)
+	}
 	for _, command := range e.hooks[c.event] {
 		cmd := exec.Command("/bin/sh", "-c", command)
 		cmd.Dir = e.folder
@@ -343,12 +348,14 @@ func (e *sessionEnv) fire(c hookCall) {
 }
 
 // environ is the hooks' environment: the cell's own HOME and CODEX_HOME,
-// so session cells run in parallel.
+// so session cells run in parallel, and no WATCHTOWER_* variable of the
+// developer's shell (a config path would point the hooks at a real
+// workspace).
 func (e *sessionEnv) environ() []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "HOME=") && !strings.HasPrefix(kv, "CODEX_HOME=") &&
-			!strings.HasPrefix(kv, "WATCHTOWER_TERMINAL_SESSION_ID=") {
+			!strings.HasPrefix(kv, "WATCHTOWER_") {
 			env = append(env, kv)
 		}
 	}
@@ -400,14 +407,18 @@ func (e *sessionEnv) openTurns() int {
 	return n
 }
 
-// watchIssue is the row's agent_watch_issue, or the read's error text
-// while the column does not exist (before G5's migration).
-func (e *sessionEnv) watchIssue() string {
+// watchIssue is the row's agent_watch_issue; present is false while the
+// column does not exist (before G5's migration).
+func (e *sessionEnv) watchIssue() (issue string, present bool) {
 	var v sql.NullString
-	if err := e.db.QueryRow(`SELECT agent_watch_issue FROM terminal_sessions WHERE id = ?`, e.row).Scan(&v); err != nil {
-		return "unreadable column: " + err.Error()
+	err := e.db.QueryRow(`SELECT agent_watch_issue FROM terminal_sessions WHERE id = ?`, e.row).Scan(&v)
+	if err != nil && strings.Contains(err.Error(), "no such column") {
+		return "", false
 	}
-	return v.String
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return v.String, true
 }
 
 func (e *sessionEnv) pendingPermissions() int {
@@ -437,8 +448,7 @@ func (ag *sessionAgent) run(t *testing.T, s *Scenario) *sessionResult {
 		res.SessionIDs = append(res.SessionIDs, row.ClaudeSessionID.String)
 		res.OpenTurns = append(res.OpenTurns, e.openTurns())
 	}
-	switch s.Name {
-	case "session-older-event":
+	if s.Fixture.OlderWrite {
 		// A write stamped before the stored state writes nothing, through
 		// the one writer both hook paths share.
 		row := e.rowNow()
@@ -448,13 +458,14 @@ func (ag *sessionAgent) run(t *testing.T, s *Scenario) *sessionResult {
 			t.Fatal(err)
 		}
 		res.OlderWrote = wrote
-	case "session-transcript", "session-compressed-transcript":
+	}
+	if s.Fixture.ReadFeed {
 		res.FeedEntries, res.FeedLiveOK, res.FeedErr = e.feed()
 		res.Title, res.TitleErr = e.title(ag)
 	}
 	e.stopBackground()
 	res.Row = e.rowNow()
-	res.WatchIssue = e.watchIssue()
+	res.WatchIssue, res.WatchColumn = e.watchIssue()
 	res.Stderr = e.stderr
 	return res
 }
@@ -507,14 +518,14 @@ func (e *sessionEnv) feed() (int, bool, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return 0, false, fmt.Errorf("session-feed: %v: %s", err, strings.TrimSpace(stderr.String()))
+		return 0, false, fmt.Errorf("session-feed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var out struct {
 		Entries []json.RawMessage `json:"entries"`
 		LiveOK  bool              `json:"live_ok"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		return 0, false, fmt.Errorf("session-feed output: %v", err)
+		return 0, false, fmt.Errorf("session-feed output: %w", err)
 	}
 	return len(out.Entries), out.LiveOK, nil
 }
@@ -549,31 +560,59 @@ func writeTranscript(t *testing.T, path, kind, src string) {
 	if kind == "missing" {
 		return
 	}
+	if kind == "zstd" {
+		// The compressed copy is committed (no zstd binary or package is
+		// needed), its session id already the suite's: `sed s/SESSION/<id>/
+		// <src> | zstd -q -c > <src>.zst` after any change of src.
+		src += ".zst"
+	}
 	raw, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw = bytes.ReplaceAll(raw, []byte("SESSION"), []byte(sessionID))
-	if kind == "zstd" {
-		cmd := exec.Command("zstd", "-q", "-c")
-		cmd.Stdin = bytes.NewReader(raw)
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("zstd: %v", err)
-		}
-		raw = out
+	if kind != "zstd" {
+		raw = bytes.ReplaceAll(raw, []byte("SESSION"), []byte(sessionID))
 	}
 	writeFile(t, path, string(raw))
 }
 
 // ---- session scenarios -----------------------------------------------------
 
-var sessionLevel = []Level{LevelSession}
-
+// sessionScenario is a session row. A hook that reported "not recorded"
+// fails the cell whatever its assertion says: the hook ran into an error,
+// not the agent's behaviour.
 func sessionScenario(name string, requires []Cap, file string, steps []sessionStep, assert func(c *Cell, r *sessionResult) error) *Scenario {
-	return &Scenario{Name: name, Levels: sessionLevel, Requires: requires,
+	return &Scenario{Name: name, Levels: []Level{LevelSession}, Requires: requires,
 		Fixture: Fixture{File: file, Session: steps},
-		Assert:  func(c *Cell) error { return assert(c, c.O.Session) }}
+		Assert: func(c *Cell) error {
+			for _, line := range c.O.Session.Stderr {
+				if strings.Contains(line, "not recorded") {
+					return fmt.Errorf("a hook failed: %s", line)
+				}
+			}
+			return assert(c, c.O.Session)
+		}}
+}
+
+func withFixture(s *Scenario, set func(*Fixture)) *Scenario {
+	set(&s.Fixture)
+	return s
+}
+
+// transcriptReadable checks the session's transcript reaches the feed, the
+// live line and the AI title.
+func transcriptReadable(r *sessionResult) error {
+	switch {
+	case r.FeedErr != nil:
+		return r.FeedErr
+	case r.FeedEntries == 0:
+		return errors.New("no feed entries")
+	case !r.FeedLiveOK:
+		return errors.New("no live line")
+	case r.TitleErr != nil || !strings.Contains(r.Title, "please add a flag"):
+		return fmt.Errorf("no title text (%v)", r.TitleErr)
+	}
+	return nil
 }
 
 // wantStates checks the row's state after each step.
@@ -599,10 +638,7 @@ var sessionScenarios = []*Scenario{
 	sessionScenario("session-tool", nil, "", []sessionStep{stepPrompt, stepTool}, wantStates("working", "working")),
 	sessionScenario("session-permission", []Cap{CapPermissionWait}, "", []sessionStep{stepPrompt, stepPermission},
 		func(c *Cell, r *sessionResult) error {
-			if !c.Supported {
-				return wantStates("working", "approval")(c, r)
-			}
-			if err := wantStates("working", "approval")(c, r); err != nil {
+			if err := wantStates("working", "approval")(c, r); err != nil || !c.Supported {
 				return err
 			}
 			if r.PendingPermissions != 1 {
@@ -640,14 +676,16 @@ var sessionScenarios = []*Scenario{
 				return fmt.Errorf("startup moved the row to %q", r.SessionIDs[0])
 			}
 			for i, source := range []string{"resume", "clear", "compact"} {
-				if got := r.SessionIDs[2+i]; got == r.SessionIDs[1+i] {
-					return fmt.Errorf("after %s the row still names session %q", source, got)
+				if got := r.SessionIDs[2+i]; got != nextSessionIDs[source] {
+					return fmt.Errorf("after %s the row names session %q, want %q", source, got, nextSessionIDs[source])
 				}
 			}
 			return nil
 		}),
-	sessionScenario("session-foreign-id", nil, "", []sessionStep{stepForeignPrompt}, wantStates("")),
-	sessionScenario("session-older-event", nil, "", []sessionStep{stepPrompt, stepStop},
+	// The row's own prompt after the foreign one is the control: the hook
+	// did run and would have written.
+	sessionScenario("session-foreign-id", nil, "", []sessionStep{stepForeignPrompt, stepPrompt}, wantStates("", "working")),
+	withFixture(sessionScenario("session-older-event", nil, "", []sessionStep{stepPrompt, stepStop},
 		func(c *Cell, r *sessionResult) error {
 			if err := wantStates("working", "waiting")(c, r); err != nil {
 				return err
@@ -656,40 +694,20 @@ var sessionScenarios = []*Scenario{
 				return errors.New("an older event was written over a newer state")
 			}
 			return nil
-		}),
-	sessionScenario("session-transcript", nil, "plain", nil,
-		func(_ *Cell, r *sessionResult) error {
-			switch {
-			case r.FeedErr != nil:
-				return r.FeedErr
-			case r.FeedEntries == 0:
-				return errors.New("no feed entries")
-			case !r.FeedLiveOK:
-				return errors.New("no live line")
-			case r.TitleErr != nil || !strings.Contains(r.Title, "please add a flag"):
-				return fmt.Errorf("no title text (%v)", r.TitleErr)
-			}
-			return nil
-		}),
-	sessionScenario("session-compressed-transcript", []Cap{CapCompressedTranscript}, "zstd", nil,
+		}), func(f *Fixture) { f.OlderWrite = true }),
+	withFixture(sessionScenario("session-transcript", nil, "plain", nil,
+		func(_ *Cell, r *sessionResult) error { return transcriptReadable(r) }),
+		func(f *Fixture) { f.ReadFeed = true }),
+	withFixture(sessionScenario("session-compressed-transcript", []Cap{CapCompressedTranscript}, "zstd", nil,
 		func(c *Cell, r *sessionResult) error {
 			if !c.Supported {
 				return nil // the agent never compresses its transcript
 			}
-			if r.FeedErr != nil {
-				return r.FeedErr
-			}
-			if r.FeedEntries == 0 {
-				return errors.New("no feed entries from a compressed transcript")
-			}
-			if !r.FeedLiveOK {
-				return errors.New("no live line from a compressed transcript")
-			}
-			if r.TitleErr != nil || !strings.Contains(r.Title, "please add a flag") {
-				return fmt.Errorf("no title text from a compressed transcript (%v)", r.TitleErr)
+			if err := transcriptReadable(r); err != nil {
+				return fmt.Errorf("compressed transcript: %w", err)
 			}
 			return nil
-		}),
+		}), func(f *Fixture) { f.ReadFeed = true }),
 	// A rollout the watch cannot read: the row never stays a silent
 	// working (§3.5). Without a transcript watch the hooks alone drive
 	// the row, which is the unsupported branch.
@@ -730,7 +748,7 @@ func hooksOnly(r *sessionResult) error {
 	if len(r.States) == 0 || r.States[0] != "working" {
 		return fmt.Errorf("the prompt hook left the row %v", r.States)
 	}
-	if r.WatchIssue != "" && !strings.HasPrefix(r.WatchIssue, "unreadable column") {
+	if r.WatchColumn && r.WatchIssue != "" {
 		return fmt.Errorf("a hook-driven row got watch issue %q", r.WatchIssue)
 	}
 	return nil

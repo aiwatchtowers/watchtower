@@ -8,10 +8,11 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -101,14 +102,9 @@ const goldenHeader = `# The transport contract suite's resolved matrix (internal
 
 func writeGolden(t *testing.T, results map[string]string) {
 	t.Helper()
-	keys := make([]string, 0, len(results))
-	for k := range results {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	var b strings.Builder
 	b.WriteString(goldenHeader)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(results)) {
 		fmt.Fprintf(&b, "%s %s\n", k, results[k])
 	}
 	if err := os.WriteFile(goldenPath, []byte(b.String()), 0o600); err != nil {
@@ -124,6 +120,7 @@ func TestTransportSuite(t *testing.T) {
 	golden := readGolden(t)
 	var mu sync.Mutex
 	results := map[string]string{}
+	// One group so the parallel session cells end before -update writes.
 	t.Run("cells", func(t *testing.T) {
 		for _, ref := range allCells() {
 			runMatrixCell(t, ref, golden, &mu, results)
@@ -145,6 +142,25 @@ func TestTransportSuite(t *testing.T) {
 	}
 }
 
+// gapSignatures is how each open gap fails today: a gap cell must fail
+// this way, so a harness fault (a fake that rejected its input, a fixture
+// typo, a hook that did not run) never passes as the gap. A gap's task
+// flips its cells to pass; a fix that only changes the failure updates the
+// signature.
+var gapSignatures = map[string]*regexp.Regexp{
+	"L1":  regexp.MustCompile(`token too long`),
+	"L3":  regexp.MustCompile(`a response past the cap ran|no turn cap in force`),
+	"L5":  regexp.MustCompile(`web search`),
+	"L6":  regexp.MustCompile(`images and PDFs need the Claude provider`),
+	"L7":  regexp.MustCompile(`no usage event|the first message was wiped|the partial text was not delivered|the text before the tool was not kept`),
+	"L9":  regexp.MustCompile(`not a capability refusal`),
+	"L10": regexp.MustCompile(`not a providers\.Failure`),
+	"S1":  regexp.MustCompile(`no pull signal`),
+	"S2":  regexp.MustCompile(`no pull signal`),
+	"S3":  regexp.MustCompile(`pending permission requests`),
+	"S7":  regexp.MustCompile(`compressed transcript`),
+}
+
 // runMatrixCell runs one cell as a subtest and checks it against the
 // golden. Session cells run in parallel (each has its own HOME); the LLM
 // cells share the process environment and the ledger, so they run one at a
@@ -156,13 +172,23 @@ func runMatrixCell(t *testing.T, ref cellRef, golden map[string]string, mu *sync
 			t.Parallel()
 		}
 		sup := supported(ref.a, ref.s)
-		path := fixturePath(t, ref.a, ref.s, ref.level)
-		if sup && ref.level != LevelSession && filepath.Base(path) == "never_started.jsonl" {
+		path, found := fixturePath(t, ref.a, ref.s, ref.level)
+		if sup && ref.level != LevelSession && !found {
 			t.Fatalf("no fixture for %s", key)
 		}
 		o := runCell(t, ref.a, ref.s, ref.level)
-		cell := &Cell{A: ref.a, S: ref.s, Level: ref.level, Supported: sup, O: o, fixture: readFixture(path)}
+		cell := &Cell{A: ref.a, S: ref.s, Level: ref.level, Supported: sup, O: o, fixture: readFixture(t, path)}
 		err := ref.s.Assert(cell)
+		if len(o.FakeErrors) > 0 {
+			// The fake rejected its input (argv, stdin, a directive): part of
+			// a failure's text, and never part of a pass.
+			if err == nil {
+				err = fmt.Errorf("the cell holds but the fake rejected its input: %s", strings.Join(o.FakeErrors, "; "))
+				t.Errorf("%s: %v", key, err)
+			} else {
+				err = fmt.Errorf("%w (fake: %s)", err, strings.Join(o.FakeErrors, "; "))
+			}
+		}
 		want := golden[key]
 		got := "pass"
 		if !sup {
@@ -170,7 +196,7 @@ func runMatrixCell(t *testing.T, ref cellRef, golden map[string]string, mu *sync
 		}
 		if err != nil {
 			got = "gap:?"
-			if strings.HasPrefix(want, "gap:") {
+			if id, ok := strings.CutPrefix(want, "gap:"); ok && gapSignatures[id] != nil && gapSignatures[id].MatchString(err.Error()) {
 				got = want
 			}
 		}
@@ -188,6 +214,8 @@ func runMatrixCell(t *testing.T, ref cellRef, golden map[string]string, mu *sync
 			t.Errorf("%s is not in the golden (run with -update)", key)
 		case strings.HasPrefix(want, "gap:") && err == nil:
 			t.Errorf("%s now holds: flip %s to %s in the golden", key, want, got)
+		case strings.HasPrefix(want, "gap:") && got != want:
+			t.Errorf("%s fails, but not the way %s does: %v", key, want, err)
 		case !strings.HasPrefix(want, "gap:") && err != nil:
 			t.Errorf("%s (%s) fails: %v", key, want, err)
 		case !strings.HasPrefix(want, "gap:") && want != got:
@@ -219,6 +247,8 @@ func TestTransportSuite_EveryCellResolved(t *testing.T) {
 		case strings.HasPrefix(got, "gap:"):
 			if id := strings.TrimPrefix(got, "gap:"); !openGaps[id] {
 				t.Errorf("%s names %q, not an open gap of the spec's §2.2", key, got)
+			} else if gapSignatures[id] == nil {
+				t.Errorf("%s names %s, which has no failure signature", key, got)
 			}
 		default:
 			t.Errorf("%s has result %q", key, got)
@@ -277,7 +307,7 @@ func TestTransportSuite_NoSkip(t *testing.T) {
 // (OLLAMA_URL, OLLAMA_MODEL; CODEX_BIN for a codex outside PATH,
 // CODEX_MODEL for another model).
 func TestTransportSuite_Live(t *testing.T) {
-	plain := scenarios[0]
+	plain := scenarioNamed(t, "plain-answer")
 	cases := []struct {
 		env  string
 		name string
@@ -312,4 +342,15 @@ func TestTransportSuite_Live(t *testing.T) {
 			}
 		})
 	}
+}
+
+func scenarioNamed(t *testing.T, name string) *Scenario {
+	t.Helper()
+	for _, s := range scenarios {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("no scenario %q", name)
+	return nil
 }

@@ -6,8 +6,9 @@
 // Environment:
 //
 //	WT_FAKECLI_FIXTURE  the fixture script (required unless --version)
-//	WT_FAKECLI_LOG      one JSON line per invocation and grandchild is
-//	                    appended here: {"pid","pgid","argv"} / {"grandchild"}
+//	WT_FAKECLI_LOG      one JSON line per invocation, grandchild and failure
+//	                    is appended here: {"pid","pgid","argv"} /
+//	                    {"grandchild"} / {"fake_error"}
 //	WT_FAKECLI_VERSION  what `--version` prints (default "fakecli 0.0.0")
 //
 // A fixture is a script read top to bottom. A line starting with "#!" is a
@@ -73,7 +74,9 @@ func main() {
 		return
 	}
 	n := invocationIndex()
-	logLine(map[string]any{"pid": os.Getpid(), "pgid": pgid(), "argv": args})
+	if err := logLine(map[string]any{"pid": os.Getpid(), "pgid": pgid(), "argv": args}); err != nil {
+		fail(exitFixture, "fakecli: logging the launch: %v", err)
+	}
 	section, err := loadSection(os.Getenv(envFixture), n)
 	if err != nil {
 		fail(exitFixture, "fakecli: %v", err)
@@ -107,18 +110,24 @@ func pgid() int {
 	return g
 }
 
-func logLine(v map[string]any) {
+func logLine(v map[string]any) error {
 	path := os.Getenv(envLog)
 	if path == "" {
-		return
+		return nil
 	}
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return
+		return err
 	}
-	_, _ = f.Write(append(b, '\n'))
-	_ = f.Close()
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // loadSection returns the lines of the fixture's n-th section.
@@ -231,7 +240,9 @@ func spawnGrandchild() {
 	if err := c.Start(); err != nil {
 		fail(exitFixture, "fakecli: grandchild: %v", err)
 	}
-	logLine(map[string]any{"grandchild": c.Process.Pid})
+	if err := logLine(map[string]any{"grandchild": c.Process.Pid}); err != nil {
+		fail(exitFixture, "fakecli: logging the grandchild: %v", err)
+	}
 }
 
 func sleepForever() {
@@ -240,7 +251,12 @@ func sleepForever() {
 	}
 }
 
+// fail reports what the fake rejected on stderr and in the log (the suite
+// reads it back, so a rejected input is never mistaken for the
+// transport's own failure), then exits with code.
 func fail(code int, format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintln(os.Stderr, msg)
+	_ = logLine(map[string]any{"fake_error": msg}) // already failing: stderr has it
 	os.Exit(code)
 }

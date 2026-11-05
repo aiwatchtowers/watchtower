@@ -280,7 +280,7 @@ def claude_ai(raw_path, out_dir):
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 ROLLOUT_RE = re.compile(r"/[^\s\"']*/rollout-[^\s\"']*\.jsonl(?:\.zst)?")
-ABS_PATH_RE = re.compile(r"(?:/Users|/private/var|/var/folders|/home)/[^\s\"']*")
+ABS_PATH_RE = re.compile(r"(?:/Users|/private|/var|/tmp|/home|/Volumes|/opt|/usr/local)/[^\s\"']*")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 MSG_ID_RE = re.compile(r"\bmsg_[A-Za-z0-9]{8,}")
 

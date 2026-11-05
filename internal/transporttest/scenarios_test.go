@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"watchtower/internal/chat"
@@ -38,6 +39,9 @@ type Fixture struct {
 	MaxTurns   int
 	// Session is the session level's script (sessions_test.go).
 	Session []sessionStep
+	// ReadFeed reads the session's feed and title after the script;
+	// OlderWrite then tries a write stamped before the stored state.
+	ReadFeed, OlderWrite bool
 }
 
 // Drive is how a cell's run is driven.
@@ -200,7 +204,9 @@ func (c *Cell) refusedBeforeStart() error {
 	case err == nil:
 		return errors.New("not refused")
 	case errors.As(err, &f) && f.Category == providers.Capability:
-	case errors.As(err, &ae):
+	case errors.As(err, &ae) && ae.RequiresClaude:
+		// Today's refusal of a binary file by a text-only backend (A2 makes
+		// it a capability refusal).
 	default:
 		return fmt.Errorf("refused with %T, not a capability refusal", err)
 	}
@@ -244,8 +250,12 @@ func (c *Cell) expect(key string) (string, bool) {
 	return "", false
 }
 
-func readFixture(path string) string {
-	b, _ := os.ReadFile(path)
+func readFixture(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return string(b)
 }
 
@@ -403,6 +413,9 @@ func assertInterrupted(c *Cell) error {
 	if !c.Supported {
 		return c.noToolsOffered()
 	}
+	if c.S.Fixture.Drive == driveCancelAtTool && len(c.O.eventsOf(chat.EventToolStart)) == 0 {
+		return errors.New("no tool call was shown before the interrupt")
+	}
 	e, ok := c.O.terminal()
 	if !ok || e.Type != chat.EventTurnDone || e.Status != chat.StatusInterrupted {
 		return fmt.Errorf("terminal %s/%s, want turn_done interrupted", e.Type, e.Status)
@@ -436,8 +449,9 @@ func (c *Cell) groupGone() error {
 
 func assertTimeout(c *Cell) error {
 	if c.O.Err == nil {
-		if e, ok := c.O.terminal(); ok && e.Type == chat.EventTurnDone && e.Status == chat.StatusComplete {
-			return errors.New("a timed-out run reported success")
+		e, ok := c.O.terminal()
+		if !ok || (e.Type == chat.EventTurnDone && e.Status == chat.StatusComplete) {
+			return errors.New("a timed-out run did not end in an error")
 		}
 	}
 	if c.A.Caps.ChildProcess && len(c.O.Launches) == 0 {
@@ -532,6 +546,9 @@ func assertTurnCapStops(c *Cell) error {
 	if !c.Supported {
 		return nil // no turn cap: nothing to assert beyond the cell itself
 	}
+	if !c.O.CapApplied {
+		return errors.New("no turn cap in force")
+	}
 	if strings.Contains(c.O.text(), markThird) {
 		return errors.New("a response past the cap ran")
 	}
@@ -555,6 +572,9 @@ func assertTurnCapStops(c *Cell) error {
 func assertTurnCapCompletes(c *Cell) error {
 	if !c.Supported {
 		return nil
+	}
+	if !c.O.CapApplied {
+		return errors.New("no turn cap in force")
 	}
 	if err := c.completed(); err != nil {
 		return err
