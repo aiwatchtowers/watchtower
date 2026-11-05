@@ -60,4 +60,12 @@ public enum PushRouting {
             ? cloudKit.alertSource(for: userInfo)
             : RelayPushWake().alertSource(for: userInfo)
     }
+
+    /// The sealed envelope for `source`: an inline one is already in hand (no network); a CloudKit record is fetched.
+    public static func envelope(for source: AlertSource, timeout: TimeInterval, cloudKit: any PushWake) async throws -> Data? {
+        switch source {
+        case .inline: return try await RelayPushWake().envelope(for: source, timeout: timeout)
+        case .fetchRecord: return try await cloudKit.envelope(for: source, timeout: timeout)
+        }
+    }
 }
