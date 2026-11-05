@@ -98,6 +98,9 @@ struct HubListRow: View {
                         Text(flavor)
                     }
                 }
+                if let transport = item.transportLine {
+                    Text(transport)
+                }
                 if let problem = item.problem {
                     Text(problem)
                 }
