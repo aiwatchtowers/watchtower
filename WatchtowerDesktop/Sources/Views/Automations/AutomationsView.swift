@@ -253,6 +253,7 @@ struct AutomationsView: View {
                     workspaceDir: hooks.workspaceDir,
                     composerPrefill: vm.composerPrefill,
                     turnOnBuiltin: turnOnBuiltin(target),
+                    workbenchName: workbenchName,
                     onSaved: { vm.showCard($0) },
                     onDiscardDraft: discardHandler(target)
                 )

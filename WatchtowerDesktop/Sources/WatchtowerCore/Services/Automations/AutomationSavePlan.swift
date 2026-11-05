@@ -64,10 +64,28 @@ package enum AutomationChangePresentation {
     /// One line per changed field, "<field> <old> → <new>" ("Script changed"
     /// for the script). A never-confirmed recipe has nothing to compare; an
     /// unknown diff says so rather than show an empty block.
-    package static func lines(_ changes: [AutomationChange], known: Bool, confirmedBefore: Bool) -> [String] {
+    /// `workbenchName` names a workbench scope ("workbench:<id>").
+    package static func lines(
+        _ changes: [AutomationChange],
+        known: Bool,
+        confirmedBefore: Bool,
+        workbenchName: (Int64) -> String? = { _ in nil }
+    ) -> [String] {
         guard confirmedBefore else { return [firstConfirmation] }
         guard known else { return [unknownChanges] }
-        return changes.map(line)
+        return changes.map { line($0, workbenchName: workbenchName) }
+    }
+
+    /// A scope as Go writes it (`personal`, `workbench:<id>`,
+    /// `builtin:<id>`) in words, the workbench by its name.
+    package static func scopeWords(_ scope: String, workbenchName: (Int64) -> String?) -> String {
+        if scope.hasPrefix("builtin:") { return AutomationListSections.builtinTitle }
+        if scope.hasPrefix("workbench") {
+            let id = Int64(scope.dropFirst("workbench:".count))
+            guard let id else { return "Workbench" }
+            return "Workbench “\(workbenchName(id) ?? "#\(id)")”"
+        }
+        return AutomationListSections.personalTitle
     }
 
     /// The Changed box's author line on a confirm: "Changed by the
@@ -79,7 +97,8 @@ package enum AutomationChangePresentation {
         return "\(who) · \(AutomationCardPresentation.relative(now.timeIntervalSince(changedAt))) ago"
     }
 
-    private static func line(_ change: AutomationChange) -> String {
+    /// One changed field's line (the Changed box and the pinned Changed row).
+    package static func line(_ change: AutomationChange, workbenchName: (Int64) -> String? = { _ in nil }) -> String {
         switch change.field {
         case "script":
             return "Script changed"
@@ -99,7 +118,8 @@ package enum AutomationChangePresentation {
         case "permissions":
             return "Permissions \(listWords(change.old)) → \(listWords(change.new))"
         case "scope":
-            return "Scope \(change.old) → \(change.new)"
+            return "Scope \(scopeWords(change.old, workbenchName: workbenchName)) → "
+                + scopeWords(change.new, workbenchName: workbenchName)
         case "artifacts":
             return "Cards \(artifactsWords(change.old)) → \(artifactsWords(change.new))"
         default:

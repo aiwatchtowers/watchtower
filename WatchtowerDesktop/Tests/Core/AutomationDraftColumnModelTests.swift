@@ -44,7 +44,8 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         fields: String? = fullFields,
         permissions: [String] = ["gmail:read@work", "llm:light"],
         outputs: String = #"["inbox"]"#,
-        addsLLM: String = ""
+        addsLLM: String = "",
+        scope: String = "personal"
     ) throws -> AutomationsCLI.ValidateResult {
         let errorsJSON = String(data: try JSONSerialization.data(withJSONObject: errors), encoding: .utf8) ?? "[]"
         let wideningJSON = String(data: try JSONSerialization.data(withJSONObject: widening), encoding: .utf8) ?? "[]"
@@ -53,7 +54,7 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         let fieldsJSON = fields.map { #","fields":\#($0)"# } ?? ""
         let hash = AutomationDraftColumnModel.contentHash(text)
         let json = #"{"ok":\#(ok),"errors":\#(errorsJSON),"slug":"acme-digest","name":"acme digest","#
-            + #""scope":"personal","approval_hash":"h2","content_hash":"\#(hash)","#
+            + #""scope":"\#(scope)","approval_hash":"h2","content_hash":"\#(hash)","#
             + #""permissions":\#(permissionsJSON),"outputs":\#(outputs),"#
             + #""widening":\#(wideningJSON),"feeds_sources_to_llm":\#(feeds),"#
             + #""changes":\#(changes),"changes_known":\#(changesKnown)\#(fieldsJSON)"#
@@ -90,10 +91,12 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         isNew: Bool = true,
         plan: AutomationSavePlan? = nil,
         saved: AutomationDraftColumnModel.Saved? = nil,
-        now: Date = Date()
+        now: Date = Date(),
+        workbenchName: (Int64) -> String? = { _ in nil }
     ) -> AutomationDraftColumnModel {
         AutomationDraftColumnModel(text: text, validated: validated, isChecking: isChecking, newestChatEntry: entry,
-                                   confirmedText: confirmedText, isNew: isNew, plan: plan, saved: saved, now: now)
+                                   confirmedText: confirmedText, isNew: isNew, plan: plan, saved: saved, now: now,
+                                   workbenchName: workbenchName)
     }
 
     func testNewRecipeShowsNoNewMarksAndHasNoChanges() throws {
@@ -377,5 +380,98 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertNil(none.shell)
         XCTAssertNil(none.llm)
         XCTAssertNil(none.aiStep)
+    }
+
+    // MARK: - AUTO-06: the pinned Changed row (ask #486)
+
+    private static let livingFields = #"{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"1","#
+        + #""artifacts":"living","budget":{"tokens":40000,"minutes":5}}"#
+
+    /// One change of each hashed field as Go writes it.
+    private static let oneChange: [AutomationHashedField: String] = [
+        .script: #"{"field":"script","old":"","new":""}"#,
+        .permissions: #"{"field":"permissions","old":"[\"llm:light\"]","new":"[\"gmail:read@work\",\"llm:light\"]"}"#,
+        .outputs: #"{"field":"outputs","old":"[\"report\"]","new":"[\"inbox\"]"}"#,
+        .scope: #"{"field":"scope","old":"personal","new":"workbench:3"}"#,
+        .trigger: #"{"field":"trigger","old":"{\"schedule\":\"0 8 * * 1-5\"}","new":"{\"schedule\":\"0 9 * * 1-5\"}"}"#,
+        .missed: #"{"field":"missed","old":"run_once","new":"skip"}"#,
+        .budget: #"{"field":"budget_tokens","old":"20000","new":"40000"}"#,
+        .concurrency: #"{"field":"concurrency","old":"2","new":"1"}"#,
+        .artifacts: #"{"field":"artifacts","old":"feed","new":"living"}"#
+    ]
+
+    private func edit(changing fields: [AutomationHashedField], known: Bool = true) throws -> AutomationDraftColumnModel {
+        let changes = "[" + fields.compactMap { Self.oneChange[$0] }.joined(separator: ",") + "]"
+        return model(validated: try validated(changes: changes, changesKnown: known, fields: Self.livingFields),
+                     confirmedText: Self.confirmed, isNew: false) { $0 == 3 ? "acme-app" : nil }
+    }
+
+    /// AUTO-06 guard: whatever step the owner is on, every hashed field a
+    /// save or confirm press there confirms is on screen — in the step's
+    /// boxes or in the pinned row. Each step × each changed field (artifacts
+    /// included), all at once, an unknown diff, a new recipe.
+    func testAuto06_EveryHashedFieldVisibleWhereverAPressLands() throws {
+        XCTAssertEqual(Set(Self.oneChange.keys), Set(AutomationHashedField.allCases), "a case per hashed field")
+        for step in AutomationEditorStep.allCases {
+            for field in AutomationHashedField.allCases {
+                let m = try edit(changing: [field])
+                XCTAssertTrue(m.showsAllFields)
+                XCTAssertTrue(m.visibleFields(on: step).contains(field), "\(field) changed, press on \(step)")
+            }
+            let all = try edit(changing: AutomationHashedField.allCases)
+            XCTAssertEqual(all.visibleFields(on: step), Set(AutomationHashedField.allCases), "all changed, \(step)")
+            let unknown = try edit(changing: [], known: false)
+            XCTAssertEqual(unknown.visibleFields(on: step), Set(AutomationHashedField.allCases), "unknown, \(step)")
+            let new = model(validated: try validated(fields: Self.livingFields))
+            XCTAssertEqual(new.visibleFields(on: step), Set(AutomationHashedField.allCases), "new, \(step)")
+        }
+    }
+
+    /// The row lists only what the step does not show, in the Changed box's
+    /// words; absent where the step shows everything changed or nothing
+    /// changed.
+    func testConfirmationRowPerStep() throws {
+        let m = try edit(changing: [.scope, .script, .budget])
+        XCTAssertNil(m.confirmationRow(on: .collects), "the Changed box is on What it collects")
+        let look = try XCTUnwrap(m.confirmationRow(on: .look))
+        XCTAssertEqual(look.title, "Changed")
+        XCTAssertEqual(look.items.map(\.text), [
+            "Scope Personal → Workbench “acme-app”", "Script changed", "Budget per run 20,000 tokens → 40,000 tokens"
+        ])
+        let schedule = try XCTUnwrap(m.confirmationRow(on: .schedule))
+        XCTAssertEqual(schedule.items.map(\.text), ["Scope Personal → Workbench “acme-app”", "Script changed"])
+
+        let timing = try edit(changing: [.trigger, .missed])
+        XCTAssertNil(timing.confirmationRow(on: .schedule), "When it runs shows both")
+        XCTAssertNotNil(timing.confirmationRow(on: .look))
+
+        let none = try edit(changing: [])
+        for step in AutomationEditorStep.allCases { XCTAssertNil(none.confirmationRow(on: step)) }
+
+        // While checking, nothing: every button is off anyway.
+        XCTAssertNil(model(validated: nil, isChecking: true).confirmationRow(on: .look))
+    }
+
+    /// A new workbench draft: every field with its value, the scope named by
+    /// its workbench; a change of a field this build does not know is never
+    /// taken as shown.
+    func testConfirmationRowForANewDraftNamesTheWorkbench() throws {
+        let new = model(validated: try validated(fields: Self.livingFields, scope: "workbench:3")) {
+            $0 == 3 ? "acme-app" : nil
+        }
+        let look = try XCTUnwrap(new.confirmationRow(on: .look))
+        XCTAssertEqual(look.title, "Also confirms")
+        XCTAssertEqual(look.items.first?.text, "Scope: Workbench “acme-app”")
+        XCTAssertEqual(Set(look.items.compactMap(\.field)), Set(AutomationHashedField.allCases))
+        XCTAssertTrue(look.items.contains { $0.text == AutomationDraftColumnModel.scriptLine })
+        XCTAssertEqual(new.confirmationRow(on: .schedule)?.items.compactMap(\.field),
+                       [.scope, .permissions, .outputs, .script])
+        XCTAssertEqual(new.confirmationRow(on: .collects)?.items.compactMap(\.field),
+                       [.scope, .trigger, .missed, .budget, .concurrency, .artifacts])
+
+        let odd = model(validated: try validated(changes: #"[{"field":"retention","old":"1","new":"2"}]"#,
+                                                 fields: Self.livingFields),
+                        confirmedText: Self.confirmed, isNew: false)
+        XCTAssertEqual(odd.confirmationRow(on: .schedule)?.items.map(\.text), ["retention 1 → 2"])
     }
 }

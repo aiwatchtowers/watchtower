@@ -91,6 +91,44 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
     /// What the boxes say instead of their values when `showsAllFields` is
     /// false (`checkingLine` or `unreadableLine`); nil when they show values.
     package let placeholder: String?
+    /// Every hashed field a press confirms, for the pinned row
+    /// (`confirmationRow(on:)`): the changed fields of an edit with a known
+    /// diff (`itemsAreChanges`), else each field with its value. Empty while
+    /// the boxes show no values (every button is off then).
+    package let hashedItems: [AutomationSaveConfirmationRow.Item]
+    /// `hashedItems` are the Changed box's lines, shown in full on What it
+    /// collects.
+    package let itemsAreChanges: Bool
+
+    /// The editor's pinned row on `step` (AUTO-06, ask #486): the hashed
+    /// fields a press there confirms that the step does not show; nil when
+    /// the step shows them all, or there is nothing to confirm.
+    package func confirmationRow(on step: AutomationEditorStep) -> AutomationSaveConfirmationRow? {
+        let shown = shownFields(on: step)
+        let items = hashedItems.filter { item in item.field.map { !shown.contains($0) } ?? true }
+        guard !items.isEmpty else { return nil }
+        return AutomationSaveConfirmationRow(
+            title: itemsAreChanges ? AutomationSaveConfirmationRow.changedTitle
+                : AutomationSaveConfirmationRow.valuesTitle,
+            items: items
+        )
+    }
+
+    /// The hashed fields on screen at a press on `step`: the step's boxes
+    /// and its pinned row. AUTO-06 holds when this covers every field a
+    /// press confirms.
+    package func visibleFields(on step: AutomationEditorStep) -> Set<AutomationHashedField> {
+        shownFields(on: step).union((confirmationRow(on: step)?.items ?? []).compactMap(\.field))
+    }
+
+    /// What the step's boxes show: What it collects with a Changed box
+    /// shows every changed field; the Inbox cards box only when it is drawn.
+    private func shownFields(on step: AutomationEditorStep) -> Set<AutomationHashedField> {
+        if step == .collects, itemsAreChanges { return Set(AutomationHashedField.allCases) }
+        var shown = step.shownFields
+        if artifacts == nil { shown.remove(.artifacts) }
+        return shown
+    }
 
     package init(
         text: String,
@@ -102,7 +140,8 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
         plan: AutomationSavePlan?,
         checkFailed: Bool = false,
         saved: Saved? = nil,
-        now: Date = Date()
+        now: Date = Date(),
+        workbenchName: (Int64) -> String? = { _ in nil }
     ) {
         recipeText = text
         self.isNew = isNew
@@ -136,7 +175,8 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             )
             sends = shown.outputs.map(AutomationCardPresentation.outputLine)
             changes = isNew ? [] : AutomationChangePresentation.lines(
-                shown.changes, known: shown.changesKnown, confirmedBefore: confirmedText != nil
+                shown.changes, known: shown.changesKnown, confirmedBefore: confirmedText != nil,
+                workbenchName: workbenchName
             )
             shellWarning = AutomationCardPresentation.shellWarning(permissions: permissions)
         } else {
@@ -150,6 +190,21 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             sends = []
             changes = []
             shellWarning = nil
+        }
+        if let shown, let fields = shown.fields {
+            itemsAreChanges = !isNew && confirmedText != nil && shown.changesKnown
+            hashedItems = itemsAreChanges
+                ? shown.changes.map { change in
+                    AutomationSaveConfirmationRow.Item(
+                        field: AutomationHashedField(changeField: change.field),
+                        text: AutomationChangePresentation.line(change, workbenchName: workbenchName)
+                    )
+                }
+                : Self.valueItems(shown, fields: fields, when: when, eachRun: eachRun, mayDo: mayDo, sends: sends,
+                                  artifacts: artifacts, workbenchName: workbenchName)
+        } else {
+            itemsAreChanges = false
+            hashedItems = []
         }
         if let saved, saved.needsConfirmation, !changes.isEmpty {
             authorLine = AutomationChangePresentation.authorLine(changedBy: saved.changedBy,
@@ -212,6 +267,42 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
 
     package static let feedLine = "A new card each run"
     package static let livingLine = "One card per key, kept current"
+
+    /// Each hashed field with its value, in the boxes' words, for a recipe
+    /// with nothing to compare (new, never confirmed, unknown diff).
+    private static func valueItems(
+        _ shown: AutomationsCLI.ValidateResult,
+        fields: AutomationsCLI.ValidateResult.Fields,
+        when: String,
+        eachRun: String,
+        mayDo: [AutomationCardPresentation.PermissionLine],
+        sends: [String],
+        artifacts: String?,
+        workbenchName: (Int64) -> String?
+    ) -> [AutomationSaveConfirmationRow.Item] {
+        typealias Item = AutomationSaveConfirmationRow.Item
+        let concurrency = Int(fields.concurrency) ?? 1
+        var items = [
+            Item(field: .scope, text: "Scope: "
+                + AutomationChangePresentation.scopeWords(shown.scope, workbenchName: workbenchName)),
+            Item(field: .permissions, text: "It may: " + (mayDo.isEmpty ? "Nothing beyond its own state"
+                    : mayDo.map(\.text).joined(separator: "; "))),
+            Item(field: .outputs, text: "Sends: " + (sends.isEmpty ? "Nothing" : sends.joined(separator: "; "))),
+            Item(field: .script, text: scriptLine),
+            Item(field: .trigger, text: "When: " + when),
+            Item(field: .missed, text: fields.missed == "skip" ? "Missed while asleep: skip"
+                : "Missed while asleep: run once"),
+            Item(field: .budget, text: "Each run: " + eachRun),
+            Item(field: .concurrency, text: concurrency <= 1 ? "One run at a time"
+                : "Up to \(concurrency) runs at a time")
+        ]
+        if let artifacts { items.append(Item(field: .artifacts, text: "Inbox cards: " + artifacts)) }
+        return items
+    }
+
+    /// The pinned row's script line: the text itself is under What it
+    /// collects (**Show recipe**).
+    package static let scriptLine = "Script: under What it collects → Show recipe"
 
     /// Every run's limits: a missed time, then how many run at once.
     private static func missedAndConcurrency(_ fields: AutomationsCLI.ValidateResult.Fields) -> String {

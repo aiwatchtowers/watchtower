@@ -23,6 +23,8 @@ struct AutomationEditorPanel: View {
     /// A built-in's **Save and Turn On**: turns its features on once the save
     /// landed; nil for every other recipe (its footer uses the CLI's enable).
     var turnOnBuiltin: (() async -> Void)?
+    /// A workbench's name by id: the pinned Changed row names the scope.
+    var workbenchName: (Int64) -> String? = { _ in nil }
     let onSaved: (Int64) -> Void
     /// **Discard Draft** of a new draft; nil hides the ⋯ menu.
     let onDiscardDraft: (() -> Void)?
@@ -354,7 +356,8 @@ struct AutomationEditorPanel: View {
             isNew: isNew,
             plan: plan,
             checkFailed: isFailed(key),
-            saved: saved
+            saved: saved,
+            workbenchName: workbenchName
         )
     }
 

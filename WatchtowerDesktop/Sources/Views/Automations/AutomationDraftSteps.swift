@@ -82,15 +82,28 @@ struct AutomationDraftSteps<Look: View, Footer: View>: View {
     }
 }
 
-/// AUTO-06 seam (pending the owner's answer in ask #485): no step of the
-/// editor shows every hashed field, so what a save press under `step` is
-/// confirmed against goes here, above the footer on every step. Empty
-/// until the owner picks the shape; the press itself is unchanged.
+/// The editor's pinned row above the footer (AUTO-06, ask #486): the
+/// hashed fields a save or confirm pressed on `step` confirms that the step
+/// does not show (`AutomationDraftColumnModel.confirmationRow(on:)`), every
+/// line wrapped, none cut. Nothing when the step shows them all.
 struct AutomationSaveConfirmation: View {
     let column: AutomationDraftColumnModel
     let step: AutomationEditorStep
 
     var body: some View {
-        EmptyView()
+        if let row = column.confirmationRow(on: step) {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                SectionHeader(title: row.title, systemImage: "arrow.left.arrow.right")
+                ForEach(Array(row.items.enumerated()), id: \.offset) { _, item in
+                    Text(item.text)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Spacing.medium)
+            .card()
+        }
     }
 }
