@@ -382,7 +382,15 @@ extension ArtifactBlocksTests {
     func testReplyDataKeepsGoBytes() throws {
         let goCase = try XCTUnwrap(try Self.goCases().first { $0.name == "reply data bytes" })
         let action = try XCTUnwrap(try decoded(goCase).flattenedActions(cardActions: []).first)
-        XCTAssertEqual(action.payload, .reply(value: "v", dataJSON: #"{"a":"\u003c\u0026\u003e","f":1.5,"n":[1,{"b":null}]}"#))
+        XCTAssertEqual(action.payload, .reply(value: "v", dataJSON:
+            #"{"a":"\u003c\u0026\u003e","big":531995931301175800000,"f":1.5,"n":[1,{"b":null}]}"#))
+    }
+
+    /// An integer past Int64 reads as an NSDecimalNumber, whose `doubleValue`
+    /// misrounds: the bytes Go wrote must come back unchanged.
+    func testDecimalNumberKeepsGoDigits() throws {
+        let text = "[531995931301175800000,123456789012345680000,18446744073709552000]"
+        XCTAssertEqual(try GoJSON.marshal(try JSONSerialization.jsonObject(with: Data(text.utf8))), text)
     }
 
     func testRefsMatchGo() throws {

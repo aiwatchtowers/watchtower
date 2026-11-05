@@ -112,9 +112,14 @@ enum GoJSON {
 
     private static func number(_ number: NSNumber) throws -> String {
         if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue ? "true" : "false" }
-        if !CFNumberIsFloatType(number), !(number is NSDecimalNumber) { return number.stringValue }
-        let value = number.doubleValue
-        guard value.isFinite else { throw ArtifactJSON.Unreadable() }
+        // JSONSerialization reads an integer past Int64 (Go writes a float64
+        // up to 1e21 in plain decimal) as an NSDecimalNumber, whose
+        // `doubleValue` is not correctly rounded: parse its digits instead
+        // (Go writes at most 17 significant ones, within its 38).
+        let decimal = number as? NSDecimalNumber
+        if !CFNumberIsFloatType(number), decimal == nil { return number.stringValue }
+        guard let value = decimal.map({ Double($0.stringValue) }) ?? number.doubleValue,
+              value.isFinite else { throw ArtifactJSON.Unreadable() }
         return float(value)
     }
 
