@@ -137,14 +137,14 @@ Every piece of state these tasks write, each writer, and who wins.
 
 ## Launch conditions
 
-Phase 4 merges into `feature/relay-client-next` without these. Relay does not turn on for users (a Release origin) until each is closed. G1–G4 are on the board under #1533 and #1537 beside it. No Go hub session runs now (ask #1015): these wait on the board, the owner assigns them, and nothing in Phase 4 depends on them.
+Phase 4 merges into `feature/relay-client-next` without these. Relay does not turn on for users (a Release origin) until each is closed. G1–G4 are on the board under #1533 and #1537 beside it. No Go hub session runs now (ask #1015), and ask #1051 gave these conditions to the relay client session; nothing in Phase 4 depends on them.
 
 | Condition | Owner |
 |---|---|
 | G1, device records on the relay: **closed** (board #1534, ask #1056; a closed hub still misses a farewell, a v1 limit in `docs/features/relay-client.md`) | Go hub session |
 | G2, a desktop hub after a move with the old phone gone: checked, and fixed if needed | Go hub session |
-| G3, the duplicate alert at a switch: fixed or accepted (Open decision 10) | Go hub session, owner's ruling |
-| G4, a `push_off` alert at a switch to iCloud: checked, and fixed or accepted | Go hub session, owner's ruling |
+| G3, the duplicate alert at a switch: **closed**, accepted as a v1 limit (Open decision 10, ask #1038) | owner's ruling |
+| G4, a `push_off` alert at a switch to iCloud: **closed**, accepted as a v1 limit (ask #1054) | owner's ruling |
 | #1537, a hello lost on a failed owner read: fixed | Go hub session |
 | **Closed (board #1534).** The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together.** The same change moves the fixture case `work_alerts_off` from `device_payload_kit_only` into `device_payload` in `hub_contract_cases.json`, adds it to the exact-name list in `HubContractFixtureTests` and points `testDevicePayloadWorkAlertsOff` at the new section, so `device_payload` pins it on both sides | Go hub session, approved by name in Open decision 1 |
 | The Learn cards `iphone-relay-subscribe`, `iphone-alerts-relay` and `headless-host-run`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), and `iphone-alerts.md`'s "will ask the Mac to stop sending" reworded to the present once the Go half and G1 are in, in the release that sets the origin | Relay client session |
@@ -975,7 +975,7 @@ The session is rebuilt at a move (`AppRoot.performRouteMove`), with a registrar 
 **The rule (Open decision 18).** The registrar always targets the hub's **CloudKit route**, whatever transport the session is on: `link.cloudKitRoute` with the CloudKit wake, for any hub that offers CloudKit; none for a relay-only hub. So the private subscription stays while the phone is on the relay, and the "When work stops" switch keeps adding and removing it there.
 
 - **No duplicates on the relay:** a hub on the relay writes no signal (Go hub contract point 6), so the subscription is silent there.
-- **No lost alert on the way back:** at a switch to CloudKit the hub re-signals every open alert it signals (`Publisher.Resignal`), before the phone has followed. A subscription removed on the relay would miss exactly those. A `push_off` alert gets no signal (G4): it arrives with the next sync, with no notification, a v1 limit until the Go hub answers.
+- **No lost alert on the way back:** at a switch to CloudKit the hub re-signals every open alert it signals (`Publisher.Resignal`), before the phone has followed. A subscription removed on the relay would miss exactly those. `Resignal` covers only pushes the switch dropped (queued, pending or in flight). A push already settled, `push_off` among them, gets no signal: its alert arrives with the next sync, with no notification, a v1 limit (G4, ask #1054).
 - **A link paired over the relay with no iCloud account:** the save fails and logs a code, the link keeps working (Phase 3 R19), and a foreground retries it.
 - **A shared-scope phone:** no poster on the relay. The new relay session calls `SharedAlertPoster.forgetSeen(hubID:defaults:)`, idempotent, so the return's first fetch is a "first fetch" and posts nothing. Otherwise up to 7 days of alerts already pushed over the relay would arrive as a burst. An alert raised in the move's window stays unposted on that phone: a v1 limit of the best-effort path (ask #622).
 

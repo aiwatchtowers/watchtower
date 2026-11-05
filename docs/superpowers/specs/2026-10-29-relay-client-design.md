@@ -229,6 +229,7 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - Phase 4, Open decision 8: Terms and Privacy links are build settings; empty hides the link in development builds — ask #1038
 - Phase 4, Open decision 9: The relay account id is in the Keychain (`relay.account`), private group, never synced — ask #1038
 - Phase 4, Open decision 10: A second alert at a switch to iCloud (G3) is accepted as a v1 limit — ask #1038
+- Launch condition G4: An alert whose push settled before a switch to iCloud (`push_off`, `no_token`, `failed`, `forbidden`, `not_paying`) gets no CloudKit signal and arrives with the next sync, with no notification; accepted as a v1 limit — ask #1054
 - Phase 4, Open decision 11: Settings → Diagnostics is a new page in every Release build, Battery moves into it, and every ordered action writes one timing row — ask #1038
 - Phase 4, Open decision 12: A 4th Mac on a phone with three in slots stays on iCloud; its Relay row says "Your subscription already has 3 Macs." with **Manage Macs** — ask #1038
 - Phase 4, Open decision 13: The hello's relay-id proof stays deferred past launch — ask #1038

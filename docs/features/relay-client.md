@@ -425,6 +425,7 @@ Plan: `docs/superpowers/plans/2026-11-03-relay-client-phase-4.md`; its Decisions
 - **Phase 4: test signing.** `StoreKitTesting.entitlements`' `com.apple.appstored.octane` was read off the iOS 26.4 runtime's `storekitd`; re-check it on an Xcode bump.
 - **Phase 4: a shared-scope alert raised in a move's window stays unposted on that phone** (ask #622's best-effort path).
 - **Phase 4: a second alert at a switch to iCloud** (G3, Open decision 10). A phone that got the relay push can get the CloudKit push as well, and the phone cannot suppress it.
+- **No notification for an alert whose push already settled, at a switch to iCloud** (G4, ask #1054). `Publisher.Resignal` covers only pushes the switch dropped (queued, pending or in flight). An alert settled `push_off`, `no_token`, `failed`, `forbidden` or `not_paying` before the switch arrives with the next sync, with no notification.
 - **Phase 4: a developer's mismatched push environment.** A build whose `aps-environment` differs from `WTPushEnvironment` loses its token on `BadDeviceToken`; Desktop shows the no-token line.
 - **Phase 4: legacy actions are not timed;** Diagnostics says to update the Mac when no linked Mac has the ordered path.
 - **Phase 4: an outage's minute count restarts at relaunch,** since `relayUnansweredSince` lives in memory.
