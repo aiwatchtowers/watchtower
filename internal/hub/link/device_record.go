@@ -28,7 +28,11 @@ type DeviceRecord struct {
 	Creator string
 	Shares  transport.Shares
 	Hosted  bool
-	// Claim, first in the rewrite's transaction, decides this version of the
+	// Stands, first in the rewrite's or the unlink's transaction, returns an
+	// error unless the link this record was read under still stands, which rolls
+	// it back. Nil: no check.
+	Stands func(tx *sql.Tx) error
+	// Claim, next in the rewrite's transaction, decides this version of the
 	// record and writes its rollback mark, so record and mark commit together:
 	// each transport has its own processor, and the rollback check ran when this
 	// one was opened. False: a newer version got there first, and nothing
@@ -82,7 +86,7 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 	}
 	if r.Payload.Unlinked != nil && *r.Payload.Unlinked {
 		log.Printf("hub link: phone %s unlinked itself", strings.ToUpper(device))
-		return c.unlinkItself(ctx, r.Shares, device)
+		return c.unlinkItself(ctx, r.Shares, device, r.Stands)
 	}
 	return c.rewrite(ctx, device, r)
 }
@@ -92,8 +96,8 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 // pass already runs off any owner request, so it waits for the share
 // calls here), elsewhere it is Unlink. A participant removal that failed is
 // left to the sweep.
-func (c *Center) unlinkItself(ctx context.Context, shares transport.Shares, device string) error {
-	finish, err := c.BeginRemove(ctx, device)
+func (c *Center) unlinkItself(ctx context.Context, shares transport.Shares, device string, stands func(*sql.Tx) error) error {
+	finish, err := c.beginRemove(ctx, device, stands)
 	if errors.Is(err, state.ErrNoDevice) {
 		return nil
 	}
@@ -155,6 +159,11 @@ func (c *Center) rewrite(ctx context.Context, device string, r DeviceRecord) err
 	var asked, typingRevoked, permsRevoked, changed, relayNamed, relayMoved bool
 	var askedName, relayRefused string
 	err := c.st.WithTx(ctx, func(tx *sql.Tx) error {
+		if r.Stands != nil {
+			if err := r.Stands(tx); err != nil {
+				return err
+			}
+		}
 		if r.Claim != nil {
 			claimed, err := r.Claim(tx)
 			if err != nil || !claimed {

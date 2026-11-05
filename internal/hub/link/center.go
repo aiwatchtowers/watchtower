@@ -289,11 +289,21 @@ func (c *Center) OnRevoke(fn func(device string)) {
 // shares even when nobody calls RemoveCloudKit. A phone that only
 // waits for the owner is refused not_confirmed instead (it never had keys,
 // nothing rotates). state.ErrNoDevice when neither.
-func (c *Center) Unlink(device string) error {
+func (c *Center) Unlink(device string) error { return c.unlink(device, nil) }
+
+// unlink is Unlink with stands (nil: none) checked first in its transaction: a
+// phone's farewell read under a link that no longer stands removes nothing and
+// rotates nothing, and its error comes back wrapped.
+func (c *Center) unlink(device string, stands func(*sql.Tx) error) error {
 	c.mu.Lock()
 	defer c.unlock()
 	removed, shared := false, false
 	err := c.keys.RotateWith(identity.ReasonUnlink, func(tx *sql.Tx) error {
+		if stands != nil {
+			if err := stands(tx); err != nil {
+				return err
+			}
+		}
 		var scope string
 		if err := tx.QueryRow(`SELECT scope FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(&scope); err != nil &&
 			!errors.Is(err, sql.ErrNoRows) {

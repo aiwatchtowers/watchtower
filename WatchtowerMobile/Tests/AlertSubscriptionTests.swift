@@ -286,6 +286,39 @@ final class AlertSubscriptionTests: XCTestCase {
         XCTAssertEqual(written.last?.workAlertsOff, true)
     }
 
+    /// The link screen waits on `linked`: a dead network holds the send, not the screen. The record is saved by then.
+    func testALinkWithTheSwitchOffDoesNotWaitOnItsSend() async throws {
+        let bed = try await alertsBed()
+        let session = try XCTUnwrap(bed.root.env.session(bed.hubID))
+        let device = try XCTUnwrap(session.linkedDevice)
+        let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
+        session.deviceSettings.workAlerts = false
+        var sendStarted = false
+        var released = false
+        bed.root.sendLinkedQueue = { _ in
+            sendStarted = true
+            while !released {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+
+        var returned = false
+        let link = Task {
+            try await bed.root.linked(record, device: device)
+            returned = true
+        }
+        for _ in 0..<600 where !returned || !sendStarted {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(sendStarted, "the send still runs")
+        XCTAssertTrue(returned, "linked waited on the blocked send")
+        let written = try await deviceRecords(bed)
+        XCTAssertEqual(written.last?.workAlertsOff, true, "saved before it returned")
+
+        released = true
+        try await link.value
+    }
+
     func testALinkWithTheSwitchOnWritesNoRecord() async throws {
         let bed = try await alertsBed()
         let session = try XCTUnwrap(bed.root.env.session(bed.hubID))

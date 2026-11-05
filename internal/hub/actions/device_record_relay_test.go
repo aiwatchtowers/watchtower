@@ -463,6 +463,76 @@ func TestDeviceRecordOpenedBeforeARelinkAppliesNothing(t *testing.T) {
 	}
 }
 
+// A farewell opened before a re-link does not unlink the live phone: it read
+// the new row, and the link check runs in the unlink's own transaction. No
+// epoch rotates.
+func TestFarewellOpenedBeforeARelinkAppliesNothing(t *testing.T) {
+	w := onRelay(t)
+	unlinked := true
+	name, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: w.phone.ID().String(), Name: "Test Phone",
+		Scope: wire.ScopePrivate, Unlinked: &unlinked, UpdatedAt: wire.Time{Time: w.clock()}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch, err := w.keys.CurrentEpoch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := false
+	w.proc.fault = func(stage string) error {
+		if !done && stage == "opened" {
+			done = true
+			w.relink(w.phone)
+		}
+		return nil
+	}
+	w.pass()
+	if !done {
+		t.Fatal("never opened")
+	}
+	if !w.stillLinked(w.phone) {
+		t.Fatal("an old farewell unlinked the new link")
+	}
+	if now, err := w.keys.CurrentEpoch(); err != nil || now != epoch {
+		t.Fatalf("epoch %d → %d (%v)", epoch, now, err)
+	}
+	if _, _, ok, err := w.st.RelaySeen(name, w.phone.ID().String()); err != nil || ok {
+		t.Fatalf("marked under the new link: %v %v", ok, err)
+	}
+}
+
+// A farewell older than a marked rewrite still comes from a phone that has
+// left: no version check stands in its way.
+func TestFarewellOlderThanAMarkedRewriteStillUnlinks(t *testing.T) {
+	w := onRelay(t)
+	device := w.phone.ID().String()
+	unlinked := true
+	wireName, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: device, Name: "Test Phone",
+		Scope: wire.ScopePrivate, Unlinked: &unlinked, UpdatedAt: wire.Time{Time: w.clock()}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := false
+	w.proc.fault = func(stage string) error {
+		if done || stage != "opened" {
+			return nil
+		}
+		done = true
+		epoch, err := w.keys.CurrentEpoch()
+		if err != nil {
+			return err
+		}
+		return w.st.WithTx(w.ctx, func(tx *sql.Tx) error { return state.RecordSeen(tx, wireName, device, epoch, 1000) })
+	}
+	w.pass()
+	if !done {
+		t.Fatal("never opened")
+	}
+	if w.stillLinked(w.phone) {
+		t.Fatal("still linked after its farewell")
+	}
+}
+
 // A farewell read, a re-link (marks gone), a switch's rewind: the old farewell
 // is read again. It no longer opens, since the relay key takes the link nonce.
 func TestOldFarewellAfterARelinkAndARewindKeepsTheLink(t *testing.T) {

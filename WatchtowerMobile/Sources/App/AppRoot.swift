@@ -82,6 +82,8 @@ final class AppRoot {
     /// nil holds nothing (tests).
     @ObservationIgnored private let startWork: BackgroundWork.Starter?
     @ObservationIgnored private let farewellDelivery: FarewellDelivery
+    /// One push of a session's send queue after `linked`'s record; tests replace it.
+    @ObservationIgnored var sendLinkedQueue: @MainActor (_ session: HubSession) async -> Void = { await $0.sendNow() }
     /// The removal running per hub: a second one for the same hub waits
     /// for it and counts nothing.
     @ObservationIgnored private var removals: [String: Task<LocalWipe, Never>] = [:]
@@ -1000,9 +1002,10 @@ extension AppRoot: LinkHost {
         _ = await session.adoption?.value
         await session.setLinkedDevice(device, writesAllowed: true)
         env.activate(record.hubID)
-        // The hub's switch starts on with every link, and the hello carries none it keeps.
+        // The hub's switch starts on with every link, and the hello carries none it keeps. The link screen waits on
+        // this function, so only the save is awaited: a dead network holds the send, not the screen.
         if !session.deviceSettings.workAlerts, await session.deviceSettings.sendWorkAlertsChange() {
-            await session.sendNow()
+            Task { [sendLinkedQueue] in await sendLinkedQueue(session) }
         }
     }
 

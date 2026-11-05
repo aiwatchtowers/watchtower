@@ -83,7 +83,8 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 	}
 	shares, _ := p.cfg.Transport.(transport.Shares)
 	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares, Hosted: !b.shared,
-		Claim: func(tx *sql.Tx) (bool, error) { return claimTx(tx, b, rec.Name, o) }}
+		Stands: func(tx *sql.Tx) error { return standsTx(tx, b) },
+		Claim:  func(tx *sql.Tx) (bool, error) { return claimTx(tx, b, rec.Name, o) }}
 	if err := p.cfg.Links.ApplyDeviceRecord(ctx, b.id.String(), r); err != nil {
 		if errors.Is(err, errRelinked) {
 			return nil // read under a link that no longer stands: nothing applied
@@ -100,18 +101,22 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 	return err
 }
 
-// claimTx decides o in the record's own transaction: the link it was read under
-// must still stand (errRelinked), and a newer version marked by now (the other
-// transport's processor got there after o was opened) wins, so false. Otherwise
-// o's mark is written and commits with the record.
-func claimTx(tx *sql.Tx, b mailbox, wireName string, o secure.Opened) (bool, error) {
+// standsTx is errRelinked unless the link b was read under still stands.
+func standsTx(tx *sql.Tx, b mailbox) error {
 	nonce, linked, err := state.LinkNonceTx(tx, b.id.String())
 	if err != nil {
-		return false, err
+		return err
 	}
 	if !linked || nonce != b.link {
-		return false, errRelinked
+		return errRelinked
 	}
+	return nil
+}
+
+// claimTx decides o in the record's own transaction: a newer version marked by
+// now (the other transport's processor got there after o was opened) wins, so
+// false. Otherwise o's mark is written and commits with the record.
+func claimTx(tx *sql.Tx, b mailbox, wireName string, o secure.Opened) (bool, error) {
 	epoch, seq, seen, err := state.RelaySeenTx(tx, wireName, o.Sender.String())
 	if err != nil {
 		return false, err

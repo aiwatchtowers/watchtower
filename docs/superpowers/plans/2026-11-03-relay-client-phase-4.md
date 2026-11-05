@@ -150,7 +150,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | The Learn cards `iphone-relay-subscribe`, `iphone-alerts-relay` and `headless-host-run`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), and `iphone-alerts.md`'s "will ask the Mac to stop sending" reworded to the present once the Go half and G1 are in, in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
-| Manual checks M1–M11 on staging | Owner, Open decision 14 |
+| Manual checks M1–M11 on staging (M11 added by G1, #1534) | Owner, Open decision 14 |
 
 ## Lanes
 
