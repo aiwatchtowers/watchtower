@@ -1042,6 +1042,69 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(center.purchase, .noSubscriptionFound)
     }
 
+    /// A cancel must not land on S21 with no load running. `.idle` is the contract: the open screen loads on it.
+    func testACancelledRestoreLeavesNoStateNothingAdvances() async throws {
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+
+        // Prior .loadingProduct, the price already known.
+        let (known, _) = try await registeredBed()
+        known.store.productResult = product
+        known.store.restoreError = RelayStoreError.cancelled
+        let knownCenter = await started(known)
+        await knownCenter.loadProduct()
+        known.store.parkProduct()
+        let reload = Task { await knownCenter.loadProduct() }
+        try await known.until("the load") { known.store.productIsParked }
+        XCTAssertEqual(knownCenter.purchase, .loadingProduct)
+        await knownCenter.restore()
+        XCTAssertEqual(knownCenter.purchase, .ready(product))
+        known.store.releaseProduct()
+        await reload.value
+        XCTAssertEqual(knownCenter.purchase, .ready(product))
+
+        // Prior .loadingProduct, no price yet.
+        let (fresh, _) = try await registeredBed()
+        fresh.store.productResult = product
+        fresh.store.restoreError = RelayStoreError.cancelled
+        let freshCenter = await started(fresh)
+        fresh.store.parkProduct()
+        let load = Task { await freshCenter.loadProduct() }
+        try await fresh.until("the load") { fresh.store.productIsParked }
+        await freshCenter.restore()
+        XCTAssertEqual(freshCenter.purchase, .idle)
+        fresh.store.releaseProduct()
+        await load.value
+        XCTAssertEqual(freshCenter.purchase, .idle, "the old load writes nothing over a press's end")
+
+        // Prior .loadingProduct, the load ending during the restore: S21 would stay with none running.
+        let (during, _) = try await registeredBed()
+        during.store.productResult = product
+        during.store.restoreError = RelayStoreError.cancelled
+        let duringCenter = await started(during)
+        during.store.parkProduct()
+        during.store.parkRestore()
+        let duringLoad = Task { await duringCenter.loadProduct() }
+        try await during.until("the load") { during.store.productIsParked }
+        let press = Task { await duringCenter.restore() }
+        try await during.until("the sign-in") { during.store.restoreIsParked }
+        during.store.releaseProduct()
+        await duringLoad.value
+        XCTAssertEqual(duringCenter.purchase, .restoring, "a load does not write during a press")
+        during.store.releaseRestore()
+        await press.value
+        XCTAssertEqual(duringCenter.purchase, .ready(product))
+
+        // Prior .idle: stays, and the screen's load gets the price.
+        let (idle, _) = try await registeredBed()
+        idle.store.productResult = product
+        idle.store.restoreError = RelayStoreError.cancelled
+        let idleCenter = await started(idle)
+        await idleCenter.restore()
+        XCTAssertEqual(idleCenter.purchase, .idle)
+        await idleCenter.loadProduct()
+        XCTAssertEqual(idleCenter.purchase, .ready(product))
+    }
+
     /// A throw says nothing about a charge: what arrives after it decides.
     func testAStoreFailureThenADeliverySettlesOrShowsTheRefusal() async throws {
         for refused in [false, true] {
@@ -1227,22 +1290,6 @@ final class RelayAccountCenterTests: XCTestCase {
         macs.relay.releaseEnd()
         await center.lapseEndsFinished()
         XCTAssertEqual(macs.relay.ended, 1)
-    }
-
-    func testStopCancelsTheLapseEnds() async throws {
-        let (bed, token) = try await registeredBed()
-        try await paying(bed, token)
-        let relay = FakeLapseTarget(isOnRelay: true)
-        relay.parksEnd = true
-        bed.targets = [relay]
-        let center = await started(bed)
-        try await bed.until("parked") { relay.endParked }
-
-        center.stop()
-        relay.releaseEnd()
-        await center.lapseEndsFinished()
-
-        XCTAssertTrue(relay.endSawCancel)
     }
 
     func testAnICloudMacIsNotAsked() async throws {

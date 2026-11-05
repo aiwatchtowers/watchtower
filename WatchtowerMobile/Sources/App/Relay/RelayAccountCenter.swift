@@ -126,8 +126,6 @@ final class RelayAccountCenter {
 
     /// The event loop, the updates task and the first pass have been started.
     @ObservationIgnored private var running = false
-    @ObservationIgnored private var eventsTask: Task<Void, Never>?
-    @ObservationIgnored private var updatesTask: Task<Void, Never>?
     /// When a pass last reached the relay: a pass that did not leaves the next foreground free to try.
     @ObservationIgnored private var lastPassAt: Date?
     /// The `lapseEnded()` calls still out, one per hub: none holds an answer, a loop or another hub.
@@ -161,16 +159,6 @@ final class RelayAccountCenter {
     /// Returns once the `lapseEnded()` calls started so far ended.
     func lapseEndsFinished() async {
         for task in Array(lapseEnds.values) { await task.value }
-    }
-
-    /// Ends the loops and cancels the `lapseEnded()` calls still out; `start()` begins again.
-    func stop() {
-        running = false
-        eventsTask?.cancel()
-        eventsTask = nil
-        updatesTask?.cancel()
-        updatesTask = nil
-        for task in lapseEnds.values { task.cancel() }
     }
 
     // MARK: - Starting
@@ -215,7 +203,7 @@ final class RelayAccountCenter {
         phase = .checking
         startEventLoop()
         let updates = store.updates()
-        updatesTask = Task { [weak self] in
+        Task { [weak self] in
             for await transaction in updates {
                 await self?.update(transaction)
             }
@@ -231,7 +219,7 @@ final class RelayAccountCenter {
             return
         }
         guard let events else { return }
-        eventsTask = Task { [weak self] in
+        Task { [weak self] in
             for await event in events {
                 await self?.handle(event)
             }
@@ -332,7 +320,8 @@ final class RelayAccountCenter {
             }
             await confirm([transaction])
         } catch RelayStoreError.cancelled {
-            purchase = prior
+            // A load does not write during a press, so S21 would stay with none running. `.idle`: the open screen loads.
+            purchase = prior == .loadingProduct ? product.map(PurchaseState.ready) ?? .idle : prior
         } catch {
             Self.logger.error("relay account: restore failed: \(Self.code(error), privacy: .public)")
             purchase = .storeFailed
@@ -454,7 +443,7 @@ final class RelayAccountCenter {
             let key = nextLapseEnd
             nextLapseEnd += 1
             lapseEnds[key] = Task {
-                if !Task.isCancelled { await target.lapseEnded() }
+                await target.lapseEnded()
                 lapseEnds[key] = nil
             }
         }

@@ -25,6 +25,10 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
         var onFinish: (@Sendable () -> Void)?
         var purchaseParked = false
         var parkedPurchase: CheckedContinuation<Void, Never>?
+        var productParked = false
+        var parkedProduct: CheckedContinuation<Void, Never>?
+        var restoreParked = false
+        var parkedRestore: CheckedContinuation<Void, Never>?
     }
 
     var productResult: RelayProduct? {
@@ -86,6 +90,40 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
         lock.withLock { state.purchaseParked = true }
     }
 
+    /// A product load is waiting at `parkProduct()`.
+    var productIsParked: Bool { lock.withLock { state.parkedProduct != nil } }
+
+    /// The next `product` waits until `releaseProduct()`.
+    func parkProduct() {
+        lock.withLock { state.productParked = true }
+    }
+
+    func releaseProduct() {
+        let waiter = lock.withLock {
+            state.productParked = false
+            defer { state.parkedProduct = nil }
+            return state.parkedProduct
+        }
+        waiter?.resume()
+    }
+
+    /// A restore is waiting at `parkRestore()`.
+    var restoreIsParked: Bool { lock.withLock { state.parkedRestore != nil } }
+
+    /// The next `restore` waits until `releaseRestore()`: the App Store's sign-in on screen.
+    func parkRestore() {
+        lock.withLock { state.restoreParked = true }
+    }
+
+    func releaseRestore() {
+        let waiter = lock.withLock {
+            state.restoreParked = false
+            defer { state.parkedRestore = nil }
+            return state.parkedRestore
+        }
+        waiter?.resume()
+    }
+
     func releasePurchase() {
         let waiter = lock.withLock {
             state.purchaseParked = false
@@ -101,6 +139,14 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
     }
 
     func product() async throws -> RelayProduct? {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let parked = lock.withLock {
+                guard state.productParked else { return false }
+                state.parkedProduct = waiter
+                return true
+            }
+            if !parked { waiter.resume() }
+        }
         let (product, error) = lock.withLock { () -> (RelayProduct?, Error?) in
             state.productCalls += 1
             return (state.product, state.productError)
@@ -127,6 +173,14 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
     }
 
     func restore() async throws -> RelayTransaction? {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let parked = lock.withLock {
+                guard state.restoreParked else { return false }
+                state.parkedRestore = waiter
+                return true
+            }
+            if !parked { waiter.resume() }
+        }
         let (result, error) = lock.withLock { () -> (RelayTransaction?, Error?) in
             state.restoreCalls += 1
             return (state.restoreResult, state.restoreError)

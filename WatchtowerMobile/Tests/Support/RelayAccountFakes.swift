@@ -14,7 +14,6 @@ final class FakeLapseTarget: RelayLapseTarget {
     /// `lapseEnded` waits until `releaseEnd()`: a slow iCloud call.
     var parksEnd = false
     private(set) var endParked = false
-    private(set) var endSawCancel = false
     private var parked: CheckedContinuation<Void, Never>?
 
     init(isOnRelay: Bool) {
@@ -34,7 +33,6 @@ final class FakeLapseTarget: RelayLapseTarget {
     func lapseEnded() async {
         if parksEnd {
             await withCheckedContinuation { parked = $0; endParked = true }
-            endSawCancel = Task.isCancelled
         }
         ended += 1
     }
