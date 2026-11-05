@@ -408,7 +408,7 @@ func runAITest(_ *cobra.Command, _ []string) error {
 	defer cancel()
 	err = providers.Allowed(cfg.AI.Provider)
 	if err == nil {
-		err = runConnectionProbe(digest.WithSource(ctx, "probe"), cfg.AI.Provider, gen)
+		err = runConnectionProbe(ctx, cfg.AI.Provider, gen)
 	}
 	if err != nil {
 		return enc.Encode(map[string]any{"ok": false, "error": connectionTestError(err), "error_code": connectionTestCode(err), "provider": cfg.AI.Provider, "model": model})
@@ -426,14 +426,16 @@ func runAITest(_ *cobra.Command, _ []string) error {
 // every codex call uses (the model_instructions_file, or stdin on a codex
 // too old for one): an answer without the nonce means the prompt never
 // reached the model and fails as invalid_output, with a content-free stderr
-// line. Claude and Ollama keep the bare request.
+// line. Claude and Ollama keep the bare request. Both calls carry the
+// "probe" source (TierForSource).
 func runConnectionProbe(ctx context.Context, provider string, gen digest.Generator) error {
+	probeCtx := digest.WithSource(ctx, "probe")
 	if provider != "codex" {
-		_, _, _, err := gen.Generate(ctx, "", "respond with exactly: OK", "")
+		_, _, _, err := gen.Generate(probeCtx, "", "respond with exactly: OK", "")
 		return err
 	}
 	nonce := "wt-probe-" + rand.Text()
-	text, _, _, err := gen.Generate(ctx, "You are a connection test. Reply with exactly this word and nothing else: "+nonce, "Reply now.", "")
+	text, _, _, err := gen.Generate(probeCtx, "You are a connection test. Reply with exactly this word and nothing else: "+nonce, "Reply now.", "")
 	if err != nil {
 		return err
 	}
