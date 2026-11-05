@@ -68,7 +68,8 @@ public struct ArtifactAction: Equatable, Sendable {
         case chat(String)
         case agent(task: String, workbench: Workbench?)
         /// `dataJSON` is the action's `data` as Go stored it (`json.Marshal`: keys
-        /// sorted, HTML-escaped); nil when absent.
+        /// sorted, HTML-escaped), rebuilt by `GoJSON.marshal` — except a `-0`,
+        /// which reads back as `0` (`GoJSON`'s known gap); nil when absent.
         case reply(value: String, dataJSON: String?)
         case target(ArtifactTargetAction)
     }

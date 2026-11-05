@@ -449,17 +449,13 @@ extension ArtifactBlocksTests {
         }
     }
 
-    /// Go's float64 layout (`json.Marshal`), beyond the fixture's 1.5.
-    func testGoFloatLayout() {
-        let cases: [(Double, String)] = [
-            (1.5, "1.5"), (100, "100"), (0.1, "0.1"), (-2.25, "-2.25"), (0, "0"), (-0.0, "-0"),
-            (123_456_789, "123456789"), (1e20, "100000000000000000000"), (1e21, "1e+21"),
-            (1.5e300, "1.5e+300"), (0.000001, "0.000001"), (1e-7, "1e-7"), (1.25e-10, "1.25e-10"),
-            (5e-324, "5e-324"), (9_007_199_254_740_993, "9007199254740992")
-        ]
-        for (value, want) in cases {
-            XCTAssertEqual(GoJSON.float(value), want, "\(value)")
-        }
+    /// Go's number layout through the real path: text Go's `json.Marshal`
+    /// wrote, read by JSONSerialization, written back unchanged. (Go's `-0`
+    /// is the known gap: JSONSerialization reads it as the integer 0.)
+    func testGoNumbersRoundTrip() throws {
+        let text = "[1.5,100,0.1,-2.25,0,123456789,100000000000000000000,1e+21,1.5e+300,0.000001,1e-7,"
+            + "1.25e-10,5e-324,9007199254740992]"
+        XCTAssertEqual(try GoJSON.marshal(try JSONSerialization.jsonObject(with: Data(text.utf8))), text)
     }
 
     /// Go's string escaping: HTML characters only under `json.Marshal`;
