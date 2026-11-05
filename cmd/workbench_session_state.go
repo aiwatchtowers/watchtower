@@ -323,6 +323,9 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 // `waiting`, which the prompt's `working` then replaces (and clears); one
 // landing after it is older than the new stamp and held back.
 func recordCodexPrompt(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, turn hookTurn) error {
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
 	if _, err := database.RestampCodexPromptTurn(rowID, workbenchID, sessionID, at.Truncate(time.Millisecond)); err != nil {
 		return err
 	}
