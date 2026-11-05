@@ -349,7 +349,9 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 		t.Fatal(err)
 	}
 	// Prove the fake catches shell_tool=false without independent snapshot flags.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// The deadline is only a hang guard over three short stub runs; a tight
+	// one fails a correct run on a loaded machine.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "-c", "features.shell_tool=false")
 	digest.IsolateChild(cmd, nil)
