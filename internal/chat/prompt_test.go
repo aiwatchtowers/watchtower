@@ -456,6 +456,9 @@ func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
 	} {
 		assert.Contains(t, got, want)
 	}
+	// The old default (publish instead of an in-app artifact) is gone.
+	assert.NotContains(t, got, "instead of an in-app html or document artifact")
+	assert.NotContains(t, got, "unless the owner asks to keep it in the app")
 }
 
 // With the owner's connectors switch off the session loads no connector

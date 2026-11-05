@@ -72,28 +72,105 @@ final class ArtifactPrintTests: XCTestCase {
         XCTAssertTrue(page.contains("<hr>"))
     }
 
-    func testNothingInTheDocumentPageLoadsOrRuns() {
+    /// Every tag the page has is on an allow-list of inert tags, every
+    /// attribute is one the renderer writes, and every link is http(s) or
+    /// mailto — whatever the markdown smuggles in.
+    func testNothingInTheDocumentPageLoadsOrRuns() throws {
         let page = ArtifactPrint.documentPage(markdown: """
         <script>alert(1)</script>
 
         Inline <img src="https://evil.example/p.png"> and <iframe src="https://evil.example"></iframe>
 
+        <svg onload=alert(1)><link rel=stylesheet href=https://evil.example/s.css><object data=https://evil.example/o></object>
+
         ![chart](https://evil.example/c.png) ![](https://evil.example/d.png)
 
         [ok](https://example.com/a?b=1&c=2) [js](javascript:alert(1)) [mail](mailto:a@example.com)
 
+        [data](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==) [upper](HTTPS://example.com/up)
+
+        [quote](https://example.com/"onclick="alert(1))
+
         &lt;script&gt;decoded&lt;/script&gt;
+
+        # H1
+
+        ###### H6
+
+        Line one\\
+        line two
+
+        - item
+
+        1. one
+
+        > quote
+
+        | a | b |
+        |---|:-:|
+        | 1 | 2 |
+
+        ```
+        code
+        ```
+
+        ***bold em*** ~~struck~~ `inline`
+
+        ---
         """, title: "<b>\"T\"</b>")
-        for forbidden in ["<script", "<img", "<iframe", "url(", "javascript:alert(1)\""] {
-            XCTAssertFalse(page.contains(forbidden), forbidden)
-        }
+
+        try assertInert(page)
+        XCTAssertFalse(page.contains("url("))
         XCTAssertTrue(page.contains("<title>&lt;b&gt;&quot;T&quot;&lt;/b&gt;</title>"))
         XCTAssertTrue(page.contains("<a href=\"https://example.com/a?b=1&amp;c=2\">ok</a>"))
         XCTAssertTrue(page.contains("<a href=\"mailto:a@example.com\">mail</a>"))
         XCTAssertTrue(page.contains("js"), "a non-web link keeps its text")
-        XCTAssertFalse(page.contains("href=\"javascript"))
+        XCTAssertTrue(page.contains("data"), "a data: link keeps its text")
+        XCTAssertFalse(page.contains("href=\"data:"))
+        XCTAssertTrue(page.contains("<a href=\"HTTPS://example.com/up\">upper</a>"), "an upper-case scheme is still a web link")
+        XCTAssertFalse(page.contains("\"onclick="), "a quote in a link destination never closes the href")
         XCTAssertTrue(page.contains("<a href=\"https://evil.example/c.png\">chart</a>"), "an image is a link, never loaded")
+        XCTAssertTrue(
+            page.contains("<a href=\"https://evil.example/d.png\">https://evil.example/d.png</a>"),
+            "an image without alt text is a link showing its address"
+        )
         XCTAssertTrue(page.contains("&lt;script&gt;"))
+        XCTAssertTrue(page.contains("&lt;svg onload=alert(1)&gt;"), "raw HTML is text")
+    }
+
+    /// Every tag is on an allow-list of inert tags, every attribute is one
+    /// the renderer writes, and every href is http(s) or mailto.
+    private func assertInert(_ page: String) throws {
+        let allowedTags: Set<String> = [
+            "html", "head", "meta", "title", "style", "body", "h1", "h2", "h3", "h4", "h5", "h6", "p", "pre", "code",
+            "ul", "ol", "li", "blockquote", "table", "thead", "tbody", "tr", "th", "td", "hr", "br", "em", "strong", "s", "a"
+        ]
+        let allowedAttributes: Set<String> = ["charset", "href", "start", "style"]
+        let tagPattern = try NSRegularExpression(pattern: "<(/?)([^\\s>/]+)([^>]*)>")
+        let attributePattern = try NSRegularExpression(pattern: "\\s([A-Za-z-]+)=\"([^\"]*)\"")
+        let whole = NSRange(page.startIndex..., in: page)
+        var hrefs: [String] = []
+        for match in tagPattern.matches(in: page, range: whole) {
+            let name = (page as NSString).substring(with: match.range(at: 2)).lowercased()
+            if name == "!doctype" { continue }
+            XCTAssertTrue(allowedTags.contains(name), "tag <\(name)>")
+            let attributes = (page as NSString).substring(with: match.range(at: 3))
+            let found = attributePattern.matches(in: attributes, range: NSRange(attributes.startIndex..., in: attributes))
+            for attribute in found {
+                let attributeName = (attributes as NSString).substring(with: attribute.range(at: 1))
+                XCTAssertTrue(allowedAttributes.contains(attributeName), "attribute \(attributeName) on <\(name)>")
+                if attributeName == "href" { hrefs.append((attributes as NSString).substring(with: attribute.range(at: 2))) }
+            }
+            let rest = attributePattern.stringByReplacingMatches(
+                in: attributes, range: NSRange(attributes.startIndex..., in: attributes), withTemplate: ""
+            )
+            XCTAssertEqual(rest.trimmingCharacters(in: .whitespaces), "", "nothing but quoted attributes on <\(name)>")
+        }
+        XCTAssertFalse(hrefs.isEmpty)
+        for href in hrefs {
+            let lower = href.lowercased()
+            XCTAssertTrue(["http:", "https:", "mailto:"].contains { lower.hasPrefix($0) }, "href \(href)")
+        }
     }
 
     func testEmptyDocumentPageIsAValidPage() {

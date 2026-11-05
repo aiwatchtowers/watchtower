@@ -201,6 +201,37 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(counter.hits, 0)
     }
 
+    /// The rules failing reports once through `onFailed`, and the message
+    /// page shown instead is never reported as the loaded content.
+    func testRulesFailureReportsOnceAndNeverLoaded() async throws {
+        struct Broken: LocalizedError {
+            var errorDescription: String? { "rules broke" }
+        }
+        let probe = CoordinatorProbe()
+        probe.coordinator.rules = { _ in throw Broken() }
+        let webView = probe.makeWebView()
+        probe.coordinator.show(.page("<html><head><title>secret page</title></head><body></body></html>"), token: 0)
+        let text = try await waitForText(webView) { $0.contains("could not be prepared") }
+        XCTAssertEqual(text, "The preview could not be prepared: rules broke")
+        // A grace for a late didFinish of the message page.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(probe.failures, ["The preview could not be prepared: rules broke"])
+        XCTAssertEqual(probe.loaded, 0, "the message page is not the content")
+    }
+
+    /// The printer's offscreen view (`makeWebView`) has the same network
+    /// barrier as the in-app view.
+    func testThePrinterRouteLoadsNothingFromTheNetwork() async throws {
+        let probe = CoordinatorProbe()
+        _ = probe.makeWebView()
+        probe.coordinator.show(.page("<html><body><img src=\"\(counter.base)/x.png\"><p>doc</p></body></html>"), token: 0)
+        try await waitUntil { probe.loaded > 0 }
+        // A grace for a late image attempt; it can only pass vacuously.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(counter.hits, 0, "the image never reached the listener")
+        XCTAssertEqual(probe.failures, [])
+    }
+
     /// A file preview (#563) loads its folder's visible files only — no
     /// dotfile as a script or in a frame, none through a symlink with a
     /// visible name (`notes.js` → `.secrets/config.js`, a folder link to
