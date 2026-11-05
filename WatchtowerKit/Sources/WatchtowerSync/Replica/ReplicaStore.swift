@@ -103,6 +103,11 @@ public final class ReplicaStore: Sendable {
         writer = try DatabasePool(path: path, configuration: configuration)
         self.opener = opener
         try createSchema()
+        do {
+            try latencySweep(now: Date())
+        } catch {
+            logger.error("latency sweep failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
     }
 
     private init(writer: any DatabaseWriter, opener: any ReplicaOpening) throws {
@@ -164,6 +169,7 @@ public final class ReplicaStore: Sendable {
                 );
                 \(Self.sliceAssetsTableSQL);
                 \(Self.relaySeenTableSQL);
+                \(Self.latencyTablesSQL);
                 \(Self.dataSeenTableSQL);
                 """)
             return try upgradeSidecarColumns(db)
@@ -823,6 +829,8 @@ public final class ReplicaStore: Sendable {
         try db.execute(
             sql: "DELETE FROM replica_meta WHERE key IN (?, ?)", arguments: [Self.dataTokenKey, Self.relayTokenKey])
         try upsertMeta(db, key: Self.sweepKey, value: "1")
+        // An open timing spans one route only.
+        try db.execute(sql: "DELETE FROM latency_pending")
     }
 
     /// Deletes every slice row (and its asset) whose wire name is not in `returned`, except this phone's keybox,
