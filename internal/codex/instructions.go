@@ -130,7 +130,10 @@ type probeEntry struct {
 // daemon start does not keep every system prompt on stdin until a restart.
 // The fallback is logged once per probe.
 func instructionsFileSupported(bin string) bool {
-	v, _ := instructionsSupport.LoadOrStore(bin, &probeEntry{})
+	v, cached := instructionsSupport.Load(bin)
+	if !cached {
+		v, _ = instructionsSupport.LoadOrStore(bin, &probeEntry{})
+	}
 	e := v.(*probeEntry)
 	e.mu.Lock()
 	defer e.mu.Unlock()

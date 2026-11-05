@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -213,13 +215,20 @@ func TestBatchIncompleteRunKeepsStderr(t *testing.T) {
 }
 
 // Stderr that says nothing about the transport keeps an incomplete run
-// unclassified: neither transport nor invalid output.
+// unclassified: neither transport nor invalid output — also when an earlier
+// line reports a lost stream codex recovered from (its retry notice).
 func TestBatchIncompleteRunOtherStderrStaysUnknown(t *testing.T) {
 	stdout := `{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"preamble"}}`
-	_, _, _, err := NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, "something odd happened", 0)).
-		Generate(context.Background(), "sys", "hi", "")
-	require.ErrorIs(t, err, errNoTurnCompleted)
-	var failure *providers.Failure
-	require.ErrorAs(t, err, &failure)
-	assert.Equal(t, providers.Unknown, failure.Category)
+	for _, stderr := range []string{
+		"something odd happened",
+		"stream disconnected before completion: reset; retrying 1/5\nthread panicked at config.rs",
+	} {
+		bin := filepath.Join(t.TempDir(), "codex")
+		require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat > /dev/null\necho '"+stdout+"'\ncat >&2 <<'EOF'\n"+stderr+"\nEOF\n"), 0o755))
+		_, _, _, err := NewCodexGenerator("gpt-x", "gpt-x", bin).Generate(context.Background(), "sys", "hi", "")
+		require.ErrorIs(t, err, errNoTurnCompleted)
+		var failure *providers.Failure
+		require.ErrorAs(t, err, &failure)
+		assert.Equal(t, providers.Unknown, failure.Category, stderr)
+	}
 }

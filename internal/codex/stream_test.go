@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -358,9 +359,13 @@ func TestQuery_ToolSeenOnlyAtCompletion(t *testing.T) {
 }
 
 // rawCodexScript writes a codex stub whose stdout is exactly stdout (printf,
-// no trailing newline added).
+// no trailing newline added). stdout is single-quoted: it must hold no '.
 func rawCodexScript(t *testing.T, stdout string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI test skipped on windows")
+	}
+	require.NotContains(t, stdout, "'")
 	path := filepath.Join(t.TempDir(), "codex")
 	body := "#!/bin/sh\ncat > /dev/null\nprintf '%s' '" + stdout + "'\n"
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
@@ -571,8 +576,7 @@ exec sleep 30
 	}
 	require.ErrorIs(t, err, context.Canceled)
 	require.Len(t, tools, 2)
-	assert.True(t, tools[1].Done)
-	assert.False(t, tools[1].OK)
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, Result: "stopped before the tool finished"}, tools[1])
 	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 50, OutputTokens: 5}}, usage)
 }
 
@@ -609,4 +613,52 @@ func TestQuery_ItemsWithoutID(t *testing.T) {
 		{ID: tools[2].ID, Name: "shell", Done: true, OK: true, Result: "/w"},
 	}, tools)
 	assert.Equal(t, "First.\n\nSecond.", textOf(chunks))
+}
+
+// An empty answer after an undecodable line fails a v2 turn with tool
+// steps too: the garbled line may have been the answer.
+func TestQuery_UndecodableAnswerFails(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"error":null,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"cut`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	_, err := queryAll(t, c)
+	require.ErrorIs(t, err, errNoAgentMessage)
+	assert.Contains(t, err.Error(), "1 undecodable")
+}
+
+// Two id-less tools open at once: each update and completion goes to the
+// oldest open one, so starts and ends pair in codex's order.
+func TestQuery_OverlappingToolsWithoutID(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.started","item":{"type":"command_execution","command":"ls","status":"in_progress"}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"pwd","status":"in_progress"}}`,
+		`{"type":"item.updated","item":{"type":"command_execution","command":"ls","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"ls","aggregated_output":"a","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"pwd","aggregated_output":"/w","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"Done."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var tools []ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			tools = append(tools, *ch.Tool)
+		}
+	}
+	require.Len(t, tools, 4)
+	ls, pwd := tools[0].ID, tools[1].ID
+	assert.NotEqual(t, ls, pwd)
+	assert.Equal(t, []ai.ToolEvent{
+		{ID: ls, Name: "shell", Args: json.RawMessage(`{"command":"ls"}`)},
+		{ID: pwd, Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`)},
+		{ID: ls, Name: "shell", Done: true, OK: true, Result: "a"},
+		{ID: pwd, Name: "shell", Done: true, OK: true, Result: "/w"},
+	}, tools)
 }
