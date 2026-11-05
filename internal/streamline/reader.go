@@ -7,6 +7,7 @@ package streamline
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"io"
 )
@@ -39,7 +40,7 @@ func NewWithLimit(r io.Reader, limit int) *Reader {
 // left unread: the child has exited by then and nothing will complete it.
 // err is io.EOF after the last line, or the read error that ended the
 // stream; the text read before an error is returned first.
-func (r *Reader) Next() (line []byte, err error) {
+func (r *Reader) Next() ([]byte, error) {
 	for r.err == nil {
 		line, oversized, err := r.readLine()
 		r.err = err
@@ -47,12 +48,10 @@ func (r *Reader) Next() (line []byte, err error) {
 			r.skipped++
 			continue
 		}
-		if len(line) > 0 && line[len(line)-1] == '\n' {
-			return line[:len(line)-1], nil
+		if len(line) == 0 {
+			continue
 		}
-		if len(line) > 0 {
-			return line, nil
-		}
+		return bytes.TrimSuffix(line, []byte{'\n'}), nil
 	}
 	return nil, r.err
 }

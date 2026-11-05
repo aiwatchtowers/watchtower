@@ -768,10 +768,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 		closePayloads()
 
-		// Lines up to streamline.MaxLine are read (a tool result can carry
-		// megabytes); a longer one is skipped and counted, never failing the
-		// turn (L1).
-		lines := streamline.New(stdout)
+		// Lines up to maxStreamLine are read (a tool result can carry
+		// megabytes); a longer one is skipped and counted (L1).
+		lines := streamline.NewWithLimit(stdout, maxStreamLine)
 		defer logSkippedLines(lines)
 
 		// lastResult (declared above) remembers the most recent "result"
@@ -859,6 +858,20 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			}
 		}
 
+		// A tool whose result was in a skipped line still gets its end, with
+		// a reason, so no step stays running (the codex rule).
+		if c.toolEvents && lines.Skipped() > 0 {
+			for _, chunk := range chatEvents.closeOpen("claude's report of this tool's result could not be read") {
+				select {
+				case textCh <- chunk:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					fail(ctx.Err())
+					return
+				}
+			}
+		}
+
 		waitErr := cmd.Wait()
 
 		// The CLI can flag is_error in its own envelope regardless of exit
@@ -872,18 +885,30 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 		if waitErr != nil {
 			fail(classifyError(waitErr, stderrBuf.String()))
+			return
+		}
+
+		// Without a result event a skipped line may have been the answer or
+		// the result itself: never a blank or partial "complete" turn.
+		if lastResult == nil && lines.Skipped() > 0 {
+			fail(providers.WithFailure("claude", providers.InvalidOutput,
+				fmt.Errorf("claude output had no result event (%d line(s) over %d bytes skipped)", lines.Skipped(), maxStreamLine)))
 		}
 	}()
 
 	return textCh, errCh, sidCh
 }
 
+// maxStreamLine is the longest stream-json line Query decodes
+// (streamline.MaxLine); a variable so tests can lower it.
+var maxStreamLine = streamline.MaxLine
+
 // logSkippedLines logs how many lines of claude's stream-json output were
 // skipped as over the limit or were not a JSON event (counts, never
 // content: FILES-01); nothing for none.
 func logSkippedLines(lines *streamline.Reader) {
 	if n := lines.Skipped(); n > 0 {
-		log.Printf("claude: skipped %d stream-json line(s) over %d bytes", n, streamline.MaxLine)
+		log.Printf("claude: skipped %d stream-json line(s) over %d bytes", n, maxStreamLine)
 	}
 	if n := lines.Undecodable(); n > 0 {
 		log.Printf("claude: %d undecodable stream-json line(s) ignored", n)
@@ -1044,6 +1069,7 @@ func ToolResultText(raw json.RawMessage) string {
 type chatEventState struct {
 	model  string
 	names  map[string]string // tool_use id → raw name, until its result
+	order  []string          // tool_use ids in names, in call order
 	hidden map[string]bool   // tool_use ids of Claude-internal tools
 	// textMessage is the id of the message that last emitted text and
 	// afterTool records a tool call since then: a later message's text, or
@@ -1089,6 +1115,7 @@ func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
 					continue
 				}
 				s.names[b.ID] = b.Name
+				s.order = append(s.order, b.ID)
 				args := b.Input
 				if len(args) == 0 {
 					args = json.RawMessage("{}")
@@ -1123,6 +1150,20 @@ func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
 			OutputTokens: u.OutputTokens}}}
 	}
 	return nil
+}
+
+// closeOpen ends every tool still waiting for its result as failed with
+// reason, in call order.
+func (s *chatEventState) closeOpen(reason string) []StreamChunk {
+	var out []StreamChunk
+	for _, id := range s.order {
+		if name, open := s.names[id]; open {
+			delete(s.names, id)
+			out = append(out, StreamChunk{Tool: &ToolEvent{ID: id, Name: name, Done: true, Result: reason}})
+		}
+	}
+	s.order = nil
+	return out
 }
 
 // extractText returns the text content from a stream event, if any.

@@ -8,6 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/logcanary"
+	"watchtower/internal/providers"
 )
 
 // twoMiBToolResult prints a stream-json user event whose tool_result
@@ -58,4 +61,68 @@ printf '","usage":{"input_tokens":1,"output_tokens":1}}\n'
 	text, _, err := c.QuerySync(ctx, "system", "hello", "")
 	require.NoError(t, err)
 	assert.Equal(t, strings.Repeat("b", 2<<20), text)
+}
+
+// lowerMaxStreamLine lowers the one-shot reader's limit for one test.
+func lowerMaxStreamLine(t *testing.T, limit int) {
+	t.Helper()
+	old := maxStreamLine
+	maxStreamLine = limit
+	t.Cleanup(func() { maxStreamLine = old })
+}
+
+// A tool result over the limit is skipped: its step still ends, failed with
+// a reason, the answer after it arrives, and only the count reaches the log
+// (FILES-01).
+func TestClaudeQuery_SkippedToolResultClosesItsStep(t *testing.T) {
+	lowerMaxStreamLine(t, 4<<10)
+	canary := logcanary.Text("tool_result")
+	sink := logcanary.Capture(t)
+	big := canary + strings.Repeat("x", 8<<10)
+	script := `printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__watchtower__get_target","input":{}}]}}\n'
+printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"` + big + `"}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}\n'
+printf '{"type":"result","subtype":"success","result":"done","session_id":"s1"}\n'
+`
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = writeMockClaude(t, script)
+	c.EmitToolEvents()
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	var text strings.Builder
+	var last *ToolEvent
+	for chunk := range textCh {
+		text.WriteString(chunk.Text)
+		if chunk.Tool != nil {
+			last = chunk.Tool
+		}
+	}
+	require.NoError(t, <-errCh)
+	assert.Equal(t, "done", text.String())
+	require.NotNil(t, last)
+	assert.Equal(t, ToolEvent{ID: "t1", Name: "mcp__watchtower__get_target", Done: true,
+		Result: "claude's report of this tool's result could not be read"}, *last)
+	assert.Contains(t, sink.String(), "claude: skipped 1 stream-json line(s) over 4096 bytes")
+	sink.AssertClean(t)
+}
+
+// A skipped line with no result event after it may have been the answer:
+// the turn fails instead of ending as a blank "complete" one.
+func TestClaudeQuery_SkippedResultFailsTheTurn(t *testing.T) {
+	lowerMaxStreamLine(t, 4<<10)
+	big := strings.Repeat("y", 8<<10)
+	script := `printf '{"type":"result","subtype":"success","result":"` + big + `","session_id":"s1"}\n'
+`
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = writeMockClaude(t, script)
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	for range textCh {
+	}
+	err := <-errCh
+	require.Error(t, err)
+	var failure *providers.Failure
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, providers.InvalidOutput, failure.Category)
+	assert.Contains(t, err.Error(), "1 line(s) over 4096 bytes skipped")
 }
