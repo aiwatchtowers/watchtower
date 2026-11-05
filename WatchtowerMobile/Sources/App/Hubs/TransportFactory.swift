@@ -23,8 +23,8 @@ struct TransportFactory: Sendable {
     /// or on a relay route a save through the shared client into the phone's mailbox with that Mac.
     let sendDirectly: @Sendable (_ record: CloudRecord, _ route: HubRoute, _ hubID: String) async throws -> Void
 
-    /// The transport's push side: the work-alert subscription, silent-push origins and the NSE's alert. CloudKit's
-    /// on every route: relay pushes come with Phase 4.
+    /// The push side the session's alert subscription goes through: CloudKit's on every route (the subscription stays
+    /// on the hub's CloudKit route while the phone is on the relay).
     let wake: any PushWake
 
     /// CloudKit only: a `.hostedRelay` route throws (tests, and the relay's absence).

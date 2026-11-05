@@ -6,6 +6,10 @@ import WatchtowerSync
 /// when it is off. A private-scope hub gets the `WatchtowerSignal` query subscription (saving by ID replaces, so a
 /// repeat is harmless); a shared-scope hub has none: the phone posts its alerts itself after each fetch
 /// (`SharedAlertPoster`, ask #622).
+///
+/// `route` is the hub's CloudKit route whatever transport the session is on (Open decision 18): the subscription stays
+/// while the phone is on the relay, where a hub writes no signal, so it is silent there, and it is in place for the
+/// signals a hub re-sends at a switch back to CloudKit.
 @MainActor
 final class AlertSubscriptionRegistrar {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AlertSubscription")
@@ -16,7 +20,7 @@ final class AlertSubscriptionRegistrar {
     private enum Applied { case unknown, registered, removed }
 
     /// What this process last got CloudKit to do; `unknown` until the first success, so a failure is retried by the
-    /// next call (the next launch, or the next toggle).
+    /// next call (the next launch, the next foreground, or the next toggle).
     private var applied = Applied.unknown
 
     init(hubID: String, route: HubRoute, wake: any PushWake) {
@@ -43,6 +47,15 @@ final class AlertSubscriptionRegistrar {
         await run.value
     }
 
+    /// Returns once no run is queued or at CloudKit: a route move waits for it, so the old session's call never
+    /// overlaps the new session's.
+    func idle() async {
+        while let run = lastRun {
+            await run.value
+            if lastRun == run { return }
+        }
+    }
+
     private func applyDesired() async {
         let enabled = desired
         let wanted = enabled ? Applied.registered : .removed
@@ -56,7 +69,8 @@ final class AlertSubscriptionRegistrar {
             applied = wanted
         } catch {
             let what = enabled ? "save" : "delete"
-            Self.logger.error("alert subscription \(what, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            let code = CloudKitPushWake.errorCode(error) ?? String(describing: type(of: error))
+            Self.logger.error("alert subscription \(what, privacy: .public) failed: \(code, privacy: .public)")
         }
     }
 }

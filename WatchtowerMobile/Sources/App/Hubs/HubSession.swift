@@ -439,6 +439,7 @@ final class HubSession {
         recordingsDirectory: URL? = nil,
         hold: RecordingHold? = nil,
         route: HubRoute? = nil,
+        link: LinkRecord? = nil,
         notifications: NotificationCenter = .default,
         pushWake: (any PushWake)? = nil,
         alertCleaner: DeliveredAlertCleaner? = nil,
@@ -536,9 +537,9 @@ final class HubSession {
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: backend, hubID: hubID, device: device,
-            route: route, wake: pushWake)
+            route: route, link: link, wake: pushWake)
         sharedAlerts = Self.makeSharedAlerts(
-            hubID: hubID, route: route, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
+            hubID: hubID, route: route, link: link, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
@@ -605,11 +606,15 @@ final class HubSession {
     private static func makeSharedAlerts(
         hubID: String,
         route: HubRoute?,
+        link: LinkRecord?,
         keys: PhoneKeys?,
         store: ReplicaStore,
         defaults: UserDefaults,
         posting: LocalAlertPosting?
     ) -> SharedAlertPoster? {
+        if case .hostedRelay? = route, link != nil {
+            SharedAlertPoster.forgetSeen(hubID: hubID, defaults: defaults)
+        }
         guard case .cloudKit(.shared)? = route, let keys else { return nil }
         return SharedAlertPoster(hubID: hubID, store: store, keys: keys.store, defaults: defaults, posting: posting ?? .live)
     }
@@ -630,6 +635,7 @@ final class HubSession {
         hubID: String,
         device: LinkedDevice?,
         route: HubRoute?,
+        link: LinkRecord?,
         wake: (any PushWake)?
     ) -> (DeviceSettings, AlertSubscriptionRegistrar?) {
         let settings = DeviceSettings(
@@ -638,20 +644,25 @@ final class HubSession {
             hubID: hubID
         )
         settings.linkedDevice = device
-        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, route: route, wake: wake)
+        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, route: route, link: link, wake: wake)
         return (settings, registrar)
     }
 
-    /// The hub's alert subscription, only for a CloudKit hub with a route and a wake (the boot passes a wake only in
-    /// a process with the app's iCloud entitlement: CloudKit raises an uncatchable exception without it).
+    /// The hub's alert subscription, always on the hub's CloudKit route, whatever transport the session is on: any hub
+    /// that offers CloudKit has one, a relay-only hub none (Open decision 18). A session with no link (a pairing's, a
+    /// link being made) goes by its own route. Needs a wake (the boot passes one only in a process with the app's iCloud
+    /// entitlement: CloudKit raises an uncatchable exception without it).
     private static func makeAlertRegistrar(
         hubID: String,
         kind: SessionBackend,
         route: HubRoute?,
+        link: LinkRecord?,
         wake: (any PushWake)?
     ) -> AlertSubscriptionRegistrar? {
-        guard kind == .live, let route, let wake else { return nil }
-        return AlertSubscriptionRegistrar(hubID: hubID, route: route, wake: wake)
+        guard kind == .live, let wake else { return nil }
+        let target = link.map { $0.offersCloudKit ? $0.cloudKitRoute : nil } ?? route
+        guard let target, target.cloudKitScope != nil else { return nil }
+        return AlertSubscriptionRegistrar(hubID: hubID, route: target, wake: wake)
     }
 
     /// The recording uploader: sealed through `secure`, re-sending only
