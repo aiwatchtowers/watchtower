@@ -266,7 +266,12 @@ private struct RelayBannerCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
-            Text(model.text).font(TypeScale.rowTitle)
+            HStack(spacing: Spacing.compact) {
+                if model.busy, model.secondLine == nil {
+                    ProgressView().controlSize(.small)
+                }
+                Text(model.text).font(TypeScale.rowTitle)
+            }
             if let line = model.secondLine {
                 HStack(spacing: Spacing.compact) {
                     if model.busy {

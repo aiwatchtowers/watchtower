@@ -57,9 +57,13 @@ final class RelayBannerModelTests: XCTestCase {
     // MARK: - The table
 
     func testBannerTable() throws {
-        let s35 = try XCTUnwrap(try banner(updateRequired: true))
+        let s35 = try XCTUnwrap(try banner(updateRequired: true, wasPaying: true))
         XCTAssertEqual(s35.text, "Update Watchtower from the App Store to keep using Relay.")
         XCTAssertEqual(s35.actions, [])
+        XCTAssertEqual(
+            try banner(updateRequired: true)?.text, "Update Watchtower from the App Store to use Relay.",
+            "a phone that never paid has nothing to keep (S43's words)"
+        )
 
         let s47 = try XCTUnwrap(try banner(phase: .free(ended: true), route: relayRoute, relayOnly: true, macName: "build-box"))
         XCTAssertEqual(s47.text, "build-box needs Relay. Your subscription ended.")
@@ -129,7 +133,7 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertEqual(moved.text, "Your Relay subscription moved to another iPhone. This iPhone is back on iCloud.")
         let ended = try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, hubOnRelayAt: all.at))
         XCTAssertEqual(ended.text, "Your Relay subscription ended. This iPhone is back on iCloud.")
-        let free = try XCTUnwrap(try banner(phase: .free(ended: true), hubOnRelayAt: all.at, unansweredFor: 3_600))
+        let free = try XCTUnwrap(try banner(phase: .free(ended: true), route: relayRoute, hubOnRelayAt: all.at, unansweredFor: 3_600))
         XCTAssertEqual(free.text, s30)
     }
 
@@ -236,6 +240,17 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertNil(session.transportRequest, "nothing was written")
     }
 
+    /// A failed write on a hub still on the relay: the press must not look dead. The line only ever shows in an outage on a
+    /// relay route, so the harmless `.unavailable` paths cannot show a false one.
+    func testAPressReturnsAnyRefusal() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let session = try await bed.orderedSession()
+        let press = try XCTUnwrap(RelayBannerPress.run(.switchToICloud, session: session, center: nil) {})
+        let refusal = await press.value
+        XCTAssertEqual(refusal, .unavailable)
+        XCTAssertNil(try banner(route: session.route, pressRefusal: refusal), "an iCloud route shows no line for it")
+    }
+
     func testARefusedRequestAsksAgainWithItsOwnReason() async throws {
         let bed = try await Bed.make(self, on: .relay)
         let session = try await bed.orderedSession()
@@ -294,8 +309,20 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertEqual(model.actions, [.switchToICloud])
     }
 
-    func testARelayThatAnswersAgainEndsTheOutageBanner() throws {
-        XCTAssertNil(try banner(route: relayRoute, unansweredFor: nil, request: request()), "its text would be false")
+    func testAnOpenRequestStaysWhenTheRelayAnswers() throws {
+        let model = try XCTUnwrap(try banner(
+            phase: .paying(grace: false, macs: []), route: relayRoute, unansweredFor: nil, request: request()
+        ))
+        XCTAssertEqual(model.text, "Switching to iCloud…", "no outage to report: the press alone")
+        XCTAssertNil(model.secondLine)
+        XCTAssertTrue(model.busy)
+        XCTAssertEqual(model.actions, [])
+        XCTAssertEqual(
+            try banner(phase: .paying(grace: false, macs: []), route: relayRoute, unansweredFor: 30, request: request())?.text,
+            "Switching to iCloud…", "under a minute of silence, after a relaunch"
+        )
+        XCTAssertNil(try banner(phase: .paying(grace: false, macs: []), route: iCloudRoute, request: request()), "the move ends it")
+        XCTAssertNil(try banner(phase: .paying(grace: false, macs: []), route: relayRoute, request: request(refusal: .unavailable)))
     }
 
     // MARK: - Dark
@@ -364,9 +391,62 @@ final class RelayBannerModelTests: XCTestCase {
 
     func testBackOnICloudIsNotSaidWhileThisHubIsStillOnTheRelay() throws {
         XCTAssertNil(try banner(phase: .moved, wasPaying: true, route: relayRoute), "a lapse's move waits for the Mac")
-        XCTAssertNil(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute))
+        XCTAssertFalse(try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute)).text.contains("back on"))
         XCTAssertNotNil(try banner(phase: .free(ended: true), wasPaying: true, route: iCloudRoute))
         XCTAssertNotNil(try banner(phase: .free(ended: true), wasPaying: true, route: nil), "no hub: nothing contradicts it")
+    }
+
+    // MARK: - S34b: ended, the route not moved yet
+
+    private var lapse: TransportRequestRecord { request(reason: TransportFollowerPolicy.lapseReason) }
+
+    func testALapsedPhoneOnAClosedMacIsToldTheMoveIsComing() throws {
+        let s34b = try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute, request: lapse))
+        XCTAssertEqual(s34b.text, "Your Relay subscription ended. Work Mac moves to iCloud when it's back.")
+        XCTAssertEqual(s34b.actions, [.subscribe, .ok])
+        XCTAssertFalse(s34b.busy)
+
+        let keptCopy = request(refusal: .lapseNoAnswer, reason: TransportFollowerPolicy.lapseReason)
+        let afterADay = try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute, request: keptCopy))
+        XCTAssertEqual(afterADay.text, s34b.text, "the copy stays: the Mac still moves when it's back")
+        XCTAssertNil(afterADay.secondLine)
+    }
+
+    /// "moves to iCloud" holds only while the Mac has a request to answer.
+    func testARefusingMacIsNotPromisedAMove() throws {
+        let refused = try XCTUnwrap(try banner(
+            phase: .free(ended: true), wasPaying: true, route: relayRoute,
+            request: request(refusal: .notSupported, reason: TransportFollowerPolicy.lapseReason)
+        ))
+        XCTAssertEqual(refused.text, "Your Relay subscription ended.")
+        XCTAssertEqual(refused.secondLine, TransportRequestRefusal.notSupported.message(macName: "Work Mac"))
+        XCTAssertEqual(refused.secondLineTone, .red)
+        XCTAssertEqual(refused.actions, [.subscribe, .ok])
+
+        let nothingAsked = try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute))
+        XCTAssertEqual(nothingAsked.text, "Your Relay subscription ended.")
+        XCTAssertNil(nothingAsked.secondLine)
+        XCTAssertEqual(nothingAsked.actions, [.subscribe, .ok])
+    }
+
+    func testS34bGivesWayOnlyWhereItShould() throws {
+        XCTAssertNil(try banner(phase: .free(ended: true), wasPaying: false, route: relayRoute, request: lapse), "OK ends it")
+        XCTAssertNil(
+            try banner(phase: .free(ended: true), unconfirmed: true, wasPaying: true, route: relayRoute, request: lapse),
+            "charged: nothing ended"
+        )
+        XCTAssertEqual(
+            try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute, relayOnly: true, request: lapse)?.text,
+            "Work Mac needs Relay. Your subscription ended."
+        )
+        XCTAssertEqual(
+            try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute, unansweredFor: 12 * 60, request: lapse)?.text,
+            outage, "an outage is what stops the Mac hearing now"
+        )
+        XCTAssertEqual(
+            try banner(phase: .free(ended: true), wasPaying: true, route: iCloudRoute, request: lapse)?.text,
+            "Your Relay subscription ended. This iPhone is back on iCloud.", "the route moved: S34"
+        )
     }
 
     // MARK: - A relay-only hub
@@ -492,7 +572,7 @@ final class RelayBannerModelTests: XCTestCase {
             XCTAssertEqual(model.toneUses.contains { $0.element == "relay banner second line" }, model.secondLine != nil)
         }
         let refused = try XCTUnwrap(try banner(route: relayRoute, unansweredFor: 12 * 60, request: request(refusal: .unavailable)))
-        XCTAssertTrue(refused.toneUses.contains { $0.element == "relay banner second line" && $0.tone == .red })
+        XCTAssertTrue(refused.toneUses.contains { $0.element == "relay banner second line" && $0.tone == .red && $0.role == .status })
         let busy = try XCTUnwrap(try banner(route: relayRoute, unansweredFor: 12 * 60, request: request()))
         XCTAssertTrue(busy.toneUses.contains { $0.element == "relay banner second line" && $0.tone == .secondary })
     }

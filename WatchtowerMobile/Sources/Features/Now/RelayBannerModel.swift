@@ -42,7 +42,9 @@ struct RelayBannerModel: Equatable {
         self.busy = busy
         self.macName = macName
         var uses: [ToneUse] = []
-        if secondLine != nil { uses.append(ToneUse(element: "relay banner second line", tone: secondLineTone, role: .info)) }
+        if secondLine != nil {
+            uses.append(ToneUse(element: "relay banner second line", tone: secondLineTone, role: secondLineTone == .red ? .status : .info))
+        }
         if !actions.isEmpty { uses.append(ToneUse(element: "relay banner actions", tone: .accent, role: .info)) }
         toneUses = uses
     }
@@ -82,22 +84,32 @@ struct RelayBannerModel: Equatable {
             return Self(text: macOnRelay(macName, canSubscribe: false), secondLine: onRelayLine, macName: macName)
         }
         if updateRequired {
-            return Self(text: "Update Watchtower from the App Store to keep using Relay.", macName: macName)
+            // A phone that never paid has nothing to keep: S43's words.
+            let goal = wasPaying ? "keep using" : "use"
+            return Self(text: "Update Watchtower from the App Store to \(goal) Relay.", macName: macName)
         }
         if relayOnly, let needs = needsRelay(phase, charged: unconfirmedPurchase, macName: macName) {
             return needs
         }
-        // A lapse's move waits for the Mac: until the route moves, "back on iCloud" would be false.
-        if wasPaying, !isOnRelay(route), let lost = lost(phase, charged: unconfirmedPurchase, macName: macName) {
+        let onRelay = isOnRelay(route)
+        let elapsed = unansweredSince.map { now.timeIntervalSince($0) } ?? 0
+        let inOutage = elapsed >= unavailableAfter
+        // On an outage the outage row says why nothing moves.
+        if wasPaying, !(onRelay && inOutage),
+           let lost = lost(phase, charged: unconfirmedPurchase, onRelay: onRelay, request: request, macName: macName) {
             return lost
         }
         if hubOnRelayAt != nil, let free = freeOnRelayMac(phase, charged: unconfirmedPurchase, line: onRelayLine, macName: macName) {
             return free
         }
-        guard isOnRelay(route), let unansweredSince else { return nil }
-        return outage(
-            for: now.timeIntervalSince(unansweredSince), relayOnly: relayOnly, request: request, pressRefusal: pressRefusal, macName: macName
-        )
+        guard onRelay else { return nil }
+        if inOutage {
+            return outage(for: elapsed, relayOnly: relayOnly, request: request, pressRefusal: pressRefusal, macName: macName)
+        }
+        // The relay answers and the owner's press still goes on: the Mac moves, so say that alone. A lapse's request is S34b's,
+        // and its OK has to end the banner.
+        guard !relayOnly, let request, request.isOpen, request.reason != TransportFollowerPolicy.lapseReason else { return nil }
+        return Self(text: switching, busy: true, macName: macName)
     }
     // swiftlint:enable function_parameter_count
 
@@ -124,19 +136,35 @@ struct RelayBannerModel: Equatable {
         }
     }
 
-    /// S33, S34.
-    private static func lost(_ phase: RelayAccountCenter.Phase, charged: Bool, macName: String) -> Self? {
+    /// S33, S34, and S34b while this hub's route has not moved: "back on iCloud" would be false until it does. Not said while
+    /// charged: nothing ended then.
+    private static func lost(
+        _ phase: RelayAccountCenter.Phase, charged: Bool, onRelay: Bool, request: TransportRequestRecord?, macName: String
+    ) -> Self? {
         switch phase {
-        case .moved:
-            Self(
+        case .moved where !onRelay:
+            return Self(
                 text: "Your Relay subscription moved to another iPhone. This iPhone is back on iCloud.",
                 actions: [.restore, .ok], macName: macName
             )
         case .free(ended: true) where !charged:
-            Self(text: "Your Relay subscription ended. This iPhone is back on iCloud.", actions: [.subscribe, .ok], macName: macName)
-        case .checking, .unknown, .free, .paying:
-            nil
+            if onRelay { return endedOnRelay(request, macName: macName) }
+            return Self(text: "Your Relay subscription ended. This iPhone is back on iCloud.", actions: [.subscribe, .ok], macName: macName)
+        case .checking, .unknown, .free, .moved, .paying:
+            return nil
         }
+    }
+
+    /// The move is promised only while the Mac has a request to answer; a refusal says why it won't come.
+    private static func endedOnRelay(_ request: TransportRequestRecord?, macName: String) -> Self {
+        let ended = "Your Relay subscription ended."
+        if request?.awaitsAnswer == true {
+            return Self(text: "\(ended) \(macName) moves to iCloud when it's back.", actions: [.subscribe, .ok], macName: macName)
+        }
+        return Self(
+            text: ended, secondLine: request?.refusal?.message(macName: macName), secondLineTone: .red,
+            actions: [.subscribe, .ok], macName: macName
+        )
     }
 
     /// S30, or S51's sentence where nothing says this phone can subscribe: not read yet, or just charged.
@@ -167,8 +195,7 @@ struct RelayBannerModel: Equatable {
         request: TransportRequestRecord?,
         pressRefusal: TransportRequestRefusal?,
         macName: String
-    ) -> Self? {
-        guard elapsed >= unavailableAfter else { return nil }
+    ) -> Self {
         let text = "Relay unavailable for \(Int(elapsed / 60)) min. Your changes wait on this iPhone."
         if relayOnly { return Self(text: text, macName: macName) }
         if let request, request.isOpen {
@@ -194,7 +221,8 @@ struct RelayBannerModel: Equatable {
 }
 
 /// A press on the banner, apart from the view. Returns the work it started, for a test to await; its value is what the row
-/// cannot say: a request refused before anything was written. `.unavailable` there means nothing to ask, no failure.
+/// may not say: a request refused before anything was written, a failed write included. It shows only in an outage on a relay
+/// route, so a call with nothing to ask (`.unavailable` on an iCloud route) cannot show a false line.
 @MainActor
 enum RelayBannerPress {
     @discardableResult
@@ -224,6 +252,7 @@ enum RelayBannerPress {
     private static func switchToICloud(_ session: HubSession, center: RelayAccountCenter?) async -> TransportRequestRefusal? {
         let reason = session.transportRequest.flatMap { $0.isOpen ? nil : $0.reason } ?? center?.switchReason
         let outcome = await session.requestTransport(reason: reason)
-        return outcome == .refused(.notOrdered) ? .notOrdered : nil
+        if case let .refused(refusal) = outcome { return refusal }
+        return nil
     }
 }

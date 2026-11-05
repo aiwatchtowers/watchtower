@@ -374,7 +374,7 @@ final class ScreenshotTourTests: XCTestCase {
         return rows
     }
 
-    /// S30–S36, S47, S50, S51, S53: Now's Relay banner in each state of Task 1's table, each light, dark and narrow, handed to
+    /// S30–S36, S34b, S36b, S47, S50, S51, S53: Now's Relay banner in each state of Task 1's table, each light, dark and narrow, handed to
     /// the view (`NowView(banner:)`). The outage frames sit on the outbox demo, for the Waiting to send row under them.
     private func captureBanners(host: ScreenshotHost, origin: RelayOrigin, now: Date) async throws -> [ScreenshotHost.IndexRow] {
         func banner(
@@ -408,7 +408,14 @@ final class ScreenshotTourTests: XCTestCase {
             ("S53", "banner-relay-only-moved", try banner(phase: .moved, route: onRelay, relayOnly: true, macName: "build-box")),
             ("S33", "banner-moved", try banner(phase: .moved, wasPaying: true)),
             ("S34", "banner-ended", try banner(phase: .free(ended: true), wasPaying: true)),
-            ("S35", "banner-update-the-app", try banner(updateRequired: true))
+            ("S34b", "banner-ended-mac-not-moved", try banner(
+                phase: .free(ended: true), wasPaying: true, route: onRelay,
+                request: TransportRequestRecord(target: .cloudKit, controlID: "c", reason: TransportFollowerPolicy.lapseReason, at: now)
+            )),
+            ("S35", "banner-update-the-app", try banner(updateRequired: true, wasPaying: true)),
+            ("S36b", "banner-switching-relay-answers", try banner(
+                route: onRelay, request: TransportRequestRecord(target: .cloudKit, controlID: "c", reason: nil, at: now)
+            ))
         ]
         let waiting: [(String, String, RelayBannerModel)] = [
             ("S31", "banner-relay-unavailable", try banner(route: onRelay, outageMinutes: 3)),
