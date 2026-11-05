@@ -132,6 +132,20 @@ struct ArtifactPanelView: View {
                 Button("Export…") {
                     ArtifactExporter.export(draft) { notice = $0 }
                 }
+                if ArtifactPrint.offersWord(draft) {
+                    Button("Export as Word…") { ArtifactExporter.exportWord(draft) { notice = $0 } }
+                        .disabled(!ArtifactPrint.canExportWord(draft))
+                }
+                if ArtifactPrint.offersPrint(draft) {
+                    // ⌘P while the panel shows a printable artifact; the
+                    // print panel's PDF menu saves it as a PDF.
+                    Button("Print…") {
+                        ArtifactPrinter.print(draft, window: NSApp.keyWindow ?? NSApp.mainWindow) { notice = $0 }
+                    }
+                    .keyboardShortcut("p", modifiers: .command)
+                    .disabled(!ArtifactPrint.canPrint(draft))
+                    .help("Print, or save as a PDF from the print panel")
+                }
                 ForEach(ArtifactActions.kindActions(for: draft, gmailConnected: gmailConnected, slackLinks: slackLinks), id: \.title) { item in
                     Button { run(item.action) } label: { Label(item.title, systemImage: item.systemImage) }
                 }

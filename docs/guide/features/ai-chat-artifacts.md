@@ -54,6 +54,22 @@ An HTML page, such as a slide deck, shows rendered in the panel once it is fully
 
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 
+### Printing, PDF and Word
+<!-- learn
+id: artifacts-print-pdf-word
+title: Print a document or save it as PDF
+text: Press **Print…** on a document or HTML artifact; the print panel's **PDF** menu saves a PDF.
+area: assistant
+level: next
+kind: tip
+since: next
+action: nav:chat
+-->
+
+A document or HTML page has **Print…** in the panel's toolbar, and **⌘P** does the same while it is shown. It opens the standard macOS print panel; choose **Save as PDF** from its **PDF** menu to keep a PDF. A document prints as formatted text, an HTML page as it renders, still with no internet access. Both wait until the artifact is fully written.
+
+A document also has **Export as Word…**, which saves it as a `.docx` file with its headings, lists and tables. **Export…** still saves the Markdown.
+
 ### Publishing to claude.ai
 <!-- learn
 id: artifacts-publish-claude-ai-on-ask
@@ -92,6 +108,7 @@ A document, table, code or HTML page has **Add to Knowledge** in its header. It 
 
 - **An HTML page shows nothing yet.** It renders once it is fully written.
 - **A page loads no images or styles.** It runs with every network load blocked; ask for one self-contained file.
+- **Print… is greyed out.** The artifact is still being written, or it is empty.
 - **No Add to Knowledge button.** Only documents, tables, code and HTML pages have it, and not in a code question chat.
 - **No passage comments on an HTML page.** HTML pages take none; ask for the change in the chat.
 
