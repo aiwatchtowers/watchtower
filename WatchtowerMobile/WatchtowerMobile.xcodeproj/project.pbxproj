@@ -284,6 +284,7 @@
 		F2A5A0FA080EB5E3C2F67345 /* FlatRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AC5C38598DF31C3BD382645 /* FlatRow.swift */; };
 		F2A95829931A110045900D52 /* PromotedLinkResumer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D9BD2D3D252DAA71D12ABD1 /* PromotedLinkResumer.swift */; };
 		F38E6DF2E0451ADE98031A89 /* SideMailboxWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6283CE039E23035A2749FC9 /* SideMailboxWiringTests.swift */; };
+		F39B06B205F1956A21E3FD7D /* RelayAccountClaimTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 856D4A46DFFF1D264D8C0AE6 /* RelayAccountClaimTests.swift */; };
 		F4D349E6D62C941C637E5556 /* FetchCadenceWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70E45893536CCF049E743DFC /* FetchCadenceWiringTests.swift */; };
 		F5939764C56F581EC24D8A85 /* NotificationRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64CDE6882FF18A0C36DFF265 /* NotificationRouter.swift */; };
 		F67B72C48F116A8D29F94701 /* CloudKitLinkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DF1A9FE57F99854C49F048F /* CloudKitLinkAccess.swift */; };
@@ -469,6 +470,7 @@
 		84659903ACFF8DB646E65E9A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingUploadWiringTests.swift; sourceTree = "<group>"; };
 		855F7388B27816608A65DDAC /* RelaySlotsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySlotsView.swift; sourceTree = "<group>"; };
+		856D4A46DFFF1D264D8C0AE6 /* RelayAccountClaimTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountClaimTests.swift; sourceTree = "<group>"; };
 		85CF6FB6B18EC8CAC1C2671C /* StartSheetWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartSheetWiringTests.swift; sourceTree = "<group>"; };
 		85FC342668572B15131C541C /* HubDisplayName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubDisplayName.swift; sourceTree = "<group>"; };
 		86DE68E84DD6BBD3754E6B69 /* RecordingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingView.swift; sourceTree = "<group>"; };
@@ -757,6 +759,7 @@
 				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
 				8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */,
 				7DBFBABAF7726F52DECC669E /* RelayAccountCenterTests.swift */,
+				856D4A46DFFF1D264D8C0AE6 /* RelayAccountClaimTests.swift */,
 				02B852FCD6E9355C7959F0B8 /* RelayAvailabilityTests.swift */,
 				4155D18D7CC6D321AF695AA4 /* RelayBannerModelTests.swift */,
 				9FC40A2129FAD7E956AE98BE /* RelayCardModelTests.swift */,
@@ -1545,6 +1548,7 @@
 				2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */,
 				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
 				E71B2EE05544775FA79A23B3 /* RelayAccountCenterTests.swift in Sources */,
+				F39B06B205F1956A21E3FD7D /* RelayAccountClaimTests.swift in Sources */,
 				BBFA0AEAFD6FEEE331DF0501 /* RelayAccountFakes.swift in Sources */,
 				EB6C1E544928D2257B444103 /* RelayAvailabilityTests.swift in Sources */,
 				83F6C97B186026D626D2BDBF /* RelayBannerModelTests.swift in Sources */,

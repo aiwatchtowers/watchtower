@@ -1,4 +1,5 @@
 import Foundation
+import os
 import WatchtowerHostedRelay
 import WatchtowerSync
 
@@ -72,6 +73,8 @@ struct TransportFactory: Sendable {
 /// A transport for a hub's other route and the store it runs on (nil for a stand-in without one), for the side
 /// mailbox reader (relay client Phase 3 Task 12), which stops the one and closes the other when done with them.
 struct SideTransport {
+    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SideTransport")
+
     let transport: any CloudSyncTransport & Sendable
     let store: TransportStore?
     /// Makes the next pull read the whole mailbox again: the store is the route's own, which the session that left it
@@ -102,6 +105,28 @@ struct SideTransport {
         } else {
             pullMailbox = {}
         }
+    }
+
+    /// A short use of a side transport beside whatever already runs on its store: opened without the launch sweep of the
+    /// stash, which could delete a file a running engine just stashed and not yet buffered, then stopped and closed. nil
+    /// when `open` throws, logged by type.
+    @MainActor
+    static func using<T>(_ open: () throws -> Self, _ body: (Self) async -> T) async -> T? {
+        let side: Self
+        do {
+            side = try TransportStore.withoutStashSweep(open)
+        } catch {
+            logger.error("no side transport: \(String(describing: type(of: error)), privacy: .public)")
+            return nil
+        }
+        let result = await body(side)
+        await (side.transport as? any LiveTransport)?.stop()
+        do {
+            try side.store?.close()
+        } catch {
+            logger.error("a side transport's store was not closed")
+        }
+        return result
     }
 
     /// Sim rule 16: the relay refused the account (`FORBIDDEN`: the hub left its slots or the mailbox is out of

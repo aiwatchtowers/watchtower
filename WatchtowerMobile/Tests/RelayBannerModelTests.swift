@@ -366,6 +366,16 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertNil(try banner(phase: .paying(grace: false, macs: []), route: relayRoute, request: request(refusal: .unavailable)))
     }
 
+    // MARK: - The clock
+
+    /// Only an outage's words change with time, and an outage shows only on a relay route that stopped answering.
+    func testOnlyAnUnansweredRelayRouteRunsAClock() {
+        XCTAssertFalse(RelayBannerModel.needsClock(route: iCloudRoute, unansweredSince: nil))
+        XCTAssertFalse(RelayBannerModel.needsClock(route: iCloudRoute, unansweredSince: now), "an iCloud route has no outage")
+        XCTAssertFalse(RelayBannerModel.needsClock(route: relayRoute, unansweredSince: nil))
+        XCTAssertTrue(RelayBannerModel.needsClock(route: relayRoute, unansweredSince: now))
+    }
+
     // MARK: - Dark
 
     func testAnEmptyOriginShowsOnlyTheMacOnRelayBanner() throws {
@@ -571,7 +581,8 @@ final class RelayBannerModelTests: XCTestCase {
         let session = try await bed.orderedSession()
         bed.relayOps.paying = false
         func model() throws -> RelayBannerModel? {
-            try banner(route: session.route, hubOnRelayAt: session.transportLink?.hubOnRelayAt)
+            // What the view reads: the row in memory, refreshed by the follower's write.
+            try banner(route: session.route, hubOnRelayAt: bed.root.linking.links.first { $0.hubID == session.hubID }?.link.hubOnRelayAt)
         }
         XCTAssertNil(try model())
 
@@ -581,7 +592,7 @@ final class RelayBannerModelTests: XCTestCase {
 
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
         await bed.fetch(session)
-        XCTAssertNil(session.transportLink?.hubOnRelayAt)
+        XCTAssertNil(try bed.row()?.link.hubOnRelayAt)
         XCTAssertNil(try model())
     }
 

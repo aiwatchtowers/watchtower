@@ -466,6 +466,7 @@ final class ScreenshotTourTests: XCTestCase {
             ("S44", "subscription-restoring", .restoring),
             ("S45", "subscription-none-found", .noSubscriptionFound),
             ("S46", "subscription-account-failed", .accountFailed),
+            ("S46b", "subscription-restore-failed", .restoreFailed),
             ("S25", "subscription-pending", .pending),
             ("S26", "subscription-not-reached", .boughtNotConfirmed),
             ("S27", "subscription-refused", .refused),

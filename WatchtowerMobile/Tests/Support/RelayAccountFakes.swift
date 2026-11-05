@@ -15,6 +15,10 @@ final class FakeLapseTarget: RelayLapseTarget {
     var parksEnd = false
     private(set) var endParked = false
     private var parked: CheckedContinuation<Void, Never>?
+    /// `lapseRelay` waits until `releaseLapse()`: the outbox step and the iCloud save.
+    var parksLapse = false
+    private(set) var lapseParked = false
+    private var parkedLapse: CheckedContinuation<Void, Never>?
 
     init(isOnRelay: Bool) {
         self.isOnRelay = isOnRelay
@@ -26,8 +30,17 @@ final class FakeLapseTarget: RelayLapseTarget {
         parked = nil
     }
 
+    func releaseLapse() {
+        parksLapse = false
+        parkedLapse?.resume()
+        parkedLapse = nil
+    }
+
     func lapseRelay() async {
         lapses += 1
+        if parksLapse {
+            await withCheckedContinuation { parkedLapse = $0; lapseParked = true }
+        }
     }
 
     func lapseEnded() async {
@@ -124,9 +137,10 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
 }
 
 /// One phone: `RelayAccountCenter`s over `FakeHostedRelay` and `FakeSubscriptionStore`, the socket's events scripted.
+/// `AccountBed(sharing:)` is a second phone on the same relay and clock: its own identity, StoreKit and defaults.
 @MainActor
 final class AccountBed {
-    let clock = ManualRelayClock(now: Date())
+    let clock: ManualRelayClock
     let fake: FakeHostedRelay
     let http: SubmitGateHTTP
     let attest = FakeAppAttest()
@@ -138,8 +152,10 @@ final class AccountBed {
     /// Times the events stream was asked for.
     private(set) var eventStreams = 0
 
-    init() {
-        fake = FakeHostedRelay(attest: .off, clock: clock)
+    init(sharing other: AccountBed? = nil) {
+        let clock = other?.clock ?? ManualRelayClock(now: Date())
+        self.clock = clock
+        fake = other?.fake ?? FakeHostedRelay(attest: .off, clock: clock)
         let http = SubmitGateHTTP(inner: fake.http)
         self.http = http
         let parts = RelayParts(
@@ -186,7 +202,7 @@ final class AccountBed {
         revoked: Bool = false
     ) -> RelayTransaction {
         RelayTransaction(
-            id: id, originalID: 1000,
+            id: id, originalID: 1000, appAccountToken: token,
             jws: FakeHostedRelay.fakeJWS(
                 originalTransactionID: original, appAccountToken: token.uuidString,
                 signedDate: clock.now().addingTimeInterval(-signedAgo)),

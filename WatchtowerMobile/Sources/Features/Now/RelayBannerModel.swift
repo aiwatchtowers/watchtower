@@ -113,6 +113,12 @@ struct RelayBannerModel: Equatable {
     }
     // swiftlint:enable function_parameter_count
 
+    /// Whether the banner's words can change with no state changing: only an outage's do, and it shows only on a relay route
+    /// that stopped answering. The view runs its clock on this alone, so a phone with no relay pays nothing recurring.
+    static func needsClock(route: HubRoute?, unansweredSince: Date?) -> Bool {
+        isOnRelay(route) && unansweredSince != nil
+    }
+
     private static func isOnRelay(_ route: HubRoute?) -> Bool {
         if case .hostedRelay = route { return true }
         return false

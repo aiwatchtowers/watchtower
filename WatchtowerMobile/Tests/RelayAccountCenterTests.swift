@@ -193,6 +193,8 @@ final class RelayAccountCenterTests: XCTestCase {
         first.signedTransaction = bed.row(token: oldToken).jws
         _ = try await oldPhone.submitTransaction(first)
         bed.clock.advance(by: .seconds(20 * 60))
+        // A phone that held it: only a claim sends a row sold to another account by itself.
+        bed.defaults.set(true, forKey: RelayAccountCenter.holdsSubscriptionKey)
         // Signed after the old phone's last submit, past the 10-minute window.
         let stale = bed.row(token: oldToken, signedAgo: 15 * 60)
         bed.store.unfinishedResult = [stale]
@@ -560,7 +562,7 @@ final class RelayAccountCenterTests: XCTestCase {
         let center = await started(bed)
         bed.fake.crash()
         await center.restore()
-        XCTAssertEqual(center.purchase, .accountFailed)
+        XCTAssertEqual(center.purchase, .restoreFailed)
         XCTAssertEqual(bed.store.restoreCalls, 0)
     }
 
@@ -1057,13 +1059,13 @@ final class RelayAccountCenterTests: XCTestCase {
         return (RelayAccountCenter(link: link, store: bed.store, defaults: bed.defaults) { [] }, gate)
     }
 
-    /// **Try Again** on S46 repeats the press that stopped at the account: a failed Restore never becomes a purchase.
+    /// **Try Again** on S46 and S46b repeats the press that stopped at the account: a failed Restore never becomes a purchase.
     func testTryAgainAfterAFailedAccountRepeatsThePress() async throws {
         let bed = AccountBed()
         let (center, gate) = gatedCenter(bed)
 
         await center.restore()
-        XCTAssertEqual(center.purchase, .accountFailed)
+        XCTAssertEqual(center.purchase, .restoreFailed)
         gate.fails = false
         bed.store.restoreResult = nil
         await center.retryAccount()
@@ -1082,18 +1084,18 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(bed.store.restoreCalls, 1, "no restore was asked of Apple")
         XCTAssertEqual(center.purchase, .pending)
 
-        // Off S46 it presses nothing.
+        // Off S46 and S46b it presses nothing.
         await center.retryAccount()
         XCTAssertEqual(bed.store.accountTokens.count, 1)
     }
 
-    /// The account answered this time, so S46's "Couldn't reach Relay" must not come back on a cancel.
+    /// The account answered this time, so S46b's "Couldn't reach Relay" must not come back on a cancel.
     func testACancelledRestoreFromTheAccountFrameDoesNotReturnToIt() async throws {
         // No price known: `.idle`, and the open screen loads.
         let bed = AccountBed()
         let (center, gate) = gatedCenter(bed)
         await center.restore()
-        XCTAssertEqual(center.purchase, .accountFailed)
+        XCTAssertEqual(center.purchase, .restoreFailed)
         gate.fails = false
         bed.store.restoreError = RelayStoreError.cancelled
         await center.retryAccount()
@@ -1106,7 +1108,7 @@ final class RelayAccountCenterTests: XCTestCase {
         let (known, knownGate) = gatedCenter(priced)
         await known.loadProduct()
         await known.restore()
-        XCTAssertEqual(known.purchase, .accountFailed)
+        XCTAssertEqual(known.purchase, .restoreFailed)
         knownGate.fails = false
         priced.store.restoreError = RelayStoreError.cancelled
         await known.retryAccount()
@@ -1537,6 +1539,113 @@ final class RelayAccountCenterTests: XCTestCase {
 
         bed.emit(.attestation(.notSupported))
         try await bed.until("unknown") { center.phase == .unknown }
+    }
+
+    /// A Buy stopped at S46, then a Restore the owner cancels: the account just answered, and S46's **Try Again** would now
+    /// run a restore.
+    func testACancelledRestoreAfterABuysAccountFailureDoesNotReturnToIt() async throws {
+        let bed = AccountBed()
+        let (center, gate) = gatedCenter(bed)
+        await center.buy()
+        XCTAssertEqual(center.purchase, .accountFailed)
+        gate.fails = false
+        bed.store.restoreError = RelayStoreError.cancelled
+
+        await center.restore()
+
+        XCTAssertEqual(center.purchase, .idle)
+    }
+
+    // MARK: - A lapse and a paying answer
+
+    func testAPayingReadDuringALapseStopsItBeforeTheNextHub() async throws {
+        let (bed, token) = try await registeredBed()
+        try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "expired", for: .zero)
+        let first = FakeLapseTarget(isOnRelay: true)
+        let second = FakeLapseTarget(isOnRelay: true)
+        first.parksLapse = true
+        bed.targets = [first, second]
+        let center = bed.makeCenter()
+        center.start()
+        center.foreground()
+        try await bed.until("the first hub's lapse") { first.lapseParked }
+
+        try await paying(bed, token)
+        await center.refresh()
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
+        first.releaseLapse()
+        await center.passTask?.value
+
+        XCTAssertEqual(second.lapses, 0, "a paying phone's Mac stays")
+    }
+
+    // MARK: - A restore that did not reach the relay
+
+    func testARestoreThatDidNotReachTheRelaySaysSoAndTryAgainRestores() async throws {
+        let (bed, token) = try await registeredBed()
+        let center = await started(bed)
+        // A move's row was finished on the old phone: not in `Transaction.unfinished` here, so nothing re-sends it.
+        let row = bed.row(token: token)
+        bed.store.restoreResult = row
+        bed.fake.crash()
+
+        await center.restore()
+
+        XCTAssertEqual(center.purchase, .restoreFailed, "no promise that it turns on by itself, no word about money")
+        XCTAssertNil(center.unconfirmed)
+        let frame = RelaySubscriptionModel(
+            purchase: center.purchase, unconfirmed: center.unconfirmed, phase: center.phase,
+            config: RelayConfig(origin: nil)
+        )
+        XCTAssertEqual(frame.line, "Couldn't reach Relay.")
+        XCTAssertEqual(frame.primary?.title, "Try Again")
+        XCTAssertEqual(frame.primary?.action, .retryAccount)
+
+        bed.fake.restart()
+        await center.retryAccount()
+
+        XCTAssertEqual(bed.store.restoreCalls, 2, "the restore runs again, not a purchase")
+        XCTAssertEqual(bed.store.accountTokens, [])
+        XCTAssertEqual(center.purchase, .done)
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
+    }
+
+    /// Only a Buy stopped at the account is S46: a charge cannot have happened. Every failed Restore is S46b.
+    func testOnlyABuyStoppedAtTheAccountSaysNothingWasCharged() async throws {
+        let bed = AccountBed()
+        let (center, gate) = gatedCenter(bed)
+        func line() -> String? {
+            RelaySubscriptionModel(
+                purchase: center.purchase, unconfirmed: center.unconfirmed, phase: center.phase, config: RelayConfig(origin: nil)
+            ).line
+        }
+
+        await center.buy()
+        XCTAssertEqual(center.purchase, .accountFailed)
+        XCTAssertEqual(line(), "Couldn't reach Relay. You weren't charged.")
+
+        center.screenClosed()
+        await center.restore()
+        XCTAssertEqual(center.purchase, .restoreFailed)
+        XCTAssertEqual(line(), "Couldn't reach Relay.")
+        center.screenClosed()
+        XCTAssertEqual(center.purchase, .idle)
+        gate.fails = false
+    }
+
+    /// `UNAVAILABLE` while the old phone's revocation goes out: the move is done and the read says so.
+    func testARestoreAnsweredUnavailableWhoseReadPaysIsDone() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let center = await started(bed)
+        bed.store.restoreResult = bed.row(id: 2, token: token)
+        // The client gives up on `UNAVAILABLE` as on any error that is no refusal.
+        bed.fake.failNext("submitTransaction", with: .unspecified)
+
+        await center.restore()
+
+        XCTAssertEqual(center.purchase, .done)
+        XCTAssertNil(center.unconfirmed)
     }
 
     // MARK: - Wiring

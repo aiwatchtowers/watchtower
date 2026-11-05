@@ -1496,9 +1496,6 @@ final class HubSession {
         await transportRequester?.lapseEnded()
     }
 
-    /// The hub's row as the request and the follower hold it (one registry read); nil for the demo.
-    var transportLink: LinkRecord? { transportRequester?.link }
-
     /// The request toward iCloud, or the end it came to, as the hub's row holds it.
     var transportRequest: TransportRequestRecord? { transportRequester?.record }
 

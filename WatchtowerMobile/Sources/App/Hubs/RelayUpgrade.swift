@@ -712,21 +712,9 @@ final class RelayUpgrader {
         session: HubSession,
         _ body: (SideTransport, SecureTransport) async -> T
     ) async -> T? {
-        let side: SideTransport
-        do {
-            side = try host.makeRelaySide(hubID: hubID, mac: mac)
-        } catch {
-            Self.logger.error("relay upgrade: no relay transport to the Mac: \(String(describing: type(of: error)), privacy: .public)")
-            return nil
-        }
-        let result = await body(side, session.sealing(side.transport))
-        await (side.transport as? any LiveTransport)?.stop()
-        do {
-            try side.store?.close()
-        } catch {
-            Self.logger.error("relay upgrade: the relay store was not closed")
-        }
-        return result
+        await SideTransport.using({ try host.makeRelaySide(hubID: hubID, mac: mac) }, { side in
+            await body(side, session.sealing(side.transport))
+        })
     }
 
     // MARK: - State

@@ -144,8 +144,8 @@ protocol TransportRequestHost: AnyObject {
 /// initiator write): into the outbox, which reaches the hub on the relay when the relay takes writes, and as a sealed
 /// copy straight into the iCloud mailbox, which gets through a relay that refuses them (`iCloudWritten`). A pass
 /// retries what is missing from the record, so a kill at any point, a failed save and an unreachable iCloud all heal
-/// at the next launch, foreground or fetch (the policy asks once per lapse, so the pass is what re-sends a lost
-/// request). The hub's answer arrives through the follower (a move, `requestAnswered`, `hub_on_relay`: the record
+/// at the next launch, foreground or fetch (the policy asks at each decision and `begin` dedupes on the open record, so
+/// the pass is what re-sends a lost request). The hub's answer arrives through the follower (a move, `requestAnswered`, `hub_on_relay`: the record
 /// clears), the side mailbox reader (the iCloud mailbox is read every 30 s while a request is open) and the rejection
 /// handler (`rejected(_:)`). After `TransportRequest.answerLimit` with no answer the record keeps a refusal; an
 /// owner's request is withdrawn (queued row, iCloud copy), a lapse's copy stays.
@@ -346,12 +346,6 @@ final class TransportRequester {
               current.transportRequest == link.transportRequest else { return .refused(.unavailable) }
         current.transportRequest = TransportRequestRecord(
             target: .cloudKit, controlID: UUID().uuidString, reason: reason, at: now())
-        if lapse, var upgrade = current.relayUpgrade, upgrade.isPending {
-            // The hub's "superseding" rule on our side: the lapse replaces a pending request toward the relay. Its slot
-            // is kept (Open decision 5).
-            upgrade.refusal = .notPaying
-            current.relayUpgrade = upgrade
-        }
         guard host.persistRoute(current) else { return .refused(.unavailable) }
         await pass()
         return outcome()
@@ -498,22 +492,9 @@ final class TransportRequester {
     private func withSide<T>(
         _ route: HubRoute, host: any TransportRequestHost, session: HubSession, _ body: (SecureTransport) async -> T
     ) async -> T? {
-        let side: SideTransport
-        do {
-            // Write-only, beside the reader's running engine on the same file: no launch sweep of the stash.
-            side = try TransportStore.withoutStashSweep { try host.makeOtherSide(hubID: hubID, route: route) }
-        } catch {
-            Self.logger.error("no transport to the other route: \(String(describing: type(of: error)), privacy: .public)")
-            return nil
-        }
-        let result = await body(session.sealing(side.transport))
-        await (side.transport as? any LiveTransport)?.stop()
-        do {
-            try side.store?.close()
-        } catch {
-            Self.logger.error("the other route's store was not closed")
-        }
-        return result
+        await SideTransport.using({ try host.makeOtherSide(hubID: hubID, route: route) }, { side in
+            await body(session.sealing(side.transport))
+        })
     }
 
     // MARK: - State
