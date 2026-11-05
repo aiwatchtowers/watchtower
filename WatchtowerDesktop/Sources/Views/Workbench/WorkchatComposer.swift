@@ -54,11 +54,7 @@ struct WorkchatComposer: View {
     /// until it stops; nil otherwise.
     static func holdCaption(agent: AgentKind?, holdsUntilIdle: Bool, working: Bool) -> String? {
         guard working, holdsUntilIdle else { return nil }
-        return holdCaption(agentName: agent?.displayName)
-    }
-
-    static func holdCaption(agentName: String?) -> String {
-        "\(agentName ?? "The agent") takes your message when this turn ends."
+        return "\(agent?.displayName ?? "The agent") takes your message when this turn ends."
     }
 
     private func send() {
@@ -104,9 +100,9 @@ struct WorkchatOutgoingBubble: View {
         }
     }
 
-    /// A line to an agent with mid-turn input is held only for a prompt, the
-    /// owner's typing or the settle after the previous line; any other waits
-    /// for the agent to stop.
+    /// A line to an agent that takes lines while it works is held only for a
+    /// prompt, the owner's typing or the settle after the previous line; any
+    /// other waits for the agent to stop.
     static func queuedCaption(holdsUntilIdle: Bool) -> String {
         holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
     }

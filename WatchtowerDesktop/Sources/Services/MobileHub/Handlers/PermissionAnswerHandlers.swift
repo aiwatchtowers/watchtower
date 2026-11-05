@@ -10,9 +10,10 @@ import WatchtowerSync
 /// behavior: allow|deny}`) decides one `permission_requests` row that the
 /// session's waiting `permission-wait` hook polls. Order: the device's own
 /// `permissions_allowed` grant (never implied by typing; else
-/// `device_not_allowed`) → the row is this live board Claude session's
-/// (else `not_found`) and `pending` (else `not_pending`, its message naming
-/// why) → an allow the phone may give (`PermissionAllowBlock`: never for a
+/// `device_not_allowed`) → a board agent session (else `not_found`) whose
+/// capability row has `permissionWait` (else `not_supported`: Codex) → the
+/// row is this session's (else `not_found`) and `pending` (else
+/// `not_pending`, its message naming why) → an allow the phone may give (`PermissionAllowBlock`: never for a
 /// shortened summary nor an Edit/Write/NotebookEdit of a settings path;
 /// else `answer_on_mac`, the row left pending; a deny always may) → the
 /// session runs (else `session_not_running`) → one guarded
@@ -21,7 +22,8 @@ import WatchtowerSync
 /// decides the prompt: nothing is typed into the terminal (PROJ-16 holds).
 ///
 /// `session_interrupt` (entity: the session id) is one Esc through the
-/// app's input path. Order: `typing_allowed` → a board Claude session →
+/// app's input path. Order: `typing_allowed` → a board agent session (else
+/// `not_found`) whose row `takesInterrupt` (else `not_supported`: Codex) →
 /// running → its resolved state is Working (Agents working included; never
 /// Running, which is no turn reported, and never Needs approval: an Esc
 /// must not answer a prompt; else `not_working`) → the action at most
@@ -58,8 +60,6 @@ final class PermissionAnswerHandlers {
     private let now: @Sendable () -> Date
     private let timeout: Duration
     private let sleep: @Sendable (Duration) async -> Void
-    /// The session capability rows the handler decides by.
-    private let caps: (AgentKind) -> AgentSessionCaps
 
     init(
         dbPool: DatabasePool,
@@ -70,11 +70,9 @@ final class PermissionAnswerHandlers {
         now: @escaping @Sendable () -> Date = { Date() },
         timeout: Duration = PermissionAnswerHandlers.defaultTimeout,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
-        control: SessionControl? = nil,
-        caps: @escaping (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of
+        control: SessionControl? = nil
     ) {
         self.dbPool = dbPool
-        self.caps = caps
         self.terminalCenter = terminalCenter
         // The app passes its shared one; alone (tests) a private one over
         // the same session state does the same checks (it types no line).
@@ -126,7 +124,7 @@ final class PermissionAnswerHandlers {
         }
         let notFound = ActionOutcome.failed(.notFound, message: "This permission request no longer exists on the Mac")
         guard let agent = try await boardAgent(sessionID) else { return notFound }
-        guard caps(agent).permissionWait else { return SessionInputHandlers.notSupported(.permission, agent: agent) }
+        guard AgentSessionCaps.of(agent).permissionWait else { return .notSupported(.permission, agent: agent) }
         let name = deviceName(action.deviceID) ?? Self.unnamedDevice
         switch try await control.answerPermission(requestID: requestID, sessionID: sessionID, allow: allow, decidedBy: name) {
         case let .applied(decided): return .applied(["status": .string(decided)])
@@ -161,7 +159,7 @@ final class PermissionAnswerHandlers {
         guard let agent = try await boardAgent(sessionID) else {
             return .failed(.notFound, message: Self.notFoundMessage)
         }
-        guard caps(agent).permissionWait else { return SessionInputHandlers.notSupported(.interrupt, agent: agent) }
+        guard AgentSessionCaps.of(agent).takesInterrupt else { return .notSupported(.interrupt, agent: agent) }
         // Running and Working come before the action's age, as the phone's
         // reasons always did; `control.interrupt` checks both again in the
         // same main-actor turn, so they cannot differ.
@@ -183,8 +181,7 @@ final class PermissionAnswerHandlers {
     // MARK: - Scope
 
     /// The agent of a board session of a workbench that still exists; nil
-    /// for anything else. An agent without `permissionWait` is refused
-    /// `not_supported`: Codex keeps "Needs approval on the Mac".
+    /// for anything else.
     private func boardAgent(_ sessionID: Int64) async throws -> AgentKind? {
         try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind.agent }
     }

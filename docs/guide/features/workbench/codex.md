@@ -20,7 +20,7 @@ Differences from Claude Code you may notice:
 - Session titles come from Codex's own history.
 - Watchtower types answers and comments the way Codex expects: Return submits, Ctrl+J starts a new line.
 - **Hand to Session** (⌥⌘↩ from a code question) works with either agent.
-- A line you send from Workchat while Codex works goes into the running turn, as with Claude Code.
+- A line you send from Workchat while Codex works waits for the end of the turn: Codex can open a form mid-turn that Watchtower cannot see.
 - Codex permission prompts are answered in the terminal only: no Workchat card, no answer from the iPhone.
 - Codex reports no idle prompt and no MCP form, so a Codex session sends no idle notice. **Settings → Features → Notifications** says **Idle notices are not available for Codex sessions.** under **Workbench notifications**.
 

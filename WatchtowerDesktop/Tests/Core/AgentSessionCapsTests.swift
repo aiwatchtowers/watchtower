@@ -12,15 +12,14 @@ final class AgentSessionCapsTests: XCTestCase {
         XCTAssertEqual(AgentSessionCaps.of(AgentKind.codex), AgentSessionCaps(
             midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false
         ))
-        XCTAssertEqual(AgentSessionCaps.of(TerminalSession.Kind.shell), .none)
-        XCTAssertEqual(AgentSessionCaps.of(nil as TerminalSession.Kind?), .none)
     }
 
-    /// Both hubs type a phone line while the agent works (PROJ-16): a kind
-    /// that takes phone input must take mid-turn input.
-    func testPhoneInputImpliesMidturnInput() {
-        for agent in AgentKind.allCases where AgentSessionCaps.of(agent).phoneInput {
-            XCTAssertTrue(AgentSessionCaps.of(agent).midturnInput, agent.rawValue)
-        }
+    /// Claude reports every mid-turn dialog; Codex's MCP forms raise no
+    /// state, so nothing goes to it while it works and the phone sends it no Esc.
+    func testDerivedGates() {
+        XCTAssertTrue(AgentSessionCaps.of(AgentKind.claude).takesLineWhileWorking)
+        XCTAssertTrue(AgentSessionCaps.of(AgentKind.claude).takesInterrupt)
+        XCTAssertFalse(AgentSessionCaps.of(AgentKind.codex).takesLineWhileWorking)
+        XCTAssertFalse(AgentSessionCaps.of(AgentKind.codex).takesInterrupt)
     }
 }

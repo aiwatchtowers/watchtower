@@ -10,7 +10,7 @@ here are scrubbed to the fixtures' placeholders.
   output, or after a text answer when the turn has no tool call; one Stop at
   the end). It fires `UserPromptSubmit` with the pasted text, line breaks
   kept (`user_prompt_submit_midturn.json`). Tab instead queues the line for
-  after the turn. Enabled: `agentkind` `MidturnInput`/`PhoneInput`.
+  after the turn. Recorded as `agentkind` `MidturnInput`, but no line is sent while codex works (`TakesLineWhileWorking` also needs `Elicitation`, see (c)): an MCP form open mid-turn would take the pasted line and its Return. Phone lines go when codex is idle (`PhoneInput`).
 - **(b) PermissionRequest hold and answer: works, not enabled.** The hook
   can hold (20 s tried) and answer with `permission_request_output_*.json`
   (the same schema Claude Code's permission-wait prints); a deny reaches the
@@ -26,4 +26,4 @@ here are scrubbed to the fixtures' placeholders.
   `elicitation/create` shows a form in the terminal but fires no hook (only
   the `PreToolUse` of the tool call before it) and writes nothing to the
   rollout (approval requests are not written there either). `IdleSignal` and
-  `Elicitation` stay false; Settings → Notifications says so.
+  `Elicitation` stay false; Settings → Notifications says so, and the phone's Interrupt (`TakesInterrupt`) stays off: an Esc could cancel such a form.

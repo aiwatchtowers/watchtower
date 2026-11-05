@@ -6,14 +6,12 @@ import WatchtowerCore
 /// Notifications caption (U7), on fixture data.
 @MainActor
 enum SessionCapsShotFixtures {
-    /// U2: an agent without mid-turn input works; a line waits, dashed, under
-    /// the composer's caption. The fixture's Codex row has no mid-turn input
-    /// so the state can be seen (the shipped Codex row has it).
+    /// U2: a Codex session works; a line waits, dashed, above the composer's
+    /// caption.
     static func workchatHoldCaption() -> AnyView {
         let model = WorkchatModel(
             sessionID: 1, control: IdleControl(), lineDelivery: SessionLineDelivery(terminalCenter: nil),
-            kind: { .codex }, now: { Date(timeIntervalSince1970: 1_790_000_000) },
-            caps: { _ in .none }
+            kind: { .codex }, now: { Date(timeIntervalSince1970: 1_790_000_000) }
         )
         let line = WorkchatOutgoing(
             id: UUID(), text: "also check the migration", sentAt: Date(timeIntervalSince1970: 1_790_000_000),

@@ -211,7 +211,7 @@ final class SessionInputHandlers: HubCompanion {
         guard let agent = try await boardAgent(sessionID) else {
             return .failed(.notFound, message: "This session no longer exists on the Mac")
         }
-        guard caps(agent).phoneInput else { return Self.notSupported(.input, agent: agent) }
+        guard caps(agent).phoneInput else { return .notSupported(.input, agent: agent) }
         guard terminalCenter.liveIDs.contains(sessionID) else {
             return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
@@ -310,12 +310,14 @@ final class SessionInputHandlers: HubCompanion {
         if let failure = standingFailure(line) { return .fail(failure) }
         // The state was read right before (the delivery's fresh read): a
         // session it does not list was deleted.
-        // Only agents with `phoneInput` reach this handler, and each of them
-        // takes a line pasted mid-turn at its next step
-        // (`AgentSessionCapsTests.testPhoneInputImpliesMidturnInput`): a
-        // working agent does not hold it (PROJ-16 amended, ask #614). A
-        // permission prompt still does.
-        switch control.workchatLineCheck(line.sessionID) {
+        // An agent that takes a line while it works (Claude Code queues it
+        // for its next step and reports every mid-turn dialog) does not hold
+        // it while working (PROJ-16 amended, ask #614); any other (Codex: an
+        // MCP form it opens mid-turn raises no state) waits for idle. A
+        // permission prompt holds either.
+        let whileWorking = terminalCenter.agent(of: line.sessionID).map { caps($0).takesLineWhileWorking } ?? false
+        let check = whileWorking ? control.workchatLineCheck(line.sessionID) : control.lineCheck(line.sessionID)
+        switch check {
         case .go: return nil
         case .sessionGone: return .fail(.sessionNotRunning)
         case .hold(.needsApproval): return .hold(.needsApproval)
@@ -532,6 +534,12 @@ final class SessionInputHandlers: HubCompanion {
     private func boardAgent(_ sessionID: Int64) async throws -> AgentKind? {
         try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind.agent }
     }
+}
+
+extension ActionOutcome {
+    static func held(_ reason: ActionReason) -> Self {
+        Self(status: .held, reason: reason, result: nil, errorMessage: nil)
+    }
 
     /// What the phone asked of a session whose agent cannot take it.
     enum NotSupported {
@@ -541,7 +549,7 @@ final class SessionInputHandlers: HubCompanion {
     /// The `not_supported` refusal (S4, PROJ-16/21 amended): the agent's
     /// session cannot take `what` from the phone. The same words as Go's
     /// hub (`notSupported*Format`); an older phone shows the message.
-    static func notSupported(_ what: NotSupported, agent: AgentKind) -> ActionOutcome {
+    static func notSupported(_ what: NotSupported, agent: AgentKind) -> Self {
         let name = agent.displayName
         let message = switch what {
         case .input: "\(name) sessions can't take messages from the phone yet. Type it on the Mac."
@@ -549,12 +557,6 @@ final class SessionInputHandlers: HubCompanion {
         case .interrupt: "\(name) sessions can't be interrupted from the phone yet. Stop it on the Mac."
         }
         return .failed(.notSupported, message: message)
-    }
-}
-
-extension ActionOutcome {
-    static func held(_ reason: ActionReason) -> Self {
-        Self(status: .held, reason: reason, result: nil, errorMessage: nil)
     }
 }
 

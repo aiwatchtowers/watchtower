@@ -1784,7 +1784,7 @@ other direction.
 
 **Locked since:** 2026-10-04
 
-## PROJ-16 — a line from the owner's phone reaches a session whose agent takes input from the phone (`phoneInput`; idle, or working for an agent with `midturnInput`) only from a device the owner allowed on the Mac, and only through PROJ-12's delivery; any other agent is refused `not_supported`; nothing typed from the phone ever answers a permission prompt
+## PROJ-16 — a line from the owner's phone reaches a session whose agent takes input from the phone (`phoneInput`; idle, or working for an agent whose row `takesLineWhileWorking`) only from a device the owner allowed on the Mac, and only through PROJ-12's delivery; any other agent is refused `not_supported`; nothing typed from the phone ever answers a permission prompt
 
 **Status:** Enforced (Desktop; owner approved 2026-10-07 as decision OD-1 — a new contract rather than an amendment of PROJ-12 — with OD-2, the one-time Allow on the Mac; spec `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` §6.6, §10, §11, plan `docs/superpowers/plans/2026-10-08-mobile-poc-b-workbench-remote.md` Task 18; amended 2026-10-17 for the phone's permission answers, PROJ-21, owner approved in ask #263 / #265; amended 2026-10-25 for send while busy, owner approved in ask #614; amended 2026-11-05 for the session capabilities, owner approved in ask #514 / #519)
 
@@ -1899,28 +1899,34 @@ approved the contract change in ask #514, the plan in ask #519):** condition
 (2) reads "a live board agent session whose capability row has `phoneInput`"
 (Go `agentkind.SessionCaps`, Swift `AgentSessionCaps`, by hand until plan
 Task A5's shared fixture) instead of "a live board `claude` session", and
-"working" counts for every agent with `midturnInput`. G7's spike on codex
-0.159.2 showed Codex takes a line pasted mid-turn at its next step (shown
-as "submitted after next tool call", sent into the running turn with a
-`UserPromptSubmit` hook event; `cmd/testdata/codex_hooks/SPIKES.md`), so
-Codex has both and its lines go like Claude's (the Workchat too:
-`WorkchatModel.holdsUntilIdle = !midturnInput`). A board session of an agent
-without `phoneInput` is refused `not_supported` with "<Agent> sessions can't
-take messages from the phone yet. Type it on the Mac." — never "This session
-no longer exists on the Mac", which stays the deleted session's `not_found`.
-The Kit gains `ActionReason.notSupported`; an older phone decodes the reason
-to nil and shows the message (the failed row renders the hub's
-`errorMessage`). The phone app keeps the composer hidden for a Codex session
-("Write to Codex sessions on the Mac.") until the hub publishes the
-capability on the session record (plan Task A5), because an older Mac still
-refuses Codex lines. Release order (ask #232 practice): the phone build with
-`notSupported` ships first or with the Mac. Guards:
-`testProj16_AWorkingCodexSessionStillHoldsTheLine` (Swift and Go) is
-replaced by `testProj16_AWorkingCodexSessionTakesTheLine` /
-`TestProj16_AWorkingCodexSessionTakesTheLineButNeverAPrompt` (working takes
-the line, Needs approval still holds the next) and
-`testCodexRefusedAsNotSupported` / `TestProj16_CodexSessionRefusedAsNotSupported`
-(an agent row without `phoneInput`: reason and message, nothing typed);
+"working" counts only for an agent whose row `takesLineWhileWorking`
+(`midturnInput` and `elicitation`: every dialog it can open mid-turn raises
+a hook state). G7's spike on codex 0.159.2 showed Codex takes a line pasted
+mid-turn at its next step (`cmd/testdata/codex_hooks/SPIKES.md` (a)), but an
+MCP elicitation form it opens mid-turn fires no hook (spike (c)), so a line
+pasted with its Return could answer that form: Codex has `phoneInput` but
+not `takesLineWhileWorking`, and its phone and Workchat lines wait for idle
+(`WorkchatModel.holdsUntilIdle = !takesLineWhileWorking`; the composer says
+"Codex takes your message when this turn ends."). Sending to a working
+Codex session is an owner decision for when codex reports elicitations. A
+board session of an agent without `phoneInput` is refused `not_supported`
+with "<Agent> sessions can't take messages from the phone yet. Type it on
+the Mac." — never "This session no longer exists on the Mac", which stays the
+deleted session's `not_found`. The Kit gains `ActionReason.notSupported`; an
+older phone decodes the reason to nil and shows the message (the failed row
+renders the hub's `errorMessage`). The phone app keeps the composer hidden
+for a Codex session ("Write to Codex sessions on the Mac.") until the hub
+publishes the capability on the session record (plan Task A5), because an
+older Mac still refuses Codex lines. Release order (ask #232 practice): the
+phone build with `notSupported` ships first or with the Mac. Guards:
+`testProj16_AWorkingCodexSessionStillHoldsTheLine` (Swift and Go; it pinned
+the old `not_found` refusal) is replaced by
+`testProj16_AWorkingCodexSessionHoldsTheLineUntilIdle` /
+`TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle` (held `agent_busy`,
+nothing typed while it works; the Go twin also types it once idle, without
+`while_busy`) and `testCodexRefusedAsNotSupported` /
+`TestProj16_CodexSessionRefusedAsNotSupported` (an agent row without
+`phoneInput`: reason and message, nothing typed);
 `TestProj16_DeletedSessionStillNotFound` pins `not_found`. Every other
 condition and guard is unchanged.
 
@@ -1931,8 +1937,8 @@ could be read as an answer to that dialog; a Claude agent that works queues a
 line for its next step, so working alone no longer holds it (2026-10-25).
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/MobileHub/SessionInputHandlersTests.swift` — `testProj16_AnUnallowedDeviceTypesNothing`, `testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt`, `testProj16_AWorkingCodexSessionTakesTheLine`, `testCodexRefusedAsNotSupported`, `testProj16_NeedsApprovalNeverGetsAPhoneLine`, `testProj16_ADraftHoldsTheLineAndNothingIsPasted`, `testProj16_AHeldLineExpiresAfter24h`, `testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored`, `testProj16_RevokeFailsHeldLines`, `testProj16_AnUnlinkedDeviceTypesNothing` (condition 0, through the relay)
-- Go hub twins (`internal/hub/actions/handlers/session_input_test.go`): `TestProj16_AWorkingCodexSessionTakesTheLineButNeverAPrompt`, `TestProj16_CodexSessionRefusedAsNotSupported`, `TestProj16_DeletedSessionStillNotFound`; the capability rows `internal/agentkind/kind_test.go::TestAgentKind_SessionCaps` and `WatchtowerDesktop/Tests/Core/AgentSessionCapsTests.swift` (`testRowsMatchGo`, `testPhoneInputImpliesMidturnInput`); Kit `ActionReasonTests` (`testNotSupportedDecodes`, `testUnknownReasonDecodesToNilAndKeepsMessage`); phone `SessionInputSenderTests::testFailedRowShowsHubMessageForUnknownReason`
+- `WatchtowerDesktop/Tests/MobileHub/SessionInputHandlersTests.swift` — `testProj16_AnUnallowedDeviceTypesNothing`, `testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt`, `testProj16_AWorkingCodexSessionHoldsTheLineUntilIdle`, `testCodexRefusedAsNotSupported`, `testProj16_NeedsApprovalNeverGetsAPhoneLine`, `testProj16_ADraftHoldsTheLineAndNothingIsPasted`, `testProj16_AHeldLineExpiresAfter24h`, `testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored`, `testProj16_RevokeFailsHeldLines`, `testProj16_AnUnlinkedDeviceTypesNothing` (condition 0, through the relay)
+- Go hub twins (`internal/hub/actions/handlers/session_input_test.go`): `TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle`, `TestProj16_CodexSessionRefusedAsNotSupported`, `TestProj16_DeletedSessionStillNotFound`; the capability rows `internal/agentkind/kind_test.go::TestAgentKind_SessionCaps` and `WatchtowerDesktop/Tests/Core/AgentSessionCapsTests.swift` (`testRowsMatchGo`, `testDerivedGates`); Kit `ActionReasonTests` (`testNotSupportedDecodes`, `testUnknownReasonDecodesToNilAndKeepsMessage`); phone `SessionInputSenderTests::testFailedRowShowsHubMessageForUnknownReason`
 - The PROJ-12 guards run unchanged against `SessionLineDelivery` (see PROJ-12).
 - supporting: `SessionInputHandlersTests` (`testEmptyOrWhitespaceTextIsInvalidParams`, `testLineBreaksAndControlCharactersBecomeOneLine`, `testTextOver4000CharactersIsInvalidParams`, `testTheFinishRequestTypesTheFixedLine`, `testAMarkedRunWithNoTurnYetIsIdle`, `testAFinishedStateFromAnEarlierRunIsNotIdle`, `testAFailedStateReadHoldsTheLineAsStateUnknown`, `testASessionNotRunningOrNotOnABoardFails`, `testCancelAfterDeliveryIsANoOpAndTheOriginalStaysApplied`, `testCancelWhileHeldCancelsTheOriginal`, `testAHeldLineSurvivesAHubRestartAndGoesOnIdle`, `testALineInterruptedMidPasteIsOutcomeUnknownAfterARestart`, `testASessionDeletedWhileALineIsHeldFailsSessionNotRunning`, `testLinesHeldByTheirGateAreNotRetriedInALoop` (wired through `SessionLineDelivery.follow` and a real `SessionAgentStateCenter`), `testOnlyThePhoneThatSentALineCanCancelIt`, `testACancelDuringAnInFlightRetryTypesNothing`, `testAStopDuringAnInFlightRetryTypesNothingAndTheNextStartTypesItOnce`, `testAQuickStopAndStartTypesTheLineOnce`, `testASecondLineWaitsForAHookAfterTheFirstWasSubmitted`, `testWithoutAHookTheSecondLineGoesAfterTheSettleCap`, `testTheRelayEchoesHeldThenTheLaterOutcomeAndKeepsIt`); `RelayProcessorTests::testASidecarWithoutTheTypingRequestColumnGainsIt`; Kit `SessionInputTextTests`; `MobileLinkCenterTests` (`testALinkedPhonesStartSessionsToggleIsMirroredAndATypingRequestIsStoredNotGranted`, `testATypingRequestAsksTheOwnerOnce`, `testAPhoneLinkingWithTypingOnAsks`, `testThePhonesToggleOffRevokesAndRevokeAndRemoveAreReported`, `testAnUnrelatedRewriteKeepsTheTypingGrant`); `SessionStartHandlerTests::testABriefFromADeviceThatMayNotTypeIsIgnoredForTheBasePrompt`; phone `WatchtowerMobile/Tests/SessionInputWiringTests.swift` (`testTheToggleOffHidesTheBarAndFinish`, `testAHeldEchoShowsItsReason`, `testNeedsApprovalShowsTheNoticeAndNoSendButton`)
 
@@ -2245,11 +2251,12 @@ reattach of the session host's runs is done (`SessionLiveness.settled`,
 the restart (PROJ-20) is never expired for it.
 
 **Amended 2026-11-05 (LLM transport independence, plan Task G7, S3/S4;
-owner approved the contract change in ask #514, the plan in ask #519):** both
-kinds (`permission_answer`, `session_interrupt`) go only to a board agent
-session whose capability row has `permissionWait` (Go
-`agentkind.SessionCaps`, Swift `AgentSessionCaps`); any other agent is
-refused `not_supported` with "<Agent> sessions can't answer this permission
+owner approved the contract change in ask #514, the plan in ask #519):**
+`permission_answer` goes only to a board agent session whose capability row
+has `permissionWait` (Go `agentkind.SessionCaps`, Swift `AgentSessionCaps`),
+`session_interrupt` only to one whose row `takesInterrupt` (`permissionWait`
+and `elicitation`: an Esc must not cancel a form the hooks never reported);
+any other agent is refused `not_supported` with "<Agent> sessions can't answer this permission
 from the phone yet. Answer it on the Mac." (interrupt: "<Agent> sessions
 can't be interrupted from the phone yet. Stop it on the Mac."), never "no
 longer exists" (a deleted session keeps `not_found`). Codex stays refused:
@@ -2626,7 +2633,7 @@ owner never saw.
 
 ## Changelog
 
-- 2026-11-05 (LLM transport independence, plan Task G7, S3/S4/S5/S10; **contract change approved in ask #514, plan in ask #519**): **PROJ-16 amended** — the heading and condition (2) decide by the session capability (`phoneInput`, `midturnInput`) instead of the `claude` kind; Codex takes phone lines and Workchat lines mid-turn (G7 spike (a)); another agent gets `not_supported` with its message, a deleted session keeps `not_found`. **PROJ-21 amended** — the answer and Interrupt decide by `permissionWait`; Codex stays refused, now `not_supported` (spike (b): its hook hides the terminal prompt while it holds). **PROJ-11's Codex v1 limits** name the missing idle signal and elicitation (spike (c)) with the Settings caption. Guards replaced, not relaxed: `…AWorkingCodexSessionStillHoldsTheLine` → `…AWorkingCodexSessionTakesTheLine…` + `…CodexSessionRefusedAsNotSupported`, `…AnAnswerForACodexSessionIsNotFound` / `…InterruptOfACodexSessionIsNotFound` → their `not_supported` twins (reason and message asserted); new `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent`, `TestProj16_DeletedSessionStillNotFound`, `TestProj21_DeletedSessionInterruptStillNotFound`.
+- 2026-11-05 (LLM transport independence, plan Task G7, S3/S4/S5/S10; **contract change approved in ask #514, plan in ask #519**): **PROJ-16 amended** — the heading and condition (2) decide by the session capability (`phoneInput`, `takesLineWhileWorking`) instead of the `claude` kind; Codex takes phone lines when idle and still waits for idle while it works (spike (a) proved mid-turn input, spike (c) found its MCP forms unreported); another agent gets `not_supported` with its message, a deleted session keeps `not_found`. **PROJ-21 amended** — the answer decides by `permissionWait`, Interrupt by `takesInterrupt`; Codex stays refused, now `not_supported` (spike (b): its hook hides the terminal prompt while it holds). **PROJ-11's Codex v1 limits** name the missing idle signal and elicitation (spike (c)) with the Settings caption. Guards replaced, not relaxed: `…AWorkingCodexSessionStillHoldsTheLine` → `…AWorkingCodexSessionHoldsTheLineUntilIdle` + `…CodexSessionRefusedAsNotSupported`, `…AnAnswerForACodexSessionIsNotFound` / `…InterruptOfACodexSessionIsNotFound` → their `not_supported` twins (reason and message asserted); new `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent`, `TestProj16_DeletedSessionStillNotFound`, `TestProj21_DeletedSessionInterruptStillNotFound`.
 - 2026-10-31 (**owner approved in ask #811**): **PROJ-20 amended — the local-PTY fallback is removed.** Every workbench session runs only in `watchtower session-host`; the Desktop's in-app SwiftTerm process (`SwiftTermSession`, `TerminalCenter.makeLocalProcess`, `TerminalCenter.unprotected`, the "This session stops when Watchtower quits." note and the quit alert's "N unprotected sessions will stop.") is gone. The Observable's fallback sentence is replaced by: when the host cannot be reached or started, the session does not open and the pane shows the reason; no session ever runs outside the host. A host that did not answer at launch is asked once more by each session start (the client's existing `ensureRunning`, no new retry loop). Guard changes approved in the same ask: `testProj20_ReattachAdoptsRunningSessionWithoutRelaunch` loses its `unprotected.isEmpty` assertion (its `HostedTerminalSession` check stays); the supporting `testQuitPromptNamesUnprotectedSessionsThatStop` is deleted; the supporting `testDetachAllNeverSignals` keeps only its hosted half (never signalled, connection closed, nothing forgotten). New supporting guards: `WatchtowerDesktop/Tests/TerminalCenterTests.swift::testProj20_NoSessionHostOpensNoSessionAndShowsTheReason` (no reachable host → nothing launched, the run ends with the reason in the pane and is not reported as a natural exit, so no PROJ-18 placed-session cleanup follows; the next start reaches a host that is back) and `testStartWithoutASessionHostClientOpensNothing`. No other guard changed.
 - 2026-10-28 (agent coach Plan 2, board #1120, **approved in ask #722**): amendment, no guard weakened. **PROJ-22** item (4): the daily miner folds into the coach once; suggestions reach the owner as coach proposals, still only on the owner's Accept; a moved row is decided only in the coach. See the amendment in PROJ-22.
 - 2026-10-26 (agent coach, board #1120, **approved in ask #659**): amendment, no guard weakened. **PROJ-22** item (3): `coach accept` is another writer of the owner's instructions, only on the owner's Accept. See the amendment in PROJ-22.

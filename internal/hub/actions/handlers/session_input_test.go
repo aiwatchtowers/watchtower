@@ -476,32 +476,36 @@ func TestProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt(t *testing.T) {
 	wantPastes(t, le, "Also update the changelog")
 }
 
-// Codex takes a line pasted mid-turn at its next step, as Claude Code does
-// (G7 spike (a), codex 0.159.2): a working Codex session gets the line, sent
-// while busy, and never one at a permission prompt.
-func TestProj16_AWorkingCodexSessionTakesTheLineButNeverAPrompt(t *testing.T) {
+// Codex takes phone lines, but a working Codex session holds them until it
+// is idle: codex takes a line pasted mid-turn (G7 spike (a)), yet an MCP form
+// it opens mid-turn raises no state (spike (c)), so a line could answer it.
+// Nothing types while it works; the line goes once it stops, not while busy.
+func TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle(t *testing.T) {
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")
 	le.lp.start(sid)
 	le.setState(sid, "working")
+	line := le.input(sid, "Also update the changelog")
 
-	out := le.send(le.h, le.input(sid, "Also update the changelog"))
+	out := le.send(le.h, line)
 
-	wantLine(t, out, deliverySubmitted, true)
+	wantOutcome(t, out, wire.StatusHeld, inputReasonAgentBusy)
+	wantPastes(t, le)
+
+	le.setStateAt(sid, "stopped", le.clock.Now().Add(time.Second))
+	le.h.DeliverHeld(context.Background())
+	settled(le.h)
 	wantPastes(t, le, "Also update the changelog")
-
-	le.setStateAt(sid, "needs_approval", le.clock.Now().Add(30*time.Second))
-	next := le.send(le.h, le.input(sid, "and the readme"))
-
-	wantOutcome(t, next, wire.StatusHeld, inputReasonNeedsApproval)
-	wantPastes(t, le, "Also update the changelog")
+	if got := le.echoes.of(line); len(got) == 0 || got[len(got)-1].Result["while_busy"] != nil {
+		t.Fatalf("echoes = %+v, want a last applied echo without while_busy", got)
+	}
 }
 
 // A board session whose agent takes no phone input is refused not_supported
 // with the owner-readable message, never "no longer exists" (S4, PROJ-16
 // amended): nothing types, nothing is held.
 func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
-	withSessionCaps(t, "codex", agentkind.SessionCaps{})
+	withSessionCaps(t, agentkind.Codex, agentkind.SessionCaps{})
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")
 	le.lp.start(sid)

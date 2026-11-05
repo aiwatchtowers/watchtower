@@ -9,10 +9,8 @@ import WatchtowerCore
 final class WorkchatComposerTests: XCTestCase {
     func testCaptionWhenNoMidturnInput() throws {
         XCTAssertEqual(
-            WorkchatComposer.holdCaption(agentName: "Codex"), "Codex takes your message when this turn ends."
-        )
-        XCTAssertEqual(
-            WorkchatComposer.holdCaption(agentName: nil), "The agent takes your message when this turn ends."
+            WorkchatComposer.holdCaption(agent: nil, holdsUntilIdle: true, working: true),
+            "The agent takes your message when this turn ends."
         )
 
         XCTAssertNil(WorkchatComposer.holdCaption(agent: .codex, holdsUntilIdle: false, working: true))

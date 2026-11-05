@@ -77,10 +77,12 @@ func TestAgentKind_SessionCaps(t *testing.T) {
 	if got := SessionCapsOf("shell"); got != (SessionCaps{}) {
 		t.Fatalf("shell = %+v", got)
 	}
-	// Both hubs type a phone line while the agent works (PROJ-16).
-	for _, k := range []Kind{Claude, Codex} {
-		if c := k.SessionCaps(); c.PhoneInput && !c.MidturnInput {
-			t.Fatalf("%s takes phone input without mid-turn input", k)
-		}
+	// Claude reports every mid-turn dialog; Codex's MCP forms raise no state,
+	// so nothing goes to it while it works and the phone sends it no Esc.
+	if !Claude.SessionCaps().TakesLineWhileWorking() || !Claude.SessionCaps().TakesInterrupt() {
+		t.Fatal("claude must take a line while working and an interrupt")
+	}
+	if Codex.SessionCaps().TakesLineWhileWorking() || Codex.SessionCaps().TakesInterrupt() {
+		t.Fatal("codex must take neither a line while working nor an interrupt")
 	}
 }

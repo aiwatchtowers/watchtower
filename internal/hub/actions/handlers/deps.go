@@ -39,9 +39,9 @@ const (
 	reasonNotSupported = "not_supported"
 )
 
-// sessionCaps is the capability row of a session's stored kind; the
-// handlers decide by it, never by the kind (tests swap it).
-var sessionCaps = agentkind.SessionCapsOf
+// sessionCaps is the capability row of a session's agent; the handlers
+// decide by it, never by the kind (tests swap it).
+var sessionCaps = agentkind.Kind.SessionCaps
 
 // The not_supported messages, by what the phone asked; %s is the agent's
 // display name. An older phone without the reason shows the message.
@@ -51,14 +51,10 @@ const (
 	notSupportedInterruptFormat  = "%s sessions can't be interrupted from the phone yet. Stop it on the Mac."
 )
 
-// notSupported is the refusal of a session of kind, with the message of
+// notSupported is the refusal of a session of agent, with the message of
 // format.
-func notSupported(format, kind string) actions.Outcome {
-	name := kind
-	if k, ok := agentkind.Parse(kind); ok {
-		name = k.DisplayName()
-	}
-	return failed(reasonNotSupported, fmt.Sprintf(format, name))
+func notSupported(format string, agent agentkind.Kind) actions.Outcome {
+	return failed(reasonNotSupported, fmt.Sprintf(format, agent.DisplayName()))
 }
 
 // DefaultTimeout is every handler's own deadline (Swift HandlerTimeout's 30 s):

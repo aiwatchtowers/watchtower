@@ -320,17 +320,19 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertEqual(outcome.result, ["delivery": .string("submitted")])
     }
 
-    /// Codex takes a line pasted mid-turn at its next step, as Claude Code
-    /// does (plan Task G7 spike (a)): a working Codex session gets the line,
-    /// sent while busy.
-    func testProj16_AWorkingCodexSessionTakesTheLine() async throws {
+    /// A working Codex session holds the phone's line until it stops: Codex
+    /// takes a line mid-turn, but an MCP form it opens mid-turn raises no
+    /// state (plan Task G7 spikes (a), (c)). Nothing types meanwhile.
+    func testProj16_AWorkingCodexSessionHoldsTheLineUntilIdle() async throws {
         let session = try await liveSession(kind: .codex)
         setState(session, .working)
 
         let outcome = try await makeHandlers().handle(input(session, "Also update the changelog"))
 
-        XCTAssertEqual(outcome.result, ["delivery": .string("submitted"), "while_busy": .bool(true)])
-        XCTAssertEqual(pastes, ["Also update the changelog"])
+        XCTAssertEqual(outcome.status, .held)
+        XCTAssertEqual(outcome.reason, .agentBusy)
+        XCTAssertTrue(pastes.isEmpty)
+        XCTAssertTrue(typed.isEmpty)
     }
 
     /// A board session whose agent takes no phone input is refused

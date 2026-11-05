@@ -105,7 +105,6 @@ struct NotificationSettings: View {
         ) {
             Toggle("Workbench notifications", isOn: isOn).labelsHidden()
         }
-        .help("Agent questions and asks, finished targets, proposals awaiting approval")
     }
 
     /// The Workbench notifications row's caption: what it notifies about,

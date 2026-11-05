@@ -8,16 +8,16 @@ import Foundation
 package struct AgentSessionCaps: Equatable, Sendable {
     /// A line pasted with its Return while the agent works is taken at the
     /// agent's next step instead of waiting for the turn's end.
-    package var midturnInput: Bool
+    package let midturnInput: Bool
     /// The hub types a phone line (or the wrap-up line) into the session (PROJ-16).
-    package var phoneInput: Bool
+    package let phoneInput: Bool
     /// A PermissionRequest hook can hold the prompt while the terminal still
-    /// shows it, and answer it (PROJ-21: the phone's answer and Interrupt).
-    package var permissionWait: Bool
+    /// shows it, and answer it (PROJ-21: the phone's answer).
+    package let permissionWait: Bool
     /// The agent reports an idle prompt (Claude Code's `idle_prompt`).
-    package var idleSignal: Bool
+    package let idleSignal: Bool
     /// The agent reports an MCP elicitation through a hook.
-    package var elicitation: Bool
+    package let elicitation: Bool
 
     package init(
         midturnInput: Bool, phoneInput: Bool, permissionWait: Bool, idleSignal: Bool, elicitation: Bool
@@ -34,10 +34,23 @@ package struct AgentSessionCaps: Equatable, Sendable {
         midturnInput: false, phoneInput: false, permissionWait: false, idleSignal: false, elicitation: false
     )
 
+    /// A line may go into the session while its agent works. Mid-turn input
+    /// alone is not enough: every dialog that can open mid-turn must raise a
+    /// hook state first (an MCP elicitation included), or a line pasted with
+    /// its Return would answer a form Watchtower cannot see. Go's
+    /// `SessionCaps.TakesLineWhileWorking`.
+    package var takesLineWhileWorking: Bool { midturnInput && elicitation }
+
+    /// The phone's one Esc (PROJ-21) may go to the session: a prompt the hooks
+    /// report is never at risk, and no unreported form can be open. Go's
+    /// `SessionCaps.TakesInterrupt`.
+    package var takesInterrupt: Bool { permissionWait && elicitation }
+
     /// `agent`'s row. Codex's comes from plan Task G7's spikes on codex
-    /// 0.159.2: a line pasted mid-turn goes into the running turn; its
-    /// PermissionRequest hook hides the terminal prompt while it holds, so
-    /// it does not wait for the phone; it has no idle or elicitation event.
+    /// 0.159.2: a line pasted mid-turn goes into the running turn, but an MCP
+    /// form it opens mid-turn raises no hook state, so nothing is sent while
+    /// it works; its PermissionRequest hook hides the terminal prompt while it
+    /// holds, so it does not wait for the phone; it has no idle event.
     package static func of(_ agent: AgentKind) -> Self {
         switch agent {
         case .claude:
@@ -45,11 +58,6 @@ package struct AgentSessionCaps: Equatable, Sendable {
         case .codex:
             Self(midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false)
         }
-    }
-
-    /// The row of a stored session kind; nil (not known yet) and a shell offer nothing.
-    package static func of(_ kind: TerminalSession.Kind?) -> Self {
-        kind?.agent.map(of) ?? .none
     }
 
     /// Settings → Notifications' line under Workbench notifications (U7):

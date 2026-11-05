@@ -48,9 +48,10 @@ const (
 // that the session's waiting permission-wait hook polls. Order: the device's
 // own permissions_allowed grant (never implied by typing; else
 // device_not_allowed) → a board agent session (else not_found) whose
-// capability row has PermissionWait (else not_supported: Codex) → the row
-// is this session's (else not_found) and pending (else not_pending, its message naming why) → an
-// allow the phone may give (AllowBlock plus the resolved path; else
+// capability row has PermissionWait (else not_supported: Codex) → the
+// row is this session's (else not_found) and pending (else not_pending,
+// its message naming why) → an allow the phone may give (AllowBlock plus
+// the resolved path; else
 // answer_on_mac, the row left pending; a deny always may) → the session runs
 // (else session_not_running) → one guarded UPDATE … WHERE status = 'pending',
 // so a Mac answer or a second phone that got there first leaves this one
@@ -85,15 +86,15 @@ func (h *Handlers) applyPermissionAnswer(ctx context.Context, r actions.Request)
 	if !linked || !device.PermissionsAllowed {
 		return failed(reasonDeviceNotAllowed, permissionsNotAllowedMsg)
 	}
-	kind, board, err := h.boardSession(ctx, sessionID)
+	agent, board, err := h.boardSession(ctx, sessionID)
 	if err != nil {
 		return failed(reasonWriteFailed, err.Error())
 	}
 	if !board {
 		return failed(reasonNotFound, requestGoneMessage)
 	}
-	if !sessionCaps(kind).PermissionWait {
-		return notSupported(notSupportedPermissionFormat, kind)
+	if !sessionCaps(agent).PermissionWait {
+		return notSupported(notSupportedPermissionFormat, agent)
 	}
 	stored, found, err := h.storedRequest(ctx, requestID, sessionID)
 	if err != nil {
@@ -180,8 +181,8 @@ func (h *Handlers) storedRequest(ctx context.Context, requestID, sessionID int64
 
 // sessionInterrupt is `session_interrupt` (entity the session id): one Esc
 // through session-host's InputTo, under the typing grant. Order:
-// typing_allowed → a board agent session (else not_found) with
-// PermissionWait (else not_supported: Codex) → running → its resolved state is
+// typing_allowed → a board agent session (else not_found) whose row
+// TakesInterrupt (else not_supported: Codex) → running → its resolved state is
 // Working (Agents working included; never Running, which is no turn
 // reported, and never Needs approval: an Esc must not answer a prompt; else
 // not_working) → the action at most InterruptMaxAge old (else expired) → no
@@ -206,15 +207,15 @@ func (h *Handlers) applySessionInterrupt(ctx context.Context, r actions.Request)
 	if !linked || !device.TypingAllowed {
 		return failed(reasonDeviceNotAllowed, typingNotAllowedMessage)
 	}
-	kind, board, err := h.boardSession(ctx, sessionID)
+	agent, board, err := h.boardSession(ctx, sessionID)
 	if err != nil {
 		return failed(reasonWriteFailed, err.Error())
 	}
 	if !board {
 		return failed(reasonNotFound, sessionGoneMessage)
 	}
-	if !sessionCaps(kind).PermissionWait {
-		return notSupported(notSupportedInterruptFormat, kind)
+	if !sessionCaps(agent).TakesInterrupt() {
+		return notSupported(notSupportedInterruptFormat, agent)
 	}
 	live, running, err := h.d.Sessions.Live(ctx, sessionID)
 	if err != nil {

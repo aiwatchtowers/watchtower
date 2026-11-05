@@ -227,10 +227,10 @@ func wantOutcome(t *testing.T, got actions.Outcome, status, reason string) {
 
 // withSessionCaps gives kind the row caps for the test (the handlers read
 // sessionCaps, not the kind).
-func withSessionCaps(t *testing.T, kind string, caps agentkind.SessionCaps) {
+func withSessionCaps(t *testing.T, kind agentkind.Kind, caps agentkind.SessionCaps) {
 	t.Helper()
 	prev := sessionCaps
-	sessionCaps = func(k string) agentkind.SessionCaps {
+	sessionCaps = func(k agentkind.Kind) agentkind.SessionCaps {
 		if k == kind {
 			return caps
 		}

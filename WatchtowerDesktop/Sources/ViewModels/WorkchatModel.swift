@@ -63,13 +63,13 @@ final class WorkchatModel {
     /// The session's kind, read each time it is needed: a pane restored at
     /// launch makes its model before the sessions load.
     @ObservationIgnored private let kind: @MainActor () -> TerminalSession.Kind?
-    /// Whether a line waits for the agent to stop: an agent without
-    /// mid-turn input (`AgentSessionCaps.midturnInput`; Claude Code and
-    /// Codex take a line pasted mid-turn at their next step), a shell and a
-    /// kind not known yet keep the phone's busy hold.
-    var holdsUntilIdle: Bool { !caps(kind()).midturnInput }
-    /// The session capability rows (`AgentSessionCaps.of`; fixtures swap them).
-    @ObservationIgnored private let caps: (TerminalSession.Kind?) -> AgentSessionCaps
+    /// Whether a line waits for the agent to stop: an agent that does not
+    /// take a line while it works (`AgentSessionCaps.takesLineWhileWorking`:
+    /// Codex, whose mid-turn MCP forms raise no state), a shell and a kind
+    /// not known yet keep the phone's busy hold.
+    var holdsUntilIdle: Bool { agent.map { !caps($0).takesLineWhileWorking } ?? true }
+    /// The session capability rows (`AgentSessionCaps.of`; tests swap them).
+    @ObservationIgnored private let caps: (AgentKind) -> AgentSessionCaps
     /// The session's agent; nil for a shell or a kind not known yet.
     var agent: AgentKind? { kind()?.agent }
     /// Feed entries that stood for a line already: one echo, one line.
@@ -88,7 +88,7 @@ final class WorkchatModel {
         attachmentStore: WorkchatAttachmentStore? = nil,
         kind: @escaping @MainActor () -> TerminalSession.Kind?,
         now: @escaping () -> Date = Date.init,
-        caps: @escaping (TerminalSession.Kind?) -> AgentSessionCaps = AgentSessionCaps.of
+        caps: @escaping (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of
     ) {
         self.sessionID = sessionID
         self.caps = caps
