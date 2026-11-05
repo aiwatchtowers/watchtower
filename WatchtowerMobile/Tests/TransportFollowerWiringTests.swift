@@ -452,7 +452,9 @@ final class Bed {
         looksAtWake: Bool = false,
         stopLookCap: Duration = .seconds(10),
         macRelayID: Bool = true,
-        relayOff: Bool = false
+        relayOff: Bool = false,
+        alertWake: (any PushWake)? = nil,
+        refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
@@ -502,7 +504,8 @@ final class Bed {
         let sides = SideBuilds()
         // An empty origin: the root's relay is off, its parts never built (dark ship); the stand still has its relay.
         let rootRelay = relayOff ? SharedRelaySession(config: RelayConfig.parse("")) { parts } : shared
-        var factory = Self.factory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, defaults: defaults)
+        var factory = alertWake.map { Self.liveFactory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, wake: $0, refusing: refusing) }
+            ?? Self.factory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, defaults: defaults)
         factory.makeSide = Self.sideFactory(paths: paths, cloud: cloud, shared: rootRelay, sides: sides)
         let clock = SideClock()
         let relayOps = FakeRelayOps(
@@ -610,6 +613,35 @@ final class Bed {
                 sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
             )
         }
+    }
+
+    /// The app's own factory (so the app's rule on the alert subscription's route) over the bed's transports and `wake`.
+    /// A route `refusing` names cannot be built, as a route the factory does not serve.
+    private static func liveFactory(
+        paths: HubPaths,
+        cloud: RecordingCloud,
+        shared: SharedRelaySession,
+        keys: InMemoryPhoneKeyStore,
+        wake: any PushWake,
+        refusing: @escaping @Sendable (HubRoute) -> Bool
+    ) -> HubSessionFactory {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent("no-leftover-\(UUID().uuidString)")
+        let transports = TransportFactory(
+            isAvailable: { true },
+            serves: { !refusing($0) },
+            make: { route, store, _, energy in
+                switch route {
+                case .cloudKit:
+                    return CloudSide(inner: cloud, marker: marker)
+                case .hostedRelay(let macDeviceID):
+                    return try HostedRelayTransport(
+                        session: try XCTUnwrap(try shared.session()), store: store, macDeviceID: macDeviceID, mode: .hub, energy: energy)
+                }
+            },
+            sendDirectly: { _, _, _ in },
+            wake: wake
+        )
+        return .live(paths: paths, keys: keys, transports: transports)
     }
 
     // MARK: Sessions
