@@ -16,9 +16,35 @@ struct MacsView: View {
     /// `cancelling`: a finishing link's Cancel confirmation already open (the screenshot tour's frame).
     /// Opened once the screen is on (an alert set before it has a window is not presented).
     private let initialCancel: MacsModel.FinishingRow?
+    /// A card to show in place of the environment's (the screenshot tour's frames); its actions do nothing.
+    private let cardOverride: RelayCardModel?
+    /// Opens the subscription screen (Task 9 wires it); the card's `.openSubscription` and `.restore` end here.
+    private let openSubscription: () -> Void
 
-    init(cancelling: MacsModel.FinishingRow? = nil) {
+    init(cancelling: MacsModel.FinishingRow? = nil, card: RelayCardModel? = nil, openSubscription: @escaping () -> Void = {}) {
         initialCancel = cancelling
+        cardOverride = card
+        self.openSubscription = openSubscription
+    }
+
+    /// The Relay card: only while the relay is available and its account center was built (never on a dark build).
+    private var relayCard: RelayCardModel? {
+        if let cardOverride { return cardOverride }
+        guard let center = env.relayAccount else { return nil }
+        return RelayCardModel(
+            availability: env.relay.availability, phase: center.phase, unconfirmedPurchase: center.unconfirmed != nil,
+            slotLimit: HubRegistry.limit
+        )
+    }
+
+    private func act(_ action: RelayCardModel.Action) {
+        switch action {
+        case .openSubscription: openSubscription()
+        case .retry: Task { await env.relayAccount?.refresh() }
+        case .restore:
+            Task { await env.relayAccount?.restore() }
+            openSubscription()
+        }
     }
 
     var body: some View {
@@ -110,6 +136,11 @@ struct MacsView: View {
                             .foregroundStyle(.secondary)
                             .macsListRow()
                     }
+                }
+            }
+            if let card = relayCard {
+                Section {
+                    RelayCardView(card: card, act: act).macsListRow()
                 }
             }
         }
@@ -275,5 +306,54 @@ extension View {
     /// One row of such a list: the flat row's insets, no separator or plate.
     func macsListRow() -> some View {
         listRowInsets(RowInsets.flat).listRowBackground(Color.clear).listRowSeparator(.hidden)
+    }
+}
+
+/// The Relay card (mockup S01–S06, S41, S55): the account's rows on a `SettingsCard`, then its line and the one
+/// action. Texts and tones come from `RelayCardModel`.
+struct RelayCardView: View {
+    let card: RelayCardModel
+    let act: (RelayCardModel.Action) -> Void
+
+    var body: some View {
+        SettingsCard(title: RelayCardModel.sectionTitle) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(card.rows, id: \.title) { row in
+                    SettingsRow(title: row.title) {
+                        if let value = row.value { Text(value) }
+                    }
+                }
+                if let line = card.line {
+                    lineRow(line)
+                }
+                if let title = card.actionTitle, let action = card.action {
+                    Button(title) { act(action) }
+                        .font(TypeScale.rowTitle)
+                        .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
+                        .foregroundStyle(PhoneTone.accent.color)
+                        .buttonStyle(.plain)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // No link row: the rows (or the line) open the subscription.
+                if card.actionTitle == nil, let action = card.action { act(action) }
+            }
+        }
+    }
+
+    private func lineRow(_ line: String) -> some View {
+        let tone = card.toneUses.first { $0.element == "relay card line" }?.tone ?? .secondary
+        return HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
+            Text(line)
+                .font(TypeScale.meta)
+                .foregroundStyle(tone.color)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: Spacing.medium)
+            if card.actionTitle == nil, card.action == .openSubscription {
+                Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
+            }
+        }
+        .frame(minHeight: PhoneMetrics.minTouch, alignment: .leading)
     }
 }
