@@ -9,7 +9,6 @@ import (
 	"io"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/logredact"
@@ -104,21 +103,30 @@ type streamMessage struct {
 	content strings.Builder
 	calls   []oaToolCall
 	byIndex map[int]int // a delta's index → position in calls
-	choice  bool        // a choice was seen
+	names   []string    // per call, the last whole-name candidate a delta sent
+	offered map[string]bool
+	choice  bool // a choice was seen
 	finish  string
 }
 
 // addToolCall merges one tool-call delta into its call.
 func (m *streamMessage) addToolCall(d oaToolCallDelta) {
-	c := &m.calls[m.callPos(d)]
+	pos := m.callPos(d)
+	for len(m.names) < len(m.calls) {
+		m.names = append(m.names, "")
+	}
+	c := &m.calls[pos]
 	if d.ID != "" {
 		c.ID = d.ID
 	}
 	if d.Type != "" {
 		c.Type = d.Type
 	}
-	if d.Function.Name != c.Function.Name {
-		c.Function.Name += d.Function.Name // a name split across deltas; a repeated whole one is kept once
+	// A name is sent once or split across deltas (joined here), or repeated
+	// whole or cumulatively (the last delta's name): resolveNames picks.
+	c.Function.Name += d.Function.Name
+	if d.Function.Name != "" {
+		m.names[pos] = d.Function.Name
 	}
 	c.Function.Arguments += d.Function.Arguments
 }
@@ -171,13 +179,9 @@ func (m *streamMessage) add(ch *oaStreamChunk, out *oaResponse, onText func(stri
 	return nil
 }
 
-// maxStreamErrorMessage caps a server's error text (the ollama client's cap).
-const maxStreamErrorMessage = 1024
-
 // streamError reports an error the chunk carries, as the owner reads it:
-// capped on a rune boundary, never empty. The shapes and the cap are the
-// ollama client's (internal/ollama asError/formatChatError), its twin for
-// plain chat.
+// capped on a rune boundary, never empty (providers.ServerErrorText, shared
+// with the ollama client, which reads the same three shapes in asError).
 func (ch *oaStreamChunk) streamError() (string, bool) {
 	var e struct{ Message, Type string }
 	switch raw := strings.TrimSpace(string(ch.Error)); {
@@ -190,31 +194,17 @@ func (ch *oaStreamChunk) streamError() (string, bool) {
 	default:
 		_ = json.Unmarshal(ch.Error, &e) // and this an object
 	}
-	msg := strings.TrimSpace(e.Message)
-	if msg == "" {
-		msg = "the model server reported an error with no message"
-	}
-	if e.Type != "" {
-		msg += " (" + e.Type + ")"
-	}
-	if len(msg) > maxStreamErrorMessage {
-		cut := maxStreamErrorMessage
-		for cut > 0 && !utf8.RuneStart(msg[cut]) {
-			cut--
-		}
-		msg = msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
-	}
-	return msg, true
+	return providers.ServerErrorText(e.Message, e.Type), true
 }
 
 // readStream reads an SSE chat-completions stream into out, passing each
-// text delta to onText as it arrives. The stream is complete at [DONE] or,
+// text delta to onText as it arrives; offered are the request's tool names. The stream is complete at [DONE] or,
 // at EOF, once a choice carried a finish_reason; one that ends with neither
 // was cut short (Transport), or stopped (the context's error).
-func readStream(ctx context.Context, br *bufio.Reader, out *oaResponse, onText func(string)) error {
+func readStream(ctx context.Context, br *bufio.Reader, out *oaResponse, onText func(string), offered map[string]bool) error {
 	sc := bufio.NewScanner(br)
 	sc.Buffer(make([]byte, 0, 64*1024), maxStreamLine)
-	var m streamMessage
+	m := streamMessage{offered: offered}
 	done, skipped := false, 0
 	for !done && sc.Scan() {
 		data, isData := strings.CutPrefix(sc.Text(), "data:")
@@ -247,10 +237,22 @@ func readStream(ctx context.Context, br *bufio.Reader, out *oaResponse, onText f
 // estimates what was streamed.
 func (m *streamMessage) into(out *oaResponse) {
 	if m.choice {
+		m.resolveNames()
 		out.Choices = []oaChoice{{
 			Message:      oaMessage{Role: "assistant", Content: m.content.String(), ToolCalls: m.calls},
 			FinishReason: m.finish,
 		}}
+	}
+}
+
+// resolveNames settles a call's name against the offered tools: the joined
+// fragments when offered, else the last name a delta sent when that one is
+// (a server that repeats the name), else the joined fragments.
+func (m *streamMessage) resolveNames() {
+	for i := range m.calls {
+		if c := &m.calls[i]; !m.offered[c.Function.Name] && m.offered[m.names[i]] {
+			c.Function.Name = m.names[i]
+		}
 	}
 }
 

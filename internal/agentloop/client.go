@@ -407,7 +407,7 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool, o
 	}
 	br := bufio.NewReader(resp.Body)
 	if onText != nil && !jsonBody(br) {
-		if err := readStream(ctx, br, &out, onText); err != nil {
+		if err := readStream(ctx, br, &out, onText, toolNames(oaTools)); err != nil {
 			return nil, err
 		}
 	} else {
@@ -452,6 +452,15 @@ func messageText(m oaMessage) string {
 		s += tc.Function.Name + tc.Function.Arguments
 	}
 	return s
+}
+
+// toolNames is the set of the offered tools' names.
+func toolNames(oaTools []oaTool) map[string]bool {
+	names := make(map[string]bool, len(oaTools))
+	for _, t := range oaTools {
+		names[t.Function.Name] = true
+	}
+	return names
 }
 
 func errJSON(msg string) string {

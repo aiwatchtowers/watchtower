@@ -312,6 +312,10 @@ func TestAgentloopQuery_StreamedToolCallShapes(t *testing.T) {
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_","arguments":"{"}}]}}]}`,
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"targets","arguments":"}"}}]}}]}`,
 		},
+		"cumulative name": {
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_","arguments":"{"}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"list_targets","arguments":"}"}}]}}]}`,
+		},
 		"repeated name": {
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_targets","arguments":"{"}}]}}]}`,
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"list_targets","arguments":"}"}}]}}]}`,
@@ -467,4 +471,21 @@ func TestAgentloopQuery_StreamErrorRecordsStreamedText(t *testing.T) {
 	got := calls.all()
 	require.Len(t, got, 1)
 	assert.Equal(t, llmusage.EstimateTokens("Some text first."), got[0].Output)
+}
+
+// A split name whose second fragment starts with the first is still joined
+// when the joined name is the offered one (a Quick Connection named "mcp").
+func TestAgentloopQuery_SplitNameResolvedAgainstOfferedTools(t *testing.T) {
+	const name = "mcp__mcp__get_issue"
+	srv := newSSEServer(t,
+		[]string{
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"mcp__","arguments":"{}"}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"mcp__get_issue"}}]}}]}`,
+			sseFinish("tool_calls"), sseDone,
+		},
+		[]string{sseText("done"), sseFinish("stop"), sseDone})
+	reg := &fakeReg{tools: map[string]*tools.Tool{name: {Name: name, Access: tools.AccessRead}}, readData: []any{}}
+	_, err := collect(t, clientWith(reg, srv.URL))
+	require.NoError(t, err)
+	assert.Equal(t, []string{name}, reg.reads)
 }
