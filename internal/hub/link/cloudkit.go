@@ -862,7 +862,9 @@ func sweepEpochTx(tx *sql.Tx) (uint64, error) {
 // answer; a failed participant read the same); a private phone is the
 // Mac's own user, so its request is bound to the owner's user record name,
 // never to the name it sent. Refused codes are answered without a share
-// call. s is the Shares the participants and the owner are read from (a
+// call. A private hello whose creator is a named user while the Mac's own
+// user cannot be read just now is no refusal: ErrOwnerUnreadable, undecided
+// and not remembered, so the processor reads it again. s is the Shares the participants and the owner are read from (a
 // deviation from the plan's signature, which had none: the center keeps no
 // Shares).
 //
@@ -946,6 +948,13 @@ func (c *Center) handleCloudKitHello(ctx context.Context, s transport.Shares, re
 	var owner string
 	if payload.Scope == wire.ScopePrivate {
 		owner = c.owner(ctx, s)
+		if owner == "" && rec.Creator != "" && rec.Creator != transport.CurrentUserCreator {
+			if _, canName := s.(transport.CloudUser); canName {
+				// The creator cannot be checked just now: no decision, the
+				// hello is read again (bounded by the processor's strikes).
+				return Pending{}, ErrOwnerUnreadable
+			}
+		}
 	}
 	if !creatorMatches(payload, rec.Creator, owner) {
 		log.Printf("hub link: hello %s not written by its phone's user: no answer", safeName(rec.Name))

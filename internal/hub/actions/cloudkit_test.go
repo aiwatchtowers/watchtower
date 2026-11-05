@@ -1,13 +1,19 @@
 package actions
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"errors"
+	"fmt"
+	"log"
+	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -580,5 +586,94 @@ func TestAProofOnARewrittenDeviceRecordIsApplied(t *testing.T) {
 	row, ok, err := w.st.Device(ph.ID().String())
 	if err != nil || !ok || row.RelayDeviceID != id {
 		t.Fatalf("the proof on a rewrite: id %q linked %v, %v", row.RelayDeviceID, ok, err)
+	}
+}
+
+// A hello whose creator check cannot read the Mac's iCloud user is held for a
+// retry like a device record (#1537): MaxRecordStrikes passes over
+// StrikeWindow, then passed over with an error-level log line and the later
+// records flow; a refusal (the lane returns nil for a dropped hello) is never
+// held; a daemon restart starts the count again and a healed read answers.
+func TestAHelloOnAnUnreadableOwnerIsRetriedThenPassedOver(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	w := newWorld(t, kindShared)
+	down := true
+	var seen []string
+	w.proc.cfg.Hello = func(_ context.Context, rec transport.Stored) error {
+		seen = append(seen, rec.Name)
+		if down {
+			return fmt.Errorf("hello: %w", link.ErrOwnerUnreadable)
+		}
+		return nil
+	}
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM devices`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.phone.Hello(w.mailbox); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 * MaxRecordStrikes { // quick nudges: under the time floor
+		if _, err := w.proc.Pass(w.ctx); !errors.Is(err, link.ErrOwnerUnreadable) {
+			t.Fatalf("a held hello was not reported: %v", err)
+		}
+	}
+	if tok, _ := w.st.ZoneToken(w.mailbox); tok != 0 {
+		t.Fatalf("passed over before the time floor: token %d", tok)
+	}
+	// The daemon restarts mid-retry: the count starts again, the hello is read again.
+	w.proc = NewProcessor(w.proc.cfg)
+	n := len(seen)
+	_, _ = w.proc.Pass(w.ctx)
+	if len(seen) != n+1 {
+		t.Fatalf("a restarted processor did not read the hello again: %d -> %d", n, len(seen))
+	}
+	if strings.Contains(logs.String(), "passed over") {
+		t.Fatal("passed over before the bound")
+	}
+	// The retries run out.
+	w.advance(StrikeWindow)
+	for range MaxRecordStrikes {
+		_, _ = w.proc.Pass(w.ctx)
+	}
+	if tok, _ := w.st.ZoneToken(w.mailbox); tok == 0 {
+		t.Fatal("the token did not move past the exhausted hello")
+	}
+	if got := logs.String(); !strings.Contains(got, "passed over") || !strings.Contains(got, "owner_unreadable") ||
+		!strings.Contains(got, w.phone.HelloName()) {
+		t.Fatalf("the exhausted hello left no error line: %q", got)
+	}
+	// Healed: a fresh hello (the phone sends again) is answered, nothing held.
+	down = false
+	w.proc = NewProcessor(w.proc.cfg)
+	if err := w.phone.Hello(w.mailbox); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+}
+
+// A refusal (the hello lane answers nil: link.ErrHelloDropped is swallowed in
+// the hub) is decided, not held: the token moves on the first pass.
+func TestARefusedHelloIsNotHeld(t *testing.T) {
+	w := newWorld(t, kindShared)
+	calls := 0
+	w.proc.cfg.Hello = func(context.Context, transport.Stored) error { calls++; return nil }
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM devices`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.phone.Hello(w.mailbox); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	w.pass()
+	if calls != 1 {
+		t.Fatalf("a refused hello was read %d times", calls)
 	}
 }

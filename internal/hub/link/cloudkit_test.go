@@ -1670,3 +1670,41 @@ func TestWantsHellosOnlyWhileACodeIsOpenOrALinkIsUrgent(t *testing.T) {
 		t.Fatal("not wanted with a relay code open")
 	}
 }
+
+// A private hello from a named creator while the Mac's own user cannot be read
+// (a cold cache, the bridge down) is no refusal: ErrOwnerUnreadable, nothing
+// answered, nothing remembered, so the same record version is decided in full
+// once the read works. A creator that really is not the owner stays dropped.
+func TestAPrivateHelloOnAnUnreadableOwnerIsRetried(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	a := newPhone(t)
+	zone := transport.SharedMailboxZone(testRelayID)
+	rec := transport.Stored{Zone: zone, Name: a.name(), Envelope: r.hello(a, code.Nonce),
+		Creator: ownerUser, RecordSeq: 5}
+	r.c.ck.mu.Lock()
+	r.c.ck.owner = "" // a cold cache
+	r.c.ck.mu.Unlock()
+	r.s.setFailing("owner_user")
+	for range 3 {
+		if _, err := r.c.HandleCloudKitHello(r.ctx, r.s, rec); !errors.Is(err, ErrOwnerUnreadable) || errors.Is(err, ErrHelloDropped) {
+			t.Fatalf("an unreadable owner was decided: %v", err)
+		}
+	}
+	if ids := pendingIDs(t, r.c); len(ids) != 0 || r.codeUsedBy(code.Nonce) != "" {
+		t.Fatalf("an undecided hello left %v, code used by %q", ids, r.codeUsedBy(code.Nonce))
+	}
+	r.s.setFailing() // healed: the same version is read again and decided
+	if p, err := r.c.HandleCloudKitHello(r.ctx, r.s, rec); err != nil || p.Code == "" {
+		t.Fatalf("the retry did not answer: %+v, %v", p, err)
+	}
+
+	// A readable owner and another creator: still a refusal, no retry.
+	b := newPhone(t)
+	r.issueCK()
+	r.s.join("_stranger")
+	_, err := r.ckHelloAs("_stranger", b, code.Nonce)
+	if !errors.Is(err, ErrHelloDropped) || errors.Is(err, ErrOwnerUnreadable) {
+		t.Fatalf("a real stranger: %v", err)
+	}
+}
