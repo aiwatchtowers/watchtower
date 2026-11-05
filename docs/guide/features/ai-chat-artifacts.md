@@ -56,17 +56,19 @@ Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in 
 
 ### Publishing to claude.ai
 <!-- learn
-id: artifacts-publish-claude-ai
+id: artifacts-publish-claude-ai-on-ask
 title: Publish a page to claude.ai
-text: On the Claude provider, a page or doc you ask for is published privately to claude.ai; **Copy Link** shares it.
+text: On the Claude provider, ask to publish a page or doc to claude.ai; **Copy Link** shares it.
 area: assistant
 level: power
 kind: feature
-since: 0.24.0
+since: next
 action: nav:chat
+replaces: [artifacts-publish-claude-ai]
+changed: Pages and docs now stay in the app unless you ask for claude.ai.
 -->
 
-On the Claude provider, signed in with a claude.ai account, a page, a slide deck or a document you ask for in the main chat is published privately to your claude.ai account instead of the artifact panel. Say "keep it in the app" to get the in-app artifact instead. Drafts to send, tables and code stay in the panel.
+On the Claude provider, signed in with a claude.ai account, the main chat can publish a page, a slide deck or a document privately to your claude.ai account. Pages, decks and documents open in the artifact panel by default; ask for it on claude.ai ("publish it to claude.ai", "make it a Claude Doc") to get a link instead. Drafts to send, tables and code always stay in the panel.
 
 The reply ends with a **Published on claude.ai** card naming the page. **Open in Browser** opens it on claude.ai; **Copy Link** copies the link. Only you can see the page until you share it on claude.ai yourself. Asking for a change in the same chat publishes the new version to the same link; once that chat has restarted (after a quiet spell or a settings change), updating the old page waits for your Approve first.
 
