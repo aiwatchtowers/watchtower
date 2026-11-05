@@ -225,6 +225,22 @@ final class MacsModelTests: XCTestCase {
         )
     }
 
+    /// The hub writes the phone's device id lower-case (`b.id.String()`); the link keeps `UUID.uuidString`.
+    func testThisIPhoneIsTheGrantDeviceIDWhateverItsCase() {
+        let (at, now) = morning
+        let id = UUID()
+        var record = link(.relay, by: id.uuidString.lowercased(), at: at)
+        XCTAssertEqual(
+            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, now: now),
+            "Relay · switched by this iPhone, Today 10:42"
+        )
+        record.switchedBy = UUID().uuidString.lowercased()
+        XCTAssertEqual(
+            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, now: now),
+            "Relay · switched by another iPhone, Today 10:42"
+        )
+    }
+
     func testAnotherPhonesIDNeverShows() {
         let (at, now) = morning
         for by in ["device-2", "7B1E5C0A-1234-4F6A-9B1F-0123456789AB", "entitlement_expired", "device-1"] {

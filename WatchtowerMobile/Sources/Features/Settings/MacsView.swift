@@ -319,8 +319,10 @@ struct RelayCardView: View {
         SettingsCard(title: RelayCardModel.sectionTitle) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(card.rows, id: \.title) { row in
-                    SettingsRow(title: row.title) {
-                        if let value = row.value { Text(value) }
+                    // The value drops under the title when both do not fit (the largest text sizes).
+                    ViewThatFits(in: .horizontal) {
+                        cardRow(row, stacked: false)
+                        cardRow(row, stacked: true)
                     }
                 }
                 if let line = card.line {
@@ -340,6 +342,19 @@ struct RelayCardView: View {
                 if card.actionTitle == nil, let action = card.action { act(action) }
             }
         }
+    }
+
+    private func cardRow(_ row: RelayCardModel.Row, stacked: Bool) -> some View {
+        let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: Spacing.tight)) : AnyLayout(HStackLayout())
+        return layout {
+            Text(row.title).font(TypeScale.rowTitle).lineLimit(stacked ? nil : 1)
+            if !stacked { Spacer(minLength: Spacing.medium) }
+            if let value = row.value {
+                Text(value).font(.subheadline).foregroundStyle(.secondary).lineLimit(stacked ? nil : 1)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private func lineRow(_ line: String) -> some View {

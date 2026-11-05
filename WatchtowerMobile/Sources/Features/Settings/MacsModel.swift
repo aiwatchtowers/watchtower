@@ -154,6 +154,12 @@ enum MacsModel {
 
     // MARK: - Each Mac's transport line (relay client Phase 4 Task 7, mockup S07)
 
+    private static func sameDevice(_ by: String, _ own: String?) -> Bool {
+        guard let own else { return false }
+        if let a = UUID(uuidString: by), let b = UUID(uuidString: own) { return a == b }
+        return by == own
+    }
+
     /// "iCloud" or "Relay", then who switched it last and when ("switched by this iPhone, Today 10:42"); "your
     /// subscription ended" when the hub moved for a lapse; "Switching…" while an upgrade or a request runs. Another
     /// phone's device id never shows: only "this iPhone" or "another iPhone".
@@ -165,7 +171,9 @@ enum MacsModel {
         if by == TransportFollowerPolicy.lapseReason {
             who = "your subscription ended"
         } else {
-            who = by == ownDeviceID ? "switched by this iPhone" : "switched by another iPhone"
+            // The hub writes the asking phone's grant device id (`b.id.String()`, lower-case, matched by parsed UUID on
+            // its side); a link keeps the id as the phone wrote it (`UUID.uuidString`, upper-case): compare as UUIDs.
+            who = sameDevice(by, ownDeviceID) ? "switched by this iPhone" : "switched by another iPhone"
         }
         guard let at = link.switchedAt else { return "\(name) · \(who)" }
         return "\(name) · \(who), \(RecordingsFormat(calendar: .current, now: now).when(at))"

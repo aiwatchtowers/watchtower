@@ -31,8 +31,26 @@ final class ScreenshotTourTests: XCTestCase {
         let make: @MainActor (AppEnvironment) -> AnyView
     }
 
+    /// `make mobile-shots SHOTS_ONLY=relay-phase4` runs `testTheRelayPhase4Shots` alone (a frame or two of a
+    /// new screen in minutes, not the whole tour's half hour); the plain run is the whole tour, which covers them too.
+    private static let onlyRelayPhase4 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase4"
+
+    func testTheRelayPhase4Shots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=relay-phase4")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
+        let rows = try await captureRelayPhase4(host: host)
+        let written = try FileManager.default.contentsOfDirectory(atPath: path)
+            .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 3 * rows.count)
+    }
+
     func testTheTour() async throws {
-        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"] else {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4 else {
             throw XCTSkip("Screenshot tour: run make mobile-shots")
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
@@ -345,7 +363,10 @@ final class ScreenshotTourTests: XCTestCase {
         another.switchedAt = at
         ended.switchedAt = at
         let lines = try macsLinking([home, thisPhone, another, ended, switching], now: now)
-        try await shot("S07", "macs-transport-lines", "bare stack, iCloud / Relay / lapse / switching rows", NavigationStack { MacsView() }.environment(lines))
+        try await shot(
+            "S07", "macs-transport-lines", "bare stack, iCloud / Relay / lapse / switching rows",
+            NavigationStack { MacsView() }.environment(lines)
+        )
         return rows
     }
 

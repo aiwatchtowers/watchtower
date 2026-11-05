@@ -206,13 +206,15 @@ mobile-run: mobile-build
 # set by eye; nothing asserts pixels. xcodebuild hands TEST_RUNNER_-prefixed
 # variables to the test process with the prefix stripped.
 SHOTS_DIR ?= build/mobile-shots
+# SHOTS_ONLY=relay-phase4 runs only the relay client Phase 4 frames (S01 upward), into the same folder.
+SHOTS_ONLY ?=
 mobile-shots:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	mkdir -p "$(SHOTS_DIR)"
-	TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
+	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
 		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO \
-		-only-testing:WatchtowerMobileTests/ScreenshotTourTests
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots)
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
 # every DesignShotCatalog entry in light and dark mode as PNGs, written to
