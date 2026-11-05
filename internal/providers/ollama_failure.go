@@ -1,6 +1,10 @@
 package providers
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+)
 
 // OllamaFailure types one failed OpenAI-compatible call (Ollama, LM Studio,
 // vLLM, llama.cpp) from its HTTP status and body; status 0 is an error the
@@ -49,4 +53,31 @@ func ollamaContextOverflow(body string) bool {
 		}
 	}
 	return false
+}
+
+// maxServerErrorText caps a server-reported error message, as the HTTP
+// status path caps its raw body: the server can attach unbounded detail
+// (a stack trace) to it.
+const maxServerErrorText = 1024
+
+// ServerErrorText is the owner's text of an error an OpenAI-compatible
+// server reports inside a 200 answer (plain ollama and runtime B): the
+// message with its type in brackets, never empty, cut on a rune boundary
+// past maxServerErrorText.
+func ServerErrorText(message, typ string) string {
+	msg := strings.TrimSpace(message)
+	if msg == "" {
+		msg = "the model server reported an error with no message"
+	}
+	if typ != "" {
+		msg = fmt.Sprintf("%s (%s)", msg, typ)
+	}
+	if len(msg) <= maxServerErrorText {
+		return msg
+	}
+	cut := maxServerErrorText
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
 }

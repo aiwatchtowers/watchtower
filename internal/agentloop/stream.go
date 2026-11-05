@@ -9,7 +9,6 @@ import (
 	"io"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/logredact"
@@ -117,8 +116,12 @@ func (m *streamMessage) addToolCall(d oaToolCallDelta) {
 	if d.Type != "" {
 		c.Type = d.Type
 	}
-	if d.Function.Name != c.Function.Name {
-		c.Function.Name += d.Function.Name // a name split across deltas; a repeated whole one is kept once
+	// A name is sent once, split across deltas, or repeated (whole, or
+	// cumulative: each delta the name so far); keep it once whichever.
+	if strings.HasPrefix(d.Function.Name, c.Function.Name) {
+		c.Function.Name = d.Function.Name
+	} else {
+		c.Function.Name += d.Function.Name
 	}
 	c.Function.Arguments += d.Function.Arguments
 }
@@ -171,13 +174,9 @@ func (m *streamMessage) add(ch *oaStreamChunk, out *oaResponse, onText func(stri
 	return nil
 }
 
-// maxStreamErrorMessage caps a server's error text (the ollama client's cap).
-const maxStreamErrorMessage = 1024
-
 // streamError reports an error the chunk carries, as the owner reads it:
-// capped on a rune boundary, never empty. The shapes and the cap are the
-// ollama client's (internal/ollama asError/formatChatError), its twin for
-// plain chat.
+// capped on a rune boundary, never empty (providers.ServerErrorText, shared
+// with the ollama client, which reads the same three shapes in asError).
 func (ch *oaStreamChunk) streamError() (string, bool) {
 	var e struct{ Message, Type string }
 	switch raw := strings.TrimSpace(string(ch.Error)); {
@@ -190,21 +189,7 @@ func (ch *oaStreamChunk) streamError() (string, bool) {
 	default:
 		_ = json.Unmarshal(ch.Error, &e) // and this an object
 	}
-	msg := strings.TrimSpace(e.Message)
-	if msg == "" {
-		msg = "the model server reported an error with no message"
-	}
-	if e.Type != "" {
-		msg += " (" + e.Type + ")"
-	}
-	if len(msg) > maxStreamErrorMessage {
-		cut := maxStreamErrorMessage
-		for cut > 0 && !utf8.RuneStart(msg[cut]) {
-			cut--
-		}
-		msg = msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
-	}
-	return msg, true
+	return providers.ServerErrorText(e.Message, e.Type), true
 }
 
 // readStream reads an SSE chat-completions stream into out, passing each

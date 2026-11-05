@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/llmusage"
@@ -142,31 +141,9 @@ type chatError struct {
 	Type    string `json:"type,omitempty"`
 }
 
-// maxStreamErrorMessage caps a reported error's message the same way the
-// non-streaming HTTP-status path already caps its raw error body (1024
-// bytes, see QuerySync/Query below) — the server can otherwise attach
-// unbounded detail (e.g. a stack trace) to the message.
-const maxStreamErrorMessage = 1024
-
-// formatChatError renders a chatError into a bounded, rune-safe message —
-// never echoed past the cap, since it may carry arbitrary server-side detail.
-func formatChatError(e *chatError) string {
-	msg := strings.TrimSpace(e.Message)
-	if msg == "" {
-		msg = "ollama reported an error with no message"
-	}
-	if e.Type != "" {
-		msg = fmt.Sprintf("%s (%s)", msg, e.Type)
-	}
-	if len(msg) <= maxStreamErrorMessage {
-		return msg
-	}
-	cut := maxStreamErrorMessage
-	for cut > 0 && !utf8.RuneStart(msg[cut]) {
-		cut--
-	}
-	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
-}
+// formatChatError renders a chatError as the owner reads it: bounded,
+// rune-safe, never empty (providers.ServerErrorText, shared with runtime B).
+func formatChatError(e *chatError) string { return providers.ServerErrorText(e.Message, e.Type) }
 
 // buildMessages creates the message array from system prompt and user message.
 func buildMessages(systemPrompt, userMessage string) []chatMessage {
