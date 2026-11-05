@@ -1006,6 +1006,9 @@ extension TransportStore {
     }
 
     private static let resyncRunning = "running"
+    /// A zone's load (a first pull, or the replica's sweep wanting a full read): it restarts from 0 at once when a
+    /// middle page expires, where a resync after `TOKEN_EXPIRED` stalls.
+    private static let resyncLoad = "load"
     private static let resyncStalled = "stalled"
 
     /// Binds the store to the relay Mac `macDeviceID` (and `hubID` when known). A store holds
@@ -1160,17 +1163,27 @@ extension TransportStore {
     }
 
     /// Starts a `TOKEN_EXPIRED` resync of `zone`: the cursor back to 0 and nothing seen yet, persisted.
-    package func beginRelayResync(_ zone: CloudZoneID) throws {
-        try queue.write { db in try Self.startRelayResync(zone, db) }
+    package func beginRelayResync(_ zone: CloudZoneID, load: Bool = false) throws {
+        try queue.write { db in try Self.startRelayResync(zone, db, load: load) }
     }
 
-    private static func startRelayResync(_ zone: CloudZoneID, _ db: Database) throws {
+    /// Whether the running resync of `zone` is a load (`beginRelayResync(_:load:)`), not a `TOKEN_EXPIRED` resync.
+    package func relayResyncIsLoad(_ zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS (SELECT 1 FROM relay_resync_seen WHERE zone = ? AND name = ?)",
+                arguments: [Self.resyncMarkerZone(zone), Self.resyncLoad]) ?? false
+        }
+    }
+
+    private static func startRelayResync(_ zone: CloudZoneID, _ db: Database, load: Bool = false) throws {
         try db.execute(
             sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
             arguments: [zone.rawValue, resyncMarkerZone(zone)])
         try db.execute(
             sql: "INSERT INTO relay_resync_seen (zone, name) VALUES (?, ?)",
-            arguments: [resyncMarkerZone(zone), resyncRunning])
+            arguments: [resyncMarkerZone(zone), load ? resyncLoad : resyncRunning])
         try writeRelayCursor(0, zone: zone, db)
     }
 

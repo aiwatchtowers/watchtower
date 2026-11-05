@@ -99,9 +99,13 @@ public actor ReplicaHydrator {
 
     private func performHydration() async throws -> (applied: Int, deleted: Int) {
         try await pull?()
-        // Asked before the read: a load that finishes after the question can only add to what the read returns.
-        let loadComplete = await (transport as? any InitialLoadReporting)?.dataLoadComplete() ?? true
+        // Asked before and after the read: whole only if no load was running at either end, so a load that starts
+        // after the first answer cannot pass as complete.
+        let reporting = transport as? any InitialLoadReporting
+        let completeBefore = await reporting?.dataLoadComplete() ?? true
         let batch = try await transport.changes(in: .data, since: store.storedToken())
+        let completeAfter = await reporting?.dataLoadComplete() ?? true
+        let loadComplete = completeBefore && completeAfter
         // A locked keychain before the first unlock (or no link yet) throws
         // here: nothing of the batch is stored and the token is kept (F15).
         let applied = try store.applyCounting(batch, loadComplete: loadComplete)

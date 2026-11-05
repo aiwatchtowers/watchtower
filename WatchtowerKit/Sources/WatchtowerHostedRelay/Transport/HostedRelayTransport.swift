@@ -173,6 +173,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// only after the load's last page.
     public func dataLoadComplete() async -> Bool {
         guard pullTask == nil else { return false }
+        // Cursor 0 and no marker: the first pull has not started, so what the buffer holds is not a load.
+        guard let cursor = try? store.relayCursor(zone: .data), cursor > 0 else { return false }
         return !((try? store.relayResyncPending(.data)) ?? true)
     }
 

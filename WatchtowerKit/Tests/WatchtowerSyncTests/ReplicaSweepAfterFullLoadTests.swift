@@ -13,12 +13,17 @@ final class ReplicaSweepAfterFullLoadTests: XCTestCase {
     private final class GatedTransport: CloudSyncTransport, InitialLoadReporting, @unchecked Sendable {
         let inner = InMemoryCloudTransport()
         var complete = false
+        /// When set, the answers in turn (the last repeats) instead of `complete`.
+        var answers: [Bool] = []
         func save(_ records: [CloudRecord]) async throws { try await inner.save(records) }
         func delete(recordNames: [String], in zone: CloudZoneID) async throws { try await inner.delete(recordNames: recordNames, in: zone) }
         func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
             try await inner.changes(in: zone, since: token)
         }
-        func dataLoadComplete() async -> Bool { complete }
+        func dataLoadComplete() async -> Bool {
+            if answers.count > 1 { return answers.removeFirst() }
+            return answers.first ?? complete
+        }
     }
 
     private func slice(_ id: String) -> CloudRecord {
@@ -99,6 +104,19 @@ final class ReplicaSweepAfterFullLoadTests: XCTestCase {
         try await ReplicaHydrator(transport: new, store: store).hydrateOnce()
         try await assertNames(store, ["kept", "far"])
         XCTAssertFalse(try store.sweepsAfterFullPull())
+    }
+
+    /// A load that starts after the first answer (complete, then loading) is not a whole load.
+    func testALoadStartingDuringTheReadIsNotComplete() async throws {
+        let keys = try TestE2E.phoneStore()
+        let store = try await routeChangedStore(keys)
+        let new = GatedTransport()
+        let hub = TestE2E.hubTransport(TestE2E.hub(firstSeq: 1_000), inner: new)
+        try await hub.save([slice("kept")])
+        new.answers = [true, false]
+        try await ReplicaHydrator(transport: new, store: store).hydrateOnce()
+        try await assertNames(store, ["kept", "far", "gone"])
+        XCTAssertTrue(try store.sweepsAfterFullPull())
     }
 
     /// An empty buffer read (the first pull has not landed) must not spend the sweep.
