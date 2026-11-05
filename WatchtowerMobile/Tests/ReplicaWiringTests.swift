@@ -259,13 +259,13 @@ final class ReplicaWiringTests: XCTestCase {
 
     // MARK: - Transport choice
 
-    /// The unsigned test host (CODE_SIGNING_ALLOWED=NO) has no iCloud
+    /// The test host has no iCloud
     /// entitlement, so `AppEnvironment.demoSingle()` runs the demo transport and is
     /// linked to the demo device.
-    func testUnsignedHostProbesFalseAndBootsDemo() async throws {
+    func testHostWithoutICloudProbesFalseAndBootsDemo() async throws {
         XCTAssertFalse(
             CloudKitTransport.entitlementPresent(),
-            "an unsigned simulator host must probe false, or the demo path is dead"
+            "a simulator host without iCloud must probe false, or the demo path is dead"
         )
         let env = try managed(AppEnvironment.demoSingle(recordingsDirectory: try makeRecordingsDirectory()))
         XCTAssertEqual(env.backend, .inMemoryDemo)

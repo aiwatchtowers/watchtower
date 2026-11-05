@@ -59,17 +59,43 @@ final class RelayConfigTests: XCTestCase {
         ))
         let base = try Self.read("Base.xcconfig")
         XCTAssertEqual(Self.settingLines(base, key: "WT_APP_ATTEST_ENV"), ["WT_APP_ATTEST_ENV = development"])
-        // Release: its own entitlements without the key until Phase 4.
+        // Release: its own entitlements, the key fixed to production (Phase 4).
         let releaseFile = try XCTUnwrap(
             try Self.configSetting("WatchtowerMobile", config: "Release", key: "CODE_SIGN_ENTITLEMENTS")
         )
         XCTAssertNotEqual(releaseFile, "WatchtowerMobile.entitlements")
         let release = try Self.read(releaseFile)
-        XCTAssertFalse(release.contains(Self.appAttestKey))
+        XCTAssertTrue(release.contains("<key>\(Self.appAttestKey)</key>\n\t<string>production</string>"))
         XCTAssertFalse(release.contains("WT_APP_ATTEST_ENV"))
         XCTAssertNil(try Self.configSetting("WatchtowerMobile", config: "Release", key: "WT_APP_ATTEST_ENV"))
-        // Everything else matches the Debug file: the Release file is that file without the App Attest key.
-        XCTAssertEqual(Self.keys(release), Self.keys(debug).filter { $0 != Self.appAttestKey })
+        // Everything else matches the Debug file: the same keys.
+        XCTAssertEqual(Self.keys(release), Self.keys(debug))
+    }
+
+    func testProductAndLinksReadEmptyAsNil() {
+        XCTAssertNil(RelayConfig.value(nil))
+        XCTAssertNil(RelayConfig.value(""))
+        XCTAssertNil(RelayConfig.value("  \n"))
+        XCTAssertNil(RelayConfig.value("$(WT_TERMS_URL)"))
+        XCTAssertEqual(RelayConfig.value(" com.example.relay.monthly "), "com.example.relay.monthly")
+        XCTAssertNil(RelayConfig.url(""))
+        XCTAssertNil(RelayConfig.url("$(WT_PRIVACY_URL)"))
+        XCTAssertNil(RelayConfig.url("not a url"))
+        XCTAssertNil(RelayConfig.url("http://example.com/terms"))
+        XCTAssertEqual(RelayConfig.url("https://example.com/terms")?.absoluteString, "https://example.com/terms")
+    }
+
+    func testBuildSettingsCarryTheProductAndEmptyLinks() throws {
+        let base = try Self.read("Base.xcconfig")
+        XCTAssertEqual(Self.settingLines(base, key: "WT_RELAY_PRODUCT_ID"),
+                       ["WT_RELAY_PRODUCT_ID = com.aiwatchtowers.watchtower.relay.monthly"])
+        XCTAssertEqual(Self.settingLines(base, key: "WT_TERMS_URL"), ["WT_TERMS_URL ="])
+        XCTAssertEqual(Self.settingLines(base, key: "WT_PRIVACY_URL"), ["WT_PRIVACY_URL ="])
+        let info = try Self.read("Info.plist")
+        for (key, setting) in [("WTRelayProductID", "WT_RELAY_PRODUCT_ID"), ("WTTermsURL", "WT_TERMS_URL"),
+                               ("WTPrivacyURL", "WT_PRIVACY_URL")] {
+            XCTAssertTrue(info.contains("<key>\(key)</key>\n\t<string>$(\(setting))</string>"), key)
+        }
     }
 
     func testOnlyTheAppTargetLinksTheRelayProduct() throws {

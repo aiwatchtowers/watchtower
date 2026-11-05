@@ -184,11 +184,14 @@ mobile-build:
 # The test host shares one on-disk replica with the simulator's installed app
 # (spec §10), so the recipe boots the simulator and uninstalls the app first:
 # a stale replica would fail ReplicaWiringTests' exact counts.
+# Signed to run locally with test-only simulated entitlements, not unsigned: storekitd refuses SKTestSession
+# otherwise (StoreKitRelayStoreTests; see WatchtowerMobile/StoreKitTesting.entitlements).
 mobile-test:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	xcodebuild test -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
-		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_ONLY)
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
+		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/WatchtowerMobile/StoreKitTesting.entitlements" $(MOBILE_ONLY)
 
 # Build, boot the simulator, install and launch: the mobile app-dev.
 mobile-run: mobile-build

@@ -571,7 +571,8 @@ jobs:
         with:
           xcode-version: "26.4.1"
 
-      # Unsigned: Base.xcconfig and the recipe set CODE_SIGNING_ALLOWED=NO.
+      # Build is unsigned (CODE_SIGNING_ALLOWED=NO). Test signs to run locally with
+      # StoreKitTesting.entitlements, which needs no team or keychain on the runner.
       - name: Build
         run: make mobile-build SIM="$SIM"
 
