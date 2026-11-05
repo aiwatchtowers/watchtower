@@ -18,17 +18,26 @@ final class ArtifactPrinter: NSObject {
     /// height only has to be non-zero (vertical pagination is automatic).
     private static let pageFrame = NSRect(x: 0, y: 0, width: 540, height: 760)
 
-    private let coordinator = SandboxedHTMLView.Coordinator()
+    private let coordinator: SandboxedHTMLView.Coordinator
     private let title: String
     private let onError: (String) -> Void
     private var webView: WKWebView?
     private var started = false
     /// Finishes the job when the page never finishes loading.
     private var loadTimeout: Task<Void, Never>?
-    private static let loadTimeoutDuration: Duration = .seconds(15)
+    private let loadTimeoutDuration: Duration
 
-    private init(title: String, onError: @escaping (String) -> Void) {
+    /// `coordinator` and `loadTimeout` are for tests (a load that never
+    /// finishes, a short timeout).
+    init(
+        title: String,
+        coordinator: SandboxedHTMLView.Coordinator? = nil,
+        loadTimeout: Duration = .seconds(15),
+        onError: @escaping (String) -> Void
+    ) {
         self.title = title
+        self.coordinator = coordinator ?? SandboxedHTMLView.Coordinator()
+        self.loadTimeoutDuration = loadTimeout
         self.onError = onError
     }
 
@@ -40,12 +49,20 @@ final class ArtifactPrinter: NSObject {
             artifactExportLog.error("Print failed: no window to show the print panel in")
             return onError("Print failed: no window to show the print panel in.")
         }
-        let job = ArtifactPrinter(title: draft.title, onError: onError)
-        jobs.insert(job)
-        job.start(page, window: window)
+        start(ArtifactPrinter(title: draft.title, onError: onError), .page(page), window: window)
     }
 
-    private func start(_ page: String, window: NSWindow) {
+    /// Keeps `job` alive and loads `content` for the print panel on
+    /// `window`. Internal so a test can start a job made its own way.
+    static func start(_ job: ArtifactPrinter, _ content: SandboxedHTMLContent, window: NSWindow) {
+        jobs.insert(job)
+        job.start(content, window: window)
+    }
+
+    /// The job is still kept alive (tests: every way a job ends drops it).
+    static func isRunning(_ job: ArtifactPrinter) -> Bool { jobs.contains(job) }
+
+    private func start(_ content: SandboxedHTMLContent, window: NSWindow) {
         webView = SandboxedHTMLView.makeWebView(coordinator: coordinator, frame: Self.pageFrame)
         coordinator.onLoaded = { [weak self, weak window] webView in
             guard let self else { return }
@@ -62,9 +79,9 @@ final class ArtifactPrinter: NSObject {
             }
             self.finish(error: "Print failed: \(message)")
         }
-        coordinator.show(.page(page), token: 0)
-        loadTimeout = Task { [weak self] in
-            try? await Task.sleep(for: Self.loadTimeoutDuration)
+        coordinator.show(content, token: 0)
+        loadTimeout = Task { [weak self, loadTimeoutDuration] in
+            try? await Task.sleep(for: loadTimeoutDuration)
             guard !Task.isCancelled, let self, !self.started else { return }
             self.finish(error: "Print failed: the page did not finish loading.")
         }

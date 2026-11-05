@@ -232,6 +232,111 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(probe.failures, [])
     }
 
+    /// A content navigation that fails reports once through `onFailed`
+    /// (an unreadable page fails its scheme task, which is no cancel; a
+    /// missing one would load a 404 page instead).
+    func testAFailedContentNavigationReportsOnce() async throws {
+        let (folder, page) = try Self.unreadablePage()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let probe = CoordinatorProbe()
+        _ = probe.makeWebView()
+        probe.coordinator.show(.file(page, folder: folder), token: 0)
+        try await waitUntil { !probe.failures.isEmpty }
+        // A grace for a late second report; it can only pass vacuously.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(probe.failures.count, 1, "\(probe.failures)")
+        XCTAssertTrue(probe.failures.first?.hasPrefix("The page could not be loaded:") == true, "\(probe.failures)")
+        XCTAssertEqual(probe.loaded, 0)
+    }
+
+    /// The web content process ending reports through `onFailed` once,
+    /// however often WebKit says so.
+    func testAnEndedContentProcessReportsOnce() async throws {
+        let probe = CoordinatorProbe()
+        probe.coordinator.rules = Self.neverReadyRules
+        let webView = probe.makeWebView()
+        probe.coordinator.show(.page("<p>doc</p>"), token: 0)
+        probe.coordinator.webViewWebContentProcessDidTerminate(webView)
+        probe.coordinator.webViewWebContentProcessDidTerminate(webView)
+        XCTAssertEqual(probe.failures, ["The page stopped: its web content process ended."])
+        probe.coordinator.cancel()
+    }
+
+    // MARK: ArtifactPrinter — every way a job ends drops it
+
+    /// A page that never finishes loading ends the job after the timeout
+    /// with a notice, instead of a Print… that silently does nothing.
+    func testThePrinterTimesOutAPageThatNeverLoads() async throws {
+        let coordinator = SandboxedHTMLView.Coordinator()
+        coordinator.rules = Self.neverReadyRules
+        let errors = ErrorLog()
+        let job = ArtifactPrinter(title: "t", coordinator: coordinator, loadTimeout: .milliseconds(100)) { errors.list.append($0) }
+        let window = Self.offscreenWindow()
+        ArtifactPrinter.start(job, .page("<p>doc</p>"), window: window)
+        XCTAssertTrue(ArtifactPrinter.isRunning(job))
+        try await waitUntil { !errors.list.isEmpty }
+        XCTAssertEqual(errors.list, ["Print failed: the page did not finish loading."])
+        XCTAssertFalse(ArtifactPrinter.isRunning(job), "the timed-out job is dropped")
+    }
+
+    /// The content process ending fails the job exactly once: no second
+    /// report from WebKit or from the load timeout afterwards.
+    func testThePrinterFailsOnceWhenTheContentProcessEnds() async throws {
+        let coordinator = SandboxedHTMLView.Coordinator()
+        coordinator.rules = Self.neverReadyRules
+        let errors = ErrorLog()
+        let job = ArtifactPrinter(title: "t", coordinator: coordinator, loadTimeout: .milliseconds(200)) { errors.list.append($0) }
+        let window = Self.offscreenWindow()
+        ArtifactPrinter.start(job, .page("<p>doc</p>"), window: window)
+        let webView = try XCTUnwrap(coordinator.webView)
+        coordinator.webViewWebContentProcessDidTerminate(webView)
+        coordinator.webViewWebContentProcessDidTerminate(webView)
+        XCTAssertEqual(errors.list, ["Print failed: The page stopped: its web content process ended."])
+        XCTAssertFalse(ArtifactPrinter.isRunning(job), "the failed job is dropped")
+        // Past the timeout: it was cancelled with the job.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(errors.list.count, 1, "\(errors.list)")
+    }
+
+    /// A content navigation that fails ends the job with its reason.
+    func testThePrinterFailsWhenTheContentNavigationFails() async throws {
+        let (folder, page) = try Self.unreadablePage()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let errors = ErrorLog()
+        let job = ArtifactPrinter(title: "t") { errors.list.append($0) }
+        let window = Self.offscreenWindow()
+        ArtifactPrinter.start(job, .file(page, folder: folder), window: window)
+        try await waitUntil { !errors.list.isEmpty }
+        XCTAssertEqual(errors.list.count, 1, "\(errors.list)")
+        XCTAssertTrue(errors.list.first?.hasPrefix("Print failed: The page could not be loaded:") == true, "\(errors.list)")
+        XCTAssertFalse(ArtifactPrinter.isRunning(job), "the failed job is dropped")
+    }
+
+    /// A page that exists but cannot be opened: the scheme handler fails
+    /// its task. The folder is the caller's to remove.
+    private static func unreadablePage() throws -> (folder: URL, page: URL) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let page = folder.appendingPathComponent("locked.html")
+        try "<p>locked</p>".write(to: page, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: page.path)
+        return (folder, page)
+    }
+
+    /// Rules that are never ready: the content never starts loading, until
+    /// the load is cancelled.
+    private static let neverReadyRules: @MainActor (Bool) async throws -> WKContentRuleList = { _ in
+        try await Task.sleep(for: .seconds(60))
+        throw CancellationError()
+    }
+
+    /// Never ordered in (no window on screen during tests).
+    private static func offscreenWindow() -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: .borderless, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
     /// A file preview (#563) loads its folder's visible files only — no
     /// dotfile as a script or in a frame, none through a symlink with a
     /// visible name (`notes.js` → `.secrets/config.js`, a folder link to
@@ -396,6 +501,12 @@ private final class CoordinatorProbe {
         webView = view
         return view
     }
+}
+
+/// What a printer job reported through `onError`.
+@MainActor
+private final class ErrorLog {
+    var list: [String] = []
 }
 
 /// A loopback listener that counts every connection made to it and answers
