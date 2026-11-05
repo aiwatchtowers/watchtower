@@ -84,6 +84,16 @@ final class InboxArtifactCardTests: XCTestCase {
         XCTAssertEqual(InboxCardLayout.of(shown).pressable.map(\.index), [1])
     }
 
+    /// In the Inbox the target button is drawn disabled until it is wired,
+    /// while a chat button beside it stays pressable.
+    func testTargetButtonIsDrawnDisabledInTheInbox() throws {
+        let target = #"{"label":"Make a task","kind":"target","target":{"title":"Follow up"}}"#
+        let shown = card(blocks: #"{"v":1,"blocks":[{"type":"actions","actions":[\#(target),\#(chat)]}]}"#)
+        let sut = InboxReadingPane(item: .output(shown), navScreens: []) { _ in }
+        XCTAssertTrue(try sut.inspect().find(ArtifactTargetButton.self).find(ViewType.Button.self).isDisabled())
+        XCTAssertFalse(try sut.inspect().find(button: "Draft").isDisabled())
+    }
+
     // MARK: - People
 
     func testAvatarFallsBackToInitialsForAnUnknownUser() {

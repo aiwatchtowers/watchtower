@@ -106,6 +106,8 @@ struct InboxArtifactCard: View {
                 }
             },
             isActionEnabled: { index in
+                // A `target` button has no press here yet (it maps to no
+                // `InboxCardAction`): drawn disabled, never a dead click.
                 guard let action = byIndex[index] else { return false }
                 return !InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
             }

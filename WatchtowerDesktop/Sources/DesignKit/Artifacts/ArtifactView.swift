@@ -408,6 +408,7 @@ struct ArtifactActionButton: View {
             ArtifactTargetButton(label: action.label, state: environment.targetButtonState(index), mode: mode) {
                 environment.onAction(index)
             }
+            .disabled(mode == .inbox && !environment.isActionEnabled(index))
         } else if mode == .preview {
             plain.disabled(true).help(ArtifactRenderMode.previewButtonHelp)
         } else {

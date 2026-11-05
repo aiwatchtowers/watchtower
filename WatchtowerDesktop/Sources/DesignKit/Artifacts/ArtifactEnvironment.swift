@@ -47,9 +47,9 @@ public struct ArtifactEnvironment {
     public var refHooks: ArtifactRefHooks
     /// The state of the target button at a flattened index.
     public var targetButtonState: (Int) -> ArtifactTargetButtonState
-    /// Whether the (non-target) button at a flattened index can be pressed
-    /// in `.inbox` now: the host disables a Reply already sent, a link its
-    /// rules refuse, a press while one is under way.
+    /// Whether the button at a flattened index can be pressed in `.inbox`
+    /// now: the host disables a Reply already sent, a link its rules refuse,
+    /// a press while one is under way, a kind it does not press yet.
     public var isActionEnabled: (Int) -> Bool
 
     public init(
