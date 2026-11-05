@@ -30,7 +30,7 @@ struct MacDetailView: View {
     /// Only the link flow's own work holds Forget back: a switch waiting for a closed Mac never does.
     static func forgetDisabled(linkingBusy: Bool) -> Bool { linkingBusy }
 
-    /// This phone's grant from the session's keybox; nil when it cannot be read (a locked keychain).
+    /// This phone's grant from the session's keybox; nil when it cannot be read (a locked keychain) or was not fetched yet.
     static func grant(of link: LinkRecord, session: HubSession) -> DeviceGrant? {
         guard let deviceID = link.deviceID.flatMap(UUID.init(uuidString:)) else { return nil }
         do {

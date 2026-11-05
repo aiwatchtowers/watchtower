@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerHostedRelay
 
 /// Settings → Macs' Relay card (relay client Phase 4 Task 7, mockup S01–S06, S41, S55): the account's state in
 /// the mockup's words. Every text lives here and is asserted in `RelayCardModelTests`.
@@ -52,7 +53,7 @@ struct RelayCardModel: Equatable {
     /// nil on an unavailable relay: no card at all (a dark build shows nothing of Relay).
     /// `unconfirmedPurchase` (`center.unconfirmed != nil`) replaces the card of `.free` and `.unknown`: the other
     /// phases have their own answer.
-    init?(availability: RelayAvailability, phase: RelayAccountCenter.Phase, unconfirmedPurchase: Bool, slotLimit: Int) {
+    init?(availability: RelayAvailability, phase: RelayAccountCenter.Phase, unconfirmedPurchase: Bool) {
         guard case .available = availability else { return nil }
         var line: String?
         var action: Action?
@@ -82,7 +83,7 @@ struct RelayCardModel: Equatable {
         case let .paying(grace, macs):
             rows = [
                 Row(title: Self.subscriptionTitle, value: Self.active),
-                Row(title: Self.macsTitle, value: "\(macs.count) of \(slotLimit)")
+                Row(title: Self.macsTitle, value: "\(macs.count) of \(HostedRelayLimits.maxMacSlots)")
             ]
             if grace { line = Self.grace }
         case .moved:

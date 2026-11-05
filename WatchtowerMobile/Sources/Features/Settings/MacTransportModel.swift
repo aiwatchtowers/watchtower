@@ -31,6 +31,7 @@ struct MacTransportModel: Equatable {
     static let needsRelay = "This hub needs Relay"
     static let checking = "Checking…"
     static let needsUpdate = "Update Watchtower on this Mac to use Relay"
+    static let needsUpdateForICloud = "Update Watchtower on this Mac to switch it to iCloud."
     static let notConfirmed = "Your purchase isn't confirmed yet."
     static let subscribe = "Subscribe to use Relay"
     static let unreachable = "Couldn't reach Relay."
@@ -189,9 +190,10 @@ struct MacTransportModel: Equatable {
         private func checkingRule() -> Choice? {
             guard phase == .checking else { return nil }
             if onRelay {
+                // No press yet: the read says whether this is a lapse's move, which spares the Mac's other phones, or a
+                // plain one, and it ends as an answer or `.unknown` (then the press goes, as a plain move).
                 return Choice(rows: [
-                    relayRow(line: MacTransportModel.checking, chosen: true),
-                    iCloudRow(line: MacTransportModel.iCloudLine, enabled: true, action: .chooseICloud)
+                    relayRow(line: MacTransportModel.checking, chosen: true), iCloudRow(line: MacTransportModel.checking)
                 ])
             }
             return Choice(rows: [
@@ -200,20 +202,15 @@ struct MacTransportModel: Equatable {
             ])
         }
 
-        /// A refusal whose line would now be false or whose button could only be refused again (slots freed since, the
-        /// subscription gone) falls through to the state underneath, which says what helps.
+        /// A refusal whose line would now be false or whose button could only be refused again falls through to the state
+        /// underneath, which says what helps: slots freed since, and every refusal on a free or moved phone.
         private func keptRefusalRule() -> Choice? {
-            guard !onRelay, let refusal = session.upgradeRefusal else { return nil }
+            guard !onRelay, !notPaying, let refusal = session.upgradeRefusal else { return nil }
             if refusal == .vouch(.slotsFull) { return slotsRule() }
             guard let message = refusal.message(macName: macName, now: now) else { return nil }
-            switch refusal {
-            case .tooSoon(let retryAt):
+            if case .tooSoon(let retryAt) = refusal {
                 guard now < retryAt else { return nil }
                 return Choice(rows: [relayRow(line: message), chosenICloud], footnote: refusal.footnote)
-            case .notPaying, .vouch(.notPaying):
-                if notPaying { return nil }
-            default:
-                break
             }
             return Choice(
                 rows: [relayRow(line: message, enabled: true, action: .tryAgain), chosenICloud], failing: .relay
@@ -223,7 +220,7 @@ struct MacTransportModel: Equatable {
         private func grantRule() -> Choice? {
             guard !onRelay else { return nil }
             guard let grant else {
-                // Not read (a locked keychain): nothing proves the Mac old.
+                // Not read: a locked keychain, or a grant not fetched yet. Nothing proves the Mac old, and both heal.
                 return Choice(rows: [relayRow(line: MacTransportModel.checking), chosenICloud])
             }
             let coherent = grant.relayDeviceID.flatMap { mac in
@@ -269,6 +266,9 @@ struct MacTransportModel: Equatable {
         private func settledRule() -> Choice {
             let footnote = MacTransportModel.footnote(link, ownDeviceID: ownDeviceID, now: now)
             if onRelay {
+                if let blocked = iCloudBlocked {
+                    return Choice(rows: [relayRow(chosen: true, enabled: true), iCloudRow(line: blocked)])
+                }
                 return Choice(
                     rows: [
                         relayRow(chosen: true, enabled: true),
@@ -284,6 +284,13 @@ struct MacTransportModel: Equatable {
                 ],
                 footnote: footnote
             )
+        }
+
+        /// Why a Relay route cannot ask for iCloud: `requestTransport` refuses a hub with no ordered actions before it
+        /// writes anything, so the press would show nothing. nil when the press goes.
+        private var iCloudBlocked: String? {
+            guard let grant else { return MacTransportModel.checking }
+            return grant.runsOrderedActions ? nil : MacTransportModel.needsUpdateForICloud
         }
 
         private var chosenICloud: Row { iCloudRow(line: nil, chosen: true, enabled: true) }
@@ -359,11 +366,11 @@ enum MacTransportPress {
         }
     }
 
-    /// An upgrade that decided nothing (the relay did not answer) goes on by itself at the next pass, and its row has
-    /// nothing to show: reading the account again makes the row say so when the relay really is out.
+    /// The upgrader reads the account on its own and the center is not told, so its read goes stale here: a refusal for
+    /// full slots needs the fresh list to show (the slots rule), and an upgrade that decided nothing leaves its row with
+    /// nothing to say, so S54 shows when the relay really is out. The card's "2 of 3" reads the same list.
     private static func upgrade(_ session: HubSession, _ center: RelayAccountCenter?) async {
-        if await session.upgradeToRelay() == .waiting {
-            await center?.refresh()
-        }
+        _ = await session.upgradeToRelay()
+        await center?.refresh()
     }
 }

@@ -345,7 +345,7 @@ final class ScreenshotTourTests: XCTestCase {
         ]
         for (number, slug, phase, unconfirmed) in cards {
             let card = try XCTUnwrap(RelayCardModel(
-                availability: .available(origin), phase: phase, unconfirmedPurchase: unconfirmed, slotLimit: 3
+                availability: .available(origin), phase: phase, unconfirmedPurchase: unconfirmed
             ))
             try await shot(number, slug, "bare stack, the Relay card", NavigationStack { MacsView(card: card) }.environment(twoMacs))
         }

@@ -1,5 +1,4 @@
 import SwiftUI
-import WatchtowerHostedRelay
 
 /// Settings → Macs (multi-hub spec §5.6): the linked Macs in order, reordered
 /// with Edit, each Unlinked or Forgotten (`MacsModel.action`) from its swipe
@@ -33,8 +32,7 @@ struct MacsView: View {
         if let cardOverride { return cardOverride }
         guard let center = env.relayAccount else { return nil }
         return RelayCardModel(
-            availability: env.relay.availability, phase: center.phase, unconfirmedPurchase: center.unconfirmed != nil,
-            slotLimit: HostedRelayLimits.maxMacSlots
+            availability: env.relay.availability, phase: center.phase, unconfirmedPurchase: center.unconfirmed != nil
         )
     }
 

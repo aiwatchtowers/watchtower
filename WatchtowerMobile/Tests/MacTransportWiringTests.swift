@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import WatchtowerE2ETesting
 import WatchtowerHostedRelay
@@ -136,6 +137,57 @@ final class MacTransportWiringTests: XCTestCase {
         XCTAssertGreaterThan(asked.count, before, "so S54 shows when the relay really is out")
     }
 
+    /// The account read is stale after this session's own upgrades: the upgrader reads the relay itself and the center
+    /// is not told. A fourth Mac's refusal must still reach the screen, not fall back to the row the owner just pressed.
+    func testASlotsFullRefusalShowsThoughTheAccountReadWasStale() async throws {
+        let (bed, session) = try await upgradeBed()
+        let phone = bed.phone.deviceID
+        // This Mac is not on the subscription (the bed's stand paired it).
+        try await HostedRelayPairing(session: try XCTUnwrap(bed.rootRelay.session())).removeSlot(mac: bed.mac.deviceID)
+        for seed in [UInt8(21), 22] {
+            try await bed.fake.pair(mac: try await macOnTheStand(bed, seed: seed), phones: [phone])
+        }
+        let center = RelayAccountCenter(
+            link: .live(bed.rootRelay), store: FakeSubscriptionStore(),
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "mac-transport-\(UUID().uuidString)"))
+        ) { [] }
+        center.start()
+        await center.foreground()?.value
+        guard case .paying(_, let before) = center.phase else { return XCTFail("\(center.phase)") }
+        XCTAssertEqual(before.count, 2)
+
+        // A third Mac's upgrade fills the slots; the center still reads two, so this Mac offers Relay.
+        try await bed.fake.pair(mac: try await macOnTheStand(bed, seed: 23), phones: [phone])
+        XCTAssertEqual(try model(bed, session, phase: center.phase).rows.first?.action, .chooseRelay)
+        bed.relayOps.fail("addSlot", with: HostedRelayPairing.Refusal.slotsFull(macs: ["a", "b", "c"]))
+
+        await MacTransportPress.run(.chooseRelay, session: session, center: center)
+
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .vouch(.slotsFull))
+        let row = try model(bed, session, phase: center.phase).rows.first
+        XCTAssertEqual(row?.line, "Your subscription already has 3 Macs.")
+        XCTAssertEqual(row?.action, .manageMacs)
+    }
+
+    /// A Relay link with no `ordered_actions`: `requestTransport` refuses before it writes anything, so the screen must not
+    /// offer the press.
+    func testARelayHubWithNoOrderedActionsOffersNoDeadICloudPress() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let session = try bed.session()
+        await session.waitForBoot()
+        try await bed.publishGrant(ordered: false)
+        await bed.fetch(session)
+        let outcome = await session.requestTransport(reason: nil)
+        XCTAssertEqual(outcome, .refused(.notOrdered), "the press this row must not offer")
+        XCTAssertNil(try bed.row()?.link.transportRequest)
+
+        let row = try model(bed, session).rows.last
+
+        XCTAssertEqual(row?.line, "Update Watchtower on this Mac to switch it to iCloud.")
+        XCTAssertEqual(row?.enabled, false)
+        XCTAssertNil(row?.action)
+    }
+
     // MARK: - How it ends
 
     func testAFinishedSwitchEndsBusy() async throws {
@@ -253,6 +305,19 @@ final class MacTransportWiringTests: XCTestCase {
         await session.epochAckWork?.value
         await session.outbox.drain()
         return (bed, session)
+    }
+
+    /// Another Mac registered on the bed's relay, ready to fill a slot.
+    private func macOnTheStand(_ bed: Bed, seed: UInt8) async throws -> String {
+        let clock = ManualRelayClock(now: Date())
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: seed, count: 32))
+        let mac = HostedRelayClient(
+            origin: try RelayOrigin(bed.fake.origin), signer: Ed25519RelaySigner(key), kind: .mac,
+            attestor: RelayAttestor(attest: FakeAppAttest(), keys: InMemoryAppAttestKeyStore(), clock: clock),
+            http: bed.fake.http, sockets: bed.fake.sockets, clock: clock
+        )
+        _ = try await mac.register()
+        return mac.deviceID
     }
 
     private func relayBed() async throws -> (Bed, HubSession) {

@@ -166,9 +166,35 @@ final class MacTransportModelTests: XCTestCase {
                 relay: Expected(line: "Checking…"), iCloud: Expected(line: "Checking…", chosen: true, enabled: true)
             ),
             Case(
-                name: "S19 checking, Relay route: leaving stays possible", model: try model(link: relayRoute, phase: .checking),
-                relay: Expected(line: "Checking…", chosen: true),
-                iCloud: Expected(line: free2, enabled: true, action: .chooseICloud)
+                name: "S19 checking, Relay route: the press waits for the reason the read gives",
+                model: try model(link: relayRoute, phase: .checking),
+                relay: Expected(line: "Checking…", chosen: true), iCloud: Expected(line: "Checking…")
+            ),
+            Case(
+                name: "S12's look on a Relay route: no ordered actions, the press could only be refused",
+                model: try model(link: relayRoute, grant: .some(grant(ordered: false))),
+                relay: Expected(line: relayLine, chosen: true, enabled: true),
+                iCloud: Expected(line: "Update Watchtower on this Mac to switch it to iCloud.")
+            ),
+            Case(
+                name: "Relay route, no grant read yet: nothing proves the press would go",
+                model: try model(link: relayRoute, grant: .some(nil)),
+                relay: Expected(line: relayLine, chosen: true, enabled: true), iCloud: Expected(line: "Checking…")
+            ),
+            Case(
+                name: "S10 free, an old refusal kept", model: try model(phase: free, facts: facts(refusal: .unavailable)),
+                relay: Expected(line: "Subscribe to use Relay", enabled: true, action: .openSubscription),
+                iCloud: Expected(line: free2, chosen: true, enabled: true)
+            ),
+            Case(
+                name: "S10 moved, an old refusal kept", model: try model(phase: .moved, facts: facts(refusal: .readerNotConfirmed)),
+                relay: Expected(line: "Subscribe to use Relay", enabled: true, action: .openSubscription),
+                iCloud: Expected(line: free2, chosen: true, enabled: true)
+            ),
+            Case(
+                name: "S56 free and unconfirmed, an old refusal kept",
+                model: try model(phase: free, unconfirmed: true, facts: facts(refusal: .replacementLimit)),
+                relay: Expected(line: "Your purchase isn't confirmed yet.", enabled: true, action: .openSubscription), iCloud: chosenICloud
             ),
             Case(
                 name: "S18 kept refusal", model: try model(facts: facts(refusal: .unavailable)),
@@ -284,11 +310,17 @@ final class MacTransportModelTests: XCTestCase {
         // Slots freed since the refusal: the line would be false.
         let freed = try model(phase: .paying(grace: false, macs: ["a"]), facts: facts(refusal: .vouch(.slotsFull)))
         XCTAssertEqual(freed.rows.first?.action, .chooseRelay)
-        // Not paying: Manage Macs and Try Again could only be refused again. Subscribing helps.
-        for refusal: RelayUpgradeRefusal in [.vouch(.slotsFull), .notPaying, .vouch(.notPaying)] {
-            let row = try model(phase: free, facts: facts(refusal: refusal)).rows.first
-            XCTAssertEqual(row?.line, "Subscribe to use Relay", "\(refusal)")
-            XCTAssertEqual(row?.action, .openSubscription, "\(refusal)")
+        // Free or moved: every old refusal's button could only be refused again. Subscribing helps.
+        let refusals: [RelayUpgradeRefusal] = [
+            .vouch(.slotsFull), .vouch(.notPaying), .vouch(.updateRequired), .vouch(.hubNotOnRelay), .notPaying, .unavailable,
+            .notSupported, .readerNotConfirmed, .replacementLimit, .tooSoon(retryAt: now.addingTimeInterval(240))
+        ]
+        for refusal in refusals {
+            for phase in [free, .free(ended: true), .moved] {
+                let row = try model(phase: phase, facts: facts(refusal: refusal)).rows.first
+                XCTAssertEqual(row?.line, "Subscribe to use Relay", "\(refusal) \(phase)")
+                XCTAssertEqual(row?.action, .openSubscription, "\(refusal) \(phase)")
+            }
         }
         // Paying again after a not-paying refusal: the phase's answer may be late, so the text and Try Again stay.
         let again = try model(facts: facts(refusal: .notPaying)).rows.first
