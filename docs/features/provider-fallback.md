@@ -384,7 +384,13 @@ the selected provider's strong model and account, possibly spending paid quota.
 It uses the current form's model and CLI path without saving them, testing the
 light model, or falling back to another provider. The existing `ai test` command
 now invokes the canonical isolated no-tools batch leaf: no owner startup hooks,
-MCP tools or shell snapshots. Its additive `--cli-path` override is test-only;
+MCP tools or shell snapshots. For codex the request carries a system prompt
+naming a fresh nonce, delivered through the same `model_instructions_file` every
+codex call uses, and an answer without the nonce fails as `invalid_output`, so a
+broken system-prompt path fails the test. The MCP tool mount is not part of
+the probe (it stays tool-less); the
+opt-in `scripts/check-codex-features.sh --live` covers it with a real codex
+run. Its additive `--cli-path` override is test-only;
 HTTP providers reject that flag and retain their direct HTTP test. Local Settings
 tests retain one request per distinct light/strong model against the form URL.
 Failures cross into Desktop as sanitized messages plus a typed `error_code`, not

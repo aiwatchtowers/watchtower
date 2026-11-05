@@ -9,6 +9,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // useRealVersionProbe restores the real `codex --version` probe for one
@@ -55,8 +58,9 @@ func TestParseCodexVersion(t *testing.T) {
 
 // The version gate (board #566): model_instructions_file only from
 // minInstructionsFileVersion on; an older codex, or one whose version
-// cannot be read, keeps the prompt off argv by the stdin layout. The probe
-// runs once per binary.
+// cannot be read, keeps the prompt off argv by the stdin layout. A read
+// version is probed once per binary; a failed probe is retried later
+// (TestInstructionsFileSupported_FailedProbeIsRetried).
 func TestInstructionsFileSupported_ByVersion(t *testing.T) {
 	useRealVersionProbe(t)
 	for version, want := range map[string]bool{
@@ -80,6 +84,36 @@ func TestInstructionsFileSupported_ByVersion(t *testing.T) {
 	if instructionsFileSupported(filepath.Join(t.TempDir(), "missing-codex")) {
 		t.Error("a codex that cannot be run must count as too old")
 	}
+}
+
+// A probe that fails (the binary cannot run, times out, prints garbage) is
+// not remembered for the process lifetime: within instructionsProbeRetry the
+// stdin layout stays without a new probe, after it the next run probes again
+// and a success is then kept for good (#669 follow-up: one slow probe at
+// daemon start moved every system prompt to stdin until a restart).
+func TestInstructionsFileSupported_FailedProbeIsRetried(t *testing.T) {
+	useRealVersionProbe(t)
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	count := filepath.Join(dir, "count")
+	// Fails its first --version, prints a good version from then on.
+	body := "#!/bin/sh\n[ \"$1\" = \"--version\" ] || exit 1\necho x >> '" + count + "'\n" +
+		"[ \"$(wc -l < '" + count + "' | tr -d ' ')\" = 1 ] && exit 1\necho 'codex-cli 0.150.0'\n"
+	require.NoError(t, os.WriteFile(bin, []byte(body), 0o755))
+	runs := func() int { b, _ := os.ReadFile(count); return strings.Count(string(b), "x") }
+
+	prev := instructionsProbeRetry
+	t.Cleanup(func() { instructionsProbeRetry = prev })
+	instructionsProbeRetry = time.Hour
+	assert.False(t, instructionsFileSupported(bin), "the failed probe falls back to stdin")
+	assert.False(t, instructionsFileSupported(bin), "within the retry window")
+	assert.Equal(t, 1, runs(), "no new probe inside the retry window")
+
+	instructionsProbeRetry = 0
+	assert.True(t, instructionsFileSupported(bin), "the retry after the window succeeds")
+	assert.Equal(t, 2, runs())
+	assert.True(t, instructionsFileSupported(bin))
+	assert.Equal(t, 2, runs(), "a success is cached")
 }
 
 // On a codex older than the gate the system prompt travels ahead of the
