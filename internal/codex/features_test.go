@@ -3,6 +3,7 @@ package codex
 import (
 	"bufio"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,8 +130,8 @@ func TestDisabledFeatures_EveryRunTurnsThemOff(t *testing.T) {
 	}
 }
 
-// liveFeaturesEnv opts into TestDisabledFeatures_LiveCLI ("check" or
-// "update"); see scripts/check-codex-features.sh.
+// liveFeaturesEnv opts into the live TestDisabledFeatures_* checks
+// ("check" or "update"); see scripts/check-codex-features.sh.
 const liveFeaturesEnv = "WATCHTOWER_CHECK_CODEX_FEATURES"
 
 // TestDisabledFeatures_LiveCLI compares the installed codex CLI's feature
@@ -168,24 +169,12 @@ func TestDisabledFeatures_LiveCLI(t *testing.T) {
 }
 
 // liveFeatureDefaults runs `codex features list` and returns the default
-// ("true"/"false") of each flag not marked removed. The child runs in its
-// own process group, killed and reaped on every path.
+// ("true"/"false") of each flag not marked removed.
 func liveFeatureDefaults(t *testing.T, bin string) map[string]string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "features", "list")
-	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(), "PATH="+RichPATH())
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	out, err := cmd.Output()
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	require.NoError(t, err, "codex features list")
+	out := runCodexCLI(t, bin, t.TempDir(), append(os.Environ(), "PATH="+RichPATH()), "features", "list")
 	flags := map[string]string{}
-	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
 		if len(f) >= 3 && f[len(f)-2] != "removed" {
@@ -193,6 +182,30 @@ func liveFeatureDefaults(t *testing.T, bin string) map[string]string {
 		}
 	}
 	return flags
+}
+
+// runCodexCLI runs the installed codex CLI with args in dir and returns its
+// stdout. The child runs in its own process group, killed and reaped on
+// every path; a failure names the args, a fired deadline and codex's stderr.
+func runCodexCLI(t *testing.T, bin, dir string, env []string, args ...string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir, cmd.Env = dir, env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	out, err := cmd.Output()
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	var stderr []byte
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		stderr = ee.Stderr
+	}
+	require.NoError(t, err, "codex %v (deadline: %v): %s", args, ctx.Err(), stderr)
+	return string(out)
 }
 
 // markUndecided writes each name as "<name> undecided <default>", replacing
@@ -249,19 +262,8 @@ func TestDisabledFeatures_LiveSkillListHidden(t *testing.T) {
 	env := append(os.Environ(), "HOME="+home, "CODEX_HOME="+codexHome, "PATH="+RichPATH())
 
 	render := func(configs []string) string {
-		args := append([]string{"debug", "prompt-input"}, configs...)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, bin, append(args, "hi")...)
-		cmd.Dir, cmd.Env = repo, env
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-		out, err := cmd.Output()
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		require.NoError(t, err, "codex debug prompt-input")
-		return string(out)
+		args := append(append([]string{"debug", "prompt-input"}, configs...), "hi")
+		return runCodexCLI(t, bin, repo, env, args...)
 	}
 	// Only the -c pairs: prompt-input takes no exec flags.
 	configsOf := func(args []string) []string {
@@ -278,11 +280,11 @@ func TestDisabledFeatures_LiveSkillListHidden(t *testing.T) {
 	for name := range probes {
 		require.Contains(t, bare, name, "the probe must be discovered without the flags, or the check proves nothing")
 	}
-	tools := NewClient("m", "", "codex")
+	toolRun := NewClient("m", "", "codex") // the argv of a tool run; no mount needed
 	readFolder := NewClient("m", "", "codex")
 	readFolder.SetReadFolder(repo)
 	for run, args := range map[string][]string{
-		"tools":       tools.execArgs(),
+		"tools":       toolRun.execArgs(),
 		"read folder": readFolder.execArgs(),
 	} {
 		got := render(configsOf(args))

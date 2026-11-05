@@ -101,11 +101,22 @@ func assertTreeDiesOnCancel(t *testing.T, p ai.Provider, grandchild func() int) 
 	}, 5*time.Second, 50*time.Millisecond, "the CLI's grandchild %d survived the cancel", pid)
 }
 
-func codexGroupTestConfig(t *testing.T, bin string) (*config.Config, *db.DB, string) {
+// groupTestConfig is a workspace whose provider runs the stub bin, with
+// routed set a tool-router fallback to the other CLI.
+func groupTestConfig(t *testing.T, provider, bin string, routed bool) (*config.Config, *db.DB, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEX_HOME", t.TempDir())
-	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}, CodexPath: bin}
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: provider}}
+	other := "codex"
+	if provider == "codex" {
+		cfg.CodexPath, other = bin, "claude"
+	} else {
+		cfg.ClaudePath = bin
+	}
+	if routed {
+		cfg.AI.Fallback.Enabled, cfg.AI.Fallback.Provider = true, other
+	}
 	dbPath := cfg.DBPath()
 	database, err := db.Open(dbPath)
 	require.NoError(t, err)
@@ -117,7 +128,7 @@ func codexGroupTestConfig(t *testing.T, bin string) (*config.Config, *db.DB, str
 // process tree dies, as the warm claude session's group does.
 func TestCodexSessionClient_CancelKillsTheProcessTree(t *testing.T) {
 	bin, grandchild := cliTreeStub(t, "codex", "codex-cli 0.200.0")
-	cfg, database, dbPath := codexGroupTestConfig(t, bin)
+	cfg, database, dbPath := groupTestConfig(t, "codex", bin, false)
 	c := codexSessionClient(sessionWiring{cfg: cfg, database: database, dbPath: dbPath, model: "m",
 		mcpArgs: []string{"--chat", "--surface", "main"}})
 	assertTreeDiesOnCancel(t, c, grandchild)
@@ -126,24 +137,7 @@ func TestCodexSessionClient_CancelKillsTheProcessTree(t *testing.T) {
 // `ai query` on codex — the embedded chats (--tools chat) and the
 // read-folder code questions — ends the whole tree on a stop too.
 func TestCodexQueryClient_CancelKillsTheProcessTree(t *testing.T) {
-	oldTools, oldModel := aiFlagTools, aiFlagModel
-	t.Cleanup(func() { aiFlagTools, aiFlagModel = oldTools, oldModel })
-	for _, toolsFlag := range []string{"chat", ""} {
-		t.Run("tools="+toolsFlag, func(t *testing.T) {
-			bin, grandchild := cliTreeStub(t, "codex", "codex-cli 0.200.0")
-			cfg, _, dbPath := codexGroupTestConfig(t, bin)
-			aiFlagTools, aiFlagModel = toolsFlag, "m"
-			client, cleanup, err := newQueryClient(cfg, dbPath)
-			require.NoError(t, err)
-			t.Cleanup(cleanup)
-			if toolsFlag == "" {
-				c, ok := client.(readFolderConfigurable)
-				require.True(t, ok, "%T", client)
-				c.SetReadFolder(t.TempDir())
-			}
-			assertTreeDiesOnCancel(t, client, grandchild)
-		})
-	}
+	queryClientTreeCases(t, "codex", "codex-cli 0.200.0")
 }
 
 // `ai query` on claude — the embedded chats (--tools chat), the read-folder
@@ -151,6 +145,13 @@ func TestCodexQueryClient_CancelKillsTheProcessTree(t *testing.T) {
 // whole tree on a stop, as the codex path does: its MCP servers and shells
 // die with it.
 func TestClaudeQueryClient_CancelKillsTheProcessTree(t *testing.T) {
+	queryClientTreeCases(t, "claude", "2.1.0 (Claude Code)")
+}
+
+// queryClientTreeCases runs a cancelled `ai query` on provider — direct and
+// through the tool router, with --tools chat and with a read folder — and
+// asserts the stub CLI's grandchild dies with it.
+func queryClientTreeCases(t *testing.T, provider, version string) {
 	oldTools, oldModel := aiFlagTools, aiFlagModel
 	t.Cleanup(func() { aiFlagTools, aiFlagModel = oldTools, oldModel })
 	for _, tc := range []struct {
@@ -165,16 +166,8 @@ func TestClaudeQueryClient_CancelKillsTheProcessTree(t *testing.T) {
 		{name: "routed read-folder", routed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin, grandchild := cliTreeStub(t, "claude", "2.1.0 (Claude Code)")
-			t.Setenv("HOME", t.TempDir())
-			cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "claude"}, ClaudePath: bin}
-			if tc.routed {
-				cfg.AI.Fallback.Enabled, cfg.AI.Fallback.Provider = true, "codex"
-			}
-			dbPath := cfg.DBPath()
-			database, err := db.Open(dbPath)
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = database.Close() })
+			bin, grandchild := cliTreeStub(t, provider, version)
+			cfg, _, dbPath := groupTestConfig(t, provider, bin, tc.routed)
 			aiFlagTools, aiFlagModel = tc.tools, tc.model
 			client, cleanup, err := newQueryClient(cfg, dbPath)
 			require.NoError(t, err)

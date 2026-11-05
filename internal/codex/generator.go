@@ -248,10 +248,8 @@ func featuresOff(keep []string) []string {
 // ~/.agents and the repository's .agents, with their descriptions and local
 // paths) out of the model's context on every codex run Watchtower launches
 // itself — the codex counterpart of the skills claude's --setting-sources
-// leaves out. Verified on codex 0.159.2 with `codex debug prompt-input`
-// (TestDisabledFeatures_LiveSkillListHidden); the skip_host_skill_discovery
-// feature flag has no effect on `codex exec` there. A skill named
-// explicitly in the input (`$name`) is still loaded by codex: see
+// leaves out (TestDisabledFeatures_LiveSkillListHidden). Why not
+// skip_host_skill_discovery, and the `$name` limit: see
 // testdata/codex_features.txt.
 const hideSkillListArg = "skills.include_instructions=false"
 
