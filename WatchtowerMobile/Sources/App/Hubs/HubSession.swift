@@ -309,6 +309,10 @@ final class HubSession {
     @ObservationIgnored private let transport: any CloudSyncTransport & Sendable
     /// `transport` when it has a lifecycle and live events (nil for an in-memory stand-in).
     @ObservationIgnored private let liveTransport: (any LiveTransport)?
+    /// A background boot on the relay left `liveTransport.start()` to the first activation.
+    @ObservationIgnored private var relayStartOwed = false
+    /// That activation's start: `shutDown` waits for it before stopping the transport.
+    @ObservationIgnored private var relayStart: Task<Void, Never>?
     /// The CloudKit transport's own store (nil for any other transport):
     /// read-only here, for what still waits in its send queue.
     @ObservationIgnored let transportStore: TransportStore?
@@ -847,7 +851,14 @@ final class HubSession {
                 await cloud.setEngineFetchedHandler { [weak self] in
                     Task { @MainActor in await self?.applyBuffered() }
                 }
-                await cloud.start()
+                // A launch into the background on the relay wants no socket: its fetches go over HTTPS, logging in when
+                // they must, and the first activation starts the transport (`setActive`). Read and set with no suspension,
+                // so an activation either finds this owed or came first and starts here.
+                if !isActive, case .hostedRelay? = route {
+                    relayStartOwed = true
+                } else {
+                    await cloud.start()
+                }
                 await alertRegistrar?.apply(enabled: deviceSettings.workAlerts)
             }
         }
@@ -1102,7 +1113,11 @@ final class HubSession {
         startOutboxWork(sweep: true)
         readHeartbeat()
         onFetched?()
-        return hydrated.applied + hydrated.deleted + routed > 0 ? .newData : .noData
+        if hydrated.applied + hydrated.deleted + routed > 0 { return .newData }
+        // A relay transport held or stopped by App Attest answers a push with no call and no error: an earlier fetch of
+        // this launch took the refusal. The push fetched nothing, and its data waits for the next open.
+        if case .push = depth, let relay = await relayAvailability(), relay != .available { return .failed }
+        return .noData
     }
 
     /// A depth for the log: `full` or `push`.
@@ -1175,6 +1190,7 @@ final class HubSession {
             restartLoop(firstCycle: nil)
             return
         }
+        startOwedRelay()
         // Review Focus 1: rows a locked background hydrate stored open now (the unlock signal may have passed
         // while the app was suspended), before the return's fetch.
         indexStoredRows()
@@ -1189,6 +1205,14 @@ final class HubSession {
         if recent, isBootstrapped {
             Task { await applyBuffered() }
         }
+    }
+
+    /// The first activation of a session booted in the background on the relay: the transport starts as a foreground
+    /// boot's does (register, socket, flush, pull), and clears any App Attest hold a push's fetch ran into.
+    private func startOwedRelay() {
+        guard relayStartOwed, !stopped, let liveTransport else { return }
+        relayStartOwed = false
+        relayStart = Task { await liveTransport.start() }
     }
 
     /// Opens or closes the uploader's retries with the scene phase. Each
@@ -1693,6 +1717,8 @@ final class HubSession {
         // own pass, then whatever else sits on the outbox's chain (an enqueue's flush, a resend, a withdrawal).
         await outboxWork?.value
         await Self.drain(outbox, cap: outboxDrainCap)
+        // A start not yet run must not want its socket after the stop.
+        await relayStart?.value
         await liveTransport?.stop()
     }
 

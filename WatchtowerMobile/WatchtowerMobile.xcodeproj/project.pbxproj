@@ -64,6 +64,7 @@
 		28A8E1AED929497941884440 /* KeychainKeyStoreDeviceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE23C9A9206CA7B4CFEC3857 /* KeychainKeyStoreDeviceTests.swift */; };
 		2B1B961486EF6E3A1061D8DA /* AccountStatusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B82508B1B88A4C9672D4000 /* AccountStatusStyle.swift */; };
 		2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */; };
+		2CFEF414FF433DE57CCB0673 /* PushLaunchSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D1B5A60BD91F03BDAA61C4 /* PushLaunchSocketTests.swift */; };
 		2DBC73EB92D6356CAEC0E1DE /* MacDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD7C29E7FA56B9E7A085F69C /* MacDetailView.swift */; };
 		2E3168D3BC931B2646C1D085 /* WatchtowerHostedRelay in Frameworks */ = {isa = PBXBuildFile; productRef = 1C53FC403A2C3717C2D23C92 /* WatchtowerHostedRelay */; };
 		2EDD7B7533E80AD3C0747DC2 /* NotifyService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CE1581266064A628CA86BA7B /* NotifyService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -376,6 +377,7 @@
 		32467BA6794CDAB20E3FDE26 /* NotDeliveredModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotDeliveredModel.swift; sourceTree = "<group>"; };
 		33A9A8CE46252B64C968083D /* SendGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendGuard.swift; sourceTree = "<group>"; };
 		3423ED435746DC6583E674BC /* FakeHostedRelay+Zones.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FakeHostedRelay+Zones.swift"; sourceTree = "<group>"; };
+		34D1B5A60BD91F03BDAA61C4 /* PushLaunchSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushLaunchSocketTests.swift; sourceTree = "<group>"; };
 		359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskDraft.swift; sourceTree = "<group>"; };
 		39F534AB8FCE553B8BC57C4D /* HubRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubRegistry.swift; sourceTree = "<group>"; };
 		3B22EFD3B72B5CE043AA1EE1 /* BatteryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryDiagnostics.swift; sourceTree = "<group>"; };
@@ -731,6 +733,7 @@
 				B7D8BB14D242560434FB94E9 /* OrderedActionsWiringTests.swift */,
 				AF08EF4BD6F8B5CD6BA56C66 /* PermissionAnswerWiringTests.swift */,
 				0AAE61E8661239DBCD5FAAE6 /* PermissionCardTests.swift */,
+				34D1B5A60BD91F03BDAA61C4 /* PushLaunchSocketTests.swift */,
 				8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */,
 				528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */,
 				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
@@ -1505,6 +1508,7 @@
 				9123C82A7C74BBD898B28393 /* OrderedActionsWiringTests.swift in Sources */,
 				0E146E046F62B4933A70AD59 /* PermissionAnswerWiringTests.swift in Sources */,
 				151D9238668AE559C7248156 /* PermissionCardTests.swift in Sources */,
+				2CFEF414FF433DE57CCB0673 /* PushLaunchSocketTests.swift in Sources */,
 				F68A1D786C431F915FD26888 /* RecorderFakes.swift in Sources */,
 				7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */,
 				598F0F750CFB3F8CF52F078F /* RecordingHoldTests.swift in Sources */,

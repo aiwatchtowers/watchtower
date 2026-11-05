@@ -454,13 +454,15 @@ final class Bed {
         macRelayID: Bool = true,
         relayOff: Bool = false,
         alertWake: (any PushWake)? = nil,
+        startsActive: Bool = true,
+        relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
         refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
         let sockets = SocketCounter(inner: fake.sockets)
         let parts = RelayParts(
-            attest: FakeAppAttest(), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: fake.http,
+            attest: FakeAppAttest(), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: relayHTTP?(fake.http) ?? fake.http,
             sockets: sockets, clock: relayClock
         )
         let shared = SharedRelaySession(config: RelayConfig.parse(fake.origin)) { parts }
@@ -505,7 +507,7 @@ final class Bed {
         // An empty origin: the root's relay is off, its parts never built (dark ship); the stand still has its relay.
         let rootRelay = relayOff ? SharedRelaySession(config: RelayConfig.parse("")) { parts } : shared
         var factory = alertWake.map { Self.liveFactory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, wake: $0, refusing: refusing) }
-            ?? Self.factory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, defaults: defaults)
+            ?? Self.factory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, defaults: defaults, startsActive: startsActive)
         factory.makeSide = Self.sideFactory(paths: paths, cloud: cloud, shared: rootRelay, sides: sides)
         let clock = SideClock()
         let relayOps = FakeRelayOps(
@@ -590,7 +592,8 @@ final class Bed {
         cloud: RecordingCloud,
         shared: SharedRelaySession,
         keys: InMemoryPhoneKeyStore,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        startsActive: Bool
     ) -> HubSessionFactory {
         HubSessionFactory { _, hubID, route, device in
             try paths.prepare(hubID)
@@ -609,7 +612,7 @@ final class Bed {
             return try HubSession(
                 transport: transport, replicaPath: paths.replicaPath(hubID), backend: .live, transportStore: store,
                 hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), defaults: defaults,
-                recordingsDirectory: paths.recordingsDirectory(hubID), route: route, uploadRetriesAllowed: false,
+                recordingsDirectory: paths.recordingsDirectory(hubID), route: route, startsActive: startsActive, uploadRetriesAllowed: false,
                 sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
             )
         }
