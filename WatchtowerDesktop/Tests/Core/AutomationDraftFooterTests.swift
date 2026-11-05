@@ -164,24 +164,4 @@ final class AutomationDraftFooterTests: XCTestCase {
         XCTAssertEqual(off.primaryTitle(on: .look), "Save Look")
         XCTAssertFalse(off.primaryEnabled)
     }
-
-    /// No step shows every hashed field, so under a step the "listed above"
-    /// hints point to the save review (AUTO-06); a reason nothing can be
-    /// saved is said as is. The review itself keeps `hint`.
-    func testStepHintPointsToTheReview() {
-        let review = "Next you'll see everything this confirms"
-        XCTAssertEqual(Footer.make(isNew: true, bytesChanged: true, enabled: false, needsConfirmation: true).stepHint,
-                       review)
-        XCTAssertEqual(Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false).stepHint,
-                       review)
-        XCTAssertEqual(Footer.make(isNew: false, bytesChanged: false, enabled: true, needsConfirmation: true).stepHint,
-                       review)
-        let unchanged = Footer.make(isNew: false, bytesChanged: false, enabled: true, needsConfirmation: false)
-        XCTAssertEqual(unchanged.stepHint, "No changes to save")
-        let errors = Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
-                                 showsAllFields: false, hasErrors: true)
-        XCTAssertEqual(errors.stepHint, "The recipe has errors, so it can't be saved")
-        XCTAssertEqual(Footer.make(isNew: true, bytesChanged: true, enabled: false, needsConfirmation: true).hint,
-                       "Saving confirms exactly what's listed above and turns it on")
-    }
 }

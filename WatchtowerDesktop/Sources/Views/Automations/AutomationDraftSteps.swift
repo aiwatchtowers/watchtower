@@ -1,15 +1,13 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The editor's footer, the same under every step: the AI-step line, the
-/// hint and the save or confirm buttons of `verdict`. Under a step a press
-/// opens the save review; in the review it saves. A view over values; the
-/// panel decides what a press does.
+/// The editor's footer under the draft column, the same on every step: the
+/// AI-step line, the hint and the save or confirm buttons of `verdict`. A
+/// view over values; the panel decides what a press does.
 struct AutomationDraftFooterBar: View {
     let verdict: AutomationDraftFooter
-    /// The step shown (**Save Look** on the Look step, `stepHint`); nil in
-    /// the save review, which shows every hashed field above it.
-    let step: AutomationEditorStep?
+    /// The step shown: **Save Look** on the Look step.
+    let step: AutomationEditorStep
     /// A press may land: checked bytes and nothing saving.
     let ready: Bool
     /// These bytes are being checked: the primary reads "Checking…".
@@ -23,7 +21,7 @@ struct AutomationDraftFooterBar: View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             if let aiStepWarning { AutomationLLMStepWarning(text: aiStepWarning) }
             if !checking {
-                Text(step == nil ? verdict.hint : verdict.stepHint)
+                Text(verdict.hint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -36,7 +34,7 @@ struct AutomationDraftFooterBar: View {
                         .buttonStyle(.kitSecondary)
                         .disabled(!ready)
                 }
-                Button(checking ? AutomationDraftColumnModel.checkingLine : primaryTitle) {
+                Button(checking ? AutomationDraftColumnModel.checkingLine : verdict.primaryTitle(on: step)) {
                     onPress(verdict.primary)
                 }
                 .buttonStyle(.kitPrimary)
@@ -45,10 +43,6 @@ struct AutomationDraftFooterBar: View {
             }
         }
         .controlSize(.small)
-    }
-
-    private var primaryTitle: String {
-        step.map(verdict.primaryTitle(on:)) ?? verdict.primary.title
     }
 }
 

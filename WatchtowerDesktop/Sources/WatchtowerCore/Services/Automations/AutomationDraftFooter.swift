@@ -44,9 +44,6 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     nonisolated package static let cantShowAllHint = "Can't show everything this would confirm, so it can't be saved"
     /// The draft does not validate: its errors are listed above.
     nonisolated package static let hasErrorsHint = "The recipe has errors, so it can't be saved"
-    /// Under a step of the editor, which shows only part of the hashed
-    /// fields: a press opens the review of all of them (AUTO-06).
-    nonisolated package static let reviewHint = "Next you'll see everything this confirms"
 
     /// The header's compact "Save…" shows while the draft column is hidden and
     /// there is something to save; it opens the column, where the press is made.
@@ -68,13 +65,6 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     package let primaryEnabled: Bool
     package let secondary: Action?
     package let hint: String
-
-    /// The hint under a step of the editor: a press there opens the save
-    /// review, so "listed above" becomes `reviewHint`; why nothing can be
-    /// saved is said as is.
-    package var stepHint: String {
-        [Self.turnsOnHint, Self.saveHint, Self.confirmHint].contains(hint) ? Self.reviewHint : hint
-    }
 
     /// The primary button's title on `step`: **Save Look** for a save on
     /// the Look step; a confirm keeps its own title.
