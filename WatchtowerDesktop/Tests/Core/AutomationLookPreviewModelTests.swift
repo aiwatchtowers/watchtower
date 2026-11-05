@@ -331,4 +331,30 @@ final class AutomationLookPreviewModelTests: XCTestCase {
         let ended = try owner(Self.resultJSON(status: "failed", tokens: 900, error: "boom"), at: t0)
         XCTAssertEqual(Model.dryRunTokens(text: Self.text, chatEntry: .none, ownerResult: ended), 900)
     }
+
+    // MARK: - Outputs from the check
+
+    private static func checked(text: String, outputs: [String], ok: Bool = true) throws
+        -> AutomationsCLI.ValidateResult {
+        let hash = AutomationDraftColumnModel.contentHash(text)
+        let list = outputs.map { "\"\($0)\"" }.joined(separator: ",")
+        let json = #"{"ok":\#(ok),"content_hash":"\#(hash)","outputs":[\#(list)]}"#
+        return try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
+    }
+
+    /// A report-only text was checked, then edited to make Inbox cards:
+    /// until the new bytes are checked the outputs are unknown, so the pane
+    /// never says "no Inbox card" from the old check.
+    func testOutputsOnlyFromTheCheckOfTheseBytes() throws {
+        let old = try Self.checked(text: "RECIPE v1", outputs: ["report"])
+        XCTAssertNil(Model.outputs(checked: old, text: Self.text))
+        XCTAssertEqual(Model.state(text: Self.text, outputs: Model.outputs(checked: old, text: Self.text),
+                                   chatEntry: .none, ownerResult: nil, running: false), .empty)
+        XCTAssertEqual(Model.outputs(checked: try Self.checked(text: Self.text, outputs: ["inbox"]), text: Self.text),
+                       ["inbox"])
+        XCTAssertEqual(Model.outputs(checked: try Self.checked(text: Self.text, outputs: ["report"]), text: Self.text),
+                       ["report"])
+        XCTAssertNil(Model.outputs(checked: try Self.checked(text: Self.text, outputs: [], ok: false), text: Self.text))
+        XCTAssertNil(Model.outputs(checked: nil, text: Self.text))
+    }
 }

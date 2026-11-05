@@ -92,6 +92,17 @@ package enum AutomationLookPreviewModel {
         return .running(previous: shownCards(settled))
     }
 
+    /// The recipe's outputs for `state`: those of the last check only when
+    /// it is a valid check of `text` itself; nil (unknown) while these bytes
+    /// are not checked yet, or their check failed — never an older text's
+    /// outputs.
+    package static func outputs(checked: AutomationsCLI.ValidateResult?, text: String) -> [String]? {
+        guard let checked, checked.ok, checked.contentHash == AutomationDraftColumnModel.contentHash(text) else {
+            return nil
+        }
+        return checked.outputs
+    }
+
     /// The tokens of the newest dry run of `text` (the chat's or the
     /// owner's), for the footer's AI-step line; nil when no dry run of these
     /// bytes exists (none, a failure, a check without a dry run, a refusal).

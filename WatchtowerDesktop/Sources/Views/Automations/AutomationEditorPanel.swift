@@ -367,9 +367,7 @@ struct AutomationEditorPanel: View {
         return AutomationLookPane(
             content: AutomationLookPreviewModel.state(
                 text: text,
-                // Unknown until a check of a valid text finished: the pane
-                // does not claim there is no Inbox output meanwhile.
-                outputs: editor.lastChecked[key].flatMap { $0.ok ? $0.outputs : nil },
+                outputs: AutomationLookPreviewModel.outputs(checked: editor.lastChecked[key], text: text),
                 chatEntry: chat?.draft.lookEntry(text: text) ?? .none,
                 ownerResult: editor.previewResults[key],
                 running: editor.isPreviewRunning(key),
