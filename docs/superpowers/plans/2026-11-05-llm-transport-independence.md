@@ -128,11 +128,13 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - [ ] **Step 4:** `go test ./internal/streamline ./internal/ai ./internal/codex` PASS; `make lint-diff`.
 - [ ] **Step 5:** Flip A1's `oversized tool line` cells for claude one-shot if A1 is already merged. Commit `fix(ai): claude one-shot reads lines up to 64 MiB and skips larger ones (L1)`.
 
-### Task G2: codex turn cap in model turns (L3, L4; decision A, N4, N5)
+### Task G2: codex turn cap in model turns (L3, L4, L13; decision A, N4, N5)
 
 **Depends on:** G1 (shared reader in `internal/codex/stream.go`), N4 (signed off).
 **Contracts:** AUTO-08 (amendment text from the spec's §5, changelog citing asks #507 and #514); SPECREVIEW-01 note.
 **Risk:** medium. N5 decided in ask #522: the cap counts the rollout's `token_count` events.
+
+**Also L13 (found by A1):** runtime B (`agentloop`) at `MaxIterations` returns a success text instead of a `providers.Budget` failure. Make it fail with `budget` like claude's `error_max_turns`, with the test `TestAgentloop_CapIsBudgetFailure`, and flip A1's `runtime-b/stream turn-cap-sequential` cell from `gap:L13` to pass.
 
 **Files:**
 - Modify: `internal/codex/stream.go` (`turnCounter`), `internal/codex/client.go` (`SetMaxTurns`, which cancels the group when turn N+1 starts and returns a `budget` failure), `cmd/automations_backends.go` (codex `agent()` gets `SetMaxTurns(automationAgentMaxTurns)`), `cmd/workbench_spec_review.go` (codex reviewer gets `SetMaxTurns(specreview.MaxTurns)`), `docs/inventory/automations.md`, `docs/inventory/spec-review.md` (note), `docs/features/automations.md`.
