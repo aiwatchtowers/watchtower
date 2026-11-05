@@ -1060,17 +1060,37 @@ func TestLocalOpener_TooLarge(t *testing.T) {
 
 // --- sips, sniffing, policy, classes ----------------------------------------
 
+// The stub writes its pids and a partial output, marks itself ready and
+// waits on a forked sleep. The deadline must fire after the stub is ready,
+// or there is no group to prove killed: an attempt whose deadline beat the
+// stub's start (a loaded machine) is retried with a doubled deadline, and
+// every assertion runs on the attempt that reached the wait.
 func TestRunSips_TimeoutKillsGroup(t *testing.T) {
+	prevPath, prevTimeout := sipsPath, sipsTimeout
+	t.Cleanup(func() { sipsPath, sipsTimeout = prevPath, prevTimeout })
+	for timeout := 300 * time.Millisecond; ; timeout *= 2 {
+		if runSipsTimeoutAttempt(t, timeout) {
+			return
+		}
+		require.Less(t, timeout, 10*time.Second, "the stub never got ready before the deadline")
+		t.Logf("stub not ready within %v; retrying with a longer deadline", timeout)
+	}
+}
+
+// runSipsTimeoutAttempt runs one stub under timeout and reports whether the
+// stub was ready when the deadline fired (false: retry, nothing asserted
+// about the group).
+func runSipsTimeoutAttempt(t *testing.T, timeout time.Duration) bool {
+	t.Helper()
 	dir := t.TempDir()
 	parentPID := filepath.Join(dir, "parent.pid")
 	childPID := filepath.Join(dir, "child.pid")
+	ready := filepath.Join(dir, "ready")
 	script := filepath.Join(dir, "sips")
 	body := "#!/bin/sh\necho $$ > '" + parentPID + "'\nsleep 30 &\necho $! > '" + childPID +
-		"'\nfor a; do last=$a; done\necho partial > \"$last\"\nwait\n"
+		"'\nfor a; do last=$a; done\necho partial > \"$last\"\n: > '" + ready + "'\nwait\n"
 	require.NoError(t, os.WriteFile(script, []byte(body), 0o700))
-	prevPath, prevTimeout := sipsPath, sipsTimeout
-	sipsPath, sipsTimeout = script, 300*time.Millisecond
-	t.Cleanup(func() { sipsPath, sipsTimeout = prevPath, prevTimeout })
+	sipsPath, sipsTimeout = script, timeout
 	work := filepath.Join(dir, "work")
 	require.NoError(t, os.Mkdir(work, 0o700))
 	in := filepath.Join(work, "media-in")
@@ -1088,16 +1108,20 @@ func TestRunSips_TimeoutKillsGroup(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, out)
 	assert.Equal(t, "convert_failed", ClassifyError(err))
+	entries, err := os.ReadDir(work)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the partial output file is removed, never reused")
+	assert.Equal(t, "media-in", entries[0].Name())
+	if _, err := os.Stat(ready); err != nil {
+		return false
+	}
 	for _, f := range []string{parentPID, childPID} {
 		pid := readPID(f)
 		require.Positive(t, pid, f)
 		assert.Eventually(t, func() bool { return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) },
 			3*time.Second, 20*time.Millisecond, "process %d is gone", pid)
 	}
-	entries, err := os.ReadDir(work)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "the partial output file is removed, never reused")
-	assert.Equal(t, "media-in", entries[0].Name())
+	return true
 }
 
 func readPID(path string) int {
