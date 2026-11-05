@@ -871,6 +871,9 @@ final class LinkingViewModel {
     /// iCloud link whose upgrade to the relay got its slot (`add_slot`, Phase 3b Task 19) frees it the same way.
     /// Returns whether the slot is free (true for an iCloud link that holds none).
     private func unlinkRow(_ row: HubRow) async -> Bool {
+        // The owner's removal also takes the hub's promoted entry this build cannot read (#1499), first: a kill
+        // after it leaves the row to unlink again, and nothing a later build could resume.
+        store.removeUnreadablePromoted(row.hubID)
         report(LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
         guard row.state == .linked, let mac = Self.slotToFree(row.link) else { return true }
         return await removeRelaySlot(mac, keepOnFailure: true)
@@ -899,6 +902,7 @@ final class LinkingViewModel {
             await unlink(hubID)
             return
         }
+        store.removeUnreadablePromoted(hubID)
         phase = .unlinking
         report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: hubID)
         phase = .idle
@@ -909,6 +913,7 @@ final class LinkingViewModel {
     /// then its keys go.
     private func forgetUnreadable(_ hubID: String) async {
         guard let host, host.unreadableHubIDs().contains(hubID) else { return }
+        store.removeUnreadablePromoted(hubID)
         phase = .unlinking
         ending.insert(hubID)
         let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: nil)

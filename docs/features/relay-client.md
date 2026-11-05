@@ -328,6 +328,8 @@ The relay displaces an older socket of the same device (close 1001), so two rela
 
 Order after the owner confirmed the link: keys saved → `PromotedLink` (`LinkStore`, state `.confirmed`) → `vouch` → `.promoteSent` → `promote` (a `HUB_NOT_VOUCHED` vouches again once) → `.promoted` → linked. Every definite refusal after `.confirmed` moves it to `.needsOwner(reason)` with the keys kept; only the owner's Cancel deletes them. `PromotedLinkResumer` resumes confirmed links at every launch and foreground; they never hold the link screen. A `.promoteSent` link whose answer was lost asks the account state before it promotes again. A full phone registry when a link finishes is `.needsOwner(.tooManyMacs)` (ask #915).
 
+A promoted entry this build cannot read (a newer build's case after a downgrade) is skipped, kept as stored through every write, and logged once per hub per `LinkStore` instance (#1499; a clean read re-arms the line). Only the owner's own removal of that hub deletes it (`LinkStore.removeUnreadablePromoted`, called first by Unlink, the slots screen's Remove and Forget of an unreadable row), so a later build cannot bring a removed Mac back; the launch orphan pass then cleans the hub's files as for any removed hub. Writers of `link.promoted`: `LinkStore` only (`confirm`, `update`, `removePromoted`, `removeUnreadablePromoted`, and the `promoted` setter), driven by `LinkingViewModel` and `PromotedLinkResumer`. There is no age rule and no UI for such an entry; an unreadable entry of a hub the owner never removes stays (accepted limit). This ruling was decided by the agent (#1499), not the owner.
+
 ### The link route rule (Phase 3 R4)
 
 `LinkRoutePolicy.decide` is pure over the code and `RelayAvailability`:
@@ -426,6 +428,7 @@ A creator check that needs the Mac's iCloud user and cannot read it is no refusa
 - **Phase 4: test signing.** `StoreKitTesting.entitlements`' `com.apple.appstored.octane` was read off the iOS 26.4 runtime's `storekitd`; re-check it on an Xcode bump.
 - **Phase 4: a shared-scope alert raised in a move's window stays unposted on that phone** (ask #622's best-effort path).
 - **Phase 4: a second alert at a switch to iCloud** (G3, Open decision 10). A phone that got the relay push can get the CloudKit push as well, and the phone cannot suppress it.
+- **No notification for an alert whose push already settled, at a switch to iCloud** (G4, ask #1054). `Publisher.Resignal` covers only pushes the switch dropped (queued, pending or in flight). An alert settled `push_off`, `no_token`, `failed`, `forbidden` or `not_paying` before the switch arrives with the next sync, with no notification.
 - **Phase 4: a developer's mismatched push environment.** A build whose `aps-environment` differs from `WTPushEnvironment` loses its token on `BadDeviceToken`; Desktop shows the no-token line.
 - **Phase 4: legacy actions are not timed;** Diagnostics says to update the Mac when no linked Mac has the ordered path.
 - **Phase 4: an outage's minute count restarts at relaunch,** since `relayUnansweredSince` lives in memory.
