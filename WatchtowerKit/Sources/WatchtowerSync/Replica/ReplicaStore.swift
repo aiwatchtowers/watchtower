@@ -379,14 +379,19 @@ public final class ReplicaStore: Sendable {
     /// `apply`, returning how many records it stored (refused, rolled-back,
     /// unchanged, signal and other-phone keybox records are not counted), or
     /// nil when the monotonic guard dropped the batch. The hydrator's count.
-    func applyCounting(_ batch: CloudChangeBatch) throws -> Int? {
+    ///
+    /// `loadComplete` is false while the transport is still loading its zone (a multi-page pull after a route
+    /// change, a pull that failed midway): a pending route-change sweep then waits. The batch is applied but its
+    /// token is not saved (`tokenSaved` false), so the next cycle reads the whole buffer again and the sweep, once
+    /// the load is complete, sees every row the new transport returned, not the pages that happened to be in.
+    func applyCounting(_ batch: CloudChangeBatch, loadComplete: Bool = true) throws -> (stored: Int, tokenSaved: Bool)? {
         // JSONEncoder always emits valid UTF-8, so the nil branch is
         // unreachable; skipping only the token persistence would just
         // re-read the zone next cycle (safe — upserts are idempotent).
         let tokenJSON = String(bytes: try JSONEncoder().encode(batch.newToken), encoding: .utf8)
         let (accepted, refused) = try verify(batch.changed)
         let assets = Self.readAssets(of: accepted.map(\.record))
-        let outcome = try writer.write { db -> (applied: Bool, stored: Int, rolledBack: [String]) in
+        let outcome = try writer.write { db -> (applied: Bool, stored: Int, rolledBack: [String], tokenSaved: Bool) in
             // Monotonic guard: a batch whose token is not newer than what we
             // already applied is a stale or overlapping read — e.g. a
             // reentrant hydration cycle that resumed after a newer one
@@ -399,12 +404,15 @@ public final class ReplicaStore: Sendable {
                 arguments: [Self.dataTokenKey]
             )
             if let stored = Self.decodeToken(storedRaw), batch.newToken.value <= stored.value {
-                return (false, 0, [])
+                return (false, 0, [], false)
             }
             // The first complete pull after a route change (no token, something returned): every row it did not
-            // return goes once the batch is in (R12).
+            // return goes once the batch is in (R12). Complete means the transport finished loading its zone; until
+            // then (or while nothing came back) the token is held back, so the batch that sweeps is the whole load.
             let marked = try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [Self.sweepKey])
-            let sweeping = storedRaw == nil && !batch.changed.isEmpty && marked != nil
+            let pendingSweep = storedRaw == nil && marked != nil
+            let sweeping = pendingSweep && loadComplete && !batch.changed.isEmpty
+            let holdToken = pendingSweep && !sweeping
             var rolledBack: [String] = []
             var stored = 0
             // Per-kind change stamps (board #724): a stored version is
@@ -442,16 +450,16 @@ public final class ReplicaStore: Sendable {
                 touchedKinds.formUnion(try Self.sweep(keeping: Set(batch.changed.map(\.recordName)), in: db))
             }
             try Self.bumpKindVersions(touchedKinds, in: db)
-            if let tokenJSON {
+            if let tokenJSON, !holdToken {
                 try Self.upsertMeta(db, key: Self.dataTokenKey, value: tokenJSON)
             }
-            return (true, stored, rolledBack)
+            return (true, stored, rolledBack, !holdToken)
         }
         guard outcome.applied else { return nil }
         for (name, reason) in refused { noteRejected(name, reason: reason) }
         for name in outcome.rolledBack { noteRejected(name, reason: "rolledBack") }
         for item in accepted where item.version == nil { noteNewerFormat(item.record.recordName) }
-        return outcome.stored
+        return (outcome.stored, outcome.tokenSaved)
     }
 
     /// The data records of a batch this replica stores, verified, and the
