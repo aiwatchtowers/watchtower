@@ -2265,7 +2265,7 @@ owner approved the contract change in ask #514, the plan in ask #519):**
 `permission_answer` goes only to a board agent session whose capability row
 has `permissionWait` (Go `agentkind.SessionCaps`, Swift `AgentSessionCaps`),
 `session_interrupt` only to one whose row `takesInterrupt` (`permissionWait`
-and `elicitation`: an Esc must not cancel a form the hooks never reported);
+and `elicitation`: an Esc must not cancel a form the hooks never reported — G7 spike (c): a codex 0.159.2 MCP elicitation form shows "esc to cancel" in the terminal, fires no hook and leaves the row Working, so the phone's Esc would cancel it instead of interrupting the turn; kept refused for Codex by the owner's answer relayed for G7);
 any other agent is refused `not_supported` with "<Agent> sessions can't answer this permission
 from the phone yet. Answer it on the Mac." (interrupt: "<Agent> sessions
 can't be interrupted from the phone yet. Stop it on the Mac."), never "no
