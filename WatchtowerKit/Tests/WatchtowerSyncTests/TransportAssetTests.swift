@@ -318,4 +318,112 @@ final class TransportAssetTests: XCTestCase {
         XCTAssertNil(rewritten["asset"])
         XCTAssertNil(CloudKitTransport.cloudRecord(from: rewritten, zone: .relay)?.assetFileURL)
     }
+
+    // MARK: - One stash per route store (board #1496)
+
+    private func tempDirectory() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("route-stash-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    /// Stashes `name`'s file in `store` and buffers an event that references it.
+    private func bufferStashed(_ store: TransportStore, name: String, in dir: URL) throws -> URL {
+        let source = dir.appendingPathComponent("staged-\(name)")
+        try Data(name.utf8).write(to: source)
+        let stashed = try XCTUnwrap(store.stashAsset(from: source, recordName: name, zone: .data))
+        try store.bufferChanged([CloudRecord(
+            recordName: name, zone: .data, kind: "meeting_transcript", modifiedAt: stamp,
+            payload: Data("{}".utf8), assetFileURL: stashed
+        )])
+        return stashed
+    }
+
+    func testTwoStoresInOneFolderKeepTheirOwnStashThroughWipeAndReopen() throws {
+        let dir = try tempDirectory()
+        let a = try TransportStore(path: dir.appendingPathComponent("a.sqlite").path)
+        let b = try TransportStore(path: dir.appendingPathComponent("b.sqlite").path, stashFolder: "b-assets")
+        let fileA = try bufferStashed(a, name: "rec-a", in: dir)
+        let fileB = try bufferStashed(b, name: "rec-b", in: dir)
+        XCTAssertNotEqual(fileA.deletingLastPathComponent(), fileB.deletingLastPathComponent())
+
+        try b.wipe()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileA.path), "b's wipe left a's file")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileB.path))
+        let fileB2 = try bufferStashed(b, name: "rec-b", in: dir)
+        try a.wipe()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileB2.path), "a's wipe left b's file")
+
+        // The open-time sweep of one store does not reach the other's folder either.
+        let fileA2 = try bufferStashed(a, name: "rec-a", in: dir)
+        try a.close()
+        try b.close()
+        let reopenedB = try TransportStore(path: dir.appendingPathComponent("b.sqlite").path, stashFolder: "b-assets")
+        defer { try? reopenedB.close() }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileA2.path), "b's open sweep left a's file")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileB2.path), "a referenced file survives its own sweep")
+    }
+
+    /// An installed phone: the relay store's files sit in the shared folder. Opening it with its own folder moves
+    /// the files its rows name and rewrites the rows; the other store's file and a stray are not touched by it.
+    func testAStoreWithItsOwnFolderAdoptsItsRowsFilesOutOfTheSharedOne() throws {
+        let dir = try tempDirectory()
+        let path = dir.appendingPathComponent("b.sqlite").path
+        let old = try TransportStore(path: path)  // an earlier build: the shared folder
+        let own = try bufferStashed(old, name: "rec-b", in: dir)
+        let other = dir.appendingPathComponent(TransportStore.sharedStashFolder).appendingPathComponent("other-store-file")
+        try Data("o".utf8).write(to: other)
+        try old.close()
+
+        let store = try TransportStore(path: path, stashFolder: "b-assets")
+        defer { try? store.close() }
+        let moved = try XCTUnwrap(store.stashDirectory).appendingPathComponent(own.lastPathComponent)
+        XCTAssertEqual(try Data(contentsOf: moved), Data("rec-b".utf8), "its file moved into its own folder")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: own.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.path), "the other store's file stays for that store")
+        let batch = try store.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.first?.assetFileURL?.standardizedFileURL, moved.standardizedFileURL)
+        // A second open changes nothing, and the moved file survives the sweep because its row follows it.
+        try store.close()
+        let again = try TransportStore(path: path, stashFolder: "b-assets")
+        defer { try? again.close() }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
+    }
+
+    /// A crash after the file moved and before its row changed: the next open finds the file in place and finishes.
+    func testAnInterruptedAdoptionFinishesAtTheNextOpen() throws {
+        let dir = try tempDirectory()
+        let path = dir.appendingPathComponent("b.sqlite").path
+        let old = try TransportStore(path: path)
+        let legacy = try bufferStashed(old, name: "rec-b", in: dir)
+        try old.close()
+        let ownFolder = dir.appendingPathComponent("b-assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: ownFolder, withIntermediateDirectories: true)
+        let moved = ownFolder.appendingPathComponent(legacy.lastPathComponent)
+        try FileManager.default.moveItem(at: legacy, to: moved)
+
+        let store = try TransportStore(path: path, stashFolder: "b-assets")
+        defer { try? store.close() }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path), "the file survives the open sweep")
+        let batch = try store.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.first?.assetFileURL?.standardizedFileURL, moved.standardizedFileURL)
+    }
+
+    /// The shared store's file was already swept by the other store (the old bug): the row stays as it was and the
+    /// open does not fail.
+    func testAdoptionWithTheFileAlreadyGoneLeavesTheRow() throws {
+        let dir = try tempDirectory()
+        let path = dir.appendingPathComponent("b.sqlite").path
+        let old = try TransportStore(path: path)
+        let legacy = try bufferStashed(old, name: "rec-b", in: dir)
+        try old.close()
+        try FileManager.default.removeItem(at: legacy)
+
+        let store = try TransportStore(path: path, stashFolder: "b-assets")
+        defer { try? store.close() }
+        let batch = try store.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.first?.assetFileURL?.standardizedFileURL, legacy.standardizedFileURL)
+    }
 }

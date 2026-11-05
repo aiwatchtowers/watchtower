@@ -36,16 +36,72 @@ public final class TransportStore: Sendable {
         try $sweepsStashAtOpen.withValue(false, operation: body)
     }
 
-    public init(path: String) throws {
+    /// The stash folder every store used before each route had its own (board #1496): two route stores of one hub
+    /// shared it, and one store's sweep deleted the other's files. The default still names it, so a store that keeps
+    /// it (the CloudKit one) keeps its files.
+    public static let sharedStashFolder = "transport-assets"
+
+    /// `stashFolder` names the fetched-asset folder next to the database. Stores that sit in one folder pass
+    /// different names. A store that does not use the shared one adopts its own rows' files out of it at open
+    /// (`adoptSharedStash`).
+    public init(path: String, stashFolder: String = TransportStore.sharedStashFolder) throws {
         queue = try DatabaseQueue(path: path)
-        assetsDirectory = URL(fileURLWithPath: path)
-            .deletingLastPathComponent()
-            .appendingPathComponent("transport-assets", isDirectory: true)
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+        assetsDirectory = parent.appendingPathComponent(stashFolder, isDirectory: true)
         try createSchema()
         // Launch pass: stash files an earlier run leaked (before the
         // eviction/wipe sweeps existed, or a crash between a buffer and its
         // compaction) are unreferenced by any row now.
-        if Self.sweepsStashAtOpen { sweepUnreferencedStash() }
+        if Self.sweepsStashAtOpen {
+            if stashFolder != Self.sharedStashFolder {
+                adoptSharedStash(from: parent.appendingPathComponent(Self.sharedStashFolder, isDirectory: true))
+            }
+            sweepUnreferencedStash()
+        }
+    }
+
+    /// Upgrade from the shared folder: the files this store's own rows (buffered events, queued writes) name in
+    /// `legacy` move into its stash and the rows follow. Every other file there belongs to the other route's store
+    /// or is a leak, and stays for that store's own sweep. Idempotent: a restart after the files moved and before
+    /// the rows changed finds the file in place and only rewrites the rows. A file already gone (the other store's
+    /// sweep ran first, the very bug this fixes) leaves its row as it was: the consumer already treats a missing
+    /// asset file as an unreadable asset. Best-effort: a failure leaves the row and file for the next open.
+    private func adoptSharedStash(from legacy: URL) {
+        guard let stash = assetsDirectory else { return }
+        let legacyPath = legacy.standardizedFileURL
+        do {
+            let paths = try queue.read { db in
+                try String.fetchAll(db, sql: """
+                    SELECT asset_path FROM events WHERE asset_path IS NOT NULL
+                    UNION SELECT asset_path FROM pending WHERE asset_path IS NOT NULL
+                    """)
+            }
+            let fileManager = FileManager.default
+            var rewrites: [(old: String, new: String)] = []
+            for path in paths {
+                let url = URL(fileURLWithPath: path)
+                guard url.deletingLastPathComponent().standardizedFileURL == legacyPath else { continue }
+                let target = stash.appendingPathComponent(url.lastPathComponent)
+                if fileManager.fileExists(atPath: url.path) {
+                    try fileManager.createDirectory(at: stash, withIntermediateDirectories: true)
+                    if fileManager.fileExists(atPath: target.path) { try fileManager.removeItem(at: target) }
+                    try fileManager.moveItem(at: url, to: target)
+                } else if !fileManager.fileExists(atPath: target.path) {
+                    continue
+                }
+                rewrites.append((path, target.path))
+            }
+            guard !rewrites.isEmpty else { return }
+            try queue.write { db in
+                for (old, new) in rewrites {
+                    for table in ["events", "pending"] {
+                        try db.execute(sql: "UPDATE \(table) SET asset_path = ? WHERE asset_path = ?", arguments: [new, old])
+                    }
+                }
+            }
+        } catch {
+            logger.warning("shared stash not adopted: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private init(queue: DatabaseQueue) throws {
@@ -54,8 +110,8 @@ public final class TransportStore: Sendable {
         try createSchema()
     }
 
-    /// The fetched-asset stash directory (`transport-assets/` next to the
-    /// database); nil for an in-memory store. The phone sets its file
+    /// The fetched-asset stash directory (`stashFolder` next to the
+    /// database, `transport-assets/` by default); nil for an in-memory store. The phone sets its file
     /// protection class (mobile E2E D8); the store creates it on demand.
     public var stashDirectory: URL? { assetsDirectory }
 
