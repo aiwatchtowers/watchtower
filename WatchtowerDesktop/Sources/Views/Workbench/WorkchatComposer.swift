@@ -4,7 +4,8 @@ import WatchtowerCore
 /// The Workchat's field and round button (#711, spec §4): Return sends,
 /// Shift-Return adds a line; while the agent works the button is Stop, and
 /// Esc in the empty field stops too. A Stop that did not go says why above
-/// the field (`WorkchatModel.stopError`).
+/// the field (`WorkchatModel.stopError`); while an agent without mid-turn
+/// input works, one line says a message waits for the turn's end (U2).
 struct WorkchatComposer: View {
     @Bindable var model: WorkchatModel
     /// `SessionControl.isWorking` for the session's status.
@@ -16,6 +17,13 @@ struct WorkchatComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let hold = Self.holdCaption(agent: model.agent, holdsUntilIdle: model.holdsUntilIdle, working: working) {
+                Text(hold)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Spacing.large)
+                    .padding(.top, Spacing.compact)
+            }
             if let stopError = model.stopError {
                 Text(stopError)
                     .font(.caption)
@@ -40,6 +48,17 @@ struct WorkchatComposer: View {
                 focusRequest: focusRequest
             )
         }
+    }
+
+    /// U2's line (S5): while the agent works and the session holds lines
+    /// until it stops; nil otherwise.
+    static func holdCaption(agent: AgentKind?, holdsUntilIdle: Bool, working: Bool) -> String? {
+        guard working, holdsUntilIdle else { return nil }
+        return holdCaption(agentName: agent?.displayName)
+    }
+
+    static func holdCaption(agentName: String?) -> String {
+        "\(agentName ?? "The agent") takes your message when this turn ends."
     }
 
     private func send() {
@@ -85,8 +104,9 @@ struct WorkchatOutgoingBubble: View {
         }
     }
 
-    /// A Claude line is held only for a prompt, the owner's typing or the
-    /// settle after the previous line; Codex waits for the agent to stop.
+    /// A line to an agent with mid-turn input is held only for a prompt, the
+    /// owner's typing or the settle after the previous line; any other waits
+    /// for the agent to stop.
     static func queuedCaption(holdsUntilIdle: Bool) -> String {
         holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
     }

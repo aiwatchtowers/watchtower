@@ -448,7 +448,9 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertEqual(model.outgoing.first?.state, .queued)
     }
 
-    func testSendWhileWorkingHoldsOnCodex() async throws {
+    /// Codex takes a line pasted mid-turn at its next step (plan Task G7
+    /// spike (a)): a working Codex session gets the line, as Claude's does.
+    func testSendWhileWorkingGoesOnCodex() async throws {
         let session = try await liveSession()
         setState(session, .working)
         let clock = try XCTUnwrap(clock)
@@ -459,7 +461,25 @@ final class WorkchatModelTests: XCTestCase {
 
         await model.send()
 
-        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+        XCTAssertTrue(typedText.contains("Also add the fixture"))
+    }
+
+    /// The hold follows the session capability, never the kind: a kind
+    /// with mid-turn input never holds, one without it (or not known yet) does.
+    func testHoldsUntilIdleFollowsCapability() throws {
+        var kind: TerminalSession.Kind?
+        let model = WorkchatModel(sessionID: 1, control: try makeControl(), lineDelivery: delivery) { kind }
+        for candidate in [nil, TerminalSession.Kind.claude, .codex, .shell] {
+            kind = candidate
+            XCTAssertEqual(
+                model.holdsUntilIdle, !AgentSessionCaps.of(candidate).midturnInput, String(describing: candidate)
+            )
+        }
+        kind = .codex
+        XCTAssertFalse(model.holdsUntilIdle, "Codex takes mid-turn input")
+        kind = .shell
+        XCTAssertTrue(model.holdsUntilIdle)
     }
 
     func testSendWhileApprovalPendingQueues() async throws {

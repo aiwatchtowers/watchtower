@@ -64,3 +64,23 @@ func TestAgentKind_SQLKindsMatchesParse(t *testing.T) {
 		}
 	}
 }
+
+// The rows G7's spikes on codex 0.159.2 support (the Swift twin
+// AgentSessionCapsTests pins the same rows).
+func TestAgentKind_SessionCaps(t *testing.T) {
+	if got := Claude.SessionCaps(); got != (SessionCaps{MidturnInput: true, PhoneInput: true, PermissionWait: true, IdleSignal: true, Elicitation: true}) {
+		t.Fatalf("claude = %+v", got)
+	}
+	if got := Codex.SessionCaps(); got != (SessionCaps{MidturnInput: true, PhoneInput: true}) {
+		t.Fatalf("codex = %+v", got)
+	}
+	if got := SessionCapsOf("shell"); got != (SessionCaps{}) {
+		t.Fatalf("shell = %+v", got)
+	}
+	// Both hubs type a phone line while the agent works (PROJ-16).
+	for _, k := range []Kind{Claude, Codex} {
+		if c := k.SessionCaps(); c.PhoneInput && !c.MidturnInput {
+			t.Fatalf("%s takes phone input without mid-turn input", k)
+		}
+	}
+}

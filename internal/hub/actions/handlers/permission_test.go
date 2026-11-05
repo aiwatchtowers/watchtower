@@ -484,13 +484,18 @@ func TestAnAnswerThatLosesTheRaceIsNotPending(t *testing.T) {
 	}
 }
 
-// Codex keeps "Needs approval on the Mac": its rows are not the phone's.
-func TestAnAnswerForACodexSessionIsNotFound(t *testing.T) {
+// A board session whose agent has no permission wait is refused
+// not_supported with the owner-readable message (S4, PROJ-21 amended): the
+// row stays pending, never "no longer exists".
+func TestProj21_CodexPermissionRefusedAsNotSupported(t *testing.T) {
 	p := newPermEnv(t)
 	sid := p.liveSession("codex")
 	rid := p.permRequest(sid, reqOpt{})
 
-	wantOutcome(t, p.answer(sid, rid, "allow"), wire.StatusFailed, reasonNotFound)
+	got := p.answer(sid, rid, "allow")
+
+	wantOutcome(t, got, wire.StatusFailed, reasonNotSupported)
+	wantMessage(t, got, "Codex sessions can't answer this permission from the phone yet. Answer it on the Mac.")
 	if s := p.rowStatus(rid); s != "pending" {
 		t.Fatalf("status = %q", s)
 	}
@@ -635,18 +640,29 @@ func TestAStaleInterruptExpires(t *testing.T) {
 	}
 }
 
-func TestInterruptOfACodexSessionIsNotFound(t *testing.T) {
+// Interrupt is a PROJ-21 kind: a session whose agent has no permission wait
+// (an Esc could land on a prompt Watchtower cannot see) is refused
+// not_supported, and no Esc is sent.
+func TestProj21_CodexInterruptRefusedAsNotSupported(t *testing.T) {
 	p := newPermEnv(t)
 	sid := p.liveSession("codex")
 	p.port.start(sid)
 	p.setState(sid, "working")
 
 	got := p.interrupt(sid, time.Second)
-	wantOutcome(t, got, wire.StatusFailed, reasonNotFound)
-	wantMessage(t, got, sessionGoneMessage)
+	wantOutcome(t, got, wire.StatusFailed, reasonNotSupported)
+	wantMessage(t, got, "Codex sessions can't be interrupted from the phone yet. Stop it on the Mac.")
 	if got := p.esc.interrupts(); len(got) != 0 {
 		t.Fatalf("interrupts = %v", got)
 	}
+}
+
+// A deleted session still reads "no longer exists on the Mac".
+func TestProj21_DeletedSessionInterruptStillNotFound(t *testing.T) {
+	p := newPermEnv(t)
+	got := p.interrupt(9999, time.Second)
+	wantOutcome(t, got, wire.StatusFailed, reasonNotFound)
+	wantMessage(t, got, sessionGoneMessage)
 }
 
 func TestInterruptNeedsTheTypingGrant(t *testing.T) {

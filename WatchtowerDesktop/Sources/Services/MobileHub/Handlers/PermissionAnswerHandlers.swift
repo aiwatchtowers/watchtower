@@ -58,6 +58,8 @@ final class PermissionAnswerHandlers {
     private let now: @Sendable () -> Date
     private let timeout: Duration
     private let sleep: @Sendable (Duration) async -> Void
+    /// The session capability rows the handler decides by.
+    private let caps: (AgentKind) -> AgentSessionCaps
 
     init(
         dbPool: DatabasePool,
@@ -68,9 +70,11 @@ final class PermissionAnswerHandlers {
         now: @escaping @Sendable () -> Date = { Date() },
         timeout: Duration = PermissionAnswerHandlers.defaultTimeout,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
-        control: SessionControl? = nil
+        control: SessionControl? = nil,
+        caps: @escaping (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of
     ) {
         self.dbPool = dbPool
+        self.caps = caps
         self.terminalCenter = terminalCenter
         // The app passes its shared one; alone (tests) a private one over
         // the same session state does the same checks (it types no line).
@@ -121,7 +125,8 @@ final class PermissionAnswerHandlers {
             return .failed(.deviceNotAllowed, message: "This phone is not allowed to answer permission prompts")
         }
         let notFound = ActionOutcome.failed(.notFound, message: "This permission request no longer exists on the Mac")
-        guard try await isBoardSession(sessionID) else { return notFound }
+        guard let agent = try await boardAgent(sessionID) else { return notFound }
+        guard caps(agent).permissionWait else { return SessionInputHandlers.notSupported(.permission, agent: agent) }
         let name = deviceName(action.deviceID) ?? Self.unnamedDevice
         switch try await control.answerPermission(requestID: requestID, sessionID: sessionID, allow: allow, decidedBy: name) {
         case let .applied(decided): return .applied(["status": .string(decided)])
@@ -153,7 +158,10 @@ final class PermissionAnswerHandlers {
         guard deviceGrant(action.deviceID).typingAllowed else {
             return .failed(.deviceNotAllowed, message: "This phone is not allowed to type into sessions")
         }
-        guard try await isBoardSession(sessionID) else { return .failed(.notFound, message: Self.notFoundMessage) }
+        guard let agent = try await boardAgent(sessionID) else {
+            return .failed(.notFound, message: Self.notFoundMessage)
+        }
+        guard caps(agent).permissionWait else { return SessionInputHandlers.notSupported(.interrupt, agent: agent) }
         // Running and Working come before the action's age, as the phone's
         // reasons always did; `control.interrupt` checks both again in the
         // same main-actor turn, so they cannot differ.
@@ -174,9 +182,10 @@ final class PermissionAnswerHandlers {
 
     // MARK: - Scope
 
-    /// A board `claude` session of a workbench that still exists: the phone
-    /// sees nothing else, and Codex keeps "Needs approval on the Mac".
-    private func isBoardSession(_ sessionID: Int64) async throws -> Bool {
-        try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind == .claude }
+    /// The agent of a board session of a workbench that still exists; nil
+    /// for anything else. An agent without `permissionWait` is refused
+    /// `not_supported`: Codex keeps "Needs approval on the Mac".
+    private func boardAgent(_ sessionID: Int64) async throws -> AgentKind? {
+        try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind.agent }
     }
 }

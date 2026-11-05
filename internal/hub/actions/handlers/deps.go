@@ -7,11 +7,13 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/state"
@@ -30,7 +32,34 @@ const (
 	reasonCannotType       = "cannot_type"
 	reasonOutcomeUnknown   = "outcome_unknown"
 	reasonWriteFailed      = "write_failed"
+	// reasonNotSupported: the host or the session's agent cannot do this
+	// for the phone (a recording on a host without the transcriber, a
+	// session kind whose capability row lacks it); the message says what
+	// to do.
+	reasonNotSupported = "not_supported"
 )
+
+// sessionCaps is the capability row of a session's stored kind; the
+// handlers decide by it, never by the kind (tests swap it).
+var sessionCaps = agentkind.SessionCapsOf
+
+// The not_supported messages, by what the phone asked; %s is the agent's
+// display name. An older phone without the reason shows the message.
+const (
+	notSupportedInputFormat      = "%s sessions can't take messages from the phone yet. Type it on the Mac."
+	notSupportedPermissionFormat = "%s sessions can't answer this permission from the phone yet. Answer it on the Mac."
+	notSupportedInterruptFormat  = "%s sessions can't be interrupted from the phone yet. Stop it on the Mac."
+)
+
+// notSupported is the refusal of a session of kind, with the message of
+// format.
+func notSupported(format, kind string) actions.Outcome {
+	name := kind
+	if k, ok := agentkind.Parse(kind); ok {
+		name = k.DisplayName()
+	}
+	return failed(reasonNotSupported, fmt.Sprintf(format, name))
+}
 
 // DefaultTimeout is every handler's own deadline (Swift HandlerTimeout's 30 s):
 // ample for a write waiting on the database lock or a delivery's pause.

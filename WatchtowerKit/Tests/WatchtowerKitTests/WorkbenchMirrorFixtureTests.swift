@@ -265,8 +265,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(request.summaryClipped)
         XCTAssertEqual(request.createdAt, t0)
         XCTAssertEqual(
-            ActionReason.allCases.suffix(3).map(\.rawValue),
-            ["not_pending", "not_working", "answer_on_mac"]
+            ActionReason.allCases.suffix(4).map(\.rawValue),
+            ["not_pending", "not_working", "answer_on_mac", "not_supported"]
         )
     }
 

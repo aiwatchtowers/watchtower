@@ -128,10 +128,12 @@ type tryResult struct {
 // `session_finish_request` (the session id; FinishLine) and
 // `session_input_cancel` (entity the original action's id), PROJ-16: a line
 // goes only from a device the owner allowed to type, only to a live board
-// claude session, and only through session-host's typed-never-submitted
-// Deliver with HoldIfPromptText. Right before every paste the agent must be
-// idle for the current run or working (a Claude session queues a line typed
-// mid-turn; the echo then says while_busy), never at a permission prompt and
+// agent session whose capability row has PhoneInput (another kind is
+// refused not_supported, a deleted one not_found), and only through
+// session-host's typed-never-submitted Deliver with HoldIfPromptText. Right
+// before every paste the agent must be idle for the current run or working
+// (Claude Code and Codex take a line pasted mid-turn at their next step; the
+// echo then says while_busy), never at a permission prompt and
 // never right after a submit until a hook reported; otherwise the line is
 // held (agent_busy, needs_approval, prompt_has_text — the host's answer —,
 // state_unknown), kept in the sidecar, retried on each read of the session
@@ -206,8 +208,11 @@ func (h *Handlers) sendLine(ctx context.Context, r actions.Request, commit func(
 	if err != nil {
 		return failed(reasonWriteFailed, "Could not read the session: "+err.Error())
 	}
-	if !onBoard || kind != "claude" {
+	if !onBoard {
 		return failed(reasonNotFound, sessionGoneMessage)
+	}
+	if !sessionCaps(kind).PhoneInput {
+		return notSupported(notSupportedInputFormat, kind)
 	}
 	l := phoneLine{req: r, sessionID: sessionID, line: line}
 	res := h.tryLine(ctx, l, nil)

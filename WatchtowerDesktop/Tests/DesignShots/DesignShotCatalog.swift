@@ -68,6 +68,12 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
                 AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
             },
+            DesignShot(name: "workchat-hold-caption", size: NSSize(width: 560, height: 0)) {
+                AnyView(SessionCapsShotFixtures.workchatHoldCaption().shotFrame().detailBackground())
+            },
+            DesignShot(name: "settings-notifications-idle-caption", size: NSSize(width: 620, height: 240)) {
+                AnyView(SessionCapsShotFixtures.notificationSettings().shotFrame().panelBackground())
+            },
             DesignShot(name: "workchat-activity-busy", size: NSSize(width: 720, height: 400)) {
                 AnyView(WorkchatLiveProposalShot(model: .busy, narrow: false, agentsOpen: false))
             },

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/hubtest"
@@ -237,7 +238,7 @@ func (le *lineEnv) liveSession() int64 {
 func (le *lineEnv) agentSession(kind string) int64 {
 	le.t.Helper()
 	var agentID any
-	if kind == "claude" {
+	if kind == "claude" || kind == "codex" {
 		agentID = "00000000-0000-4000-8000-0000000000" + strconv.Itoa(10+le.seq)
 		le.seq++
 	}
@@ -475,9 +476,10 @@ func TestProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt(t *testing.T) {
 	wantPastes(t, le, "Also update the changelog")
 }
 
-// Send while busy is Claude only: a Codex session is refused before any line
-// check, and nothing types.
-func TestProj16_AWorkingCodexSessionStillHoldsTheLine(t *testing.T) {
+// Codex takes a line pasted mid-turn at its next step, as Claude Code does
+// (G7 spike (a), codex 0.159.2): a working Codex session gets the line, sent
+// while busy, and never one at a permission prompt.
+func TestProj16_AWorkingCodexSessionTakesTheLineButNeverAPrompt(t *testing.T) {
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")
 	le.lp.start(sid)
@@ -485,7 +487,52 @@ func TestProj16_AWorkingCodexSessionStillHoldsTheLine(t *testing.T) {
 
 	out := le.send(le.h, le.input(sid, "Also update the changelog"))
 
+	wantLine(t, out, deliverySubmitted, true)
+	wantPastes(t, le, "Also update the changelog")
+
+	le.setStateAt(sid, "needs_approval", le.clock.Now().Add(30*time.Second))
+	next := le.send(le.h, le.input(sid, "and the readme"))
+
+	wantOutcome(t, next, wire.StatusHeld, inputReasonNeedsApproval)
+	wantPastes(t, le, "Also update the changelog")
+}
+
+// A board session whose agent takes no phone input is refused not_supported
+// with the owner-readable message, never "no longer exists" (S4, PROJ-16
+// amended): nothing types, nothing is held.
+func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
+	withSessionCaps(t, "codex", agentkind.SessionCaps{})
+	le := newLineEnv(t)
+	sid := le.agentSession("codex")
+	le.lp.start(sid)
+	le.setState(sid, "stopped")
+
+	for _, r := range []actions.Request{le.input(sid, "Also update the changelog"), le.finish(sid)} {
+		out := le.send(le.h, r)
+		wantOutcome(t, out, wire.StatusFailed, reasonNotSupported)
+		if want := "Codex sessions can't take messages from the phone yet. Type it on the Mac."; out.Message != want {
+			t.Fatalf("message = %q, want %q", out.Message, want)
+		}
+	}
+	wantPastes(t, le)
+	if n := le.heldRows(); n != 0 {
+		t.Fatalf("held rows = %d", n)
+	}
+}
+
+// not_found keeps its meaning: a session id with no board row (deleted) is
+// still "no longer exists on the Mac", whatever the capability table says.
+func TestProj16_DeletedSessionStillNotFound(t *testing.T) {
+	le := newLineEnv(t)
+	sid := le.agentSession("codex")
+	le.exec(`DELETE FROM terminal_sessions WHERE id = ?`, sid)
+
+	out := le.send(le.h, le.input(sid, "Hello"))
+
 	wantOutcome(t, out, wire.StatusFailed, reasonNotFound)
+	if out.Message != sessionGoneMessage {
+		t.Fatalf("message = %q, want %q", out.Message, sessionGoneMessage)
+	}
 	wantPastes(t, le)
 }
 

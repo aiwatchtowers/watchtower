@@ -185,7 +185,12 @@ final class SessionInputSender {
 
 /// The workchat's input (spec §5.4, §6.6, PROJ-16): the composer and Finish
 /// show only on a phone whose typing the Mac allowed and whose own toggle
-/// is on, for a live Claude session (the Mac refuses any other agent's). A session at a permission prompt takes
+/// is on, for a live Claude session. A Mac since plan 2026-11-05 Task G7
+/// also takes Codex lines, but an older Mac refuses them, and the session
+/// record does not yet say which Mac this is (A5 publishes the capability):
+/// a Codex session keeps "Write to Codex sessions on the Mac.". A line the
+/// Mac refused shows the Mac's message, whatever its reason (U5: an older
+/// phone reads `not_supported` that way). A session at a permission prompt takes
 /// nothing from the phone: "Needs approval on the Mac" (or "Answer the
 /// request above" when the screen's permission card takes this phone's
 /// answer, #517), no send. Each line on its way shows how far the Mac got,
@@ -201,7 +206,7 @@ struct SessionInputModel: Equatable {
         case turnOn
         /// Asked; the Mac has not allowed it yet.
         case waitingForMac
-        /// Not a Claude session: the Mac takes phone lines and Finish for Claude sessions only (PROJ-16).
+        /// Not a Claude session: this phone sends lines and Finish to Claude sessions only (PROJ-16).
         case macOnly(TerminalSessionState.Agent)
 
         var text: String {
