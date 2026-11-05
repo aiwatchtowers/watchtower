@@ -1,5 +1,7 @@
 # Headless host
 
+Relay isn't in the current version of Watchtower for iPhone, and a headless host links a phone only over Relay.
+
 A headless host runs your workbenches on a Linux box or on a Mac without the Watchtower app, and you drive them from your iPhone. It is for a small always-on machine, like a Raspberry Pi on a shelf, that has no screen and no Watchtower window.
 
 ## Why use it

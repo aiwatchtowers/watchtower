@@ -10,22 +10,20 @@ You leave the Mac while a session works. When it asks a question, needs a permis
 ## How it works
 <!-- learn: none -->
 
-Your Mac decides when to alert, and only while you are away from it. Its alert travels the way the phone syncs: through iCloud, or over Relay when the Mac runs over Relay.
+Your Mac decides when to alert, and only while you are away from it. Its alert travels the way the phone syncs.
 
 ### Alerts over Relay
-<!-- learn
-id: iphone-alerts-relay
-title: Get work alerts over Relay
-text: On a Mac that runs over Relay, alerts reach your subscribed iPhone as encrypted pushes.
-area: iphone
-level: next
-kind: feature
-since: next
--->
+<!-- learn: none -->
+
+Relay isn't in the current version of Watchtower for iPhone.
 
 When your Mac runs over Relay, each alert is pushed through the relay to every linked phone with a Relay subscription, once per phone. The push is sealed: the relay and Apple see only the word **Watchtower**, and the phone opens the title and text itself.
 
 A phone gets these pushes only after Watchtower was opened on it once. Very long text is shortened in the push; the ask itself stays complete. An alert that cannot be sent within 5 minutes is dropped rather than arriving late, and none is sent once you are back at the Mac.
+
+Turning **When work stops** off on the phone asks the Mac to stop sending it these pushes, because the relay's push address also carries the phone's silent updates and the phone can't drop one without the other. A Mac switch from Relay to iCloud can bring one alert twice.
+
+If the Mac shows "Relay has no notifications configured.", the relay this Mac uses cannot send pushes; the ask or the stopped session still shows in the app. A phone without a Relay subscription gets no alerts while the Mac runs over Relay, and no updates at all: see [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md). More on [iPhone: Relay](iphone-relay.md).
 
 ## Using it
 
@@ -57,8 +55,6 @@ An alert leaves Notification Center once there is nothing left to do: the ask wa
 
 - **No alerts while you sit at the Mac.** By design: alerts come only while you are away from it.
 - **The Mac shows "Notifications aren't set up on this iPhone. Open Watchtower on it once."** under a phone in Settings → **Mobile**. Open Watchtower on that iPhone once; the next alert reaches it.
-- **The Mac shows "Relay has no notifications configured."** The relay this Mac uses cannot send pushes. The ask or the stopped session still shows in the app.
-- **No alerts on a phone without a Relay subscription** while the Mac runs over Relay. That phone gets no updates at all; see [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 
 ## Related
 

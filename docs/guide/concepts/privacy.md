@@ -88,7 +88,7 @@ When it is on, your Mac publishes a trimmed view of its data to your own iCloud 
 
 It is end-to-end encrypted.
 
-Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. Over Relay, the same sealed records go through the relay, and a work alert reaches the phone as a push that carries only an encrypted envelope: the relay and Apple's push service see the word **Watchtower**, never the alert's title or text. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`. An older version kept them in the Keychain; the update moves them into that file and then deletes the Keychain items.
+Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. Relay isn't in the current version of Watchtower for iPhone. Over Relay, the same sealed records go through the relay, and a work alert reaches the phone as a push that carries only an encrypted envelope: the relay and Apple's push service see the word **Watchtower**, never the alert's title or text. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`. An older version kept them in the Keychain; the update moves them into that file and then deletes the Keychain items.
 
 **Diagnostics** in **Settings → Mobile** shows how long the Mac took to apply phone actions. Those timings hold no content, are kept for 7 days on the Mac and never leave it.
 

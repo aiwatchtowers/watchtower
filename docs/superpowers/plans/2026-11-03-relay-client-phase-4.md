@@ -145,7 +145,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | G3, the duplicate alert at a switch: fixed or accepted (Open decision 10) | Go hub session, owner's ruling |
 | G4, a `push_off` alert at a switch to iCloud: checked, and fixed or accepted | Go hub session, owner's ruling |
 | #1537, a hello lost on a failed owner read: fixed | Go hub session |
-| The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together**, pinned by the `device_payload` fixture case on both sides | Go hub session, approved by name in Open decision 1 |
+| The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together.** The same change moves the fixture case `work_alerts_off` from `device_payload_kit_only` into `device_payload` in `hub_contract_cases.json`, adds it to the exact-name list in `HubContractFixtureTests` and points `testDevicePayloadWorkAlertsOff` at the new section, so `device_payload` pins it on both sides | Go hub session, approved by name in Open decision 1 |
 | The Learn cards `iphone-relay-subscribe` and `iphone-alerts-relay`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
@@ -164,7 +164,7 @@ Each task's `Depends on:` is the exact list. Each parallel lane runs in its own 
 | Target | Tasks |
 |---|---|
 | #1243 subscription, transfer, `entitlement_expired` → CloudKit, the transport and subscription screens | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 17 |
-| #1244 relay pushes | 11, 12, 13, 18 |
+| #1244 relay pushes | 11, 12, 13, 18, 19 |
 | #1246 latency samples | 14, 15 |
 
 Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; their commit messages name all three.
@@ -180,7 +180,7 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 **Files:**
 - Modify: `docs/design/mockups/relay-client/index.html`: a new section "8. iPhone — Phase 4 states", neutral names only. Sections 3–6 stay; where a new frame replaces one, the old frame says "see 8.x".
 
-**States.** Each frame in light and dark, plus the narrow variant of the longest text. The shot numbers are fixed here and used by Tasks 7–10 and 15.
+**States.** Each frame in light and dark, plus the narrow variant of the longest text. The shot numbers are fixed here and used by Tasks 7–10 and 15. The `b` and `c` frames and S57 were added during execution, each by the task that found the state (Tasks 8, 9, 10, 15).
 
 | Screen | State | Text (new unless marked "mockup") | Shot |
 |---|---|---|---|
@@ -199,6 +199,7 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 | | Free phone | Relay row "Subscribe to use Relay" › opens the subscription | S10 |
 | | Too soon (mockup) | "Switching to Relay is possible again in 4 min"; "The Mac was switched less than 5 minutes ago." | S11 |
 | | Mac needs an update (mockup) | "Update Watchtower on this Mac to use Relay" | S12 |
+| | Mac reads no ordered actions, Relay route | iCloud row disabled, "Update Watchtower on Work Mac to change how it connects." | S12b |
 | | Relay-only hub | Relay row only, "This hub works over Relay only"; on a lapse "This hub needs Relay" (spec §8) | S13 |
 | | The relay gave no answer, iCloud route | Relay row disabled, "Couldn't reach Relay." | S54 |
 | | Purchase not confirmed | Relay row "Your purchase isn't confirmed yet." › opens the subscription | S56 |
@@ -210,6 +211,7 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 | | Busy, toward iCloud | "Switching to iCloud…" | S17 |
 | | Error with Try Again | a `RelayUpgradeRefusal.message` line (Phase 3b texts unchanged) with **Try Again** | S18 |
 | | Loading | the rows disabled with "Checking…" while the account is read | S19 |
+| | Loading on a Relay route | both rows "Checking…", the check on Relay, iCloud greyed: the press waits for the read | S19b |
 | | Empty | Not reachable: the screen exists only for a linked Mac, and only with an available relay (no frame without the section: the row opens nothing then) | note |
 | | Narrow | S16's text | S16 narrow |
 | Subscription | Loaded (mockup, the price from StoreKit) | "Changes reach your phone in under a second instead of tens of seconds." (mockup); the three bullets; "Subscribe — <price> / month"; **Restore Purchases** · **Terms** · **Privacy** | S20 |
@@ -219,6 +221,9 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 | | Busy, confirming | "Confirming with Relay…" | S24 |
 | | Busy, restoring | "Restoring…" | S44 |
 | | No subscription found | "No subscription found on this Apple ID." | S45 |
+| | No subscription found, no price | the same line, **Load the Price** | S45b |
+| | The App Store call failed | "The App Store didn't finish. Nothing changed; you can try again." **Subscribe** | S57 |
+| | The same, no price | the same line, **Load the Price** | S57b |
 | | Relay account failed, nothing charged | "Couldn't reach Relay. You weren't charged." **Try Again** | S46 |
 | | Pending | "Waiting for approval. Relay turns on when it's approved." | S25 |
 | | Bought, relay not reached | "You're subscribed. Relay turns on as soon as Watchtower reaches it." **Try Again** | S26 |
@@ -237,10 +242,16 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 | | Relay unavailable, past 10 min (mockup) | the same with **Switch Work Mac to iCloud** | S32 |
 | | Moved (mockup) | "Your Relay subscription moved to another iPhone. This iPhone is back on iCloud." **Restore Purchases** **OK** | S33 |
 | | Ended | "Your Relay subscription ended. This iPhone is back on iCloud." **Subscribe** **OK** | S34 |
+| | Ended, the Mac not moved yet (text pending ask #1040) | "Your Relay subscription ended. Work Mac moves to iCloud when it's back." **Subscribe** **OK** | S34b |
+| | Ended, the Mac refused | "Your Relay subscription ended." a refusal line, **Switch Work Mac to iCloud** **Subscribe** **OK** | S34c |
+| | Moved, the Mac not moved yet | "Your subscription moved to another iPhone." **Restore Purchases** **OK** | S41b |
+| | Moved, the Mac refused | the same line, a refusal line, **Switch Work Mac to iCloud** **Restore Purchases** **OK** | S41c |
 | | Update the app (mockup) | "Update Watchtower from the App Store to keep using Relay." | S35 |
 | | Busy, after the press | "Switching to iCloud…" | S36 |
+| | Busy, the relay answers again | "Switching to iCloud…" alone | S36b |
 | | Error with Try Again | the request's refusal line under the outage text, **Switch Work Mac to iCloud** again | S50 |
 | Diagnostics | Rows (mockup, plus the Mac's-answer line) | "Action → result on screen · 7 days"; "Relay" "214 actions" "p50 0.31 s · p90 0.7 s"; "Mac's answer: p50 0.12 s · p90 0.3 s"; "Measured on this iPhone only. Nothing is sent anywhere."; the Battery section | S37 |
+| | Rows, iCloud only (the Release build) | "iCloud" "214 actions" and the result lines; no Relay word | S37b |
 | | Empty | "No timings yet. They appear after your first action." | S38 |
 | | Empty, no linked Mac on the new action path | "Timings need an updated Watchtower on your Mac." | S48 |
 | | Loading | "Reading timings…" | S39 |
@@ -984,6 +995,16 @@ The session is rebuilt at a move (`AppRoot.performRouteMove`), with a registrar 
 
 ---
 
+### Task 19: A push launch opens no socket until the first activation (added during execution, board #1559)
+
+**Depends on:** Task 18
+
+Not in the approved plan: Task 13's review found that a push launch opened a relay socket, predating this phase (#1240, #1241). Decided by the agent, pending ask #1040 (the list).
+
+**Files:** `WatchtowerMobile/Sources/App/Hubs/HubSession.swift`, `WatchtowerMobile/Tests/PushLaunchSocketTests.swift`, `docs/features/relay-client.md`.
+
+**Behaviour:** a session booted in the background on a relay route does not call `start()`, so it wants no socket; `fetchForPush` goes over HTTPS, logging in when it must; the first `setActive(true)` starts the transport once. A push fetch that brought nothing while the relay is held is `.failed`. CloudKit routes are unchanged. A cold tap launch can read a non-active state at boot, so it may connect at activation rather than in the boot, with no path leaving a person with no socket.
+
 ## #1246 — Latency samples
 
 ### Task 14: Stamps and storage
@@ -1133,22 +1154,22 @@ struct LatencyDiagnosticsModel: Equatable {
 - [ ] **Step 6a: Signed Release archive:** `make mobile-archive > "${TMPDIR:-/tmp}/p4-archive.log" 2>&1; echo "exit=$?"` with the owner's `Signing.xcconfig`. CI is unsigned and cannot see this. A signing failure naming App Attest before the portal step is the expected result: record it in the PR body. **Pre-main condition:** `feature/relay-client-next` does not merge into main until this command gives `exit=0` (owner-only step 3, Open decision 2).
 - [ ] **Step 6b: Launch conditions:** copy the section's table into the PR body with each row's state.
 - [ ] **Step 7: Interop** (local, recorded in the PR description): `make relay-interop-kit RELAY=…`, `make relay-interop-kit-hub RELAY=…`, `make relay-interop-kit-hub RELAY=… RELAY_INTEROP_DESKTOP=1`, with a clean relay worktree at the `VERSION` commit. The third run's step 8 exercises the lapse the policy now decides (Task 3). The stand has no App Store or APNs, so purchases and pushes stay manual.
-- [ ] **Step 8: Shots:** `make mobile-shots SIM='iPhone 17 Pro'`. Compare S01–S56 with mockup section 8 in light, dark and narrow; list every difference in the PR description.
+- [ ] **Step 8: Shots:** `make mobile-shots SIM='iPhone 17 Pro'`. Compare S01–S57, with the frames S12b, S19b, S34b, S34c, S36b, S37b, S41b, S41c, S45b and S57b, with mockup section 8 in light, dark and narrow; list every difference in the PR description.
 - [ ] **Step 9: Commit** gate fixes, if any: `fix: relay client Phase 4 gate (#1243, #1244, #1246)`. The PR into `feature/relay-client-next` carries the manual checks below, unrun.
 
 ## Manual checks for the PR bodies (Open decision 14)
 
 They need what only the owner can provide (see "Owner-only steps") or a physical iPhone; staging with APNs and an App Store sandbox.
 
-- **M1. Buying.** A sandbox purchase on a device against staging: the price from App Store Connect, the subscription active, the card "Active".
+- **M1. Buying.** A sandbox purchase on a device against staging: the price from App Store Connect, the subscription active, the card "Active". A second buy in a paid period charges nothing, in the sandbox (proven only under StoreKit Testing so far).
 - **M2. A real App Attest.** The first `register`/`login` with attestation on (spec §4), including on `TestFlight` (production environment).
 - **M3. Moving.** Restore Purchases on a second iPhone: the first says "moved" and falls back to iCloud; the new one re-links by QR; at most 3 moves in 30 days.
-- **M4. A silent push on a locked phone** (after the first unlock) wakes the app and the background login's assertion succeeds; the replica has the change on next open.
+- **M4. A silent push on a locked phone** (after the first unlock) wakes the app and the background login's assertion succeeds on `fetchForPush`'s path; the replica has the change on next open. Count sockets on a locked launch: none until the first activation (Task 19).
 - **M5. An ask alert.** With the app killed, the alert shows its real title and body; a tap opens the ask; resolving the ask removes the notification.
 - **M6. A lapse.** A sandbox subscription expiring (accelerated renewal): the phone and the Mac return to iCloud; unechoed actions resent or listed; Subscribe works again.
 - **M7. Relay unavailable.** Block the relay host: the banner at 60 s, the offer at 10 min, Switch to iCloud reaching the Mac.
 - **M8. The goal.** Settings → Diagnostics on a good network: Relay p50 under 500 ms.
-- **M9. Confirmations** that shots cannot capture on iOS 26 (Forget This Mac, Cancel Link).
+- **M9. Confirmations and screens** that shots cannot capture on iOS 26 or the demo hides: Forget This Mac's layout and confirmation, Cancel Link; the banners' subscription sheet and its **Close**; **Manage Subscription** opens Apple's subscriptions page (`https://apps.apple.com/account/subscriptions`).
 - **M10. Xcode-signed builds:** `WTPushEnvironment` matches the signed `aps-environment`; a mismatch shows Desktop's no-token line.
 
 ## Decisions
@@ -1159,7 +1180,7 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 |---|---|
 | Hub-side parts (indicators, `send_alert`, hub samples) are the Go hub's; gaps listed, no tasks here | ask #802 |
 | PRs target `feature/relay-client-next` | ask #958 |
-| Phase 4 merges without a device check | proposed, Open decision 14. Ask #884 answered this for Phase 1 and "без проверки мержи" for 0a; neither names Phase 4 |
+| Phase 4 merges without a device check | ask #1038, Open decision 14. Ask #884 answered this for Phase 1 and "без проверки мержи" for 0a; neither names Phase 4 |
 | Ships dark, with no Release origin | ask #904 (Owner approval 1, Phase 3) |
 | A proven relay-id record moves the id from another hub row; handled separately and treated as done here | ask #1005 |
 | The hello's relay-id proof is deferred | ask #980 (3b decision 6); before launch: Open decision 13 |
@@ -1201,8 +1222,31 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | A failed replica fails the Diagnostics read | decided by the agent |
 | Legacy actions are not timed, and Diagnostics says to update the Mac | decided by the agent |
 | Now shows one banner at most, in a fixed order | decided by the agent; Open decision 17 |
+| An upgrade running when the subscription lapses is refused by the hub (`not_paying`) and shows Phase 3b's refusal; the superseding path looks unreachable on an iCloud route | decided by the agent, Task 5; pending ask #1040 (the list) |
+| A store failure is `PurchaseState.storeFailed`, S57, "The App Store didn't finish. Nothing changed; you can try again."; a cancelled sign-in is not a failure | decided by the agent, Task 6; pending ask #1040 (the list) |
+| The center's first pass runs from `foreground()`, not `start()`, so a push launch stays frugal | decided by the agent, Task 6, amends its brief's "at launch and each foreground"; pending ask #1040 (the list) |
+| An expiry control and `.entitlementInactive` sweep before they read, so an unsent renewal cannot lapse Macs | decided by the agent, Task 6; pending ask #1040 (the list) |
+| A paying read corrects an expiry control, so no lapse; a failed read after a control still lapses | decided by the agent, Task 6's review, amends its brief's "refresh, then lapse"; pending ask #1040 (the list) |
+| A non-nil `unconfirmed` wins over `.storeFailed`, `.pending`, `.noSubscriptionFound` and `.accountFailed`, so a charged owner never reads false text | decided by the agent, Tasks 6 and 9, overrides their "What shows"; pending ask #1040 (the list) |
+| `updateRequired` stops a sale, not an answer: it overrides `.idle`, `.loadingProduct`, `.ready`, `.productFailed`, `.storeFailed`, `.noSubscriptionFound`, `.accountFailed`; S43 shows with no press and no `unconfirmed`; order: running press, paying, unconfirmed, latch, result | decided by the agent, Task 9, corrected in its fix round; pending ask #1040 (the list) |
+| A retry on a result with no price reads **Load the Price** (S45b, S57b) | decided by the agent, Task 9; pending ask #1040 (the list) |
+| An iCloud row with no `ordered_actions` on a relay route is disabled and reuses `.notOrdered`'s text (S12b), replacing a first ruling's new string | decided by the agent, Task 8; pending ask #1040 (the list) |
+| The registrar's foreground gate stands against the spec's "at every launch": a token waits for the next open | decided by the agent, Task 13; pending ask #1040 (the list) |
+| `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case | decided by the agent, Task 13; the move is in Launch conditions; pending ask #1040 (the list) |
+| A push launch opens no socket until the first activation: new Task 19; a tap launch can connect at activation rather than in the boot | decided by the agent, Tasks 13 and 19; pending ask #1040 (the list) |
+| `AlertSubscriptionRegistrar.idle()` is capped at 10 s, like `outboxDrainCap`, against its brief's "no cap": a hung CloudKit call must not leave a stopped session with no error | decided by the agent, Task 18; pending ask #1040 (the list) |
+| New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again | decided by the agent, Task 10; pending ask #1040 (the list) |
+| Now's banner is a plain card, not the mockup's amber, because orange means waiting for you (`PhoneTone`, `OrangeToneTests`) | decided by the agent, Task 10; pending ask #1040 (owner rules on it by name) |
+| S34b's text: "Your Relay subscription ended. Work Mac moves to iCloud when it's back." with **Subscribe** **OK** | decided by the agent, Task 10; pending ask #1040 (owner rules on it by name) |
+| Task 5 starts beside Task 4's investigation, off next | decided by the agent, execution order only |
+| Tasks 6 and 14 start before Tasks 2, 4 and 5 clear CI, on branches built from their reviewed heads | decided by the agent, execution order only |
+| Tasks 7 and 13 run in parallel off Task 6; Tasks 9 and 15 run in parallel, on separate simulators | decided by the agent, execution order only |
+| S01's chevron, the card's button trait and `lineRow`'s Spacer wrap go to Task 8, which edits the same file | decided by the agent, execution order only |
+| Every one of the 19 Open decisions below on its recommended option | ask #1038 |
 
 ## Open decisions for the owner
+
+**Answered:** ask #1038 approved all 19 on their recommended options. Open decision 3's price stays with the owner, in App Store Connect. Ask #1040 is open on the banner's colour, the S34b text and the list of the agent's decisions above.
 
 Each is a proposal with a recommended option. Approving the plan accepts each recommendation; a comment on the approval overrides that decision. Anything raised later goes into its own ask before that task's review. Each Alternative or "Refused" says what changes if it is not taken, and in which task.
 
