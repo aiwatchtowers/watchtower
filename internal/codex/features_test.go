@@ -111,6 +111,7 @@ func TestDisabledFeatures_EveryRunTurnsThemOff(t *testing.T) {
 	}
 	for name, args := range runs {
 		require.NotEmpty(t, args, name)
+		assert.True(t, hasConfig(args, hideSkillListArg), "%s: the owner's skill list must stay out of the context", name)
 		readsFolder := name == "read folder" || name == "spec review"
 		hasTools := name != "batch" && name != "image"
 		for _, f := range disabledFeatures {
@@ -218,4 +219,75 @@ func markUndecided(t *testing.T, flags map[string]string) {
 	slices.Sort(lines)
 	out := strings.Join(append(header, lines...), "\n") + "\n"
 	require.NoError(t, os.WriteFile(featuresSnapshot, []byte(out), 0o644))
+}
+
+// TestDisabledFeatures_LiveSkillListHidden checks with the installed codex
+// CLI (opt-in with the feature check, never in CI) that a run's flags keep
+// the owner's skill list out of the model's context: `codex debug
+// prompt-input` (local, no model call) renders the prompt of a folder whose
+// home, CODEX_HOME and repository each hold a probe skill, once without and
+// once with the production `-c` flags of a tool run and a read-folder run.
+func TestDisabledFeatures_LiveSkillListHidden(t *testing.T) {
+	if os.Getenv(liveFeaturesEnv) == "" {
+		t.Skipf("set %s=check to run against the installed codex CLI", liveFeaturesEnv)
+	}
+	bin := FindBinary("")
+	require.NotEmpty(t, bin, "codex CLI not found")
+	home, codexHome, repo := t.TempDir(), t.TempDir(), t.TempDir()
+	probes := map[string]string{
+		"probe-home-skill-wt":      filepath.Join(home, ".agents", "skills"),
+		"probe-codexhome-skill-wt": filepath.Join(codexHome, "skills"),
+		"probe-repo-skill-wt":      filepath.Join(repo, ".agents", "skills"),
+	}
+	for name, root := range probes {
+		dir := filepath.Join(root, name)
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		body := "---\nname: " + name + "\ndescription: Probe skill " + name + ".\n---\nProbe.\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o600))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(repo, ".git"), 0o700))
+	env := append(os.Environ(), "HOME="+home, "CODEX_HOME="+codexHome, "PATH="+RichPATH())
+
+	render := func(configs []string) string {
+		args := append([]string{"debug", "prompt-input"}, configs...)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, append(args, "hi")...)
+		cmd.Dir, cmd.Env = repo, env
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+		out, err := cmd.Output()
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		require.NoError(t, err, "codex debug prompt-input")
+		return string(out)
+	}
+	// Only the -c pairs: prompt-input takes no exec flags.
+	configsOf := func(args []string) []string {
+		var out []string
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "-c" {
+				out = append(out, "-c", args[i+1])
+			}
+		}
+		return out
+	}
+
+	bare := render(nil)
+	for name := range probes {
+		require.Contains(t, bare, name, "the probe must be discovered without the flags, or the check proves nothing")
+	}
+	tools := NewClient("m", "", "codex")
+	readFolder := NewClient("m", "", "codex")
+	readFolder.SetReadFolder(repo)
+	for run, args := range map[string][]string{
+		"tools":       tools.execArgs(),
+		"read folder": readFolder.execArgs(),
+	} {
+		got := render(configsOf(args))
+		for name := range probes {
+			assert.NotContains(t, got, name, "%s run: skill %s reached the context", run, name)
+		}
+	}
 }
