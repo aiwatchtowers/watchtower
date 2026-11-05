@@ -433,7 +433,7 @@ final class AppRoot {
         let requester = TransportRequester(session: session, follower: follower, host: self, now: upgradeClock)
         session.attach(requester)
         session.transportSignals.onRejection = { control in
-            if requester.hasOpenRequest { return requester.rejected(control) }
+            if requester.awaitsAnswer { return requester.rejected(control) }
             return await upgrader.rejected(control)
         }
         // The mailbox on the hub's other transport (Task 12), only for a hub with both routes.

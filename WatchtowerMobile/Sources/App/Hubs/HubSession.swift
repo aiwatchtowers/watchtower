@@ -1448,6 +1448,12 @@ final class HubSession {
         await transportRequester?.lapse()
     }
 
+    /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared, so
+    /// the Mac does not move behind the phone's back and a later lapse asks anew. An owner's request is left alone.
+    func lapseEnded() async {
+        await transportRequester?.lapseEnded()
+    }
+
     /// The request toward iCloud, or the end it came to, as the hub's row holds it.
     var transportRequest: TransportRequestRecord? { transportRequester?.record }
 

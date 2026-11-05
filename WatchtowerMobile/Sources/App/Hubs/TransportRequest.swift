@@ -51,7 +51,7 @@ struct TransportRequestRecord: Codable, Equatable, Sendable {
     var controlID: String
     /// The hub's own word for a move that spares its other phones (`TransportFollowerPolicy.lapseReason`); nil for a
     /// plain request.
-    var reason: String?
+    let reason: String?
     /// When the request started (the 24 h limit counts from it).
     let at: Date
     /// The sealed copy is in the iCloud mailbox (the way past a relay that refuses writes).
@@ -188,6 +188,19 @@ final class TransportRequester {
         _ = await follower.handle(.relayLapsed)
     }
 
+    /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared. An
+    /// owner's request is left alone. While a lapse's refusal stays on the record, a later lapse notice asks nothing
+    /// new, so Task 6 calls this (`HubSession.lapseEnded()`) when the entitlement returns.
+    func lapseEnded() async {
+        _ = await run {
+            guard let host = self.host, let link = host.followerLink(hubID: self.hubID),
+                  let request = link.transportRequest, request.reason == TransportFollowerPolicy.lapseReason,
+                  self.update(request, { $0.transportRequest = nil }) != nil else { return .underWay }
+            await self.withdraw(request, link: link)
+            return .underWay
+        }
+    }
+
     /// The follower's `requestSwitch`: only a move to iCloud exists.
     private func requested(_ target: TransportKind, reason: String) async {
         guard target == .cloudKit else { return }
@@ -229,6 +242,11 @@ final class TransportRequester {
         record?.isOpen == true
     }
 
+    /// The hub may still answer: open, or a lapse's copy kept after its day. A rejection then belongs to the request.
+    var awaitsAnswer: Bool {
+        record?.awaitsAnswer == true
+    }
+
     /// `work` after the ones started before it.
     private func run(_ work: @escaping @MainActor () async -> TransportRequestOutcome) async -> TransportRequestOutcome {
         let previous = last
@@ -250,7 +268,7 @@ final class TransportRequester {
     /// open (the rejection is an upgrade's: `hasOpenRequest` says so first); false when the row could not be written
     /// (the feed hands it again).
     func rejected(_ control: ControlPayload) -> Bool {
-        guard let host, let link = host.followerLink(hubID: hubID), let request = link.transportRequest, request.isOpen else {
+        guard let host, let link = host.followerLink(hubID: hubID), let request = link.transportRequest, request.awaitsAnswer else {
             return false
         }
         var next = request
@@ -264,7 +282,8 @@ final class TransportRequester {
             if control.reason != RelayUpgrade.unavailable {
                 Self.logger.notice("transport_switch_rejected with a reason this build does not know: read as unavailable")
             }
-            if request.askedAgain {
+            if request.askedAgain || !request.isOpen {
+                // A lapse's kept copy answered after its day: no further automatic request, the refusal is the answer.
                 next.refusal = .unavailable
             } else {
                 next.retryAt = now().addingTimeInterval(TimeInterval(control.retryAfterS ?? 0))
@@ -295,11 +314,6 @@ final class TransportRequester {
                 // The notice repeats at every refusal; a closed answer stays closed until the owner presses Try Again.
                 return .refused(existing.refusal ?? .unavailable)
             }
-            if existing.isOpen {
-                // A lapse joins an owner's plain request: it must carry the lapse's reason (and keep its copy), so the
-                // plain one is withdrawn and the lapse asks in its place.
-                await withdraw(existing, link: link)
-            }
         }
         do {
             guard try await session.outbox.orderedActions() else { return .refused(.notOrdered) }
@@ -310,6 +324,11 @@ final class TransportRequester {
             // A relay-only hub has no iCloud to go to: it needs Relay (the screens say so).
             Self.logger.notice("a lapse on a hub that offers only the relay asks nothing")
             return .refused(.notSupported)
+        }
+        if let existing = link.transportRequest, existing.isOpen {
+            // A lapse joins an owner's plain request: it must carry the lapse's reason (and keep its copy), so the
+            // plain one is withdrawn and the lapse asks in its place (only once the checks above passed).
+            await withdraw(existing, link: link)
         }
         // Read again after the await: an unlink, a move or another press meanwhile wins.
         guard !stopped, var current = host.followerLink(hubID: hubID), current.transport == .relay,
