@@ -358,6 +358,13 @@ Approved in ask #451 (the owner approved every item):
 - **INBOX-05** (amend Observable): the Learned Rules pane is reached from the root folder's ⋯ instead of the strip's ⋯; the store, its readers and writers are unchanged. Guards unchanged.
 - **New entries** (each a new principle, so its own number; approved in ask #451): **FOLDER-01 — Deleting a folder never deletes content** (children, routes and artifacts move to the parent; guard `TestFolder01_DeleteMovesContentsUp`); **APPROVAL-01 — An open approval is always on screen, a closed one never** (native fallback when the recipe is off, failed, behind or capped; render-time check; guards `test_APPROVAL_01_native_card_when_recipe_off`, `…_when_behind`, `…_closed_never_drawn`).
 
+**Summary by entry** (the plan's **Contracts touched** table carries the task and the guard names for each):
+
+- New: FOLDER-01, APPROVAL-01.
+- Amended: STRIP-01 (built-in wording, filter wording, Reply narrowing), STRIP-02, STRIP-03, INBOX-05, AGENT-03, AGENT-07, AGENT-04 (note), AUTO-09 (changelog line), INBOX-02/09 (changelog note).
+- Enforced, guards must stay green: REMIND-01 (guard note on the new `changed` return), AUTO-01, AUTO-04, AUTO-05, AUTO-06, AUTO-08 (read only), AUTO-11, AUTO-12, AGENT-05, IDEA-04, TRACKS-04/07, FEAT-01, FEAT-03, FEAT-04.
+- Unaffected: PROJ-01..22 and every other inventory file.
+
 ### If an item of ask #451 had been refused (historical)
 
 Ask #451 was approved in full, so this table no longer applies; it records the fallbacks considered before the answer. Each row is one amendment in ask #451, refused on its own. Before the answer, a refusal of the STRIP-01 built-in wording or of APPROVAL-01 would have blocked Needs approval and Waiting for me — B's core — and the plan tasks that build them were gated on ask #451 until it was approved; those gates are cleared.
