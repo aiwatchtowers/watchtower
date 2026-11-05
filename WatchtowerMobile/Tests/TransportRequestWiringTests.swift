@@ -623,7 +623,6 @@ final class TransportRequestWiringTests: XCTestCase {
         XCTAssertEqual(kept.map(\.id), [record.controlID], "a lapse's copy stays")
     }
 
-
     // MARK: - Fix round 2
 
     func testARejectionReadOnICloudAfterALapseDayIsHeard() async throws {
