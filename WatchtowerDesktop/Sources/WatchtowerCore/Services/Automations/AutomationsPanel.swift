@@ -59,7 +59,7 @@ package enum AutomationEditorTarget: Hashable, Sendable {
 package enum AutomationEditorStep: String, CaseIterable, Hashable, Sendable {
     case collects
     case look
-    case when
+    case schedule
 }
 
 /// The Automations tab's right panel.
