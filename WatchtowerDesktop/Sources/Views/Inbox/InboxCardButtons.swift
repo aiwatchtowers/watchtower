@@ -4,7 +4,9 @@ import WatchtowerCore
 /// An automation card's two button rows (spec B2): its own actions, the
 /// first one prominent unless it set `primary: false`; then the common row
 /// (`InboxCommonRow`) with Done and Dismiss trailing. An Agent press that
-/// names no one workbench opens a picker anchored to the button.
+/// names no one workbench opens a picker anchored to the button. A card
+/// drawn from blocks draws its own actions with its blocks
+/// (`InboxArtifactCard`) and passes `drawsOwnActions: false`.
 struct InboxCardButtons: View {
     let card: AutomationOutputCard
     /// The screens a `watchtower-nav://` link may open.
@@ -16,6 +18,8 @@ struct InboxCardButtons: View {
     var onDismiss: () -> Void = {}
     /// The workbenches an agent press can go to.
     var workbenches: [Workbench] = []
+    /// False: only the common row (the card's actions are drawn with its blocks).
+    var drawsOwnActions = true
 
     /// An agent press waiting for the owner's workbench: the action's index
     /// (the button it is anchored to) and its task.
@@ -27,7 +31,7 @@ struct InboxCardButtons: View {
     @State private var picking: AgentPick?
 
     var body: some View {
-        let actions = InboxCardAction.decode(card.actionsJSON)
+        let actions = drawsOwnActions ? InboxCardAction.decode(card.actionsJSON) : []
         let reply = InboxCardAction.replyState(card)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             if !actions.isEmpty {
@@ -67,38 +71,14 @@ struct InboxCardButtons: View {
     }
 
     private func press(_ action: InboxCardAction, reply: InboxReplyState) {
-        switch action.kind {
-        case .link(let url):
-            onCommand(.openLink(url))
-        case .chat(let message):
-            onCommand(.chat(InboxCardSubject(card), message: message))
-        case let .agent(task, workbench):
-            // The recipe's task, then the card fenced as data (as Hand to
-            // Agent… sends it): a card can quote anyone.
-            handToAgent(task: InboxCardTexts.agentActionTask(card, task: task), ref: workbench, anchor: action.index)
-        case .reply:
-            // A recipe that cannot run: its card is where it is confirmed or
-            // turned on (spec B3).
-            if reply == .ready {
-                onCommand(.reply(outputID: card.id, action: action.index))
-            } else {
-                onCommand(.openAutomation(card))
-            }
+        switch InboxCardPress.resolve(action, card: card, reply: reply, workbenches: workbenches) {
+        case .command(let command): onCommand(command)
+        case .pick(let task): picking = AgentPick(anchor: action.index, task: task)
         }
     }
 
     private func isDisabled(_ action: InboxCardAction, reply: InboxReplyState) -> Bool {
-        switch action.kind {
-        case .link(let url):
-            return !InboxCardLinkPolicy.permits(url, navScreens: navScreens)
-        case .chat, .agent:
-            return false
-        case .reply:
-            switch reply {
-            case .sent, .removed: return true
-            case .ready, .needsConfirmation, .off, .unreadable: return isWriting
-            }
-        }
+        InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
     }
 
     /// The pressed Reply reads "Sent — run #N"; every other button keeps
@@ -158,20 +138,6 @@ struct InboxCardButtons: View {
 // MARK: - The workbench picker
 
 extension InboxCardButtons {
-    /// The resolved workbench goes out as an id; with none resolved, the
-    /// picker opens, or — no workbench at all — the press goes out as it is
-    /// and `AppState.perform` says why it cannot be handed over.
-    private func handToAgent(task: String, ref: InboxCardAction.WorkbenchRef?, anchor: Int) {
-        switch InboxAgentHandoff.workbench(for: ref, card: card, workbenches: workbenches) {
-        case .workbench(let id):
-            onCommand(.agent(InboxCardSubject(card), task: task, workbench: .id(id)))
-        case .pick where !workbenches.isEmpty:
-            picking = AgentPick(anchor: anchor, task: task)
-        case .pick:
-            onCommand(.agent(InboxCardSubject(card), task: task, workbench: ref))
-        }
-    }
-
     private func isPicking(_ anchor: Int) -> Binding<Bool> {
         Binding(get: { picking?.anchor == anchor }, set: { if !$0 { picking = nil } })
     }

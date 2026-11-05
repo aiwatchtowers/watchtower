@@ -1039,6 +1039,14 @@ final class AutomationEditorCenterTests: XCTestCase {
         )
     }
 
+    /// `artifacts` is hashed (AUTO-06): a feed ↔ living switch reads in words.
+    func testConfirmSheetNamesTheArtifactsChange() {
+        XCTAssertEqual(
+            AutomationChangePresentation.lines([AutomationChange(field: "artifacts", old: "feed", new: "living")],
+                                               known: true, confirmedBefore: true),
+            ["Cards new each run → kept current"])
+    }
+
     func testConfirmSheetUnknownChangesSaysSo() {
         XCTAssertEqual(AutomationChangePresentation.lines([], known: false, confirmedBefore: true),
                        ["What changed is not known — review the whole recipe"])

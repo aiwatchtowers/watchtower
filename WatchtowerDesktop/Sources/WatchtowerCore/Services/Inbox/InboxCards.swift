@@ -81,6 +81,9 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     package var proposals: [AgentAction] = []
     package var reminders: [Reminder] = []
     package var outputs: [AutomationOutputCard] = []
+    /// `users` id → best name for the `person` blocks of `outputs`
+    /// (`AutomationQueries.artifactPeople`).
+    package var artifactPeople: [String: String] = [:]
     package var days: [InboxDayCard] = []
     /// More dates exist past `days` (the Day filter's **Show older**).
     package var hasOlderDays = false

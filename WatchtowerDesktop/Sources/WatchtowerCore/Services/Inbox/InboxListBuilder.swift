@@ -92,7 +92,7 @@ package enum InboxListBuilder {
 
         var rows: [(at: Date, item: InboxListItem)] = []
         if showsAutomationCards {
-            rows += feed.outputs.map { (at: $0.createdAt, item: .output($0)) }
+            rows += feed.outputs.map { (at: $0.changedAt, item: .output($0)) }
             rows += feed.reminders.map { (at: AutomationDates.parse($0.remindAt) ?? .distantPast, item: .reminder($0)) }
         }
         let startOfToday = calendar.startOfDay(for: now)

@@ -19,10 +19,12 @@ final class AutomationsCLITests: XCTestCase {
 
     func testReplyArgs() async throws {
         let (cli, runner) = cli(#"{"run_id":7,"daemon_running":false}"#)
-        let result = try await cli.reply(outputID: 5, action: 1)
-        XCTAssertEqual(runner.invocations, [["automations", "reply", "--output", "5", "--action", "1", "--json"]])
-        XCTAssertEqual(AutomationsCLI.args(.reply(outputID: 5, action: 1)),
-                       ["automations", "reply", "--output", "5", "--action", "1", "--json"])
+        let result = try await cli.reply(outputID: 5, action: 1, contentHash: "h1")
+        XCTAssertEqual(runner.invocations, [["automations", "reply", "--output", "5", "--action", "1",
+                                             "--content-hash", "h1", "--json"]])
+        XCTAssertEqual(AutomationsCLI.args(.reply(outputID: 5, action: 1, contentHash: "")),
+                       ["automations", "reply", "--output", "5", "--action", "1", "--content-hash", "", "--json"],
+                       "a card from before the blocks migration passes its empty hash; Go skips the check")
         XCTAssertEqual(result, AutomationsCLI.ReplyResult(runID: 7, daemonRunning: false))
     }
 

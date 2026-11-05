@@ -451,6 +451,16 @@ package struct AutomationOutput: FetchableRecord, Identifiable, Equatable, Senda
     package let createdAt: Date?
     package let readAt: Date?
     package let dismissedAt: Date?
+    /// The canonical block document; `""` = none (the markdown `body`).
+    package let blocksJSON: String
+    /// A living artifact's key; nil = a feed output.
+    package let outputKey: String?
+    /// Go `blocks.ContentHash`; `""` on rows from before the blocks migration.
+    package let contentHash: String
+    /// The last run that wrote the row.
+    package let writtenAt: Date?
+    /// The last write that changed `content_hash` (the Inbox order).
+    package let changedAt: Date?
 
     package init(row: Row) throws {
         id = row["id"]
@@ -463,13 +473,20 @@ package struct AutomationOutput: FetchableRecord, Identifiable, Equatable, Senda
         createdAt = AutomationDates.parse(row["created_at"])
         readAt = AutomationDates.parse(row["read_at"])
         dismissedAt = AutomationDates.parse(row["dismissed_at"])
+        blocksJSON = row["blocks_json"]
+        outputKey = row["output_key"]
+        contentHash = row["content_hash"]
+        writtenAt = AutomationDates.parse(row["written_at"])
+        changedAt = AutomationDates.parse(row["changed_at"])
     }
 }
 
 /// An open `kind='inbox'` output (neither done nor dismissed) as the Inbox
 /// shows it: read or unread, with its link, its actions (`actions_json`,
-/// decoded by the view), the button the owner pressed and its run, and the
-/// recipe's state now (a press needs a runnable recipe).
+/// decoded by the view), its block document (`blocks_json`, decoded by the
+/// view through the Kit), the button the owner pressed and its run, and the
+/// recipe's state now (a press needs a runnable recipe). `contentHash` is
+/// the version drawn: every read-state write and Reply press carries it.
 package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
     package let id: Int64
     package let automationID: Int64
@@ -490,9 +507,22 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
     /// The recipe's file is gone (`removed_at`): its card stays, its Reply
     /// buttons cannot send.
     package let recipeRemoved: Bool
+    /// The canonical block document; `""` = none (the markdown `body`).
+    package let blocksJSON: String
+    /// A living artifact's key; nil = a feed card.
+    package let outputKey: String?
+    /// Go `blocks.ContentHash` of what is drawn; `""` on rows from before
+    /// the blocks migration (the guarded writes still match those).
+    package let contentHash: String
+    /// The last run that wrote the card ("Updated …" on a living card).
+    package let writtenAt: Date
+    /// The last write that changed its content: the Inbox and Home order.
+    package let changedAt: Date
 
     /// The badge and the unread dot: never opened.
     package var isUnread: Bool { readAt == nil }
+    /// A living artifact: one card per key, rewritten by later runs.
+    package var isLiving: Bool { outputKey != nil }
 
     package init(
         id: Int64,
@@ -510,7 +540,12 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         pressedRunID: Int64? = nil,
         workbenchID: Int64? = nil,
         recipeState: AutomationHeaderButton.State = .runnable,
-        recipeRemoved: Bool = false
+        recipeRemoved: Bool = false,
+        blocksJSON: String = "",
+        outputKey: String? = nil,
+        contentHash: String = "",
+        writtenAt: Date? = nil,
+        changedAt: Date? = nil
     ) {
         self.id = id
         self.automationID = automationID
@@ -528,6 +563,11 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         self.workbenchID = workbenchID
         self.recipeState = recipeState
         self.recipeRemoved = recipeRemoved
+        self.blocksJSON = blocksJSON
+        self.outputKey = outputKey
+        self.contentHash = contentHash
+        self.writtenAt = writtenAt ?? createdAt
+        self.changedAt = changedAt ?? createdAt
     }
 }
 

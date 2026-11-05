@@ -93,7 +93,7 @@ final class InboxReadingPaneTests: XCTestCase {
 
         XCTAssertEqual(commands, [.agent(InboxCardSubject(shown), task: InboxCardTexts.agentActionTask(shown, task: "Fix it"),
                                          workbench: .id(3)),
-                                  .reply(outputID: 5, action: 2)])
+                                  .reply(outputID: 5, action: 2, contentHash: shown.contentHash)])
     }
 
     func testReplyButtonStates() throws {

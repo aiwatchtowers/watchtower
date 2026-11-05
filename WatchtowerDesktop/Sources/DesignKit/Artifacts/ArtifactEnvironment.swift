@@ -47,19 +47,25 @@ public struct ArtifactEnvironment {
     public var refHooks: ArtifactRefHooks
     /// The state of the target button at a flattened index.
     public var targetButtonState: (Int) -> ArtifactTargetButtonState
+    /// Whether the button at a flattened index can be pressed in `.inbox`
+    /// now: the host disables a Reply already sent, a link its rules refuse,
+    /// a press while one is under way, a kind it does not press yet.
+    public var isActionEnabled: (Int) -> Bool
 
     public init(
         markdown: @escaping (String) -> AnyView = Self.inlineMarkdown,
         avatar: @escaping (String) -> AnyView? = { _ in nil },
         onAction: @escaping (Int) -> Void = { _ in },
         refHooks: ArtifactRefHooks = ArtifactRefHooks(),
-        targetButtonState: @escaping (Int) -> ArtifactTargetButtonState = { _ in .idle }
+        targetButtonState: @escaping (Int) -> ArtifactTargetButtonState = { _ in .idle },
+        isActionEnabled: @escaping (Int) -> Bool = { _ in true }
     ) {
         self.markdown = markdown
         self.avatar = avatar
         self.onAction = onAction
         self.refHooks = refHooks
         self.targetButtonState = targetButtonState
+        self.isActionEnabled = isActionEnabled
     }
 
     /// Inline-only markdown; text that does not parse shows as written.
