@@ -31,7 +31,7 @@ A new read-only command `watchtower diagnostics [--json] [--app-version <v>] [--
 **What it writes: never the main database file and none of Watchtower's own files; SQLite's `-wal`/`-shm` side files are the one stated exception.** Exactly:
 - a no-op `PersistentPreRunE` (no `ensureSchemaFormat`: no schema upgrade, no config rewrite). The command checks the config file's existence with `os.Stat` first, as `ensureSchemaFormat` does (not-exist → `Config: none (not set up)`), then calls `config.Load`; a load error is reported, not fatal;
 - no features migration: the command never calls `config.MigrateFeatureGates` (see Features below);
-- no pid-file cleanup: `daemon.FindProcess` → `resolveProcess` removes a stale pid file (`removeStalePIDFile`), so the command uses a new `daemon.PeekProcess(path) (pid int, running bool, err error)`: `resolveProcess` gains a `removeStale bool` parameter, `FindProcess` (and every other existing caller) passes `true` and behaves as today, `PeekProcess` passes `false`. Test `internal/daemon::TestPeekProcess_LeavesStalePIDFile`;
+- no pid-file cleanup: `daemon.FindProcess` → `resolveProcess` removes a stale pid file (`removeStalePIDFile`), so the command uses a new `daemon.PeekProcess(path) (pid int, state PeekState, err error)` (the five states in the Daemon row of the Inputs table): `resolveProcess` gains a `removeStale bool` parameter, `FindProcess` (and every other existing caller) passes `true` and behaves as today, `PeekProcess` passes `false`. Test `internal/daemon::TestPeekProcess_LeavesStalePIDFile`;
 - `Execute()` starts the stale-temp sweep through `shouldSweepTemp(role)`, which is false for `cli:diagnostics`;
 - the database is opened with the new `db.OpenExistingContext(ctx, path, 500 ms)` — `OpenExisting`'s DSN (`mode=rw` + `_query_only=1`), no migration, `PingContext(ctx)` — through a connector that turns off SQLite's checkpoint on close; then `lockmetrics.Configure("")`, so no `dblock.jsonl` line. `query_only` refuses every write statement.
 - **No checkpoint, ever (ask #1033).** By default SQLite checkpoints the WAL into the main file when the last connection to a database closes; on a stopped install with a left-over WAL that would write `watchtower.db`. The diagnostics connection prevents it:
@@ -60,17 +60,19 @@ The text, one fact per line:
 ```
 Watchtower <version> (commit <sha>, flavor: default|corp) · app <--app-version>
 macOS <x.y> · <chip>
-Config: ok | none (not set up) | unreadable (parse|permission|other)
+Config: ok | none (not set up) | unreadable (parse|permission|other) | unknown (no home directory)
+Workspace: not chosen (<n> found) | none yet | unknown (invalid name|lookup failed|no home directory)   ← only when no workspace resolves; it replaces every workspace line
 AI: <provider> · reserve <provider>, automatic|off
 Features on: <feature ids>
 Sources: <Kind> <n> [ok|<k> needs sign-in|<k> error|<k> purged|<k> off] · … · Quick Connections <n> · iPhone companion on|off
-Daemon: running|stopped · last cycle <age> ago, done|error|running
+Daemon: running | stopped | stopped (stale pid file) | unknown (process not confirmed) | unknown (pid file corrupt) | unknown (pid file unreadable: permission|other) · last cycle <age> ago, done|error|running | no cycle yet | last cycle unknown
 Recent errors (last 20):
   <yyyy-MM-dd HH:mmZ>  <phase>  <class>
   (or: pipeline runs unknown (<reason>), followed by the sync row)
 Crash: none in the logs | <n> in the logs, last after <yyyy-MM-dd HH:mmZ>, in <place> | <n> in the logs, last time unknown, in <place>
 Logs: watchtower.log <size> · daemon.log <size> (not attached)
 Database: schema <goose version> · <size> · managed by organization: yes|yes (with errors)|no
+Partial report: <reasons>   ← only when partial (see Budget outputs)
 ```
 
 - **Line parts.** A line is made of parts, and each part fails on its own: a database part that is busy or missing prints `unknown (<reason>)` in its place while the file- and flag-based parts of the same line still print — `Sources: unknown (database busy) · iPhone companion on`, `Database: schema unknown (database busy) · 1.2 GB · managed by organization: no`, and in Recent errors the sync row from `last_sync.json` under `pipeline runs unknown (database busy)` (mockup `report-problem-busy`).
@@ -83,7 +85,8 @@ Database: schema <goose version> · <size> · managed by organization: yes|yes (
   | Jira | `jira_accounts` | as Slack, incl. `removed` → not counted, `enabled = 0` → off |
   | Confluence | `ext_sources` with `provider = 'confluence'` (spaces, shown as `<n> spaces`) | `status` CHECK `ok`/`error`/`needs_consent`/`revoked`: `ok` → ok; `error` → error; `needs_consent` and `revoked` → needs sign-in; `enabled = 0` → off |
   | Linear | `linear_accounts` | as Slack |
-  | Email over IMAP | `email_accounts` | `ok`, `error`, `revoked` |
+  | Email over IMAP | `email_accounts` with `provider = 'imap'` (text: `Email (IMAP) <n>`) | `ok`, `error`, `revoked` |
+  | Outlook | `email_accounts` with `provider = 'outlook'` (text: `Outlook <n>`) — Microsoft mail synced over IMAP with OAuth (`internal/imap/outlook_auth.go`); the form has no Outlook checkbox, so JSON `sources` maps it to `Email over IMAP` | `ok`, `error`, `revoked` |
   | Calendar (CalDAV/ICS) — **not a form option** | `calendar_accounts` | `ok`, `error`, `revoked`; shown in the text line, omitted from JSON `sources` |
   | Quick Connections | `external_connections` with `enabled = 1` | count only |
 
@@ -122,6 +125,13 @@ Database: schema <goose version> · <size> · managed by organization: yes|yes (
 
 ### Inputs, and what each does when it fails
 
+**Paths without a fatal helper.** `config.WorkspaceDir()` (and `DBPath()`, built on it) calls `log.Fatalf` when the home directory cannot be determined, which would break "always exit 0". The command never calls them: it resolves `root, err := config.DataRoot()` (returns the error) and joins `root/<ActiveWorkspace>` itself. The config path is `flagConfig`; `defaultConfigPath()` returns `""` when there is no home directory and no `WATCHTOWER_CONFIG_PATH`. Outcomes:
+- `flagConfig == ""` → `Config: unknown (no home directory)`; every config- and workspace-dependent line as "no config".
+- `DataRoot()` error → `Workspace: unknown (no home directory)`; every workspace line `unknown (no home directory)`.
+- Config loaded but `ActiveWorkspace` empty (`config.Load`'s `resolveActiveWorkspace` picks the only workspace holding a database, and leaves it empty when there are none or several): the command counts `config.WorkspaceDirsWithDatabase(root)` itself and prints `Workspace: not chosen (<n> found)` for several, `Workspace: none yet` for none, `Workspace: unknown (lookup failed)` when the scan fails — never the names (they can be company names). An `ActiveWorkspace` failing `config.ValidWorkspaceRe` → `Workspace: unknown (invalid name)`.
+- Whenever the `Workspace:` line is printed, it replaces the workspace lines — Sources (account kinds, Quick Connections), Daemon, Recent errors, Crash, Logs and the schema/size parts of Database — which each print `unknown (no workspace)`; the iPhone and policy parts still print. So a several-workspace install never shows a misleading `Daemon: stopped` or `unknown (no database)` from the data root.
+- Tests (`TestDiagnostics_InputFailures` cases): `no_home_dir` (HOME unset, exit 0, no fatal), `workspace_not_chosen` (two workspaces with databases, line says `(2 found)`, no names), `workspace_none_yet`, `workspace_lookup_failed`, `workspace_invalid_name`.
+
 Every line is built by its own function run through `safeLine`, which recovers a panic and prints `unknown (internal error)` for that line only. No input runs an external program: verified 2026-11-04 that `internal/config`, `internal/providers`, `internal/features` and `internal/policy` contain no `exec.Command`/`exec.LookPath`; the provider line reads config fields only and never resolves models by calling a CLI.
 
 | Input | What it reads | Missing / failed / slow → printed text | Test |
@@ -138,6 +148,7 @@ Every line is built by its own function run through `safeLine`, which recovers a
 | Recent errors | own `QueryContext` on `pipeline_runs`, plus `last_sync.json` | no rows → `none`; no database / deadline → `unknown (no database)` / `unknown (database busy)` | `TestDiagnostics_RecentErrors`, busy tests below |
 | Error class | `diagnostics.ErrorClass` (pure) | cannot fail; unknown wording → `other` | `TestErrorClass` |
 | Schema, size | own `QueryContext`: `SELECT max(version_id) FROM goose_db_version`; `os.Stat` of the file | no goose table → `schema unknown`; deadline → `schema unknown (database busy)` while the size still prints; stat error → size left out | `TestDiagnostics_DatabaseLine`, `TestDiagnostics_BusyKeepsFileParts` |
+| Database open / read | `db.OpenExistingContext`, then the reads | the database parts (Sources kinds and Quick Connections, pipeline runs, schema) print: file missing → `unknown (no database)`; `SQLITE_NOTADB` (not a database — also a SQLCipher-keyed file once #603 Stage 2 lands) → `unknown (database unreadable: not a database)`; `SQLITE_CORRUPT` → `unknown (database unreadable: corrupt)`; `SQLITE_CANTOPEN`/`SQLITE_PERM`/`SQLITE_READONLY` or `fs.ErrPermission` → `unknown (database unreadable: permission)`; the driver does not confirm `NO_CKPT_ON_CLOSE` (`out != 1`, the connect fails, nothing is read and nothing is retried without it) → `unknown (database not opened: checkpoint guard unavailable)`; any other open error → `unknown (database unreadable: other)`. The file-size part still prints whenever `os.Stat` works | `TestDiagnostics_InputFailures` cases `db_missing`, `db_not_a_database` (random bytes), `db_corrupt` (a valid header with a damaged page), `db_permission` (mode 000), `db_no_ckpt_guard` (connector seam returns `out = 0`), `db_other` |
 | Log sizes | `os.Stat` of `watchtower.log`, `daemon.log` | missing → `<file> missing`; other error → `<file> unreadable` | `TestDiagnostics_LogMissing`, `TestDiagnostics_LogUnreadable` |
 | Crash | streamed reads of `watchtower.log.1`, `watchtower.log`, `daemon.log` | file missing/unreadable → skipped; all three → `Crash: unknown (no logs)`; 2 s budget hit → `(scan stopped after <N> MB)` | crash tests in Failure modes |
 | Any input | — | panic → `unknown (internal error)`; still running at the 8 s hard stop → `unknown (timed out)` | `TestDiagnostics_LinePanicIsContained`, `TestDiagnostics_HardStop` |
@@ -149,7 +160,7 @@ The Desktop kills the command after 10 s (`CLIRunnerProtocol.run(args:timeout:)`
 
 - **One database deadline.** All database work — the open's ping and every query — runs under one `context.WithTimeout` of **4 s**, started before the open. The busy timeout per statement is **500 ms**. When the deadline passes, the statement in flight and every database line not yet computed print `unknown (database busy)`; lines already computed stay.
 - **How the deadline reaches SQLite (verified 2026-11-04).** `db.OpenExisting` calls `Ping()` with no context and opens `mode=rw`, and the existing read helpers take no context, so the command reuses none of them:
-  - `internal/db/db.go`: `openExistingDSN(dbPath, dsn)` becomes `openExistingDSN(ctx, dbPath, dsn)` and calls `d.PingContext(ctx)` (the pool's `pragmaConnector.Connect(ctx)` already receives that context). New exported `OpenExistingContext(ctx, dbPath, busy)` = `OpenExisting`'s DSN through that path. `OpenExisting` and `OpenExistingRW` pass `context.Background()` — the same behaviour as today for every caller (grep 2026-11-04): `cmd/workbench_asks_cli.go`, `cmd/workbench_spec_review.go`, `cmd/workbench_askguard.go` ×2, `cmd/workbench_askguard_stop.go` ×3 (two `OpenExisting`, one `OpenExistingRW`), `cmd/workbench_session_feed.go`, `cmd/usage_llm.go`, `cmd/llmusage_wiring.go` (RW), `internal/agentlogdb/totals.go`, `internal/db/compact.go` ×2 (one RW), `internal/db/fts_rebuild.go` ×3 (one RW), `internal/hub/wiring.go`, `internal/hub/state/state.go`. No other function in `internal/db` changes.
+  - `internal/db/db.go`: `openExistingDSN(dbPath, dsn)` becomes `openExistingDSN(ctx, dbPath, dsn)` and calls `d.PingContext(ctx)` (the pool's `pragmaConnector.Connect(ctx)` already receives that context). New exported `OpenExistingContext(ctx, dbPath, busy)` = `OpenExisting`'s DSN through that path. `OpenExisting` and `OpenExistingRW` pass `context.Background()` — the same behaviour as today for every caller (grep 2026-11-04): `cmd/workbench_asks_cli.go`, `cmd/workbench_spec_review.go`, `cmd/workbench_askguard.go` ×2, `cmd/workbench_askguard_stop.go` ×3 (two `OpenExisting`, one `OpenExistingRW`), `cmd/workbench_session_feed.go`, `cmd/usage_llm.go`, `cmd/llmusage_wiring.go` (RW), `internal/agentlogdb/totals.go`, `internal/db/compact.go` ×2 (one RW), `internal/db/fts_rebuild.go` ×3 (one RW), `internal/hub/wiring.go`, `internal/hub/state/state.go`. Besides `openExistingDSN` and the new `OpenExistingContext`, the only other change in `internal/db` is the small `openExistingWith(ctx, dbPath, connector)` from the Seam below, which `OpenExistingContext` uses to pass its `NoCheckpointOnClose` connector; no existing function's behaviour changes.
   - The four reads (accounts, Quick Connections, `pipeline_runs`, goose version) are the command's own `QueryContext` calls in `cmd/diagnostics.go`; no shared helper gains a context parameter.
   - The driver honours the context: `internal/sqlcipher/sqlite3.go` runs a statement in a goroutine and calls `sqlite3_interrupt` on `ctx.Done()` (exec ~l.2481, rows ~l.2698). Its own comment says the interrupt is racy and can miss between `sqlite3_*` calls; the statement then finishes on its own, bounded by the 500 ms busy timeout plus the query's own time (small aggregate reads).
   - **Close** is inside the database stage and its budget; it never checkpoints (`NO_CKPT_ON_CLOSE`).
@@ -168,7 +179,7 @@ The Desktop kills the command after 10 s (`CLIRunnerProtocol.run(args:timeout:)`
 | Log scan (2 s) | `Crash: … (scan stopped after <N> MB)` — the crashes found so far, or `Crash: none in the first <N> MB of the logs (scan stopped)` when none; Logs line unaffected (stat only) | `partial: true`; last line `Partial report: log scan stopped` | `budget_logscan_with_crash`, `budget_logscan_none_found` |
 | Hard stop (8 s) | every line or part not finished: `unknown (timed out)` | `partial: true`; last line `Partial report: timed out at 8 s` | `budget_hard_stop` |
 
-When more than one budget runs out, the last line names each, comma-separated in table order (`Partial report: database busy, log scan stopped`). A complete report has no such line and `partial: false`. The Desktop shows a partial report as ready (the text explains itself), not as failed.
+**`partial` is true when any budget ran out or any part printed `database busy` or `timed out`** — a single statement that waits its 500 ms `busy_timeout` and fails with `SQLITE_BUSY` before the 4 s deadline also prints `unknown (database busy)` for its part and sets `partial`. The last line names each reason once, comma-separated in table order (`Partial report: database busy, log scan stopped`). A complete report has no such line and `partial: false`. Test cases `busy_single_statement` (one held lock for one read only: that part busy, `partial: true`, `Partial report: database busy`) and `busy_and_logscan` (both reasons, in order). The Desktop shows a partial report as ready (the text explains itself), not as failed.
 
 A busy database is real even in WAL mode: a writer holding `locking_mode = EXCLUSIVE`, or WAL recovery after a crash, makes readers wait. Test `TestDiagnostics_BusyDatabaseFinishesInTime`: another connection takes an exclusive lock (`PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE`) and holds it; the command finishes in under 5 s of database time and under 7.5 s total, exits 0, prints `unknown (database busy)` for Sources, Recent errors and Database, and every non-database line normally. A second test, `TestDiagnostics_DeadlineMidway`, uses a fake reader seam whose queries sleep 1.5 s each: the lines computed before the deadline are printed, the rest say `unknown (database busy)`, and the total stays under 7.5 s.
 
@@ -252,7 +263,7 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 | Save fails | inline notice with the reason, atomic write leaves nothing partial | `testSaveFailureShowsReason` |
 | Corp build | no GitHub, no Discussions; Save only | `testCorpBuildOffersSaveOnly` |
 
-**Writers.** None of this data has a writer: the command and the sheet only read. The only writes are the user-chosen file and the pasteboard, each once per user press.
+**Writers.** None of this data has a writer: the command and the sheet write no Watchtower data and never the main database file. Per Decision 15, the only file effects are SQLite's own: the `-shm` read marks / wal-index, and on a cleanly stopped install a new empty `-wal` + `-shm` pair that stays until the next normal open. The sheet's only writes are the user-chosen file and the pasteboard, each once per user press.
 
 ## Paths that change together
 
@@ -305,7 +316,12 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 | 23 | Per-input failure behaviour, a panic contained per line, no input runs an external program; the iPhone flag comes from the Desktop as `--iphone` | ask #1030 (owner asked for the coverage; the specifics decided by agent) |
 | 24 | CLI audit: `diagnostics` is decided as a **no-content** command — it joins `cliNoContentCommands` in `cmd/audit_cli_test.go` (next to `policy show`, `version`) with the comment "kinds, counts, states and error classes only (DIAG-01)", so it writes **no** `com.watchtower.audit` line, under an agent marker or not. It prints no synced content (DIAG-01's guard proves it), so READ-02's "every company-data read leaves one line" does not apply; READ-01's budget is for registry read tools and the command is not one (no MCP tool is added) | ask #1039 |
 | 25 | Under an agent marker (`CLAUDECODE`, `CODEX_*`, `WATCHTOWER_TERMINAL_SESSION_ID`, `WATCHTOWER_AUTOMATION_RUN_ID`) the command runs as usual — it is not an owner gesture, writes nothing and shows no content, so AGENT-07's `refuseUnderAgent` list does not grow | ask #1039 |
-| 26 | Daemon line texts for every `PeekProcess` state and pid-file error, and the budget outputs with the `Partial report:` marker and JSON `partial` | ask #1034 (owner asked for them; the texts decided by agent) |
+| 26 | Daemon line texts for every `PeekProcess` state and pid-file error, and the budget outputs | ask #1034 (owner asked for them; the texts decided by agent) |
+| 27 | The pinned JSON key `partial` and the `Partial report: <reasons>` last line; `partial` = any budget ran out or any part busy/timed out | pending owner ask |
+| 28 | Open GitHub Issue is disabled while "What happened?" is empty, in every state | pending owner ask |
+| 29 | Paths resolved without `WorkspaceDir`/`DBPath` (no `log.Fatalf`); a `Workspace:` line replaces the workspace lines when none resolves, with a count and never names | decided by agent |
+| 30 | Unreadable-database texts per SQLite error class; no read without the checkpoint guard | decided by agent |
+| 31 | Outlook accounts shown on their own in the text and mapped to the form's `Email over IMAP` checkbox | decided by agent |
 
 ### Contracts touched
 
@@ -332,7 +348,7 @@ Real SwiftUI shots from `DesignShotCatalog` (`ReportProblemShotFixtures` in `Wat
 | `report-problem-collecting` | loading/busy: empty field, spinner + "Collecting diagnostics…", Save and Open disabled |
 | `report-problem-empty` | ready, nothing typed: full diagnostics, "Describe the problem to continue.", Open disabled |
 | `report-problem-filled` | ready, typed: full diagnostics, Discussions link, Cancel · Save Diagnostics… · Open GitHub Issue |
-| `report-problem-busy` | database busy: `Sources: unknown (database busy) · iPhone companion on`, `pipeline runs unknown (database busy)` with the sync row under it, `Database: schema unknown (database busy) · 1.2 GB · managed by organization: no`; every other line normal, sheet ready |
+| `report-problem-busy` | database busy: `Sources: unknown (database busy) · iPhone companion on`, `pipeline runs unknown (database busy)` with the sync row under it, `Database: schema unknown (database busy) · 1.2 GB · managed by organization: no`, and the last line `Partial report: database busy`; every other line normal, sheet ready |
 | `report-problem-failed` | error: warning with the 10-second reason, partial lines (app and macOS versions), Retry; Open enabled because text is typed |
 | `report-problem-opened` | after Open: green "Opened in your browser…" notice, Cancel became Done |
 | `report-problem-tooLong` | after Open over budget: warning "did not fit in the link" + Copy Report, Done |
@@ -358,6 +374,7 @@ Re-render: `cd WatchtowerDesktop && DESKTOP_SHOTS_DIR=<dir> swift test --filter 
 
 - Guide: `docs/guide/troubleshooting/README.md` gains "Report a problem" (Help → Report a Problem…, what is included, Discussions for questions, `watchtower diagnostics` from the terminal, the corp variant); `.github/ISSUE_TEMPLATE/bug_report.yml`'s `version`/`logs` descriptions mention `watchtower diagnostics`.
 - `docs/daemon-pipeline.md`: its data-paths table gains `watchtower diagnostics` as a reader of `watchtower.log`/`.1`/`daemon.log`, `daemon.pid`, `last_sync.json` and the database (read-only), and states where panics land.
+- `docs/inventory/agent-actions.md` (where READ-02 lives): a changelog line — `diagnostics` decided as a no-content CLI command (`cliNoContentCommands`, decision 24), READ-02 unchanged — and `cmd/audit_cli_test.go` gains the entry.
 - Inventory: a new `docs/inventory/diagnostics.md` with DIAG-01 (Enforced, guard `cmd/diagnostics_test.go::TestDIAG01_NoNamesOrText`, approved in ask #1026) and a row in `docs/inventory/README.md`: Diagnostics → `diagnostics.md` → `cmd/diagnostics.go`, `internal/diagnostics/`, `WatchtowerDesktop/Sources/WatchtowerCore/` (`ReportProblem*`).
 - Feature note `docs/features/report-a-problem.md` + CLAUDE.md index line.
 

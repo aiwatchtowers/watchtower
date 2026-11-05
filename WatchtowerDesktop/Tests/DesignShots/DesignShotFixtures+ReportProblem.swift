@@ -92,6 +92,7 @@ enum ReportProblemMockCopy {
     Crash: none in the logs
     Logs: watchtower.log 4 MB · daemon.log 12 KB (not attached)
     Database: schema unknown (database busy) · 1.2 GB · managed by organization: no
+    Partial report: database busy
     """
 }
 
