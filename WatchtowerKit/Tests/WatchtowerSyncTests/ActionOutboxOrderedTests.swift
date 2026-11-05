@@ -1226,6 +1226,44 @@ final class ActionOutboxOrderedTests: XCTestCase {
         let skips = try await writtenControls(phone).filter { $0.kind == .skipTo }.map(\.seq)
         XCTAssertEqual(skips, [2], "the order skips the row listed as Not delivered")
     }
+
+    // MARK: - A switch request's reason (relay client Phase 4 Task 5)
+
+    func testASwitchRequestWithoutAReasonHasNoReasonKey() async throws {
+        let phone = try await makePhone(route: .hostedRelay(macDeviceID: "mac"))
+        let id = try await phone.outbox.enqueueSwitchRequest(target: .cloudKit, id: "REQ-1")
+        _ = try await phone.outbox.flush()
+
+        XCTAssertEqual(id, "REQ-1")
+        let written = try await writtenControls(phone)
+        let control = try XCTUnwrap(written.first { $0.kind == .transportSwitch })
+        XCTAssertNil(control.reason)
+        let json = try XCTUnwrap(String(bytes: RelayCoder.makeEncoder().encode(control), encoding: .utf8))
+        XCTAssertFalse(json.contains("reason"), "absent on the wire, not null")
+    }
+
+    func testASwitchRequestCarriesItsReason() async throws {
+        let phone = try await makePhone(route: .hostedRelay(macDeviceID: "mac"))
+        _ = try await phone.outbox.enqueueSwitchRequest(target: .cloudKit, id: "REQ-2", reason: "entitlement_expired")
+        _ = try await phone.outbox.flush()
+
+        let written = try await writtenControls(phone)
+        let control = try XCTUnwrap(written.first { $0.kind == .transportSwitch })
+        XCTAssertEqual(control.reason, "entitlement_expired")
+        XCTAssertEqual(control.target, "cloudkit")
+        XCTAssertEqual(control.id, "REQ-2")
+    }
+
+    func testAQueuedSwitchRequestCanBeWithdrawn() async throws {
+        let phone = try await makePhone(route: .hostedRelay(macDeviceID: "mac"))
+        await phone.outbox.holdFlushes()
+        _ = try await phone.outbox.enqueueSwitchRequest(target: .cloudKit, id: "REQ-3")
+        XCTAssertEqual(try phone.store.queuedControls().map(\.id), ["REQ-3"])
+
+        try await phone.outbox.withdrawControl(id: "REQ-3")
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+    }
+
 }
 
 /// Records every call the phone's `SecureTransport` makes, then forwards it to the in-memory transport. `events`

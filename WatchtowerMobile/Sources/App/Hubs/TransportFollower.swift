@@ -47,7 +47,9 @@ final class TransportFollower {
     let hubID: String
     private let outbox: ActionOutbox
     private weak var host: (any TransportFollowerHost)?
-    private let now: () -> Date
+    private let now: @MainActor () -> Date
+    /// Executes the policy's `requestSwitch` (a lapse's request toward iCloud): set by the hub's `TransportRequester`.
+    var onRequestSwitch: (@MainActor (TransportKind, String) async -> Void)?
     /// The opened keybox of each `transport_switched` being decided, by control id.
     private var keyboxes: [String: Keybox] = [:]
     /// The last decision started: each one waits for the one before (`handle(_:)`), so the feed, the hydrator and the
@@ -55,7 +57,7 @@ final class TransportFollower {
     private var lastDecision: Task<Bool, Never>?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "TransportFollower")
 
-    init(hubID: String, outbox: ActionOutbox, host: any TransportFollowerHost, now: @escaping () -> Date = Date.init) {
+    init(hubID: String, outbox: ActionOutbox, host: any TransportFollowerHost, now: @escaping @MainActor () -> Date = Date.init) {
         self.hubID = hubID
         self.outbox = outbox
         self.host = host
@@ -125,7 +127,7 @@ final class TransportFollower {
             Self.logger.notice("transport input left for a later pass")
             return false
         }
-        return await execute(commands, next: next, link: link, input: input, host: host)
+        return await execute(commands, next: next, link: link, input: input, canUseRelay: canUseRelay, host: host)
     }
 
     /// An upgrade's `transport_switch{relay}` waits for its answer (relay client Phase 3b Task 19): the policy then
@@ -157,6 +159,7 @@ final class TransportFollower {
         var handled = false
         var decided = false
         var answered = false
+        var requestSwitch: (target: TransportKind, reason: String)?
     }
 
     /// The commands gathered into one plan.
@@ -173,7 +176,10 @@ final class TransportFollower {
             case .sendEpochAck(let epoch): plan.ack = epoch
             case .listUnechoedAsUndelivered: plan.listUndelivered = true
             case .drainMailbox(let kind): logger.notice("the \(kind.rawValue, privacy: .public) mailbox is left to drain")
-            case .pollOtherMailbox, .requestSwitch: break // `requestSwitch` is wired in `HubSession.requestTransport` (Task 5)
+            case .pollOtherMailbox: break
+            case let .requestSwitch(target, reason):
+                plan.requestSwitch = (target, reason)
+                plan.decided = true
             case .markHandled: plan.handled = true
             case .ignore: plan.decided = true
             }
@@ -186,6 +192,7 @@ final class TransportFollower {
         next: FollowerState,
         link: LinkRecord,
         input: FollowerInput,
+        canUseRelay: RelayUse,
         host: any TransportFollowerHost
     ) async -> Bool {
         let plan = Self.plan(commands)
@@ -196,11 +203,13 @@ final class TransportFollower {
             return false
         }
         guard await moveOutbox(plan, moves: moves) else { return false }
-        if let move = plan.move, !persist(move, next: next, link: link, host: host) {
+        let effects = RequestEffects(plan: plan, moves: moves)
+        if let move = plan.move, !persist(move, next: next, link: link, effects: effects, host: host) {
             // Nothing moved: the session goes on on its route, so its outbox writes there again.
             if moves { await outbox.releaseFlushes() }
             return false
         }
+        if plan.move == nil, !persistRequestState(effects, host: host) { return false }
         if plan.merge {
             guard case let .switched(_, _, _, _, _, controlID, _) = input, let keybox = keyboxes[controlID],
                   await host.mergeSwitchKeys(keybox, hubID: hubID) else { return false }
@@ -218,6 +227,7 @@ final class TransportFollower {
             host.moveSession(hubID: hubID)
         }
         if plan.answered, case .switched(.relay, _, _, _, _, _, _) = input, !upgradeAnswered(host: host) { return false }
+        if let ask = plan.requestSwitch { await onRequestSwitch?(ask.target, ask.reason) }
         if case .marker = input { return true }
         return plan.handled || plan.decided
     }
@@ -276,6 +286,7 @@ final class TransportFollower {
         _ move: (to: TransportKind, by: String, at: Date),
         next: FollowerState,
         link: LinkRecord,
+        effects: RequestEffects,
         host: any TransportFollowerHost
     ) -> Bool {
         var moved = link
@@ -298,7 +309,46 @@ final class TransportFollower {
             moved.switchedBy = move.by
             moved.switchedAt = move.at
         }
+        effects.apply(to: &moved, at: now())
         guard moved != link else { return true }
         return host.persistRoute(moved)
+    }
+
+    /// What a decision does to this phone's request toward iCloud and to `hubOnRelayAt` (relay client Phase 4
+    /// Task 5), written with the move when there is one.
+    private struct RequestEffects {
+        /// The request is over: the hub moved (so the route is no longer the one it was made on), answered with the
+        /// transport it runs on, or stays on the relay without this phone.
+        let clearsRequest: Bool
+        /// The hub stays on the relay for another paying phone (`hub_on_relay`, or a move to the relay this phone
+        /// cannot follow): only `withoutHub` lists the unechoed actions as Not delivered.
+        let setsHubOnRelay: Bool
+        /// A later move, or the hub's answer for where it runs, ends that.
+        let clearsHubOnRelay: Bool
+
+        init(plan: Plan, moves: Bool) {
+            setsHubOnRelay = plan.listUndelivered
+            clearsRequest = moves || plan.answered || plan.listUndelivered
+            clearsHubOnRelay = !plan.listUndelivered && (moves || plan.answered)
+        }
+
+        func apply(to link: inout LinkRecord, at date: Date) {
+            if clearsRequest { link.transportRequest = nil }
+            if setsHubOnRelay {
+                link.hubOnRelayAt = date
+            } else if clearsHubOnRelay {
+                link.hubOnRelayAt = nil
+            }
+        }
+    }
+
+    /// The request and `hubOnRelayAt` of a decision that moves nothing, on the row as it stands now (the request
+    /// pass may have written it meanwhile). false when the row could not be written.
+    private func persistRequestState(_ effects: RequestEffects, host: any TransportFollowerHost) -> Bool {
+        guard var fresh = host.followerLink(hubID: hubID) else { return true }
+        let before = fresh
+        effects.apply(to: &fresh, at: now())
+        guard fresh != before else { return true }
+        return host.persistRoute(fresh)
     }
 }
