@@ -10,8 +10,12 @@ import WebKit
 @MainActor
 final class ArtifactPrinter: NSObject {
     private static var jobs: Set<ArtifactPrinter> = []
-    /// A4 at 72 dpi less the default margins; WebKit paginates from the
-    /// view's width, and a zero-size view prints blank pages.
+    /// The layout size the page is laid out at before printing. WebKit
+    /// paginates from the view's width (a zero-size view prints blank
+    /// pages); horizontal pagination is `.fit`, so this width is scaled to
+    /// the paper's printable width. 540 pt is US Letter (612 pt) less two
+    /// half-inch margins, near A4's 595 pt less the same (523 pt); the
+    /// height only has to be non-zero (vertical pagination is automatic).
     private static let pageFrame = NSRect(x: 0, y: 0, width: 540, height: 760)
 
     private let coordinator = SandboxedHTMLView.Coordinator()
