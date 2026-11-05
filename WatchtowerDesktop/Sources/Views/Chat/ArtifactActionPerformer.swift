@@ -58,6 +58,7 @@ enum ArtifactExporter {
             do {
                 try file.contents.write(to: url, atomically: true, encoding: .utf8)
             } catch {
+                artifactExportLog.error("Export failed: \(error.localizedDescription, privacy: .private)")
                 onError("Export failed: \(error.localizedDescription)")
             }
         }
