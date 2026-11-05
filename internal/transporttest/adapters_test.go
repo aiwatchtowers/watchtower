@@ -90,10 +90,12 @@ type Caps struct {
 	ChildProcess bool // structural: the transport runs a child process
 	Quota        bool // reports a subscription quota (Failure Quota, ResetAt)
 
-	FailureSignal        string // hook / pull / none
-	InterruptSignal      string // hook / pull / none
-	IdleSignal           bool
-	PermissionWait       bool
+	FailureSignal   string // hook / pull / none
+	InterruptSignal string // hook / pull / none
+	IdleSignal      bool
+	PermissionWait  bool
+	// MidturnInput: a line goes to the session while its agent works
+	// (agentkind's TakesLineWhileWorking), not only that the TUI queues it.
 	MidturnInput         bool
 	RegistryProbe        bool
 	CompressedTranscript bool
@@ -234,10 +236,12 @@ var adapters = []*Adapter{
 			Images: true, WebSearch: true, ReadFolder: "shell_sandbox", TurnCap: "counted",
 			Interrupt: "kill_turn", ChildProcess: true, Quota: true,
 			// The session row's targets (§3.5): pulled failure and interrupt
-			// (S1, S2), the permission hook (S3, pending G7's spike), mid-turn
-			// input (S5), the probe (S6), compressed rollouts (S7, N1).
-			FailureSignal: "pull", InterruptSignal: "pull", IdleSignal: true, PermissionWait: true,
-			MidturnInput: true, RegistryProbe: true, CompressedTranscript: true, SubagentFeed: true},
+			// (S1, S2), the probe (S6), compressed rollouts (S7, N1). G7's
+			// spikes on codex 0.159.2 settled the rest (agentkind.SessionCaps):
+			// no permission wait (S3, owner ask #521), no line while it works
+			// (S5: its MCP forms raise no state), no idle signal (S10).
+			FailureSignal: "pull", InterruptSignal: "pull",
+			RegistryProbe: true, CompressedTranscript: true, SubagentFeed: true},
 		Batch: func(r *run) digest.Generator {
 			g := codex.NewCodexGenerator(fakeModel, fakeModel, bins.codex)
 			g.SetIsolatedChild() // cmd/generator.go routedGenerator

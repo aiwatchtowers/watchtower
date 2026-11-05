@@ -93,8 +93,8 @@ func (h *Handlers) applyPermissionAnswer(ctx context.Context, r actions.Request)
 	if !board {
 		return failed(reasonNotFound, requestGoneMessage)
 	}
-	if !sessionCaps(agent).PermissionWait {
-		return notSupported(notSupportedPermissionFormat, agent)
+	if msg, refused := PhoneRefusal("permission_answer", agent); refused {
+		return failed(reasonNotSupported, msg)
 	}
 	stored, found, err := h.storedRequest(ctx, requestID, sessionID)
 	if err != nil {
@@ -214,8 +214,8 @@ func (h *Handlers) applySessionInterrupt(ctx context.Context, r actions.Request)
 	if !board {
 		return failed(reasonNotFound, sessionGoneMessage)
 	}
-	if !sessionCaps(agent).TakesInterrupt() {
-		return notSupported(notSupportedInterruptFormat, agent)
+	if msg, refused := PhoneRefusal("session_interrupt", agent); refused {
+		return failed(reasonNotSupported, msg)
 	}
 	live, running, err := h.d.Sessions.Live(ctx, sessionID)
 	if err != nil {

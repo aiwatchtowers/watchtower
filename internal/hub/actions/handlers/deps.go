@@ -51,10 +51,24 @@ const (
 	notSupportedInterruptFormat  = "%s sessions can't be interrupted from the phone yet. Stop it on the Mac."
 )
 
-// notSupported is the refusal of a session of agent, with the message of
-// format.
-func notSupported(format string, agent agentkind.Kind) actions.Outcome {
-	return failed(reasonNotSupported, fmt.Sprintf(format, agent.DisplayName()))
+// PhoneRefusal is the not_supported message of a phone action of
+// actionKind on a board session of agent, refused by the agent's
+// capability row; refused is false when the row takes it. The transport
+// contract suite asserts each agent's answer through it.
+func PhoneRefusal(actionKind string, agent agentkind.Kind) (message string, refused bool) {
+	caps := sessionCaps(agent)
+	var format string
+	switch {
+	case (actionKind == "session_input" || actionKind == "session_finish_request") && !caps.PhoneInput:
+		format = notSupportedInputFormat
+	case actionKind == "permission_answer" && !caps.PermissionWait:
+		format = notSupportedPermissionFormat
+	case actionKind == "session_interrupt" && !caps.TakesInterrupt():
+		format = notSupportedInterruptFormat
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(format, agent.DisplayName()), true
 }
 
 // DefaultTimeout is every handler's own deadline (Swift HandlerTimeout's 30 s):

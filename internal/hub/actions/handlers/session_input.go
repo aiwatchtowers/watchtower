@@ -214,8 +214,8 @@ func (h *Handlers) sendLine(ctx context.Context, r actions.Request, commit func(
 	if !onBoard {
 		return failed(reasonNotFound, sessionGoneMessage)
 	}
-	if !sessionCaps(agent).PhoneInput {
-		return notSupported(notSupportedInputFormat, agent)
+	if msg, refused := PhoneRefusal(r.Action.Kind, agent); refused {
+		return failed(reasonNotSupported, msg)
 	}
 	l := phoneLine{req: r, sessionID: sessionID, line: line}
 	res := h.tryLine(ctx, l, nil)
@@ -274,17 +274,11 @@ func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) try
 		row.RunStartedAt = db.AgentStateStamp(live.StartedAt)
 	}
 	now := h.d.Clock()
-	s := sessionstate.Resolve(row, now)
-	agent, _ := agentkind.Parse(row.Kind)
-	// A working agent takes the line only when nothing it can open mid-turn
-	// goes unreported (TakesLineWhileWorking); otherwise it waits for idle.
-	working := sessionstate.IsWorking(s) && sessionCaps(agent).TakesLineWhileWorking()
-	switch {
-	case sessionstate.NeedsApproval(s):
-		res.held = inputReasonNeedsApproval
-	case !sessionstate.IsIdle(row, s) && !working, h.justSubmitted(l.sessionID, row, now):
-		res.held = inputReasonAgentBusy
+	hold, working := LineGate(row, now)
+	if hold == "" && h.justSubmitted(l.sessionID, row, now) {
+		hold = inputReasonAgentBusy
 	}
+	res.held = hold
 	if res.held != "" {
 		return res
 	}
@@ -310,6 +304,28 @@ func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) try
 	}
 	res.final = &out
 	return res
+}
+
+// LineGate is PROJ-16's session condition for a phone line right before
+// its paste, from the session's state row (RunStartedAt set for the live
+// run) and its agent's capability row: hold is "" when the line may go,
+// needs_approval at a permission prompt, agent_busy when the agent is
+// neither idle nor working, or works and its row does not
+// TakesLineWhileWorking (an MCP form it opens mid-turn would take the
+// line). whileBusy reports a line that goes while the agent works. The hub
+// also holds a line just submitted into the session (justSubmitted). The
+// transport contract suite asserts each agent's answer through it.
+func LineGate(row sessionstate.Row, now time.Time) (hold string, whileBusy bool) {
+	s := sessionstate.Resolve(row, now)
+	agent, _ := agentkind.Parse(row.Kind)
+	working := sessionstate.IsWorking(s) && sessionCaps(agent).TakesLineWhileWorking()
+	switch {
+	case sessionstate.NeedsApproval(s):
+		return inputReasonNeedsApproval, false
+	case !sessionstate.IsIdle(row, s) && !working:
+		return inputReasonAgentBusy, false
+	}
+	return "", working
 }
 
 // deliverPhoneLine is the Deliver of a line that passed its gate; heldBy is

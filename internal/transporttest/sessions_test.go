@@ -22,6 +22,8 @@ import (
 	"watchtower/internal/agentlog"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/sessionstate"
 	"watchtower/internal/terminal"
 )
 
@@ -46,6 +48,9 @@ const (
 	stepSubagentStart sessionStep = "subagent-start"
 	stepSubagentStop  sessionStep = "subagent-stop"
 	stepForeignPrompt sessionStep = "foreign-prompt"
+	// stepIdle: the agent sits at an empty prompt (Claude Code's
+	// idle_prompt notice); an agent without an idle signal reports nothing.
+	stepIdle sessionStep = "idle"
 	// Pull-only intents (§3.5): the watch gives up on an unreadable
 	// rollout and writes the row's watch issue; an automation's session()
 	// waiting on the row ends.
@@ -87,6 +92,7 @@ type hookCall struct {
 // sessionEnv is one session cell's workspace.
 type sessionEnv struct {
 	t          *testing.T
+	runStarted time.Time
 	home       string
 	folder     string
 	db         *db.DB
@@ -140,6 +146,11 @@ type sessionResult struct {
 	FeedErr       error
 	Title         string
 	TitleErr      error
+	// LineHolds and LineBusy are the hub's phone-line gate after each step
+	// (handlers.LineGate, the live run started with the env): the hold
+	// reason ("" = the line goes) and whether it goes while the agent works.
+	LineHolds []string
+	LineBusy  []bool
 	// OlderWrote says a write stamped before the stored state landed.
 	OlderWrote bool
 	Stderr     []string
@@ -174,6 +185,7 @@ var claudeSession = &sessionAgent{
 		stepFailure: {{event: "StopFailure", payload: "stopfailure_rate_limit.json"}},
 		// An Esc fires no Stop in Claude Code; the idle notice moves the row.
 		stepInterrupt:     {{event: "Notification", set: map[string]any{"notification_type": "idle_prompt", "message": "Claude is waiting for your input"}}},
+		stepIdle:          {{event: "Notification", set: map[string]any{"notification_type": "idle_prompt", "message": "Claude is waiting for your input"}}},
 		stepSubagentStart: {{event: "SubagentStart", payload: "subagentstart_teammate.json"}},
 		stepSubagentStop:  {{event: "SubagentStop", payload: "subagentstop_teammate.json"}},
 		stepForeignPrompt: {{event: "UserPromptSubmit", set: map[string]any{"session_id": foreignSessionID}}},
@@ -252,7 +264,8 @@ func claudeSettingsHooks(t *testing.T, path string) map[string][]string {
 // "test" under a fresh HOME, a workbench on a temp folder with the agent's
 // hooks installed, and the agent's terminal_sessions row.
 func newSessionEnv(t *testing.T, ag *sessionAgent) *sessionEnv {
-	e := &sessionEnv{t: t, home: t.TempDir(), folder: t.TempDir(), sessionID: sessionID}
+	e := &sessionEnv{t: t, home: t.TempDir(), folder: t.TempDir(), sessionID: sessionID,
+		runStarted: time.Now().Add(-time.Minute)}
 	writeFile(t, filepath.Join(e.home, ".config", "watchtower", "config.yaml"), "active_workspace: test\n")
 	path := filepath.Join(e.home, ".local", "share", "watchtower", "test", "watchtower.db")
 	raw, err := os.ReadFile(migratedDB(t))
@@ -425,6 +438,17 @@ func (e *sessionEnv) watchIssue() (issue string, present bool) {
 	return v.String, true
 }
 
+// lineGate is the hub's phone-line gate on the row now, as the live run
+// the env started.
+func (e *sessionEnv) lineGate() (hold string, whileBusy bool) {
+	row, err := sessionstate.Load(context.Background(), e.db, e.row)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	row.RunStartedAt = db.AgentStateStamp(e.runStarted)
+	return handlers.LineGate(row, time.Now())
+}
+
 func (e *sessionEnv) pendingPermissions() int {
 	var n int
 	if err := e.db.QueryRow(`SELECT COUNT(*) FROM permission_requests WHERE terminal_session_id = ? AND status = 'pending'`, e.row).Scan(&n); err != nil {
@@ -451,6 +475,9 @@ func (ag *sessionAgent) run(t *testing.T, s *Scenario) *sessionResult {
 		res.States = append(res.States, row.AgentState.String)
 		res.SessionIDs = append(res.SessionIDs, row.ClaudeSessionID.String)
 		res.OpenTurns = append(res.OpenTurns, e.openTurns())
+		hold, busy := e.lineGate()
+		res.LineHolds = append(res.LineHolds, hold)
+		res.LineBusy = append(res.LineBusy, busy)
 	}
 	if s.Fixture.OlderWrite {
 		// A write stamped before the stored state writes nothing, through
@@ -660,8 +687,16 @@ var sessionScenarios = []*Scenario{
 	sessionScenario("session-tool", nil, "", []sessionStep{stepPrompt, stepTool}, wantStates("working", "working")),
 	sessionScenario("session-permission", []Cap{CapPermissionWait}, "", []sessionStep{stepPrompt, stepPermission},
 		func(c *Cell, r *sessionResult) error {
-			if err := wantStates("working", "approval")(c, r); err != nil || !c.Supported {
+			if err := wantStates("working", "approval")(c, r); err != nil {
 				return err
+			}
+			if !c.Supported {
+				// S3: no permission wait, so no request the phone could
+				// answer; the hub refuses the answer as not_supported (S4).
+				if r.PendingPermissions != 0 {
+					return fmt.Errorf("%d pending permission requests without a permission wait", r.PendingPermissions)
+				}
+				return nil
 			}
 			if r.PendingPermissions != 1 {
 				return fmt.Errorf("%d pending permission requests, want 1: the prompt cannot be answered off the TUI", r.PendingPermissions)
@@ -741,6 +776,75 @@ var sessionScenarios = []*Scenario{
 			}
 			return nil
 		}), func(f *Fixture) { f.ReadFeed = true }),
+	// S4: what the phone asks of the session. An agent row without a
+	// capability refuses it as not_supported with the agent's name, never
+	// "no longer exists"; one with it takes it (handlers.PhoneRefusal).
+	sessionScenario("session-phone-refusals", []Cap{CapPermissionWait}, "", []sessionStep{stepPrompt},
+		func(c *Cell, r *sessionResult) error {
+			if err := wantStates("working")(c, r); err != nil {
+				return err
+			}
+			agent, ok := agentkind.Parse(c.A.Name)
+			if !ok {
+				return fmt.Errorf("%s is not an agent kind", c.A.Name)
+			}
+			want := map[string]string{"session_input": "", "session_finish_request": ""}
+			if c.Supported {
+				want["permission_answer"], want["session_interrupt"] = "", ""
+			} else {
+				name := agent.DisplayName()
+				want["permission_answer"] = name + " sessions can't answer this permission from the phone yet. Answer it on the Mac."
+				want["session_interrupt"] = name + " sessions can't be interrupted from the phone yet. Stop it on the Mac."
+			}
+			for kind, msg := range want {
+				got, refused := handlers.PhoneRefusal(kind, agent)
+				if refused != (msg != "") || got != msg {
+					return fmt.Errorf("%s: refused=%v %q, want %q", kind, refused, got, msg)
+				}
+			}
+			return nil
+		}),
+	// S5: a phone or Workchat line while the agent works. An agent that
+	// takes it mid-turn gets it at once (while busy); any other holds it
+	// until idle (agent_busy), and both take it once the turn stops.
+	sessionScenario("session-midturn-line", []Cap{CapMidturnInput}, "", []sessionStep{stepPrompt, stepStop},
+		func(c *Cell, r *sessionResult) error {
+			if err := wantStates("working", "waiting")(c, r); err != nil {
+				return err
+			}
+			wantHold, wantBusy := "", true
+			if !c.Supported {
+				wantHold, wantBusy = "agent_busy", false
+			}
+			if r.LineHolds[0] != wantHold || r.LineBusy[0] != wantBusy {
+				return fmt.Errorf("while working the line gate says hold %q busy %v, want %q %v",
+					r.LineHolds[0], r.LineBusy[0], wantHold, wantBusy)
+			}
+			if r.LineHolds[1] != "" || r.LineBusy[1] {
+				return fmt.Errorf("at idle the line gate says hold %q busy %v, want it to go", r.LineHolds[1], r.LineBusy[1])
+			}
+			return nil
+		}),
+	// S10: an idle prompt. An agent with an idle signal moves the row to
+	// waiting; one without reports nothing, so the row stays working rather
+	// than going silently idle, and its capability row (the Settings
+	// caption's source) says so.
+	sessionScenario("session-idle-notice", []Cap{CapIdleSignal}, "", []sessionStep{stepPrompt, stepIdle},
+		func(c *Cell, r *sessionResult) error {
+			if c.Supported {
+				return wantStates("working", "waiting")(c, r)
+			}
+			if r.PullErr == nil {
+				return errors.New("an agent without an idle signal reported the idle prompt")
+			}
+			if len(r.States) != 2 || r.States[1] != "working" {
+				return fmt.Errorf("the row went %v, want it to stay working", r.States)
+			}
+			if agent, ok := agentkind.Parse(c.A.Name); !ok || agent.SessionCaps().IdleSignal {
+				return fmt.Errorf("%s: the capability row claims an idle signal", c.A.Name)
+			}
+			return nil
+		}),
 	// A rollout the watch cannot read: the row never stays a silent
 	// working (§3.5). Without a transcript watch the hooks alone drive
 	// the row, which is the unsupported branch.
@@ -861,4 +965,24 @@ func restampRollout(t *testing.T, path string, end time.Time) {
 		return []byte(`"timestamp":"` + at + `"`)
 	})
 	writeFile(t, path, string(raw))
+}
+
+// TestTransportSuite_SessionCapsMatchAgentKind: the suite's session
+// capability rows are the ones the consumers decide by (agentkind; A5's
+// fixture replaces both).
+func TestTransportSuite_SessionCapsMatchAgentKind(t *testing.T) {
+	for _, a := range adapters {
+		if a.Session == nil {
+			continue
+		}
+		agent, ok := agentkind.Parse(a.Name)
+		if !ok {
+			t.Fatalf("%s has a session row but is not an agent kind", a.Name)
+		}
+		ak := agent.SessionCaps()
+		if a.Caps.PermissionWait != ak.PermissionWait || a.Caps.IdleSignal != ak.IdleSignal ||
+			a.Caps.MidturnInput != ak.TakesLineWhileWorking() {
+			t.Errorf("%s: suite caps %+v disagree with agentkind %+v", a.Name, a.Caps, ak)
+		}
+	}
 }
