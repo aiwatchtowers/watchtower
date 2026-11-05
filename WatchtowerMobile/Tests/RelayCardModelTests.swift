@@ -24,6 +24,15 @@ final class RelayCardModelTests: XCTestCase {
         model.rows.map { [$0.title, $0.value ?? ""] }
     }
 
+    func testOnlyACardWithNoLinkRowIsItselfThePress() throws {
+        XCTAssertEqual(try card(.free(ended: false)).cardAction, .openSubscription)
+        XCTAssertEqual(try card(.free(ended: false), unconfirmed: true).cardAction, .openSubscription)
+        XCTAssertNil(try card(.free(ended: true)).cardAction, "Subscribe is its own link row")
+        XCTAssertNil(try card(.unknown).cardAction, "Retry is its own link row")
+        XCTAssertNil(try card(.moved).cardAction)
+        XCTAssertNil(try card(.paying(grace: false, macs: [])).cardAction)
+    }
+
     func testEveryPhaseHasItsRowsAndAction() throws {
         struct Case {
             let phase: RelayAccountCenter.Phase

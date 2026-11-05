@@ -46,6 +46,9 @@ struct RelayCardModel: Equatable {
     let actionTitle: String?
     let toneUses: [ToneUse]
 
+    /// What pressing the card itself does: `action` when no link row performs it.
+    var cardAction: Action? { actionTitle == nil ? action : nil }
+
     /// nil on an unavailable relay: no card at all (a dark build shows nothing of Relay).
     /// `unconfirmedPurchase` (`center.unconfirmed != nil`) replaces the card of `.free` and `.unknown`: the other
     /// phases have their own answer.
