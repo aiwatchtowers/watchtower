@@ -288,5 +288,9 @@ func (s *queryStream) toolEnd(item *CodexItem) *ai.ToolEvent {
 		}
 		ev.Result = strings.Join(parts, "\n")
 	}
+	if !ev.OK && strings.TrimSpace(ev.Result) == "" {
+		// A failed call codex reported with no error and no result text.
+		ev.Result = "the tool failed"
+	}
 	return ev
 }

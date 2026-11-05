@@ -263,6 +263,16 @@ func TestToolEnd_FailureAlwaysHasAReason(t *testing.T) {
 		assert.False(t, end.OK, want)
 		assert.Equal(t, want, end.Result)
 	}
+	// A failed MCP call with neither an error nor a result (codex prints
+	// "error":null,"result":null) still says why.
+	for name, item := range map[string]*CodexItem{
+		"no error, no result":  {Type: "mcp_tool_call", Status: "failed"},
+		"blank result content": {Type: "mcp_tool_call", Status: "failed", Result: &CodexToolResult{}},
+	} {
+		end := s.toolEnd(item)
+		assert.False(t, end.OK, name)
+		assert.Equal(t, "the tool failed", end.Result, name)
+	}
 }
 
 // The watchtower server is mounted as watchtower-app when the owner's codex
