@@ -125,9 +125,6 @@ extension HostedRelayTransport {
         return buffered
     }
 
-    /// The next pull reads `zone` from 0 again, as a `TOKEN_EXPIRED` resync does (what the server no longer holds
-    /// leaves the buffer at its end): for a reader that must see what an earlier consumer of this store read and
-    /// compacted (relay client Phase 3 Task 12, the drain of a mailbox the phone left).
     /// The replica has a sweep pending and wants the whole data zone again (a route return onto a store whose
     /// cursor is above 0): starts a load from 0 unless one is running (it is resumed at its cursor, so a restart
     /// midway does not begin again). Nothing to do while the cursor is 0: the first pull is the load.
@@ -137,6 +134,9 @@ extension HostedRelayTransport {
         try store.beginRelayResync(.data, load: true)
     }
 
+    /// The next pull reads `zone` from 0 again, as a `TOKEN_EXPIRED` resync does (what the server no longer holds
+    /// leaves the buffer at its end): for a reader that must see what an earlier consumer of this store read and
+    /// compacted (relay client Phase 3 Task 12, the drain of a mailbox the phone left).
     public func readFromStart(_ zone: CloudZoneID) throws {
         try store.beginRelayResync(zone)
     }
