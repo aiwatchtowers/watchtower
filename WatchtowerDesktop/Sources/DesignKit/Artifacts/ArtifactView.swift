@@ -411,7 +411,7 @@ struct ArtifactActionButton: View {
         } else if mode == .preview {
             plain.disabled(true).help(ArtifactRenderMode.previewButtonHelp)
         } else {
-            plain
+            plain.disabled(!environment.isActionEnabled(index))
         }
     }
 

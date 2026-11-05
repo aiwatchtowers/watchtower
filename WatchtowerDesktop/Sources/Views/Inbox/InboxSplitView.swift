@@ -202,6 +202,7 @@ struct InboxSplitView<EmptyList: View>: View {
             saveProposal: saveProposal,
             onRetryBuiltin: onRetryBuiltin,
             workbenches: workbenches,
+            artifactPeople: vm.feed.artifactPeople,
             dayCard: { card in
                 if let pane = dayPane?(card) {
                     around(pane, card)

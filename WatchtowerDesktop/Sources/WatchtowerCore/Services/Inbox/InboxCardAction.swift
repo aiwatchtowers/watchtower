@@ -19,8 +19,10 @@ package struct InboxCardAction: Equatable, Sendable {
         case name(String)
     }
 
-    /// The action's position in the stored array: what `automations reply
-    /// --action` takes, which a dropped action before it does not shift.
+    /// The action's press address: its index in the card's flattened action
+    /// list (the card's own actions first, so for those the position in the
+    /// stored array) — what `automations reply --action` takes, which a
+    /// dropped action before it does not shift.
     package let index: Int
     package let label: String
     package let kind: Kind

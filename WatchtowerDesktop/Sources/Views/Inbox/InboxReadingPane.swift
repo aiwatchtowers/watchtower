@@ -2,9 +2,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Inbox's reading pane (spec B1, C1 §6.2): the selected row read in
-/// full. An automation card shows where it came from (a link to its run),
-/// its title, its body as markdown under the chat's link rules, and its
-/// buttons; a reminder its note, its Slack message and Done / Snooze 1h; a
+/// full. An automation card shows where it came from (a link to its run, or
+/// "Updated …" on a living card), its title, its body — markdown under the
+/// chat's link rules, or its blocks (`InboxCardLayout`) — and its buttons; a reminder its note, its Slack message and Done / Snooze 1h; a
 /// pending `save_automation` proposal its summary (`SaveAutomationProposalPane`),
 /// any other proposal its `AgentActionCardView`; a message its
 /// `InboxMessagePane`. The day, track and idea cards come from `dayCard`,
@@ -36,6 +36,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let onRetryBuiltin: ((String) -> Void)?
     /// The workbenches a card's agent press can go to.
     let workbenches: [Workbench]
+    /// `users` id → best name for a card's `person` blocks.
+    let artifactPeople: [String: String]
     let dayCard: (InboxDayCard) -> DayCard
     let trackCard: (InboxTrackCard) -> TrackCard
     let ideaCard: (Idea) -> IdeaCard
@@ -54,6 +56,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
+        artifactPeople: [String: String] = [:],
         @ViewBuilder dayCard: @escaping (InboxDayCard) -> DayCard,
         @ViewBuilder trackCard: @escaping (InboxTrackCard) -> TrackCard,
         @ViewBuilder ideaCard: @escaping (Idea) -> IdeaCard
@@ -71,6 +74,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         self.saveProposal = saveProposal
         self.onRetryBuiltin = onRetryBuiltin
         self.workbenches = workbenches
+        self.artifactPeople = artifactPeople
         self.dayCard = dayCard
         self.trackCard = trackCard
         self.ideaCard = ideaCard
@@ -140,18 +144,25 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                     Chip(text: "High", color: Tone.priority("high"))
                 }
             }
-            if !card.body.isEmpty {
-                MarkdownView(text: card.body)
+            switch InboxCardLayout.of(card) {
+            case .markdown:
+                if !card.body.isEmpty {
+                    MarkdownView(text: card.body)
+                }
+                InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
+                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
+                    .padding(.top, Spacing.small)
+            case let .artifact(result, cardActions):
+                InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
+                                  navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
+                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
             }
-            InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                             onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
-                .padding(.top, Spacing.small)
         }
     }
 
     @ViewBuilder
     private func source(_ card: AutomationOutputCard) -> some View {
-        let line = InboxCardTexts.readingSourceLine(card)
+        let line = InboxCardTexts.readingSourceLine(card, now: now)
         if let onOpenAutomationRun {
             Button(line) { onOpenAutomationRun(card.runID) }
                 .buttonStyle(.kitQuiet)

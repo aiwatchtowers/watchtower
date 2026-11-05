@@ -37,8 +37,8 @@ extension AppState {
             case .workbench(let id): await handInboxCardToAgent(subject, task: task, workbenchID: id)
             case .pick: actionStripViewModel?.lastError = Self.inboxNoWorkbench
             }
-        case let .reply(outputID, action):
-            await actionStripViewModel?.pressReply(outputID: outputID, action: action)
+        case let .reply(outputID, action, contentHash):
+            await actionStripViewModel?.pressReply(outputID: outputID, action: action, contentHash: contentHash)
         case .openAutomation(let card):
             openAutomationRun(automationID: card.automationID, runID: nil)
         }

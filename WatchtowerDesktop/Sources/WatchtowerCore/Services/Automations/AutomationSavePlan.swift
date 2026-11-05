@@ -100,6 +100,8 @@ package enum AutomationChangePresentation {
             return "Permissions \(listWords(change.old)) → \(listWords(change.new))"
         case "scope":
             return "Scope \(change.old) → \(change.new)"
+        case "artifacts":
+            return "Cards \(artifactsWords(change.old)) → \(artifactsWords(change.new))"
         default:
             return "\(change.field) \(change.old) → \(change.new)"
         }
@@ -118,6 +120,12 @@ package enum AutomationChangePresentation {
     private static func triggerKind(_ json: String) -> String {
         let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
         return ["schedule", "button", "event", "manual"].first { object[$0] != nil } ?? ""
+    }
+
+    /// `artifacts`: `feed` (a new card per run, also the hash's absent key)
+    /// or `living` (one card per key, kept current).
+    private static func artifactsWords(_ value: String) -> String {
+        value == "living" ? "kept current" : "new each run"
     }
 
     private static func missedWords(_ value: String) -> String {

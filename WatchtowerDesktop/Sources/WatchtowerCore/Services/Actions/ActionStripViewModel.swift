@@ -411,9 +411,12 @@ package final class ActionStripViewModel {
     private func openingWrite(_ item: InboxSelection) -> (@Sendable (Database) throws -> Void)? {
         switch item {
         case .output(let id):
-            guard outputRows.first(where: { $0.id == id })?.isUnread == true else { return nil }
+            guard let card = outputRows.first(where: { $0.id == id }), card.isUnread else { return nil }
             let now = Date()
-            return { try AutomationQueries.markOutputOpened($0, id: id, now: now) }
+            let hash = card.contentHash
+            // A card rewritten under the view stays unread: the mark is for
+            // the version drawn, and the refresh after the write shows the new one.
+            return { _ = try AutomationQueries.markOutputOpened($0, id: id, contentHash: hash, now: now) }
         case .day(let date):
             guard let briefing = feed.days.first(where: { $0.date == date })?.briefing, !briefing.isRead else { return nil }
             let id = briefing.id
@@ -520,19 +523,43 @@ package final class ActionStripViewModel {
         }
     }
 
-    /// Done on an output card: writes `done_at` only. The card leaves the
-    /// strip only once the write landed; a failure keeps it and says why.
+    /// Done on an output card: writes `done_at` only, at the version drawn.
+    /// The card leaves the strip only once the write landed; a card
+    /// rewritten under the view (its hash moved) changes nothing and is
+    /// read again, so the new version shows; a failure keeps it and says why.
     package func markOutputDone(_ id: Int64) async {
         let now = Date()
-        await write(.card(.output(id)), { try AutomationQueries.markOutputDone($0, id: id, now: now) },
-                    onSuccess: { self.deselect(.output(id)) })
+        let hash = drawnHash(id)
+        await guardedWrite(.output(id)) { try AutomationQueries.markOutputDone($0, id: id, contentHash: hash, now: now) }
     }
 
-    /// Dismiss on an output card: writes `dismissed_at` only.
+    /// Dismiss on an output card: writes `dismissed_at` only, at the version drawn.
     package func dismissOutput(_ id: Int64) async {
         let now = Date()
-        await write(.card(.output(id)), { try AutomationQueries.dismissOutput($0, id: id, now: now) },
-                    onSuccess: { self.deselect(.output(id)) })
+        let hash = drawnHash(id)
+        await guardedWrite(.output(id)) { try AutomationQueries.dismissOutput($0, id: id, contentHash: hash, now: now) }
+    }
+
+    /// The content hash of output `id` as the list drew it; `""` (a row from
+    /// before the blocks migration, or one no longer listed) otherwise.
+    private func drawnHash(_ id: Int64) -> String {
+        outputRows.first { $0.id == id }?.contentHash ?? ""
+    }
+
+    /// A read-state write that may change nothing: the card is deselected
+    /// only when its row changed; either way the list is read again, so a
+    /// card rewritten meanwhile shows as the database has it.
+    private func guardedWrite(_ item: InboxSelection, _ change: @escaping @Sendable (Database) throws -> Bool) async {
+        let pool = dbPool
+        await pendingWrites.run(CardKey.card(item)) {
+            lastError = nil
+            do {
+                if try await pool.write(change) { deselect(item) }
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
     }
 
     /// A Reply button: `watchtower automations reply` records the press and
@@ -540,7 +567,10 @@ package final class ActionStripViewModel {
     /// nothing for it (STRIP-02). One press per card at a time; the card then
     /// shows its sent state, and a refusal ("Sent — run #7", a recipe that
     /// cannot run) keeps it and says why.
-    package func pressReply(outputID: Int64, action: Int) async {
+    /// `action` is the press's index in the card's flattened action list and
+    /// `contentHash` the version drawn: a card rewritten since is refused by
+    /// the CLI ("This card changed — look again") and nothing is queued.
+    package func pressReply(outputID: Int64, action: Int, contentHash: String) async {
         let runner = cliRunner
         await pendingWrites.run(CardKey.card(.output(outputID))) {
             lastError = nil
@@ -549,7 +579,8 @@ package final class ActionStripViewModel {
                 return
             }
             do {
-                _ = try await AutomationsCLI(runner: runner).reply(outputID: outputID, action: action)
+                _ = try await AutomationsCLI(runner: runner)
+                    .reply(outputID: outputID, action: action, contentHash: contentHash)
                 await refresh()
             } catch {
                 await refresh()
@@ -604,7 +635,6 @@ package final class ActionStripViewModel {
     private func write(
         _ key: CardKey,
         _ change: @escaping @Sendable (Database) throws -> Void,
-        onSuccess: () -> Void = {},
         onFailure: (Error) async -> Void = { _ in }
     ) async {
         let pool = dbPool
@@ -612,7 +642,6 @@ package final class ActionStripViewModel {
             lastError = nil
             do {
                 try await pool.write(change)
-                onSuccess()
                 await refresh()
             } catch {
                 await onFailure(error)

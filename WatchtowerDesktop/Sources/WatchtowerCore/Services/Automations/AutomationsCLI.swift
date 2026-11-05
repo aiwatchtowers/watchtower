@@ -28,8 +28,9 @@ package struct AutomationsCLI {
         case sessionLaunched(step: Int64, session: Int64)
         case sessionEnded(step: Int64, status: SessionEnd, error: String?)
         case rescan(workbenchID: Int64)
-        /// The owner's press of Reply action `action` of Inbox card `outputID`.
-        case reply(outputID: Int64, action: Int)
+        /// The owner's press of Reply action `action` (its flattened index) of
+        /// Inbox card `outputID`, drawn at `contentHash`.
+        case reply(outputID: Int64, action: Int, contentHash: String)
         /// Deletes a built-in's owner copy: the shipped text runs again.
         case reset(Int64)
         /// Retries the one-time move of the built-ins' old settings.
@@ -108,8 +109,9 @@ package struct AutomationsCLI {
         case let .rescan(workbenchID):
             // The personal folder and this workbench's (spec §13.4).
             return ["automations", "rescan", "--workbench", String(workbenchID)]
-        case let .reply(outputID, action):
-            return ["automations", "reply", "--output", String(outputID), "--action", String(action), "--json"]
+        case let .reply(outputID, action, contentHash):
+            return ["automations", "reply", "--output", String(outputID), "--action", String(action),
+                    "--content-hash", contentHash, "--json"]
         case let .reset(id):
             return ["automations", "reset", String(id), "--json"]
         case .upgradeBuiltins:
@@ -224,9 +226,10 @@ package struct AutomationsCLI {
     }
 
     /// Records the press of a card's Reply action and queues one
-    /// `trigger='reply'` run (AUTO-09); the CLI wakes the daemon itself.
-    package func reply(outputID: Int64, action: Int) async throws -> ReplyResult {
-        try await decode(.reply(outputID: outputID, action: action))
+    /// `trigger='reply'` run (AUTO-09); the CLI wakes the daemon itself. A
+    /// card whose content changed since it was drawn is refused, nothing queued.
+    package func reply(outputID: Int64, action: Int, contentHash: String) async throws -> ReplyResult {
+        try await decode(.reply(outputID: outputID, action: action, contentHash: contentHash))
     }
 
     /// Resets built-in `id` to its shipped text (runnable at once, AUTO-06
