@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/codex"
+	"watchtower/internal/policy/policytest"
 )
 
 // v2CodexStub prints one codex chat turn: a preamble, an MCP call, the
@@ -31,7 +33,10 @@ func v2CodexStub(t *testing.T) string {
 		`{"type":"turn.completed","usage":{"input_tokens":50,"cached_input_tokens":10,"output_tokens":7}}`,
 	}, "\n")
 	path := filepath.Join(t.TempDir(), "codex")
-	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\ncat > /dev/null\ncat <<'__EOF__'\n"+jsonl+"\n__EOF__\n"), 0o755))
+	script := "#!/bin/sh\n" +
+		`if [ "$1" = --version ]; then echo 'codex-cli 0.166.0'; exit; fi` + "\n" +
+		"cat > /dev/null\ncat <<'__EOF__'\n" + jsonl + "\n__EOF__\n"
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
 	return path
 }
 
@@ -84,4 +89,53 @@ func TestToolRouteProvider_ForwardsChatEvents(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, tools)
+}
+
+// `ai query --events v2` through the real CLI entry, on codex directly and
+// through the tool router (fallback on): the turn's tool call reaches stdout
+// as tool_start/tool_end and its usage as a usage event. Guards the wiring
+// in runAIQuery (enableChatEvents) and in the router's run (configureLeaf),
+// which the tests above call by hand.
+func TestAIQueryV2_CodexChatEventsThroughTheCLI(t *testing.T) {
+	for name, fallback := range map[string]string{
+		"direct": "",
+		"routed": "  fallback: {enabled: true, provider: claude}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			policytest.Set(t, nil)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			dir := t.TempDir()
+			config := filepath.Join(dir, "config.yaml")
+			require.NoError(t, os.WriteFile(config, fmt.Appendf(nil, `active_workspace: test-ws
+workspaces:
+  test-ws:
+    slack_token: "xoxp-test-token"
+codex_path: %q
+ai:
+  provider: codex
+%s`, v2CodexStub(t), fallback), 0o600))
+			p := startCLI(t, "ai", "query", "--config", config, "--db-path", filepath.Join(dir, "wt.db"),
+				"--events", "v2", "--", "hi")
+			_ = p.stdin.Close()
+			var types []string
+			var usage chat.Event
+			routed := false
+			for line := range p.lines {
+				var e chat.Event
+				require.NoError(t, json.Unmarshal([]byte(line), &e), line)
+				types = append(types, e.Type)
+				if e.Type == chat.EventUsage {
+					usage = e
+				}
+				// Only the tool router announces its pick (a routing chunk).
+				routed = routed || (e.Type == chat.EventSessionReady && e.RoutingMode != "")
+			}
+			require.NoError(t, p.wait(), p.stderr.String())
+			assert.Equal(t, name == "routed", routed, "the turn went through the tool router: %v", types)
+			assert.Contains(t, types, chat.EventToolStart)
+			assert.Contains(t, types, chat.EventToolEnd)
+			assert.Equal(t, 7, usage.TokensOut, "%v", types)
+		})
+	}
 }

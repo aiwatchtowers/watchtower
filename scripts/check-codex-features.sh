@@ -31,7 +31,9 @@ for arg in "$@"; do
 done
 
 cd "$(dirname "$0")/.."
-codex --version
+# No bare `codex` call here: the tests resolve the binary the way Watchtower
+# does (codex.FindBinary: RichPATH with nvm/volta/fnm, then the login shell),
+# so a codex that is only under nvm and not on this shell's PATH still runs.
 WATCHTOWER_CHECK_CODEX_FEATURES=$mode go test ./internal/codex -run '^TestDisabledFeatures_' -count=1 -v
 if [ "$live" = 1 ]; then
 	WATCHTOWER_LIVE_CODEX=1 go test ./internal/codex -run '^TestCodexLive_' -count=1 -v

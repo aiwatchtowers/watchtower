@@ -47,14 +47,23 @@ func codexTreeStub(t *testing.T) (bin string, grandchild func() int) {
 	t.Cleanup(func() {
 		// The stub's group when it has one (the fixed wiring), and both
 		// pids by name either way (an unfixed run left them in ours).
+		var killed []int
 		if pid := readPid(stubPidFile); pid > 0 {
 			if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
 				_ = syscall.Kill(-pid, syscall.SIGKILL)
 			}
 			_ = syscall.Kill(pid, syscall.SIGKILL)
+			killed = append(killed, pid)
 		}
 		if pid := grandchild(); pid > 0 {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
+			killed = append(killed, pid)
+		}
+		// Wait until both are gone (reaped by their parent or by init), so
+		// no stub outlives the test.
+		for _, pid := range killed {
+			require.Eventually(t, func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH },
+				5*time.Second, 20*time.Millisecond, "codex stub process %d is still alive or unreaped after SIGKILL", pid)
 		}
 	})
 	return bin, grandchild

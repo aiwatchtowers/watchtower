@@ -73,7 +73,9 @@ waiting step until it is approved, rejected or times out.
 (`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
 `TestChat02_GateDecisionsAreSteps` (`internal/chat/gate_test.go`);
 `testChat02WaitingStepIsVisibleUntilItEnds`
-(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`)
+(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
+`TestTurnBackend_CodexToolCallsBecomeSteps`
+(`internal/chat/turn_backend_codex_test.go`)
 
 ## CHAT-03 — bounded warm sessions
 
@@ -250,6 +252,7 @@ child is never started without it.
 
 ## Changelog
 
+- 2026-11-05 (codex parity, branch `feature/codex-parity`): **CHAT-02** strengthened, no guard relaxed; the Observable's wording is unchanged. Codex main-chat turns (`NewTurnBackend` over `codex.Client` with `EmitToolEvents`) now meet it as the Claude path does: each `mcp_tool_call`/`command_execution` item is one `tool_start`/`tool_end` step, a failed or declined call is a red step with a reason, and a call still open when the stream ends is closed as a red step. New guard `TestTurnBackend_CodexToolCallsBecomeSteps` (`internal/chat/turn_backend_codex_test.go`, codex's JSONL through `codex.Client` and the turn backend); the opt-in live proof against the real codex CLI is `TestCodexLive_ChatToolStepAndUsage` (`internal/codex/live_test.go`, `WATCHTOWER_LIVE_CODEX=1`, never in CI, so not a guard). The existing CHAT-02 guards are unchanged. Feature note: `docs/features/chat-redesign.md`.
 - 2026-11-04 (fix: codex prompt file lifetime, owner approved ask #481): **CHAT-04** Observable amended, no guard relaxed; the "nothing on argv" rule is unchanged. codex re-reads its `model_instructions_file` for every model request of a run, so removing it at codex's first output failed the next request ("failed to load workspace requirements", codex-cli 0.159.2) and every codex-provider call with tools broke. The file now lives until codex exits (`fsutil.HoldTempFile`, a deferred release in `codex.Client.Query`/`QuerySync` and `codex.CodexGenerator.run`); its holder's shared flock keeps `fsutil.SweepStaleTemp` off it. `TestPromptFile_GoneAfterFirstOutput` is replaced by `TestPromptFile_KeptUntilCodexExits` (the fake re-reads the file after its first output; no file left after return); `TestHoldTempFile_SweepSkipsAHeldFile` covers the sweep. Trade-off: a process killed mid-run leaves the 0600 file until the 10-minute sweep. Feature note: `docs/features/files-outside-db.md`.
 
 - 2026-10-26 (Chats panel, spec `docs/superpowers/specs/2026-10-26-chats-panel-design.md`): note only — the tab's name changed (AI Chat → Chats) and `chat_conversations.read_at` was added (migration 00161). No guard changed or relaxed.

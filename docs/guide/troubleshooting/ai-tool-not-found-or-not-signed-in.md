@@ -9,6 +9,7 @@ Chat replies fail, digests and briefings report "Didn't work yet", or Setup keep
 - In a Workbench: "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart." or "Codex was not found."
 - A status line "Didn't work yet — retries automatically" whose reason names the tool.
 - A reason or a **Test Connection** line that names a Codex model: "**Codex needs an update to use** gpt-6-astra" or "gpt-6-astra **isn't available on your Codex account**".
+- After **Test Connection**: "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
 
 ## Why
 
@@ -20,7 +21,7 @@ Either the tool is not installed where Watchtower looks, or it is installed but 
 2. A red cross: install the tool, or type its full path into **Claude CLI Path** / **Codex CLI Path**. In Terminal, `which claude` (or `which codex`) prints the path. A green check means it was found.
 3. Not signed in: in Terminal run `claude login` (or `codex login`), or start `claude` and sign in. Use the same macOS user that runs Watchtower.
 4. Press **Test Connection**. The result line says what failed: not authenticated, "Model not available for your account.", "API overloaded. Try again later." or "Network error."
-5. A model error: clear **Light Model** or **Strong Model** with **Default**. "Codex needs an update": run `codex update` in Terminal. "Isn't available on your Codex account": type a model your account offers, such as `gpt-5.6-sol`.
+5. A model error: clear **Light Model** or **Strong Model** with **Default**. "Codex needs an update": run `codex update` in Terminal. "Isn't available on your Codex account": type a model your account offers, such as `gpt-5.6-sol`. "Ignored Watchtower's instructions": run `codex update` in Terminal, then **Test Connection** again.
 6. Ollama / Local: start the server, check the URL and that the chosen model exists, then **Test Connection**.
 7. Workbench: after the tool works, press **Restart** on the session.
 

@@ -50,7 +50,7 @@ func NewTurnBackend(q Querier, d *db.DB, conversationID int64, opts ...TurnOptio
 func (b *turnBackend) Start(ctx context.Context) (string, error) { return "", ctx.Err() }
 
 func (b *turnBackend) Turn(ctx context.Context, c Command, emit func(Event)) error {
-	replay, err := ReplayFromDB(b.d, b.conversationID, c.TurnID)
+	replay, err := ReplayFromDB(b.d, b.conversationID, c.TurnID, c.Attachments)
 	if err != nil {
 		return err
 	}
