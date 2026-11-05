@@ -19,7 +19,7 @@ func compressInPlace(t *testing.T, path string) {
 	require.NoError(t, err)
 	enc, err := zstd.NewWriter(nil)
 	require.NoError(t, err)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 	require.NoError(t, os.WriteFile(path, enc.EncodeAll(plain, nil), 0o600))
 }
 

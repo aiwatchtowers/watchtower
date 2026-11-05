@@ -26,7 +26,7 @@ func compress(t *testing.T, plain []byte) []byte {
 	t.Helper()
 	enc, err := zstd.NewWriter(nil)
 	require.NoError(t, err)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 	return enc.EncodeAll(plain, nil)
 }
 
