@@ -61,6 +61,21 @@ package struct AutomationDraftFooter: Equatable, Sendable {
             + AutomationCardPresentation.tokensText(Int64(dryRunTokens), estimated: false) + "."
     }
 
+    /// The editor footer's warnings, the same on every step (spec "Where it
+    /// sits"): the shell warning (#560), the #559 `llm()` warning and the
+    /// AI-step line, from the column of the bytes on screen.
+    package struct Warnings: Equatable, Sendable {
+        package let shell: String?
+        package let llm: String?
+        package let aiStep: String?
+
+        package init(column: AutomationDraftColumnModel, dryRunTokens: Int?) {
+            shell = column.shellWarning
+            llm = column.llmWarning
+            aiStep = AutomationDraftFooter.aiStepWarning(addsLLM: column.addsLLM, dryRunTokens: dryRunTokens)
+        }
+    }
+
     package let primary: Action
     package let primaryEnabled: Bool
     package let secondary: Action?

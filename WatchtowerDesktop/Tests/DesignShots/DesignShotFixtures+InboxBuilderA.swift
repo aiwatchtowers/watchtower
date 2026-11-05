@@ -137,8 +137,7 @@ enum InboxBuilderAShotFixtures {
     /// the AI-step line when `llmTokens`), as an edit of an automation that
     /// is on.
     private static func lookColumn(_ content: AutomationLookPaneContent, llmTokens: Int?, now: Date) -> AnyView {
-        let column = AutomationDraftColumnModel(text: "", validated: nil, isChecking: false, newestChatEntry: nil,
-                                                confirmedText: nil, isNew: false, plan: nil, checkFailed: true)
+        let column = lookColumnModel(addsLLM: llmTokens != nil)
         let verdict = AutomationDraftFooter.make(isNew: false, bytesChanged: true, enabled: true,
                                                  needsConfirmation: false)
         return AnyView(AutomationDraftSteps(
@@ -147,13 +146,28 @@ enum InboxBuilderAShotFixtures {
             footer: {
                 AutomationDraftFooterBar(
                     verdict: verdict, step: .look, ready: true, checking: false, isSaving: false,
-                    aiStepWarning: llmTokens.flatMap { AutomationDraftFooter.aiStepWarning(addsLLM: true, dryRunTokens: $0) }
+                    warnings: AutomationDraftFooter.Warnings(column: column, dryRunTokens: llmTokens)
                 ) { _ in }
                 .padding(Spacing.large)
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .detailBackground())
+    }
+
+    /// A checked edit of "Waiting for me" (living Inbox cards), with
+    /// `adds_llm` as given.
+    private static func lookColumnModel(addsLLM: Bool) -> AutomationDraftColumnModel {
+        let text = "---\nname: Waiting for me\n---\n"
+        let json = #"{"ok":true,"errors":[],"slug":"waiting","name":"Waiting for me","scope":"personal","#
+            + #""approval_hash":"h2","content_hash":"\#(AutomationDraftColumnModel.contentHash(text))","#
+            + #""permissions":["slack:read@acme","llm:light"],"outputs":["inbox"],"widening":[],"#
+            + #""changes":[],"changes_known":true,"adds_llm":\#(addsLLM),"#
+            + #""fields":{"trigger":"schedule: */30 9-18 * * 1-5","missed":"skip","concurrency":"1","#
+            + #""artifacts":"living","budget":{"tokens":20000,"minutes":5}}}"#
+        let validated = try? JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
+        return AutomationDraftColumnModel(text: text, validated: validated, isChecking: false, newestChatEntry: nil,
+                                          confirmedText: text, isNew: false, plan: nil)
     }
 
     private static func waitingCard(sample name: String = "waiting-living") -> AutomationLookPaneContent.Card {

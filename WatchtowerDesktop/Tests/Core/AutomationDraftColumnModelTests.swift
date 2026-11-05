@@ -355,4 +355,27 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         // Artifacts is not needed to show every field: an older CLI still saves.
         XCTAssertTrue(model(validated: try validated()).showsAllFields)
     }
+
+    /// The editor's footer carries the shell (#560), #559 and AI-step
+    /// warnings: `Warnings` is built from the column alone, so the footer
+    /// drawn under every step shows the same lines; in the steps view the
+    /// column's boxes no longer show the first two.
+    func testFooterWarningsComeFromTheColumn() throws {
+        let saved = AutomationDraftColumnModel.Saved(changedBy: "", changedAt: nil, needsConfirmation: false,
+                                                     llmAutoWrites: ["send_slack_message"])
+        let all = model(validated: try validated(feeds: true, permissions: ["shell:\"make test\"", "llm:light"],
+                                                 addsLLM: "true"),
+                        isNew: false, saved: saved)
+        let warnings = AutomationDraftFooter.Warnings(column: all, dryRunTokens: 5800)
+        XCTAssertEqual(warnings.shell, AutomationCardPresentation.shellWarning(permissions: ["shell:\"make test\""]))
+        XCTAssertEqual(warnings.llm, AutomationLLMWarning.line(feedsSourcesToLLM: true, tools: ["send_slack_message"]))
+        XCTAssertNotNil(warnings.llm)
+        XCTAssertEqual(warnings.aiStep,
+                       "This change adds an AI step: every run will use the model. This dry run used 5,800 tokens.")
+
+        let none = AutomationDraftFooter.Warnings(column: model(validated: try validated()), dryRunTokens: 5800)
+        XCTAssertNil(none.shell)
+        XCTAssertNil(none.llm)
+        XCTAssertNil(none.aiStep)
+    }
 }

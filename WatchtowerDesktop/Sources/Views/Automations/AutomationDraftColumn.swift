@@ -35,6 +35,9 @@ struct AutomationDraftColumn: View {
     var section = Section.all
 
     private var showsCollects: Bool { section != .schedule }
+    /// The shell and #559 warnings sit in the boxes only in the full column:
+    /// in the editor's steps they are in the footer, on every step.
+    private var showsWarnings: Bool { section == .all }
     private var showsSchedule: Bool { section != .collects }
 
     var body: some View {
@@ -85,9 +88,11 @@ struct AutomationDraftColumn: View {
                     }
                 }
             }
-            if let warning = model.shellWarning { LLMWarningLabel(text: warning) }
+            if showsWarnings, let warning = model.shellWarning { LLMWarningLabel(text: warning) }
             // With grants paused, the #559 warning sits by their boxes.
-            if model.pausedGrants.isEmpty, let warning = model.llmWarning { LLMWarningLabel(text: warning) }
+            if showsWarnings, model.pausedGrants.isEmpty, let warning = model.llmWarning {
+                LLMWarningLabel(text: warning)
+            }
         }
         box(title: "Sends", systemImage: "paperplane") {
             if let placeholder = model.placeholder {
@@ -182,7 +187,7 @@ struct AutomationDraftColumn: View {
                 Toggle("Keep auto for \(tool)", isOn: keepBinding(tool))
                     .toggleStyle(.checkbox)
             }
-            if let warning = model.llmWarning { LLMWarningLabel(text: warning) }
+            if showsWarnings, let warning = model.llmWarning { LLMWarningLabel(text: warning) }
         }
     }
 

@@ -411,7 +411,7 @@ struct AutomationEditorPanel: View {
                 ready: editor.canSave(key) && !isSaving,
                 checking: column.status == .checking && !isFailed(key),
                 isSaving: isSaving,
-                aiStepWarning: AutomationDraftFooter.aiStepWarning(addsLLM: column.addsLLM, dryRunTokens: tokens)
+                warnings: AutomationDraftFooter.Warnings(column: column, dryRunTokens: tokens)
             ) { press($0, key: key) }
         }
         .controlSize(.small)

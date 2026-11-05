@@ -13,13 +13,15 @@ struct AutomationDraftFooterBar: View {
     /// These bytes are being checked: the primary reads "Checking…".
     let checking: Bool
     let isSaving: Bool
-    /// `AutomationDraftFooter.aiStepWarning`; nil hides the line.
-    let aiStepWarning: String?
+    /// The shell, #559 and AI-step warnings, shown above the hint.
+    let warnings: AutomationDraftFooter.Warnings
     let onPress: (AutomationDraftFooter.Action) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            if let aiStepWarning { AutomationLLMStepWarning(text: aiStepWarning) }
+            if let shell = warnings.shell { LLMWarningLabel(text: shell).font(.callout) }
+            if let llm = warnings.llm { LLMWarningLabel(text: llm).font(.callout) }
+            if let aiStep = warnings.aiStep { AutomationLLMStepWarning(text: aiStep) }
             if !checking {
                 Text(verdict.hint)
                     .font(.caption)
