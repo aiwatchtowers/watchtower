@@ -262,7 +262,7 @@ struct MacTransportModel: Equatable {
 
         /// Paying on iCloud (S09), or on the relay whatever the account says (S08): the way back stays open.
         private func settledRule() -> Choice {
-            let footnote = MacTransportModel.footnote(link, ownDeviceID: ownDeviceID, now: now)
+            let footnote = MacTransportModel.footnote(link, ownDeviceID: ownDeviceID, subscriptionEnded: phase.subscriptionEnded, now: now)
             if onRelay {
                 if let blocked = iCloudBlocked {
                     return Choice(rows: [relayRow(chosen: true, enabled: true), iCloudRow(line: blocked)])
@@ -309,8 +309,9 @@ struct MacTransportModel: Equatable {
     }
 
     /// "Applies to every phone of this Mac.", then who changed it last and when, when anyone did.
-    private static func footnote(_ link: LinkRecord, ownDeviceID: String?, now: Date) -> String {
-        guard let who = MacsModel.switchedByText(link, ownDeviceID: ownDeviceID) else { return appliesToEveryPhone }
+    private static func footnote(_ link: LinkRecord, ownDeviceID: String?, subscriptionEnded: Bool, now: Date) -> String {
+        let by = MacsModel.switchedByText(link, ownDeviceID: ownDeviceID, subscriptionEnded: subscriptionEnded)
+        guard let who = by else { return appliesToEveryPhone }
         guard let at = link.switchedAt else { return "\(appliesToEveryPhone) Last changed \(who)." }
         let moment = RecordingsFormat(calendar: .current, now: now).inSentence(at)
         return "\(appliesToEveryPhone) Last changed \(who) \(moment)."

@@ -97,7 +97,7 @@ func (h *hubRuntime) switcherConfig(ac actions.Config) switcher.Config {
 	if h.acct != nil {
 		c.Paying = h.payingByDevice
 		c.AnyPaying = func(ctx context.Context) (bool, error) {
-			acct, err := h.readAccount(ctx)
+			acct, err := h.followed(h.acct.Fresh(ctx))
 			if err != nil {
 				return false, err
 			}

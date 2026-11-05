@@ -64,6 +64,7 @@ type world struct {
 	// payHang: the account read blocks until its context ends.
 	unmatched bool
 	payHang   bool
+	onRead    func() // runs inside an account read (a phone linking meanwhile)
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -144,6 +145,12 @@ func newWorld(t *testing.T, flavour string) *world {
 			return maps.Clone(w.paying), nil
 		},
 		AnyPaying: func(ctx context.Context) (bool, error) {
+			w.mu.Lock()
+			hook := w.onRead
+			w.mu.Unlock()
+			if hook != nil {
+				hook()
+			}
 			w.mu.Lock()
 			hang, err, anyPays := w.payHang, w.payErr, w.unmatched
 			for _, p := range w.paying {

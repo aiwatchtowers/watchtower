@@ -1,6 +1,7 @@
 package switcher_test
 
 import (
+	"database/sql"
 	"errors"
 	"slices"
 	"strconv"
@@ -432,12 +433,29 @@ func TestHubActsOnEntitlementControl(t *testing.T) {
 func g2World(t *testing.T, w *world) *hubtest.Phone {
 	t.Helper()
 	a := w.addPhone(true)
+	w.route(a, true)
 	w.moveTo(a, wire.TransportRelay)
 	w.advance(switcher.NoPayerPoll)
 	w.mu.Lock()
 	w.paying = map[string]bool{} // the revoked slots are gone from the account
 	w.mu.Unlock()
 	return a
+}
+
+// route gives ph an iCloud route (it was linked over CloudKit) or takes it
+// away: the sidecar's user_record_name, which CloudKitLinks counts.
+func (w *world) route(ph *hubtest.Phone, on bool) {
+	w.t.Helper()
+	user := ""
+	if on {
+		user = "_user"
+	}
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE devices SET user_record_name = ? WHERE device_id = ? COLLATE NOCASE`, user, ph.ID().String())
+		return err
+	}); err != nil {
+		w.t.Fatal(err)
+	}
 }
 
 // poll runs one PollOther, one interval after the last.
@@ -545,35 +563,130 @@ func TestG2APhoneLinkingMovesNothing(t *testing.T) {
 	})
 }
 
-func TestG2NoPhonesEverLinkedMovesNothing(t *testing.T) {
+// A hub with no linked phone at all, on the relay by its stored route, is
+// not moved (the guard on the list, not the start state).
+func TestG2NoPhonesLinkedOnTheRelayMovesNothing(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
+		if err := w.st.SetMeta(switcher.MetaTransport, string(transport.KindRelay)); err != nil {
+			t.Fatal(err)
+		}
+		w.rebuild(nil)
+		w.wantActive(transport.KindRelay)
 		for range 4 {
 			w.pollAfterInterval()
 		}
-		w.wantActive(transport.KindCloudKit) // never on the relay: nothing to move from
-		if _, _, ok, _ := w.sw.SwitchedAt(); ok {
-			t.Fatal("a switch happened")
-		}
+		w.wantActive(transport.KindRelay)
 	})
 }
 
+// A phone linked a moment ago (its relay slot may not be listed yet) is not
+// counted: the first read waits for it to be an interval old.
+func TestG2APhoneLinkedWithinTheIntervalIsNotCounted(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.route(a, true)
+		w.moveTo(a, wire.TransportRelay)
+		w.sw.PollOther(w.ctx) // a paying read arms the interval now
+		w.advance(2 * time.Minute)
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error { // the phone links now
+			_, err := tx.Exec(`UPDATE devices SET linked_at = ?`, float64(w.clock().UnixNano())/1e9)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w.mu.Lock()
+		w.paying = map[string]bool{}
+		w.mu.Unlock()
+		w.advance(3 * time.Minute)
+		w.sw.PollOther(w.ctx) // the interval is up, the phone is 3 minutes old: nothing counts
+		w.pollAfterInterval() // count 1
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A phone that links while the account is being read changes the list under
+// the answer: that answer counts for nothing.
+func TestG2APhoneLinkingDuringTheReadResetsTheCount(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		w.pollAfterInterval() // count 1
+		w.mu.Lock()
+		w.onRead = func() {
+			w.mu.Lock()
+			w.onRead = nil
+			w.mu.Unlock()
+			w.addPhone(false)
+		}
+		w.mu.Unlock()
+		w.pollAfterInterval() // the list changed during this read
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval() // count 1 for the new list
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// No phone with an iCloud route: nothing to follow to iCloud, so the hub
+// stays on the relay however long nobody pays. A route gained or lost
+// between the reads restarts the count (a route lost leaves none again).
+func TestG2NoICloudRouteMovesNothing(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := g2World(t, w)
+		w.route(a, false)
+		for range 4 {
+			w.pollAfterInterval()
+		}
+		w.wantActive(transport.KindRelay)
+		w.route(a, true)
+		w.pollAfterInterval() // count 1
+		w.route(a, false)     // the route is lost between the reads
+		w.pollAfterInterval()
+		w.pollAfterInterval()
+		w.wantActive(transport.KindRelay)
+		w.route(a, true)
+		w.pollAfterInterval() // count 1 again
+		b := w.addPhone(false)
+		w.route(b, true) // a second route gained between the reads
+		w.advance(switcher.NoPayerPoll)
+		w.pollAfterInterval() // the routes changed: count 1
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A phone's own request is in flight (the hub heads for the relay again after
+// a pending move off it): the check does not replace it with its own.
 func TestG2APendingSwitchIsNotOverridden(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		a := g2World(t, w)
-		w.pollAfterInterval()
-		w.advance(switcher.AntiFlap)
-		// the phone's own request toward CloudKit is in flight (not stepped)
-		target := wire.TransportCloudKit
-		w.onCloudKit(a)
-		if _, err := a.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil {
+		w.pollAfterInterval() // count 1
+		id := a.ID().String()
+		w.mu.Lock()
+		w.paying[id] = true // so the phone may ask for the relay
+		w.mu.Unlock()
+		if err := w.sw.Request(w.ctx, id, transport.KindCloudKit, ""); err != nil {
 			t.Fatal(err)
 		}
-		w.sw.PollOther(w.ctx)
-		w.settle(a)
-		w.wantActive(transport.KindCloudKit)
-		if _, by, _, _ := w.sw.SwitchedAt(); by != a.ID().String() && by != wire.SwitchedByEntitlement {
-			t.Fatalf("switched_by %q", by)
+		if err := w.sw.Request(w.ctx, id, transport.KindRelay, ""); err != nil {
+			t.Fatal(err)
 		}
+		w.mu.Lock()
+		w.paying[id] = false
+		w.mu.Unlock()
+		if !w.sw.Pending() {
+			t.Fatal("no request in flight")
+		}
+		w.advance(switcher.NoPayerPoll)
+		w.sw.PollOther(w.ctx) // no Step: the request stays in flight
+		w.sw.PollOther(w.ctx)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindRelay) // the phone's last word stood
 	})
 }
 

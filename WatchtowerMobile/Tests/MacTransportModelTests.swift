@@ -391,7 +391,7 @@ final class MacTransportModelTests: XCTestCase {
             (own, today, "\(applies) Last changed by this iPhone at 10:42."),
             (own.lowercased(), today, "\(applies) Last changed by this iPhone at 10:42."),
             ("B7C1F5F0-3A77-4E4E-9D46-111111111111", today, "\(applies) Last changed by another iPhone at 10:42."),
-            (lapse, today, "\(applies) Last changed when your subscription ended at 10:42."),
+            (lapse, today, applies), // paying: a charged owner is never told "ended"
             (own, nil, "\(applies) Last changed by this iPhone.")
         ]
         for (by, at, expected) in cases {

@@ -217,12 +217,37 @@ final class MacsModelTests: XCTestCase {
             (link(nil), true, "Switching…")
         ]
         for (record, inFlight, expected) in table {
-            XCTAssertEqual(MacsModel.transportLine(record, ownDeviceID: own, inFlight: inFlight, now: now), expected)
+            XCTAssertEqual(MacsModel.transportLine(record, ownDeviceID: own, inFlight: inFlight, subscriptionEnded: true, now: now), expected)
         }
         XCTAssertEqual(
-            MacsModel.transportLine(link(.relay, by: "device-1", at: at), ownDeviceID: nil, inFlight: false, now: now),
+            MacsModel.transportLine(link(.relay, by: "device-1", at: at), ownDeviceID: nil, inFlight: false, subscriptionEnded: true, now: now),
             "Relay · switched by another iPhone, Today 10:42", "no own id: nobody is this iPhone"
         )
+    }
+
+    /// A paying phone, and one that never subscribed, is not told its subscription ended (relay-client.md: a charged
+    /// owner is never told "ended"): a move for a lapse reads the plain name, in the line and in the footnote.
+    func testALapseMoveIsToldOnlyToAPhoneWhoseSubscriptionEnded() {
+        let (at, now) = morning
+        let record = link(.cloudKit, by: "entitlement_expired", at: at)
+        let phases: [(RelayAccountCenter.Phase, Bool)] = [
+            (.free(ended: true), true), (.moved, true), (.free(ended: false), false),
+            (.paying(grace: false, macs: []), false), (.paying(grace: true, macs: []), false),
+            (.checking, false), (.unknown, false)
+        ]
+        for (phase, ended) in phases {
+            XCTAssertEqual(phase.subscriptionEnded, ended, "\(phase)")
+            XCTAssertEqual(
+                MacsModel.transportLine(
+                    record, ownDeviceID: "device-1", inFlight: false, subscriptionEnded: phase.subscriptionEnded, now: now
+                ),
+                ended ? "iCloud · your subscription ended, Today 10:42" : "iCloud", "\(phase)"
+            )
+            XCTAssertEqual(
+                MacsModel.switchedByText(record, ownDeviceID: "device-1", subscriptionEnded: phase.subscriptionEnded),
+                ended ? "when your subscription ended" : nil, "\(phase)"
+            )
+        }
     }
 
     /// The hub writes the phone's device id lower-case (`b.id.String()`); the link keeps `UUID.uuidString`.
@@ -231,12 +256,12 @@ final class MacsModelTests: XCTestCase {
         let id = UUID()
         var record = link(.relay, by: id.uuidString.lowercased(), at: at)
         XCTAssertEqual(
-            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, now: now),
+            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, subscriptionEnded: true, now: now),
             "Relay · switched by this iPhone, Today 10:42"
         )
         record.switchedBy = UUID().uuidString.lowercased()
         XCTAssertEqual(
-            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, now: now),
+            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, subscriptionEnded: true, now: now),
             "Relay · switched by another iPhone, Today 10:42"
         )
     }
@@ -244,7 +269,9 @@ final class MacsModelTests: XCTestCase {
     func testAnotherPhonesIDNeverShows() {
         let (at, now) = morning
         for by in ["device-2", "7B1E5C0A-1234-4F6A-9B1F-0123456789AB", "entitlement_expired", "device-1"] {
-            let line = MacsModel.transportLine(link(.relay, by: by, at: at), ownDeviceID: "device-1", inFlight: false, now: now)
+            let line = MacsModel.transportLine(
+                link(.relay, by: by, at: at), ownDeviceID: "device-1", inFlight: false, subscriptionEnded: true, now: now
+            )
             XCTAssertFalse(line.contains("device-"), line)
             XCTAssertFalse(line.contains("7B1E5C0A"), line)
             XCTAssertFalse(line.contains("entitlement_expired"), line)

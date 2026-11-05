@@ -56,6 +56,15 @@ final class RelayAccountCenter {
         case free(ended: Bool)
         case paying(grace: Bool, macs: [String])
         case moved
+
+        /// This phone's own subscription ended or moved away: the only phases whose Mac lines say "your subscription
+        /// ended". Paying, never subscribed (`free(ended: false)`), checking and unknown do not.
+        var subscriptionEnded: Bool {
+            switch self {
+            case .free(ended: true), .moved: true
+            case .free(ended: false), .paying, .checking, .unknown: false
+            }
+        }
     }
 
     enum PurchaseState: Equatable {
