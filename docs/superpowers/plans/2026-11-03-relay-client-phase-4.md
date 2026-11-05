@@ -142,7 +142,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | Condition | Owner |
 |---|---|
 | G1, device records on the relay | Go hub session |
-| G2, a desktop hub after a move with the old phone gone: checked, and fixed if needed | Go hub session |
+| ~~G2, a desktop hub after a move with the old phone gone~~ **Closed** (ask #1055): `switcher.checkNoPayer` moves a desktop host on the relay to iCloud (by `entitlement_expired`) after two quiet reads of "nobody pays"; see `docs/features/relay-client.md` | Go hub session |
 | G3, the duplicate alert at a switch: **closed**, accepted as a v1 limit (Open decision 10, ask #1038) | owner's ruling |
 | G4, a `push_off` alert at a switch to iCloud: **closed**, accepted as a v1 limit (ask #1054) | owner's ruling |
 | #1537, a hello lost on a failed owner read: fixed | Go hub session |

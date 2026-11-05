@@ -1,6 +1,7 @@
 package switcher_test
 
 import (
+	"errors"
 	"slices"
 	"strconv"
 	"testing"
@@ -421,26 +422,173 @@ func TestHubActsOnEntitlementControl(t *testing.T) {
 	})
 }
 
-// G2 (relay client phase 4 launch conditions): the only paying phone is gone
-// (wiped after a subscription move: the relay revoked its slots and sent
-// neither SLOT_REMOVED nor ENTITLEMENT_EXPIRED, and the phone never asks).
-// The account read answers with nobody paying. This pins what the switcher
-// does today: nothing tells the desktop host, so it stays on the relay for
-// any amount of polling. A fix flips this test.
-func TestG2NoPayingPhoneLeftDoesNotMoveADesktopHostToday(t *testing.T) {
+// G2 (relay client launch conditions): the only paying phone is gone (wiped
+// after a subscription move: the relay revoked its slots and sent neither
+// SLOT_REMOVED nor ENTITLEMENT_EXPIRED, and the phone never asks). nopayer.go
+// moves the desktop host to CloudKit by itself, on two quiet reads.
+
+// g2World is a hub on the relay whose phone was linked long ago and whose
+// account lists nobody paying.
+func g2World(t *testing.T, w *world) *hubtest.Phone {
+	t.Helper()
+	a := w.addPhone(true)
+	w.moveTo(a, wire.TransportRelay)
+	w.advance(switcher.NoPayerPoll)
+	w.mu.Lock()
+	w.paying = map[string]bool{} // the revoked slots are gone from the account
+	w.mu.Unlock()
+	return a
+}
+
+// poll runs one PollOther, one interval after the last.
+func (w *world) pollAfterInterval() {
+	w.t.Helper()
+	w.advance(switcher.NoPayerPoll)
+	w.sw.PollOther(w.ctx)
+	if err := w.sw.Step(w.ctx); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestG2NoPayingPhoneLeftMovesADesktopHostToCloudKit(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
-		a := w.addPhone(true)
-		w.moveTo(a, wire.TransportRelay)
-		w.mu.Lock()
-		w.paying = map[string]bool{} // the revoked slots are gone from the account
-		w.mu.Unlock()
-		for range 20 {
-			w.advance(switcher.OtherPoll)
-			w.sw.PollOther(w.ctx)
-			if err := w.sw.Step(w.ctx); err != nil {
-				t.Fatal(err)
-			}
-		}
+		g2World(t, w)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindRelay) // one read is not enough
+		w.sw.PollOther(w.ctx)             // inside the interval: no second read
 		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+		if _, by, ok, err := w.sw.SwitchedAt(); err != nil || !ok || by != wire.SwitchedByEntitlement {
+			t.Fatalf("switched_by %q %v %v", by, ok, err)
+		}
+	})
+}
+
+func TestG2AnOutageOrATimeoutMovesNothing(t *testing.T) {
+	for _, how := range []string{"error", "timeout"} {
+		t.Run(how, func(t *testing.T) {
+			eachFlavour(t, func(t *testing.T, w *world) {
+				g2World(t, w)
+				w.pollAfterInterval() // count 1
+				w.mu.Lock()
+				if how == "error" {
+					w.payErr = errors.New("relay unreachable")
+				} else {
+					w.payHang = true
+				}
+				w.mu.Unlock()
+				w.pollAfterInterval()
+				w.pollAfterInterval()
+				w.wantActive(transport.KindRelay)
+				w.mu.Lock()
+				w.payErr, w.payHang = nil, false
+				w.mu.Unlock()
+				w.pollAfterInterval() // the outage reset the count: 1 again
+				w.wantActive(transport.KindRelay)
+				w.pollAfterInterval()
+				w.wantActive(transport.KindCloudKit)
+			})
+		})
+	}
+}
+
+func TestG2ARestartRestartsTheCount(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		w.pollAfterInterval()
+		w.rebuild(nil)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+func TestG2APayerAppearingResetsTheCount(t *testing.T) {
+	for _, how := range []string{"linked phone", "unmatched account phone"} {
+		t.Run(how, func(t *testing.T) {
+			eachFlavour(t, func(t *testing.T, w *world) {
+				a := g2World(t, w)
+				w.pollAfterInterval()
+				w.mu.Lock()
+				if how == "linked phone" {
+					w.paying[a.ID().String()] = true
+				} else {
+					w.unmatched = true // a phone whose relay id is not learned yet
+				}
+				w.mu.Unlock()
+				w.pollAfterInterval()
+				w.mu.Lock()
+				w.paying[a.ID().String()] = false
+				w.unmatched = false
+				w.mu.Unlock()
+				w.pollAfterInterval()
+				w.wantActive(transport.KindRelay)
+				w.pollAfterInterval()
+				w.wantActive(transport.KindCloudKit)
+			})
+		})
+	}
+}
+
+func TestG2APhoneLinkingMovesNothing(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		w.pollAfterInterval() // count 1
+		w.addPhone(false)     // linked just now, not in the account yet
+		w.sw.PollOther(w.ctx)
+		w.pollAfterInterval() // the list changed: the count restarts at 1
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+func TestG2NoPhonesEverLinkedMovesNothing(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		for range 4 {
+			w.pollAfterInterval()
+		}
+		w.wantActive(transport.KindCloudKit) // never on the relay: nothing to move from
+		if _, _, ok, _ := w.sw.SwitchedAt(); ok {
+			t.Fatal("a switch happened")
+		}
+	})
+}
+
+func TestG2APendingSwitchIsNotOverridden(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := g2World(t, w)
+		w.pollAfterInterval()
+		w.advance(switcher.AntiFlap)
+		// the phone's own request toward CloudKit is in flight (not stepped)
+		target := wire.TransportCloudKit
+		w.onCloudKit(a)
+		if _, err := a.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil {
+			t.Fatal(err)
+		}
+		w.sw.PollOther(w.ctx)
+		w.settle(a)
+		w.wantActive(transport.KindCloudKit)
+		if _, by, _, _ := w.sw.SwitchedAt(); by != a.ID().String() && by != wire.SwitchedByEntitlement {
+			t.Fatalf("switched_by %q", by)
+		}
+	})
+}
+
+func TestG2AfterTheMoveTheAntiFlapStillHolds(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := g2World(t, w)
+		w.pollAfterInterval()
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+		w.mu.Lock()
+		w.paying[a.ID().String()] = true
+		w.mu.Unlock()
+		w.onCloudKit(a)
+		w.ask(a, wire.TransportRelay) // a paying phone asks at once: too soon
+		w.settle(a)
+		w.wantActive(transport.KindCloudKit)
 	})
 }

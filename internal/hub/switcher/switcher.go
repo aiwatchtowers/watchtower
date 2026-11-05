@@ -106,8 +106,11 @@ type Config struct {
 	Publisher       *slices.Publisher
 	Keyboxes        func() ([]wire.Keybox, error)
 	Paying          func(ctx context.Context) (map[string]bool, error)
-	OldSideTimeout  time.Duration
-	Clock           func() time.Time
+	// AnyPaying (optional) is whether any phone in the relay account pays,
+	// matched to a linked phone or not; an error is unknown (nopayer.go).
+	AnyPaying      func(ctx context.Context) (bool, error)
+	OldSideTimeout time.Duration
+	Clock          func() time.Time
 	// OnSwitched (nil = none) sees each switch once its commit moved the
 	// active transport to target, while the publisher is still held (the
 	// runtime drops the queued alert pushes on a switch to CloudKit and
@@ -133,6 +136,9 @@ type Switcher struct {
 	// read that answered (entitlement.go). Device ids in uuidString form.
 	pending map[string]bool
 	paying  map[string]bool
+
+	npMu sync.Mutex // the no-payer check (nopayer.go)
+	np   noPayer
 
 	boMu    sync.Mutex // the failed-Step backoff
 	boDelay time.Duration
@@ -437,6 +443,7 @@ func (s *Switcher) PollOther(ctx context.Context) {
 	}
 	s.writeOwedMarkers(ctx, "")
 	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
+	s.checkNoPayer(ctx)  // G2: nobody pays any more
 	if s.Pending() && s.stepDue() {
 		s.Kick()
 	}

@@ -60,6 +60,10 @@ type world struct {
 	calls  []string
 	paying map[string]bool
 	payErr error
+	// unmatched: the account lists a paying phone no linked device names;
+	// payHang: the account read blocks until its context ends.
+	unmatched bool
+	payHang   bool
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -138,6 +142,19 @@ func newWorld(t *testing.T, flavour string) *world {
 				return nil, w.payErr
 			}
 			return maps.Clone(w.paying), nil
+		},
+		AnyPaying: func(ctx context.Context) (bool, error) {
+			w.mu.Lock()
+			hang, err, any := w.payHang, w.payErr, w.unmatched
+			for _, p := range w.paying {
+				any = any || p
+			}
+			w.mu.Unlock()
+			if hang {
+				<-ctx.Done()
+				return false, ctx.Err()
+			}
+			return any, err
 		},
 		OldSideTimeout: testOldSide,
 	}
