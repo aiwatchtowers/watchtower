@@ -367,6 +367,26 @@ final class ScreenshotTourTests: XCTestCase {
             "S07", "macs-transport-lines", "bare stack, iCloud / Relay / lapse / switching rows",
             NavigationStack { MacsView() }.environment(lines)
         )
+
+        // S37–S40, S48: Settings → Diagnostics, each state through a fixed reader.
+        let settings = SettingsViewModel()
+        settings.refreshBattery()
+        let diagnostics: [(String, String, LatencyDiagnosticsModel.State)] = [
+            ("S37", "diagnostics-rows", .rows([
+                .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+            ])),
+            ("S38", "diagnostics-empty", .empty),
+            ("S48", "diagnostics-needs-mac-update", .needsMacUpdate),
+            ("S39", "diagnostics-loading", .loading),
+            ("S40", "diagnostics-error", .failed)
+        ]
+        for (number, slug, state) in diagnostics {
+            let view = NavigationStack { DiagnosticsView(settings: settings, reader: LatencyDiagnosticsReader(fixed: state)) }
+            try await host.captureThree("\(number)-\(slug)", view, narrowScroll: Self.toTheEnd)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "DiagnosticsView", source: "Features/Settings/DiagnosticsView.swift",
+                reached: "bare stack, a fixed reader, light/dark/narrow"))
+        }
         return rows
     }
 

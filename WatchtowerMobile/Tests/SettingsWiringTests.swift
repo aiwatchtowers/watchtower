@@ -36,6 +36,18 @@ final class SettingsWiringTests: XCTestCase {
         )
     }
 
+    /// Relay client Phase 4 Task 15 (Open decision 11): the Battery section left Settings for the Diagnostics page.
+    func testBatteryLivesInDiagnostics() throws {
+        let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sources = tests.deletingLastPathComponent().appendingPathComponent("Sources/Features/Settings")
+        let settings = try String(contentsOf: sources.appendingPathComponent("SettingsView.swift"), encoding: .utf8)
+        let diagnostics = try String(contentsOf: sources.appendingPathComponent("DiagnosticsView.swift"), encoding: .utf8)
+        XCTAssertFalse(settings.contains("BatterySection"))
+        XCTAssertTrue(diagnostics.contains("BatterySection(report:"))
+        XCTAssertTrue(settings.contains("DiagnosticsView("))
+        XCTAssertEqual(SettingsView.diagnosticsTitle, "Diagnostics")
+    }
+
     // MARK: - Your Mac: online / offline / never connected
 
     func testHeartbeat2099SecondsOldIsOnline() {
