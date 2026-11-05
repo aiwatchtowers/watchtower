@@ -4,9 +4,10 @@ import WatchtowerCore
 /// The right panel's editor (spec A4): **Chat | Form | Script** on the left,
 /// all editing one draft in the `AppState`-owned `AutomationEditorCenter`;
 /// the draft column on the right shows every hashed field of the bytes on
-/// screen as `validate` measured them, and the footer under it saves or
-/// confirms exactly those bytes (AUTO-06). No sheet: the column is the
-/// confirmation.
+/// screen as `validate` measured them, a step at a time (What it collects ·
+/// Look · When it runs). No step shows every hashed field, so the footer's
+/// press opens the save review, which shows them all and saves or confirms
+/// exactly those bytes (AUTO-06).
 struct AutomationEditorPanel: View {
     let target: AutomationEditorTarget
     @Bindable var editor: AutomationEditorCenter
@@ -34,6 +35,8 @@ struct AutomationEditorPanel: View {
     /// Waits for the owner's press to land, then opens the saved automation;
     /// cancelled when the panel goes, so it never navigates from elsewhere.
     @State private var pressTask: Task<Void, Never>?
+    /// The save review is open: every hashed field and the press (AUTO-06).
+    @State private var reviewingSave = false
 
     private var mode: AutomationEditorMode { chosenMode ?? .initial(toolsAvailable: hasTools) }
     private var hasTools: Bool { chat?.toolsAvailable ?? toolsAvailable }
@@ -80,6 +83,7 @@ struct AutomationEditorPanel: View {
             }
         }
         .task { await open() }
+        .sheet(isPresented: $reviewingSave) { saveReview }
         .onDisappear {
             pressTask?.cancel()
             pressTask = nil
@@ -386,11 +390,13 @@ struct AutomationEditorPanel: View {
         return { chat.dryRunAgain() }
     }
 
+    /// Under a step the footer opens the save review (`step`); in the
+    /// review (`nil`) it saves.
     private func footer(
         _ form: AutomationFormModel,
         key: Int64,
         column: AutomationDraftColumnModel,
-        step: AutomationEditorStep
+        step: AutomationEditorStep?
     ) -> some View {
         let enabled = vm.items.first { $0.id == key }?.automation.enabled ?? form.detail.enabled
         let verdict = AutomationDraftFooter.make(
@@ -411,10 +417,42 @@ struct AutomationEditorPanel: View {
                 checking: column.status == .checking && !isFailed(key),
                 isSaving: isSaving,
                 aiStepWarning: AutomationDraftFooter.aiStepWarning(addsLLM: column.addsLLM, dryRunTokens: tokens)
-            ) { press($0, key: key) }
+            ) { action in
+                guard step == nil else {
+                    reviewingSave = true
+                    return
+                }
+                reviewingSave = false
+                press(action, key: key)
+            }
         }
         .controlSize(.small)
         .padding(Spacing.large)
+    }
+
+    /// The save review (AUTO-06): the whole draft column — every hashed
+    /// field of the bytes on screen, the warnings and the Keep auto boxes —
+    /// over the footer that saves or confirms them. It follows the draft:
+    /// bytes changed meanwhile are checked again before any press lands.
+    @ViewBuilder private var saveReview: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Review and save").font(.headline)
+                Spacer()
+                Button("Cancel", role: .cancel) { reviewingSave = false }
+                    .buttonStyle(.kitQuiet)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding([.horizontal, .top], Spacing.large)
+            if let key, let form {
+                let column = columnModel(form, key: key)
+                AutomationDraftColumn(model: column, keepAuto: keepAutoBinding(key), onDryRunAgain: nil)
+                footer(form, key: key, column: column, step: nil)
+            } else {
+                centered { ProgressView().controlSize(.small) }
+            }
+        }
+        .frame(width: 460, height: 620)
     }
 
     /// The aside line with **Restore**, and why the last save, check or
