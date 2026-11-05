@@ -1043,6 +1043,72 @@ final class RelayAccountCenterTests: XCTestCase {
     }
 
     /// A cancel must not land on S21 with no load running. `.idle` is the contract: the open screen loads on it.
+    /// **Try Again** on S46 repeats the press that stopped at the account: a failed Restore never becomes a purchase.
+    func testTryAgainAfterAFailedAccountRepeatsThePress() async throws {
+        let bed = AccountBed()
+        let live = RelayAccountLink.live(bed.relay)
+        final class Gate: @unchecked Sendable { var fails = true }
+        let gate = Gate()
+        let link = RelayAccountLink(
+            hasIdentity: live.hasIdentity,
+            account: {
+                if gate.fails { throw HostedRelayPairing.Refusal.unreachable }
+                return try live.account()
+            },
+            events: { nil }
+        )
+        let center = RelayAccountCenter(link: link, store: bed.store, defaults: bed.defaults) { [] }
+
+        await center.restore()
+        XCTAssertEqual(center.purchase, .accountFailed)
+        gate.fails = false
+        bed.store.restoreResult = nil
+        await center.retryAccount()
+        XCTAssertEqual(bed.store.restoreCalls, 1)
+        XCTAssertTrue(bed.store.accountTokens.isEmpty, "no purchase was asked of Apple")
+        XCTAssertEqual(center.purchase, .noSubscriptionFound)
+
+        center.screenClosed()
+        gate.fails = true
+        await center.buy()
+        XCTAssertEqual(center.purchase, .accountFailed)
+        gate.fails = false
+        bed.store.purchaseResult = .pending
+        await center.retryAccount()
+        XCTAssertEqual(bed.store.accountTokens.count, 1)
+        XCTAssertEqual(bed.store.restoreCalls, 1, "no restore was asked of Apple")
+        XCTAssertEqual(center.purchase, .pending)
+
+        // Off S46 it presses nothing.
+        await center.retryAccount()
+        XCTAssertEqual(bed.store.accountTokens.count, 1)
+    }
+
+    /// The account answered this time, so S46's "Couldn't reach Relay" must not come back on a cancel.
+    func testACancelledRestoreFromTheAccountFrameDoesNotReturnToIt() async throws {
+        let bed = AccountBed()
+        let live = RelayAccountLink.live(bed.relay)
+        final class Gate: @unchecked Sendable { var fails = true }
+        let gate = Gate()
+        let link = RelayAccountLink(
+            hasIdentity: live.hasIdentity,
+            account: {
+                if gate.fails { throw HostedRelayPairing.Refusal.unreachable }
+                return try live.account()
+            },
+            events: { nil }
+        )
+        let center = RelayAccountCenter(link: link, store: bed.store, defaults: bed.defaults) { [] }
+        await center.restore()
+        XCTAssertEqual(center.purchase, .accountFailed)
+        gate.fails = false
+        bed.store.restoreError = RelayStoreError.cancelled
+
+        await center.retryAccount()
+
+        XCTAssertEqual(center.purchase, .idle)
+    }
+
     func testACancelledRestoreLeavesNoStateNothingAdvances() async throws {
         let product = RelayProduct(id: "relay", displayPrice: "$4.99")
 
