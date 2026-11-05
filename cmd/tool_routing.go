@@ -23,6 +23,7 @@ type toolRouteProvider struct {
 	router          *providerrouting.Router
 	build           func(*config.Config) (ai.Provider, func(), error)
 	readFolder      string
+	chatEvents      bool
 	capable         func(string) (bool, error)
 	mu              sync.Mutex
 	nativeProviders map[string]toolNativeSession
@@ -41,6 +42,26 @@ func newToolRouteProvider(cfg *config.Config, build func(*config.Config) (ai.Pro
 	return &toolRouteProvider{cfg: cfg, build: build, router: &providerrouting.Router{Health: health, Diagnostic: func(err error) { log.Printf("AI tool routing: %v", err) }}}
 }
 func (p *toolRouteProvider) SetReadFolder(dir string) { p.readFolder = dir }
+
+// EmitToolEvents switches the chat events on for every leaf it builds
+// (enableChatEvents).
+func (p *toolRouteProvider) EmitToolEvents() { p.chatEvents = true }
+
+// configureLeaf hands the leaf what was set on the router: the read folder
+// and the chat events.
+func (p *toolRouteProvider) configureLeaf(leaf ai.Provider) error {
+	if p.readFolder != "" {
+		c, ok := leaf.(readFolderConfigurable)
+		if !ok {
+			return fmt.Errorf("selected provider cannot read folders")
+		}
+		c.SetReadFolder(p.readFolder)
+	}
+	if p.chatEvents {
+		enableChatEvents(leaf)
+	}
+	return nil
+}
 func (p *toolRouteProvider) request(sessionID string) providerrouting.Request {
 	preferred := p.cfg.AI.Provider
 	p.mu.Lock()
@@ -108,12 +129,8 @@ func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(conte
 		return providerrouting.Result{}, err
 	}
 	defer cleanup()
-	if p.readFolder != "" {
-		c, ok := leaf.(readFolderConfigurable)
-		if !ok {
-			return providerrouting.Result{}, fmt.Errorf("selected provider cannot read folders")
-		}
-		c.SetReadFolder(p.readFolder)
+	if err := p.configureLeaf(leaf); err != nil {
+		return providerrouting.Result{}, err
 	}
 	req.Preferred, req.Mode, req.Retry = selected, providerrouting.Pinned, providerrouting.Never
 	return p.router.Run(ctx, req, func(callCtx context.Context, attempt providerrouting.Attempt) (providerrouting.Result, error) {
