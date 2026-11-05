@@ -314,3 +314,71 @@ func TestSetTerminalClaudeSessionID_ClearsTheTranscriptPath(t *testing.T) {
 		}
 	}
 }
+
+// RestampCodexPromptTurn (board #959) moves only agent_state_at, only on a
+// working codex row of the workbench running the id, only forward; a
+// waiting row, a claude row, another id or workbench, a NULL id and an
+// older or equal stamp are refused with the row unchanged.
+func TestRestampCodexPromptTurn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	seedWorking := func(id int64) {
+		t.Helper()
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ? WHERE id = ?`,
+			AgentStateStamp(now.Add(-time.Minute)), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused := func(name string, id, wb int64, sid string, at time.Time) {
+		t.Helper()
+		before := terminalRowSnapshot(t, d, id)
+		written, err := d.RestampCodexPromptTurn(id, wb, sid, at)
+		if err != nil || written {
+			t.Fatalf("%s: written %v, err %v", name, written, err)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s changed the row\nbefore %s\nafter  %s", name, before, after)
+		}
+	}
+
+	codex := newAgentStateRow(t, d, pid, "codex", codexTestUUID)
+	seedWorking(codex)
+	refused("another workbench", codex, other, codexTestUUID, now)
+	refused("another id", codex, pid, codexOtherUUID, now)
+	refused("an older stamp", codex, pid, codexTestUUID, now.Add(-2*time.Minute))
+	refused("an equal stamp", codex, pid, codexTestUUID, now.Add(-time.Minute))
+
+	nullID := newAgentStateRow(t, d, pid, "codex", nil)
+	seedWorking(nullID)
+	refused("a NULL id", nullID, pid, "", now)
+
+	claude := newAgentStateRow(t, d, pid, "claude", codexOtherUUID)
+	seedWorking(claude)
+	refused("a claude row", claude, pid, codexOtherUUID, now)
+
+	finished := newAgentStateRow(t, d, pid, "codex", codexTestUUID)
+	seedWorking(finished)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`, AgentStateStamp(now), finished); err != nil {
+		t.Fatal(err)
+	}
+	refused("a finished row", finished, pid, codexTestUUID, now)
+
+	waiting := newAgentStateRow(t, d, pid, "codex", codexTestUUID)
+	seedCountedWaiting(t, d, waiting, now)
+	refused("a waiting row", waiting, pid, codexTestUUID, now)
+
+	before := terminalRowSnapshot(t, d, codex)
+	written, err := d.RestampCodexPromptTurn(codex, pid, codexTestUUID, now)
+	if err != nil || !written {
+		t.Fatalf("restamp: written %v, err %v", written, err)
+	}
+	s, err := d.GetTerminalSession(codex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.AgentStateAt.Equal(now) || s.AgentState.String != "working" {
+		t.Fatalf("got %q at %v, want working at %v (before %s)", s.AgentState.String, s.AgentStateAt, now, before)
+	}
+}

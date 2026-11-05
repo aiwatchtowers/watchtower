@@ -524,6 +524,33 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	return n > 0, nil
 }
 
+// RestampCodexPromptTurn moves a working codex row's agent_state_at to at:
+// a prompt over a turn that never ended (Codex fires no Stop on a failed
+// turn, board #959), which SetTerminalAgentState treats as a repeat. The
+// session probe records a failure only when its task_complete is later than
+// agent_state_at, so a failed turn's error never lands on the next prompt's
+// turn. Writes only on workbench workbenchID's codex row id running
+// sessionID, reading working with an older (or unreadable) stamp and not
+// finished (a prompt over a finished row is a state change that
+// SetTerminalAgentState stamps itself); nothing else changes. False when a
+// guard held it back.
+func (db *DB) RestampCodexPromptTurn(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
+	stamp := AgentStateStamp(at)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state_at = ?
+		WHERE id = ? AND project_id = ? AND kind = ? AND claude_session_id = ? AND agent_state = 'working'
+		  AND finished_at IS NULL
+		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
+		stamp, id, workbenchID, string(agentkind.Codex), sessionID, stamp)
+	if err != nil {
+		return false, fmt.Errorf("restamping terminal session %d prompt: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("restamping terminal session %d prompt: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // cwdNewerClause holds when a cwd (the first parameter; empty = none) stamped
 // with the second and third parameters may replace the stored one:
 // agent_cwd_at is NULL, unreadable or earlier, and the stamp is not before

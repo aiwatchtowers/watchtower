@@ -55,6 +55,8 @@ var codexHookRows = []struct {
 	{"PostToolUse", "", "workbench session-state --agent codex", 5, 0},
 	{"SubagentStart", "", "workbench session-state --agent codex", 5, 0},
 	{"SubagentStop", "", "workbench session-state --agent codex", 5, 0},
+	// Interrupt (the owner's Esc) ends the turn with no Stop: board #959.
+	{"Interrupt", "", "workbench session-state --agent codex", 5, 0},
 	{"PreToolUse", "request_user_input", "workbench ask-guard --agent codex --pre-tool-use", 5, 0},
 	{"Stop", "", "workbench check --agent codex --stop-hook", 15, 0},
 	{"Stop", "", "workbench ask-guard --agent codex --stop", 30, 1},

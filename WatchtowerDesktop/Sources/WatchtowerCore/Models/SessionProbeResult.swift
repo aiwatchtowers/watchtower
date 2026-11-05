@@ -6,11 +6,12 @@ import Foundation
 /// agent_background_at}` or `{ok: false, error}`, exit 0 either way.
 package struct SessionProbeResult: Decodable, Equatable, Sendable {
     /// What the probe read. `busy` and `waiting` leave the count alone;
-    /// `idle`, `shell`, `unknown` and `gone` end it (Go writes, the Desktop
-    /// only reads the row again).
+    /// `idle`, `shell`, `unknown` and `gone` end it; `failed` stored a
+    /// working codex row's failed turn, read from its rollout (board #959).
+    /// Go writes, the Desktop only reads the row again.
     package enum Outcome: String, Decodable, Sendable {
         case notStale = "not_stale"
-        case busy, waiting, idle, shell, unknown, gone
+        case busy, waiting, idle, shell, unknown, gone, failed
 
         /// An outcome this build does not know reads as `unknown`: the probe
         /// ran, the Desktop has nothing to do with its answer.
