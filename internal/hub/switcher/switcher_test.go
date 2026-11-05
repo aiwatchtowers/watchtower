@@ -145,16 +145,16 @@ func newWorld(t *testing.T, flavour string) *world {
 		},
 		AnyPaying: func(ctx context.Context) (bool, error) {
 			w.mu.Lock()
-			hang, err, any := w.payHang, w.payErr, w.unmatched
+			hang, err, anyPays := w.payHang, w.payErr, w.unmatched
 			for _, p := range w.paying {
-				any = any || p
+				anyPays = anyPays || p
 			}
 			w.mu.Unlock()
 			if hang {
 				<-ctx.Done()
 				return false, ctx.Err()
 			}
-			return any, err
+			return anyPays, err
 		},
 		OldSideTimeout: testOldSide,
 	}
