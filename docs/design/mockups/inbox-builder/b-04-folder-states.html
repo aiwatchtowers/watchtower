@@ -95,15 +95,32 @@
 
 <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
   <div class="mockup" style="flex:1; min-width:260px">
-    <div class="mockup-header">Save sheet: new folder</div>
-    <div class="mockup-body"><small>The editor chat suggested a folder; the save sheet lists it.</small><br>
-      New folder: Release, in Inbox<br><button class="mock-button">Cancel</button> <button class="mock-button">Save and Turn On</button><br>
-      <small>Shot: <code>inbox-b-save-new-folder</code>.</small></div>
+    <div class="mockup-header">Changed row: new folder</div>
+    <div class="mockup-body"><small>The editor chat suggested a folder. The editor's pinned Changed row above the footer lists it last; it is placement, not a confirmed field.</small>
+      <div style="border:1px solid #8886; border-radius:8px; padding:6px 8px; margin:6px 0">
+        <b>⇄ Changed</b><br>
+        <small>When: every weekday at 09:00 (was 08:00)</small><br>
+        <small>New folder: Release, in Inbox</small>
+      </div>
+      <button class="mock-button">Save and Turn On</button> <button class="mock-button">Save Turned Off</button><br>
+      <small>Saving confirms exactly what's listed above and turns it on</small><br>
+      <small>Shot: <code>inbox-b-changed-row-new-folder</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Changed row: existing folder</div>
+    <div class="mockup-body"><small>+ New Artifact… pressed while Release was selected: the new recipe goes there.</small>
+      <div style="border:1px solid #8886; border-radius:8px; padding:6px 8px; margin:6px 0">
+        <b>⇄ Also confirms</b><br>
+        <small>Sends: Inbox</small><br>
+        <small>Folder: Release</small>
+      </div>
+      <button class="mock-button">Save and Turn On</button><br>
+      <small>No line when the press saves nothing. Shot: <code>inbox-b-changed-row-folder-only</code>.</small></div>
   </div>
   <div class="mockup" style="flex:1; min-width:260px">
     <div class="mockup-header">Folder not created after save</div>
     <div class="mockup-body"><small style="color:#d33">Saved. The folder was not created: the Inbox menu changed — reload it and try again.</small> <button class="mock-button">Try Again</button><br>
-      <small>The recipe stays saved; Try Again re-reads the menu first. Shot: <code>inbox-b-save-folder-failed</code>.</small></div>
+      <small>Under the editor footer. The recipe stays saved; Try Again re-reads the menu first. Shot: <code>inbox-b-save-folder-failed</code>.</small></div>
   </div>
 </div>
 
@@ -111,7 +128,6 @@
   <div class="mockup-header">Move to Folder ▸ (artifact ⋯)</div>
   <div class="mockup-body" style="line-height:1.8">
     <div>✓ Inbox</div><div style="padding-left:14px">Release acme 2.0</div><div style="padding-left:28px">Blockers</div><div style="padding-left:14px">Team</div>
-    <div>New Folder…</div>
-    <small>Moves the automation: every artifact that follows it moves at once. Needs approval is not a target.</small>
+    <small>The tree, the current folder checked. Moves the automation: every artifact that follows it moves at once. Needs approval is not a target. Shot: <code>inbox-b-move-to-folder</code>.</small>
   </div>
 </div>

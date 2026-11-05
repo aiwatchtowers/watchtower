@@ -5,9 +5,9 @@
 **Mockups** (HTML, sample data only; the native DesignShotCatalog shots are the plan's Task 1 and replace them as the reference once the owner has looked at them):
 
 - [`b-01-inbox-menu.html`](../../design/mockups/inbox-builder/b-01-inbox-menu.html) — the folder menu, the root selected, the artifact ⋯ menu, the folder ⋯ menu, the root ⋯ menu, the Idea finder entry's ⋯ and a failed ⋯ entry on the artifact header.
-- [`b-02-needs-approval.html`](../../design/mockups/inbox-builder/b-02-needs-approval.html) — Needs approval: recipe card, native fallback card, failed action with Retry / Dismiss, reminder, recipe cards only, built-in upgrade notice, recipe off, built-in stopped (its own Turn On), last run failed, off-note and stopped-note Turn On failed, turned on but not restarted (daemon banner), empty.
+- [`b-02-needs-approval.html`](../../design/mockups/inbox-builder/b-02-needs-approval.html) — Needs approval: recipe card, native fallback card, failed action with Retry / Dismiss, reminder, recipe cards only, built-in upgrade notice, recipe off, built-in stopped (its own Turn On), last run failed, off-note and stopped-note Turn On failed, turned on but not restarted (daemon banner over the Inbox and over the Automations tab's built-in card), empty.
 - [`b-03-waiting-for-me.html`](../../design/mockups/inbox-builder/b-03-waiting-for-me.html) — Waiting for me rows with native actions: idle, busy, write failed, Reply composer / refused / waiting, not yet run, empty; `track` and `idea` ref rows.
-- [`b-04-folder-states.html`](../../design/mockups/inbox-builder/b-04-folder-states.html) — empty root, empty folder, new folder, drag, move in progress, the menu changed (reload), a refused write, a failed read, delete, hidden folders shown, CLI unavailable, Move to folder ▸, the save sheet's new-folder line and its "folder was not created" line.
+- [`b-04-folder-states.html`](../../design/mockups/inbox-builder/b-04-folder-states.html) — empty root, empty folder, new folder, drag, move in progress, the menu changed (reload), a refused write, a failed read, delete, hidden folders shown, CLI unavailable, Move to folder ▸, the editor's Changed row with the new-folder and existing-folder lines, and the "folder was not created" line.
 
 `02-inbox-menu.html` from the brainstorm predates ask #947 (its entries are automations); the B mockups draw folders that many automations write into.
 
@@ -70,7 +70,7 @@ One transaction: child folders move to the deleted folder's parent (appended aft
 
 ### Creating a folder from the editor
 
-When the owner tells the editor chat "put this into a Release folder", the agent proposes the folder name in its turn; the Desktop's save sheet lists it ("New folder: Release, in Inbox"). On **Save** (or **Save and Turn On**) the Desktop first saves the recipe as today (`automations save … --expect-content-hash`), then runs `inbox folders route <automation-id> --new-title Release --parent <id> --expect-revision <r>`, which creates the folder and the route in one transaction. A route failure after a saved recipe leaves the recipe saved and shows `Saved. The folder was not created: <reason>` with **Try Again** *(agent's call: the recipe is the owner's real work; a folder is redone with one press)*. No separate approval for the folder (umbrella).
+When the owner tells the editor chat "put this into a Release folder", the agent proposes the folder name in its turn; the editor's pinned **Changed** row above the footer (sub-project A's row from ask #486; there is no save sheet since ask #475) lists it as its last line, "New folder: Release, in Inbox" ("Folder: Release" for an existing folder). The line is placement, not a hashed field: it never changes what the press confirms (AUTO-06), and it is shown only when the press saves. On **Save** (or **Save and Turn On**) the Desktop first saves the recipe as today (`automations save … --expect-content-hash`), then runs `inbox folders route <automation-id> --new-title Release --parent <id> --expect-revision <r>`, which creates the folder and the route in one transaction. A route failure after a saved recipe leaves the recipe saved and shows `Saved. The folder was not created: <reason>` with **Try Again** *(agent's call: the recipe is the owner's real work; a folder is redone with one press)*. No separate approval for the folder (umbrella).
 
 How the agent proposes it: the editor chat's draft carries a `folder` suggestion (`{title, parent_slug}`) in the draft cache next to the recipe text; it is not part of the recipe. If A's editor stores drafts differently, the suggestion lives in the same place A keeps the Look step's state. The agent sees existing folders through a read tool `list_inbox_folders` on the `automation_editor` surface (title, slug, parent) so it reuses a folder instead of proposing a duplicate.
 
@@ -192,7 +192,7 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 - **Folder ⋯** (owner folder; also its context menu): **Rename…**, **Icon ▸**, **New Folder Inside**, **Hide** / **Show**, **Delete…** (inline confirmation: "Delete “Release”? Its 2 folders, 3 automations and 5 artifacts move to Inbox.").
 - **Root ⋯**: **Learned Rules**, **Assistant Profile** (both open in the reading pane, as `InboxAuxPane.learnedRules` / `.profile` do today), **Show Hidden Folders**, **New Folder**. **Find Ideas in Past Messages…** moves to the Idea finder entry's ⋯ (today it sits in the Ideas filter's menu).
 - **Needs approval ⋯**: **Edit the Look…**, **Turn Off** / **Turn On**, **Run History**.
-- **+ New Artifact…** opens the Automations editor's new flow (`AutomationsViewModel.showNew`) at "what should it collect", with the current folder preselected as its route; saving routes it there (the save sheet line above).
+- **+ New Artifact…** opens the Automations editor's new flow (`AutomationsViewModel.showNew`) at "what should it collect", with the current folder preselected as its route; saving routes it there (the Changed row's "Folder: <title>" line above).
 
 **Drag** (owner folders only): drop between siblings reorders (`inbox folders move <id> --parent <same> --position <n>`); drop onto a folder makes it the last child. Root and Needs approval cannot be dragged, and nothing can be dropped above Needs approval or into it; a drop deeper than the depth limit is refused before the call (the drop indicator does not appear). While the call runs the menu is read-only and shows the dragged row in its new place dimmed; on success the tree re-reads; on a revision conflict the tree re-reads and a line under the menu says "The menu changed — reloaded. Drag again if needed." (5 seconds, or until the next drag).
 
@@ -212,7 +212,7 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Needs approval, last run failed | "Showing approvals in the standard card — the last run failed." + **Run History** |
 | Needs approval, off note's Turn On failed | the reason under the off note (both buttons call `AppState.setBuiltinEnabled(["approval-cards"], on: true)`, the built-in card's Turn On: the `features enable` error, or "Feature changes are being applied in Settings — try again"); the note stays. Never read from `FeatureManagerService.loadError`, which other screens share |
 | Needs approval, stopped note's Turn On failed | the reason `resumeStoppedBuiltin` returned, under the stopped note; the note stays |
-| Needs approval, turned on but not restarted | the note leaves once the feature reads on; the app-wide daemon banner keeps "The background sync did not restart: …" with **Retry** until a start or restart succeeds (`setBuiltinEnabled` sets `daemonStartFailure` from the restart's own error; see Decisions, pending owner confirmation) |
+| Needs approval, turned on but not restarted | the note leaves once the feature reads on; the app-wide daemon banner keeps "The background sync did not restart: …" with **Retry** until a start or restart succeeds (`setBuiltinEnabled` sets `daemonStartFailure` from the restart's own error; the same banner after a built-in card's Turn On in the Automations tab; Decisions, ask #503) |
 | Row busy | the row's buttons disabled, progress at its trailing edge |
 | Row write failed | the row stays, red error line, **Retry** |
 | Reply composer open | one-line field under the row, **Propose Reply** / **Cancel**, the line "Goes to Needs approval — nothing is sent until you approve it" |
@@ -230,7 +230,8 @@ Three columns *(agent's call: the existing `InboxSplitView` list + reading pane,
 | Folder read failed | the previous tree and list stay; today's strip error line |
 | CLI unavailable | menu edits disabled with "The watchtower CLI isn't available" (`CLIRunnerError.binaryNotFound`), reading still works |
 | Artifact ⋯ entry failed | the CLI's text on the artifact header |
-| Save sheet, new folder | "New folder: Release, in Inbox" |
+| Changed row, new folder | the editor's pinned Changed row ends with "New folder: Release, in Inbox" (or "Folder: Release" for an existing folder) |
+| Automations tab, built-in Turn On not restarted | the app-wide daemon banner "The background sync did not restart: …" with **Retry** above the built-in card |
 | Folder not created after save | "Saved. The folder was not created: <reason>" + **Try Again** |
 
 ## Moving today's Inbox into folders
@@ -447,7 +448,7 @@ Swift (`make test-swift FILTER=…`, Core where possible):
 - A pending Reply disables the row's Reply — agent's call: one reply proposal per item at a time, no duplicates in Needs approval.
 - Reply is a native action of the `inbox_item` kind wherever such a ref row is drawn, and also on the Messages legacy entry's card while it stands in for Waiting for me — agent's call (ask #457 review): the approved Reply must not vanish before Waiting for me's first run or after a failed one; the legacy card otherwise stays today's pane.
 - Native wins over a recipe action of the same kind per `ref` kind, incl. A's `target` on track and idea rows — agent's call.
-- Daemon banner after a failed restart on any built-in Turn On — **pending owner confirmation (plan B review ask)**: when a built-in's Turn On enables its feature but the daemon restart fails, `AppState.setBuiltinEnabled` sets the app-wide daemon banner ("The background sync did not restart: …" with **Retry**) from the restart's own error. It lives in `setBuiltinEnabled`, so the Automations tab's built-in cards change too: today that failure is only the card's line. Why: the Needs approval note leaves once the feature reads on, and the failure must stay visible until a restart succeeds.
+- Daemon banner after a failed restart on any built-in Turn On — **owner's decision, ask #503**: when a built-in's Turn On enables its feature but the daemon restart fails, `AppState.setBuiltinEnabled` sets the app-wide daemon banner ("The background sync did not restart: …" with **Retry**) from the restart's own error. It lives in `setBuiltinEnabled`, so it shows in the Automations tab too — every built-in card's Turn On, not only the Inbox's Needs approval note (today that failure is only the card's line). **Retry** on the banner restarts the daemon (`AppState.startDaemonFromBanner()`); a successful start or restart clears it. Why: the Needs approval note leaves once the feature reads on, and the failure must stay visible until a restart succeeds.
 
 ## Contract with sub-project A
 
