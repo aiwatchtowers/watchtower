@@ -62,7 +62,14 @@ final class FakeKeychainBackend: KeychainBackend, @unchecked Sendable {
         }
     }
 
-    func delete(account: String, group: String?) throws { lock.withLock { items["\(group ?? "")|\(account)"] = nil } }
+    func delete(account: String, group: String?) throws {
+        lock.withLock {
+            items["\(group ?? "")|\(account)"] = nil
+            deletedAccounts.append(account)
+        }
+    }
+    private var deletedAccounts: [String] = []
+    var deletes: [String] { lock.withLock { deletedAccounts } }
 }
 
 final class KeyStoreTests: XCTestCase {
@@ -123,6 +130,24 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.alertMaterial("hub-1")) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
         XCTAssertThrowsError(try store.hubSigningKey("hub-1")) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
         XCTAssertThrowsError(try store.deviceID()) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+    }
+
+    /// #1499: a read that fails because the device is locked is not "the link is gone": no read path deletes anything,
+    /// and the link reads again, unchanged, once the device unlocks.
+    func testALockedKeychainReadDeletesNothingAndTheLinkReadsAgainAfterUnlock() throws {
+        let backend = FakeKeychainBackend()
+        let store = makeStore(backend)
+        let keys = link()
+        try store.saveHubLink(keys)
+        backend.failReads(.locked)
+        for _ in 0..<3 {
+            XCTAssertThrowsError(try store.hubLink("hub-1")) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+            XCTAssertThrowsError(try store.hubSigningKey("hub-1")) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+            XCTAssertThrowsError(try store.alertMaterial("hub-1")) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+        }
+        XCTAssertTrue(backend.deletes.isEmpty, "a locked read removes nothing")
+        backend.failReads(nil)
+        XCTAssertEqual(try store.hubLink("hub-1"), keys)
     }
 
     /// F14: the read-only accessor never creates an identity: absent is nil, and nothing is written.

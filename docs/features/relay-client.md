@@ -328,6 +328,8 @@ The relay displaces an older socket of the same device (close 1001), so two rela
 
 Order after the owner confirmed the link: keys saved → `PromotedLink` (`LinkStore`, state `.confirmed`) → `vouch` → `.promoteSent` → `promote` (a `HUB_NOT_VOUCHED` vouches again once) → `.promoted` → linked. Every definite refusal after `.confirmed` moves it to `.needsOwner(reason)` with the keys kept; only the owner's Cancel deletes them. `PromotedLinkResumer` resumes confirmed links at every launch and foreground; they never hold the link screen. A `.promoteSent` link whose answer was lost asks the account state before it promotes again. A full phone registry when a link finishes is `.needsOwner(.tooManyMacs)` (ask #915).
 
+A promoted entry this build cannot read (a newer build's case after a downgrade) is skipped, kept as stored through every write, and logged once per hub per `LinkStore` instance (#1499; a clean read re-arms the line). Only the owner's own removal of that hub deletes it (`LinkStore.removeUnreadablePromoted`, called first by Unlink, the slots screen's Remove and Forget of an unreadable row), so a later build cannot bring a removed Mac back; the launch orphan pass then cleans the hub's files as for any removed hub. Writers of `link.promoted`: `LinkStore` only (`confirm`, `update`, `removePromoted`, `removeUnreadablePromoted`, and the `promoted` setter), driven by `LinkingViewModel` and `PromotedLinkResumer`. There is no age rule and no UI for such an entry; an unreadable entry of a hub the owner never removes stays (accepted limit). This ruling was decided by the agent (#1499), not the owner.
+
 ### The link route rule (Phase 3 R4)
 
 `LinkRoutePolicy.decide` is pure over the code and `RelayAvailability`:
