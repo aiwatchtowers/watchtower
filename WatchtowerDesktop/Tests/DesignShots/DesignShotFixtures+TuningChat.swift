@@ -229,7 +229,7 @@ enum TuningChatTexts {
     static let abRemoved = "This A/B was removed with its source data"
     static let proposeRefused = "Not proposed: with today's additions digest.channel would pass 600 characters."
     static let conversationRemoved = "This conversation was removed with the source data it read. "
-        + "Proposals it made stay in Proposed edits."
+        + "Its open proposals were withdrawn; accepted ones stay."
     static let showAccepted = "Show in Accepted edits"
     static let claudeOnly = "Claude Code only"
     static let tooFew = "Only 2 past calls of digest.channel match the current prompt — A/B needs 3. "
