@@ -85,28 +85,49 @@ struct AutomationDraftSteps<Look: View, Footer: View>: View {
 /// The editor's pinned row above the footer (AUTO-06, ask #486): the
 /// hashed fields a save or confirm pressed on `step` confirms that the step
 /// does not show (`AutomationDraftColumnModel.confirmationRow(on:)`), every
-/// line wrapped, none cut. Nothing when the step shows them all.
+/// line wrapped, none cut. Nothing when the step shows them all. Its lines
+/// scroll past `maxLinesHeight` under a header that stays put, so a long
+/// row never pushes Save off the pane.
 struct AutomationSaveConfirmation: View {
     let column: AutomationDraftColumnModel
     let step: AutomationEditorStep
+
+    /// The lines' height before they scroll: about a third of the editor's
+    /// usual pane, room for six or seven lines.
+    static let maxLinesHeight: CGFloat = 180
+
+    /// The lines' own height, measured: the row takes it up to the cap.
+    @State private var linesHeight: CGFloat = 0
 
     var body: some View {
         if let row = column.confirmationRow(on: step) {
             VStack(alignment: .leading, spacing: Spacing.compact) {
                 SectionHeader(title: row.title, systemImage: "arrow.left.arrow.right")
-                if let note = row.note {
-                    Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                // A long row scrolls in place, the header above it.
+                ScrollView {
+                    lines(row).onGeometryChange(for: CGFloat.self) { $0.size.height } action: { linesHeight = $0 }
                 }
-                ForEach(Array(row.items.enumerated()), id: \.offset) { _, item in
-                    Text(item.text)
-                        .font(.callout)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
+                .frame(height: min(linesHeight, Self.maxLinesHeight))
+                .scrollDisabled(linesHeight <= Self.maxLinesHeight)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Spacing.medium)
             .card()
         }
+    }
+
+    private func lines(_ row: AutomationSaveConfirmationRow) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            if let note = row.note {
+                Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(Array(row.items.enumerated()), id: \.offset) { _, item in
+                Text(item.text)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

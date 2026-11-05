@@ -61,6 +61,12 @@ enum InboxBuilderAShotFixtures {
                 lookColumn(.preview(.init(cards: waiting), tokens: 3100, at: now), llmTokens: nil, now: now,
                            changes: #"[{"field":"scope","old":"personal","new":"workbench:3"},"#
                                + #"{"field":"script","old":"","new":""}]"#)
+            },
+            // AUTO-06: a never-confirmed recipe with long lines and every
+            // footer warning — the row scrolls, Save stays on the pane.
+            DesignShot(name: "look-save-long-confirmation", size: NSSize(width: 480, height: 640)) {
+                lookColumn(.preview(.init(cards: waiting), tokens: 5800, at: now), column: longConfirmationColumn(),
+                           llmTokens: 5800, now: now)
             }
         ]
     }
@@ -149,7 +155,16 @@ enum InboxBuilderAShotFixtures {
         now: Date,
         changes: String = "[]"
     ) -> AnyView {
-        let column = lookColumnModel(addsLLM: llmTokens != nil, changes: changes)
+        lookColumn(content, column: lookColumnModel(addsLLM: llmTokens != nil, changes: changes),
+                   llmTokens: llmTokens, now: now)
+    }
+
+    private static func lookColumn(
+        _ content: AutomationLookPaneContent,
+        column: AutomationDraftColumnModel,
+        llmTokens: Int?,
+        now: Date
+    ) -> AnyView {
         let verdict = AutomationDraftFooter.make(isNew: false, bytesChanged: true, enabled: true,
                                                  needsConfirmation: false)
         return AnyView(AutomationDraftSteps(
@@ -183,6 +198,32 @@ enum InboxBuilderAShotFixtures {
         let validated = try? JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
         return AutomationDraftColumnModel(text: text, validated: validated, isChecking: false, newestChatEntry: nil,
                                           confirmedText: text, isNew: false, plan: nil) { $0 == 3 ? "acme-app" : nil }
+    }
+
+    /// A workbench recipe never confirmed, with many long permissions, a
+    /// shell command and auto on for a Slack send: the "Also confirms" row
+    /// lists every field, and the footer carries every warning.
+    private static func longConfirmationColumn() -> AutomationDraftColumnModel {
+        let text = "---\nname: Release watch\n---\n"
+        let permissions = [
+            "slack:read@acme", "slack:write@acme", "gmail:read@work", "jira:read@ACME", "jira:write@ACME",
+            "confluence:read@acme", "calendar:read@work", "llm:strong", "shell:\"make release-notes VERSION=next\""
+        ]
+        let list = permissions.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\\\"") + "\"" }
+            .joined(separator: ",")
+        let json = #"{"ok":true,"errors":[],"slug":"release-watch","name":"Release watch","scope":"workbench","#
+            + #""approval_hash":"h2","content_hash":"\#(AutomationDraftColumnModel.contentHash(text))","#
+            + #""permissions":[\#(list)],"outputs":["inbox","report","slack"],"widening":[],"#
+            + #""changes":[],"changes_known":false,"adds_llm":true,"feeds_sources_to_llm":true,"#
+            + #""fields":{"trigger":"event: slack.new_messages where account=\"acme\", channel=\"release-*\"","#
+            + #""missed":"skip","concurrency":"1","artifacts":"living","budget":{"tokens":60000,"minutes":15}}}"#
+        let validated = try? JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
+        let saved = AutomationDraftColumnModel.Saved(changedBy: "", changedAt: nil, needsConfirmation: true,
+                                                     llmAutoWrites: ["send_slack_message"])
+        return AutomationDraftColumnModel(text: text, validated: validated, isChecking: false, newestChatEntry: nil,
+                                          confirmedText: nil, isNew: false, plan: nil, saved: saved) { _ in
+            "acme-release"
+        }
     }
 
     private static func waitingCard(sample name: String = "waiting-living") -> AutomationLookPaneContent.Card {
