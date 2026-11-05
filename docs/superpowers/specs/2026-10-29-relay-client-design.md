@@ -219,7 +219,7 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - Tasks 17 (proto pin to relay `bcca870`, `Changes.resync`) and 18 (the phone's `vouch_hub`) are part of Phase 3a — Phase 3 plan Owner approval 10, ask #904
 - Link failures added in review: `NOT_FOUND` at `open_pairing` shows "<Mac> isn't on Relay yet" (`LinkFailure.macNotOnRelay`); a v5 code is the "newer" case in `testANewerCodeVersionAsksToUpdateTheApp`; a full phone registry when a confirmed link finishes is `.needsOwner(.tooManyMacs)` — ask #915
 - The Keychain key id next to `relay_auth` (`AfterFirstUnlockThisDeviceOnly`) and the App Attest entitlement per configuration; the routing test `testAttestUnsupportedStaysOnCloudKit` in `WatchtowerMobile/Tests`; the `pair/<slot>` zone — ask #854, ask #799
-- Phase 4, Open decision 1: "When work stops" off on a relay phone: option A, `work_alerts_off` in the `device` record and the hub skips the push; the Go half is a Launch condition — ask #1038
+- Phase 4, Open decision 1: "When work stops" off on a relay phone: option A, `work_alerts_off` in the `device` record and the hub skips the push; the Go half is a Launch condition, closed with board #1534 — ask #1038
 - Phase 4, Open decision 2: The App Attest entitlement is in Release now; `feature/relay-client-next` does not reach main until the owner turned it on and the signed archive passes — ask #1038
 - Phase 4, Open decision 3: Product `com.aiwatchtowers.watchtower.relay.monthly`, one monthly auto-renewable, Family Sharing off; the price is set only in App Store Connect — ask #1038
 - Phase 4, Open decision 4: A timing starts at the start of the save that put the action on the transport; Diagnostics shows the end-to-end row plus a "Mac's answer" line — ask #1038
@@ -253,7 +253,7 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - Phase 4: A retry on a result with no price reads **Load the Price** (S45b, S57b) — decided by the agent, Task 9; ask #1040
 - Phase 4: An iCloud row with no `ordered_actions` on a relay route is disabled and reuses `.notOrdered`'s text (S12b), replacing a first ruling's new string — decided by the agent, Task 8
 - Phase 4: The registrar's foreground gate stands against the spec's "at every launch": a token waits for the next open — decided by the agent, Task 13
-- Phase 4: `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case — decided by the agent, Task 13; the move is in Launch conditions
+- Phase 4 (closed with the Go half, board #1534; the case is in `device_payload` now): `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case — decided by the agent, Task 13; the move is in Launch conditions
 - Phase 4: A push launch opens no socket until the first activation: new Task 19; a tap launch can connect at activation rather than in the boot — decided by the agent, Tasks 13 and 19; ask #1040
 - Phase 4: `AlertSubscriptionRegistrar.idle()` is capped at 10 s, like `outboxDrainCap`, against its brief's "no cap": a hung CloudKit call must not leave a stopped session with no error — decided by the agent, Task 18; ask #1040
 - Phase 4: New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again — decided by the agent, Task 10
