@@ -31,7 +31,8 @@ protocol RelaySubscriptionStore: Sendable {
     func product() async throws -> RelayProduct?
     func purchase(accountToken: UUID) async throws -> RelayPurchaseResult
     func unfinished() async -> [RelayTransaction]
-    /// `AppStore.sync()`, then the current entitlement's fresh transaction.
+    /// `AppStore.sync()`, then the current entitlement's fresh transaction. The owner's cancel throws
+    /// `RelayStoreError.cancelled`.
     func restore() async throws -> RelayTransaction?
     func updates() -> AsyncStream<RelayTransaction>
     func finish(_ transaction: RelayTransaction) async

@@ -11,9 +11,20 @@ final class FakeLapseTarget: RelayLapseTarget {
     var isOnRelay: Bool
     private(set) var lapses = 0
     private(set) var ended = 0
+    /// `lapseEnded` waits until `releaseEnd()`: a slow iCloud call.
+    var parksEnd = false
+    private(set) var endParked = false
+    private(set) var endSawCancel = false
+    private var parked: CheckedContinuation<Void, Never>?
 
     init(isOnRelay: Bool) {
         self.isOnRelay = isOnRelay
+    }
+
+    func releaseEnd() {
+        parksEnd = false
+        parked?.resume()
+        parked = nil
     }
 
     func lapseRelay() async {
@@ -21,6 +32,10 @@ final class FakeLapseTarget: RelayLapseTarget {
     }
 
     func lapseEnded() async {
+        if parksEnd {
+            await withCheckedContinuation { parked = $0; endParked = true }
+            endSawCancel = Task.isCancelled
+        }
         ended += 1
     }
 }
@@ -55,13 +70,30 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
         for waiter in waiters { waiter.resume() }
     }
 
+    private static let readKey = "get_account_state"
+
+    /// Reads wait until `releaseReads()`.
+    func holdReads() {
+        hold(Self.readKey)
+    }
+
+    var isHoldingRead: Bool {
+        isHolding(Self.readKey)
+    }
+
+    func releaseReads() {
+        release(Self.readKey)
+    }
+
     /// The next submit answers `state` whatever the fake would.
     func answerNextSubmit(_ state: Relay_V1_EntitlementKind) {
         lock.withLock { answers.append(state) }
     }
 
     func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
-        if let request = try? Relay_V1_Request(serializedBytes: body), case .submitTransaction(let submit)? = request.op {
+        let request = try? Relay_V1_Request(serializedBytes: body)
+        if case .getAccountState? = request?.op { await waitIfHeld(Self.readKey) }
+        if case .submitTransaction(let submit)? = request?.op {
             await waitIfHeld(submit.signedTransaction)
             let scripted = lock.withLock { answers.isEmpty ? nil : answers.removeFirst() }
             if let scripted {

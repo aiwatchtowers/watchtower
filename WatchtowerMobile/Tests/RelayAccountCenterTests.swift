@@ -57,7 +57,7 @@ final class RelayAccountCenterTests: XCTestCase {
     private func started(_ bed: AccountBed) async -> RelayAccountCenter {
         let center = bed.makeCenter()
         center.start()
-        await center.passTask?.value
+        await center.foreground()?.value
         return center
     }
 
@@ -108,6 +108,7 @@ final class RelayAccountCenterTests: XCTestCase {
         bed.http.hold(row.jws)
         let center = bed.makeCenter()
         center.start()
+        center.foreground()
         try await bed.until("the submit in flight") { bed.http.isHolding(row.jws) }
         XCTAssertEqual(center.unconfirmed, .confirming, "the owner is told while it is confirmed")
         XCTAssertEqual(center.purchase, .idle)
@@ -250,6 +251,23 @@ final class RelayAccountCenterTests: XCTestCase {
         try await paying(bed, token)
         await center.retryConfirm()
         XCTAssertEqual(center.purchase, .done)
+    }
+
+    /// A refused press whose own read says paying: S29, and the row stays for the next launch.
+    func testARefusedPressWhoseReadSaysPayingIsDoneAndKeepsTheRow() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let center = await started(bed)
+        let row = bed.row(token: token)
+        bed.sell(row)
+        bed.fake.failNext("submitTransaction", with: .invalidTransaction)
+
+        await center.buy()
+
+        XCTAssertEqual(center.purchase, .done)
+        XCTAssertEqual(center.unconfirmed, .refused)
+        XCTAssertEqual(bed.store.finished, [], "a read never finishes a row")
+        XCTAssertEqual(bed.store.unfinishedResult, [row])
     }
 
     func testAPressRefusedAgainKeepsTheAutomaticBound() async throws {
@@ -618,6 +636,39 @@ final class RelayAccountCenterTests: XCTestCase {
         try await bed.until("the answer") { center.phase == .paying(grace: false, macs: []) }
     }
 
+    /// A push launch: the listeners are up, and no sweep or read until the app is active.
+    func testAColdStartRunsNoPassUntilTheForeground() async throws {
+        let (bed, token) = try await registeredBed()
+        let row = bed.row(token: token)
+        bed.store.unfinishedResult = [row]
+        let opsBefore = bed.ops.count
+        let center = bed.makeCenter()
+
+        center.start()
+        try await bed.until("the updates task") { bed.store.updatesCalls == 1 }
+        XCTAssertEqual(bed.eventStreams, 1)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(bed.store.unfinishedCalls, 0)
+        XCTAssertEqual(bed.ops.count, opsBefore)
+        XCTAssertEqual(center.phase, .checking)
+
+        await center.foreground()?.value
+        XCTAssertEqual(bed.store.finished, [row])
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
+    }
+
+    func testAFailedPassDoesNotBlockTheForeground() async throws {
+        let (bed, _) = try await registeredBed()
+        bed.fake.crash()
+        let center = await started(bed)
+        XCTAssertEqual(center.phase, .unknown)
+
+        bed.fake.restart()
+        await center.foreground()?.value
+
+        XCTAssertEqual(center.phase, .free(ended: false), "no minute's wait after a pass that reached nothing")
+    }
+
     func testAForegroundRunsAtMostOnceAMinute() async throws {
         let (bed, _) = try await registeredBed()
         let center = await started(bed)
@@ -711,6 +762,7 @@ final class RelayAccountCenterTests: XCTestCase {
         bed.http.hold(renewal.jws)
         let center = bed.makeCenter()
         center.start()
+        center.foreground()
         try await bed.until("the submit") { bed.http.isHolding(renewal.jws) }
         XCTAssertNil(center.unconfirmed, "no .confirming")
         bed.fake.crash()
@@ -755,6 +807,11 @@ final class RelayAccountCenterTests: XCTestCase {
             bed.store.unfinishedResult = []
             bed.store.restoreResult = nil
             await center.restore()
+        case .storeFailed:
+            bed.store.unfinishedResult = []
+            bed.store.purchaseError = RelayStoreError.productUnavailable
+            await center.buy()
+            bed.store.purchaseError = nil
         default:
             XCTFail("not a finished press: \(state)")
         }
@@ -762,7 +819,7 @@ final class RelayAccountCenterTests: XCTestCase {
     }
 
     private static let finishedPresses: [Purchase] = [
-        .pending, .boughtNotConfirmed, .refused, .transferLimit, .notImplemented, .updateRequired, .noSubscriptionFound
+        .pending, .boughtNotConfirmed, .refused, .transferLimit, .notImplemented, .updateRequired, .noSubscriptionFound, .storeFailed
     ]
 
     func testAnEntitlementAnswerSettlesAFinishedPress() async throws {
@@ -824,7 +881,9 @@ final class RelayAccountCenterTests: XCTestCase {
     }
 
     func testScreenClosedClearsAFinishedPress() async throws {
-        let cleared: [Purchase] = [.boughtNotConfirmed, .refused, .transferLimit, .notImplemented, .updateRequired, .noSubscriptionFound]
+        let cleared: [Purchase] = [
+            .boughtNotConfirmed, .refused, .transferLimit, .notImplemented, .updateRequired, .noSubscriptionFound, .storeFailed
+        ]
         for state in cleared {
             let (bed, token) = try await registeredBed()
             let center = await started(bed)
@@ -929,19 +988,82 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(center.purchase, .noSubscriptionFound)
     }
 
-    func testAFailedStoreCallIsNoRefusalAndChargesNothing() async throws {
+    func testAFailedStoreCallIsStoreFailedAndSubmitsNothing() async throws {
         let (bed, _) = try await registeredBed()
         let center = await started(bed)
         bed.store.purchaseError = RelayStoreError.productUnavailable
         await center.buy()
-        XCTAssertEqual(center.purchase, .productFailed)
+        XCTAssertEqual(center.purchase, .storeFailed)
         XCTAssertEqual(bed.submitted, [])
 
         center.screenClosed()
         bed.store.restoreError = RelayStoreError.productUnavailable
         await center.restore()
-        XCTAssertEqual(center.purchase, .productFailed)
+        XCTAssertEqual(center.purchase, .storeFailed)
         XCTAssertNil(center.unconfirmed)
+        XCTAssertEqual(bed.submitted, [])
+    }
+
+    func testAStoreFailureStaysThroughLoadProductAndClearsOnClose() async throws {
+        let (bed, _) = try await registeredBed()
+        bed.store.productResult = RelayProduct(id: "relay", displayPrice: "$4.99")
+        let center = await started(bed)
+        bed.store.restoreError = RelayStoreError.productUnavailable
+        await center.restore()
+
+        await center.loadProduct()
+        XCTAssertEqual(center.purchase, .storeFailed, "a Restore's result stays until it has been on screen")
+        XCTAssertEqual(bed.store.productCalls, 0)
+
+        center.screenClosed()
+        XCTAssertEqual(center.purchase, .idle)
+    }
+
+    func testACancelledRestoreReturnsToThePriorStateWithNoMessage() async throws {
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        let (bed, _) = try await registeredBed()
+        bed.store.productResult = product
+        let center = await started(bed)
+        bed.store.restoreError = RelayStoreError.cancelled
+
+        await center.restore()
+        XCTAssertEqual(center.purchase, .idle)
+
+        await center.loadProduct()
+        await center.restore()
+        XCTAssertEqual(center.purchase, .ready(product))
+
+        bed.store.restoreError = nil
+        bed.store.restoreResult = nil
+        await center.restore()
+        XCTAssertEqual(center.purchase, .noSubscriptionFound)
+        bed.store.restoreError = RelayStoreError.cancelled
+        await center.restore()
+        XCTAssertEqual(center.purchase, .noSubscriptionFound)
+    }
+
+    /// A throw says nothing about a charge: what arrives after it decides.
+    func testAStoreFailureThenADeliverySettlesOrShowsTheRefusal() async throws {
+        for refused in [false, true] {
+            let (bed, token) = try await registeredBed()
+            let center = await started(bed)
+            try await bed.until("the updates task") { bed.store.updatesCalls == 1 }
+            bed.store.purchaseError = RelayStoreError.productUnavailable
+            await center.buy()
+            XCTAssertEqual(center.purchase, .storeFailed)
+
+            if refused { bed.fake.failNext("submitTransaction", with: .invalidTransaction) }
+            bed.store.emit(bed.row(token: token))
+
+            if refused {
+                try await bed.until("the refusal") { center.unconfirmed == .refused }
+                XCTAssertEqual(center.purchase, .storeFailed)
+                XCTAssertEqual(bed.store.finished, [])
+            } else {
+                try await bed.until("settled") { center.purchase == .done }
+                XCTAssertEqual(bed.store.finished.count, 1)
+            }
+        }
     }
 
     // MARK: - Lapse and move
@@ -1033,6 +1155,96 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
     }
 
+    /// Apple renewed and the row is not sent yet: the sweep runs first, so the billing boundary sends no Mac back.
+    func testAnUnsentRenewalAtExpiryLapsesNothing() async throws {
+        for event in [HostedRelayEvent.control(kind: .entitlementExpired, detail: ""), .entitlementInactive] {
+            let (bed, token) = try await registeredBed()
+            try await paying(bed, token)
+            let macs = targets(on: bed)
+            let center = await started(bed)
+            try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "expired", for: .zero)
+            let renewal = bed.row(token: token, renewal: true)
+            bed.store.unfinishedResult = [renewal]
+
+            bed.emit(event)
+
+            try await bed.until("the renewal confirmed") { bed.store.finished == [renewal] }
+            try await bed.until("the read") { center.phase == .paying(grace: false, macs: []) }
+            XCTAssertEqual(macs.relay.lapses, 0, "\(event)")
+            XCTAssertEqual(bed.submitted, [renewal.jws], "\(event)")
+        }
+    }
+
+    /// The bound still applies: a refused renewal is not sent again, and the expiry stands.
+    func testARefusedRenewalAtExpiryStillLapses() async throws {
+        let (bed, token) = try await registeredBed()
+        let renewal = bed.row(token: token, renewal: true)
+        bed.store.unfinishedResult = [renewal]
+        bed.fake.failNext("submitTransaction", with: .invalidTransaction)
+        let center = await started(bed)
+        XCTAssertEqual(bed.submitted.count, 1)
+        let macs = targets(on: bed)
+        try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "expired", for: .zero)
+
+        bed.emit(.control(kind: .entitlementExpired, detail: ""))
+
+        try await bed.until("the lapse") { macs.relay.lapses == 1 }
+        XCTAssertEqual(bed.submitted.count, 1)
+        XCTAssertEqual(center.phase, .free(ended: true))
+    }
+
+    func testAnOlderReadDoesNotOverwriteAMove() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let center = await started(bed)
+        bed.http.holdReads()
+        let read = Task { await center.refresh() }
+        try await bed.until("the read in flight") { bed.http.isHoldingRead }
+
+        bed.emit(.control(kind: .subscriptionMoved, detail: ""))
+        try await bed.until("the move") { center.phase == .moved }
+        bed.http.releaseReads()
+        await read.value
+
+        XCTAssertEqual(center.phase, .moved, "the older read still said paying")
+    }
+
+    func testADoneDoesNotWaitForTheLapseEnd() async throws {
+        let (bed, token) = try await registeredBed()
+        let macs = targets(on: bed)
+        macs.relay.parksEnd = true
+        let center = await started(bed)
+        bed.sell(bed.row(token: token))
+
+        // A press ends though one hub's iCloud call is still out, and the other hub is not held behind it.
+        await center.buy()
+
+        XCTAssertEqual(center.purchase, .done)
+        try await bed.until("the parked hub") { macs.relay.endParked }
+        try await bed.until("the other hub") { macs.other.ended == 1 }
+        XCTAssertEqual(macs.relay.ended, 0)
+
+        macs.relay.releaseEnd()
+        await center.lapseEndsFinished()
+        XCTAssertEqual(macs.relay.ended, 1)
+    }
+
+    func testStopCancelsTheLapseEnds() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let relay = FakeLapseTarget(isOnRelay: true)
+        relay.parksEnd = true
+        bed.targets = [relay]
+        let center = await started(bed)
+        try await bed.until("parked") { relay.endParked }
+
+        center.stop()
+        relay.releaseEnd()
+        await center.lapseEndsFinished()
+
+        XCTAssertTrue(relay.endSawCancel)
+    }
+
     func testAnICloudMacIsNotAsked() async throws {
         let (bed, _) = try await registeredBed()
         let cloud = FakeLapseTarget(isOnRelay: false)
@@ -1101,10 +1313,12 @@ final class RelayAccountCenterTests: XCTestCase {
 
         try await paying(bed, token, state: "grace")
         await center.refresh()
+        await center.lapseEndsFinished()
         XCTAssertEqual(macs.relay.ended, 1)
         XCTAssertEqual(macs.other.ended, 1)
 
         await center.refresh()
+        await center.lapseEndsFinished()
         XCTAssertEqual(macs.relay.ended, 1, "only when the entitlement returns")
     }
 
@@ -1114,7 +1328,8 @@ final class RelayAccountCenterTests: XCTestCase {
         try await paying(bed, token)
         let relay = FakeLapseTarget(isOnRelay: true)
         bed.targets = [relay]
-        _ = await started(bed)
+        let center = await started(bed)
+        await center.lapseEndsFinished()
         XCTAssertEqual(relay.ended, 1)
     }
 
@@ -1164,11 +1379,16 @@ final class RelayAccountCenterTests: XCTestCase {
         try await paying(bed, token)
         let center = await started(bed)
         let phase = center.phase
+        XCTAssertEqual(phase, .paying(grace: false, macs: []))
 
+        // Events run in order: once the second is seen, `.retryLater` was handled.
         bed.emit(.attestation(.retryLater(after: .seconds(60))))
+        bed.emit(.unsupportedVersion)
+        try await bed.until("handled") { center.updateRequired }
+        XCTAssertEqual(center.phase, phase, ".retryLater: the phase stays")
+
         bed.emit(.attestation(.notSupported))
         try await bed.until("unknown") { center.phase == .unknown }
-        XCTAssertNotEqual(phase, .unknown)
     }
 
     // MARK: - Wiring
@@ -1188,12 +1408,18 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(store.totalCalls, 0)
     }
 
+    /// On a cold launch the center's first pass waits for the foreground (a push launch stays frugal).
     func testARelayRootBuildsItsCenterAndForwardsTheForeground() async throws {
-        let bed = try await Bed.make(self, on: .relay)
+        let bed = try await Bed.make(self, on: .cloudKit)
         let store = FakeSubscriptionStore()
         bed.root.wireRelayAccount { store }
         let center = try XCTUnwrap(bed.root.env.relayAccount)
+        XCTAssertEqual(store.unfinishedCalls, 0, "no pass before the app is active")
+        XCTAssertEqual(center.phase, .checking)
+
+        await bed.root.becameActive().value
         await center.passTask?.value
+
         XCTAssertEqual(store.unfinishedCalls, 1)
         XCTAssertEqual(center.phase, .paying(grace: false, macs: [bed.mac.deviceID]))
     }
@@ -1205,7 +1431,7 @@ final class RelayAccountCenterTests: XCTestCase {
         let store = FakeSubscriptionStore()
         bed.root.wireRelayAccount { store }
         let center = try XCTUnwrap(bed.root.env.relayAccount)
-        await center.passTask?.value
+        await center.foreground()?.value
         let account = try await bed.fake.accountID(ofPhone: bed.phone.deviceID)
         let session = try await bed.orderedSession()
         try await bed.fake.setEntitlement(accountID: account, state: "expired", for: .zero)

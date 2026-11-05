@@ -64,12 +64,26 @@ final class RelayAccountCenter {
         case accountFailed
         case restoring, noSubscriptionFound
         case refused, transferLimit, notImplemented, updateRequired
+        /// The App Store call threw for a reason other than the owner's cancel. It says nothing about a charge.
+        case storeFailed
         case done
     }
 
     enum UnconfirmedPurchase: Equatable {
         case confirming, notReached
         case refused, transferLimit, notImplemented, updateRequired
+    }
+
+    /// What one `get_account_state` came to.
+    private enum ReadOutcome {
+        /// No answer.
+        case failed
+        /// An answer a newer read or a control overtook: nothing written.
+        case superseded
+        /// Written, no lapse.
+        case kept
+        /// Written, and the relay Macs were asked to lapse.
+        case lapsed
     }
 
     /// What one `submit_transaction` came to. A refusal is a definite answer; anything else that is no entitlement,
@@ -97,7 +111,7 @@ final class RelayAccountCenter {
         }
     }
 
-    /// The last pass (sweep, then read) started; a test awaits it.
+    /// The pass (sweep, then read) running; nil once it ended. A test awaits it.
     @ObservationIgnored private(set) var passTask: Task<Void, Never>?
 
     static let wasPayingKey = "relay.wasPaying"
@@ -114,7 +128,11 @@ final class RelayAccountCenter {
     @ObservationIgnored private var running = false
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
     @ObservationIgnored private var updatesTask: Task<Void, Never>?
+    /// When a pass last reached the relay: a pass that did not leaves the next foreground free to try.
     @ObservationIgnored private var lastPassAt: Date?
+    /// The `lapseEnded()` calls still out, one per hub: none holds an answer, a loop or another hub.
+    @ObservationIgnored private var lapseEnds: [Int: Task<Void, Never>] = [:]
+    @ObservationIgnored private var nextLapseEnd = 0
     /// One flight per transaction id.
     @ObservationIgnored private var flights: [UInt64: Task<SubmitAnswer, Never>] = [:]
     /// Definitely refused in this process: the automatic paths do not send these again; a press reads past it.
@@ -140,10 +158,26 @@ final class RelayAccountCenter {
         wasPaying = defaults.bool(forKey: Self.wasPayingKey)
     }
 
+    /// Returns once the `lapseEnded()` calls started so far ended.
+    func lapseEndsFinished() async {
+        for task in Array(lapseEnds.values) { await task.value }
+    }
+
+    /// Ends the loops and cancels the `lapseEnded()` calls still out; `start()` begins again.
+    func stop() {
+        running = false
+        eventsTask?.cancel()
+        eventsTask = nil
+        updatesTask?.cancel()
+        updatesTask = nil
+        for task in lapseEnds.values { task.cancel() }
+    }
+
     // MARK: - Starting
 
-    /// The event loop, the unfinished sweep, the updates task and the first read; nothing at all without an identity
-    /// (no session, register, attestation, read or `Transaction` stream).
+    /// The event loop and the updates task; nothing at all without an identity (no session, register, attestation, read
+    /// or `Transaction` stream). The first sweep and read wait for `foreground()`: a push launch stays frugal, and a launch
+    /// in the foreground runs them at once.
     func start() {
         guard !running else { return }
         do {
@@ -159,19 +193,19 @@ final class RelayAccountCenter {
         }
     }
 
-    /// Runs what `start()` held back. Idempotent, and nothing while there still is no identity.
+    /// Runs what `start()` held back, with its first pass: an owner's press or a link got here. Idempotent, and nothing
+    /// while there still is no identity.
     func identityAppeared() {
         guard !running, (try? link.hasIdentity()) == true else { return }
         begin()
+        startPass()
     }
 
-    /// The return to the foreground: a pass at most once a minute. Returns the pass it started.
+    /// The app is active: a pass at most once a minute, the first at once. Returns the pass it started or joined.
     @discardableResult
     func foreground() -> Task<Void, Never>? {
-        guard running else {
-            start()
-            return running ? passTask : nil
-        }
+        if !running { start() }
+        guard running else { return nil }
         if let lastPassAt, abs(now().timeIntervalSince(lastPassAt)) < Self.foregroundInterval { return nil }
         return startPass()
     }
@@ -186,7 +220,6 @@ final class RelayAccountCenter {
                 await self?.update(transaction)
             }
         }
-        startPass()
     }
 
     private func startEventLoop() {
@@ -205,10 +238,14 @@ final class RelayAccountCenter {
         }
     }
 
+    /// One pass at a time from the foreground: a second activation joins it.
     @discardableResult
     private func startPass() -> Task<Void, Never> {
-        lastPassAt = now()
-        let task = Task { await pass() }
+        if let passTask { return passTask }
+        let task = Task {
+            await pass()
+            passTask = nil
+        }
         passTask = task
         return task
     }
@@ -216,7 +253,7 @@ final class RelayAccountCenter {
     /// The unfinished rows are submitted, then the account is read.
     private func pass() async {
         await sweep()
-        await read()
+        if await read() != .failed { lastPassAt = now() }
     }
 
     // MARK: - The owner's presses
@@ -232,7 +269,7 @@ final class RelayAccountCenter {
     func screenClosed() {
         switch purchase {
         case .done, .noSubscriptionFound, .accountFailed, .refused, .transferLimit, .notImplemented, .updateRequired,
-             .boughtNotConfirmed, .productFailed:
+             .boughtNotConfirmed, .productFailed, .storeFailed:
             purchase = .idle
         default:
             break
@@ -276,14 +313,16 @@ final class RelayAccountCenter {
             }
         } catch {
             Self.logger.error("relay account: purchase failed: \(Self.code(error), privacy: .public)")
-            purchase = .productFailed
+            purchase = .storeFailed
         }
     }
 
     /// A first use too: nothing is asked of Apple when the account fails. The restored transaction keeps its original
     /// account's token and the relay moves it. Exempt from the refused set: the same id can come back with a new signature.
+    /// The owner's cancel returns to the state before the press, with no message.
     func restore() async {
         guard !pressRunning else { return }
+        let prior = purchase
         purchase = .restoring
         guard await pressAccountID() != nil else { return }
         do {
@@ -292,9 +331,11 @@ final class RelayAccountCenter {
                 return
             }
             await confirm([transaction])
+        } catch RelayStoreError.cancelled {
+            purchase = prior
         } catch {
             Self.logger.error("relay account: restore failed: \(Self.code(error), privacy: .public)")
-            purchase = .productFailed
+            purchase = .storeFailed
         }
     }
 
@@ -368,29 +409,28 @@ final class RelayAccountCenter {
         await read()
     }
 
-    /// A failed read is `.unknown`, never free: no paying phone is sent back to iCloud on a network failure. Returns
-    /// whether this read lapsed the relay Macs.
+    /// A failed read is `.unknown`, never free: no paying phone is sent back to iCloud on a network failure.
     @discardableResult
-    private func read() async -> Bool {
+    private func read() async -> ReadOutcome {
         readGeneration += 1
         let generation = readGeneration
         let state: RelayAccountState
         do {
             guard let account = try link.account() else {
                 phase = .unknown
-                return false
+                return .failed
             }
             state = try await account.state()
         } catch {
             Self.logger.notice("relay account: read failed: \(Self.code(error), privacy: .public)")
             if generation == readGeneration { phase = .unknown }
-            return false
+            return .failed
         }
-        guard generation == readGeneration else { return false }
+        guard generation == readGeneration else { return .superseded }
         return await apply(state)
     }
 
-    private func apply(_ state: RelayAccountState) async -> Bool {
+    private func apply(_ state: RelayAccountState) async -> ReadOutcome {
         let previous = phase
         if state.moved {
             phase = .moved
@@ -398,15 +438,26 @@ final class RelayAccountCenter {
             phase = .paying(grace: state.entitlement == .grace, macs: state.macs)
             markPaying()
             settle()
-            if !Self.isPaying(previous) {
-                for target in targets() { await target.lapseEnded() }
-            }
-            return false
+            if !Self.isPaying(previous) { endLapses() }
+            return .kept
         } else {
             phase = .free(ended: state.entitlement == .expired || state.entitlement == .revoked)
         }
         await lapseRelayMacs()
-        return true
+        return .lapsed
+    }
+
+    /// The entitlement came back: each hub's kept lapse request is withdrawn on its own, which can mean an iCloud call,
+    /// so it holds neither this answer, a press, a loop nor another hub.
+    private func endLapses() {
+        for target in targets() {
+            let key = nextLapseEnd
+            nextLapseEnd += 1
+            lapseEnds[key] = Task {
+                if !Task.isCancelled { await target.lapseEnded() }
+                lapseEnds[key] = nil
+            }
+        }
     }
 
     private static func isPaying(_ phase: Phase) -> Bool {
@@ -435,7 +486,8 @@ final class RelayAccountCenter {
     /// An entitlement answer settles the screen. A running press ends on the same answer by itself.
     private func settle() {
         switch purchase {
-        case .pending, .boughtNotConfirmed, .refused, .transferLimit, .notImplemented, .updateRequired, .noSubscriptionFound:
+        case .pending, .boughtNotConfirmed, .refused, .transferLimit, .notImplemented, .updateRequired, .noSubscriptionFound,
+             .storeFailed:
             purchase = .done
         default:
             break
@@ -447,7 +499,7 @@ final class RelayAccountCenter {
     private func handle(_ event: HostedRelayEvent) async {
         switch event {
         case .control(.entitlementExpired, _), .entitlementInactive:
-            await readThenLapse()
+            await sweepReadThenLapse()
         case .control(.subscriptionMoved, _):
             readGeneration += 1
             phase = .moved
@@ -466,11 +518,13 @@ final class RelayAccountCenter {
         }
     }
 
-    /// The relay said the entitlement ended. The read corrects the phase: if it answers paying, its answer is the newer
-    /// one and no Mac goes back to iCloud. A failed read leaves the relay's word standing.
-    private func readThenLapse() async {
-        let lapsed = await read()
-        if !lapsed, !Self.isPaying(phase) { await lapseRelayMacs() }
+    /// The relay said the entitlement ended. A renewal Apple sold and the relay has not seen goes first (past the refused
+    /// ids), so the billing boundary sends no Mac back. The read corrects the phase: if it answers paying, its answer is
+    /// the newer one and no Mac goes back to iCloud. A failed read leaves the relay's word standing.
+    private func sweepReadThenLapse() async {
+        await sweep()
+        let outcome = await read()
+        if outcome != .lapsed, !Self.isPaying(phase) { await lapseRelayMacs() }
     }
 
     // MARK: - The submit path
