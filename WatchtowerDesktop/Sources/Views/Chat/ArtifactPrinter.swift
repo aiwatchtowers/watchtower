@@ -19,6 +19,9 @@ final class ArtifactPrinter: NSObject {
     private let onError: (String) -> Void
     private var webView: WKWebView?
     private var started = false
+    /// Finishes the job when the page never finishes loading.
+    private var loadTimeout: Task<Void, Never>?
+    private static let loadTimeoutDuration: Duration = .seconds(15)
 
     private init(title: String, onError: @escaping (String) -> Void) {
         self.title = title
@@ -47,6 +50,11 @@ final class ArtifactPrinter: NSObject {
             self.finish(error: "Print failed: \(message)")
         }
         coordinator.show(.page(page), token: 0)
+        loadTimeout = Task { [weak self] in
+            try? await Task.sleep(for: Self.loadTimeoutDuration)
+            guard !Task.isCancelled, let self, !self.started else { return }
+            self.finish(error: "Print failed: the page did not finish loading.")
+        }
     }
 
     private func run(_ webView: WKWebView, window: NSWindow) {
@@ -78,6 +86,8 @@ final class ArtifactPrinter: NSObject {
 
     private func finish(error: String?) {
         if let error { onError(error) }
+        loadTimeout?.cancel()
+        loadTimeout = nil
         coordinator.cancel()
         coordinator.onLoaded = nil
         coordinator.onFailed = nil

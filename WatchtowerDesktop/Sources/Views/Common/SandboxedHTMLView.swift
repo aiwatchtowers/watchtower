@@ -165,7 +165,13 @@ struct SandboxedHTMLView: NSViewRepresentable {
                     self.showMessage("The preview could not be prepared: \(error.localizedDescription)")
                     return
                 }
-                guard !Task.isCancelled, let webView = self.webView else { return }
+                // A cancelled load has a successor (`show` again) or an owner
+                // that is going away (`cancel`); either one reports itself.
+                guard !Task.isCancelled else { return }
+                guard let webView = self.webView else {
+                    self.onFailed?("The page could not be prepared: its view is gone.")
+                    return
+                }
                 self.install(rules, on: webView.configuration.userContentController)
                 self.showingMessage = false
                 switch content {
@@ -227,6 +233,11 @@ struct SandboxedHTMLView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             onFailed?("The page could not be loaded: \(error.localizedDescription)")
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            htmlPreviewLog.error("HTML preview web content process ended")
+            onFailed?("The page stopped: its web content process ended.")
         }
 
         // MARK: WKUIDelegate — nothing leaves the view
