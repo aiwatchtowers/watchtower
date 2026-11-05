@@ -1140,23 +1140,29 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations.last, ["automations", "preview", "--stdin", "--json", "--workbench", "5"])
     }
 
-    /// Lifecycle rule: the run belongs to the center, so the view that
-    /// pressed Dry run going away (its task cancelled) neither stops it nor
-    /// loses its result.
+    /// Lifecycle rule: the run belongs to the center, so the panel that
+    /// pressed Dry run going away loses neither the run nor its result. The
+    /// panel is a stand-in owner dropped mid-run; every state after that is
+    /// rebuilt from a fresh read of the center alone, as a reopened panel
+    /// would.
     func testPreviewOutlivesThePressingView() async throws {
         runner.on("preview") { _ in Self.previewJSON(title: "Kept") }
         runner.hold("preview")
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        let view = Task { @MainActor in center.runPreview(7) }
-        await view.value
-        view.cancel()
+        var panel: LookPanelStandIn? = LookPanelStandIn(center: center)
+        panel?.pressDryRun(7)
         await waitUntil { self.runner.isHolding }
-        guard case .running = lookState(center, 7) else { return XCTFail("running while the CLI works") }
+        panel = nil // the panel is gone while the CLI works
 
+        guard case .running = lookState(center, 7) else {
+            return XCTFail("a reopened panel sees the run, got \(lookState(center, 7))")
+        }
         runner.release()
         await waitUntil { !center.isPreviewRunning(7) }
-        guard case let .preview(shown, _, _) = lookState(center, 7) else { return XCTFail("the result is kept") }
+        guard case let .preview(shown, _, _) = lookState(center, 7) else {
+            return XCTFail("a reopened panel sees the result, got \(lookState(center, 7))")
+        }
         XCTAssertEqual(shown.cards.map(\.title), ["Kept"])
     }
 
@@ -1221,5 +1227,20 @@ final class AutomationEditorCenterTests: XCTestCase {
         await center.beginEdit(7, chatNewestText: nil)
         center.discard(7)
         XCTAssertEqual(center.step(for: 7), .look, "the step outlives closing the panel")
+    }
+}
+
+/// A panel's only part in a Dry run: the press. Dropped by the test to
+/// model navigating away.
+@MainActor
+private final class LookPanelStandIn {
+    let center: AutomationEditorCenter
+
+    init(center: AutomationEditorCenter) {
+        self.center = center
+    }
+
+    func pressDryRun(_ key: Int64) {
+        center.runPreview(key)
     }
 }
