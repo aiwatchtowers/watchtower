@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/logredact"
 )
 
 // queryAll runs c.Query to its end and returns every chunk and the error.
@@ -154,6 +155,7 @@ func longLineStub(t *testing.T, n int) string {
 	body := `#!/bin/sh
 echo $$ > '` + pidFile + `'
 cat > /dev/null
+echo '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"cat big","exit_code":null,"status":"in_progress","aggregated_output":""}}'
 printf '%s' '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big","exit_code":0,"status":"completed","aggregated_output":"'
 head -c ` + strconv.Itoa(n) + ` /dev/zero | tr '\000' 'a'
 printf '%s\n' '"}}'
@@ -213,4 +215,90 @@ func TestQuery_LineOverLimitIsSkippedAndTheRunEnds(t *testing.T) {
 	chunks, err := queryAll(t, c)
 	require.NoError(t, err)
 	assert.Equal(t, "done", textOf(chunks))
+
+	// The skipped line was the tool's end: the step is closed as failed,
+	// never left running.
+	var tools []ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			tools = append(tools, *ch.Tool)
+		}
+	}
+	require.Len(t, tools, 2)
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "shell", Done: true, Result: "this tool's result was too large to show"}, tools[1])
+}
+
+// A tool codex never reports the end of is closed as failed when the
+// stream ends.
+func TestQuery_UnfinishedToolIsClosed(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}`,
+		`{"type":"turn.failed","error":{"message":"stream disconnected"}}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 1))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.Error(t, err)
+	var last *ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			last = ch.Tool
+		}
+	}
+	require.NotNil(t, last)
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, Result: "codex stopped before reporting this tool's result"}, *last)
+}
+
+// A failed command or MCP call with no output still says why.
+func TestToolEnd_FailureAlwaysHasAReason(t *testing.T) {
+	one := 1
+	s := &queryStream{}
+	for want, item := range map[string]*CodexItem{
+		"the command was declined":       {Type: "command_execution", Status: "declined"},
+		"the command exited with code 1": {Type: "command_execution", Status: "failed", ExitCode: &one},
+		"the command failed":             {Type: "command_execution", Status: "failed"},
+		"the tool failed":                {Type: "mcp_tool_call", Status: "failed", ToolError: &CodexItemFailure{}},
+	} {
+		end := s.toolEnd(item)
+		assert.False(t, end.OK, want)
+		assert.Equal(t, want, end.Result)
+	}
+}
+
+// The watchtower server is mounted as watchtower-app when the owner's codex
+// config has its own watchtower; its tools still read as watchtower's, so
+// the chat shows them by name and extracts their Sources.
+func TestQuery_WatchtowerToolsUnderAnotherKey(t *testing.T) {
+	home := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"),
+		[]byte("[mcp_servers.watchtower]\nurl = \"https://mcp.example.com/mcp\"\n"), 0o600))
+	stdout := strings.Join([]string{
+		`{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower-app","tool":"search_knowledge","arguments":{},"status":"in_progress"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", filepath.Join(t.TempDir(), "w.db"), fakeCodexScript(t, stdout, "", 0))
+	c.SetChildEnv([]string{"CODEX_HOME=" + home})
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var names []string
+	for _, ch := range chunks {
+		if ch.Tool != nil && !ch.Tool.Done {
+			names = append(names, ch.Tool.Name)
+		}
+	}
+	assert.Equal(t, []string{"mcp__watchtower__search_knowledge"}, names)
+}
+
+// A clean exit without turn.completed keeps what the run said about it, so
+// the chat can classify it (here a rate limit).
+func TestQuery_IncompleteRunKeepsItsReason(t *testing.T) {
+	stdout := `{"type":"error","message":"429 Too Many Requests"}`
+	_, err := queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0)))
+	require.ErrorIs(t, err, errNoTurnCompleted)
+	assert.Contains(t, logredact.Full(err), "429 Too Many Requests")
+
+	_, err = queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, "", "stream closed early", 0)))
+	require.ErrorIs(t, err, errNoTurnCompleted)
+	assert.Contains(t, logredact.Full(err), "stream closed early")
 }

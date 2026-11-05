@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -203,6 +204,8 @@ func (c *Client) execArgs() []string {
 type runMount struct {
 	args, env []string
 	external  []ai.ExternalMCPServer
+	// server is the watchtower server's key ("" = not mounted).
+	server string
 }
 
 // prompt is systemPrompt with the mounted Quick Connections' external-data
@@ -244,7 +247,7 @@ func (c *Client) mount() (runMount, error) {
 			mounted = append(mounted, s)
 		}
 	}
-	return runMount{args: []string{"-c", override}, env: env, external: mounted}, nil
+	return runMount{args: []string{"-c", override}, env: env, external: mounted, server: watchtowerKey(owner)}, nil
 }
 
 // processDir is the subprocess cwd: the read folder, or a TCC-neutral
@@ -257,9 +260,6 @@ func (c *Client) processDir() string {
 	}
 	return os.TempDir()
 }
-
-// errNoTurnCompleted fails a run that exited cleanly without turn.completed.
-var errNoTurnCompleted = errors.New("codex exited without completing the turn")
 
 // EmitToolEvents switches on the protocol-v2 chat events (the stateless chat
 // turn backend calls it): every tool call becomes a start and an end chunk
@@ -327,7 +327,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// One ledger row per run, recorded on every return below: the
 		// turn's usage events summed (usage stays nil without one), else
 		// estimates of the prompt and the streamed text.
-		s := &queryStream{ctx: ctx, out: textCh, model: c.model, v2: c.toolEvents}
+		s := &queryStream{ctx: ctx, out: textCh, model: c.model, v2: c.toolEvents, watchtower: m.server}
 		ok := false
 		defer func() {
 			recordCodexCall(ctx, c.model, start, s.usage, true, systemPrompt+userMessage, s.answer.String(), ok)
@@ -336,7 +336,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		reader := bufio.NewReaderSize(stdout, 64*1024)
 		for {
 			line, oversized, readErr := readStreamLine(reader, maxStreamLine)
-			if trimmed := strings.TrimSpace(string(line)); !oversized && trimmed != "" && !s.handle([]byte(trimmed)) {
+			if oversized {
+				s.skipped++
+			} else if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && !s.handle(trimmed) {
 				_ = cmd.Wait()
 				errCh <- ctx.Err()
 				return
@@ -351,7 +353,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				return
 			}
 		}
-		s.sendUsage()
+		s.finish()
 
 		err = cmd.Wait()
 		switch {
@@ -367,7 +369,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			// A clean exit is a success only after turn.completed (the claude
 			// backend's "exited without a result"): an empty or cut-off run
 			// is never a blank or partial "complete" answer.
-			errCh <- providers.ContextFailure("codex", ctx, errNoTurnCompleted)
+			errCh <- providers.ContextFailure("codex", ctx, s.incompleteError(stderrBuf.String()))
 		default:
 			ok = true
 		}
