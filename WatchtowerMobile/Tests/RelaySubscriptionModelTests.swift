@@ -167,16 +167,22 @@ final class RelaySubscriptionModelTests: XCTestCase {
         }
     }
 
-    /// The App Store charges before the submit could say the app is too old: S43 first, not after the money.
+    /// The latch stops a sale; it does not rewrite an answer. Over these seven a press could lead to a purchase, and Apple
+    /// charges before the submit could say the app is too old: S43 first, not after the money.
     func testAnAppTooOldSellsNothing() {
-        let selling: [RelayAccountCenter.PurchaseState] = [.idle, .loadingProduct, .ready(price), .productFailed, .storeFailed, .noSubscriptionFound]
+        let selling: [RelayAccountCenter.PurchaseState] = [
+            .idle, .loadingProduct, .ready(price), .productFailed, .storeFailed, .noSubscriptionFound, .accountFailed
+        ]
         for purchase in selling {
-            let shown = model(purchase, product: price, updateRequired: true)
-            XCTAssertEqual(shown.line, tooOld, "\(purchase)")
-            XCTAssertNil(shown.primary, "\(purchase)")
-            XCTAssertNil(shown.lead, "\(purchase)")
-            XCTAssertNil(shown.manageSubscriptionURL, "\(purchase)")
-            XCTAssertTrue(shown.showsRestore, "\(purchase)")
+            for product in [price, nil] {
+                let shown = model(purchase, product: product, updateRequired: true)
+                let name = "\(purchase), product \(String(describing: product))"
+                XCTAssertEqual(shown.line, tooOld, name)
+                XCTAssertNil(shown.primary, name)
+                XCTAssertNil(shown.lead, name)
+                XCTAssertNil(shown.manageSubscriptionURL, name)
+                XCTAssertTrue(shown.showsRestore, name)
+            }
         }
         // A press in progress keeps its frame.
         XCTAssertEqual(model(.buying, updateRequired: true).primary?.title, "Waiting for the App Store…")
@@ -190,6 +196,33 @@ final class RelaySubscriptionModelTests: XCTestCase {
         XCTAssertEqual(model(.ready(price), phase: paying, updateRequired: true).line, relayIsOn)
         // Without the latch it sells again.
         XCTAssertEqual(model(.ready(price)).primary?.title, subscribe)
+    }
+
+    /// An answer stays as it was, with the same button: an owner refused still needs **Manage Subscription**.
+    func testAnAppTooOldKeepsAnAnswer() throws {
+        let page = try XCTUnwrap(URL(string: "https://apps.apple.com/account/subscriptions"))
+        struct Kept {
+            let purchase: RelayAccountCenter.PurchaseState
+            let primary: Model.Button?
+            let line: String
+            var url: URL?
+        }
+        let manageButton = Model.Button(title: manage, action: .manageSubscription)
+        let kept = [
+            Kept(purchase: .done, primary: Model.Button(title: "Done", action: .done), line: relayIsOn),
+            Kept(purchase: .pending, primary: nil, line: "Waiting for approval. Relay turns on when it's approved."),
+            Kept(purchase: .refused, primary: manageButton, line: refused, url: page),
+            Kept(purchase: .transferLimit, primary: manageButton, line: limit, url: page),
+            Kept(purchase: .notImplemented, primary: manageButton, line: noPurchases, url: page),
+            Kept(purchase: .boughtNotConfirmed, primary: Model.Button(title: "Try Again", action: .retryConfirm), line: notReached),
+            Kept(purchase: .updateRequired, primary: nil, line: tooOld)
+        ]
+        for item in kept {
+            let shown = model(item.purchase, product: price, updateRequired: true)
+            XCTAssertEqual(shown.primary, item.primary, "\(item.purchase)")
+            XCTAssertEqual(shown.line, item.line, "\(item.purchase)")
+            XCTAssertEqual(shown.manageSubscriptionURL, item.url, "\(item.purchase)")
+        }
     }
 
     func testAPayingPhoneIgnoresUnconfirmed() {
@@ -243,15 +276,17 @@ final class RelaySubscriptionModelTests: XCTestCase {
         XCTAssertEqual(model(.noSubscriptionFound, product: other).primary?.title, "Subscribe — €1,23 / month")
     }
 
-    /// A Restore pressed before any load found a price: no **Subscribe** to write, so **Retry** as on S22, and S22's shape.
+    /// A Restore pressed before any load found a price: no **Subscribe** to write, so **Load the Price** in S22's shape.
+    /// What ended there was a Restore, not a load: S22's own **Retry** stays for a failed load.
     func testAResultWithNoPriceOffersRetry() {
         let lines: [(RelayAccountCenter.PurchaseState, String, Bool)] = [
             (.noSubscriptionFound, "No subscription found on this Apple ID.", false),
             (.storeFailed, "The App Store didn't finish. Nothing changed; you can try again.", true)
         ]
+        XCTAssertEqual(model(.productFailed).primary, Model.Button(title: "Retry", action: .reloadProduct))
         for (purchase, line, isError) in lines {
             let shown = model(purchase)
-            XCTAssertEqual(shown.primary, Model.Button(title: "Retry", action: .reloadProduct), "\(purchase)")
+            XCTAssertEqual(shown.primary, Model.Button(title: "Load the Price", action: .reloadProduct), "\(purchase)")
             XCTAssertEqual(shown.line, line, "\(purchase)")
             XCTAssertEqual(shown.lineIsError, isError, "\(purchase)")
             XCTAssertNil(shown.lead, "\(purchase)")

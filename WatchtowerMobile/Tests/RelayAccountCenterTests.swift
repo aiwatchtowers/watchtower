@@ -1113,7 +1113,7 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(known.purchase, .ready(product))
     }
 
-    /// **Retry** on S45 and S57 with no price: the result goes, the load runs, and a failure there is S22.
+    /// **Load the Price** on S45 and S57 with no price: the result goes, the load runs, and a failure there is S22.
     func testReloadProductLeavesAResultWithNoPrice() async throws {
         let (bed, _) = try await registeredBed()
         let center = await started(bed)

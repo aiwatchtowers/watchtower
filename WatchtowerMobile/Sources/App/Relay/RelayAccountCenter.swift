@@ -287,7 +287,7 @@ final class RelayAccountCenter {
         purchase = found.map(PurchaseState.ready) ?? .productFailed
     }
 
-    /// **Retry**: S22, and S45 and S57 with no price, where `loadProduct()` alone would leave the result standing. The press
+    /// S22's **Retry**, and **Load the Price** on S45 and S57 with no price, where `loadProduct()` alone would leave the result standing. The press
     /// replaces the result. A running press stays: `screenClosed()` and `loadProduct()` both leave it.
     func reloadProduct() async {
         screenClosed()
