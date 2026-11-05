@@ -155,7 +155,7 @@ func TestQuerySync_OldCodexPromptsNeverReachArgv(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	body := `#!/bin/sh
 [ "$1" = "--version" ] && { echo "codex-cli 0.120.0"; exit 0; }
-reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'; exit 0; }
 case "$*" in *MARKER-old*|*model_instructions_file*) reply on-argv ;; esac
 input=$(cat)
 case "$input" in *` + sysMarker + `*` + userMarker + `*) reply ok ;; esac
@@ -232,7 +232,7 @@ file=""
 for a in "$@"; do case "$a" in model_instructions_file=*) file=${a#model_instructions_file=}; file=${file#\"}; file=${file%\"} ;; esac; done
 cat > /dev/null
 first=$(cat "$file"); second=$(cat "$file")
-reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'; exit 0; }
 case "$first$second" in *` + marker + `*` + marker + `*) ;; *) reply unread ;; esac
 echo '{"type":"thread.started","thread_id":"t"}'
 sleep 0.5

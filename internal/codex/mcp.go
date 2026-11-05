@@ -185,7 +185,7 @@ func mcpOverride(dbPath string, extra, envVars []string, external []ai.ExternalM
 		entries = append(entries, TOMLString(name)+"={enabled=false}")
 	}
 	if dbPath != "" {
-		key := freeKey("watchtower", "-app", taken)
+		key := watchtowerKey(owner)
 		taken[key] = true
 		entries = append(entries, watchtowerEntry(key, dbPath, extra, envVars))
 	}
@@ -200,6 +200,16 @@ func mcpOverride(dbPath string, extra, envVars []string, external []ai.ExternalM
 func EnvConflicts(external []ai.ExternalMCPServer, baseEnv []string) map[int64]string {
 	_, _, skipped := externalEntries(external, map[string]bool{}, envMap(baseEnv))
 	return skipped
+}
+
+// watchtowerKey is the key the watchtower server is mounted under: the
+// first of watchtower, watchtower-app, … that no owner server uses.
+func watchtowerKey(owner []string) string {
+	taken := map[string]bool{}
+	for _, name := range owner {
+		taken[name] = true
+	}
+	return freeKey("watchtower", "-app", taken)
 }
 
 func freeKey(key, suffix string, taken map[string]bool) string {

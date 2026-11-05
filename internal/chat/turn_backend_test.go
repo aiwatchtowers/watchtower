@@ -109,6 +109,8 @@ func TestTurnBackend_ReplaysHistoryAndStreams(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(user, "why?"), "the running turn is not replayed as history")
 }
 
+// The runtime B (agentloop) shape of tool chunks; the codex path is
+// TestTurnBackend_CodexToolCallsBecomeSteps.
 func TestTurnBackend_ToolChunksBecomeSteps(t *testing.T) {
 	d, conv := seedConversation(t)
 	fq := &fakeQuerier{chunks: []ai.StreamChunk{

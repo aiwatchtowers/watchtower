@@ -17,11 +17,22 @@ type RoutingMetadata struct {
 // follows. Text is empty on a boundary chunk. Tool, when set, reports one tool
 // call's start or end — only from a loop whose tool events were switched on
 // (agentloop.Client.EmitToolEvents, used by the protocol-v2 chat session).
+// Usage, when set, is the turn's token totals — likewise only for a consumer
+// that switched those events on (codex.Client.EmitToolEvents).
 type StreamChunk struct {
 	Routing      *RoutingMetadata
 	Text         string
 	ToolBoundary bool
 	Tool         *ToolEvent
+	Usage        *TurnUsage
+}
+
+// TurnUsage is one streamed turn's token totals, as a chat message records
+// them: InputTokens counts every input token, cached ones included.
+type TurnUsage struct {
+	Model        string
+	InputTokens  int
+	OutputTokens int
 }
 
 // ToolEvent is one tool call observed by an in-process tool loop: a start

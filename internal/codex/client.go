@@ -2,9 +2,11 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,6 +46,8 @@ type Client struct {
 	serversFromHome bool
 	// noServers: the run mounts no MCP server at all (SetNoMCPServers).
 	noServers bool
+	// toolEvents: Query streams the protocol-v2 chat events (EmitToolEvents).
+	toolEvents bool
 }
 
 // SetNoMCPServers makes the run tool-less on MCP: every server of the
@@ -195,6 +199,8 @@ func (c *Client) execArgs() []string {
 type runMount struct {
 	args, env []string
 	external  []ai.ExternalMCPServer
+	// server is the watchtower server's key ("" = not mounted).
+	server string
 }
 
 // prompt is systemPrompt with the mounted Quick Connections' external-data
@@ -236,7 +242,7 @@ func (c *Client) mount() (runMount, error) {
 			mounted = append(mounted, s)
 		}
 	}
-	return runMount{args: []string{"-c", override}, env: env, external: mounted}, nil
+	return runMount{args: []string{"-c", override}, env: env, external: mounted, server: watchtowerKey(owner)}, nil
 }
 
 // processDir is the subprocess cwd: the read folder, or a TCC-neutral
@@ -249,6 +255,13 @@ func (c *Client) processDir() string {
 	}
 	return os.TempDir()
 }
+
+// EmitToolEvents switches on the protocol-v2 chat events (the stateless chat
+// turn backend calls it): every tool call becomes a start and an end chunk
+// (ai.StreamChunk.Tool), the turn's usage a Usage chunk, and agent messages
+// are separated even across a tool call. A v1 consumer leaves it off and
+// keeps the reset-on-boundary stream.
+func (c *Client) EmitToolEvents() { c.toolEvents = true }
 
 // Query sends a streaming request via the Codex CLI and returns channels
 // for text chunks, errors, and the session ID (always empty for Codex).
@@ -280,7 +293,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// sweep off it during a long run. It is removed on every return.
 		defer holdPromptFile(promptFile)()
 
-		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+		// runCtx ends the child when the read below fails, so the run never
+		// waits on a codex blocked writing into a pipe nobody reads.
+		runCtx, cancelRun := context.WithCancel(ctx)
+		defer cancelRun()
+		cmd := exec.CommandContext(runCtx, c.codexCmd, args...)
 		cmd.Stdin = strings.NewReader(promptStdin)
 		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 		defer reap()
@@ -305,93 +322,50 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// One ledger row per run, recorded on every return below: the
 		// turn's usage events summed (usage stays nil without one), else
 		// estimates of the prompt and the streamed text.
-		var usage *CodexUsage
-		var answer strings.Builder
+		s := &queryStream{ctx: ctx, out: textCh, model: c.model, v2: c.toolEvents, watchtower: m.server}
 		ok := false
 		defer func() {
-			recordCodexCall(ctx, c.model, start, usage, true, systemPrompt+userMessage, answer.String(), ok)
+			recordCodexCall(ctx, c.model, start, s.usage, true, systemPrompt+userMessage, s.answer.String(), ok)
 		}()
 
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-		// Top-level "error" events, kept for runError: they explain a run
-		// that exits non-zero without a turn.failed event.
-		var errLines []byte
-		var terminal error
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
+		reader := bufio.NewReaderSize(stdout, 64*1024)
+		for {
+			line, oversized, readErr := readStreamLine(reader, maxStreamLine)
+			if oversized {
+				s.skipped++
+			} else if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && !s.handle(trimmed) {
+				_ = cmd.Wait()
+				errCh <- ctx.Err()
+				return
 			}
-
-			var event CodexEvent
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				continue
+			if errors.Is(readErr, io.EOF) {
+				break
 			}
-
-			if (event.Type == "turn.failed" || event.Type == "error") && event.Error != nil {
-				terminal = eventTurnError(c.model, event.Error)
-			}
-			if event.Type == "turn.started" || event.Type == "turn.completed" {
-				terminal = nil
-				errLines = nil
-			}
-			if event.Type == "error" {
-				errLines = append(append(errLines, line...), '\n')
-			}
-			if event.Usage != nil {
-				if usage == nil {
-					usage = &CodexUsage{}
-				}
-				usage.add(event.Usage)
-			}
-
-			// A tool call interrupts the turn: signal a boundary so the consumer
-			// drops the pre-tool preamble and starts the answer fresh from what
-			// follows the tool (the ai.Client tool_use precedent). Codex wraps one
-			// item across item.started/updated/completed, so a single tool call
-			// fires a boundary per stage — deliberately unfiltered by stage, since
-			// it is idempotent: each extra boundary just re-clears an
-			// already-empty accumulator on the consumer side.
-			if event.Item != nil && (event.Item.Type == "mcp_tool_call" || event.Item.Type == "command_execution") {
-				select {
-				case textCh <- ai.StreamChunk{ToolBoundary: true}:
-				case <-ctx.Done():
-					_ = cmd.Wait()
-					errCh <- ctx.Err()
-					return
-				}
-			}
-
-			// Stream agent_message content as it arrives.
-			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.MessageText() != "" {
-				answer.WriteString(event.Item.MessageText())
-				select {
-				case textCh <- ai.StreamChunk{Text: event.Item.MessageText()}:
-				case <-ctx.Done():
-					_ = cmd.Wait()
-					errCh <- ctx.Err()
-					return
-				}
+			if readErr != nil {
+				cancelRun()
+				_ = cmd.Wait()
+				errCh <- providers.ContextFailure("codex", ctx, fmt.Errorf("reading codex output: %w", readErr))
+				return
 			}
 		}
+		s.finish()
 
-		if err := scanner.Err(); err != nil {
-			_ = cmd.Wait()
-			errCh <- fmt.Errorf("reading codex output: %w", err)
-			return
-		}
-
-		if err := cmd.Wait(); terminal != nil {
+		err = cmd.Wait()
+		switch {
+		case s.terminal != nil:
+			terminal := s.terminal
 			if err != nil {
 				terminal = digest.WithCause(terminal, err)
 			}
 			errCh <- providers.ContextFailure("codex", ctx, terminal)
-		} else if err != nil {
-			errCh <- providers.ContextFailure("codex", ctx, runError(c.model, errLines, err, stderrBuf.String(), c.codexCmd))
-		} else {
+		case err != nil:
+			errCh <- providers.ContextFailure("codex", ctx, runError(c.model, s.errLines, err, stderrBuf.String(), c.codexCmd))
+		case !s.completed:
+			// A clean exit is a success only after turn.completed (the claude
+			// backend's "exited without a result"): an empty or cut-off run
+			// is never a blank or partial "complete" answer.
+			errCh <- providers.ContextFailure("codex", ctx, s.incompleteError(stderrBuf.String()))
+		default:
 			ok = true
 		}
 
