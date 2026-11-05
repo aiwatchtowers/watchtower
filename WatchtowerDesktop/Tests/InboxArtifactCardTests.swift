@@ -100,4 +100,21 @@ final class InboxArtifactCardTests: XCTestCase {
         XCTAssertNil(InboxArtifactCard.avatar(nil), "unknown user: the block draws its own initials")
         XCTAssertNotNil(InboxArtifactCard.avatar("Colleague A"))
     }
+
+    /// The pane's environment resolves a person block's `slack_user` through
+    /// the people map: a known user draws the initials of their local name,
+    /// an unknown one the initials of the name the recipe wrote.
+    func testPersonBlockAvatarThroughThePanesEnvironment() throws {
+        func person(_ name: String, _ user: String) -> String {
+            #"{"type":"person","name":"\#(name)","avatar":{"slack_user":"\#(user)"},"lines":[]}"#
+        }
+        let blocks = #"{"v":1,"blocks":["# + person("Ann Example", "acme:U1") + ","
+            + person("Bo Example", "acme:U9") + "]}"
+        let sut = InboxReadingPane(item: .output(card(blocks: blocks)), navScreens: [], onCommand: { _ in },
+                                   artifactPeople: ["acme:U1": "Colleague Alpha"])
+        let view = try sut.inspect()
+        XCTAssertNoThrow(try view.find(text: "CA"), "known user: initials of the local name")
+        XCTAssertThrowsError(try view.find(text: "AE"), "a resolved avatar replaces the block's initials")
+        XCTAssertNoThrow(try view.find(text: "BE"), "unknown user: initials of the block's name")
+    }
 }

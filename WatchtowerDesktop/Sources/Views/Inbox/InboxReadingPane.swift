@@ -250,13 +250,14 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
         proposalCard: ((AgentAction) -> AgentActionCardView)? = nil,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
-        workbenches: [Workbench] = []
+        workbenches: [Workbench] = [],
+        artifactPeople: [String: String] = [:]
     ) {
         self.init(
             item: item, navScreens: navScreens, now: now, isWriting: isWriting, onCommand: onCommand,
             onOpenAutomationRun: onOpenAutomationRun, onDone: onDone, onDismiss: onDismiss, onSnooze: onSnooze,
             proposalCard: proposalCard, saveProposal: saveProposal, onRetryBuiltin: onRetryBuiltin,
-            workbenches: workbenches,
+            workbenches: workbenches, artifactPeople: artifactPeople,
             dayCard: { InboxCardPlaceholder(day: $0) },
             trackCard: { card in InboxCardColumn { InboxCardPlaceholder(track: card, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0) }
