@@ -75,7 +75,13 @@ waiting step until it is approved, rejected or times out.
 `testChat02WaitingStepIsVisibleUntilItEnds`
 (`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
 `TestTurnBackend_CodexToolCallsBecomeSteps`
-(`internal/chat/turn_backend_codex_test.go`)
+(`internal/chat/turn_backend_codex_test.go`);
+the transport contract suite's `two-messages`, `tool-ok` and
+`tool-failed` rows on every chat and stream backend (warm claude, codex,
+runtime B), resolved in `internal/transporttest/testdata/matrix.golden` and
+run by `TestTransportSuite` (`internal/transporttest/matrix_test.go`): a
+failed tool has a non-empty reason, text before a call is kept, two messages
+keep their separator
 
 ## CHAT-03 — bounded warm sessions
 
@@ -93,7 +99,7 @@ running once the daemon (and its exclusive `sync.lock`) is gone: every
 session gets the `close` command, then one SIGTERM after a 2 s grace, then
 SIGKILL after 3 s more if it is still alive — a busy turn's partial text is
 kept (`status='partial'`) rather than discarded. On the Go side, `Session`
-reaps the `claude` child and its own children on `Close()`, on stdin EOF,
+reaps the backend's child process group, any transport, on `Close()`, on stdin EOF,
 and when a stuck write blocks a full pipe (the write fails instead of
 hanging the turn) — no orphan process survives eviction, quit, or a
 misbehaving child.
@@ -115,7 +121,11 @@ misbehaving child.
 `TestChat03_CloseUnblocksAStuckWrite`
 (`internal/chat/claude_backend_test.go`);
 `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps`
-(`internal/chat/gate_test.go`)
+(`internal/chat/gate_test.go`);
+the transport contract suite's `timeout-kill`, `interrupt-text` and
+`interrupt-tool` rows (`TestTransportSuite`, `internal/transporttest`; no
+pid of a fake CLI's grandchild survives, a warm child survives an
+interrupt) and `TestFakeCLI_GroupReaped`
 
 **Amendment (2026-10-25, #608):** the main chat's claude.ai tools (publish and connectors) gain a first off reason, the organization's `AllowClaudeAITools = false` — "claude.ai tools are turned off by your organization's policy." — and a warm `ai session` answers each turn with the policy error when its provider is no longer allowed (`policyCheckedBackend`). Guards: `internal/chat/claudeai_test.go` `TestClaudeAIAvailability_PolicyOff`, `cmd/provider_policy_test.go` `TestProviderPolicy_SessionTurnRefused`.
 
@@ -252,6 +262,7 @@ child is never started without it.
 
 ## Changelog
 
+- 2026-11-05 (LLM transport independence, Task A1; spec approved in ask #514, plan in ask #519): **CHAT-02** strengthened and **CHAT-03** reworded, no guard relaxed. CHAT-02's guards gain the transport contract suite's tool rows on every chat and stream backend (warm claude, codex, runtime B; `internal/transporttest`, `TestTransportSuite` over `testdata/matrix.golden`, where a cell a backend fails today is recorded as its open gap and flips to `pass` with the gap's fix). CHAT-03's "`Session` reaps the `claude` child" becomes "the backend's child process group, any transport" (spec §5); its guards gain the suite's `timeout-kill` and interrupt rows and `TestFakeCLI_GroupReaped`. Spec: `docs/superpowers/specs/2026-11-05-llm-transport-independence-design.md` §4.
 - 2026-11-05 (codex parity follow-up, embedded chats on `--events v2`): note only — **no contract wording or guard assertion changed**. The Desktop's embedded chats (target, track, idea, meeting, automation, setup assistants, code questions) now run `ai query --events v2` and, on claude as on codex, get each tool call as a `tool_start`/`tool_end` step (shown live, written to `chat_turn_steps` as it starts and ends for a database chat) and no `reset`: text streamed before a call is kept. Tests: `TestQuery_ChatEventsMakeToolStepsAndUsage` (`internal/ai`), `TestAIQueryV2_ClaudeGetsChatEvents`/`TestAIQueryV2_ClaudeChatEventsThroughTheCLI` (`cmd`), `testToolStepsAndUsageReachTheLiveRowAndTheDatabase` (`WatchtowerDesktop/Tests/Core/EmbeddedChatEngineTests.swift`). Feature note: `docs/features/embedded-chat.md`.
 - 2026-11-05 (codex parity, branch `feature/codex-parity`): **CHAT-02** strengthened, no guard relaxed; the Observable's wording is unchanged. Codex main-chat turns (`NewTurnBackend` over `codex.Client` with `EmitToolEvents`) now meet it as the Claude path does: each `mcp_tool_call`/`command_execution` item is one `tool_start`/`tool_end` step, a failed or declined call is a red step with a reason, and a call still open when the stream ends is closed as a red step. New guard `TestTurnBackend_CodexToolCallsBecomeSteps` (`internal/chat/turn_backend_codex_test.go`, codex's JSONL through `codex.Client` and the turn backend); the opt-in live proof against the real codex CLI is `TestCodexLive_ChatToolStepAndUsage` (`internal/codex/live_test.go`, `WATCHTOWER_LIVE_CODEX=1`, never in CI, so not a guard). The existing CHAT-02 guards are unchanged. Feature note: `docs/features/chat-redesign.md`.
 - 2026-11-04 (fix: codex prompt file lifetime, owner approved ask #481): **CHAT-04** Observable amended, no guard relaxed; the "nothing on argv" rule is unchanged. codex re-reads its `model_instructions_file` for every model request of a run, so removing it at codex's first output failed the next request ("failed to load workspace requirements", codex-cli 0.159.2) and every codex-provider call with tools broke. The file now lives until codex exits (`fsutil.HoldTempFile`, a deferred release in `codex.Client.Query`/`QuerySync` and `codex.CodexGenerator.run`); its holder's shared flock keeps `fsutil.SweepStaleTemp` off it. `TestPromptFile_GoneAfterFirstOutput` is replaced by `TestPromptFile_KeptUntilCodexExits` (the fake re-reads the file after its first output; no file left after return); `TestHoldTempFile_SweepSkipsAHeldFile` covers the sweep. Trade-off: a process killed mid-run leaves the 0600 file until the 10-minute sweep. Feature note: `docs/features/files-outside-db.md`.

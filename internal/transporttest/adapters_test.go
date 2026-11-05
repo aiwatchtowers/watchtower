@@ -1,0 +1,622 @@
+package transporttest
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"watchtower/internal/agentloop"
+	"watchtower/internal/ai"
+	"watchtower/internal/chat"
+	"watchtower/internal/codex"
+	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
+	"watchtower/internal/ollama"
+	"watchtower/internal/tools"
+)
+
+// Level is the shape of an invocation a scenario runs at (spec §4.1).
+type Level string
+
+const (
+	LevelBatch   Level = "batch"   // digest.Generator
+	LevelStream  Level = "stream"  // ai.Provider / chat.Querier
+	LevelChat    Level = "chat"    // chat.Backend
+	LevelSession Level = "session" // a Workbench session agent
+)
+
+// Cap names one capability a scenario can require (Caps.Has).
+type Cap string
+
+const (
+	CapTools        Cap = "tools"
+	CapUsageSplit   Cap = "usage_split"
+	CapImages       Cap = "images"
+	CapPDFs         Cap = "pdfs"
+	CapWebSearch    Cap = "web_search"
+	CapReadFolder   Cap = "read_folder"
+	CapTurnCap      Cap = "turn_cap"
+	CapChildProcess Cap = "child_process"
+	CapWarmSession  Cap = "warm_session"
+
+	CapFailureSignal        Cap = "failure_signal"
+	CapInterruptSignal      Cap = "interrupt_signal"
+	CapIdleSignal           Cap = "idle_signal"
+	CapPermissionWait       Cap = "permission_wait"
+	CapMidturnInput         Cap = "midturn_input"
+	CapRegistryProbe        Cap = "registry_probe"
+	CapCompressedTranscript Cap = "compressed_transcript"
+	CapSubagentFeed         Cap = "subagent_feed"
+	CapTranscriptWatch      Cap = "transcript_watch" // FailureSignal "pull": the §3.5 rollout watch
+)
+
+// Caps is an adapter's capability row, the target values of the spec's
+// §3.3 table (and the session capabilities of §3.5). A cell whose adapter
+// lacks a required capability runs the scenario's unsupported branch; a
+// declared capability the adapter does not deliver yet fails and is
+// recorded as the open gap that promises it.
+type Caps struct {
+	Tools        string // none / watchtower / watchtower+quick_connections
+	ToolEvents   bool
+	TextStream   string // token / message / final
+	Usage        string // none / totals / split
+	CostReported bool
+	Images       bool
+	PDFs         bool
+	WebSearch    bool
+	ReadFolder   string // none / tools / shell_sandbox
+	TurnCap      string // native / counted / none
+	Interrupt    string // in_turn / kill_turn
+	WarmSession  bool
+	ChildProcess bool // structural: the transport runs a child process
+
+	FailureSignal        string // hook / pull / none
+	InterruptSignal      string // hook / pull / none
+	IdleSignal           bool
+	PermissionWait       bool
+	MidturnInput         bool
+	RegistryProbe        bool
+	CompressedTranscript bool
+	SubagentFeed         bool
+}
+
+// Has reports whether the row offers c.
+func (c Caps) Has(want Cap) bool {
+	switch want {
+	case CapTools:
+		return c.Tools != "" && c.Tools != "none"
+	case CapUsageSplit:
+		return c.Usage == "split"
+	case CapImages:
+		return c.Images
+	case CapPDFs:
+		return c.PDFs
+	case CapWebSearch:
+		return c.WebSearch
+	case CapReadFolder:
+		return c.ReadFolder != "" && c.ReadFolder != "none"
+	case CapTurnCap:
+		return c.TurnCap != "" && c.TurnCap != "none"
+	case CapChildProcess:
+		return c.ChildProcess
+	case CapWarmSession:
+		return c.WarmSession
+	case CapFailureSignal:
+		return c.FailureSignal != "" && c.FailureSignal != "none"
+	case CapInterruptSignal:
+		return c.InterruptSignal != "" && c.InterruptSignal != "none"
+	case CapIdleSignal:
+		return c.IdleSignal
+	case CapPermissionWait:
+		return c.PermissionWait
+	case CapMidturnInput:
+		return c.MidturnInput
+	case CapRegistryProbe:
+		return c.RegistryProbe
+	case CapCompressedTranscript:
+		return c.CompressedTranscript
+	case CapSubagentFeed:
+		return c.SubagentFeed
+	case CapTranscriptWatch:
+		return c.FailureSignal == "pull"
+	}
+	panic("unknown capability " + string(want))
+}
+
+// Adapter is one transport as the suite drives it: through today's public
+// constructors, configured the way production configures them. A nil level
+// function means the transport has no such level (no cell).
+type Adapter struct {
+	Name     string // the matrix name prefix
+	Fixtures string // testdata/<Fixtures>/
+	Caps     Caps
+	Batch    func(r *run) digest.Generator
+	Stream   func(r *run) chat.Querier
+	Chat     func(r *run) chat.Backend
+	Session  *sessionAgent
+}
+
+func (a *Adapter) levels() []Level {
+	var out []Level
+	if a.Batch != nil {
+		out = append(out, LevelBatch)
+	}
+	if a.Stream != nil {
+		out = append(out, LevelStream)
+	}
+	if a.Chat != nil {
+		out = append(out, LevelChat)
+	}
+	if a.Session != nil {
+		out = append(out, LevelSession)
+	}
+	return out
+}
+
+const (
+	fakeModel    = "fixture-model"
+	codexVersion = "codex-cli 0.159.2"
+	sysPrompt    = "SYSTEM PROMPT"
+	userPrompt   = "Reply with exactly three words."
+)
+
+// adapters is every transport of the suite.
+var adapters = []*Adapter{
+	{
+		Name: "claude", Fixtures: "claude",
+		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "split",
+			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
+			Interrupt: "in_turn", WarmSession: true, ChildProcess: true,
+			FailureSignal: "hook", InterruptSignal: "hook", IdleSignal: true, PermissionWait: true,
+			MidturnInput: true, RegistryProbe: true},
+		Batch: func(r *run) digest.Generator {
+			g := digest.NewClaudeGenerator(fakeModel, fakeModel, bins.claude)
+			g.SetIsolatedChild() // cmd/generator.go routedGenerator
+			return g
+		},
+		Stream: func(r *run) chat.Querier {
+			c := ai.NewClient(fakeModel, "", bins.claude)
+			c.SetProcessGroup(true) // cmd/generator.go newQueryClient (#957)
+			c.EmitToolEvents()      // `ai query --events v2`
+			if r.readFolder != "" {
+				c.SetReadFolder(r.readFolder)
+			}
+			if r.maxTurns > 0 {
+				c.SetMaxTurns(r.maxTurns)
+			}
+			return c
+		},
+		Chat: func(r *run) chat.Backend {
+			// The main chat's tool flags (cmd/ai_session.go claudeSessionOptions).
+			return chat.NewClaudeBackend(chat.ClaudeOptions{Binary: bins.claude, Model: fakeModel,
+				SystemPrompt: sysPrompt, WorkDir: r.workDir(), Warn: io.Discard,
+				Tools: ai.SessionBuiltinTools, AllowedTools: ai.AllowedTools(nil) + "," + ai.WebSearchTool,
+				DisallowedTools: ai.SessionDisallowedTools,
+				InterruptGrace:  2 * time.Second, CloseGrace: time.Second})
+		},
+		Session: claudeSession,
+	},
+	{
+		Name: "codex", Fixtures: "codex",
+		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "message", Usage: "split",
+			Images: true, WebSearch: true, ReadFolder: "shell_sandbox", TurnCap: "counted",
+			Interrupt: "kill_turn", ChildProcess: true,
+			// The session row's targets (§3.5): pulled failure and interrupt
+			// (S1, S2), the permission hook (S3, pending G7's spike), mid-turn
+			// input (S5), the probe (S6), compressed rollouts (S7, N1).
+			FailureSignal: "pull", InterruptSignal: "pull", IdleSignal: true, PermissionWait: true,
+			MidturnInput: true, RegistryProbe: true, CompressedTranscript: true, SubagentFeed: true},
+		Batch: func(r *run) digest.Generator {
+			g := codex.NewCodexGenerator(fakeModel, fakeModel, bins.codex)
+			g.SetIsolatedChild() // cmd/generator.go routedGenerator
+			return g
+		},
+		Stream: func(r *run) chat.Querier { return codexClient(r) },
+		Chat: func(r *run) chat.Backend {
+			return chat.NewTurnBackend(codexClient(r), r.chatDB(), r.conv, chat.WithSystemPrompt(sysPrompt))
+		},
+		Session: codexSession,
+	},
+	{
+		Name: "ollama", Fixtures: "ollama",
+		Caps:  Caps{Tools: "none", TextStream: "token", Usage: "totals", ReadFolder: "none", TurnCap: "none", Interrupt: "kill_turn"},
+		Batch: func(r *run) digest.Generator { return ollama.NewGenerator(fakeModel, fakeModel, r.serverURL()) },
+		// `ai query --read-folder` on ollama builds the same client: the
+		// folder is not passed on (L9).
+		Stream: func(r *run) chat.Querier { return ollama.NewClient(fakeModel, r.serverURL()) },
+	},
+	{
+		Name: "runtime-b", Fixtures: "runtime-b",
+		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "final", Usage: "totals",
+			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn"},
+		Stream: func(r *run) chat.Querier { return runtimeB(r) },
+		Chat: func(r *run) chat.Backend {
+			return chat.NewTurnBackend(runtimeB(r), r.chatDB(), r.conv, chat.WithSystemPrompt(sysPrompt))
+		},
+	},
+}
+
+// codexClient is the codex chat/query client as cmd builds it: its own
+// process group (codexSessionClient, newQueryClient), the v2 tool events.
+func codexClient(r *run) *codex.Client {
+	c := codex.NewClient(fakeModel, "", bins.codex)
+	c.SetProcessGroup(true)
+	c.EmitToolEvents()
+	if r.readFolder != "" {
+		c.SetReadFolder(r.readFolder)
+	}
+	return c
+}
+
+// runtimeB is the in-process tool loop over the fake HTTP server with the
+// two read tools the fixtures call.
+func runtimeB(r *run) *agentloop.Client {
+	reg := tools.New(r.chatDB())
+	for _, tl := range []*tools.Tool{tools.NewListTargets(), tools.NewGetTarget()} {
+		if err := reg.Register(tl); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	c := agentloop.NewClientWithOptions(fakeModel, r.serverURL(), reg,
+		tools.Binding{Surface: "main", ConversationID: r.conv, TurnID: "t2"},
+		agentloop.Options{MaxIterations: r.maxTurns})
+	c.EmitToolEvents()
+	return c
+}
+
+// run is one cell's environment.
+type run struct {
+	t          *testing.T
+	dir        string
+	fixture    string // the fixture file
+	fakeLog    string // the fake CLI's invocation log
+	readFolder string // set: a read-folder run
+	maxTurns   int
+
+	srvOnce sync.Once
+	srv     *fakeServer
+
+	dbOnce sync.Once
+	db     *db.DB
+	conv   int64
+}
+
+func newRun(t *testing.T, fixture string) *run {
+	r := &run{t: t, dir: t.TempDir(), fixture: fixture}
+	r.fakeLog = filepath.Join(r.dir, "fake.log")
+	t.Setenv("WT_FAKECLI_FIXTURE", fixture)
+	t.Setenv("WT_FAKECLI_LOG", r.fakeLog)
+	t.Setenv("WT_FAKECLI_VERSION", codexVersion)
+	t.Cleanup(func() { reapAll(t, readLaunches(t, r.fakeLog)) })
+	return r
+}
+
+func (r *run) workDir() string {
+	d := filepath.Join(r.dir, "work")
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		r.t.Fatal(err)
+	}
+	return d
+}
+
+func (r *run) serverURL() string {
+	r.srvOnce.Do(func() { r.srv = newFakeServer(r.t, r.fixture) })
+	return r.srv.URL
+}
+
+func (r *run) requests() []string {
+	if r.srv == nil {
+		return nil
+	}
+	return r.srv.bodies()
+}
+
+// chatDB is the cell's database, the conversation seeded as the Desktop
+// leaves it before a turn (CHAT-01): turn t1 finished, the owner message of
+// turn t2 persisted. The conversation is r.conv after the first call.
+func (r *run) chatDB() *db.DB {
+	r.dbOnce.Do(func() {
+		r.db = db.OpenTestDB(r.t)
+		res, err := r.db.Exec(`INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('', 1, 1)`)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		r.conv, _ = res.LastInsertId()
+		var parent any
+		for _, m := range []struct{ role, text, turn string }{
+			{"user", "what slipped?", "t1"}, {"assistant", replayAnswer, "t1"}, {"user", userPrompt, "t2"},
+		} {
+			res, err := r.db.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, turn_id, created_at)
+				VALUES (?, ?, ?, ?, ?, 1)`, r.conv, parent, m.role, m.text, m.turn)
+			if err != nil {
+				r.t.Fatal(err)
+			}
+			parent, _ = res.LastInsertId()
+		}
+	})
+	return r.db
+}
+
+// replayAnswer is turn t1's answer, which a replay transport carries into
+// turn t2.
+const replayAnswer = "the refunds launch slipped"
+
+// launch is one fake CLI invocation from its log.
+type launch struct {
+	PID           int      `json:"pid"`
+	PGID          int      `json:"pgid"`
+	Argv          []string `json:"argv"`
+	Grandchildren []int    `json:"-"`
+}
+
+func readLaunches(t *testing.T, path string) []launch {
+	t.Helper()
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var out []launch
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
+	for sc.Scan() {
+		var line struct {
+			launch
+			Grandchild int `json:"grandchild"`
+		}
+		if json.Unmarshal(sc.Bytes(), &line) != nil {
+			continue
+		}
+		switch {
+		case line.Grandchild > 0 && len(out) > 0:
+			out[len(out)-1].Grandchildren = append(out[len(out)-1].Grandchildren, line.Grandchild)
+		case line.PID > 0:
+			out = append(out, line.launch)
+		}
+	}
+	return out
+}
+
+// fakeServer replays a fixture as an OpenAI-compatible endpoint: section n
+// answers the n-th request (the last repeats). Directives: "#! status N",
+// "#! sleep D", "#! hang" (until the request is cancelled); every other
+// non-comment line is written as a body line and flushed.
+type fakeServer struct {
+	*httptest.Server
+	mu   sync.Mutex
+	reqs []string
+}
+
+func newFakeServer(t *testing.T, fixture string) *fakeServer {
+	raw, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sections [][]string
+	sections = append(sections, nil)
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "#! next-invocation" {
+			sections = append(sections, nil)
+			continue
+		}
+		sections[len(sections)-1] = append(sections[len(sections)-1], line)
+	}
+	s := &fakeServer{}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		s.mu.Lock()
+		n := len(s.reqs)
+		s.reqs = append(s.reqs, string(body))
+		s.mu.Unlock()
+		status := http.StatusOK
+		var out []string
+		for _, line := range sections[min(n, len(sections)-1)] {
+			directive, isDirective := strings.CutPrefix(line, "#!")
+			switch {
+			case isDirective:
+				name, arg, _ := strings.Cut(strings.TrimSpace(directive), " ")
+				switch name {
+				case "status":
+					status, _ = strconv.Atoi(arg)
+				case "sleep":
+					d, _ := time.ParseDuration(arg)
+					time.Sleep(d)
+				case "hang":
+					w.WriteHeader(status)
+					writeLines(w, out)
+					<-req.Context().Done()
+					return
+				}
+			case strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "":
+			default:
+				out = append(out, line)
+			}
+		}
+		w.WriteHeader(status)
+		writeLines(w, out)
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func writeLines(w http.ResponseWriter, lines []string) {
+	for _, l := range lines {
+		_, _ = io.WriteString(w, l+"\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+}
+
+func (s *fakeServer) bodies() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.reqs...)
+}
+
+// Outcome is what one cell's run produced, in the normalized vocabulary:
+// v2 chat events for the stream and chat levels (a stream's chunks through
+// chat.ChunkEvents), the text, usage and error of a batch call.
+type Outcome struct {
+	Events   []chat.Event
+	Text     string
+	Usage    *digest.Usage
+	Err      error
+	Calls    []llmusage.Call
+	Launches []launch
+	Requests []string
+	// Alive is, per launch, whether its pid still ran when the turn ended
+	// (before Close): the warm child surviving an interrupt.
+	Alive []bool
+	// Session is the session level's result.
+	Session *sessionResult
+}
+
+func driveBatch(ctx context.Context, r *run, a *Adapter, _ *Scenario, o *Outcome) {
+	o.Text, o.Usage, _, o.Err = a.Batch(r).Generate(ctx, sysPrompt, userPrompt, "")
+}
+
+func driveStream(ctx context.Context, r *run, a *Adapter, _ *Scenario, o *Outcome) {
+	textCh, errCh, sidCh := a.Stream(r).Query(ctx, sysPrompt, userPrompt, "")
+	for c := range textCh {
+		o.Events = append(o.Events, chat.ChunkEvents("t2", c)...)
+	}
+	for range sidCh {
+	}
+	for err := range errCh {
+		if err != nil && o.Err == nil {
+			o.Err = err
+		}
+	}
+	if o.Err == nil {
+		o.Events = append(o.Events, chat.Event{Type: chat.EventTurnDone, TurnID: "t2", Status: chat.StatusComplete})
+	}
+}
+
+func driveChat(ctx context.Context, r *run, a *Adapter, s *Scenario, o *Outcome) {
+	b := a.Chat(r)
+	defer func() { _ = b.Close() }()
+	if _, err := b.Start(ctx); err != nil {
+		o.Err = err
+		return
+	}
+	turns := []string{"t2"}
+	if s.Fixture.Drive == driveTwoTurns && a.Caps.WarmSession {
+		turns = []string{"t1", "t2"}
+	}
+	for _, turn := range turns {
+		cmd := chat.Command{Type: chat.CommandTurn, TurnID: turn, Text: userPrompt}
+		if s.Fixture.Attach != "" {
+			cmd.Attachments = []chat.Attachment{r.attachment(s.Fixture.Attach)}
+		}
+		var once sync.Once
+		if s.Fixture.Drive == driveCancelAtText || s.Fixture.Drive == driveCancelAtTool {
+			// A transport that shows nothing to cancel at is cancelled
+			// anyway, so the cell ends instead of waiting out its timeout.
+			timer := time.AfterFunc(3*time.Second, func() { once.Do(func() { _ = b.Cancel() }) })
+			defer timer.Stop()
+		}
+		emit := func(e chat.Event) {
+			o.Events = append(o.Events, e)
+			if (s.Fixture.Drive == driveCancelAtText && e.Type == chat.EventTextDelta) ||
+				(s.Fixture.Drive == driveCancelAtTool && e.Type == chat.EventToolStart) {
+				once.Do(func() { go func() { _ = b.Cancel() }() })
+			}
+		}
+		if err := b.Turn(ctx, cmd, emit); err != nil {
+			o.Err = err
+			break
+		}
+	}
+	for _, l := range readLaunches(r.t, r.fakeLog) {
+		o.Alive = append(o.Alive, !pidGone(l.PID, 0))
+	}
+}
+
+// attachment writes an attachment file of kind ("image" or "pdf").
+func (r *run) attachment(kind string) chat.Attachment {
+	switch kind {
+	case "image":
+		p := filepath.Join(r.dir, "shot.png")
+		writeFile(r.t, p, "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+		return chat.Attachment{Path: p, Mime: "image/png", Name: "shot.png"}
+	case "pdf":
+		p := filepath.Join(r.dir, "doc.pdf")
+		writeFile(r.t, p, "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0/Kids[]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
+		return chat.Attachment{Path: p, Mime: "application/pdf", Name: "doc.pdf"}
+	}
+	r.t.Fatalf("unknown attachment kind %q", kind)
+	return chat.Attachment{}
+}
+
+// runCell runs scenario s on adapter a at level, supported or not, and
+// returns the outcome. The cell's fake processes are reaped at its end.
+func runCell(t *testing.T, a *Adapter, s *Scenario, level Level) *Outcome {
+	if level == LevelSession {
+		return &Outcome{Session: a.Session.run(t, s)}
+	}
+	r := newRun(t, fixturePath(t, a, s, level))
+	r.maxTurns = s.Fixture.MaxTurns
+	if s.Fixture.ReadFolder {
+		r.readFolder = r.workDir()
+	}
+	timeout := 10 * time.Second
+	if s.Fixture.Drive == driveTimeout {
+		timeout = 1500 * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ledger.take()
+	o := &Outcome{}
+	switch level {
+	case LevelBatch:
+		driveBatch(ctx, r, a, s, o)
+	case LevelStream:
+		driveStream(ctx, r, a, s, o)
+	case LevelChat:
+		driveChat(ctx, r, a, s, o)
+	case LevelSession:
+		t.Fatal("a session cell has no LLM run") // handled above
+	}
+	o.Launches = readLaunches(t, r.fakeLog)
+	o.Requests = r.requests()
+	o.Calls = ledger.take()
+	return o
+}
+
+// fixturePath is testdata/<transport>/<file>.<level>.jsonl when it exists,
+// else testdata/<transport>/<file>.jsonl, else the shared "never started"
+// fixture (an unsupported cell must not start anything).
+func fixturePath(t *testing.T, a *Adapter, s *Scenario, level Level) string {
+	t.Helper()
+	dir := filepath.Join("testdata", a.Fixtures)
+	for _, name := range []string{s.Fixture.File + "." + string(level) + ".jsonl", s.Fixture.File + ".jsonl"} {
+		p, err := filepath.Abs(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	p, err := filepath.Abs(filepath.Join("testdata", "never_started.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
