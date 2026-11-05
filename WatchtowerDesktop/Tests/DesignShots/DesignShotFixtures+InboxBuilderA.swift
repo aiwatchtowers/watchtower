@@ -25,9 +25,7 @@ enum InboxBuilderAShotFixtures {
                               json: #"{"v":1,"blocks":[{"type":"chart"}]}"#,
                               body: "Weekly acme report\n- 12 open issues, 3 blocked\n- Freeze on Thursday")
             }
-        ] + lookShots + targetShots + [
-            DesignShot(name: "automation-save-review", size: NSSize(width: 460, height: 620)) { saveReview() }
-        ]
+        ] + lookShots + targetShots
     }
 
     private static var lookShots: [DesignShot] {
@@ -156,39 +154,6 @@ enum InboxBuilderAShotFixtures {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .detailBackground())
-    }
-
-    /// The save review a press under an editor step opens (AUTO-06): every
-    /// hashed field, living Inbox cards, the AI-step line, as the panel
-    /// draws it for an edit of an automation that is on.
-    static func saveReview() -> AnyView {
-        let text = "---\nname: Waiting for me\n---\n"
-        let json = #"{"ok":true,"errors":[],"slug":"waiting","name":"Waiting for me","scope":"personal","#
-            + #""approval_hash":"h2","content_hash":"\#(AutomationDraftColumnModel.contentHash(text))","#
-            + #""permissions":["slack:read@acme","llm:light"],"outputs":["inbox"],"widening":["llm:light"],"#
-            + #""changes":[{"field":"permissions","old":"[\"slack:read@acme\"]","#
-            + #""new":"[\"llm:light\",\"slack:read@acme\"]"},{"field":"artifacts","old":"feed","new":"living"},"#
-            + #"{"field":"script","old":"","new":""}],"changes_known":true,"adds_llm":true,"#
-            + #""fields":{"trigger":"schedule: */30 9-18 * * 1-5","missed":"skip","concurrency":"1","#
-            + #""artifacts":"living","budget":{"tokens":20000,"minutes":5}}}"#
-        do {
-            let validated = try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
-            let column = AutomationDraftColumnModel(text: text, validated: validated, isChecking: false,
-                                                    newestChatEntry: nil, confirmedText: text + "\n", isNew: false,
-                                                    plan: nil)
-            let verdict = AutomationDraftFooter.make(isNew: false, bytesChanged: true, enabled: true,
-                                                     needsConfirmation: false)
-            return AnyView(AutomationSaveReview(column: column, keepAuto: .constant([])) {
-                AutomationDraftFooterBar(
-                    verdict: verdict, step: nil, ready: true, checking: false, isSaving: false,
-                    aiStepWarning: AutomationDraftFooter.aiStepWarning(addsLLM: column.addsLLM, dryRunTokens: 5800)
-                ) { _ in }
-                .padding(Spacing.large)
-            } onCancel: {}
-            .detailBackground())
-        } catch {
-            return failure(error)
-        }
     }
 
     private static func waitingCard(sample name: String = "waiting-living") -> AutomationLookPaneContent.Card {

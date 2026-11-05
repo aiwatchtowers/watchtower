@@ -85,31 +85,3 @@ struct AutomationDraftSteps<Look: View, Footer: View>: View {
         }
     }
 }
-
-/// The editor's save review (AUTO-06): the whole draft column — every
-/// hashed field of the bytes on screen, the warnings and the Keep auto
-/// boxes — over the footer that saves or confirms them.
-struct AutomationSaveReview<Footer: View>: View {
-    static var size: CGSize { CGSize(width: 460, height: 620) }
-
-    let column: AutomationDraftColumnModel
-    @Binding var keepAuto: Set<String>
-    @ViewBuilder let footer: () -> Footer
-    let onCancel: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Review and save").font(.headline)
-                Spacer()
-                Button("Cancel", role: .cancel, action: onCancel)
-                    .buttonStyle(.kitQuiet)
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding([.horizontal, .top], Spacing.large)
-            AutomationDraftColumn(model: column, keepAuto: $keepAuto, onDryRunAgain: nil)
-            footer()
-        }
-        .frame(width: Self.size.width, height: Self.size.height)
-    }
-}
