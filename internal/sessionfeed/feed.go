@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/rollout"
 )
 
 // Conversation is one Claude Code conversation of a tab, in ledger order.
@@ -84,9 +86,8 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 	}
 	read := false // an earlier conversation counts as read
 	for i, c := range convs {
-		sessionDir := strings.TrimSuffix(c.Path, ".jsonl")
 		if afterIdx >= 0 && i < afterIdx {
-			addSubagents(metaMarkers(sessionDir, c.AgentSessionID), false)
+			addSubagents(subagentMarkers(c), false)
 			read = true
 			continue
 		}
@@ -99,12 +100,12 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			return nil, err
 		}
 		if res == nil {
-			addSubagents(metaMarkers(sessionDir, c.AgentSessionID), false)
+			addSubagents(subagentMarkers(c), false)
 			continue
 		}
-		ResolveSubagents(sessionDir, res.Entries)
+		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
 		addSubagents(res.Entries, true)
-		addSubagents(metaMarkers(sessionDir, c.AgentSessionID), false)
+		addSubagents(subagentMarkers(c), false)
 		if read && start == 0 {
 			feed.Entries = append(feed.Entries, separatorEntry(c.AgentSessionID, res.Entries))
 		}
@@ -159,6 +160,9 @@ func parseFile(c Conversation, start int64) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
 	}
+	if c.Codex {
+		return parseCodexFile(c, start)
+	}
 	f, err := os.Open(c.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -170,10 +174,71 @@ func parseFile(c Conversation, start int64) (*Result, error) {
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
 	}
-	if c.Codex {
-		return ParseCodex(f, start, c.AgentSessionID)
-	}
 	return Parse(f, start, c.AgentSessionID)
+}
+
+// parseCodexFile parses a rollout, plain or zstd-compressed, from byte offset
+// start. A compressed rollout's offsets count decompressed bytes; one that
+// does not decode yields no entries and is counted under Unknown "<zstd>",
+// like before it was read; one that expands past rollout.MaxDecompressed
+// under "<zstd-too-large>".
+func parseCodexFile(c Conversation, start int64) (*Result, error) {
+	rc, compressed, err := rollout.Open(c.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
+	}
+	defer func() { _ = rc.Close() }()
+	if !compressed {
+		// rollout.Open returns a plain file as itself.
+		if _, err := rc.(*os.File).Seek(start, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
+		}
+		return ParseCodex(rc, start, c.AgentSessionID)
+	}
+	_, err = io.CopyN(io.Discard, rc, start)
+	if errors.Is(err, io.EOF) {
+		// A cursor past the end reads nothing, as on a plain file.
+		return &Result{Offset: start, Unknown: map[string]int{}}, nil
+	}
+	if err == nil {
+		var res *Result
+		if res, err = ParseCodex(rc, start, c.AgentSessionID); err == nil {
+			return res, nil
+		}
+	}
+	key := "<zstd>"
+	if errors.Is(err, rollout.ErrTooLarge) {
+		key = "<zstd-too-large>"
+	}
+	return &Result{Offset: start, Unknown: map[string]int{key: 1}}, nil
+}
+
+// subagentMarkers lists a conversation's subagents for the feed: Claude's
+// from the sidecar meta files, Codex's from the rollout's live agents (the
+// same set FindSubagent opens, bounded to the live window). A rollout with no
+// readable activity lists none.
+func subagentMarkers(c Conversation) []Entry {
+	if !c.Codex {
+		return metaMarkers(strings.TrimSuffix(c.Path, ".jsonl"), c.AgentSessionID)
+	}
+	live, err := LiveOf(c, false, time.Now())
+	if err != nil {
+		return nil
+	}
+	return liveMarkers(live, c.AgentSessionID)
+}
+
+// liveMarkers turns a snapshot's agents into marker entries of conv.
+func liveMarkers(live *Live, conv string) []Entry {
+	var out []Entry
+	for _, a := range live.Agents {
+		ref := a.Ref
+		out = append(out, Entry{ID: ref.ToolUseID, Kind: KindSubagent, Subagent: &ref, At: a.StartedAt, Conversation: conv})
+	}
+	return out
 }
 
 // LocateAll finds the main transcripts of agentSessionIDs under the Claude
