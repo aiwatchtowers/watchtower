@@ -142,6 +142,9 @@ struct SandboxedHTMLView: NSViewRepresentable {
         private var focused = false
         /// The view shows `showMessage`'s text, not the content.
         private var showingMessage = false
+        /// The navigation that loads the content; only its finish or
+        /// failure is reported (a page's own navigations are not).
+        private var contentNavigation: WKNavigation?
         private var load: Task<Void, Never>?
         /// The rule list in force. A different one is added before this one
         /// goes, so the view is never without a block.
@@ -178,7 +181,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
                 case let .page(html):
                     self.page = nil
                     self.files.serve(nil)
-                    webView.loadHTMLString(html, baseURL: nil)
+                    self.contentNavigation = webView.loadHTMLString(html, baseURL: nil)
                 case let .file(url, folder):
                     let token = self.files.serve(folder)
                     self.page = HTMLPreviewPolicy.pageURL(file: url, folder: folder, token: token)
@@ -186,7 +189,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
                         return self.showMessage("The preview could not be prepared: the file is not in its folder.")
                     }
                     self.files.setPage(page)
-                    webView.load(URLRequest(url: page))
+                    self.contentNavigation = webView.load(URLRequest(url: page))
                 }
             }
         }
@@ -194,6 +197,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
         /// A fixed message in place of the page; never the content.
         private func showMessage(_ text: String) {
             showingMessage = true
+            contentNavigation = nil
             page = nil
             files.serve(nil)
             let escaped = text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
@@ -221,17 +225,32 @@ struct SandboxedHTMLView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            if !showingMessage { onLoaded?(webView) }
+            if !showingMessage, let navigation, navigation === contentNavigation { onLoaded?(webView) }
             guard focusOnLoad, !focused, let window = webView.window else { return }
             focused = true
             window.makeFirstResponder(webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            onFailed?("The page could not be loaded: \(error.localizedDescription)")
+            contentFailed(navigation, error)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            contentFailed(navigation, error)
+        }
+
+        /// WebKit's "frame load interrupted by policy change" (WebKitErrorDomain
+        /// 102): a navigation the policy delegate cancelled.
+        private static let webKitErrorDomain = "WebKitErrorDomain"
+        private static let frameLoadInterrupted = 102
+
+        /// Reports a failure of the content load only; a navigation of the
+        /// page's own (cancelled by the policy above) is no failure.
+        private func contentFailed(_ navigation: WKNavigation?, _ error: Error) {
+            guard !showingMessage, let navigation, navigation === contentNavigation else { return }
+            let error = error as NSError
+            if error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled { return }
+            if error.domain == Self.webKitErrorDomain, error.code == Self.frameLoadInterrupted { return }
             onFailed?("The page could not be loaded: \(error.localizedDescription)")
         }
 

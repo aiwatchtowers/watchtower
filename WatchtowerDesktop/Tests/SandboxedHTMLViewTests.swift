@@ -94,6 +94,23 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(counter.hits, 0)
     }
 
+    /// A page that navigates itself away is still a loaded page: the
+    /// policy cancel of its own navigation is no failure (the printer would
+    /// otherwise report "Print failed" for a page that printed fine).
+    func testASelfNavigatingPageLoadsWithoutAFailure() async throws {
+        let probe = CoordinatorProbe()
+        let webView = probe.makeWebView()
+        probe.coordinator.show(.page("<html><head><title>page</title></head><body><script>location='https://example.com'</script></body></html>"),
+                               token: 0)
+        try await waitUntil { probe.loaded > 0 }
+        XCTAssertEqual(probe.loaded, 1, "the content load finished")
+        // A grace for a late failure callback of the cancelled navigation; a
+        // slow runner can only make this pass vacuously, never fail it.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(probe.failures, [], "the cancelled self-navigation is no failure")
+        XCTAssertEqual(webView.url?.absoluteString, "about:blank")
+    }
+
     func testAFilePreviewLoadsItsSiblingsButNotTheNetwork() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -260,6 +277,17 @@ final class SandboxedHTMLViewTests: XCTestCase {
 
     // MARK: helpers
 
+    /// Polls `done` until it holds or `timeout` passes (then fails).
+    private func waitUntil(timeout: Duration = .seconds(10), _ done: () -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while clock.now < deadline {
+            if done() { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTFail("timed out")
+    }
+
     private func waitForText(_ webView: WKWebView, until done: (String) -> Bool) async throws -> String {
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(10)
@@ -314,6 +342,28 @@ final class SandboxedHTMLViewTests: XCTestCase {
             hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
         ))
         return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+    }
+}
+
+/// A coordinator with an offscreen web view made the printer's way
+/// (`SandboxedHTMLView.makeWebView`), recording its callbacks.
+@MainActor
+private final class CoordinatorProbe {
+    let coordinator = SandboxedHTMLView.Coordinator()
+    private(set) var loaded = 0
+    private(set) var failures: [String] = []
+    private var webView: WKWebView?
+
+    init() {
+        coordinator.onLoaded = { [weak self] _ in self?.loaded += 1 }
+        coordinator.onFailed = { [weak self] in self?.failures.append($0) }
+    }
+
+    /// The probe keeps the view alive (the coordinator holds it weakly).
+    func makeWebView() -> WKWebView {
+        let view = SandboxedHTMLView.makeWebView(coordinator: coordinator, frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        webView = view
+        return view
     }
 }
 
