@@ -364,6 +364,18 @@ final class ScreenshotTourTests: XCTestCase {
         another.switchedAt = at
         ended.switchedAt = at
         let lines = try macsLinking([home, thisPhone, another, ended, switching], now: now)
+        // The lapse row says "your subscription ended" only on a phone whose own subscription ended (S06): a center
+        // that read a revoked entitlement from the fake relay, in place of the never-started one for this frame.
+        let bed = AccountBed()
+        let token = try await bed.register()
+        try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "revoked", for: .seconds(86_400))
+        let endedCenter = bed.makeCenter()
+        endedCenter.start()
+        await endedCenter.foreground()?.value
+        XCTAssertEqual(endedCenter.phase, .free(ended: true))
+        let neverStarted = env.relayAccount
+        env.relayAccount = endedCenter
+        defer { env.relayAccount = neverStarted }
         try await shot(
             "S07", "macs-transport-lines", "bare stack, iCloud / Relay / lapse / switching rows",
             NavigationStack { MacsView() }.environment(lines)
