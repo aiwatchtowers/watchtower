@@ -2,16 +2,17 @@ package transporttest
 
 import (
 	"bufio"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -22,7 +23,8 @@ import (
 const modulePath = "watchtower"
 
 // adapterDirs are the adapter packages, relative to the repository root;
-// every package under them is an adapter too.
+// every package under them is an adapter too. internal/transporttest holds
+// the contract suite's fakes, which name every transport by design.
 var adapterDirs = []string{
 	"internal/agentloop",
 	"internal/ai",
@@ -42,6 +44,14 @@ var adapterFiles = []string{
 	"internal/chat/claude_translate.go",
 }
 
+// plannedAdapters are adapter paths the transport independence plan creates
+// later (A4, A5). Only these may be missing; once one exists the test asks
+// for its removal from this set, so a typo in the lists above cannot hide.
+var plannedAdapters = map[string]bool{
+	"cmd/transport_wiring.go": true,
+	"internal/sessionagent":   true,
+}
+
 // transportNames are the string literals that name a transport.
 var transportNames = map[string]bool{"claude": true, "codex": true, "ollama": true, "http": true}
 
@@ -53,16 +63,16 @@ const allowFile = "testdata/llmtransport_allow.txt"
 
 // TestLLMTRANSPORT01_NoTransportNamesOutsideAdapters fails on a transport
 // name check outside the adapters that the baseline does not list: a
-// comparison or switch case against "claude"/"codex"/"ollama"/"http" or
-// agentkind.Claude/Codex, or a type assertion to a concrete adapter type.
+// comparison, switch case or slices.Contains/Index membership test against
+// "claude"/"codex"/"ollama"/"http" or agentkind.Claude/Codex (also inside a
+// conversion such as string(agentkind.Codex)), or a type assertion to a
+// concrete adapter type.
 // BEHAVIOR LLMTRANSPORT-01 — see docs/inventory/llm-transport.md
 func TestLLMTRANSPORT01_NoTransportNamesOutsideAdapters(t *testing.T) {
-	root := repoRoot(t)
-	hits := scanRepo(t, root)
+	hits := repoHits(t)
 	allow := readAllow(t)
-	for _, key := range sortedKeys(hits) {
-		n := hits[key]
-		if allowed := allow[key].count; n > allowed {
+	for _, key := range slices.Sorted(maps.Keys(hits)) {
+		if n, allowed := hits[key], allow[key].count; n > allowed {
 			t.Errorf("%s: %d transport name check(s), baseline allows %d. Decide by a capability "+
 				"(providers.Capabilities) or move the code into an adapter; a new baseline entry needs "+
 				"the owner's approval (LLMTRANSPORT-01)", key, n, allowed)
@@ -71,15 +81,11 @@ func TestLLMTRANSPORT01_NoTransportNamesOutsideAdapters(t *testing.T) {
 }
 
 // TestLLMTRANSPORT01_BaselineOnlyShrinks fails on a baseline entry that no
-// longer matches (delete it or lower its count) and on one without a reason.
+// longer matches: delete it or lower its count.
 // BEHAVIOR LLMTRANSPORT-01 — see docs/inventory/llm-transport.md
 func TestLLMTRANSPORT01_BaselineOnlyShrinks(t *testing.T) {
-	root := repoRoot(t)
-	hits := scanRepo(t, root)
+	hits := repoHits(t)
 	for key, e := range readAllow(t) {
-		if strings.TrimSpace(e.reason) == "" {
-			t.Errorf("%s (line %d) has no reason", key, e.line)
-		}
 		if got := hits[key]; got < e.count {
 			t.Errorf("%s (line %d) allows %d hit(s) but %d remain: lower the count or delete the entry, "+
 				"the baseline only shrinks", key, e.line, e.count, got)
@@ -93,6 +99,8 @@ func TestLLMTRANSPORT01_CatchesANewNameCheck(t *testing.T) {
 	const src = `package consumer
 
 import (
+	"slices"
+
 	"watchtower/internal/agentkind"
 	"watchtower/internal/codex"
 	kind "watchtower/internal/digest"
@@ -111,7 +119,7 @@ func pick(provider string, k agentkind.Kind, g any) int {
 	case "openai":
 		return 9
 	}
-	if k == agentkind.Codex {
+	if k == agentkind.Codex || provider == string(agentkind.Claude) || (k) == (agentkind.Kind("codex")) {
 		return 4
 	}
 	if _, ok := g.(*codex.Client); ok {
@@ -120,9 +128,14 @@ func pick(provider string, k agentkind.Kind, g any) int {
 	switch g.(type) {
 	case *codex.Client:
 		return 6
+	case *chatBackend:
+		return 8
 	}
 	if _, ok := g.(kind.ImageCapable); ok {
 		return 7
+	}
+	if slices.Contains([]string{"claude", "openai", "ollama"}, provider) {
+		return 10
 	}
 	return 0
 }
@@ -136,65 +149,134 @@ func (s *Server) other(p string) bool { return p == "codex" && p != "other" }
 	if err != nil {
 		t.Fatal(err)
 	}
-	concrete := map[string]bool{modulePath + "/internal/codex.Client": true}
+	concrete := map[string]bool{
+		modulePath + "/internal/codex.Client":  true,
+		modulePath + "/x/consumer.chatBackend": true,
+	}
 	got := map[string]int{}
-	for _, h := range fileHits(f, "x/consumer.go", concrete, false) {
+	for _, h := range fileHits(f, "x/consumer/consumer.go", modulePath+"/x/consumer", concrete) {
 		got[h]++
 	}
+	const file = "x/consumer/consumer.go | "
 	want := map[string]int{
-		`x/consumer.go | pick | "codex"`:              1,
-		`x/consumer.go | pick | "ollama"`:             1,
-		`x/consumer.go | pick | "claude"`:             1,
-		`x/consumer.go | pick | "http"`:               1,
-		`x/consumer.go | pick | agentkind.Codex`:      1,
-		`x/consumer.go | pick | assert *codex.Client`: 2,
-		`x/consumer.go | var routed | "claude"`:       1,
-		`x/consumer.go | (*Server).other | "codex"`:   1,
+		file + `pick | "codex"`:              2, // == "codex" and agentkind.Kind("codex")
+		file + `pick | "ollama"`:             2,
+		file + `pick | "claude"`:             2,
+		file + `pick | "http"`:               1,
+		file + `pick | agentkind.Codex`:      1,
+		file + `pick | agentkind.Claude`:     1,
+		file + `pick | assert *codex.Client`: 2,
+		file + `pick | assert *chatBackend`:  1,
+		file + `var routed | "claude"`:       1,
+		file + `(*Server).other | "codex"`:   1,
 	}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !maps.Equal(got, want) {
 		t.Fatalf("hits:\n  %v\nwant:\n  %v", got, want)
 	}
 }
 
+var (
+	repoScanOnce sync.Once
+	repoScan     map[string]int
+	repoScanErr  error
+)
+
+// repoHits scans the repository once per test binary; both guards read it.
+func repoHits(t *testing.T) map[string]int {
+	t.Helper()
+	root := repoRoot(t)
+	repoScanOnce.Do(func() { repoScan, repoScanErr = scanRepo(root) })
+	if repoScanErr != nil {
+		t.Fatal(repoScanErr)
+	}
+	return repoScan
+}
+
 // scanRepo returns every name check outside the adapters, keyed
 // "<file> | <func> | <what>", with its count.
-func scanRepo(t *testing.T, root string) map[string]int {
-	t.Helper()
-	concrete := concreteAdapterTypes(t, root)
+func scanRepo(root string) (map[string]int, error) {
+	if err := checkAdapterPaths(root); err != nil {
+		return nil, err
+	}
+	concrete, err := concreteAdapterTypes(root)
+	if err != nil {
+		return nil, err
+	}
 	fset := token.NewFileSet()
 	hits := map[string]int{}
+	files := 0
 	for _, dir := range []string{"cmd", "internal"} {
-		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
+		err := walkGo(root, dir, func(rel string, d fs.DirEntry) bool {
+			return d.Name() == "testdata" || isAdapterDir(rel)
+		}, func(rel string) error {
+			if isAdapterFile(rel) {
+				return nil
+			}
+			f, err := parser.ParseFile(fset, filepath.Join(root, rel), nil, parser.SkipObjectResolution)
 			if err != nil {
 				return err
 			}
-			rel, _ := filepath.Rel(root, path)
-			rel = filepath.ToSlash(rel)
-			if d.IsDir() {
-				if d.Name() == "testdata" || isAdapterDir(rel) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") || isAdapterFile(rel) {
-				return nil
-			}
-			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			inAgentKind := filepath.ToSlash(filepath.Dir(rel)) == "internal/agentkind"
-			for _, h := range fileHits(f, rel, concrete, inAgentKind) {
+			files++
+			for _, h := range fileHits(f, rel, modulePath+"/"+filepath.ToSlash(filepath.Dir(rel)), concrete) {
 				hits[h]++
 			}
 			return nil
 		})
 		if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 	}
-	return hits
+	if files == 0 {
+		return nil, os.ErrNotExist
+	}
+	return hits, nil
 }
+
+// walkGo calls visit with the repository-relative slash path of every
+// non-test .go file under root/dir; skipDir prunes a directory.
+func walkGo(root, dir string, skipDir func(rel string, d fs.DirEntry) bool, visit func(rel string) error) error {
+	return filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if rel != dir && skipDir(rel, d) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") {
+			return nil
+		}
+		return visit(rel)
+	})
+}
+
+// checkAdapterPaths fails on a listed adapter path that does not exist,
+// unless it is planned, and on a planned path that now exists.
+func checkAdapterPaths(root string) error {
+	for _, p := range slices.Concat(adapterDirs, adapterFiles) {
+		_, err := os.Stat(filepath.Join(root, p))
+		switch {
+		case err == nil && plannedAdapters[p]:
+			return &pathError{p, "exists now: remove it from plannedAdapters"}
+		case os.IsNotExist(err) && !plannedAdapters[p]:
+			return &pathError{p, "is listed as an adapter but does not exist"}
+		case err != nil && !os.IsNotExist(err):
+			return err
+		}
+	}
+	return nil
+}
+
+type pathError struct{ path, msg string }
+
+func (e *pathError) Error() string { return e.path + " " + e.msg }
 
 func isAdapterDir(rel string) bool {
 	for _, d := range adapterDirs {
@@ -205,170 +287,236 @@ func isAdapterDir(rel string) bool {
 	return false
 }
 
-func isAdapterFile(rel string) bool {
-	for _, f := range adapterFiles {
-		if rel == f {
-			return true
-		}
-	}
-	return false
-}
+func isAdapterFile(rel string) bool { return slices.Contains(adapterFiles, rel) }
 
 // concreteAdapterTypes lists "<import path>.<Type>" for every non-interface
-// type the adapter packages declare.
-func concreteAdapterTypes(t *testing.T, root string) map[string]bool {
-	t.Helper()
+// type the adapter packages and adapter files declare.
+func concreteAdapterTypes(root string) (map[string]bool, error) {
 	out := map[string]bool{}
 	fset := token.NewFileSet()
+	collect := func(rel string) error {
+		f, err := parser.ParseFile(fset, filepath.Join(root, rel), nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		pkgPath := modulePath + "/" + filepath.ToSlash(filepath.Dir(rel))
+		for _, name := range concreteTypes(f) {
+			out[pkgPath+"."+name] = true
+		}
+		return nil
+	}
 	for _, dir := range adapterDirs {
-		abs := filepath.Join(root, dir)
-		if _, err := os.Stat(abs); os.IsNotExist(err) {
+		if plannedAdapters[dir] {
 			continue
 		}
-		err := filepath.WalkDir(abs, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
+		skip := func(_ string, d fs.DirEntry) bool { return d.Name() == "testdata" }
+		if err := walkGo(root, dir, skip, collect); err != nil {
+			return nil, err
+		}
+	}
+	for _, file := range adapterFiles {
+		if plannedAdapters[file] {
+			continue
+		}
+		if err := collect(file); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func concreteTypes(f *ast.File) []string {
+	var out []string
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts := spec.(*ast.TypeSpec)
+			if _, iface := ts.Type.(*ast.InterfaceType); !iface {
+				out = append(out, ts.Name.Name)
 			}
-			if d.IsDir() {
-				if d.Name() == "testdata" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			rel, _ := filepath.Rel(root, filepath.Dir(path))
-			pkgPath := modulePath + "/" + filepath.ToSlash(rel)
-			for _, decl := range f.Decls {
-				gd, ok := decl.(*ast.GenDecl)
-				if !ok || gd.Tok != token.TYPE {
-					continue
-				}
-				for _, spec := range gd.Specs {
-					ts := spec.(*ast.TypeSpec)
-					if _, iface := ts.Type.(*ast.InterfaceType); !iface {
-						out[pkgPath+"."+ts.Name.Name] = true
-					}
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
 	}
 	return out
 }
 
-// fileHits returns one key per name check in f. inAgentKind treats the bare
-// Claude/Codex identifiers as the kinds (the agentkind package itself).
-func fileHits(f *ast.File, rel string, concrete map[string]bool, inAgentKind bool) []string {
-	imports := map[string]string{} // local name → import path
+// fileScope resolves names in one file: its import names and its own package.
+type fileScope struct {
+	imports     map[string]string // local name → import path
+	pkgPath     string
+	concrete    map[string]bool
+	inAgentKind bool // bare Claude/Codex are the kinds (the agentkind package itself)
+}
+
+// fileHits returns one key per name check in f (rel is its repository path,
+// pkgPath its import path).
+func fileHits(f *ast.File, rel, pkgPath string, concrete map[string]bool) []string {
+	s := fileScope{imports: map[string]string{}, pkgPath: pkgPath, concrete: concrete, inAgentKind: pkgPath == agentKindPath}
 	for _, imp := range f.Imports {
 		p, _ := strconv.Unquote(imp.Path.Value)
 		name := p[strings.LastIndex(p, "/")+1:]
 		if imp.Name != nil {
 			name = imp.Name.Name
 		}
-		imports[name] = p
+		s.imports[name] = p
 	}
-	nameOf := func(e ast.Expr) string {
-		switch x := e.(type) {
-		case *ast.BasicLit:
-			if x.Kind == token.STRING {
-				if v, err := strconv.Unquote(x.Value); err == nil && transportNames[v] {
-					return strconv.Quote(v)
-				}
-			}
-		case *ast.SelectorExpr:
-			if id, ok := x.X.(*ast.Ident); ok && imports[id.Name] == agentKindPath && (x.Sel.Name == "Claude" || x.Sel.Name == "Codex") {
-				return "agentkind." + x.Sel.Name
-			}
-		case *ast.Ident:
-			if inAgentKind && (x.Name == "Claude" || x.Name == "Codex") {
-				return "agentkind." + x.Name
-			}
-		}
-		return ""
-	}
-	assertOf := func(e ast.Expr) string {
-		star := ""
-		if s, ok := e.(*ast.StarExpr); ok {
-			star, e = "*", s.X
-		}
-		sel, ok := e.(*ast.SelectorExpr)
-		if !ok {
-			return ""
-		}
-		id, ok := sel.X.(*ast.Ident)
-		if !ok || !concrete[imports[id.Name]+"."+sel.Sel.Name] {
-			return ""
-		}
-		p := imports[id.Name]
-		return "assert " + star + p[strings.LastIndex(p, "/")+1:] + "." + sel.Sel.Name
-	}
-
 	var out []string
-	visit := func(fn string, n ast.Node) {
-		add := func(what string) {
-			if what != "" {
-				out = append(out, rel+" | "+fn+" | "+what)
-			}
-		}
-		ast.Inspect(n, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.BinaryExpr:
-				if x.Op == token.EQL || x.Op == token.NEQ {
-					if w := nameOf(x.X); w != "" {
-						add(w)
-					} else {
-						add(nameOf(x.Y))
-					}
-				}
-			case *ast.SwitchStmt:
-				for _, c := range x.Body.List {
-					for _, e := range c.(*ast.CaseClause).List {
-						add(nameOf(e))
-					}
-				}
-			case *ast.TypeAssertExpr:
-				if x.Type != nil {
-					add(assertOf(x.Type))
-				}
-			case *ast.TypeSwitchStmt:
-				for _, c := range x.Body.List {
-					for _, e := range c.(*ast.CaseClause).List {
-						add(assertOf(e))
-					}
-				}
-			}
-			return true
-		})
-	}
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			visit(funcName(d), d)
+			out = s.appendHits(out, rel+" | "+funcName(d)+" | ", d)
 		case *ast.GenDecl:
 			for _, spec := range d.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					out = s.appendHits(out, rel+" | var "+valueNames(vs)+" | ", vs)
 				}
-				var names []string
-				for _, n := range vs.Names {
-					names = append(names, n.Name)
-				}
-				visit("var "+strings.Join(names, ","), vs)
 			}
 		}
 	}
 	return out
+}
+
+func valueNames(vs *ast.ValueSpec) string {
+	names := make([]string, 0, len(vs.Names))
+	for _, n := range vs.Names {
+		names = append(names, n.Name)
+	}
+	return strings.Join(names, ",")
+}
+
+// appendHits appends prefix+what for every name check under n.
+func (s fileScope) appendHits(out []string, prefix string, n ast.Node) []string {
+	add := func(what string) {
+		if what != "" {
+			out = append(out, prefix+what)
+		}
+	}
+	ast.Inspect(n, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.BinaryExpr:
+			if x.Op == token.EQL || x.Op == token.NEQ {
+				if w := s.nameOf(x.X); w != "" {
+					add(w)
+				} else {
+					add(s.nameOf(x.Y))
+				}
+			}
+		case *ast.SwitchStmt:
+			s.eachCase(x.Body, func(e ast.Expr) { add(s.nameOf(e)) })
+		case *ast.TypeAssertExpr:
+			if x.Type != nil {
+				add(s.assertOf(x.Type))
+			}
+		case *ast.TypeSwitchStmt:
+			s.eachCase(x.Body, func(e ast.Expr) { add(s.assertOf(e)) })
+		case *ast.CallExpr:
+			for _, w := range s.membership(x) {
+				add(w)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+func (fileScope) eachCase(body *ast.BlockStmt, fn func(ast.Expr)) {
+	for _, c := range body.List {
+		for _, e := range c.(*ast.CaseClause).List {
+			fn(e)
+		}
+	}
+}
+
+// nameOf names e when it is a transport name: a literal, an agentkind
+// constant, either one in parentheses or inside a one-argument conversion.
+func (s fileScope) nameOf(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return s.nameOf(x.X)
+	case *ast.CallExpr:
+		if len(x.Args) == 1 && isTypeName(x.Fun) {
+			return s.nameOf(x.Args[0])
+		}
+	case *ast.BasicLit:
+		if x.Kind == token.STRING {
+			if v, err := strconv.Unquote(x.Value); err == nil && transportNames[v] {
+				return strconv.Quote(v)
+			}
+		}
+	case *ast.SelectorExpr:
+		if id, ok := x.X.(*ast.Ident); ok && s.imports[id.Name] == agentKindPath && isKindConst(x.Sel.Name) {
+			return "agentkind." + x.Sel.Name
+		}
+	case *ast.Ident:
+		if s.inAgentKind && isKindConst(x.Name) {
+			return "agentkind." + x.Name
+		}
+	}
+	return ""
+}
+
+// isTypeName reports whether a call is a conversion to a kind string:
+// string(x), Kind(x) or agentkind.Kind(x).
+func isTypeName(fun ast.Expr) bool {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return f.Name == "string" || f.Name == "Kind"
+	case *ast.SelectorExpr:
+		_, ok := f.X.(*ast.Ident)
+		return ok && f.Sel.Name == "Kind"
+	}
+	return false
+}
+
+func isKindConst(name string) bool { return name == "Claude" || name == "Codex" }
+
+// membership names every transport name in the literal list of a
+// slices.Contains or slices.Index call.
+func (s fileScope) membership(call *ast.CallExpr) []string {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || len(call.Args) != 2 || (sel.Sel.Name != "Contains" && sel.Sel.Name != "Index") {
+		return nil
+	}
+	if id, ok := sel.X.(*ast.Ident); !ok || s.imports[id.Name] != "slices" {
+		return nil
+	}
+	lit, ok := call.Args[0].(*ast.CompositeLit)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, e := range lit.Elts {
+		if w := s.nameOf(e); w != "" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// assertOf names a type-assertion target that is a concrete adapter type,
+// in another package (*codex.Client) or in this one (*claudeBackend).
+func (s fileScope) assertOf(e ast.Expr) string {
+	star := ""
+	if st, ok := e.(*ast.StarExpr); ok {
+		star, e = "*", st.X
+	}
+	switch x := e.(type) {
+	case *ast.SelectorExpr:
+		id, ok := x.X.(*ast.Ident)
+		if !ok {
+			return ""
+		}
+		if p := s.imports[id.Name]; s.concrete[p+"."+x.Sel.Name] {
+			return "assert " + star + p[strings.LastIndex(p, "/")+1:] + "." + x.Sel.Name
+		}
+	case *ast.Ident:
+		if s.concrete[s.pkgPath+"."+x.Name] {
+			return "assert " + star + x.Name
+		}
+	}
+	return ""
 }
 
 func funcName(d *ast.FuncDecl) string {
@@ -397,13 +545,13 @@ func funcName(d *ast.FuncDecl) string {
 }
 
 type allowEntry struct {
-	count  int
-	reason string
-	line   int
+	count int
+	line  int
 }
 
 // readAllow parses the baseline: "<file> | <func> | <what> | <count> | <reason>"
-// per line; blank lines and lines starting with # are skipped.
+// per line; blank lines and lines starting with # are skipped. A missing
+// reason, a bad count or a duplicate key fails.
 func readAllow(t *testing.T) map[string]allowEntry {
 	t.Helper()
 	f, err := os.Open(allowFile)
@@ -419,8 +567,8 @@ func readAllow(t *testing.T) map[string]allowEntry {
 			continue
 		}
 		parts := strings.SplitN(line, " | ", 5)
-		if len(parts) != 5 {
-			t.Fatalf("%s:%d: want \"<file> | <func> | <what> | <count> | <reason>\", got %q", allowFile, n, line)
+		if len(parts) != 5 || strings.TrimSpace(parts[4]) == "" {
+			t.Fatalf("%s:%d: want \"<file> | <func> | <what> | <count> | <reason>\" with a reason, got %q", allowFile, n, line)
 		}
 		count, err := strconv.Atoi(parts[3])
 		if err != nil || count < 1 {
@@ -430,7 +578,7 @@ func readAllow(t *testing.T) map[string]allowEntry {
 		if _, dup := out[key]; dup {
 			t.Fatalf("%s:%d: %s is listed twice", allowFile, n, key)
 		}
-		out[key] = allowEntry{count: count, reason: parts[4], line: n}
+		out[key] = allowEntry{count: count, line: n}
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
@@ -454,13 +602,4 @@ func repoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
-}
-
-func sortedKeys(m map[string]int) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
