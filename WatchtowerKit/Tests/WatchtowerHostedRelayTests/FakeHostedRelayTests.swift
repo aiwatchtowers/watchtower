@@ -573,6 +573,34 @@ final class FakeHostedRelayTests: XCTestCase {
         XCTAssertEqual(state.entitlement.untilMs, ms(clock.now()) + 86_400_000)
     }
 
+    func testSubmitTransactionRules() async throws {
+        let relay = makeRelay()
+        let phone = try await onboard(relay, .phone, seed: 2)
+        let other = try await onboard(relay, .phone, seed: 3)
+        let account = try await relay.accountID(ofPhone: phone.id)
+        let otherAccount = try await relay.accountID(ofPhone: other.id)
+        func submit(_ device: Device, _ jws: String) throws -> Relay_V1_ErrorCode? {
+            var op = Relay_V1_SubmitTransaction()
+            op.signedTransaction = jws
+            return try errorCode(relay, device, .submitTransaction(op))
+        }
+        func payload(_ token: String, _ signed: Date? = nil) -> String {
+            FakeHostedRelay.fakeJWS(originalTransactionID: "7", appAccountToken: token, signedDate: signed ?? clock.now())
+        }
+
+        XCTAssertEqual(try submit(phone, "not a payload"), .invalidTransaction)
+        XCTAssertEqual(try submit(phone, payload(otherAccount)), .invalidTransaction, "a foreign token with no link")
+        XCTAssertNil(try submit(phone, payload(account)))
+        clock.advance(by: .seconds(60))
+        XCTAssertEqual(try submit(other, payload(UUID().uuidString.lowercased())), .invalidTransaction, "neither account")
+        XCTAssertNil(try submit(other, payload(account)), "the first link's token moves it")
+        XCTAssertNil(try submit(other, payload(account, clock.now().addingTimeInterval(-3_600))), "older: nothing changes on a held subscription")
+        XCTAssertEqual(try submit(phone, payload(account, clock.now().addingTimeInterval(-3_600))), .invalidTransaction, "older: refused on a link")
+
+        relay.billingConfigured = false
+        XCTAssertEqual(try errorCode(relay, phone, .submitTransaction(.init())), .unspecified, "not implemented")
+    }
+
     func testMoveSubscription() async throws {
         let relay = makeRelay()
         let from = try await onboard(relay, .phone, seed: 2)

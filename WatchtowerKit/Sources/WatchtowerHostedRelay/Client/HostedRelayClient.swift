@@ -292,6 +292,10 @@ public actor HostedRelayClient {
             throw HostedRelayError.undecodable(status: status)
         }
         if case .error(let error) = response.result {
+            if error.code == .unspecified, error.message == Self.notImplementedMessage {
+                Self.logger.error("relay \(Self.name(op), privacy: .public): not implemented, HTTP \(status)")
+                throw NotImplemented()
+            }
             Self.logger.error("relay \(Self.name(op), privacy: .public): \(String(describing: error.code), privacy: .public), HTTP \(status)")
             throw Self.error(error)
         }
@@ -311,6 +315,15 @@ public actor HostedRelayClient {
         guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
         parts.scheme = parts.scheme?.lowercased() == "http" ? "ws" : "wss"
         return parts.url ?? url
+    }
+
+    /// What a relay without the op's backing (no App Store keys, no APNs key) answers as `UNSPECIFIED`.
+    static let notImplementedMessage = "not implemented"
+
+    /// `UNSPECIFIED` with `notImplementedMessage` over HTTPS: the relay does not run this op. Carries
+    /// nothing of the answer.
+    public struct NotImplemented: Error, Equatable, Sendable {
+        public init() {}
     }
 
     /// A relay `Response.error` as the error the client throws (`post`'s mapping).
