@@ -26,9 +26,11 @@ func TestAIConnectionStrictUnsavedProbeBothProviders(t *testing.T) {
 				policytest.Set(t, nil)
 				t.Setenv("HOME", t.TempDir())
 				t.Setenv("CODEX_HOME", t.TempDir())
-				bin := routingCLI(t, provider, fails)
+				var bin string
 				if provider == "codex" && !fails {
 					bin = nonceEchoCodexCLI(t)
+				} else {
+					bin = routingCLI(t, provider, fails)
 				}
 				capture := filepath.Join(t.TempDir(), "arguments")
 				source, err := os.ReadFile(bin)
@@ -97,7 +99,7 @@ f=
 for a in "$@"; do
  case "$a" in model_instructions_file=*) f=${a#model_instructions_file=}; f=${f#\"}; f=${f%\"};; esac
 done
-nonce=$(grep -o 'wt-probe-[0-9a-f]*' "$f" | head -1)
+nonce=$(grep -o 'wt-probe-[A-Z2-7]*' "$f" | head -1)
 cat >/dev/null
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$nonce"
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":3}}'
@@ -116,9 +118,9 @@ func TestAIConnectionCodexChecksSystemPromptNonce(t *testing.T) {
 			policytest.Set(t, nil)
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("CODEX_HOME", t.TempDir())
-			bin := routingCLI(t, "codex", false) // answers "ok"
-			if nonceEcho {
-				bin = nonceEchoCodexCLI(t)
+			bin := nonceEchoCodexCLI(t)
+			if !nonceEcho {
+				bin = routingCLI(t, "codex", false) // answers "ok"
 			}
 			cfg := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: codex}"), 0o600))

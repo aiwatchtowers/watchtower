@@ -138,13 +138,13 @@ func instructionsFileSupported(bin string) bool {
 		r.failedAt = time.Now()
 	}
 	instructionsSupport.Store(bin, r)
-	if !ok {
-		reason := fmt.Sprintf("version %d.%d.%d", v[0], v[1], v[2])
-		if err != nil {
-			reason = err.Error() + "; probing again after " + instructionsProbeRetry.String()
-		}
-		log.Printf("codex: %s (%s) predates model_instructions_file %d.%d.%d; the system prompt rides on stdin instead",
-			bin, reason, minInstructionsFileVersion[0], minInstructionsFileVersion[1], minInstructionsFileVersion[2])
+	switch {
+	case err != nil:
+		log.Printf("codex: could not read the version of %s (%v); the system prompt rides on stdin until the next probe in %s",
+			bin, err, instructionsProbeRetry)
+	case !ok:
+		log.Printf("codex: %s (version %d.%d.%d) predates model_instructions_file %d.%d.%d; the system prompt rides on stdin instead",
+			bin, v[0], v[1], v[2], minInstructionsFileVersion[0], minInstructionsFileVersion[1], minInstructionsFileVersion[2])
 	}
 	return ok
 }

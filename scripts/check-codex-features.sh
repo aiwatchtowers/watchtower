@@ -31,7 +31,7 @@ for arg in "$@"; do
 done
 
 cd "$(dirname "$0")/.."
-echo "$(codex --version)"
+codex --version
 WATCHTOWER_CHECK_CODEX_FEATURES=$mode go test ./internal/codex -run '^TestDisabledFeatures_' -count=1 -v
 if [ "$live" = 1 ]; then
 	WATCHTOWER_LIVE_CODEX=1 go test ./internal/codex -run '^TestCodexLive_' -count=1 -v

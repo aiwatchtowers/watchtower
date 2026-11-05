@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -127,10 +127,7 @@ func liveQuery(t *testing.T, c *Client, systemPrompt, userMessage string) string
 
 func liveNonce(t *testing.T) string {
 	t.Helper()
-	b := make([]byte, 6)
-	_, err := rand.Read(b)
-	require.NoError(t, err)
-	return "n" + hex.EncodeToString(b)
+	return "n" + rand.Text()
 }
 
 // runFakeMCPServer is a minimal stdio MCP server (newline-delimited
@@ -175,6 +172,10 @@ func runFakeMCPServer(nonce string) int {
 			continue
 		}
 		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}
+	if err := sc.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "fake MCP server: reading stdin: %v\n", err)
+		return 1
 	}
 	return 0
 }

@@ -182,16 +182,11 @@ func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount [
 // need; for a read-folder run also the read-only sandbox with the shell on
 // and web search off (SetReadFolder). The MCP servers come from mount.
 func (c *Client) execArgs() []string {
-	args := append(execPrefix(c.model), featuresOff(toolRunFeatures)...)
 	if c.readFolder == "" {
-		return args
+		return append(execPrefix(c.model), featuresOff(toolRunFeatures)...)
 	}
-	for i, a := range args {
-		if a == "features.shell_tool=false" {
-			args[i] = "features.shell_tool=true"
-		}
-	}
-	return append(args, "--sandbox", "read-only", "-c", `web_search="disabled"`)
+	args := append(execPrefix(c.model), featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
+	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", `web_search="disabled"`)
 }
 
 // runMount is one launch's MCP mount: the -c flags, the environment the

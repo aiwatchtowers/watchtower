@@ -385,9 +385,10 @@ It uses the current form's model and CLI path without saving them, testing the
 light model, or falling back to another provider. The existing `ai test` command
 now invokes the canonical isolated no-tools batch leaf: no owner startup hooks,
 MCP tools or shell snapshots. For codex the request carries a system prompt
-naming a fresh nonce, delivered through the same `model_instructions_file` every
-codex call uses, and an answer without the nonce fails as `invalid_output`, so a
-broken system-prompt path fails the test. The MCP tool mount is not part of
+naming a fresh nonce, delivered the way every codex call delivers it (the
+`model_instructions_file`, or stdin on a codex too old for one), and an answer
+without the nonce fails as `invalid_output` (with a content-free stderr line), so
+a broken system-prompt path fails the test. The MCP tool mount is not part of
 the probe (it stays tool-less); the
 opt-in `scripts/check-codex-features.sh --live` covers it with a real codex
 run. Its additive `--cli-path` override is test-only;

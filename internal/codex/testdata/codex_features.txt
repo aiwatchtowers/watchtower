@@ -1,128 +1,131 @@
 # Every codex feature flag `codex features list` reports (removed flags left
-# out), each with Watchtower's decision for the codex runs it launches itself
-# (batch, chat, code questions, spec review, automation agent()):
-#   off  — turned off on every such run (disabledFeatures in generator.go;
-#          a read-folder run turns shell_tool back on to read files);
+# out): its name, Watchtower's decision for the codex runs it launches itself
+# (batch, chat, code questions, spec review, automation agent()) and the
+# default the CLI reported when the line was last reviewed:
+#   off   — turned off on every such run (disabledFeatures in generator.go;
+#           a read-folder run turns shell_tool back on to read files);
 #   batch — off on tool-less batch and image calls only; runs with tools
-#          need it (toolRunFeatures);
-#   keep — left as the owner's codex configures it.
+#           need it (toolRunFeatures in generator.go);
+#   keep  — left as the owner's codex configures it.
 # Workbench terminal sessions (the owner's own codex) never get these flags.
-# TestDisabledFeatures_MatchSnapshot pins disabledFeatures to the "off" lines;
+# TestDisabledFeatures_MatchSnapshot pins disabledFeatures to the "off" and
+# "batch" lines and toolRunFeatures to the "batch" ones;
 # scripts/check-codex-features.sh compares this file with the installed CLI
-# after a codex upgrade (--update adds new flags as "undecided", which fails
-# the offline test until each gets a decision).
+# after a codex upgrade: a new flag, or a "keep" flag whose default changed,
+# fails (--update rewrites such lines as "undecided", which fails the offline
+# test until each gets a decision).
 # Snapshot of codex-cli 0.159.2; codex_hooks is the legacy alias of hooks
 # (not listed by the CLI, still accepted).
-agent_message_board keep
-analytics_plan_history keep
-api_key_model_discovery keep
-apply_patch_preserve_line_endings keep
-apply_patch_streaming_events keep
-apps off
-artifact keep
-auth_elicitation keep
-background_paginated_rollout_migration keep
-bedrock_setup_wizard keep
-browser_use off
-browser_use_external off
-browser_use_full_cdp_access keep
-chronicle off
-code_mode off
-code_mode_host batch
-code_mode_interrupt keep
-code_mode_only keep
-code_mode_prewarm keep
-codex_apps_mcp_2026_07_28 keep
-codex_hooks off
-compaction_image_budget keep
-computer_use off
-concurrent_reasoning_summaries keep
-content_item_kinds keep
-context_management keep
-current_time_reminder keep
-cwd_relative_turn_diffs keep
-daemon_auto_start off
-default_mode_request_user_input keep
-defer_mailbox_preemption keep
-deferred_executor keep
-deferred_tool_world_state keep
-enable_mcp_apps keep
-enable_request_compression keep
-exec_permission_approvals keep
-executed_tool_call_metadata keep
-executor_capability_discovery keep
-external_agent_memory_import off
-fast_mode keep
-goals off
-guardian_approval keep
-guardian_enhanced_node_repl_transcripts keep
-guardian_node_repl_transcript_images keep
-guardian_reuse_parent_compaction keep
-guardianv2 keep
-hooks off
-image_generation off
-image_resize_notice keep
-in_app_browser off
-in_app_chat keep
-in_app_dictation keep
-in_app_local_automation keep
-in_app_updates keep
-instant_interrupt keep
-local_thread_store_compression keep
-mcp_2026_07_28 keep
-mcp_oauth_refresh_coordination keep
-memories off
-mentions_v2 keep
-multi_agent off
-multi_agent_v2 off
-network_proxy keep
-non_prefixed_mcp_tool_names keep
-nonfatal_clock_read_errors keep
-omit_app_server_notification_media keep
-plugin_sharing off
-plugins off
-powershell_shell_version keep
-prefer_mxc keep
-prevent_idle_sleep keep
-psp keep
-realtime_conversation off
-reasoning_effort_override keep
-recommended_plugins off
-remote_plugin off
-request_permissions_tool keep
-respect_system_proxy keep
-retain_client_developer_messages keep
-rollout_budget keep
-runtime_metrics keep
-secret_auth_storage keep
-send_message_to_user_async keep
-shell_snapshot off
-shell_snapshot_v2 off
-shell_tool off
-shell_zsh_fork keep
-skill_mcp_dependency_install off
-skill_search off
-skip_host_skill_discovery keep
-sleep_tool keep
-standalone_web_search keep
-step_model_switching keep
-system_proxy_fallback keep
-terminal_visualization_instructions keep
-token_budget keep
-tool_call_mcp_elicitation keep
-tool_suggest off
-transcript_v2 keep
-unbounded_connection_retries keep
-unified_exec off
-unified_exec_tty keep
-unified_image_budget keep
-use_agent_identity keep
-use_legacy_landlock keep
-use_xaa keep
-view_image off
-web_search_cached keep
-web_search_request keep
-windows_sandbox_service keep
-workspace_dependencies keep
-worktrees keep
-write_stdin_approval keep
+agent_message_board keep false
+analytics_plan_history keep false
+api_key_model_discovery keep false
+apply_patch_preserve_line_endings keep false
+apply_patch_streaming_events keep false
+apps off true
+artifact keep false
+auth_elicitation keep true
+background_paginated_rollout_migration keep false
+bedrock_setup_wizard keep false
+browser_use off true
+browser_use_external off true
+browser_use_full_cdp_access keep true
+chronicle off false
+code_mode off false
+code_mode_host batch true
+code_mode_interrupt keep false
+code_mode_only keep false
+code_mode_prewarm keep false
+codex_apps_mcp_2026_07_28 keep false
+codex_hooks off true
+compaction_image_budget keep true
+computer_use off true
+concurrent_reasoning_summaries keep false
+content_item_kinds keep true
+context_management keep false
+current_time_reminder keep false
+cwd_relative_turn_diffs keep false
+daemon_auto_start off true
+default_mode_request_user_input keep false
+defer_mailbox_preemption keep false
+deferred_executor keep false
+deferred_tool_world_state keep false
+enable_mcp_apps keep false
+enable_request_compression keep true
+exec_permission_approvals keep false
+executed_tool_call_metadata keep false
+executor_capability_discovery keep false
+external_agent_memory_import off false
+fast_mode keep true
+goals off true
+guardian_approval keep true
+guardian_enhanced_node_repl_transcripts keep false
+guardian_node_repl_transcript_images keep false
+guardian_reuse_parent_compaction keep true
+guardianv2 keep false
+hooks off true
+image_generation off true
+image_resize_notice keep false
+in_app_browser off true
+in_app_chat keep true
+in_app_dictation keep true
+in_app_local_automation keep true
+in_app_updates keep true
+instant_interrupt keep false
+local_thread_store_compression keep false
+mcp_2026_07_28 keep false
+mcp_oauth_refresh_coordination keep false
+memories off false
+mentions_v2 keep true
+multi_agent off true
+multi_agent_v2 off false
+network_proxy keep false
+non_prefixed_mcp_tool_names keep false
+nonfatal_clock_read_errors keep false
+omit_app_server_notification_media keep false
+plugin_sharing off true
+plugins off true
+powershell_shell_version keep false
+prefer_mxc keep false
+prevent_idle_sleep keep false
+psp keep false
+realtime_conversation off true
+reasoning_effort_override keep false
+recommended_plugins off false
+remote_plugin off true
+request_permissions_tool keep false
+respect_system_proxy keep false
+retain_client_developer_messages keep false
+rollout_budget keep false
+runtime_metrics keep false
+secret_auth_storage keep false
+send_message_to_user_async keep false
+shell_snapshot off true
+shell_snapshot_v2 off false
+shell_tool off true
+shell_zsh_fork keep false
+skill_mcp_dependency_install off true
+skill_search off true
+skip_host_skill_discovery keep false
+sleep_tool keep true
+standalone_web_search keep false
+step_model_switching keep false
+system_proxy_fallback keep true
+terminal_visualization_instructions keep false
+token_budget keep false
+tool_call_mcp_elicitation keep true
+tool_suggest off true
+transcript_v2 keep false
+unbounded_connection_retries keep true
+unified_exec off true
+unified_exec_tty keep true
+unified_image_budget keep false
+use_agent_identity keep false
+use_legacy_landlock keep false
+use_xaa keep false
+view_image off true
+web_search_cached keep false
+web_search_request keep false
+windows_sandbox_service keep false
+workspace_dependencies keep true
+worktrees keep true
+write_stdin_approval keep true

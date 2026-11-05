@@ -278,8 +278,9 @@ func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, std
 // buildImageArgs is buildArgs for an image call. Beyond execArgs (whose
 // disabledFeatures cover the default-on features that reach outside the
 // call) it turns off web search and every MCP server of the owner's codex
-// config (fail closed when the config cannot be read), and adds `--image=<path>` (one value: --image splits on commas, so a comma in
-// the path is refused) ahead of the instructions override and the "-".
+// config (fail closed when the config cannot be read), and adds
+// `--image=<path>` (one value: --image splits on commas, so a comma in the
+// path is refused) ahead of the instructions override and the "-".
 // Residual risk: a codex feature that becomes default-on later is off only
 // once scripts/check-codex-features.sh has flagged it and it was added.
 func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath, workDir string) (args []string, stdin, promptFile string, err error) {

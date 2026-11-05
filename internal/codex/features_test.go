@@ -20,19 +20,23 @@ import (
 // Watchtower's decision for each (see its header).
 const featuresSnapshot = "testdata/codex_features.txt"
 
-// readFeaturesSnapshot returns the snapshot's decision per feature name.
-func readFeaturesSnapshot(t *testing.T) map[string]string {
+// snapshotFeature is one snapshot line: Watchtower's decision and the
+// default the CLI reported when the line was reviewed.
+type snapshotFeature struct{ decision, enabled string }
+
+// readFeaturesSnapshot returns the snapshot's lines by feature name.
+func readFeaturesSnapshot(t *testing.T) map[string]snapshotFeature {
 	t.Helper()
 	raw, err := os.ReadFile(featuresSnapshot)
 	require.NoError(t, err)
-	out := map[string]string{}
+	out := map[string]snapshotFeature{}
 	for line := range strings.SplitSeq(string(raw), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		f := strings.Fields(line)
-		require.Len(t, f, 2, "snapshot line %q", line)
-		out[f[0]] = f[1]
+		require.Len(t, f, 3, "snapshot line %q", line)
+		out[f[0]] = snapshotFeature{decision: f[1], enabled: f[2]}
 	}
 	return out
 }
@@ -43,8 +47,8 @@ func readFeaturesSnapshot(t *testing.T) map[string]string {
 func TestDisabledFeatures_MatchSnapshot(t *testing.T) {
 	snap := readFeaturesSnapshot(t)
 	var off, batch []string
-	for name, decision := range snap {
-		switch decision {
+	for name, f := range snap {
+		switch f.decision {
 		case "off":
 			off = append(off, name)
 		case "batch":
@@ -52,7 +56,7 @@ func TestDisabledFeatures_MatchSnapshot(t *testing.T) {
 			batch = append(batch, name)
 		case "keep":
 		default:
-			t.Errorf("feature %q has no decision (%q): mark it off, batch or keep in %s", name, decision, featuresSnapshot)
+			t.Errorf("feature %q has no decision (%q): mark it off, batch or keep in %s", name, f.decision, featuresSnapshot)
 		}
 	}
 	assert.ElementsMatch(t, off, disabledFeatures)
@@ -128,11 +132,14 @@ func TestDisabledFeatures_EveryRunTurnsThemOff(t *testing.T) {
 const liveFeaturesEnv = "WATCHTOWER_CHECK_CODEX_FEATURES"
 
 // TestDisabledFeatures_LiveCLI compares the installed codex CLI's feature
-// flags with the snapshot (opt-in, never in CI): every flag it lists that is
-// not "removed" must be in the snapshot; "update" adds the missing ones as
-// "undecided", which TestDisabledFeatures_MatchSnapshot then fails until each
-// is marked off or keep. `codex features list` reads only local config: no
-// model call, no network.
+// flags with the snapshot (opt-in, never in CI). It fails on a flag the CLI
+// lists (not "removed") that the snapshot lacks, and on a "keep" flag whose
+// default differs from the pinned one (a release turning a flag on by
+// default is the case the deny list must not miss). "update" rewrites such
+// lines as "undecided" with the CLI's default, which
+// TestDisabledFeatures_MatchSnapshot then fails until each is marked off,
+// batch or keep. `codex features list` reads only local config: no model
+// call, no network.
 func TestDisabledFeatures_LiveCLI(t *testing.T) {
 	mode := os.Getenv(liveFeaturesEnv)
 	if mode == "" {
@@ -140,27 +147,28 @@ func TestDisabledFeatures_LiveCLI(t *testing.T) {
 	}
 	bin := FindBinary("")
 	require.NotEmpty(t, bin, "codex CLI not found")
-	listed := liveFeatureNames(t, bin)
+	listed := liveFeatureDefaults(t, bin)
 	require.NotEmpty(t, listed, "codex features list printed nothing")
 	snap := readFeaturesSnapshot(t)
-	var missing []string
-	for _, name := range listed {
-		if _, ok := snap[name]; !ok {
-			missing = append(missing, name)
+	changed := map[string]string{} // name → the CLI's default
+	for name, enabled := range listed {
+		f, ok := snap[name]
+		if !ok || (f.decision == "keep" && f.enabled != enabled) {
+			changed[name] = enabled
 		}
 	}
-	if len(missing) > 0 && mode == "update" {
-		addUndecidedFeatures(t, missing)
-		t.Logf("added to %s as undecided: %v — mark each off/batch (and add it to disabledFeatures) or keep", featuresSnapshot, missing)
+	if len(changed) > 0 && mode == "update" {
+		markUndecided(t, changed)
+		t.Logf("marked undecided in %s: %v — mark each off/batch (and add it to disabledFeatures) or keep", featuresSnapshot, changed)
 		return
 	}
-	assert.Empty(t, missing, "codex features missing from %s (rerun with update, then decide each)", featuresSnapshot)
+	assert.Empty(t, changed, "codex flags new to %s or kept with a changed default (rerun with update, then decide each)", featuresSnapshot)
 }
 
-// liveFeatureNames runs `codex features list` and returns the names of the
-// flags not marked removed. The child runs in its own process group, killed
-// and reaped on every path.
-func liveFeatureNames(t *testing.T, bin string) []string {
+// liveFeatureDefaults runs `codex features list` and returns the default
+// ("true"/"false") of each flag not marked removed. The child runs in its
+// own process group, killed and reaped on every path.
+func liveFeatureDefaults(t *testing.T, bin string) map[string]string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -174,33 +182,37 @@ func liveFeatureNames(t *testing.T, bin string) []string {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	require.NoError(t, err, "codex features list")
-	var names []string
+	flags := map[string]string{}
 	sc := bufio.NewScanner(strings.NewReader(string(out)))
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
-		if len(f) >= 2 && f[1] != "removed" {
-			names = append(names, f[0])
+		if len(f) >= 3 && f[len(f)-2] != "removed" {
+			flags[f[0]] = f[len(f)-1]
 		}
 	}
-	return names
+	return flags
 }
 
-// addUndecidedFeatures adds names to the snapshot as "undecided", keeping its
-// header and its lines sorted.
-func addUndecidedFeatures(t *testing.T, names []string) {
+// markUndecided writes each name as "<name> undecided <default>", replacing
+// its line if there is one, keeping the header and the lines sorted.
+func markUndecided(t *testing.T, flags map[string]string) {
 	t.Helper()
 	raw, err := os.ReadFile(featuresSnapshot)
 	require.NoError(t, err)
 	var header, lines []string
 	for line := range strings.SplitSeq(strings.TrimRight(string(raw), "\n"), "\n") {
-		if strings.HasPrefix(line, "#") {
+		switch {
+		case strings.HasPrefix(line, "#"):
 			header = append(header, line)
-		} else if line != "" {
-			lines = append(lines, line)
+		case line == "":
+		default:
+			if _, ok := flags[strings.Fields(line)[0]]; !ok {
+				lines = append(lines, line)
+			}
 		}
 	}
-	for _, n := range names {
-		lines = append(lines, n+" undecided")
+	for name, enabled := range flags {
+		lines = append(lines, name+" undecided "+enabled)
 	}
 	slices.Sort(lines)
 	out := strings.Join(append(header, lines...), "\n") + "\n"
