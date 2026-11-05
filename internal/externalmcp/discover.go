@@ -2,6 +2,7 @@ package externalmcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -36,6 +37,29 @@ type ServerSpec struct {
 // exchange; a stdio server is started for the call in its own process group,
 // and the group is stopped before ListTools returns.
 func ListTools(ctx context.Context, spec ServerSpec) ([]db.ExternalTool, error) {
+	defs, err := ListToolDefs(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	tools := make([]db.ExternalTool, 0, len(defs))
+	for _, d := range defs {
+		tools = append(tools, d.Tool)
+	}
+	return tools, nil
+}
+
+// ToolDef is one listed tool as a model is offered it: the QC-02 policy
+// fields plus the server's description and input schema (nil when absent).
+type ToolDef struct {
+	Tool        db.ExternalTool
+	Description string
+	InputSchema json.RawMessage
+}
+
+// ListToolDefs is ListTools with each tool's description and input schema,
+// for a caller that offers the tools to a model itself (runtime B). A
+// schema that cannot be encoded is left nil.
+func ListToolDefs(ctx context.Context, spec ServerSpec) ([]ToolDef, error) {
 	transport, stderr, err := discoveryTransport(ctx, spec)
 	if err != nil {
 		return nil, err
@@ -55,20 +79,25 @@ func ListTools(ctx context.Context, spec ServerSpec) ([]db.ExternalTool, error) 
 		defer killProcessGroup(ct.Command)
 	}
 
-	tools := []db.ExternalTool{}
+	defs := []ToolDef{}
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			return nil, withStderr(fmt.Errorf("listing tools: %w", err), stderr)
 		}
-		t := db.ExternalTool{Name: tool.Name}
+		d := ToolDef{Tool: db.ExternalTool{Name: tool.Name}, Description: tool.Description}
 		if tool.Annotations != nil {
-			t.Annotated = true
-			t.ReadOnlyHint = tool.Annotations.ReadOnlyHint
-			t.DestructiveHint = tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint
+			d.Tool.Annotated = true
+			d.Tool.ReadOnlyHint = tool.Annotations.ReadOnlyHint
+			d.Tool.DestructiveHint = tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint
 		}
-		tools = append(tools, t)
+		if tool.InputSchema != nil {
+			if b, err := json.Marshal(tool.InputSchema); err == nil {
+				d.InputSchema = b
+			}
+		}
+		defs = append(defs, d)
 	}
-	return tools, nil
+	return defs, nil
 }
 
 // stderrHeadLimit bounds how much of a stdio server's stderr a failed

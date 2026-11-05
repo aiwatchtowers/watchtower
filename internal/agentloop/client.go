@@ -20,9 +20,11 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/externalmcp"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
@@ -55,6 +57,10 @@ type Client struct {
 	allowed map[string]bool // nil = every surface tool (Options.Tools nil)
 
 	toolEvents bool // the protocol-v2 chat events: tool start/end chunks and the turn's usage (EmitToolEvents)
+
+	extMu     sync.Mutex
+	extLoader func() []ai.ExternalMCPServer    // the Quick Connections of a turn (external.go); nil = none
+	extDefs   map[string][]externalmcp.ToolDef // listings, per server, for the client's life
 }
 
 // EmitToolEvents switches on the protocol-v2 chat events: Query reports
@@ -172,13 +178,15 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 			emit(ai.StreamChunk{ToolBoundary: true})
 		}
 	}
+	ext := c.mountExternal(ctx)
+	systemPrompt = ai.WithExternalDataRule(systemPrompt, ext.servers)
 	msgs := make([]oaMessage, 0, 4)
 	if systemPrompt != "" {
 		msgs = append(msgs, oaMessage{Role: "system", Content: systemPrompt})
 	}
 	msgs = append(msgs, oaMessage{Role: "user", Content: userMessage})
 
-	oaTools := c.buildTools()
+	oaTools := append(c.buildTools(), ext.defs...)
 	var usage *ai.Usage
 	var lastContent string
 
@@ -203,7 +211,7 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 		msgs = append(msgs, m)
 		for _, call := range m.ToolCalls {
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments)})
-			result := c.dispatch(ctx, call)
+			result := c.dispatch(ctx, call, ext)
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Done: true,
 				OK: !strings.HasPrefix(result, `{"error":`), Result: result})
 			msgs = append(msgs, oaMessage{
@@ -264,13 +272,16 @@ func (c *Client) emitTool(emit func(ai.StreamChunk), ev *ai.ToolEvent) {
 // dispatch runs one tool call against the registry and returns the JSON string
 // that becomes the tool-result message. A tool error is returned as an error
 // JSON fed back to the model, never up the stack — one bad call must not kill
-// the turn.
-func (c *Client) dispatch(ctx context.Context, call oaToolCall) string {
+// the turn. A name in ext is a mounted Quick Connection tool (external.go).
+func (c *Client) dispatch(ctx context.Context, call oaToolCall, ext mountedExternal) string {
 	name := call.Function.Name
 	// The allowlist is checked first: a tool outside it was never offered,
 	// whatever the registry or the surface would say about it.
 	if c.allowed != nil && !c.allowed[name] {
 		return errJSON("tool " + name + " is not offered here")
+	}
+	if t, ok := ext.tools[name]; ok {
+		return c.callExternal(ctx, t, json.RawMessage(call.Function.Arguments))
 	}
 	t, ok := c.reg.Get(name)
 	if !ok {

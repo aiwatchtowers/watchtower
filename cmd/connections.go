@@ -210,15 +210,6 @@ func connectionAuthState(cfg *config.Config, id int64, errW io.Writer) string {
 	return "none"
 }
 
-// warnIfProviderIgnoresConnections tells the owner that Quick Connections are
-// wired only for the claude and codex providers, so an enabled connection is
-// inert under any other (ollama). Non-fatal: the enable/add still succeeds.
-func warnIfProviderIgnoresConnections(w io.Writer, cfg *config.Config, name string) {
-	if p := cfg.AI.ConfiguredProviderID(); p != "claude" && p != "codex" {
-		fmt.Fprintf(w, "warning: Quick Connections work only with the claude and codex AI providers; connection %q will be inert under provider %q\n", name, p)
-	}
-}
-
 // validateConnectionAddFlags checks `connections add`'s name and kind flags.
 func validateConnectionAddFlags(name, kind, command, url string) error {
 	if name == "" {
@@ -338,7 +329,6 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Added connection #%d %q (%s), disabled.\n", id, name, kind)
 	fmt.Fprintf(out, "Run 'watchtower connections enable %d' to enable it.\n", id)
-	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, name)
 	return nil
 }
 
@@ -437,14 +427,6 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 	out := cmd.OutOrStdout()
 	if enabled {
 		fmt.Fprintf(out, "Connection %d enabled.\n", id)
-		// Best-effort name lookup for the warning only: the enable already
-		// succeeded, so a failed read must not hide the provider warning -
-		// fall back to the id rather than swallow it.
-		label := strconv.FormatInt(id, 10)
-		if conn, err := database.GetExternalConnection(id); err == nil {
-			label = conn.Name
-		}
-		warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, label)
 		refreshToolsAfterEnable(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, database, id)
 	} else {
 		fmt.Fprintf(out, "Connection %d disabled.\n", id)
@@ -567,7 +549,6 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Connection %d signed in and enabled.\n", id)
-	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
 	refreshToolsAfterEnable(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, database, id)
 	return nil
 }
