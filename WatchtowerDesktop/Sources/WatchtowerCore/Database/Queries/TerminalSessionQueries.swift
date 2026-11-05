@@ -161,7 +161,7 @@ package enum TerminalSessionQueries {
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
-                SELECT s.id, s.project_id, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
+                SELECT s.id, s.project_id, s.kind, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
                        s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
                        s.agent_background, s.agent_background_at, s.chat_question, s.chat_question_at,
                        \(cwdAt) AS agent_cwd_at,
