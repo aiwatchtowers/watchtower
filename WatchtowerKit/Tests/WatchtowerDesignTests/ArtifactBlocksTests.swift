@@ -458,6 +458,13 @@ extension ArtifactBlocksTests {
         XCTAssertEqual(try GoJSON.marshal(try JSONSerialization.jsonObject(with: Data(text.utf8))), text)
     }
 
+    /// Pins `GoJSON`'s known gap: Go's `-0` reads back as `0`. If this
+    /// starts failing, Foundation or the code changed: revisit the gap and
+    /// the comments that name it.
+    func testNegativeZeroIsTheKnownGap() throws {
+        XCTAssertEqual(try GoJSON.marshal(try JSONSerialization.jsonObject(with: Data("[-0]".utf8))), "[0]")
+    }
+
     /// Go's string escaping: HTML characters only under `json.Marshal`;
     /// `\b \f \n \r \t` as such, other controls `\u00XX`, U+2028/9 always.
     func testGoStringEscaping() {

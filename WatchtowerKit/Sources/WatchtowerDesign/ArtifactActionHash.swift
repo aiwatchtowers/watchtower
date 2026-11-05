@@ -16,12 +16,11 @@ extension ArtifactAction {
 /// Go's `encoding/json` byte for byte (one known gap below), for the two
 /// forms a block document holds: the canonical form (`blocks.marshal`, no
 /// HTML escaping) and a reply's `data` (`json.Marshal`: HTML-escaped, keys
-/// sorted). Both escape
-/// `"` and `\`, write `\b \f \n \r \t` as such, other control characters as
-/// `\u00XX`, U+2028/U+2029 as `\u2028`/`\u2029`, and leave `/` alone.
-/// One known gap: Go writes a negative-zero float64 in `data` as `-0`,
-/// which JSONSerialization reads as the integer 0, so it comes back `0`
-/// (and that action's hash differs from Go's).
+/// sorted). Both escape `"` and `\`, write `\b \f \n \r \t` as such, other
+/// control characters as `\u00XX`, U+2028/U+2029 as `\u2028`/`\u2029`, and
+/// leave `/` alone. One known gap: Go writes a negative-zero float64 in
+/// `data` as `-0`, which JSONSerialization reads as the integer 0, so it
+/// comes back `0` (and that action's hash differs from Go's).
 enum GoJSON {
     /// The action's canonical JSON: Go `db.InboxAction`'s fields in their
     /// struct order, empty ones omitted (`omitempty`), `data` copied as stored.
