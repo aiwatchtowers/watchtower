@@ -16,6 +16,9 @@ import (
 	"watchtower/internal/tools"
 )
 
+// Runtime B is wired like claude and codex.
+var _ externalMCPConfigurable = (*agentloop.Client)(nil)
+
 // seedQuickConnection writes one enabled stdio connection with a read and a
 // write tool and its secret, in cfg's workspace database.
 func seedQuickConnection(t *testing.T, cfg *config.Config) string {

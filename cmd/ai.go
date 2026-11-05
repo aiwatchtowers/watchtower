@@ -289,7 +289,8 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		c, ok := aiClient.(readFolderConfigurable)
 		if !ok {
 			// A provider with no file tools (ollama) would answer from the
-			// prompt alone: refused, never a silent answer (L9).
+			// prompt alone: refused before any model call, never a silent
+			// answer (spec 2026-11-05 §3.3, read_folder none).
 			return refuseQuery(enc, providers.CapabilityError(cfg.AI.Provider, providers.ReviewReadonly,
 				fmt.Errorf("--read-folder: the %s provider has no file tools, so it cannot read the folder; use Claude or Codex for questions about code", cfg.AI.Provider)))
 		}
@@ -623,7 +624,9 @@ func queryErrorClass(err error) (code, reason string, retryable bool) {
 
 // refuseQuery ends a query refused before any model call: the error as the
 // requested protocol's event (v2: one classified error; v1: error + done),
-// and a failed exit carrying err for stderr.
+// and a failed exit carrying err for stderr. Unlike emitError's setup
+// errors (exit 0), a refused capability is a failed command: a caller that
+// skipped its own capability check must not read the run as answered.
 func refuseQuery(enc *json.Encoder, err error) error {
 	code, reason, retry := queryErrorClass(err)
 	if aiFlagEvents == "v2" {
@@ -693,8 +696,9 @@ type processGroupConfigurable interface{ SetProcessGroup(v bool) }
 // mcp-config and tool allowlist) and codex.Client (the -c mcp_servers
 // override, enabled_tools per server) — it mounts owner-added external MCP
 // servers ("Quick Connections", internal/externalmcp) alongside the built-in
-// watchtower server. The ollama client has no MCP subprocess, so the
-// type-assert in newQueryClient simply skips it there.
+// watchtower server. agentloop.Client (runtime B, the ollama chat) offers
+// the same servers' allowed tools in-process; newQueryClient wires it in its
+// own branch. The plain ollama client has no tools.
 type externalMCPConfigurable interface {
 	SetExternalMCPServers(servers []ai.ExternalMCPServer)
 }

@@ -17,6 +17,8 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/ollama"
+	"watchtower/internal/providers"
 )
 
 // readFolderFixture is a config whose claude is a stub that answers with its
@@ -205,6 +207,39 @@ ai:
 	assert.Equal(t, "required_capability_missing", errEv.Reason)
 	assert.False(t, errEv.Retryable)
 	assert.NotEmpty(t, errEv.Message)
+
+	// v1: the same refusal as an error event, then done.
+	code, stdout, _ = f.run(t, "--read-folder", f.folder)
+	assert.NotEqual(t, 0, code)
+	assert.Zero(t, hits.Load(), "no model call")
+	var types []string
+	var v1Err aiStreamEvent
+	for _, line := range stdout {
+		var ev aiStreamEvent
+		require.NoError(t, json.Unmarshal([]byte(line), &ev), line)
+		types = append(types, ev.Type)
+		if ev.Type == "error" {
+			v1Err = ev
+		}
+	}
+	assert.Equal(t, []string{"error", "done"}, types)
+	assert.Equal(t, "required_capability_missing", v1Err.Reason)
+	assert.False(t, v1Err.Retryable)
+}
+
+// With fallback routing on, the router's leaf refuses the same way: a
+// capability error with the required_capability_missing reason, not an
+// untyped retryable one.
+func TestAIQuery_ReadFolderRoutedLeafWithoutFileToolsIsRefused(t *testing.T) {
+	p := &toolRouteProvider{readFolder: t.TempDir()}
+	err := p.configureLeaf("ollama", ollama.NewClient("llama", ""))
+	var failure *providers.Failure
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, providers.Capability, failure.Category)
+	assert.Equal(t, "ollama", failure.Provider)
+	_, reason, retry := queryErrorClass(err)
+	assert.Equal(t, "required_capability_missing", reason)
+	assert.False(t, retry)
 }
 
 func firstText(t *testing.T, lines []string) string {

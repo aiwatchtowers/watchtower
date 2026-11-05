@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -215,4 +216,94 @@ func TestAgentloop_GatedLoopMountsNoQuickConnections(t *testing.T) {
 	assert.Empty(t, offered(requests()[0]))
 	calls, _ := mcpSrv.seen()
 	assert.Empty(t, calls)
+}
+
+// The session's loader runs on every turn (QC-04: OAuth refresh per
+// launch).
+func TestAgentloop_LoaderRunsEveryTurn(t *testing.T) {
+	mcpSrv := newFakeMCP(t)
+	model, _ := recordingServer(t, finalResp("ok"))
+	c := clientWith(&fakeReg{tools: map[string]*tools.Tool{}}, model.URL)
+	loads := 0
+	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
+		loads++
+		return []ai.ExternalMCPServer{mcpSrv.server()}
+	})
+	for range 2 {
+		_, err := collect(t, c)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 2, loads, "the loader runs on every turn")
+}
+
+// A server whose listing fails is not listed again on the next turn: one
+// dead server does not cost every turn a listing timeout.
+func TestAgentloop_FailedListingIsNotRetriedEveryTurn(t *testing.T) {
+	var hits atomic.Int32
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(dead.Close)
+	model, requests := recordingServer(t, finalResp("ok"))
+	c := clientWith(&fakeReg{tools: map[string]*tools.Tool{}}, model.URL)
+	c.SetExternalMCPServers([]ai.ExternalMCPServer{{ID: 3, Name: "dead", Kind: "http", URL: dead.URL,
+		AllowTools: []string{"get_issue"}}})
+
+	_, err := collect(t, c)
+	require.NoError(t, err)
+	first := hits.Load()
+	require.NotZero(t, first, "the first turn tried to list it")
+	_, err = collect(t, c)
+	require.NoError(t, err)
+	assert.Equal(t, first, hits.Load(), "the second turn did not list it again")
+	for _, req := range requests() {
+		assert.Empty(t, offered(req))
+	}
+}
+
+// A tool whose offered name is not a valid function name is skipped, not
+// sent: a strict server would refuse the whole request.
+func TestAgentloop_InvalidFunctionNameSkipped(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "1"}, nil)
+	noop := func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	}
+	server.AddTool(&mcp.Tool{Name: "issues.get", InputSchema: map[string]any{"type": "object"}}, noop)
+	server.AddTool(&mcp.Tool{Name: "get_issue", InputSchema: map[string]any{"type": "object"}}, noop)
+	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(srv.Close)
+
+	model, requests := recordingServer(t, finalResp("ok"))
+	c := clientWith(&fakeReg{tools: map[string]*tools.Tool{}}, model.URL)
+	c.SetExternalMCPServers([]ai.ExternalMCPServer{{ID: 4, Name: "acme", Kind: "http", URL: srv.URL,
+		AllowTools: []string{"issues.get", "get_issue"}}})
+	_, err := collect(t, c)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mcp__acme__get_issue"}, offered(requests()[0]))
+}
+
+// A tool the fresh listing marks a write is never offered, even when the
+// cached allowed list still names it (QC-02).
+func TestAgentloop_AnnotatedWriteNeverOfferedEvenIfAllowed(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "1"}, nil)
+	var called atomic.Int32
+	destructive := true
+	server.AddTool(&mcp.Tool{Name: "get_issue", InputSchema: map[string]any{"type": "object"},
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: &destructive}},
+		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			called.Add(1)
+			return &mcp.CallToolResult{}, nil
+		})
+	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(srv.Close)
+
+	model, requests := recordingServer(t, toolCallResp("mcp__acme__get_issue", `{}`), finalResp("ok"))
+	c := clientWith(&fakeReg{tools: map[string]*tools.Tool{}}, model.URL)
+	c.SetExternalMCPServers([]ai.ExternalMCPServer{{ID: 5, Name: "acme", Kind: "http", URL: srv.URL,
+		AllowTools: []string{"get_issue"}}})
+	_, err := collect(t, c)
+	require.NoError(t, err)
+	assert.Empty(t, offered(requests()[0]))
+	assert.Zero(t, called.Load(), "the write never reached the server")
 }

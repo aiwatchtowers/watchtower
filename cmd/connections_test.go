@@ -44,7 +44,7 @@ func writeConnectionsConfig(t *testing.T) *config.Config {
 
 // writeConnectionsConfigWithProvider is the writeConnectionsConfig precedent,
 // but stamps ai.provider so ConfiguredProviderID() resolves to a specific
-// value — used to exercise warnIfProviderIgnoresConnections per provider.
+// value — used to check that no provider warns about Quick Connections.
 func writeConnectionsConfigWithProvider(t *testing.T, provider string) *config.Config {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

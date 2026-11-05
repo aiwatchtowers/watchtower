@@ -64,6 +64,8 @@ func TestCodeForFailure_EveryCategory(t *testing.T) {
 	assert.False(t, retry, "a spent subscription does not come back on a retry")
 	code, _ = CodeForFailure(providers.Auth)
 	assert.Equal(t, CodeAuth, code)
+	code, _ = CodeForFailure(providers.Policy)
+	assert.Equal(t, CodeProviderUnavailable, code, "a policy refusal is not a sign-in problem")
 	code, retry = CodeForFailure(providers.Cancelled)
 	assert.Equal(t, CodeInterrupted, code)
 	assert.False(t, retry)

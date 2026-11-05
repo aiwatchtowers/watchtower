@@ -2,10 +2,6 @@ package providers
 
 import "strings"
 
-// ollamaProvider is the Failure.Provider of every OpenAI-compatible HTTP
-// call: plain ollama and the runtime-B loop share the one server setting.
-const ollamaProvider = "ollama"
-
 // OllamaFailure types one failed OpenAI-compatible call (Ollama, LM Studio,
 // vLLM, llama.cpp) from its HTTP status and body; status 0 is an error the
 // server reported inside a 200 answer. cause stays the error the owner
@@ -33,17 +29,15 @@ func OllamaFailure(status int, body string, cause error) error {
 	case status == 0 && strings.Contains(b, "model") && strings.Contains(b, "not found"):
 		category = Model
 	}
-	return &Failure{Provider: ollamaProvider, Category: category, Cause: cause}
+	return &Failure{Provider: "ollama", Category: category, Cause: cause}
 }
 
 // OllamaRequestFailure types a call that got no answer at all (the request
 // failed, or the stream broke): cancellation and deadlines stay theirs, a
-// network error is Transport. nil stays nil.
+// network error is Transport. nil stays nil. Plain ollama and the runtime-B
+// loop share the one server setting, so both report provider "ollama".
 func OllamaRequestFailure(cause error) error {
-	if cause == nil {
-		return nil
-	}
-	return ProcessFailure(ollamaProvider, cause)
+	return ProcessFailure("ollama", cause)
 }
 
 // ollamaContextOverflow matches the context-size refusals of the common

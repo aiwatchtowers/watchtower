@@ -5,8 +5,7 @@ import Foundation
 /// runtime-B `agentloop.Client` all implement `SetExternalMCPServers`).
 /// This is the pure decision behind the Settings caption that tells the owner
 /// when their active provider cannot use the connections they have enabled,
-/// so "Enabled" is never a silent lie. A2 replaces the name check with the
-/// provider's capabilities.
+/// so "Enabled" is never a silent lie.
 public enum QuickConnectionsProviderNotice {
     /// Nil when the provider is claude, codex or ollama (connections work);
     /// otherwise a caption telling the owner which providers they work with.

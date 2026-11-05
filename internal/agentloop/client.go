@@ -20,12 +20,11 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"watchtower/internal/ai"
-	"watchtower/internal/externalmcp"
 	"watchtower/internal/llmusage"
+	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 	"watchtower/internal/tools"
@@ -58,9 +57,8 @@ type Client struct {
 
 	toolEvents bool // the protocol-v2 chat events: tool start/end chunks and the turn's usage (EmitToolEvents)
 
-	extMu     sync.Mutex
-	extLoader func() []ai.ExternalMCPServer    // the Quick Connections of a turn (external.go); nil = none
-	extDefs   map[string][]externalmcp.ToolDef // listings, per server, for the client's life
+	extLoader   func() []ai.ExternalMCPServer // the Quick Connections of a turn (external.go); nil = none
+	extListings map[string]externalListing    // tools/list per server, for the client's life
 }
 
 // EmitToolEvents switches on the protocol-v2 chat events: Query reports
@@ -149,8 +147,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			return
 		}
 		if c.toolEvents && usage != nil {
-			textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
-				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}}
+			// The answer is complete: a stop now drops the usage, nothing else.
+			select {
+			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
+				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 	return textCh, errCh, sidCh
@@ -386,7 +388,7 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, providers.OllamaFailure(resp.StatusCode, string(b),
-			fmt.Errorf("model returned HTTP %d: %s", resp.StatusCode, string(b)))
+			logredact.Errorf("model returned HTTP %d: %s", resp.StatusCode, logredact.Text(b)))
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, providers.OllamaRequestFailure(fmt.Errorf("decoding model response: %w", err))

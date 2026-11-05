@@ -227,11 +227,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		usage, text, ok := streamSSE(ctx, resp.Body, textCh, errCh)
 		recordOllamaCall(ctx, c.model, start, usage, systemPrompt+userMessage, text, ok)
 		if ok && c.chatEvents && usage != nil {
+			// The answer is complete: a stop now drops the usage, nothing else.
 			select {
 			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
 				InputTokens: usage.PromptTokens, OutputTokens: usage.CompletionTokens}}:
 			case <-ctx.Done():
-				errCh <- providers.OllamaRequestFailure(ctx.Err())
 			}
 		}
 	}()
