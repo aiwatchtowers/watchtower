@@ -205,14 +205,20 @@ package enum AutomationQueries {
     /// the card draws instead of an image (a card never fetches one). A
     /// user the local table does not know is absent, so the block draws
     /// the initials of the name the recipe wrote. A `blocks_json` that is
-    /// not JSON names nobody (the card draws its unreadable fallback).
+    /// not JSON, or a block that is not an object, names nobody (the card
+    /// draws its unreadable fallback). Every `json_extract` on a block is
+    /// behind `json_each`'s own `b.type = 'object'` (not `json_type(b.value)`,
+    /// which parses a text element as JSON too): a text element would fail
+    /// the whole read, and SQLite may evaluate the join before the WHERE.
     package static func artifactPeople(_ db: Database) throws -> [String: String] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT DISTINCT u.id, u.name, u.display_name, u.real_name
             FROM automation_outputs o,
                 json_each(CASE WHEN json_valid(o.blocks_json) THEN o.blocks_json ELSE '{}' END, '$.blocks') b
-            JOIN users u ON u.id = json_extract(b.value, '$.avatar.slack_user')
-            WHERE \(openInbox) AND o.blocks_json != '' AND json_extract(b.value, '$.type') = 'person'
+            JOIN users u ON u.id = CASE WHEN b.type = 'object'
+                THEN json_extract(b.value, '$.avatar.slack_user') END
+            WHERE \(openInbox) AND o.blocks_json != ''
+              AND CASE WHEN b.type = 'object' THEN json_extract(b.value, '$.type') END = 'person'
             """)
         var names: [String: String] = [:]
         for row in rows {

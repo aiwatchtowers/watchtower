@@ -196,6 +196,32 @@ final class ArtifactCardTests: XCTestCase {
         XCTAssertEqual(people, ["acme:U1": "Colleague A", "acme:U3": "colleague.c"])
     }
 
+    /// A valid document whose `blocks` holds a string and a number (and an
+    /// avatar that is not an object) next to a healthy card: the people
+    /// read and the whole Inbox feed still read, and the healthy card's
+    /// person still resolves.
+    func testArtifactPeopleSurvivesNonObjectBlocks() throws {
+        let queue = try TestDatabase.create()
+        let healthy = try queue.write { db -> Int64 in
+            try db.execute(sql: "INSERT INTO users (id, name, display_name) VALUES ('acme:U1', 'colleague.a', 'Colleague A')")
+            let automationID = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automationID)
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: automationID, runID: run, createdAt: "2026-10-16T09:00:00Z",
+                blocksJSON: #"{"v":1,"blocks":["broken",42,{"type":"person","name":"X","avatar":"acme:U1"}]}"#)
+            return try TestDatabase.insertAutomationOutput(
+                db, automationID: automationID, runID: run, createdAt: "2026-10-16T10:00:00Z",
+                blocksJSON: #"{"v":1,"blocks":[{"type":"person","name":"Someone","avatar":{"slack_user":"acme:U1"}}]}"#)
+        }
+        XCTAssertEqual(try queue.read { db in try AutomationQueries.artifactPeople(db) }, ["acme:U1": "Colleague A"])
+        let snapshot = try queue.read { db in
+            try InboxFeedQueries.read(db, nowUTC: "2026-10-16T12:00:00Z", dayLimit: 1)
+        }
+        XCTAssertEqual(snapshot.outputs.count, 2)
+        XCTAssertEqual(snapshot.outputs.first?.id, healthy)
+        XCTAssertEqual(snapshot.artifactPeople, ["acme:U1": "Colleague A"])
+    }
+
     // MARK: - Texts
 
     func testLivingCardSourceLineSaysUpdated() {
