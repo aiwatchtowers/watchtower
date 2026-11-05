@@ -435,24 +435,18 @@ struct AutomationEditorPanel: View {
     /// over the footer that saves or confirms them. It follows the draft:
     /// bytes changed meanwhile are checked again before any press lands.
     @ViewBuilder private var saveReview: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Review and save").font(.headline)
-                Spacer()
-                Button("Cancel", role: .cancel) { reviewingSave = false }
-                    .buttonStyle(.kitQuiet)
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding([.horizontal, .top], Spacing.large)
-            if let key, let form {
-                let column = columnModel(form, key: key)
-                AutomationDraftColumn(model: column, keepAuto: keepAutoBinding(key), onDryRunAgain: nil)
+        if let key, let form {
+            let column = columnModel(form, key: key)
+            AutomationSaveReview(column: column, keepAuto: keepAutoBinding(key)) {
                 footer(form, key: key, column: column, step: nil)
-            } else {
-                centered { ProgressView().controlSize(.small) }
+            } onCancel: {
+                reviewingSave = false
             }
+        } else {
+            let size = AutomationSaveReview<EmptyView>.size
+            centered { ProgressView().controlSize(.small) }
+                .frame(width: size.width, height: size.height)
         }
-        .frame(width: 460, height: 620)
     }
 
     /// The aside line with **Restore**, and why the last save, check or
