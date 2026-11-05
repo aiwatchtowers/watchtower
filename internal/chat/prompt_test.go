@@ -431,7 +431,8 @@ func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
 
 	for _, want := range []string{
 		"publish private pages, slide decks and documents to the owner's claude.ai account",
-		"is published to claude.ai instead of an in-app html or document artifact, unless the owner asks to keep it in the app",
+		"Pages, decks and documents stay in-app html or document artifacts by default",
+		"Publish to claude.ai only when the owner explicitly asks for it",
 		"Artifact tool",
 		"Claude Docs",
 		"Write the page's source file with the Write tool at an absolute path inside " + testPublishDir + " only",
