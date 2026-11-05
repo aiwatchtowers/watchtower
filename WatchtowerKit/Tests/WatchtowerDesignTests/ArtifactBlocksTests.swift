@@ -1,5 +1,5 @@
 import SwiftUI
-import WatchtowerDesign
+@testable import WatchtowerDesign
 import XCTest
 
 /// The block document decoder over the Swift-only samples
@@ -277,6 +277,208 @@ final class ArtifactBlocksTests: XCTestCase {
         XCTAssertEqual(Tone.artifact(.warning), Tone.warning)
         XCTAssertEqual(Tone.artifact(.danger), Tone.error)
         XCTAssertEqual(Tone.artifact(.accent), .accentColor)
+    }
+}
+
+// MARK: - Parity with Go's shared fixture
+
+/// The Kit against `internal/automations/blocks/testdata/blocks_cases.json`
+/// (Go is its only writer, plan Task 13): every Go-canonical document
+/// decodes with the card's stored actions (`card_actions`, as
+/// `automation_outputs.actions_json` holds them), every action's hash and
+/// press order are Go's, refs come in document order, and newer versions
+/// are unsupported.
+extension ArtifactBlocksTests {
+    private struct GoCase {
+        let name: String
+        let canonical: String
+        /// The card's own actions, decoded from the stored `card_actions`.
+        let cardActions: [ArtifactAction]
+        let labels: [String]
+        let hashes: [String]
+        /// Every list row's `ref` in the canonical document, in order.
+        let refs: [Samples.Ref]
+    }
+
+    private static func goFixture() throws -> [String: Any] {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // WatchtowerDesignTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerKit
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/automations/blocks/testdata/blocks_cases.json")
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    }
+
+    private static func goCases() throws -> [GoCase] {
+        let valid = try XCTUnwrap(try goFixture()["valid"] as? [[String: Any]])
+        return try valid.map { item in
+            let canonical = try XCTUnwrap(item["canonical"] as? String)
+            let document = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(canonical.utf8)) as? [String: Any])
+            let rows = (document["blocks"] as? [[String: Any]] ?? []).flatMap { $0["rows"] as? [Any] ?? [] }
+            let refs = rows.compactMap { ($0 as? [String: Any])?["ref"] as? [String: Any] }.map {
+                Samples.Ref(kind: $0["kind"] as? String ?? "", id: ($0["id"] as? NSNumber)?.int64Value ?? 0)
+            }
+            let name = try XCTUnwrap(item["name"] as? String)
+            guard case let .actions(cardActions) = ArtifactDocument.decodeActions(
+                try XCTUnwrap(item["card_actions"] as? String)) else {
+                XCTFail("\(name): Go's stored card actions do not decode")
+                throw XCTSkip("undecodable card actions")
+            }
+            return GoCase(
+                name: name,
+                canonical: canonical,
+                cardActions: cardActions,
+                labels: try XCTUnwrap(item["actions"] as? [String]),
+                hashes: try XCTUnwrap(item["action_hashes"] as? [String]),
+                refs: refs
+            )
+        }
+    }
+
+    private func decoded(_ goCase: GoCase, file: StaticString = #filePath, line: UInt = #line) throws
+        -> ArtifactDocument {
+        guard case let .document(document) = ArtifactDocument.decode(goCase.canonical) else {
+            XCTFail("\(goCase.name): Go's canonical document does not decode", file: file, line: line)
+            throw XCTSkip("undecodable Go case")
+        }
+        return document
+    }
+
+    func testEveryGoCanonicalDocumentDecodes() throws {
+        let cases = try Self.goCases()
+        XCTAssertGreaterThanOrEqual(cases.count, 10)
+        for goCase in cases {
+            XCTAssertEqual(ArtifactDocument.decode(goCase.canonical).isDocument, true, goCase.name)
+        }
+    }
+
+    /// Go `FlattenActions`: the card's own actions first, then each block
+    /// action in the order the Kit flattens them.
+    func testFlattenedOrderMatchesGo() throws {
+        let cases = try Self.goCases()
+        XCTAssertTrue(cases.contains { !$0.cardActions.isEmpty })
+        for goCase in cases {
+            let labels = try decoded(goCase).flattenedActions(cardActions: goCase.cardActions).map(\.label)
+            XCTAssertEqual(labels, goCase.labels, goCase.name)
+        }
+    }
+
+    /// `ArtifactAction.hash` is Go `blocks.ActionHash` for every action, the
+    /// card's own and the blocks' (escaping — the stored card actions are
+    /// HTML-escaped, the hashed form is not —, field order, omitted empties,
+    /// `data` bytes and workbench forms).
+    func testActionHashMatchesGo() throws {
+        var checked = 0
+        for goCase in try Self.goCases() {
+            let actions = try decoded(goCase).flattenedActions(cardActions: goCase.cardActions)
+            XCTAssertEqual(actions.map(\.hash), goCase.hashes, goCase.name)
+            checked += actions.count
+        }
+        XCTAssertGreaterThanOrEqual(checked, 10)
+    }
+
+    /// A reply's `data` reads back as the bytes Go stored (`json.Marshal`).
+    func testReplyDataKeepsGoBytes() throws {
+        let goCase = try XCTUnwrap(try Self.goCases().first { $0.name == "reply data bytes" })
+        let action = try XCTUnwrap(try decoded(goCase).flattenedActions(cardActions: []).first)
+        XCTAssertEqual(action.payload, .reply(value: "v", dataJSON:
+            #"{"a":"\u003c\u0026\u003e","big":531995931301175800000,"f":1.5,"n":[1,{"b":null}]}"#))
+    }
+
+    /// An integer past Int64 reads as an NSDecimalNumber, whose `doubleValue`
+    /// misrounds: the bytes Go wrote must come back unchanged.
+    func testDecimalNumberKeepsGoDigits() throws {
+        let text = "[531995931301175800000,123456789012345680000,18446744073709552000]"
+        XCTAssertEqual(try GoJSON.marshal(try JSONSerialization.jsonObject(with: Data(text.utf8))), text)
+    }
+
+    func testRefsMatchGo() throws {
+        let cases = try Self.goCases()
+        XCTAssertTrue(cases.contains { !$0.refs.isEmpty })
+        for goCase in cases {
+            let refs = try decoded(goCase).refs.map { Samples.Ref(kind: $0.kind.rawValue, id: $0.id) }
+            XCTAssertEqual(refs, goCase.refs, goCase.name)
+        }
+    }
+
+    func testGoUnsupportedDocumentsAreUnsupported() throws {
+        let unsupported = try XCTUnwrap(try Self.goFixture()["unsupported"] as? [[String: Any]])
+        XCTAssertFalse(unsupported.isEmpty)
+        for item in unsupported {
+            let data = try JSONSerialization.data(withJSONObject: try XCTUnwrap(item["document"]))
+            let version = try XCTUnwrap(item["version"] as? Int)
+            XCTAssertEqual(ArtifactDocument.decode(try XCTUnwrap(String(bytes: data, encoding: .utf8))),
+                           .unsupported(version: version), item["name"] as? String ?? "?")
+        }
+    }
+
+    /// The twin of Go's fixture-coverage test: every `ArtifactBlock` case and
+    /// every action kind appears in a Go-canonical case (the switches are
+    /// exhaustive, so a new case does not compile until it is listed here).
+    func testGoFixtureCoversEveryBlockAndActionKind() throws {
+        var blocks = Set<String>()
+        var kinds = Set<String>()
+        for goCase in try Self.goCases() {
+            let document = try decoded(goCase)
+            for block in document.blocks {
+                switch block {
+                case .heading: blocks.insert("heading")
+                case .text: blocks.insert("text")
+                case .list: blocks.insert("list")
+                case .table: blocks.insert("table")
+                case .person: blocks.insert("person")
+                case .metrics: blocks.insert("metrics")
+                case .link: blocks.insert("link")
+                case .actions: blocks.insert("actions")
+                }
+            }
+            kinds.formUnion(document.flattenedActions(cardActions: goCase.cardActions).map(Self.kindName))
+        }
+        XCTAssertEqual(blocks, ["heading", "text", "list", "table", "person", "metrics", "link", "actions"])
+        XCTAssertEqual(kinds, ["open", "chat", "agent", "reply", "target"])
+    }
+
+    private static func kindName(_ action: ArtifactAction) -> String {
+        switch action.kind {
+        case .open: "open"
+        case .chat: "chat"
+        case .agent: "agent"
+        case .reply: "reply"
+        case .target: "target"
+        }
+    }
+
+    /// Go's number layout through the real path: text Go's `json.Marshal`
+    /// wrote, read by JSONSerialization, written back unchanged. (Go's `-0`
+    /// is the known gap: JSONSerialization reads it as the integer 0.)
+    func testGoNumbersRoundTrip() throws {
+        let text = "[1.5,100,0.1,-2.25,0,123456789,100000000000000000000,1e+21,1.5e+300,0.000001,1e-7,"
+            + "1.25e-10,5e-324,9007199254740992]"
+        XCTAssertEqual(try GoJSON.marshal(try JSONSerialization.jsonObject(with: Data(text.utf8))), text)
+    }
+
+    /// Pins `GoJSON`'s known gap: Go's `-0` reads back as `0`. If this
+    /// starts failing, Foundation or the code changed: revisit the gap and
+    /// the comments that name it.
+    func testNegativeZeroIsTheKnownGap() throws {
+        XCTAssertEqual(try GoJSON.marshal(try JSONSerialization.jsonObject(with: Data("[-0]".utf8))), "[0]")
+    }
+
+    /// Go's string escaping: HTML characters only under `json.Marshal`;
+    /// `\b \f \n \r \t` as such, other controls `\u00XX`, U+2028/9 always.
+    func testGoStringEscaping() {
+        let text = "a\u{8}\u{c}\n\r\t\u{1}\u{7f}\"\\/<&>\u{2028}\u{2029}é"
+        XCTAssertEqual(GoJSON.string(text), #""a\b\f\n\r\t\u0001\#u{7f}\"\\/<&>\u2028\u2029é""#)
+        XCTAssertEqual(GoJSON.string(text, escapeHTML: true),
+                       #""a\b\f\n\r\t\u0001\#u{7f}\"\\/\u003c\u0026\u003e\u2028\u2029é""#)
+    }
+
+    /// `data` objects sort keys by bytes (Go map order), not by Swift's
+    /// string order, and keep booleans, nulls and integers.
+    func testGoMarshalSortsKeysByBytes() throws {
+        let value: [String: Any] = ["b": true, "Z": NSNull(), "é": 2, "a": [1, "x"]]
+        XCTAssertEqual(try GoJSON.marshal(value), #"{"Z":null,"a":[1,"x"],"b":true,"é":2}"#)
     }
 }
 

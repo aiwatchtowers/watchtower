@@ -67,7 +67,9 @@ public struct ArtifactAction: Equatable, Sendable {
         /// The first message for AI Chat.
         case chat(String)
         case agent(task: String, workbench: Workbench?)
-        /// `dataJSON` is the action's `data`, re-serialised with sorted keys; nil when absent.
+        /// `dataJSON` is the action's `data` as Go stored it (`json.Marshal`: keys
+        /// sorted, HTML-escaped), rebuilt by `GoJSON.marshal` — except a `-0`,
+        /// which reads back as `0` (`GoJSON`'s known gap); nil when absent.
         case reply(value: String, dataJSON: String?)
         case target(ArtifactTargetAction)
     }
@@ -460,10 +462,13 @@ enum ArtifactJSON {
         return .init(title: optionalString(object["title"]), columns: columns, rows: rows)
     }
 
+    /// Go writes a blank string cell as `{"text": ""}`: a cell's text, alone
+    /// of every text field, may be empty.
     private static func cell(_ value: Any) throws -> ArtifactTableCell {
         if let text = value as? String { return ArtifactTableCell(text: text) }
         let object = try dictionary(value)
-        return ArtifactTableCell(text: try string(object, "text"), tone: try optionalTone(object["tone"]),
+        guard let text = object["text"] as? String else { throw Unreadable() }
+        return ArtifactTableCell(text: text, tone: try optionalTone(object["tone"]),
                                  link: optionalString(object["link"]))
     }
 
@@ -544,11 +549,10 @@ enum ArtifactJSON {
         return integer(value).map { .id($0) }
     }
 
+    /// The stored bytes again: Go wrote `data` with `json.Marshal`, which
+    /// `GoJSON.marshal` reproduces, so the action hash can copy it.
     private static func dataJSON(_ value: Any?) throws -> String? {
         guard let value, !(value is NSNull) else { return nil }
-        let data = try JSONSerialization.data(withJSONObject: value,
-                                              options: [.sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed])
-        guard let text = String(bytes: data, encoding: .utf8) else { throw Unreadable() }
-        return text
+        return try GoJSON.marshal(value)
     }
 }

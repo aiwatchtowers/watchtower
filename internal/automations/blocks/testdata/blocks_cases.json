@@ -180,6 +180,7 @@
           }
         ]
       },
+      "card_actions": "[{\"label\":\"Open board\",\"kind\":\"link\",\"open\":\"https://example.com/board\",\"primary\":true},{\"label\":\"Snooze\",\"kind\":\"reply\",\"reply\":\"snooze\"}]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"heading\",\"text\":\"Open threads\",\"level\":2},{\"type\":\"text\",\"markdown\":\"Three threads wait for **you**. See [the board](https://example.com/board).\"},{\"type\":\"list\",\"title\":\"Waiting for me\",\"rows\":[{\"title\":\"Deploy plan\",\"subtitle\":\"colleague A asked 2 days ago\",\"badge\":{\"text\":\"2d\",\"tone\":\"danger\"},\"tone\":\"warning\",\"link\":\"https://example.com/thread/1\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"reply\",\"data\":{\"thread\":\"T-1\"},\"primary\":true},{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Answer the deploy plan\",\"intent\":\"Reply with the rollout dates\",\"parent\":12}},{\"label\":\"Open\",\"kind\":\"link\",\"open\":\"watchtower-nav://inbox\"}],\"ref\":{\"kind\":\"inbox_item\",\"id\":41}},{\"title\":\"Budget\",\"badge\":{\"text\":\"new\"},\"actions\":[],\"ref\":{\"kind\":\"track\",\"id\":7}},{\"title\":\"Idea\",\"actions\":[{\"label\":\"Discuss\",\"kind\":\"chat\",\"chat\":\"Tell me about this idea\"}],\"ref\":{\"kind\":\"idea\",\"id\":3}}],\"empty\":\"All clear\"},{\"type\":\"table\",\"title\":\"Tickets\",\"columns\":[{\"title\":\"Key\",\"align\":\"leading\"},{\"title\":\"Hours\",\"align\":\"trailing\"}],\"rows\":[[{\"text\":\"ACME-1\"},{\"text\":\"26\",\"tone\":\"danger\",\"link\":\"https://example.com/ACME-1\"}],[{\"text\":\"ACME-2\"},{\"text\":\"3\"}]]},{\"type\":\"person\",\"name\":\"Colleague A\",\"role\":\"Release manager\",\"avatar\":{\"slack_user\":\"acme:U0000000A\"},\"lines\":[{\"text\":\"Asked about the rollout\"},{\"text\":\"Waiting 2 days\",\"tone\":\"warning\"}],\"link\":\"https://example.com/people/a\"},{\"type\":\"metrics\",\"items\":[{\"label\":\"Open\",\"value\":\"12\",\"tone\":\"info\",\"hint\":\"Threads still open\"},{\"label\":\"Done\",\"value\":\"4\"}]},{\"type\":\"link\",\"title\":\"Release notes\",\"url\":\"https://example.com/notes\",\"subtitle\":\"Draft for 1.2\"},{\"type\":\"actions\",\"actions\":[{\"label\":\"Fix it\",\"kind\":\"agent\",\"agent\":{\"task\":\"Fix the failing build\",\"workbench\":3},\"primary\":true},{\"label\":\"Ask\",\"kind\":\"agent\",\"agent\":{\"task\":\"Summarise\",\"workbench\":\"acme\"}}]}]}",
       "plain_text": "Open threads\n\nThree threads wait for **you**. See [the board](https://example.com/board).\n\nWaiting for me\n- Deploy plan — colleague A asked 2 days ago [2d]\n- Budget [new]\n- Idea\n\nTickets\nKey | Hours\nACME-1 | 26\nACME-2 | 3\n\nColleague A — Release manager\nAsked about the rollout\nWaiting 2 days\n\nOpen: 12\nDone: 4\n\nRelease notes (https://example.com/notes)",
       "actions": [
@@ -211,6 +212,7 @@
         "title": "Weekly digest",
         "blocks": []
       },
+      "card_actions": "[]",
       "canonical": "{\"v\":1,\"blocks\":[]}",
       "plain_text": "",
       "actions": [],
@@ -254,6 +256,7 @@
           }
         ]
       },
+      "card_actions": "[]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"heading\",\"text\":\"Today\",\"level\":1},{\"type\":\"list\",\"rows\":[],\"empty\":\"Nothing here\"},{\"type\":\"table\",\"columns\":[{\"title\":\"A\",\"align\":\"leading\"}],\"rows\":[]},{\"type\":\"person\",\"name\":\"Colleague B\",\"lines\":[]},{\"type\":\"list\",\"rows\":[{\"title\":\"One\",\"actions\":[]}],\"empty\":\"Nothing here\"}]}",
       "plain_text": "Today\n\nNothing here\n\nA\n\nColleague B\n\n- One",
       "actions": [],
@@ -286,6 +289,7 @@
           }
         ]
       },
+      "card_actions": "[]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"heading\",\"text\":\"Padded\",\"level\":1},{\"type\":\"text\",\"markdown\":\"body\"},{\"type\":\"list\",\"title\":\"t\",\"rows\":[{\"title\":\"row\",\"subtitle\":\"sub\",\"actions\":[]}],\"empty\":\"Nothing here\"}]}",
       "plain_text": "Padded\n\nbody\n\nt\n- row — sub",
       "actions": [],
@@ -319,6 +323,7 @@
           }
         ]
       },
+      "card_actions": "[]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Send the reply\",\"actions\":[],\"ref\":{\"kind\":\"action\",\"id\":5}},{\"title\":\"Call colleague A\",\"actions\":[],\"ref\":{\"kind\":\"reminder\",\"id\":9}}],\"empty\":\"Nothing here\"}]}",
       "plain_text": "- Send the reply\n- Call colleague A",
       "actions": [],
@@ -353,6 +358,7 @@
           }
         ]
       },
+      "card_actions": "[{\"label\":\"Task\",\"kind\":\"target\",\"target\":{\"title\":\"Card task\"},\"primary\":true}]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Follow up\"},\"primary\":true}]}]}",
       "plain_text": "",
       "actions": [
@@ -435,6 +441,7 @@
           }
         ]
       },
+      "card_actions": "[{\"label\":\"C1\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true},{\"label\":\"C2\",\"kind\":\"chat\",\"chat\":\"x\"}]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"B1\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true}]},{\"type\":\"list\",\"rows\":[{\"title\":\"r1\",\"actions\":[{\"label\":\"R1a\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true},{\"label\":\"R1b\",\"kind\":\"chat\",\"chat\":\"x\"}]},{\"title\":\"r2\",\"actions\":[]},{\"title\":\"r3\",\"actions\":[{\"label\":\"R3a\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true}]}],\"empty\":\"Nothing here\"},{\"type\":\"actions\",\"actions\":[{\"label\":\"B2\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true},{\"label\":\"B3\",\"kind\":\"chat\",\"chat\":\"x\"}]}]}",
       "plain_text": "- r1\n- r2\n- r3",
       "actions": [
@@ -487,6 +494,7 @@
           }
         ]
       },
+      "card_actions": "[]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"text\",\"markdown\":\"a <b> & c > d\"},{\"type\":\"table\",\"columns\":[{\"title\":\"<x>\",\"align\":\"leading\"}],\"rows\":[[{\"text\":\"\"}],[{\"text\":\"&\"}]]}]}",
       "plain_text": "a <b> & c > d\n\n<x>\n&",
       "actions": [],
@@ -511,6 +519,7 @@
         ],
         "priority": "low"
       },
+      "card_actions": "[]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"metrics\",\"items\":[{\"label\":\"Δ\",\"value\":\"−3 %\"}]}]}",
       "plain_text": "Δ: −3 %",
       "actions": [],
@@ -522,6 +531,12 @@
       "built_in": false,
       "input": {
         "title": "Card / <&>",
+        "actions": [
+          {
+            "label": "Card <&>",
+            "chat": "a\u2028\u0007 / <&>"
+          }
+        ],
         "blocks": [
           {
             "type": "list",
@@ -542,15 +557,18 @@
           }
         ]
       },
+      "card_actions": "[{\"label\":\"Card \\u003c\\u0026\\u003e\",\"kind\":\"chat\",\"chat\":\"a\\u2028\\u0007 / \\u003c\\u0026\\u003e\",\"primary\":true}]",
       "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"a\\u2028b\\u0007c / <&>\",\"actions\":[{\"label\":\"Task <&>\",\"kind\":\"target\",\"target\":{\"title\":\"t\\u2028\\u0007 / <&>\",\"intent\":\"i\\u2029\\u0007 / <&>\"},\"primary\":true}]}],\"empty\":\"Nothing here\"}]}",
       "plain_text": "- a\u2028b\u0007c / <&>",
       "actions": [
+        "Card <&>",
         "Task <&>"
       ],
       "action_hashes": [
+        "9dd63205adb09a72",
         "a37c5ef6cfadaea4"
       ],
-      "content_hash": "6366b594ffe2aef4dfb2d78248da26e3bd5e2baba980282452500072b90b1033"
+      "content_hash": "441b01e7d7587abc04d703bd654754eaf8d476bf80630101fb5ac2b5b93d8927"
     },
     {
       "name": "reply data bytes",
@@ -566,6 +584,7 @@
                 "reply": "v",
                 "data": {
                   "a": "<&>",
+                  "big": 531995931301175800000,
                   "f": 1.5,
                   "n": [
                     1,
@@ -579,15 +598,16 @@
           }
         ]
       },
-      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"v\",\"data\":{\"a\":\"\\u003c\\u0026\\u003e\",\"f\":1.5,\"n\":[1,{\"b\":null}]},\"primary\":true}]}]}",
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"v\",\"data\":{\"a\":\"\\u003c\\u0026\\u003e\",\"big\":531995931301175800000,\"f\":1.5,\"n\":[1,{\"b\":null}]},\"primary\":true}]}]}",
       "plain_text": "",
       "actions": [
         "Reply"
       ],
       "action_hashes": [
-        "6fa8d616cda2eba4"
+        "31a9faffb8f40ef3"
       ],
-      "content_hash": "d8737cba056fd2995eb9da5d1ff91b62113e65ebc3efcd4967896e19c15e4163"
+      "content_hash": "6cbcc3f508c9b92c26f23a6a91667386b342e01258855bad515d3ce17ca8b42a"
     }
   ],
   "invalid": [

@@ -20,8 +20,8 @@ import (
 
 // The shared fixture of Inbox builder A (spec, Test strategy): Go is its
 // only writer; the Swift decoder reads it (plan Task 13). -update rewrites
-// the computed fields of the valid cases (canonical, plain_text, actions,
-// action_hashes, content_hash); inputs and the invalid cases' messages are
+// the computed fields of the valid cases (card_actions, canonical,
+// plain_text, actions, action_hashes, content_hash); inputs and the invalid cases' messages are
 // written by hand.
 var update = flag.Bool("update", false, "rewrite the computed fields of testdata/blocks_cases.json")
 
@@ -40,6 +40,7 @@ type validCase struct {
 	Name         string          `json:"name"`
 	BuiltIn      bool            `json:"built_in"`
 	Input        json.RawMessage `json:"input"`
+	CardActions  string          `json:"card_actions"`
 	Canonical    string          `json:"canonical"`
 	PlainText    string          `json:"plain_text"`
 	Actions      []string        `json:"actions"`
@@ -91,6 +92,7 @@ func exported(t *testing.T, input json.RawMessage) map[string]any {
 // cardResult is what the SDK derives from one output.inbox argument.
 type cardResult struct {
 	doc       blocks.Document
+	stored    []byte // the card's own actions as automation_outputs.actions_json holds them
 	canonical []byte
 	plain     string
 	flat      []db.InboxAction
@@ -113,6 +115,16 @@ func card(input map[string]any, builtIn bool) (cardResult, error) {
 		}
 	}
 	opts.CardActions = len(actions)
+	// db.FinishAutomationRun (commitRunTx) writes actions_json as json.Marshal of the
+	// card's actions, [] when there are none (HTML-escaped, unlike the
+	// canonical document): the Swift parity test decodes these bytes.
+	if actions == nil {
+		actions = []db.InboxAction{}
+	}
+	stored, err := json.Marshal(actions)
+	if err != nil {
+		return cardResult{}, err
+	}
 	doc, err := blocks.Validate(fn, input["blocks"], opts)
 	if err != nil {
 		return cardResult{}, err
@@ -127,6 +139,7 @@ func card(input map[string]any, builtIn bool) (cardResult, error) {
 	plain := blocks.PlainText(doc, plainTextCap)
 	return cardResult{
 		doc:       doc,
+		stored:    stored,
 		canonical: canonical,
 		plain:     plain,
 		flat:      blocks.FlattenActions(actions, &doc),
@@ -152,9 +165,12 @@ func TestFixture_Valid(t *testing.T) {
 				hashes = append(hashes, blocks.ActionHash(a))
 			}
 			if *update {
-				c.Canonical, c.PlainText, c.Actions, c.ActionHashes, c.ContentHash =
-					string(r.canonical), r.plain, labels, hashes, r.hash
+				c.CardActions, c.Canonical, c.PlainText, c.Actions, c.ActionHashes, c.ContentHash =
+					string(r.stored), string(r.canonical), r.plain, labels, hashes, r.hash
 				return
+			}
+			if string(r.stored) != c.CardActions {
+				t.Errorf("card actions =\n%s\nwant\n%s", r.stored, c.CardActions)
 			}
 			if string(r.canonical) != c.Canonical {
 				t.Errorf("canonical =\n%s\nwant\n%s", r.canonical, c.Canonical)
