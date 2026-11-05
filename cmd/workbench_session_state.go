@@ -244,10 +244,12 @@ func recordSubagentToolRun(database *db.DB, rowID, workbenchID int64, sessionID,
 // codexStateEvents are the Codex events `session-state --agent codex`
 // records (spec 2026-10-12 §6.3). Codex has no Notification or StopFailure,
 // so a payload naming one records nothing (a codex row never gets
-// agent_failed_at), and its Stop is the drift check's.
+// agent_failed_at), and its Stop is the drift check's. Interrupt (the
+// owner's Esc) ends the turn as a Stop does, with no drift check (board
+// #959).
 var codexStateEvents = map[string]bool{
 	"UserPromptSubmit": true, "PermissionRequest": true, "PostToolUse": true,
-	"SubagentStart": true, "SubagentStop": true,
+	"SubagentStart": true, "SubagentStop": true, "Interrupt": true,
 }
 
 // runCodexSessionStateHook is `workbench session-state --agent codex`: the
@@ -297,6 +299,8 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
 	turn.transcriptPath = ""
 	switch {
+	case in.Event == "Interrupt":
+		err = recordCodexStopState(database, row, in, at)
 	case in.agentTurnEvent():
 		err = recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Codex)
 	case subagentToolRun:

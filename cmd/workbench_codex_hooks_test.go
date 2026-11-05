@@ -424,6 +424,28 @@ func TestProj11_CodexRowNeverGetsFailure(t *testing.T) {
 	assert.Nil(t, s.AgentFailure)
 }
 
+// Interrupt (the owner's Esc; codex fires no Stop then) ends the turn as the
+// Stop does: `waiting`, with no error and the open subagent turns as the
+// count; another session's Interrupt writes nothing (board #959).
+func TestProj11_CodexInterruptEndsTheTurn(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+
+	before := rowSnapshot(t, database, row)
+	out, errOut := runCodexHook(t, codexPayload(t, "interrupt", map[string]any{"session_id": codexExecSession}),
+		"session-state", "--agent", "codex")
+	assert.Empty(t, out)
+	assertForeignNote(t, errOut, codexTUISession, row, "Interrupt")
+	assert.Equal(t, before, rowSnapshot(t, database, row), "a foreign session's Interrupt")
+
+	runCodexState(t, string(codexHookFixture(t, "interrupt")))
+
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWaiting, s.AgentState.String)
+	assert.Nil(t, s.AgentFailure)
+	assert.False(t, s.Background.Valid, "no open subagent turn, no count")
+}
+
 // The Stop gate (HasCoreStateHooks reads settings.local.json) is true for a
 // codex row by construction (spec §6.3).
 func TestProj11_CodexStopGateTrueWithoutSettingsFile(t *testing.T) {
