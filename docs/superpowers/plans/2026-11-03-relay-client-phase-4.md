@@ -69,13 +69,15 @@ None blocks a task here; each blocks launch or the manual checks. Spec §12 p. 5
   - **latency stamping on CloudKit** (Task 14, Open decision 11): one small row per ordered action, on the app's own replica;
   - **the "runs over Relay" banner**, only on a phone told `hub_on_relay` (S51), which no Mac can send before launch;
   - **the alert registrar's rule** (Task 18): no change on a link that never switched, foreground retry included;
-  - **the guide page `iphone-relay.md`** (Task 16, Open decision 16), which opens by saying Relay is not in the current version, and no Learn card;
+  - **the guide's Relay text** (Task 16, Open decision 16): the new page `iphone-relay.md`, a section each on `iphone-alerts.md` and `iphone-not-delivered.md`, and a line on `iphone.md` and `README.md`. Every Relay passage a phone user can read opens with "Relay isn't in the current version of Watchtower for iPhone." The guide is embedded in the binary, so all of it reaches users;
+  - **the Diagnostics text on `iphone.md`** (Task 16), which describes iCloud timings only;
+  - **no Learn card about Relay on the phone:** the Go hub's `iphone-alerts-relay` card leaves until launch (Task 16);
   - the push routing (Task 11): a CloudKit push is classified as today, and a payload with `e` that CloudKit never sends falls to the generic notification;
   - `LinkRecord`'s new optional keys, absent on every CloudKit link.
 
   It gets **no** `MacDetailView`: the Macs list and its Forget action stay exactly as today (Task 8).
 - **CloudKit unchanged.** Every existing Kit and phone test keeps its assertions, except the battery section's place (Task 15) and `HubRoute.pushOrigin` on the relay (Task 11), both named there. `CloudSyncTransport` keeps its three requirements.
-- **Desktop and Go hub.** No file under `WatchtowerDesktop/Sources` changes, and no Go production file. The one Go addition is `internal/hub/actions/handlers/nudge_fixture_test.go` (Task 14). Hub gaps are listed under "Hub gaps for the Go hub session", never planned as tasks here (ask #802).
+- **Desktop and Go hub.** No file under `WatchtowerDesktop/Sources` changes, and no Go production file. The Go additions are two test files: `internal/hub/actions/handlers/nudge_fixture_test.go` (Task 14) and `docs/guide/relay_dark_test.go` (Task 16). Hub gaps are listed under "Hub gaps for the Go hub session", never planned as tasks here (ask #802).
 - **Inventory guards** (PROJ-16, PROJ-21) are byte-identical at the end of every task: `git diff --stat origin/feature/relay-client-next -- WatchtowerKit/Tests/WatchtowerSyncTests/PermissionAllowRuleTests.swift WatchtowerMobile/Tests/PermissionCardTests.swift WatchtowerMobile/Tests/SessionInputWiringTests.swift` prints nothing.
 - **Wire bytes.** The E2E vectors stay frozen (no `make e2e-vectors`). The one new contract section, `action_effect_kinds` in `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json`, is read by both sides in the task that adds it.
 - **Secrets.** Never logged, never in an error's description: the transaction JWS, the APNs token, the account id, the relay's `Error.message`, the push's envelope. Logs (`RelayAccount`, `RelayPush`, `NotifyService`) carry op names, codes and counts. New Keychain item `relay.account`: `KeyAccess.afterFirstUnlock`, never synchronizable, the app's private group, never the alerts group.
@@ -96,7 +98,7 @@ None blocks a task here; each blocks launch or the manual checks. Spec §12 p. 5
 
 ## Review Focus
 
-1. **A purchase survives anything between Apple and the relay.** The app dies after `purchase` and before `submit_transaction`; the relay is unreachable; the JWS is refused. Expect: never finished before the relay's entitlement answer, resubmitted from `Transaction.unfinished` at the next launch, never a remembered JWS, and the owner told in plain words. Task 6: `testAKilledPurchaseIsSubmittedAtTheNextLaunch`, `testAnUnreachableRelayLeavesTheTransactionUnfinished`, `testARestoreSubmitsAFreshTransactionNeverACachedOne`.
+1. **A purchase survives anything between Apple and the relay.** The app dies after `purchase` and before `submit_transaction`; the relay is unreachable; the JWS is refused. Expect: never finished before the relay's entitlement answer, resubmitted from `Transaction.unfinished` at the next launch, never a remembered JWS, and the owner told in plain words, also after a killed app, and on the Relay card as well as on the subscription screen. Task 6: `testAKilledPurchaseIsSubmittedAtTheNextLaunch`, `testAnUnreachableRelayLeavesTheTransactionUnfinished`, `testARestoreSubmitsAFreshTransactionNeverACachedOne`, `testARefusalAtLaunchIsShownAndSurvivesLoadProduct`, `testAnOwnerPressIsNotBoundByTheRefusedSet`. Task 7: `testAnUnconfirmedPurchaseIsNeverNotSubscribed`.
 2. **A lapse or a move strands no Mac.** The phone was offline when the control went out, the socket is closed, or iCloud is unreachable. Expect: learned from `get_account_state` at the next launch, foreground or connect; the iCloud request stays queued and goes out once per Mac; every unechoed action is resent or listed. Task 3: `testALapseAsksForCloudKitOnce`. Task 5: `testALapsedHubAsksOverICloudAndResumesAfterARelaunch`. Task 6: `testAMoveLearnedFromAccountStateLapsesEveryRelayMac`.
 3. **A foreign or broken push never loses the notification or reaches the network.** Malformed `e`, wrong base64 flavour, an unknown hub, an epoch no longer held, a CloudKit payload. Expect: the notification as it arrived; a CloudKit payload classified as today. Task 11: `testBrokenPushesAreNotAlerts` (table). Task 12: `testAnInlineAlertOpensWithNoNetwork`.
 4. **A timing never lies about the good-network goal.** An action that waited offline, an answer other than `applied`, a route change or a relaunch midway, a kind with no effect slice. Expect: no sample, and no pending row left. Task 14: `testAQueuedOfflineWaitIsNotCounted`, `testARouteChangeDropsThePendingRow`, `testAnUnfinishedRowExpiresAfterSixtySeconds`.
@@ -137,7 +139,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | G2, a desktop hub after a move with the old phone gone: checked, and fixed if needed | Go hub session |
 | G3, the duplicate alert at a switch: fixed or accepted (Open decision 10) | Go hub session, owner's ruling |
 | The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together**, pinned by the `device_payload` fixture case on both sides | Go hub session, approved by name in Open decision 1 |
-| The Learn card `iphone-relay-subscribe`, and the "not in the current version" line out of `iphone-relay.md`, in the release that sets the origin | Relay client session |
+| The Learn cards `iphone-relay-subscribe` and `iphone-alerts-relay`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
 | Manual checks M1–M10 on staging | Owner, Open decision 14 |
@@ -182,6 +184,7 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 | | Grace | "Active. Check your payment in the App Store." | S05 |
 | | Ended | "Your subscription ended." **Subscribe** | S06 |
 | | Moved | "Your subscription moved to another iPhone." **Restore Purchases** | S41 |
+| | Purchase not confirmed | "Subscription" "Not confirmed"; "Your purchase isn't confirmed yet." › opens the subscription | S55 |
 | | Busy | Not reachable: the card has no action of its own but Retry, and Retry shows Loading | note |
 | Macs: a Mac's row | iCloud; Relay with who and when; a lapse; switching | "iCloud" (mockup); "Relay · switched by this iPhone, 10:42" (mockup); "Relay · switched by another iPhone, 10:42"; "iCloud · your subscription ended, 10:42"; "Switching…" | S07 |
 | | Narrow | the longest line | S07 narrow |
@@ -191,6 +194,7 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 | | Mac needs an update (mockup) | "Update Watchtower on this Mac to use Relay" | S12 |
 | | Relay-only hub | Relay row only, "This hub works over Relay only"; on a lapse "This hub needs Relay" (spec §8) | S13 |
 | | The relay gave no answer, iCloud route | Relay row disabled, "Couldn't reach Relay." | S54 |
+| | Purchase not confirmed | Relay row "Your purchase isn't confirmed yet." › opens the subscription | S56 |
 | | Three Macs in slots | "Your subscription already has 3 Macs." **Manage Macs** | S14 |
 | | A refused iCloud request | a `TransportRequestRefusal` line with **Try Again** on the iCloud row | S49 |
 | | No answer in 24 h | "Work Mac didn't answer for a day, so nothing changed. Try again when it's back." **Try Again**; after a lapse "Work Mac didn't answer for a day. It moves to iCloud when it's back." | S52 |
@@ -516,6 +520,8 @@ final class RelayAccountCenter {
     private(set) var phase: Phase
     private(set) var purchase: PurchaseState
     private(set) var updateRequired: Bool
+    /// True while a transaction Apple sold stays unfinished with no entitlement answer. Cleared only by an entitlement answer.
+    private(set) var unconfirmedPurchase: Bool
     /// `TransportFollowerPolicy.lapseReason` on `.free` and `.moved`; nil while paying or unknown.
     var switchReason: String? { get }
     func start()            // the event loop, the unfinished sweep, the updates task, first read; nothing without an identity
@@ -531,7 +537,9 @@ protocol RelayLapseTarget: AnyObject { @MainActor func lapseRelay() async; @Main
 
 **Purchase:** `accountID()` (it may create `relay_auth` and register: the owner's press is the first use, spec §4; a failure is `.accountFailed` with nothing charged, `.updateRequired` on an attestation refusal) → `purchase(accountToken:)` → on `.purchased`, `submit(jws:)` → `finish` only after a definite relay answer → `refresh()`.
 - `.pending` shows `pending`; `.cancelled` returns to `ready`; `.unverified` shows `refused`.
-- Finish only on an entitlement answer (Open decision 19). Every refusal leaves the row in `Transaction.unfinished`, and the state shows why. **The bound:** a refused transaction id is kept in memory and not sent again in this process; the next launch sends it once. An unreachable relay is not a refusal and stays on the foreground sweep. **The 10-minute window:** a `Transaction.unfinished` JWS keeps its old `signedDate`, which is enough for this account's own purchase, which has no window. A move needs a fresh one, so a refused move passes only through **Restore** (`AppStore.sync()`), as S27 says.
+- Finish only on an entitlement answer (Open decision 19). Every refusal leaves the row in `Transaction.unfinished`, and the state shows why. **The bound holds for the automatic paths only** (the sweep and `updates()`): a refused transaction id is kept in memory and they do not send it again in this process; the next launch sends it once. **An owner's press is exempt:** `restore()` and `retryConfirm()` submit what StoreKit returns even when the id is in the refused set, because the same id can come back with a new signature. A press refused again keeps the id in the set, so the automatic paths stay bound. An unreachable relay is not a refusal and stays on the foreground sweep. **The 10-minute window:** a `Transaction.unfinished` JWS keeps its old `signedDate`, which is enough for this account's own purchase, which has no window. A move needs a fresh one, so a refused move passes only through **Restore** (`AppStore.sync()`), as S27 says.
+
+**The outcome outlives the screen.** The sweep writes the same `purchase` states as a press: a refusal at launch is `.refused`, `.transferLimit`, `.notImplemented` or `.updateRequired`, and an unreachable relay is `.boughtNotConfirmed`. `loadProduct()` keeps such a state instead of moving to `.ready`, so a charged owner is not offered a second purchase. Each of these sets `unconfirmedPurchase`, and only an entitlement answer clears the flag and the state (a press replaces the state with its own outcome, and a sweep skipping a refused id changes nothing). The flag lives in memory: at the next launch the sweep sets it again, because the row is still unfinished.
 
 **With no `relay_auth` yet** (`existingSigner()` nil: a phone that never used Relay): `start()` sets `.free(ended: false)` and does nothing else. No session, register, attestation, read or `Transaction` stream; a reinstalled phone's purchase comes back on Restore. **`identityAppeared()`** starts the rest, called after a successful `accountID()` in `buy` and `restore`, at a finished relay link, and at an upgrade's first step (the same three points call `RelayPushRegistrar.identityMayExist()`), so nothing waits for a relaunch.
 
@@ -563,6 +571,11 @@ protocol RelayLapseTarget: AnyObject { @MainActor func lapseRelay() async; @Main
   - `testEveryRefusalLeavesTheTransactionUnfinishedAndIsTriedAgain` (table: invalid, transfer limit, not implemented; the state's copy key; a later entitlement answer finishes it);
   - `testARefusedTransactionIsSentOncePerLaunch` (two foregrounds: one op; a new center: one more);
   - `testAStaleUnfinishedMoveIsRefusedAndRestorePasses` (the fake's 10-minute rule);
+  - `testAnOwnerPressIsNotBoundByTheRefusedSet` (table: `restore`, `retryConfirm`; the id refused and in the set, the store returns it with a new JWS: one more op with the new JWS; an entitlement answer finishes it);
+  - `testAPressRefusedAgainKeepsTheAutomaticBound` (then a foreground sends nothing);
+  - `testARefusalAtLaunchIsShownAndSurvivesLoadProduct` (table: invalid, transfer limit, not implemented, attestation update required; a new center: the state and `unconfirmedPurchase` set; `loadProduct` keeps both);
+  - `testAnUnreachableRelayAtLaunchIsBoughtNotConfirmed` (a new center: the same flag, `loadProduct` keeps it);
+  - `testAnEntitlementAnswerClearsTheUnconfirmedPurchase` (a sweep or a restore: flag false, the row finished);
   - `testAFailedAccountIDChargesNothing`;
   - `testARestoreWithNoIdentityCreatesItOnThePress`, and `testARestoreWhoseAccountFailsAsksNothingOfApple`;
   - `testTheCenterStartsWhenAnIdentityAppears` (the events loop and the sweep run with no relaunch, after a link and after a buy);
@@ -592,14 +605,14 @@ protocol RelayLapseTarget: AnyObject { @MainActor func lapseRelay() async; @Main
 **Files:**
 - Create: `WatchtowerMobile/Sources/Features/Settings/RelayCardModel.swift`
 - Modify: `WatchtowerMobile/Sources/Features/Settings/MacsModel.swift`, `MacsView.swift`, `WatchtowerMobile/Sources/Features/Hubs/HubListModel.swift` (the row's line and a link to Connection, Task 8)
-- Test: Create `WatchtowerMobile/Tests/RelayCardModelTests.swift`; extend `MacsModelTests.swift`, `ScreenshotTourTests.swift` (`captureRelayPhase4`, S01–S07, S41); `make mobile-gen`
+- Test: Create `WatchtowerMobile/Tests/RelayCardModelTests.swift`; extend `MacsModelTests.swift`, `ScreenshotTourTests.swift` (`captureRelayPhase4`, S01–S07, S41, S55); `make mobile-gen`
 
 **Interfaces (Produces):**
 
 ```swift
 struct RelayCardModel: Equatable {
     /// nil on an unavailable relay: no card at all.
-    init?(availability: RelayAvailability, phase: RelayAccountCenter.Phase, slotLimit: Int)
+    init?(availability: RelayAvailability, phase: RelayAccountCenter.Phase, unconfirmedPurchase: Bool, slotLimit: Int)
     let rows: [Row]          // title + value
     let line: String?
     let action: Action?      // .openSubscription, .retry, .restore
@@ -610,17 +623,17 @@ extension MacsModel {
 }
 ```
 
-`Phase` → card, with the mockup's texts (Task 1): `.checking` S02; `.unknown` S03 (**Retry** calls `refresh`); `.free(ended: false)` S01 (opens the subscription); `.paying(grace: false)` S04, "N of 3" from `macs.count` and the relay's limit of 3; `.paying(grace: true)` S05; `.free(ended: true)` S06; `.moved` S41 (**Restore Purchases**), never "ended".
+`Phase` → card, with the mockup's texts (Task 1): `.checking` S02; `.unknown` S03 (**Retry** calls `refresh`); `.free(ended: false)` S01 (opens the subscription); `.paying(grace: false)` S04, "N of 3" from `macs.count` and the relay's limit of 3; `.paying(grace: true)` S05; `.free(ended: true)` S06; `.moved` S41 (**Restore Purchases**), never "ended". **`unconfirmedPurchase` on `.free` or `.unknown` is S55 instead** (opens the subscription, which names the cause and the next step). The other phases win over it: `.paying` has its answer, `.moved` already offers Restore, and `.checking` is about to change.
 
 `transportLine`: "iCloud"; "Relay"; "Relay · switched by this iPhone, <time>"; "Relay · switched by another iPhone, <time>"; "iCloud · switched by this iPhone, <time>", and so on; `by == entitlement_expired` reads "iCloud · your subscription ended, <time>"; `inFlight` (a running upgrade or request) reads "Switching…". The device id never shows. The time uses the app's short format (`RecordingsFormat`).
 
 New rows use no `CardRowDivider`; the card is a `SettingsCard`.
 
-- [ ] **Step 1: Failing tests:** `testEveryPhaseHasItsRowsAndAction` (table, exact strings); `testAnUnavailableRelayHasNoCard`; `testTheSlotCountReadsNOfThree`; `testTransportLines` (table, exact strings, including "entitlement_expired" and a nil `switchedAt`); `testAnotherPhonesIDNeverShows`; `testCardTonesAreDeclared`; `testAnEmptyOriginShowsNoRelayUI` (`MacsView`'s model with `.off(.notConfigured)`: no card and the row line is empty, as today's row).
+- [ ] **Step 1: Failing tests:** `testEveryPhaseHasItsRowsAndAction` (table, exact strings); `testAnUnconfirmedPurchaseIsNeverNotSubscribed` (`.free(ended: false)`, `.free(ended: true)` and `.unknown`: S55, opening the subscription; `.paying` and `.moved` keep their own frames); `testAnUnavailableRelayHasNoCard`; `testTheSlotCountReadsNOfThree`; `testTransportLines` (table, exact strings, including "entitlement_expired" and a nil `switchedAt`); `testAnotherPhonesIDNeverShows`; `testCardTonesAreDeclared`; `testAnEmptyOriginShowsNoRelayUI` (`MacsView`'s model with `.off(.notConfigured)`: no card and the row line is empty, as today's row).
 - [ ] **Step 2: Run, expect failure:** `make mobile-gen`, `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='RelayCardModelTests|MacsModelTests'`.
 - [ ] **Step 3: Implement.** Add the shots with `captureThree` on a demo `RelayAccountCenter` fake.
 - [ ] **Step 4: Run the same;** `make lint-swift`.
-- [ ] **Step 5: Compare** `make mobile-shots SIM='iPhone 17 Pro'` S01–S07, S41 with the mockup; note differences for the PR body.
+- [ ] **Step 5: Compare** `make mobile-shots SIM='iPhone 17 Pro'` S01–S07, S41, S55 with the mockup; note differences for the PR body.
 - [ ] **Step 6: Commit:** `feat(mobile): Relay card and transport lines in Settings → Macs (#1243)`
 
 ### Task 8: The Mac's Connection section: the per-Mac choice
@@ -630,7 +643,7 @@ New rows use no `CardRowDivider`; the card is a `SettingsCard`.
 **Files:**
 - Create: `WatchtowerMobile/Sources/Features/Settings/MacTransportModel.swift`, `MacDetailView.swift`
 - Modify: `MacsView.swift` (**only with `RelayAvailability == .available`**, a row opens `MacDetailView`, and **Forget This Mac** is there too with today's confirmation; otherwise the list is exactly today's)
-- Test: Create `WatchtowerMobile/Tests/MacTransportModelTests.swift`, `MacTransportWiringTests.swift`; extend `ScreenshotTourTests.swift` (S08–S19, S49, S52, S54); `make mobile-gen`
+- Test: Create `WatchtowerMobile/Tests/MacTransportModelTests.swift`, `MacTransportWiringTests.swift`; extend `ScreenshotTourTests.swift` (S08–S19, S49, S52, S54, S56); `make mobile-gen`
 
 **Interfaces (Produces):**
 
@@ -649,7 +662,7 @@ struct MacTransportModel: Equatable {
     let footnote: String?
     let busyLine: String?
     let toneUses: [ToneUse]
-    init(link: LinkRecord, grant: DeviceGrant?, phase: RelayAccountCenter.Phase,
+    init(link: LinkRecord, grant: DeviceGrant?, phase: RelayAccountCenter.Phase, unconfirmedPurchase: Bool,
          availability: RelayAvailability, session: SessionTransportFacts, macName: String,
          ownDeviceID: String?, now: Date)
 }
@@ -674,6 +687,7 @@ struct SessionTransportFacts: Equatable {
 | `phase == .checking` | disabled "Checking…" (S19) | enabled per route |
 | A kept refusal | `RelayUpgradeRefusal.message`, **Try Again** (S18); `.tooSoon` shows S11 with no button until `retryAt`; `.vouch(.slotsFull)` shows S14, **Manage Macs** | chosen |
 | The grant has no `ordered_actions` or no coherent relay identity | "Update Watchtower on this Mac to use Relay" (S12), disabled | chosen |
+| `unconfirmedPurchase`, phase `.free` or `.unknown`, on an iCloud route | "Your purchase isn't confirmed yet." › subscription (S56) | chosen |
 | Not paying, `.moved`, or `.unknown` on an iCloud route | "Subscribe to use Relay" › subscription (S10); on `.unknown` "Couldn't reach Relay." disabled (S54) | chosen |
 | Paying, route iCloud, the Mac not in slots and 3 taken | S14, **Manage Macs** (`RelaySlotsView`, Phase 3; Open decision 12) | chosen |
 | Paying, route iCloud | "Instant, encrypted end to end", **chooseRelay** (S09) | chosen, "Free, slower" |
@@ -687,7 +701,7 @@ struct SessionTransportFacts: Equatable {
 
 - [ ] **Step 1: Failing tests:** the table above; `testAClosedMacShowsWaitingNotAFailure`; `testTooSoonCountsDownAndReturnsTheAction` (the injected `now` past `retryAt`: the row is enabled again); `testFootnoteNamesWhoChanged`; `testAStaleHeartbeatIsClosedAndLockedKeysAreNot`; `testNoScreenWithoutRelay`; `testTonesAreDeclared`. `MacTransportWiringTests`: `testAnEmptyOriginKeepsTheMacsListAsToday` (a row opens nothing new, Forget where it is), `testForgetStaysEnabledWhileWaiting`,  `testChoosingRelayRunsTheUpgrade`, `testChoosingICloudSendsARequest`, `testChoosingICloudOnALapsedPhoneCarriesTheReason`, `testAFinishedSwitchEndsBusy`, `testARefusalIsKeptAcrossARelaunch`, `testASecondPressStartsNothing`, `testManageMacsOpensTheSlotsScreen`.
 - [ ] **Step 2: Run, expect failure:** `make mobile-gen`, `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='MacTransportModelTests|MacTransportWiringTests'`.
-- [ ] **Step 3: Implement.** Shots S08–S19, S49, S52, S54 (each light, dark, narrow).
+- [ ] **Step 3: Implement.** Shots S08–S19, S49, S52, S54, S56 (each light, dark, narrow).
 - [ ] **Step 4: Run the same, plus** `MOBILE_FILTER='RelayUpgradeWiringTests|RelayUpgradeCopyTests|RelaySlotsModelTests'`; `make lint-swift`.
 - [ ] **Step 5: Compare** the shots with the mockup; note differences for the PR body.
 - [ ] **Step 6: Commit:** `feat(mobile): choose iCloud or Relay per Mac (#1243)`
@@ -703,9 +717,9 @@ struct SessionTransportFacts: Equatable {
 
 **Interfaces (Produces):** `struct RelaySubscriptionModel: Equatable { init(purchase: RelayAccountCenter.PurchaseState, phase: RelayAccountCenter.Phase, config: RelayConfig); let bullets: [String]; let primary: Button?; let line: String?; let lineIsError: Bool; let showsRestore: Bool; let termsURL: URL?; let privacyURL: URL?; let toneUses: [ToneUse] }`.
 
-The lead line, the bullets and every state are Task 1's text, exact. `.ready(product)` builds "Subscribe — <displayPrice> / month"; no price is written in code. `.pending`, `.boughtNotConfirmed` and the rest map one to one. A nil `termsURL` or `privacyURL` hides that link; Task 17's Release check names this as an owner step, because App Review requires both (Open decision 8). **Restore Purchases** is enabled in every state but `.buying`, `.confirming` and `.restoring`. A killed app shows `.ready` at the next open: the purchase itself is resumed by the center, and the Relay card shows the result.
+The lead line, the bullets and every state are Task 1's text, exact. `.ready(product)` builds "Subscribe — <displayPrice> / month"; no price is written in code. `.pending`, `.boughtNotConfirmed` and the rest map one to one. A nil `termsURL` or `privacyURL` hides that link; Task 17's Release check names this as an owner step, because App Review requires both (Open decision 8). **Restore Purchases** is enabled in every state but `.buying`, `.confirming` and `.restoring`. A killed app's purchase is resumed by the center's sweep (Task 6), and the screen shows that outcome: never `.ready` while `unconfirmedPurchase` is set, so **Subscribe** is not offered to someone already charged. Until the sweep answers it shows "Confirming with Relay…" (S24). The Relay card (S55) and the Connection row (S56) lead here.
 
-- [ ] **Step 1: Failing tests:** `testEveryPurchaseStateHasItsCopy` (table, exact strings); `testThePriceComesOnlyFromTheProduct`; `testRestoreIsDisabledOnlyWhileABuyRuns`; `testMissingLinksAreHidden`; `testAnEmptyProductIsTheRetryState`; `testDoneNamesTheNextStep`; `testTonesAreDeclared`. `MacTransportWiringTests`: `testSubscribeRowsOpenTheSubscriptionScreen` (the Relay card and the Connection row).
+- [ ] **Step 1: Failing tests:** `testEveryPurchaseStateHasItsCopy` (table, exact strings); `testAnUnconfirmedPurchaseOffersNoSubscribe` (each outcome of Task 6's table, and the wait before the sweep's answer: no **Subscribe**, **Restore Purchases** enabled once the sweep has answered); `testThePriceComesOnlyFromTheProduct`; `testRestoreIsDisabledOnlyWhileABuyRuns`; `testMissingLinksAreHidden`; `testAnEmptyProductIsTheRetryState`; `testDoneNamesTheNextStep`; `testTonesAreDeclared`. `MacTransportWiringTests`: `testSubscribeRowsOpenTheSubscriptionScreen` (the Relay card and the Connection row).
 - [ ] **Step 2: Run, expect failure:** `make mobile-gen`, `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='RelaySubscriptionModelTests|MacTransportWiringTests'`.
 - [ ] **Step 3: Implement.** The view only reads the model and calls the center. Shots S20–S29, S42–S46.
 - [ ] **Step 4: Run the same;** `make lint-swift`.
@@ -1030,13 +1044,16 @@ struct LatencyDiagnosticsModel: Equatable {
 **Depends on:** Tasks 2–15, 18
 
 **Files:**
-- Create: `docs/guide/features/iphone-relay.md` (what Relay does, subscribing, restoring on a new iPhone and re-linking by QR, the choice per Mac, what "Relay unavailable" and "Switch to iCloud" mean, the ended and moved messages; Open decision 11). Its first line says Relay is not in the current version of Watchtower for iPhone. No Learn card yet: `done_when`/`requires` have no Relay signal, and a card would call users to a screen their build lacks. Every section carries `<!-- learn: none -->` until launch (Launch conditions). `docs/guide/README.md` gets one line.
-- Modify: `docs/guide/features/iphone-alerts.md` (alerts over Relay, the switch), `iphone-not-delivered.md` (a lapse; the Relay-unavailable banner above Waiting to send), `iphone.md` (one link; Diagnostics).
+- Create: `docs/guide/features/iphone-relay.md` (what Relay does, subscribing, restoring on a new iPhone and re-linking by QR, the choice per Mac, what "Relay unavailable" and "Switch to iCloud" mean, the ended and moved messages; Open decision 11). Its first line is "Relay isn't in the current version of Watchtower for iPhone." No Learn card yet: `done_when`/`requires` have no Relay signal, and a card would call users to a screen their build lacks. Every section carries `<!-- learn: none -->` until launch (Launch conditions). `docs/guide/README.md` gets one line, which says the same in its own words.
+- Modify: `docs/guide/features/iphone-alerts.md`: its existing **Alerts over Relay** section (written with the Go hub) opens with the line above, adds the switch, and loses its `iphone-alerts-relay` card (`<!-- learn: none -->` until launch, Launch conditions).
+- Modify: `iphone-not-delivered.md`: a new **Over Relay** section (a lapse; the Relay-unavailable banner above Waiting to send), `<!-- learn: none -->`, opening with the line above. `iphone.md`: the same line with one link to `iphone-relay.md`, and Diagnostics (iCloud timings, no Relay promise).
+- Modify: any other sentence under `docs/guide/` that promises a phone user Relay today: `git grep -il relay -- docs/guide` lists the pages; a sentence about the Mac or a headless host stays as it is. The PR body lists each page and what it did.
+- Test: Create `docs/guide/relay_dark_test.go`: `TestRelayGuideSaysNotYet` (`iphone-relay.md`, `iphone-alerts.md`, `iphone-not-delivered.md` and `iphone.md` each contain the line exactly; no `<!-- learn` card under `docs/guide/` has an id containing `relay`). It is removed with the line at launch.
 - Modify: `docs/features/relay-client.md`: a Phase 4 section (`HostedRelayAccount`, `RelayAccountCenter`, `requestTransport`, the banners, `RelayPushWake`, the registrar, the extension, latency); v1 limits: remove "No pushes", "the upgrade is model only", "No switch screen", the StoreKit and APNs parts of the fake's list; add the limits this plan names (a shared-scope alert lost in a move's window, a duplicate alert at a switch, a developer's mismatched push environment, legacy actions unmeasured, an outage's minute count restarting at relaunch, a slice of the same kind from another cause can end a timing early).
 - Modify: `docs/features/mobile-companion.md` (push routing, the extension's inline path), `CLAUDE.md` (the feature line names Phase 4), `docs/superpowers/specs/2026-10-31-hub-phone-protocol-design.md` (§4.8, §11 item 5 done; §7.6 `reason` on `transport_switch` for a move), `docs/superpowers/specs/2026-10-29-relay-client-design.md` (§10 what the timing stamps are; §14 the guide page; Decisions: one line per answered Open decision).
 
 - [ ] **Step 1: Edit.** Bold UI text, no internals, per `docs/guide/WRITING.md`.
-- [ ] **Step 2: Run:** `go test ./docs/guide ./internal/learn` passes (the 8 KB cap); `bash scripts/leak-check.sh` over the branch's commits finds nothing.
+- [ ] **Step 2: Run:** `go test ./docs/guide ./internal/learn` passes (the 8 KB cap, `TestRelayGuideSaysNotYet`); `bash scripts/leak-check.sh` over the branch's commits finds nothing.
 - [ ] **Step 3: Commit:** `docs: relay client Phase 4 — guide, feature notes, spec text (#1243, #1244, #1246)`
 
 ### Task 17: Phase 4 gate
@@ -1100,7 +1117,9 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | No relay read at launch with no `relay_auth` | decided by the agent; spec §4 "first use" |
 | The account is read at every reconnect too | spec §7 |
 | A relay-only hub's banner comes before moved and ended, whose "back on iCloud" would be false there | decided by the agent |
-| A refused transaction is sent once per launch; a move refused for its age passes only through Restore | decided by the agent; relay README |
+| A refused transaction is sent once per launch by the automatic paths; an owner's press (Restore, Try Again) is exempt | decided by the agent, exemption from the owner's comment on ask #1012; relay README |
+| A purchase Apple sold and the relay did not confirm stays visible after a kill: the subscription screen shows its outcome and offers no Subscribe, the Relay card and the Connection row say "not confirmed" | owner's comment on ask #1012 |
+| Every Relay passage for a phone user opens with the "not in the current version" line, and the Go hub's `iphone-alerts-relay` Learn card waits for launch | owner's comment on ask #1012; the card's removal is Open decision 16 |
 | Restore creates the identity on the press; the center starts on `identityAppeared()` | decided by the agent; spec §4 "first use" |
 | A switch from a lapsed phone carries `entitlement_expired`, Try Again keeps the record's reason | decided by the agent; Open decision 6 |
 | The foreground retry of the alert save applies only to a link on the relay or one that ever switched | decided by the agent |
@@ -1140,7 +1159,7 @@ Each is a proposal with a recommended option. Any still unanswered when the plan
 13. **The hello's relay-id proof before launch.** It stays deferred in this plan (ask #980). An owner-confirmed phone is the only one that could misname an id, and a device record's proof already moves it (ask #1005). **Recommended:** keep it deferred past launch. Alternative: add it before launch (Kit, Go, the `device_hello` fixture).
 14. **Phase 4 without a device check before merge.** Ask #884 was about Phase 1, and "без проверки мержи" about 0a; this phase adds purchases and real pushes that no CI or stand can run. **Recommended:** merge into `feature/relay-client-next` on green CI and review, and run M1–M10 on staging as a launch condition. Alternative: M1 and M4 on a device before this phase's final merge.
 15. **A request toward iCloud that nobody answers.** **Recommended:** 24 h, the 3b reader wait's limit, then a refusal with **Try Again**; an owner's request is withdrawn and a lapse's stays in the mailbox. Alternative: no limit, with a **Cancel** button (Tasks 5 and 8, S52 goes).
-16. **Guide and Learn while Relay is dark.** Spec §14 puts Relay in `iphone.md` and a Learn card in the Phase 4 PR, but `iphone.md` is near its 8 KB cap and the feature is off in Release. **Recommended:** a new page `iphone-relay.md` that says first that Relay is not in the current version, one link from `iphone.md`, and the Learn card only at launch. Alternative: hold the page and the card for the launch release too (Task 16 shrinks to the feature notes), or ship the card now, which sends users to a screen their build lacks.
+16. **Guide and Learn while Relay is dark.** Spec §14 puts Relay in `iphone.md` and a Learn card in the Phase 4 PR, but `iphone.md` is near its 8 KB cap and the feature is off in Release. The branch already carries the Go hub's **Alerts over Relay** section and its `iphone-alerts-relay` card, which sends a phone user to something their build lacks. **Recommended:** a new page `iphone-relay.md` and every other Relay passage for a phone user open by saying Relay is not in the current version, one link from `iphone.md`, and the Learn cards, the Go hub's included, only at launch. Alternative: hold the page and the card for the launch release too (Task 16 shrinks to the feature notes), or ship the card now, which sends users to a screen their build lacks.
 17. **One banner at a time on Now.** Mockup section 6 drew the moved banner and the update line together. **Recommended:** one, in the fixed order of Task 10, because a phone screen has little room; the frame is split. Alternative: stack two (Task 10's model returns a list).
 18. **The CloudKit alert subscription stays while on the relay.** Spec §10 says it stays "for CloudKit phones only". **Recommended:** keep it for any hub offering CloudKit: it is silent on the relay, and the hub's re-signal at a switch back fires before the phone has followed. Alternative: remove it on the move, with a retried removal, and lose those re-signalled alerts (Task 18 changes to that).
-19. **A refused purchase is not finished.** Money was taken and the relay said no. **Recommended:** leave it unfinished, sent once per launch; a move refused for its age passes through Restore. Alternative: finish on a definite refusal, leaving only Restore (Task 6).
+19. **A refused purchase is not finished.** Money was taken and the relay said no. **Recommended:** leave it unfinished, sent once per launch by the automatic paths, with an owner's press exempt; a move refused for its age passes through Restore. Alternative: finish on a definite refusal, leaving only Restore (Task 6).
