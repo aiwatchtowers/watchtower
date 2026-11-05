@@ -42,6 +42,19 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(link.transport, .cloudKit, "the route stays on iCloud")
     }
 
+    /// The relay store can have a running reader's stash on it (a `SideMailboxReader` after a lapse): the upgrader's short
+    /// open never runs the launch sweep beside it.
+    func testTheUpgradersSideOpensItsStoreWithoutTheStashSweep() async throws {
+        let (bed, session) = try await upgradeBed()
+        try await allowReader(bed)
+        let marker = try bed.relayStashFile(hubID: hubID, mac: bed.mac.deviceID)
+
+        let outcome = await session.upgradeToRelay()
+
+        XCTAssertEqual(outcome, .underWay(.requested))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "a file a running engine stashed stays")
+    }
+
     func testTheDeviceRecordCarriesAProvenRelayIDOnlyDuringAnUpgrade() async throws {
         let (bed, session) = try await upgradeBed()
         let device = try XCTUnwrap(session.linkedDevice)

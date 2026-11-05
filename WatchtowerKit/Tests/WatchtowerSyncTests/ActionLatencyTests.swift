@@ -9,10 +9,15 @@ import XCTest
 /// `at`/`transport`/`answer_ms`/`result_ms` are kept; every other outcome leaves no sample.
 final class ActionLatencyTests: XCTestCase {
 
-    // Anchored to the real clock: opening a replica sweeps with it.
-    private let base = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded())
+    // Anchored to the real clock, per test: opening a replica sweeps with it, and XCTest builds every instance up front.
+    private var base = Date(timeIntervalSince1970: 0)
     private var device: String { TestE2E.deviceID.uuidString }
     private var hubID: String { TestE2E.hubID.uuidString }
+
+    override func setUp() {
+        super.setUp()
+        base = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded())
+    }
 
     private struct Phone {
         let inner: InMemoryCloudTransport

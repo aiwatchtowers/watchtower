@@ -395,6 +395,16 @@ final class Bed {
     let sides: SideBuilds
     /// The Mac's `relay_auth` public key (raw).
     let macAuthPub: Data
+    /// A file in the relay store's stash that no row refers to, as a running engine's just-stashed one looks to a sweep.
+    func relayStashFile(hubID: String, mac: String) throws -> URL {
+        let store = try TransportStore(path: launch.paths.transportStorePath(hubID, route: .hostedRelay(macDeviceID: mac)))
+        defer { try? store.close() }
+        let marker = try XCTUnwrap(store.stashDirectory).appendingPathComponent("just-stashed")
+        try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: marker)
+        return marker
+    }
+
     /// What a relaunch builds the root from again (`relaunch`).
     private let launch: Launch
     /// The root's relay session (an empty origin's is off and never built).

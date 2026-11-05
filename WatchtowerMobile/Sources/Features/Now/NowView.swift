@@ -205,10 +205,11 @@ struct NowView: View {
     }
 }
 
-/// The Relay banner over the live state. Its own clock: it reads the hub's row, and a minute's change needs no faster tick
-/// than this (Now's list ticks every second).
+/// The Relay banner over the live state: the hub's row from `LinkingViewModel.links` (memory, refreshed by every route
+/// write). A clock only while an outage can show, and a minute's change needs no faster tick than this.
 private struct NowRelayBanner: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(LinkingViewModel.self) private var linking
     let override: RelayBannerModel?
     let openSubscription: () -> Void
     @State private var isPressing = false
@@ -216,11 +217,21 @@ private struct NowRelayBanner: View {
     @State private var refused: [String: TransportRequestRefusal] = [:]
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 5)) { context in
-            if let model = model(now: context.date) {
-                RelayBannerCard(model: model, isPressing: isPressing, onPress: press)
-                    .padding(.top, Spacing.regular)
+        let session = env.activeSession
+        if RelayBannerModel.needsClock(route: session.route, unansweredSince: session.relayUnansweredSince) {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                card(now: context.date)
             }
+        } else {
+            card(now: .now)
+        }
+    }
+
+    @ViewBuilder
+    private func card(now: Date) -> some View {
+        if let model = model(now: now) {
+            RelayBannerCard(model: model, isPressing: isPressing, onPress: press)
+                .padding(.top, Spacing.regular)
         }
     }
 
@@ -228,7 +239,7 @@ private struct NowRelayBanner: View {
         if let override { return override }
         let session = env.activeSession
         let center = env.relayAccount
-        let link = session.transportLink
+        let link = linking.links.first { $0.hubID == session.hubID }?.link
         return RelayBannerModel.banner(
             availability: env.relay.availability, phase: center?.phase ?? .checking,
             unconfirmedPurchase: center?.unconfirmed != nil, updateRequired: center?.updateRequired ?? false,

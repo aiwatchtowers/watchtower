@@ -126,20 +126,20 @@ final class TransportRequestWiringTests: XCTestCase {
         XCTAssertEqual(onCloud.count, 1)
     }
 
-    func testALapseReplacesAPendingUpgradeRequest() async throws {
+    /// The only record a relay route holds: the upgrade got here, and a lapse has nothing to replace. Its slot is kept.
+    func testALapseLeavesASwitchedUpgradeRecordAlone() async throws {
         let (bed, session) = try await relayBed()
         var link = try XCTUnwrap(bed.row()?.link)
         let slotted = bed.clock.now.addingTimeInterval(-3600)
-        link.relayUpgrade = RelayUpgradeRecord(
-            step: .requested, requestID: "old", slotSince: slotted, macDeviceID: bed.mac.deviceID)
+        let upgrade = RelayUpgradeRecord(step: .switched, requestID: "old", slotSince: slotted, macDeviceID: bed.mac.deviceID)
+        link.relayUpgrade = upgrade
         XCTAssertTrue(try bed.registry.updateLink(link))
 
         await session.lapseRelay()
 
         let after = try XCTUnwrap(try bed.row()?.link)
         XCTAssertNotNil(after.transportRequest)
-        XCTAssertEqual(after.relayUpgrade?.isPending, false, "the upgrade ends")
-        XCTAssertEqual(after.relayUpgrade?.slotSince, slotted, "its slot is kept")
+        XCTAssertEqual(after.relayUpgrade, upgrade)
     }
 
     func testARelayOnlyHubIsNeverAskedOnALapse() async throws {
