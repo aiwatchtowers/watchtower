@@ -28,6 +28,10 @@ sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
 | A/B running: "Running 3 of 10" | §3.6 | `tuning-chat-ab-running-{light,dark}.png` |
 | A/B done: Without / With side by side, version line | §3.6 | `tuning-chat-ab-done-{light,dark}.png` |
 | A/B failed: "Stopped after 4 of 10 calls", Retry | §4.4, §4.6 | `tuning-chat-ab-failed-{light,dark}.png` |
+| A/B discarded (Not now / Discard): folded to one line | §3.6, §4.6 | `tuning-chat-ab-discarded-{light,dark}.png` |
+| A/B removed with its source data (an input purged, deleted, made private or past 7 days) | §4.5 | `tuning-chat-ab-removed-{light,dark}.png` |
+| A/B done, Propose this addition refused (the refusal line, Discard only) | §4.6 | `tuning-chat-ab-propose-refused-{light,dark}.png` |
+| Conversation removed with the source data it read, New tuning chat | §4.5 | `tuning-chat-conversation-removed-{light,dark}.png` |
 | A/B too few inputs: answer plus a quiet notice, no card | §4.6 | `tuning-chat-ab-too-few-{light,dark}.png` |
 | No tools (ollama): Open Settings | §4.1, §4.4 | `tuning-chat-no-tools-{light,dark}.png` |
 | No tools midway: provider switched to ollama mid-conversation, the open card keeps Accept / Decline, no-tools line above the composer | §4.1, §4.4 | `tuning-chat-no-tools-midway-{light,dark}.png` |

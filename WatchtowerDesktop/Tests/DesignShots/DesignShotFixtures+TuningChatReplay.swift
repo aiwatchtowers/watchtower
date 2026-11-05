@@ -6,7 +6,7 @@ import WatchtowerCore
 /// proposed, running, done and failed. Inputs show a time and a short
 /// label, never their content; only the two outputs are text.
 struct TuningReplayCard: View {
-    enum Phase { case proposed, running, done, failed }
+    enum Phase { case proposed, running, done, failed, proposeRefused }
 
     let phase: Phase
     /// The narrow panel: Without above With.
@@ -64,7 +64,7 @@ struct TuningReplayCard: View {
     }
 
     private var title: Text {
-        let verb = phase == .done ? "Tried on 5 past calls of " : "Try on 5 past calls of "
+        let verb = phase == .done || phase == .proposeRefused ? "Tried on 5 past calls of " : "Try on 5 past calls of "
         return Text(verb) + Text("digest.channel").italic()
     }
 
@@ -72,7 +72,7 @@ struct TuningReplayCard: View {
         switch phase {
         case .proposed: "≈ $0.14 · 10 model calls"
         case .running: "Running 3 of 10 · ≈ $0.14"
-        case .done: "10 calls · $0.12 · 3 of 5 outputs changed"
+        case .done, .proposeRefused: "10 calls · $0.12 · 3 of 5 outputs changed"
         case .failed: "4 of 10 calls · $0.05"
         }
     }
@@ -99,6 +99,12 @@ struct TuningReplayCard: View {
         case .done:
             ForEach(Self.inputs.prefix(2)) { input in outputRow(input) }
             rows(from: 2) { index in Self.inputs[index].changed ? ("changed", Color.accentColor) : ("same", .secondary) }
+        case .proposeRefused:
+            ForEach(Self.inputs.prefix(1)) { input in outputRow(input) }
+            Label(TuningChatTexts.proposeRefused, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(Tone.warning)
+                .fixedSize(horizontal: false, vertical: true)
         case .failed:
             Label("Stopped after 4 of 10 calls: the model timed out", systemImage: "exclamationmark.triangle")
                 .font(.callout)
@@ -175,6 +181,8 @@ struct TuningReplayCard: View {
             case .done:
                 Button("Discard") {}.buttonStyle(.kitSecondary)
                 Button("Propose this addition") {}.buttonStyle(.kitPrimary)
+            case .proposeRefused:
+                Button("Discard") {}.buttonStyle(.kitSecondary)
             case .failed:
                 Button("Discard") {}.buttonStyle(.kitSecondary)
                 Button("Retry") {}.buttonStyle(.kitPrimary)

@@ -18,6 +18,11 @@ enum TuningChatShotFixtures {
         case abTooFew = "ab-too-few", noTools = "no-tools", narrow
         /// The provider switched to ollama mid-conversation (§4.1): the open card keeps its buttons.
         case noToolsMidway = "no-tools-midway"
+        /// §4.6 owner buttons and removal: a discarded card folds, a card whose
+        /// inputs were removed reads the removed line, Propose refused, and a
+        /// conversation removed with the inputs it read.
+        case abDiscarded = "ab-discarded", abRemoved = "ab-removed"
+        case abProposeRefused = "ab-propose-refused", conversationRemoved = "conversation-removed"
 
         /// Which fixture coach backs the state.
         var coachVariant: String {
@@ -217,6 +222,11 @@ enum TuningChatTexts {
     static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → AI"
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     static let accepted = "Accepted · measuring for 14 days"
+    static let abDiscarded = "A/B discarded · digest.channel"
+    static let abRemoved = "This A/B was removed with its source data"
+    static let proposeRefused = "Not proposed: with today's additions digest.channel would pass 600 characters."
+    static let conversationRemoved = "This conversation was removed with the source data it read. "
+        + "Proposals it made stay in Proposed edits."
     static let showAccepted = "Show in Accepted edits"
     static let claudeOnly = "Claude Code only"
     static let tooFew = "Only 2 past calls of digest.channel match the current prompt — A/B needs 3. "
@@ -445,6 +455,10 @@ private struct TuningFeed: View {
             case .abRunning: replayTurn(.running)
             case .abDone: replayTurn(.done)
             case .abFailed: replayTurn(.failed)
+            case .abDiscarded: replayTurn(nil, line: (TuningChatTexts.abDiscarded, "xmark.circle", .secondary))
+            case .abRemoved: replayTurn(nil, line: (TuningChatTexts.abRemoved, "trash", .secondary))
+            case .abProposeRefused: replayTurn(.proposeRefused)
+            case .conversationRemoved: conversationRemoved
             case .abTooFew: tooFew
             case .narrow:
                 skillTurn(folded: false)
@@ -545,13 +559,47 @@ private struct TuningFeed: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    @ViewBuilder private func replayTurn(_ phase: TuningReplayCard.Phase, stacked: Bool = false) -> some View {
+    /// The whole conversation was deleted with the captured inputs it read (§4.5).
+    @ViewBuilder private var conversationRemoved: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            Label(TuningChatTexts.conversationRemoved, systemImage: "trash")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(TuningChatTexts.newChat) {}.buttonStyle(.kitSecondary)
+        }
+        .padding(Spacing.cozy)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
+    }
+
+    /// A one-line replay row in place of the card.
+    private func foldedLine(_ line: (String, String, Color)) -> some View {
+        HStack(spacing: Spacing.compact) {
+            Image(systemName: line.1).foregroundStyle(line.2)
+            Text(line.0).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Spacing.cozy)
+        .padding(.vertical, Spacing.regular)
+        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
+    }
+
+    @ViewBuilder private func replayTurn(
+        _ phase: TuningReplayCard.Phase?,
+        line: (String, String, Color)? = nil,
+        stacked: Bool = false
+    ) -> some View {
         UserMessageBubble(text: TuningChatTexts.digestAsk)
         TuningToolLines(lines: [("Read prompt digest.channel", false),
                                 ("Listed 5 captured inputs of digest.channel", false),
                                 ("Proposed a replay on 5 past calls", false)])
         Text(TuningChatTexts.digestAnswer)
-        TuningReplayCard(phase: phase, stacked: stacked)
+        if let phase {
+            TuningReplayCard(phase: phase, stacked: stacked)
+        } else if let line {
+            foldedLine(line)
+        }
     }
 }
 
