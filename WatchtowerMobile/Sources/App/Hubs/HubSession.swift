@@ -329,8 +329,8 @@ final class HubSession {
     /// for the demo.
     @ObservationIgnored private(set) var transportRequester: TransportRequester?
     /// On route `.relay`: since when this session's fetches find the relay unanswered (nil while it answers), on the
-    /// session's clock: the start of an outage for the side reader's 60 s rule (sim rule 12).
-    @ObservationIgnored private(set) var relayUnansweredSince: Date?
+    /// session's clock: the start of an outage for the side reader's 60 s rule (sim rule 12) and Now's banner.
+    private(set) var relayUnansweredSince: Date?
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored let uploader: RecordingUploader
@@ -1471,6 +1471,9 @@ final class HubSession {
     func lapseEnded() async {
         await transportRequester?.lapseEnded()
     }
+
+    /// The hub's row as the request and the follower hold it (one registry read); nil for the demo.
+    var transportLink: LinkRecord? { transportRequester?.link }
 
     /// The request toward iCloud, or the end it came to, as the hub's row holds it.
     var transportRequest: TransportRequestRecord? { transportRequester?.record }

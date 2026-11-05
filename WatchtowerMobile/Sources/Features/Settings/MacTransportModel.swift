@@ -140,10 +140,7 @@ struct MacTransportModel: Equatable {
             }
         }
 
-        private var isRelayOnly: Bool {
-            let cloudKit = TransportKind.cloudKit.rawValue
-            return link.hubTransports?.contains(cloudKit) == false || grant?.transports?.contains(cloudKit) == false
-        }
+        private var isRelayOnly: Bool { link.isRelayOnly(grant: grant) }
 
         var choice: Choice {
             relayOnlyRule() ?? refusedRequestRule() ?? openRequestRule() ?? upgradeRule() ?? checkingRule()

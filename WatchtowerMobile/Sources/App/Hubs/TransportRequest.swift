@@ -166,6 +166,11 @@ final class TransportRequester {
         follower.onRequestSwitch = { [weak self] target, reason in await self?.requested(target, reason: reason) }
     }
 
+    /// The hub's row.
+    var link: LinkRecord? {
+        host?.followerLink(hubID: hubID)
+    }
+
     /// The request on the hub's row, kept or ended.
     var record: TransportRequestRecord? {
         host?.followerLink(hubID: hubID)?.transportRequest

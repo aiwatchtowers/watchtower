@@ -12,8 +12,22 @@ enum NowRoute: Hashable, CaseIterable {
 /// one-tap answers), Working with timers, then the next meeting with
 /// Record. A `ScrollView`, so each row is its own link.
 struct NowView: View {
+    /// What sits at the top of the list, in order: the Relay banner above Waiting to send (Phase 1's row stays where it is).
+    enum TopBlock: Hashable {
+        case chip, relayBanner, outbox
+    }
+
+    static let topBlocks: [TopBlock] = [.chip, .relayBanner, .outbox]
+
     @Environment(AppEnvironment.self) private var env
     @State private var answerError: String?
+    @State private var showsSubscription = false
+    /// A banner to show in place of the live one (the screenshot tour's frames); its actions do nothing.
+    private let bannerOverride: RelayBannerModel?
+
+    init(banner: RelayBannerModel? = nil) {
+        bannerOverride = banner
+    }
 
     private var replica: WorkbenchReplicaModel { env.workbenchReplica }
 
@@ -69,15 +83,33 @@ struct NowView: View {
                 BoardTargetDetailView(replica: replica, writer: env.boardWriter, targetID: route.id)
             }
             .refreshable { await env.refresh(.pull) }
+            .sheet(isPresented: $showsSubscription) {
+                NavigationStack {
+                    RelaySubscriptionView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button(RelayBannerModel.sheetClose) { showsSubscription = false }
+                            }
+                        }
+                }
+            }
         }
     }
 
     private func content(_ model: NowModel, date: Date) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                MacStatusChip(model: model.chip)
-                if let outbox = model.outbox {
-                    NowOutboxGroup(rows: outbox)
+                ForEach(Self.topBlocks, id: \.self) { block in
+                    switch block {
+                    case .chip:
+                        MacStatusChip(model: model.chip)
+                    case .relayBanner:
+                        NowRelayBanner(override: bannerOverride) { showsSubscription = true }
+                    case .outbox:
+                        if let outbox = model.outbox {
+                            NowOutboxGroup(rows: outbox)
+                        }
+                    }
                 }
                 SectionHeader("Waiting for you", count: model.waitingCount, tone: model.waitingHeaderTone)
                 waiting(model)
@@ -169,6 +201,99 @@ struct NowView: View {
             } catch {
                 answerError = BoardWriteText.sendError(error)
             }
+        }
+    }
+}
+
+/// The Relay banner over the live state. Its own clock: it reads the hub's row, and a minute's change needs no faster tick
+/// than this (Now's list ticks every second).
+private struct NowRelayBanner: View {
+    @Environment(AppEnvironment.self) private var env
+    let override: RelayBannerModel?
+    let openSubscription: () -> Void
+    @State private var isPressing = false
+    /// Per hub: a request refused before anything reached the hub's row.
+    @State private var refused: [String: TransportRequestRefusal] = [:]
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            if let model = model(now: context.date) {
+                RelayBannerCard(model: model, isPressing: isPressing, onPress: press)
+                    .padding(.top, Spacing.regular)
+            }
+        }
+    }
+
+    private func model(now: Date) -> RelayBannerModel? {
+        if let override { return override }
+        let session = env.activeSession
+        let center = env.relayAccount
+        let link = session.transportLink
+        return RelayBannerModel.banner(
+            availability: env.relay.availability, phase: center?.phase ?? .checking,
+            unconfirmedPurchase: center?.unconfirmed != nil, updateRequired: center?.updateRequired ?? false,
+            wasPaying: center?.wasPaying ?? false, route: session.route, relayOnly: relayOnly(link, session),
+            hubOnRelayAt: link?.hubOnRelayAt, unansweredSince: session.relayUnansweredSince, request: link?.transportRequest,
+            pressRefusal: refused[session.hubID], lastUpdate: session.heartbeat?.updatedAt,
+            macName: link?.macName ?? session.hubName ?? "", now: now
+        )
+    }
+
+    /// A relay-only hub is on a relay route, so an iCloud link never reads its keybox here.
+    private func relayOnly(_ link: LinkRecord?, _ session: HubSession) -> Bool {
+        guard case .hostedRelay = session.route, let link else { return false }
+        return link.isRelayOnly(grant: MacDetailView.grant(of: link, session: session))
+    }
+
+    private func press(_ action: RelayBannerModel.Action) {
+        guard override == nil, !isPressing else { return }
+        let session = env.activeSession
+        guard let work = RelayBannerPress.run(action, session: session, center: env.relayAccount, open: openSubscription) else { return }
+        isPressing = true
+        refused[session.hubID] = nil
+        Task {
+            refused[session.hubID] = await work.value
+            isPressing = false
+        }
+    }
+}
+
+/// The banner: its sentence, a second line (the last update, the refusal, the press under way) and its links.
+private struct RelayBannerCard: View {
+    let model: RelayBannerModel
+    let isPressing: Bool
+    let onPress: (RelayBannerModel.Action) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            Text(model.text).font(TypeScale.rowTitle)
+            if let line = model.secondLine {
+                HStack(spacing: Spacing.compact) {
+                    if model.busy {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(line).font(TypeScale.meta).foregroundStyle(model.secondLineTone.color)
+                }
+            }
+            if !model.actions.isEmpty {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Spacing.large) { links }
+                    VStack(alignment: .leading, spacing: 0) { links }
+                }
+                .disabled(isPressing)
+            }
+        }
+        .card()
+    }
+
+    private var links: some View {
+        ForEach(model.actions, id: \.self) { action in
+            Button(model.title(for: action)) { onPress(action) }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(PhoneTone.accent.color)
+                .frame(minHeight: PhoneMetrics.minTouch)
+                .contentShape(Rectangle())
+                .buttonStyle(.plain)
         }
     }
 }

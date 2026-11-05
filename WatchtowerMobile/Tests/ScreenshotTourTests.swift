@@ -370,6 +370,71 @@ final class ScreenshotTourTests: XCTestCase {
         )
         rows += try await captureConnection(host: host, origin: origin, now: now) { macLink($0, $1, relay: $2) }
         rows += try await captureSubscription(host: host)
+        rows += try await captureBanners(host: host, origin: origin, now: now)
+        return rows
+    }
+
+    /// S30–S36, S47, S50, S51, S53: Now's Relay banner in each state of Task 1's table, each light, dark and narrow, handed to
+    /// the view (`NowView(banner:)`). The outage frames sit on the outbox demo, for the Waiting to send row under them.
+    private func captureBanners(host: ScreenshotHost, origin: RelayOrigin, now: Date) async throws -> [ScreenshotHost.IndexRow] {
+        func banner(
+            availability: RelayAvailability? = nil,
+            phase: RelayAccountCenter.Phase = .paying(grace: false, macs: []),
+            updateRequired: Bool = false,
+            wasPaying: Bool = false,
+            route: HubRoute? = .cloudKit(.private),
+            relayOnly: Bool = false,
+            hubOnRelay: Bool = false,
+            outageMinutes: Double? = nil,
+            request: TransportRequestRecord? = nil,
+            macName: String = "Work Mac"
+        ) throws -> RelayBannerModel {
+            let lastUpdate = Calendar.current.startOfDay(for: now).addingTimeInterval(10 * 3_600 + 41 * 60)
+            return try XCTUnwrap(RelayBannerModel.banner(
+                availability: availability ?? .available(origin), phase: phase, unconfirmedPurchase: false, updateRequired: updateRequired,
+                wasPaying: wasPaying, route: route, relayOnly: relayOnly, hubOnRelayAt: hubOnRelay ? now : nil,
+                unansweredSince: outageMinutes.map { now.addingTimeInterval(-$0 * 60) }, request: request, pressRefusal: nil,
+                lastUpdate: lastUpdate, macName: macName, now: now
+            ))
+        }
+        let onRelay = HubRoute.hostedRelay(macDeviceID: DemoSeed.Relay.workMac)
+        func refused() -> TransportRequestRecord {
+            TransportRequestRecord(target: .cloudKit, controlID: "c", reason: nil, at: now, refusal: .unavailable)
+        }
+        let plain: [(String, String, RelayBannerModel)] = [
+            ("S30", "banner-free-mac-on-relay", try banner(phase: .free(ended: false), hubOnRelay: true)),
+            ("S51", "banner-mac-on-relay-no-relay", try banner(availability: .off(.notConfigured), hubOnRelay: true)),
+            ("S47", "banner-relay-only-ended", try banner(phase: .free(ended: true), route: onRelay, relayOnly: true, macName: "build-box")),
+            ("S53", "banner-relay-only-moved", try banner(phase: .moved, route: onRelay, relayOnly: true, macName: "build-box")),
+            ("S33", "banner-moved", try banner(phase: .moved, wasPaying: true)),
+            ("S34", "banner-ended", try banner(phase: .free(ended: true), wasPaying: true)),
+            ("S35", "banner-update-the-app", try banner(updateRequired: true))
+        ]
+        let waiting: [(String, String, RelayBannerModel)] = [
+            ("S31", "banner-relay-unavailable", try banner(route: onRelay, outageMinutes: 3)),
+            ("S32", "banner-relay-unavailable-offer", try banner(route: onRelay, outageMinutes: 12)),
+            ("S36", "banner-switching", try banner(
+                route: onRelay, outageMinutes: 12,
+                request: TransportRequestRecord(target: .cloudKit, controlID: "c", reason: nil, at: now)
+            )),
+            ("S50", "banner-refused", try banner(route: onRelay, outageMinutes: 12, request: refused()))
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        func shots(_ frames: [(String, String, RelayBannerModel)], on host: ScreenshotHost, reached: String) async throws {
+            for (number, slug, model) in frames {
+                // At the largest type a sentence fills the narrow screen: the frame scrolls to its second line and links.
+                let hasMore = model.secondLine != nil || !model.actions.isEmpty
+                let scroll: CGFloat? = hasMore ? (model.text.count > 100 ? 620 : 340) : nil
+                try await host.captureThree("\(number)-\(slug)", NowView(banner: model), narrowScroll: scroll)
+                rows.append(ScreenshotHost.IndexRow(
+                    number: number, view: "NowView", source: "Features/Now/NowView.swift", reached: "\(reached), light/dark/narrow"
+                ))
+            }
+        }
+        try await shots(plain, on: host, reached: "NowView, demo hub")
+        let (env, _) = try await outboxDemoEnv()
+        let outboxHost = ScreenshotHost(directory: host.directory, env: env, linking: host.linking)
+        try await shots(waiting, on: outboxHost, reached: "NowView, outbox demo")
         return rows
     }
 
@@ -562,7 +627,8 @@ final class ScreenshotTourTests: XCTestCase {
     /// 37–38r (relay client mockup 5a): the demo outbox state on its own demo session — three actions waiting to
     /// send behind a stopped flush, two Not delivered (one withdrawn after 24 h, one refused) — on Now, then the
     /// list, its Dismiss All confirmation, and a retry running under the last one's "Unlock your iPhone" error.
-    private func captureOutbox(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+    /// A demo session with three actions waiting to send and two not delivered (mockup 5a).
+    private func outboxDemoEnv() async throws -> (AppEnvironment, HubSession) {
         let clock = MutableClock()
         let transport = RefusingTransport()
         let defaults = try makeDefaults()
@@ -588,7 +654,11 @@ final class ScreenshotTourTests: XCTestCase {
             return backlog.queued == 3 && backlog.undelivered == 2 && backlog.lastFlushStopped
                 && OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2
         }, "the outbox demo state landed")
-        let env = AppEnvironment.single(session, defaults: defaults)
+        return (AppEnvironment.single(session, defaults: defaults), session)
+    }
+
+    private func captureOutbox(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+        let (env, session) = try await outboxDemoEnv()
         let host = ScreenshotHost(directory: dir, env: env, linking: linking)
         let first = try XCTUnwrap(OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).first).id
 

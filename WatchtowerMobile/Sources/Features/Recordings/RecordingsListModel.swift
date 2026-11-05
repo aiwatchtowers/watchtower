@@ -326,6 +326,11 @@ struct RecordingsFormat {
         return formatter
     }
 
+    /// "10:00".
+    func clock(_ date: Date) -> String {
+        clock.string(from: date)
+    }
+
     /// "Today 10:00", "Yesterday 10:00", or "Mon, Oct 5".
     func when(_ date: Date) -> String {
         if calendar.isDate(date, inSameDayAs: now) { return "Today \(clock.string(from: date))" }

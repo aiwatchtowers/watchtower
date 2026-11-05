@@ -217,6 +217,11 @@ struct LinkRecord: Codable, Equatable, Sendable {
         hubTransports?.contains(TransportKind.cloudKit.rawValue) ?? true
     }
 
+    /// The hub has no iCloud to go to: by its own list on the row, or by the grant it published.
+    func isRelayOnly(grant: DeviceGrant?) -> Bool {
+        !offersCloudKit || grant?.transports?.contains(TransportKind.cloudKit.rawValue) == false
+    }
+
     /// The hub's route on the transport this link is not on, when the hub has both (relay client Phase 3 Task 12):
     /// the relay needs the Mac's relay id, CloudKit a hub that offers it. nil for a link with one route.
     var otherRoute: HubRoute? {
