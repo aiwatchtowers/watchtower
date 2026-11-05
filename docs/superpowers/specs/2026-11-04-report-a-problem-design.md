@@ -328,18 +328,18 @@ Colors only through `Tone` (`Tone.warning` for failures and the too-long notice,
 | 24 | CLI audit: `diagnostics` is decided as a **no-content** command — it joins `cliNoContentCommands` in `cmd/audit_cli_test.go` (next to `policy show`, `version`) with the comment "kinds, counts, states and error classes only (DIAG-01)", so it writes **no** `com.watchtower.audit` line, under an agent marker or not. It prints no synced content (DIAG-01's guard proves it), so READ-02's "every company-data read leaves one line" does not apply; READ-01's budget is for registry read tools and the command is not one (no MCP tool is added) | ask #1039 |
 | 25 | Under an agent marker (`CLAUDECODE`, `CODEX_*`, `WATCHTOWER_TERMINAL_SESSION_ID`, `WATCHTOWER_AUTOMATION_RUN_ID`) the command runs as usual — it is not an owner gesture, writes nothing and shows no content, so AGENT-07's `refuseUnderAgent` list does not grow | ask #1039 |
 | 26 | Daemon line texts for every `PeekProcess` state and pid-file error, and the budget outputs | ask #1034 (owner asked for them; the texts decided by agent) |
-| 27 | The pinned JSON key `partial` and the `Partial report: <reasons>` last line; `partial` = any budget ran out or any part busy/timed out | pending ask #1043 |
-| 28 | Open GitHub Issue is disabled while "What happened?" is empty, in every state | pending ask #1043 |
+| 27 | The pinned JSON key `partial` and the `Partial report: <reasons>` last line; `partial` = any budget ran out or any part busy/timed out | ask #1043 |
+| 28 | Open GitHub Issue is disabled while "What happened?" is empty, in every state | ask #1043 |
 | 29 | Paths resolved without `WorkspaceDir`/`DBPath` (no `log.Fatalf`); a `Workspace:` line replaces the workspace lines when none resolves, with a count and never names | decided by agent |
 | 30 | Unreadable-database texts per SQLite error class; no read without the checkpoint guard | decided by agent |
-| 31 | Outlook accounts shown on their own in the text and mapped to the form's `Email over IMAP` checkbox | pending ask #1043 |
+| 31 | Outlook accounts shown on their own in the text and mapped to the form's `Email over IMAP` checkbox | ask #1043 |
 | 32 | The global `--workspace` flag wins over `active_workspace`, as in `ask`/`ai`/`ai session`; an invalid or unknown name gives a `Workspace:` line, never the name. The AI line marks a provider that only comes from the default as `(default, not chosen)` | decided by agent |
 
 ### Contracts touched
 
 | Contract | How it is affected | Guard test |
 |---|---|---|
-| **DIAG-01** (new, `docs/inventory/diagnostics.md`) | **New**: the diagnostics carry kinds, counts, states and classes only; plus the pinned `--json` keys `text`, `version`, `macos`, `chip`, `provider`, `sources`, `flavor` (approved in ask #1026), and `partial` (**pending ask #1043**) | `cmd/diagnostics_test.go::TestDIAG01_NoNamesOrText`, `TestDiagnosticsText_Pinned` |
+| **DIAG-01** (new, `docs/inventory/diagnostics.md`) | **New**: the diagnostics carry kinds, counts, states and classes only; plus the pinned `--json` keys `text`, `version`, `macos`, `chip`, `provider`, `sources`, `flavor` (approved in ask #1026), and `partial` (**ask #1043**) | `cmd/diagnostics_test.go::TestDIAG01_NoNamesOrText`, `TestDiagnosticsText_Pinned` |
 | **READ-02** (audit line per company-data read, `agent-actions.md`) | **Extended by classification only**: `diagnostics` is added to `cliNoContentCommands`; no audit line (decision 24); the contract's behaviour is unchanged | `cmd/audit_cli_test.go::TestCLIAudit_EveryCommandIsDecided`, `TestCLIAudit_OnlyContentCommands` |
 | **READ-01** (read budget) | **Unchanged**: no registry read tool is added | `internal/tools` registry guard (`UndecidedReadTools`) unchanged |
 | **AGENT-07** (only the owner approves; `refuseUnderAgent`) | **Unchanged**: diagnostics is not added to the refused list (decision 25) | existing AGENT-07 tests |
