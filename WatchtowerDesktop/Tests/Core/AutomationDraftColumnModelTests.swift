@@ -438,12 +438,15 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertEqual(look.items.map(\.text), [
             "Scope Personal → Workbench “acme-app”", "Script changed", "Budget per run 20,000 tokens → 40,000 tokens"
         ])
+        // The box is only on What it collects: When it runs lists every
+        // change too, its own fields included (old → new, not just the value).
         let schedule = try XCTUnwrap(m.confirmationRow(on: .schedule))
-        XCTAssertEqual(schedule.items.map(\.text), ["Scope Personal → Workbench “acme-app”", "Script changed"])
+        XCTAssertEqual(schedule.items, look.items)
+        XCTAssertNil(look.note)
 
         let timing = try edit(changing: [.trigger, .missed])
-        XCTAssertNil(timing.confirmationRow(on: .schedule), "When it runs shows both")
-        XCTAssertNotNil(timing.confirmationRow(on: .look))
+        XCTAssertEqual(timing.confirmationRow(on: .schedule)?.items.map(\.text),
+                       ["Schedule Weekdays 08:00 → Weekdays 09:00", "Missed while asleep run once → skip"])
 
         let none = try edit(changing: [])
         for step in AutomationEditorStep.allCases { XCTAssertNil(none.confirmationRow(on: step)) }
@@ -473,5 +476,31 @@ final class AutomationDraftColumnModelTests: XCTestCase {
                                                  fields: Self.livingFields),
                         confirmedText: Self.confirmed, isNew: false)
         XCTAssertEqual(odd.confirmationRow(on: .schedule)?.items.map(\.text), ["retention 1 → 2"])
+    }
+
+    /// AUTO-06/D26 guard: at a press on any step, the screen says *which*
+    /// hashed fields changed — each changed field's Changed-box line — or
+    /// that the change is unknown, or that this is the first confirmation;
+    /// a value alone is not enough.
+    func testAuto06_ChangeMarkOnEveryStep() throws {
+        for step in AutomationEditorStep.allCases {
+            for field in AutomationHashedField.allCases {
+                let m = try edit(changing: [field])
+                let change = try JSONDecoder().decode(AutomationChange.self,
+                                                      from: Data(try XCTUnwrap(Self.oneChange[field]).utf8))
+                let line = AutomationChangePresentation.line(change) { $0 == 3 ? "acme-app" : nil }
+                XCTAssertTrue(m.changeMarks(on: step).contains(line), "\(field) changed, press on \(step)")
+            }
+            let unknown = try edit(changing: [], known: false)
+            XCTAssertEqual(unknown.changeMarks(on: step), [AutomationChangePresentation.unknownChanges], "\(step)")
+            let first = model(validated: try validated(fields: Self.livingFields), confirmedText: nil, isNew: false)
+            XCTAssertEqual(first.changeMarks(on: step), [AutomationChangePresentation.firstConfirmation], "\(step)")
+            XCTAssertTrue(first.visibleFields(on: step) == Set(AutomationHashedField.allCases), "\(step)")
+        }
+        // The notes sit in the row off What it collects, never on a new draft.
+        let unknown = try edit(changing: [], known: false)
+        XCTAssertNil(unknown.confirmationRow(on: .collects)?.note)
+        XCTAssertEqual(unknown.confirmationRow(on: .look)?.note, AutomationChangePresentation.unknownChanges)
+        XCTAssertNil(model(validated: try validated(fields: Self.livingFields)).confirmationRow(on: .look)?.note)
     }
 }

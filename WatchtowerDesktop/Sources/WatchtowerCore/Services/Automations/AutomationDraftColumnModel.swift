@@ -99,19 +99,37 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
     /// `hashedItems` are the Changed box's lines, shown in full on What it
     /// collects.
     package let itemsAreChanges: Bool
+    /// The Changed box's "First confirmation" / unknown-diff line of an edit
+    /// with nothing to compare; nil for a new recipe or a known diff.
+    package let changeNote: String?
 
-    /// The editor's pinned row on `step` (AUTO-06, ask #486): the hashed
-    /// fields a press there confirms that the step does not show; nil when
-    /// the step shows them all, or there is nothing to confirm.
+    /// The editor's pinned row on `step` (AUTO-06/D26, ask #486). An edit
+    /// with a known diff: every changed field, off What it collects (where
+    /// the Changed box is). Otherwise the fields the step does not show with
+    /// their values, under `changeNote` off What it collects. nil when there
+    /// is nothing to add to the step.
     package func confirmationRow(on step: AutomationEditorStep) -> AutomationSaveConfirmationRow? {
+        if itemsAreChanges {
+            guard step != .collects, !hashedItems.isEmpty else { return nil }
+            return AutomationSaveConfirmationRow(title: AutomationSaveConfirmationRow.changedTitle, note: nil,
+                                                 items: hashedItems)
+        }
         let shown = shownFields(on: step)
         let items = hashedItems.filter { item in item.field.map { !shown.contains($0) } ?? true }
-        guard !items.isEmpty else { return nil }
-        return AutomationSaveConfirmationRow(
-            title: itemsAreChanges ? AutomationSaveConfirmationRow.changedTitle
-                : AutomationSaveConfirmationRow.valuesTitle,
-            items: items
-        )
+        let note = step == .collects ? nil : changeNote
+        guard !items.isEmpty || note != nil else { return nil }
+        return AutomationSaveConfirmationRow(title: AutomationSaveConfirmationRow.valuesTitle, note: note,
+                                             items: items)
+    }
+
+    /// The change marks on screen at a press on `step`: the Changed box's
+    /// lines on What it collects, else the row's note and change lines.
+    /// AUTO-06/D26: every changed field's line, or the unknown-diff / first
+    /// confirmation line, is among them on every step.
+    package func changeMarks(on step: AutomationEditorStep) -> [String] {
+        if step == .collects { return changes }
+        guard let row = confirmationRow(on: step) else { return [] }
+        return (row.note.map { [$0] } ?? []) + (itemsAreChanges ? row.items.map(\.text) : [])
     }
 
     /// The hashed fields on screen at a press on `step`: the step's boxes
@@ -206,6 +224,9 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             itemsAreChanges = false
             hashedItems = []
         }
+        changeNote = hashedItems.isEmpty || isNew || itemsAreChanges ? nil
+            : confirmedText == nil ? AutomationChangePresentation.firstConfirmation
+            : AutomationChangePresentation.unknownChanges
         if let saved, saved.needsConfirmation, !changes.isEmpty {
             authorLine = AutomationChangePresentation.authorLine(changedBy: saved.changedBy,
                                                                  changedAt: saved.changedAt, now: now)

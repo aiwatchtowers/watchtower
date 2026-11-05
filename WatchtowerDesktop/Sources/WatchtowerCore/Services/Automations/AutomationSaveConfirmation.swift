@@ -31,11 +31,12 @@ extension AutomationEditorStep {
 }
 
 /// The editor's pinned row above the footer (AUTO-06, owner's answer in
-/// ask #486): the hashed fields a save or confirm pressed on this step would
-/// confirm and the step does not show. For an edit with a known diff, the
-/// changed fields as the Changed box words them ("Changed"); for a new
-/// recipe, one never confirmed, or an unknown diff, every field with its
-/// value ("Also confirms").
+/// ask #486): what a save or confirm pressed on this step confirms that the
+/// step does not show. For an edit with a known diff, every changed field as
+/// the Changed box words them ("Changed") — the box is only on What it
+/// collects; for a new recipe, one never confirmed, or an unknown diff, the
+/// fields the step does not show with their values ("Also confirms"), under
+/// the box's "First confirmation" / unknown-diff line (`note`).
 package struct AutomationSaveConfirmationRow: Equatable, Sendable {
     package struct Item: Equatable, Sendable {
         /// nil for a change of a field this build does not know: never
@@ -53,5 +54,8 @@ package struct AutomationSaveConfirmationRow: Equatable, Sendable {
     package static let valuesTitle = "Also confirms"
 
     package let title: String
+    /// The Changed box's line for an edit with nothing to compare
+    /// (`AutomationChangePresentation.firstConfirmation`/`unknownChanges`).
+    package let note: String?
     package let items: [Item]
 }

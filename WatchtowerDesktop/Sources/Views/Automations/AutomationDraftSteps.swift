@@ -94,6 +94,9 @@ struct AutomationSaveConfirmation: View {
         if let row = column.confirmationRow(on: step) {
             VStack(alignment: .leading, spacing: Spacing.compact) {
                 SectionHeader(title: row.title, systemImage: "arrow.left.arrow.right")
+                if let note = row.note {
+                    Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach(Array(row.items.enumerated()), id: \.offset) { _, item in
                     Text(item.text)
                         .font(.callout)
