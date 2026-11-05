@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/logredact"
@@ -109,8 +111,12 @@ type oaStreamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *oaUsage       `json:"usage"`
-	Error *oaStreamError `json:"error"`
+	Usage *oaUsage `json:"usage"`
+	// Error is an object ({message,type}) or a string; Object "error" with
+	// Message is the legacy vLLM shape (the ollama client reads the same).
+	Error   json.RawMessage `json:"error"`
+	Object  string          `json:"object"`
+	Message string          `json:"message"`
 }
 
 type oaToolCallDelta struct {
@@ -118,11 +124,6 @@ type oaToolCallDelta struct {
 	ID       string     `json:"id"`
 	Type     string     `json:"type"`
 	Function oaFunction `json:"function"`
-}
-
-type oaStreamError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
 }
 
 // streamMessage assembles one streamed assistant message.
@@ -143,18 +144,18 @@ func (m *streamMessage) addToolCall(d oaToolCallDelta) {
 	if d.Type != "" {
 		c.Type = d.Type
 	}
-	if c.Function.Name == "" {
-		c.Function.Name = d.Function.Name
+	if d.Function.Name != c.Function.Name {
+		c.Function.Name += d.Function.Name // a name split across deltas; a repeated whole one is kept once
 	}
 	c.Function.Arguments += d.Function.Arguments
 }
 
 // callPos finds a delta's call: by its index when the server sends one, else
-// the last call unless the delta opens a new one (an id); a delta that
-// matches none opens a new call.
+// the last call unless the delta names another id; a delta that matches
+// none opens a new call.
 func (m *streamMessage) callPos(d oaToolCallDelta) int {
 	if d.Index == nil {
-		if d.ID == "" && len(m.calls) > 0 {
+		if n := len(m.calls); n > 0 && (d.ID == "" || d.ID == m.calls[n-1].ID) {
 			return len(m.calls) - 1
 		}
 		m.calls = append(m.calls, oaToolCall{Type: "function"})
@@ -175,11 +176,7 @@ func (m *streamMessage) callPos(d oaToolCallDelta) int {
 // message (text passed on to onText). An error object in the stream is typed
 // by its text; the text stays out of the error's log form (FILES-01).
 func (m *streamMessage) add(ch *oaStreamChunk, out *oaResponse, onText func(string)) error {
-	if e := ch.Error; e != nil {
-		msg := strings.TrimSpace(e.Message)
-		if e.Type != "" {
-			msg += " (" + e.Type + ")"
-		}
+	if msg, ok := ch.streamError(); ok {
 		return providers.OllamaFailure(0, msg, logredact.Errorf("model stream error: %s", logredact.Text(msg)))
 	}
 	if ch.Usage != nil {
@@ -201,6 +198,41 @@ func (m *streamMessage) add(ch *oaStreamChunk, out *oaResponse, onText func(stri
 	return nil
 }
 
+// maxStreamErrorMessage caps a server's error text (the ollama client's cap).
+const maxStreamErrorMessage = 1024
+
+// streamError reports an error the chunk carries, as the owner reads it:
+// capped on a rune boundary, never empty.
+func (ch *oaStreamChunk) streamError() (string, bool) {
+	var msg string
+	switch raw := strings.TrimSpace(string(ch.Error)); {
+	case ch.Object == "error":
+		msg = ch.Message
+	case raw == "" || raw == "null":
+		return "", false
+	case json.Unmarshal(ch.Error, &msg) == nil:
+	default:
+		var e struct{ Message, Type string }
+		_ = json.Unmarshal(ch.Error, &e) // the chunk decoded, so this is an object
+		msg = strings.TrimSpace(e.Message)
+		if e.Type != "" {
+			msg += " (" + e.Type + ")"
+		}
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" || strings.HasPrefix(msg, "(") {
+		msg = strings.TrimSpace("the model server reported an error with no message " + msg)
+	}
+	if len(msg) > maxStreamErrorMessage {
+		cut := maxStreamErrorMessage
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
+	}
+	return msg, true
+}
+
 // readStream reads an SSE chat-completions stream into out, passing each
 // text delta to onText as it arrives. The stream is complete at [DONE] or,
 // at EOF, once a choice carried a finish_reason; one that ends with neither
@@ -209,7 +241,7 @@ func readStream(ctx context.Context, br *bufio.Reader, out *oaResponse, onText f
 	sc := bufio.NewScanner(br)
 	sc.Buffer(make([]byte, 0, 64*1024), maxStreamLine)
 	var m streamMessage
-	done := false
+	done, skipped := false, 0
 	for !done && sc.Scan() {
 		data, isData := strings.CutPrefix(sc.Text(), "data:")
 		if !isData {
@@ -222,20 +254,37 @@ func readStream(ctx context.Context, br *bufio.Reader, out *oaResponse, onText f
 		}
 		var ch oaStreamChunk
 		if json.Unmarshal([]byte(data), &ch) != nil {
-			continue // not a chunk this loop reads (the ollama client's rule)
+			skipped++ // judged at the end: it may have held the answer
+			continue
 		}
 		if err := m.add(&ch, out, onText); err != nil {
 			return err
 		}
 	}
-	if err := streamEnd(ctx, sc.Err(), done || m.finish != ""); err != nil {
-		return err
-	}
 	if m.choice {
+		// Set on a failure too: the ledger row estimates what was streamed.
 		out.Choices = []oaChoice{{
 			Message:      oaMessage{Role: "assistant", Content: m.content.String(), ToolCalls: m.calls},
 			FinishReason: m.finish,
 		}}
+	}
+	if err := streamEnd(ctx, sc.Err(), done || m.finish != ""); err != nil {
+		return err
+	}
+	return m.check(skipped)
+}
+
+// check refuses a completed stream that cannot be the model's message: a
+// tool_calls finish with no call assembled, or nothing at all after an
+// undecodable chunk (it may have held the answer). Counts only (FILES-01).
+func (m *streamMessage) check(skipped int) error {
+	switch {
+	case m.finish == "tool_calls" && len(m.calls) == 0:
+		return providers.WithFailure("ollama", providers.InvalidOutput,
+			fmt.Errorf("model stream finished for tool calls with none read (%d undecodable chunks)", skipped))
+	case skipped > 0 && m.content.Len() == 0 && len(m.calls) == 0:
+		return providers.WithFailure("ollama", providers.InvalidOutput,
+			fmt.Errorf("model stream had no message, %d undecodable chunks", skipped))
 	}
 	return nil
 }
@@ -248,6 +297,11 @@ func streamEnd(ctx context.Context, readErr error, complete bool) error {
 	switch {
 	case ctx.Err() != nil && (readErr != nil || !complete):
 		return providers.OllamaRequestFailure(fmt.Errorf("reading model stream: %w", ctx.Err()))
+	case errors.Is(readErr, io.ErrUnexpectedEOF):
+		return providers.WithFailure("ollama", providers.Transport, fmt.Errorf("reading model stream: %w", readErr))
+	case errors.Is(readErr, bufio.ErrTooLong):
+		return providers.WithFailure("ollama", providers.InvalidOutput,
+			fmt.Errorf("model stream line over %d bytes", maxStreamLine))
 	case readErr != nil:
 		return providers.OllamaRequestFailure(fmt.Errorf("reading model stream: %w", readErr))
 	case !complete:

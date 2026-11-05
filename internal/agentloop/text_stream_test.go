@@ -5,16 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/llmusage"
+	"watchtower/internal/logcanary"
+	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
@@ -296,4 +301,144 @@ func TestAgentloopQuery_CapNoteAfterShownText(t *testing.T) {
 	text := strings.Join(textsOf(chunks), "")
 	assert.Equal(t, 1, strings.Count(text, "partial progress"), text)
 	assert.True(t, strings.HasSuffix(text, "partial progress\n\n(Note: I reached the tool-call limit before finishing.)"), text)
+}
+
+// A tool name split across deltas is joined; a server that repeats the
+// whole name on every delta does not double it; index-less deltas that
+// repeat their call's id stay one call.
+func TestAgentloopQuery_StreamedToolCallShapes(t *testing.T) {
+	cases := map[string][]string{
+		"split name": {
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_","arguments":"{"}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"targets","arguments":"}"}}]}}]}`,
+		},
+		"repeated name": {
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_targets","arguments":"{"}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"list_targets","arguments":"}"}}]}}]}`,
+		},
+		"no index, repeated id": {
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"a","type":"function","function":{"name":"list_targets","arguments":"{"}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"a","function":{"arguments":"}"}}]}}]}`,
+		},
+	}
+	for name, lines := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := newSSEServer(t, append(lines, sseFinish("tool_calls"), sseDone),
+				[]string{sseText("done"), sseFinish("stop"), sseDone})
+			reg := listTargetsReg()
+			_, err := collect(t, clientWith(reg, srv.URL))
+			require.NoError(t, err)
+			assert.Equal(t, []string{"list_targets"}, reg.reads)
+		})
+	}
+}
+
+// The error shapes the ollama client reads are typed here too: an error
+// object, an error string, and the legacy {"object":"error"} body; an empty
+// message gets a fallback and a long one is cut.
+func TestAgentloopQuery_StreamErrorShapes(t *testing.T) {
+	cases := map[string]struct {
+		line string
+		want providers.ErrorCategory
+		text string
+	}{
+		"string":       {`data: {"error":"model 'x' not found"}`, providers.Model, "model 'x' not found"},
+		"legacy":       {`data: {"object":"error","message":"model 'x' not found"}`, providers.Model, "model 'x' not found"},
+		"empty":        {`data: {"error":{}}`, providers.Unknown, "no message"},
+		"context size": {`data: {"error":{"message":"maximum context length exceeded","type":"invalid_request_error"}}`, providers.ContextLimit, "(invalid_request_error)"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := newSSEServer(t, []string{tc.line})
+			_, err := collect(t, clientWith(listTargetsReg(), srv.URL))
+			var f *providers.Failure
+			require.True(t, errors.As(err, &f), "untyped: %v", err)
+			assert.Equal(t, tc.want, f.Category)
+			assert.Contains(t, logredact.Full(err), tc.text)
+		})
+	}
+
+	long := strings.Repeat("é", 2000)
+	srv := newSSEServer(t, []string{`data: {"error":{"message":"` + long + `"}}`})
+	_, err := collect(t, clientWith(listTargetsReg(), srv.URL))
+	require.Error(t, err)
+	full := logredact.Full(err)
+	assert.Less(t, len(full), 1300, "the server's message is capped")
+	assert.True(t, utf8.ValidString(full), "cut on a rune boundary")
+}
+
+// A chunk the loop cannot decode never turns into an empty finished answer:
+// a stream that ends without text or calls after one is invalid output, and
+// so is a finish_reason tool_calls with no call assembled.
+func TestAgentloopQuery_UndecodableChunkIsInvalidOutput(t *testing.T) {
+	for name, lines := range map[string][]string{
+		"object arguments": {
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"list_targets","arguments":{"k":1}}}]}}]}`,
+			sseFinish("tool_calls"), sseDone,
+		},
+		"tool_calls finish, no call": {sseFinish("tool_calls"), sseDone},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := newSSEServer(t, lines)
+			_, err := collect(t, clientWith(listTargetsReg(), srv.URL))
+			var f *providers.Failure
+			require.True(t, errors.As(err, &f), "untyped: %v", err)
+			assert.Equal(t, providers.InvalidOutput, f.Category)
+		})
+	}
+}
+
+// A body cut short mid-response (the server died) is a transport failure.
+func TestAgentloopQuery_TruncatedBodyIsTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		_, _ = io.WriteString(w, sseText("partial")+"\n\n")
+		w.(http.Flusher).Flush()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	_, err := collect(t, clientWith(listTargetsReg(), srv.URL))
+	var f *providers.Failure
+	require.True(t, errors.As(err, &f), "untyped: %v", err)
+	assert.Equal(t, providers.Transport, f.Category)
+}
+
+// A stopped stream's ledger row counts the text already streamed.
+func TestAgentloopQuery_InterruptedCallRecordsStreamedText(t *testing.T) {
+	calls := captureCalls(t)
+	srv := newSSEServer(t, []string{sseText("First message, a fair bit of it."), "HANG"})
+	c := clientWith(listTargetsReg(), srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	textCh, errCh, sidCh := c.Query(ctx, "", "go", "")
+	for ch := range textCh {
+		if ch.Text != "" {
+			cancel()
+		}
+	}
+	for range sidCh {
+	}
+	for range errCh {
+	}
+	got := calls.all()
+	require.Len(t, got, 1)
+	assert.False(t, got[0].OK)
+	assert.Equal(t, llmusage.EstimateTokens("First message, a fair bit of it."), got[0].Output)
+}
+
+// TestFILES01_AgentloopStreamErrorStaysOnTheError: a server's in-stream
+// error text is kept whole on the returned error and reaches the log only
+// as a fingerprint.
+func TestFILES01_AgentloopStreamErrorStaysOnTheError(t *testing.T) {
+	canary := logcanary.Text("agentloop.stream_error")
+	srv := newSSEServer(t, []string{`data: {"error":{"message":"model said: '` + canary + `'"}}`})
+	sink := logcanary.Capture(t)
+	_, err := collect(t, clientWith(listTargetsReg(), srv.URL))
+	require.Contains(t, logredact.Full(err), canary)
+	log.Printf("agentloop stream: %v", err)
+	require.Contains(t, sink.String(), "model stream error")
+	sink.AssertClean(t)
 }
