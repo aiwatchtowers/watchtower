@@ -111,6 +111,8 @@ Every piece of state these tasks write, each writer, and who wins.
 | State | Writers | Who wins |
 |---|---|---|
 | Subscription state (`RelayAccountCenter.state`, memory only) | relay answers from the purchase, the restore, the `Transaction.updates` listener, `get_account_state`; socket controls | The relay's last answer, serially on the main actor. A `SUBSCRIPTION_MOVED` or `ENTITLEMENT_EXPIRED` control applies at once and is corrected by the read that follows. The state is not persisted: the relay is the truth, and until it answers the card reads "Checking…". |
+| `RelayAccountCenter.purchase` (memory only) | the owner's presses: `buy`, `restore`, `retryConfirm`, `loadProduct` | One main-actor writer per press; the sweep and `updates()` never write it. |
+| `RelayAccountCenter.unconfirmed` (memory only) | the submit path, from a press, the sweep or `updates()` | The last answer, serially on the main actor. The next sweep recomputes it from `Transaction.unfinished`, so StoreKit is the truth after a restart. |
 | `relay.wasPaying` (app defaults, one flag for the ended and moved banners) | the center sets it on a paying read; the banner's **OK** clears it | One main-actor writer. A paying read after **OK** sets it again, which is right: a new subscription can end again. |
 | `submit_transaction` of one transaction | the purchase flow, the `Transaction.updates` listener, the launch's `Transaction.unfinished` sweep | One flight per transaction id in the center (the second caller joins). The relay treats a repeat as idempotent (`retryOf`). `finish()` runs once, after the first entitlement answer. |
 | `relay.account` Keychain item | the center's first `register` | `add`, never `write`: a lost race reads the winner's. |
@@ -215,9 +217,9 @@ Tasks 1, 16 and 17 serve all three targets and sit under #1243, the largest; the
 | | Relay account failed, nothing charged | "Couldn't reach Relay. You weren't charged." **Try Again** | S46 |
 | | Pending | "Waiting for approval. Relay turns on when it's approved." | S25 |
 | | Bought, relay not reached | "You're subscribed. Relay turns on as soon as Watchtower reaches it." **Try Again** | S26 |
-| | Refused | "Relay couldn't confirm this purchase. Try Restore Purchases." | S27 |
-| | Transfer limit | "This subscription moved too many times this month. Try again later." | S28 |
-| | Relay takes no purchases | "Relay can't take purchases right now. You're not charged again; try again later." | S42 |
+| | Refused | "Relay couldn't confirm this purchase. Try Restore Purchases." **Manage Subscription** | S27 |
+| | Transfer limit | "This subscription moved too many times this month. Try again later." **Manage Subscription** | S28 |
+| | Relay takes no purchases | "Relay can't take purchases right now. You're not charged again; try again later." **Manage Subscription** | S42 |
 | | App too old | "Update Watchtower from the App Store to use Relay." | S43 |
 | | Done | "Relay is on. Choose it for each Mac in Macs." **Done** | S29 |
 | | Empty | Not reachable: no product is an error, S22 | note |
@@ -365,6 +367,7 @@ struct RelayTransaction: Equatable, Sendable {
     let id: UInt64, originalID: UInt64
     let jws: String
     let revoked: Bool
+    let expiresAt: Date
 }
 enum RelayPurchaseResult: Equatable, Sendable { case purchased(RelayTransaction), pending, cancelled, unverified }
 protocol RelaySubscriptionStore: Sendable {
@@ -388,7 +391,8 @@ Only `StoreKitRelayStore` imports StoreKit. An unverified `VerificationResult` n
   - `testAskToBuyIsPending` (`askToBuyEnabled`);
   - `testAnUnfinishedPurchaseIsListedUntilFinished`;
   - `testARenewalArrivesOnUpdates` (`forceRenewalOfSubscription`);
-  - `testARefundIsReportedRevoked` (`refundTransaction`).
+  - `testARefundIsReportedRevoked` (`refundTransaction`);
+  - `testATransactionCarriesItsExpiry` (`expiresAt` equals the transaction's `expirationDate`).
   `RelayConfigTests`: `testProductAndLinksReadEmptyAsNil`; `testReleaseCarriesNoOrigin` stays green; `testEntitlementsNameTheAppAttestEnvironmentPerConfiguration` is **changed**, the Release half now expects `production` (named here because it is a contract test).
 - [ ] **Step 2: Run, expect failure:** `make mobile-gen`, then `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='StoreKitRelayStoreTests|RelayConfigTests'`.
 - [ ] **Step 3: Implement.**
@@ -517,11 +521,15 @@ final class RelayAccountCenter {
         case refused, transferLimit, notImplemented, updateRequired
         case done
     }
+    enum UnconfirmedPurchase: Equatable {
+        case confirming, notReached
+        case refused, transferLimit, notImplemented, updateRequired
+    }
     private(set) var phase: Phase
     private(set) var purchase: PurchaseState
     private(set) var updateRequired: Bool
-    /// True while a transaction Apple sold stays unfinished with no entitlement answer. Cleared only by an entitlement answer.
-    private(set) var unconfirmedPurchase: Bool
+    /// A current period Apple sold with no entitlement answer. Written only by the submit path; nil when no such row is left.
+    private(set) var unconfirmed: UnconfirmedPurchase?
     /// `TransportFollowerPolicy.lapseReason` on `.free` and `.moved`; nil while paying or unknown.
     var switchReason: String? { get }
     func start()            // the event loop, the unfinished sweep, the updates task, first read; nothing without an identity
@@ -539,7 +547,28 @@ protocol RelayLapseTarget: AnyObject { @MainActor func lapseRelay() async; @Main
 - `.pending` shows `pending`; `.cancelled` returns to `ready`; `.unverified` shows `refused`.
 - Finish only on an entitlement answer (Open decision 19). Every refusal leaves the row in `Transaction.unfinished`, and the state shows why. **The bound holds for the automatic paths only** (the sweep and `updates()`): a refused transaction id is kept in memory and they do not send it again in this process; the next launch sends it once. **An owner's press is exempt:** `restore()` and `retryConfirm()` submit what StoreKit returns even when the id is in the refused set, because the same id can come back with a new signature. A press refused again keeps the id in the set, so the automatic paths stay bound. An unreachable relay is not a refusal and stays on the foreground sweep. **The 10-minute window:** a `Transaction.unfinished` JWS keeps its old `signedDate`, which is enough for this account's own purchase, which has no window. A move needs a fresh one, so a refused move passes only through **Restore** (`AppStore.sync()`), as S27 says.
 
-**The outcome outlives the screen.** The sweep writes the same `purchase` states as a press: `.confirming` while it submits a row, then a refusal at launch is `.refused`, `.transferLimit`, `.notImplemented` or `.updateRequired`, and an unreachable relay is `.boughtNotConfirmed`. `loadProduct()` keeps such a state instead of moving to `.ready`, so a charged owner is not offered a second purchase. Each of these sets `unconfirmedPurchase`, and only an entitlement answer clears the flag and the state (a press replaces the state with its own outcome, and a sweep skipping a refused id changes nothing). The flag lives in memory: at the next launch the sweep sets it again, because the row is still unfinished.
+**Two states, two writers.** `purchase` is what an owner's press is doing, and only `buy`, `restore`, `retryConfirm` and `loadProduct` write it. `unconfirmed` means Apple sold a current period and the relay has not confirmed it, and only the submit path writes it, whichever path called. The sweep and `updates()` never touch `purchase`, so a background pass cannot interrupt a running purchase or put a state on the owner's screen by itself.
+
+**A renewal is not a purchase.** While `phase` is `.paying`, `unconfirmed` shows nowhere: a renewal submitted or refused in the background changes no screen, and the sweep retries it with a log line (code only). If the period really ends, the read says not paying, and that is what the owner sees.
+
+**A row counts only while its period is current:** not `revoked`, and `expiresAt` in the future (the center's injected `now`). A row that is not current is not sent and sets nothing. Each sweep recomputes `unconfirmed`: with no current unfinished row it is nil, and a revoked row from `updates()` clears it at once. So **Subscribe** returns when the paid period ends or Apple refunds it, and a permanent refusal hides it for that period at most. While the period is current a second purchase cannot help: the same Apple ID gets the same subscription back. The way out then is **Restore Purchases**, or **Manage Subscription** (Task 9) to cancel at Apple. A wrong device clock can bring **Subscribe** back early; that buy charges nothing and returns the same transaction.
+
+**How `unconfirmed` is set:** `.confirming` while a current row is submitted and nothing was known yet; `.notReached` on an unreachable relay; `.refused`, `.transferLimit`, `.notImplemented` or `.updateRequired` on a definite answer. An entitlement answer clears it and finishes the row. A sweep that skips a refused id (the bound) leaves it as it is. It lives in memory: the next launch's sweep sets it again, because the row is still unfinished.
+
+**Failures on this path:**
+
+| What happens | Result |
+|---|---|
+| Killed after `purchase`, before or during `submit` | The next launch's sweep: `.confirming`, then the answer. The relay treats a repeat as idempotent. |
+| The relay is unreachable | `.notReached`; retried on the foreground sweep and at `.reachable(true)`; **Try Again** |
+| A definite refusal | Sent once per launch; Restore and **Try Again** are exempt; **Manage Subscription** is offered |
+| Refused every time | As above until `expiresAt`; then the row stops counting and **Subscribe** returns |
+| Apple refunds it | `updates()` delivers it revoked: `unconfirmed` clears and the read decides the phase |
+| A renewal is refused on a paying phone | Nothing on screen; the sweep retries at the bound's pace |
+| `.pending`, then killed | No transaction, so no row and nothing unconfirmed: the screen is `.ready`, a second buy is pending again, and an approval arrives on `updates()` |
+| A press while a sweep submits the same id | The press joins the flight; if that answer is a refusal, the press sends its own fresh JWS once |
+| A sweep answers while a press runs | `unconfirmed` changes underneath; the screen keeps showing the press |
+| A row with no expiry (never for this product) | `StoreKitRelayStore` skips it with a log line (code only) |
 
 **With no `relay_auth` yet** (`existingSigner()` nil: a phone that never used Relay): `start()` sets `.free(ended: false)` and does nothing else. No session, register, attestation, read or `Transaction` stream; a reinstalled phone's purchase comes back on Restore. **`identityAppeared()`** starts the rest, called after a successful `accountID()` in `buy` and `restore`, at a finished relay link, and at an upgrade's first step (the same three points call `RelayPushRegistrar.identityMayExist()`), so nothing waits for a relaunch.
 
@@ -573,9 +602,14 @@ protocol RelayLapseTarget: AnyObject { @MainActor func lapseRelay() async; @Main
   - `testAStaleUnfinishedMoveIsRefusedAndRestorePasses` (the fake's 10-minute rule);
   - `testAnOwnerPressIsNotBoundByTheRefusedSet` (table: `restore`, `retryConfirm`; the id refused and in the set, the store returns it with a new JWS: one more op with the new JWS; an entitlement answer finishes it);
   - `testAPressRefusedAgainKeepsTheAutomaticBound` (then a foreground sends nothing);
-  - `testARefusalAtLaunchIsShownAndSurvivesLoadProduct` (table: invalid, transfer limit, not implemented, attestation update required; a new center: the state and `unconfirmedPurchase` set; `loadProduct` keeps both);
-  - `testAnUnreachableRelayAtLaunchIsBoughtNotConfirmed` (a new center: the same flag, `loadProduct` keeps it);
-  - `testAnEntitlementAnswerClearsTheUnconfirmedPurchase` (a sweep or a restore: flag false, the row finished);
+  - `testARefusalAtLaunchIsShownAndSurvivesLoadProduct` (table: invalid, transfer limit, not implemented, attestation update required; a new center: `unconfirmed` set, `purchase` untouched; `loadProduct` leaves `unconfirmed` as it is);
+  - `testAnUnreachableRelayAtLaunchIsNotReached` (a new center: `.notReached`, then `retryConfirm` finishes it);
+  - `testAnEntitlementAnswerClearsTheUnconfirmedPurchase` (a sweep or a restore: nil, the row finished);
+  - `testASweepNeverTouchesThePurchaseState` (table: during `.buying`, `.confirming`, `.ready`, `.done`: a sweep's submit and its refusal leave `purchase` as it was);
+  - `testAnExpiredRowIsNotSentAndSetsNothing`, and `testAPermanentRefusalEndsWithThePeriod` (refused, then `now` past `expiresAt`: nil, no op);
+  - `testARevokedRowClearsAtOnce` (from `updates()`);
+  - `testAPressJoiningASweepSendsItsOwnJWSAfterARefusal`;
+  - `testASweepWithOneCurrentRowKeepsItThroughTheBound` (a foreground skipping the id leaves `unconfirmed`);
   - `testAFailedAccountIDChargesNothing`;
   - `testARestoreWithNoIdentityCreatesItOnThePress`, and `testARestoreWhoseAccountFailsAsksNothingOfApple`;
   - `testTheCenterStartsWhenAnIdentityAppears` (the events loop and the sweep run with no relaunch, after a link and after a buy);
@@ -583,7 +617,7 @@ protocol RelayLapseTarget: AnyObject { @MainActor func lapseRelay() async; @Main
   - `testAReconnectReadsTheAccount`;
   - `testPendingAndCancelledSubmitNothing`, `testAnUnverifiedPurchaseSubmitsNothing`;
   - `testOneTransactionIsSubmittedOnce` (buy and `updates` deliver it together: one op);
-  - `testARenewalIsSubmitted`;
+  - `testARenewalIsSubmitted`, and `testARefusedRenewalChangesNoPurchaseState`;
   - `testARestoreSubmitsAFreshTransactionNeverACachedOne` (two restores read the store twice);
   - `testARestoreRunsAndWithNothingSaysSo`;
   - `testAMoveControlLapsesEveryRelayMac` and `testAMoveLearnedFromAccountStateLapsesEveryRelayMac`;
@@ -623,7 +657,7 @@ extension MacsModel {
 }
 ```
 
-`Phase` → card, with the mockup's texts (Task 1): `.checking` S02; `.unknown` S03 (**Retry** calls `refresh`); `.free(ended: false)` S01 (opens the subscription); `.paying(grace: false)` S04, "N of 3" from `macs.count` and the relay's limit of 3; `.paying(grace: true)` S05; `.free(ended: true)` S06; `.moved` S41 (**Restore Purchases**), never "ended". **`unconfirmedPurchase` on `.free` or `.unknown` is S55 instead** (opens the subscription, which names the cause and the next step). The other phases win over it: `.paying` has its answer, `.moved` already offers Restore, and `.checking` is about to change.
+`Phase` → card, with the mockup's texts (Task 1): `.checking` S02; `.unknown` S03 (**Retry** calls `refresh`); `.free(ended: false)` S01 (opens the subscription); `.paying(grace: false)` S04, "N of 3" from `macs.count` and the relay's limit of 3; `.paying(grace: true)` S05; `.free(ended: true)` S06; `.moved` S41 (**Restore Purchases**), never "ended". **`unconfirmedPurchase` (`center.unconfirmed != nil`) on `.free` or `.unknown` is S55 instead** (opens the subscription, which names the cause and the next step). The other phases win over it: `.paying` has its answer, `.moved` already offers Restore, and `.checking` is about to change.
 
 `transportLine`: "iCloud"; "Relay"; "Relay · switched by this iPhone, <time>"; "Relay · switched by another iPhone, <time>"; "iCloud · switched by this iPhone, <time>", and so on; `by == entitlement_expired` reads "iCloud · your subscription ended, <time>"; `inFlight` (a running upgrade or request) reads "Switching…". The device id never shows. The time uses the app's short format (`RecordingsFormat`).
 
@@ -715,11 +749,11 @@ struct SessionTransportFacts: Equatable {
 - Modify: `MacsView.swift`, `MacDetailView.swift`: `.openSubscription` pushes the screen (Task 10 adds Now's way in)
 - Test: Create `WatchtowerMobile/Tests/RelaySubscriptionModelTests.swift`, extend `MacTransportWiringTests.swift`, `ScreenshotTourTests.swift` (S20–S29, S42–S46); `make mobile-gen`
 
-**Interfaces (Produces):** `struct RelaySubscriptionModel: Equatable { init(purchase: RelayAccountCenter.PurchaseState, phase: RelayAccountCenter.Phase, config: RelayConfig); let bullets: [String]; let primary: Button?; let line: String?; let lineIsError: Bool; let showsRestore: Bool; let termsURL: URL?; let privacyURL: URL?; let toneUses: [ToneUse] }`.
+**Interfaces (Produces):** `struct RelaySubscriptionModel: Equatable { init(purchase: RelayAccountCenter.PurchaseState, unconfirmed: RelayAccountCenter.UnconfirmedPurchase?, phase: RelayAccountCenter.Phase, config: RelayConfig); let bullets: [String]; let primary: Button?; let line: String?; let lineIsError: Bool; let showsRestore: Bool; let manageSubscriptionURL: URL?; let termsURL: URL?; let privacyURL: URL?; let toneUses: [ToneUse] }`.
 
-The lead line, the bullets and every state are Task 1's text, exact. `.ready(product)` builds "Subscribe — <displayPrice> / month"; no price is written in code. `.pending`, `.boughtNotConfirmed` and the rest map one to one. A nil `termsURL` or `privacyURL` hides that link; Task 17's Release check names this as an owner step, because App Review requires both (Open decision 8). **Restore Purchases** is enabled in every state but `.buying`, `.confirming` and `.restoring`. A killed app's purchase is resumed by the center's sweep (Task 6), and the screen shows that outcome: never `.ready` while `unconfirmedPurchase` is set, so **Subscribe** is not offered to someone already charged. Until the sweep answers it shows "Confirming with Relay…" (S24). The Relay card (S55) and the Connection row (S56) lead here.
+The lead line, the bullets and every state are Task 1's text, exact. `.ready(product)` builds "Subscribe — <displayPrice> / month"; no price is written in code. `.pending`, `.boughtNotConfirmed` and the rest map one to one. A nil `termsURL` or `privacyURL` hides that link; Task 17's Release check names this as an owner step, because App Review requires both (Open decision 8). **Restore Purchases** is enabled in every state but `.buying`, `.confirming` and `.restoring`. **What shows.** A press in progress or its result wins. Otherwise, with `purchase` in `.idle`, `.loadingProduct`, `.productFailed` or `.ready` and `phase` not `.paying`, a non-nil `unconfirmed` shows its frame: `.confirming` S24, `.notReached` S26, `.refused` S27, `.transferLimit` S28, `.notImplemented` S42, `.updateRequired` S43. So **Subscribe** is not offered during a current period someone already paid for, and returns when `unconfirmed` is nil (Task 6). The Relay card (S55) and the Connection row (S56) lead here. **Manage Subscription** on S27, S28 and S42 opens `https://apps.apple.com/account/subscriptions`, so nobody is stuck paying for what the relay refuses; the screen imports no StoreKit.
 
-- [ ] **Step 1: Failing tests:** `testEveryPurchaseStateHasItsCopy` (table, exact strings); `testAnUnconfirmedPurchaseOffersNoSubscribe` (each outcome of Task 6's table, and the wait before the sweep's answer: no **Subscribe**, **Restore Purchases** enabled once the sweep has answered); `testThePriceComesOnlyFromTheProduct`; `testRestoreIsDisabledOnlyWhileABuyRuns`; `testMissingLinksAreHidden`; `testAnEmptyProductIsTheRetryState`; `testDoneNamesTheNextStep`; `testTonesAreDeclared`. `MacTransportWiringTests`: `testSubscribeRowsOpenTheSubscriptionScreen` (the Relay card and the Connection row).
+- [ ] **Step 1: Failing tests:** `testEveryPurchaseStateHasItsCopy` (table, exact strings); `testAnUnconfirmedPurchaseOffersNoSubscribe` (table, each `UnconfirmedPurchase` over `.ready`: its frame, no **Subscribe**, **Restore Purchases** enabled); `testNoUnconfirmedPurchaseOffersSubscribeAgain` (nil over `.ready`, also after a refusal: **Subscribe**); `testAPressWinsOverTheBackgroundOutcome`; `testAPayingPhoneIgnoresUnconfirmed`; `testManageSubscriptionOnEveryDefiniteRefusal` (S27, S28, S42 and no other state); `testThePriceComesOnlyFromTheProduct`; `testRestoreIsDisabledOnlyWhileABuyRuns`; `testMissingLinksAreHidden`; `testAnEmptyProductIsTheRetryState`; `testDoneNamesTheNextStep`; `testTonesAreDeclared`. `MacTransportWiringTests`: `testSubscribeRowsOpenTheSubscriptionScreen` (the Relay card and the Connection row).
 - [ ] **Step 2: Run, expect failure:** `make mobile-gen`, `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='RelaySubscriptionModelTests|MacTransportWiringTests'`.
 - [ ] **Step 3: Implement.** The view only reads the model and calls the center. Shots S20–S29, S42–S46.
 - [ ] **Step 4: Run the same;** `make lint-swift`.
@@ -1118,7 +1152,9 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | The account is read at every reconnect too | spec §7 |
 | A relay-only hub's banner comes before moved and ended, whose "back on iCloud" would be false there | decided by the agent |
 | A refused transaction is sent once per launch by the automatic paths; an owner's press (Restore, Try Again) is exempt | decided by the agent, exemption from the owner's comment on ask #1012; relay README |
-| A purchase Apple sold and the relay did not confirm stays visible after a kill: the subscription screen shows its outcome and offers no Subscribe, the Relay card and the Connection row say "not confirmed" | owner's comment on ask #1012 |
+| A purchase Apple sold and the relay did not confirm stays visible after a kill: the subscription screen shows its outcome and offers no Subscribe for that paid period, the Relay card and the Connection row say "not confirmed" | owner's comment on ask #1012 |
+| A background pass and a renewal never write the purchase state, and show nothing on a paying phone | owner's comment on ask #1035 |
+| **Subscribe** returns when the period ends or is refunded; **Manage Subscription** is on every definite refusal | owner's comment on ask #1035; the link's text decided by the agent |
 | Every Relay passage for a phone user opens with the "not in the current version" line, and the Go hub's `iphone-alerts-relay` Learn card waits for launch | owner's comment on ask #1012; the card's removal is Open decision 16 |
 | Restore creates the identity on the press; the center starts on `identityAppeared()` | decided by the agent; spec §4 "first use" |
 | A switch from a lapsed phone carries `entitlement_expired`, Try Again keeps the record's reason | decided by the agent; Open decision 6 |
@@ -1162,4 +1198,4 @@ Each is a proposal with a recommended option. Any still unanswered when the plan
 16. **Guide and Learn while Relay is dark.** Spec §14 puts Relay in `iphone.md` and a Learn card in the Phase 4 PR, but `iphone.md` is near its 8 KB cap and the feature is off in Release. The branch already carries the Go hub's **Alerts over Relay** section and its `iphone-alerts-relay` card, which sends a phone user to something their build lacks. **Recommended:** a new page `iphone-relay.md` and every other Relay passage for a phone user open by saying Relay is not in the current version, one link from `iphone.md`, and the Learn cards, the Go hub's included, only at launch. Alternative: hold the page and the card for the launch release too (Task 16 shrinks to the feature notes), or ship the card now, which sends users to a screen their build lacks.
 17. **One banner at a time on Now.** Mockup section 6 drew the moved banner and the update line together. **Recommended:** one, in the fixed order of Task 10, because a phone screen has little room; the frame is split. Alternative: stack two (Task 10's model returns a list).
 18. **The CloudKit alert subscription stays while on the relay.** Spec §10 says it stays "for CloudKit phones only". **Recommended:** keep it for any hub offering CloudKit: it is silent on the relay, and the hub's re-signal at a switch back fires before the phone has followed. Alternative: remove it on the move, with a retried removal, and lose those re-signalled alerts (Task 18 changes to that).
-19. **A refused purchase is not finished.** Money was taken and the relay said no. **Recommended:** leave it unfinished, sent once per launch by the automatic paths, with an owner's press exempt; a move refused for its age passes through Restore. Alternative: finish on a definite refusal, leaving only Restore (Task 6).
+19. **A refused purchase is not finished.** Money was taken and the relay said no. **Recommended:** leave it unfinished, sent once per launch by the automatic paths, with an owner's press exempt; it counts only while its paid period is current, so a permanent refusal ends with the period, and **Manage Subscription** lets the owner cancel at Apple; a move refused for its age passes through Restore. Alternative: finish on a definite refusal, leaving only Restore (Task 6).
