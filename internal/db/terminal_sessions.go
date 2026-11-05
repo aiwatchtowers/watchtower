@@ -530,12 +530,15 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 // session probe records a failure only when its task_complete is later than
 // agent_state_at, so a failed turn's error never lands on the next prompt's
 // turn. Writes only on workbench workbenchID's codex row id running
-// sessionID, reading working with an older (or unreadable) stamp; nothing
-// else changes. False when a guard held it back.
+// sessionID, reading working with an older (or unreadable) stamp and not
+// finished (a prompt over a finished row is a state change that
+// SetTerminalAgentState stamps itself); nothing else changes. False when a
+// guard held it back.
 func (db *DB) RestampCodexPromptTurn(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
 	stamp := AgentStateStamp(at)
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state_at = ?
 		WHERE id = ? AND project_id = ? AND kind = ? AND claude_session_id = ? AND agent_state = 'working'
+		  AND finished_at IS NULL
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
 		stamp, id, workbenchID, string(agentkind.Codex), sessionID, stamp)
 	if err != nil {

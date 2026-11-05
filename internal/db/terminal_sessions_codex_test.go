@@ -358,6 +358,13 @@ func TestRestampCodexPromptTurn(t *testing.T) {
 	seedWorking(claude)
 	refused("a claude row", claude, pid, codexOtherUUID, now)
 
+	finished := newAgentStateRow(t, d, pid, "codex", codexTestUUID)
+	seedWorking(finished)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`, AgentStateStamp(now), finished); err != nil {
+		t.Fatal(err)
+	}
+	refused("a finished row", finished, pid, codexTestUUID, now)
+
 	waiting := newAgentStateRow(t, d, pid, "codex", codexTestUUID)
 	seedCountedWaiting(t, d, waiting, now)
 	refused("a waiting row", waiting, pid, codexTestUUID, now)

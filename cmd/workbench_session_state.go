@@ -314,17 +314,19 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 	return err
 }
 
-// recordCodexPrompt records a Codex prompt's `working` as Claude Code's
-// does, then restamps a row that already read working (a turn that failed
-// with no Stop, board #959): the session probe records a failure only when
-// it is later than agent_state_at, so the failed turn's error never lands on
-// this prompt's turn before its task_started reaches the rollout.
+// recordCodexPrompt restamps a row that already reads working (a turn that
+// failed with no Stop, board #959), then records the prompt's `working` as
+// Claude Code's does. The session probe records a failure only when it is
+// later than agent_state_at, so the failed turn's error never lands on this
+// prompt's turn before its task_started reaches the rollout. The restamp goes
+// first: a probe write landing before it turns the row to an older failed
+// `waiting`, which the prompt's `working` then replaces (and clears); one
+// landing after it is older than the new stamp and held back.
 func recordCodexPrompt(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, turn hookTurn) error {
-	if err := recordAgentState(database, rowID, workbenchID, sessionID, agentStateWorking, "", nil, true, at, turn); err != nil {
+	if _, err := database.RestampCodexPromptTurn(rowID, workbenchID, sessionID, at.Truncate(time.Millisecond)); err != nil {
 		return err
 	}
-	_, err := database.RestampCodexPromptTurn(rowID, workbenchID, sessionID, at.Truncate(time.Millisecond))
-	return err
+	return recordAgentState(database, rowID, workbenchID, sessionID, agentStateWorking, "", nil, true, at, turn)
 }
 
 // agentTurnEvent says the event starts or ends a subagent's or teammate's

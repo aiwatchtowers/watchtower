@@ -488,6 +488,23 @@ func TestProj11_CodexPromptAfterAnUnseenFailureIsNeverMarkedFailed(t *testing.T)
 	assert.Nil(t, s.AgentFailure)
 }
 
+// A prompt over a finished working row still clears finished_at (the
+// restamp leaves a finished row to the state write).
+func TestCodexPromptOverAFinishedWorkingRowClearsFinished(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	_, err := database.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now().Add(-30*time.Second)), row)
+	require.NoError(t, err)
+	require.True(t, codexRow(t, database, row).Finished)
+
+	runCodexState(t, string(codexHookFixture(t, "user_prompt_submit")))
+
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWorking, s.AgentState.String)
+	assert.False(t, s.Finished, "a new prompt clears finished")
+}
+
 // A failed turn whose time cannot be read cannot be ordered against the
 // stored state: nothing is written, one stderr line says why.
 func TestSessionProbe_CodexFailureWithoutATimeIsLoggedNotWritten(t *testing.T) {
