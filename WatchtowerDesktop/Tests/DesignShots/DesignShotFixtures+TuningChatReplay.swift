@@ -6,7 +6,7 @@ import WatchtowerCore
 /// proposed, running, done and failed. Inputs show a time and a short
 /// label, never their content; only the two outputs are text.
 struct TuningReplayCard: View {
-    enum Phase { case proposed, running, done, failed, proposeRefused }
+    enum Phase { case proposed, running, done, failed, proposeRefused, runRefused }
 
     let phase: Phase
     /// The narrow panel: Without above With.
@@ -73,7 +73,7 @@ struct TuningReplayCard: View {
         case .proposed: "≈ $0.14 · 10 model calls"
         case .running: "Running 3 of 10 · ≈ $0.14"
         case .done, .proposeRefused: "10 calls · $0.12 · 3 of 5 outputs changed"
-        case .failed: "4 of 10 calls · $0.05"
+        case .failed, .runRefused: "4 of 10 calls · $0.05"
         }
     }
 
@@ -109,6 +109,12 @@ struct TuningReplayCard: View {
             Label("Stopped after 4 of 10 calls: the model timed out", systemImage: "exclamationmark.triangle")
                 .font(.callout)
                 .foregroundStyle(Tone.warning)
+            rows { index in index < 2 ? ("done", Tone.success) : ("not run", .secondary) }
+        case .runRefused:
+            Label(TuningChatTexts.runRefused, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(Tone.warning)
+                .fixedSize(horizontal: false, vertical: true)
             rows { index in index < 2 ? ("done", Tone.success) : ("not run", .secondary) }
         }
     }
@@ -181,7 +187,7 @@ struct TuningReplayCard: View {
             case .done:
                 Button("Discard") {}.buttonStyle(.kitSecondary)
                 Button("Propose this addition") {}.buttonStyle(.kitPrimary)
-            case .proposeRefused:
+            case .proposeRefused, .runRefused:
                 Button("Discard") {}.buttonStyle(.kitSecondary)
             case .failed:
                 Button("Discard") {}.buttonStyle(.kitSecondary)

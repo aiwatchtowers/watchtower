@@ -23,6 +23,8 @@ enum TuningChatShotFixtures {
         /// conversation removed with the inputs it read.
         case abDiscarded = "ab-discarded", abRemoved = "ab-removed"
         case abProposeRefused = "ab-propose-refused", conversationRemoved = "conversation-removed"
+        /// Retry (or Run) refused because the prompt changed since the run: Discard only.
+        case abRunRefused = "ab-run-refused"
 
         /// Which fixture coach backs the state.
         var coachVariant: String {
@@ -222,6 +224,7 @@ enum TuningChatTexts {
     static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → AI"
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     static let accepted = "Accepted · measuring for 14 days"
+    static let runRefused = "The prompt changed since this A/B ran — start a new one."
     static let abDiscarded = "A/B discarded · digest.channel"
     static let abRemoved = "This A/B was removed with its source data"
     static let proposeRefused = "Not proposed: with today's additions digest.channel would pass 600 characters."
@@ -458,6 +461,7 @@ private struct TuningFeed: View {
             case .abDiscarded: replayTurn(nil, line: (TuningChatTexts.abDiscarded, "xmark.circle", .secondary))
             case .abRemoved: replayTurn(nil, line: (TuningChatTexts.abRemoved, "trash", .secondary))
             case .abProposeRefused: replayTurn(.proposeRefused)
+            case .abRunRefused: replayTurn(.runRefused)
             case .conversationRemoved: conversationRemoved
             case .abTooFew: tooFew
             case .narrow:

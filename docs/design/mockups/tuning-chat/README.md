@@ -31,6 +31,7 @@ sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
 | A/B discarded (Not now / Discard): folded to one line | §3.6, §4.6 | `tuning-chat-ab-discarded-{light,dark}.png` |
 | A/B removed with its source data (an input purged, deleted, made private or past 7 days) | §4.5 | `tuning-chat-ab-removed-{light,dark}.png` |
 | A/B done, Propose this addition refused (the refusal line, Discard only) | §4.6 | `tuning-chat-ab-propose-refused-{light,dark}.png` |
+| A/B refused at Run or Retry (the prompt changed since): Discard only | §4.6 | `tuning-chat-ab-run-refused-{light,dark}.png` |
 | Conversation removed with the source data it read, New tuning chat | §4.5 | `tuning-chat-conversation-removed-{light,dark}.png` |
 | A/B too few inputs: answer plus a quiet notice, no card | §4.6 | `tuning-chat-ab-too-few-{light,dark}.png` |
 | No tools (ollama): Open Settings | §4.1, §4.4 | `tuning-chat-no-tools-{light,dark}.png` |
