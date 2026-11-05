@@ -770,11 +770,7 @@ func (b *claudeBackend) exitedTerminal(turnID string, out outcome) Event {
 		return Event{Type: EventTurnDone, TurnID: turnID, Status: StatusInterrupted, SessionID: sid}
 	}
 	if out.cause != nil {
-		code, reason, retry := ClassifyFailure(out.cause)
-		event := errorEvent(turnID, code, out.msg, retry)
-		event.Reason = reason
-		event.Cause = out.cause
-		return event
+		return failureEvent(turnID, out.cause)
 	}
 	code, retry := ClassifyClaudeError(out.msg)
 	return errorEvent(turnID, code, out.msg, retry)
@@ -818,12 +814,11 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 	if p.cmd.ProcessState.Success() {
 		// A clean exit mid-turn left the answer without its end: never a
 		// blank or partial success (L12), as codex and the batch path.
-		msg, cause := errNoResult.Error(), errNoResult
+		cause := errNoResult
 		if stderr != "" {
-			msg += ": " + stderr
 			cause = logredact.Errorf("%w: %s", errNoResult, logredact.Text(stderr))
 		}
-		return outcome{kind: outcomeExited, msg: msg, cause: providers.WithFailure("claude", providers.InvalidOutput, cause)}
+		return outcome{kind: outcomeExited, msg: logredact.Full(cause), cause: providers.WithFailure("claude", providers.InvalidOutput, cause)}
 	}
 	msg := stderr
 	if msg == "" {

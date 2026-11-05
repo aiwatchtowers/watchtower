@@ -28,8 +28,8 @@ var update = flag.Bool("update", false, "rewrite testdata/matrix.golden from tod
 const goldenPath = "testdata/matrix.golden"
 
 // openGaps are the open parity gaps of the spec's §2.2 (L2 and L12 are
-// fixed; L12 and L13 were found by this suite). A gap:<id> cell must name
-// one of them.
+// fixed; L13 was found by this suite, as L12 was). A gap:<id> cell must
+// name one of them.
 var openGaps = map[string]bool{
 	"L1": true, "L3": true, "L4": true, "L5": true, "L6": true, "L7": true, "L8": true,
 	"L9": true, "L10": true, "L11": true, "L13": true,

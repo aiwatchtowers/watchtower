@@ -927,34 +927,43 @@ func TestClaudeBackend_CancelDuringStuckWriteEndsInterrupted(t *testing.T) {
 // L12: a warm child that exits 0 mid-turn without its result line ends the
 // turn with a typed invalid_output failure, through CodeForFailure, after
 // the partial text; never a blank success or an untyped internal error.
+// Its stderr, if any, is in the message.
 func TestClaudeBackend_CleanExitWithoutResultIsInvalidOutput(t *testing.T) {
-	opts, _ := fakeClaude(t, "exit_clean")
-	b := NewClaudeBackend(opts)
-	t.Cleanup(func() { _ = b.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	t.Cleanup(cancel)
-	_, err := b.Start(ctx)
-	require.NoError(t, err)
+	for _, tc := range []struct{ stderr, wantMsg string }{
+		{"", "claude ended the turn without a result"},
+		{"mcp server failed to start", "claude ended the turn without a result: mcp server failed to start"},
+	} {
+		t.Run(tc.wantMsg, func(t *testing.T) {
+			opts, _ := fakeClaude(t, "exit_clean")
+			opts.Env = append(opts.Env, "FAKE_STDERR="+tc.stderr)
+			b := NewClaudeBackend(opts)
+			t.Cleanup(func() { _ = b.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			t.Cleanup(cancel)
+			_, err := b.Start(ctx)
+			require.NoError(t, err)
 
-	var events []Event
-	require.NoError(t, b.Turn(ctx, Command{Type: CommandTurn, TurnID: "t1", Text: "hello"}, func(e Event) { events = append(events, e) }))
-	require.NotEmpty(t, events)
-	var text strings.Builder
-	for _, e := range events {
-		if e.Type == EventTextDelta {
-			text.WriteString(e.Text)
-		}
+			var events []Event
+			require.NoError(t, b.Turn(ctx, Command{Type: CommandTurn, TurnID: "t1", Text: "hello"}, func(e Event) { events = append(events, e) }))
+			require.NotEmpty(t, events)
+			var text strings.Builder
+			for _, e := range events {
+				if e.Type == EventTextDelta {
+					text.WriteString(e.Text)
+				}
+			}
+			assert.Equal(t, "partial", text.String(), "the partial text is delivered")
+
+			last := events[len(events)-1]
+			require.Equal(t, EventError, last.Type)
+			assert.Equal(t, "t1", last.TurnID)
+			var failure *providers.Failure
+			require.ErrorAs(t, last.Cause, &failure, "the error carries a typed cause")
+			assert.Equal(t, providers.InvalidOutput, failure.Category)
+			code, retryable := CodeForFailure(providers.InvalidOutput)
+			assert.Equal(t, code, last.Code)
+			assert.Equal(t, retryable, last.Retryable)
+			assert.Equal(t, tc.wantMsg, last.Message)
+		})
 	}
-	assert.Equal(t, "partial", text.String(), "the partial text is delivered")
-
-	last := events[len(events)-1]
-	require.Equal(t, EventError, last.Type)
-	assert.Equal(t, "t1", last.TurnID)
-	var failure *providers.Failure
-	require.ErrorAs(t, last.Cause, &failure, "the error carries a typed cause")
-	assert.Equal(t, providers.InvalidOutput, failure.Category)
-	code, retryable := CodeForFailure(providers.InvalidOutput)
-	assert.Equal(t, code, last.Code)
-	assert.Equal(t, retryable, last.Retryable)
-	assert.NotEmpty(t, last.Message)
 }

@@ -891,14 +891,17 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// A clean exit without a result event never ends as a blank or
 		// partial "complete" turn (L12): the answer may be cut short, and a
 		// skipped line may have been the answer or the result itself. Codex
-		// and the batch path refuse the same run.
+		// and the batch path refuse the same run. Whatever claude said on
+		// stderr rides along (redacted in logs).
 		if lastResult == nil {
+			err := errNoResultEvent
 			if n := lines.Skipped(); n > 0 {
-				fail(providers.WithFailure("claude", providers.InvalidOutput,
-					fmt.Errorf("%w (%d line(s) over %d bytes skipped)", errNoResultEvent, n, maxStreamLine)))
-				return
+				err = fmt.Errorf("%w (%d line(s) over %d bytes skipped)", err, n, maxStreamLine)
 			}
-			fail(providers.WithFailure("claude", providers.InvalidOutput, errNoResultEvent))
+			if st := strings.TrimSpace(stderrBuf.String()); st != "" {
+				err = logredact.Errorf("%w (stderr: %s)", err, logredact.Text(st))
+			}
+			fail(providers.WithFailure("claude", providers.InvalidOutput, err))
 		}
 	}()
 
