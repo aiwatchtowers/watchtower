@@ -110,6 +110,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"$(pwd -P)|$cd_arg\"}}"
+echo '{"type":"turn.completed"}'
 `
 	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
 

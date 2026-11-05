@@ -120,8 +120,9 @@ func (b *turnBackend) Cancel() error {
 func (b *turnBackend) Close() error { return b.Cancel() }
 
 // ChunkEvents maps one ai.StreamChunk from a one-call-per-turn provider onto
-// v2 events: text → text_delta, a tool start/end → tool_start/tool_end, and a
-// bare boundary → nothing (protocol v2 never wipes text).
+// v2 events: text → text_delta, a tool start/end → tool_start/tool_end, the
+// turn's usage → usage, and a bare boundary → nothing (protocol v2 never wipes
+// text).
 func ChunkEvents(turnID string, c ai.StreamChunk) []Event {
 	switch {
 	case c.Routing != nil:
@@ -140,6 +141,9 @@ func ChunkEvents(turnID string, c ai.StreamChunk) []Event {
 			summary = truncateRunes(collapseSpace(c.Tool.Result), SummaryMaxRunes)
 		}
 		return []Event{{Type: EventToolEnd, TurnID: turnID, ID: c.Tool.ID, OK: &ok, Summary: summary, Sources: sources}}
+	case c.Usage != nil:
+		return []Event{{Type: EventUsage, TurnID: turnID, Model: c.Usage.Model,
+			TokensIn: c.Usage.InputTokens, TokensOut: c.Usage.OutputTokens}}
 	case c.Text != "":
 		return []Event{{Type: EventTextDelta, TurnID: turnID, Text: c.Text}}
 	}

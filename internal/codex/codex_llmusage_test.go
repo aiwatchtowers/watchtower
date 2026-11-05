@@ -96,7 +96,7 @@ func TestCodexGeneratorRecordsFailure(t *testing.T) {
 
 func TestCodexClientQueryRecordsEstimatedWithoutUsage(t *testing.T) {
 	calls := captureCalls(t)
-	bin := fakeCodexScript(t, `{"type":"item.completed","item":{"type":"agent_message","text":"an answer of some length"}}`, "", 0)
+	bin := fakeCodexScript(t, `{"type":"item.completed","item":{"type":"agent_message","text":"an answer of some length"}}`+"\n"+`{"type":"turn.completed"}`, "", 0)
 
 	c := NewClient("gpt-x", "", bin)
 	textCh, errCh, sidCh := c.Query(context.Background(), "system prompt", "user message here", "")

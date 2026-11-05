@@ -103,6 +103,7 @@ func TestQuery_StreamsAgentMessages(t *testing.T) {
 		`{"type":"item.started","item":{"type":"agent_message","text":"Hello "}}`,
 		`{"type":"item.updated","item":{"type":"agent_message","text":"world"}}`,
 		`{"type":"item.completed","item":{"type":"agent_message","text":"!"}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 
@@ -138,6 +139,7 @@ func TestQuery_ToolBoundaryDropsPreamble(t *testing.T) {
 		`{"type":"item.started","item":{"type":"mcp_tool_call","id":"t1"}}`,
 		`{"type":"item.completed","item":{"type":"mcp_tool_call","id":"t1"}}`,
 		`{"type":"item.completed","item":{"type":"agent_message","text":"Here is the answer."}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 

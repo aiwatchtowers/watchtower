@@ -140,6 +140,7 @@ case "$input" in
 *` + marker + `*) echo '{"type":"item.completed","item":{"type":"agent_message","text":"got:` + marker + `"}}' ;;
 *) echo '{"type":"item.completed","item":{"type":"agent_message","text":"marker-missing"}}' ;;
 esac
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -168,6 +169,7 @@ case "$input" in
 *` + marker + `*) echo '{"type":"item.completed","item":{"type":"agent_message","text":"got:` + marker + `"}}' ;;
 *) echo '{"type":"item.completed","item":{"type":"agent_message","text":"marker-missing"}}' ;;
 esac
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)

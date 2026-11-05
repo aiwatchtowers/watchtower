@@ -1,5 +1,7 @@
 package codex
 
+import "encoding/json"
+
 // CodexEvent represents a single JSONL event from the Codex CLI --json output.
 type CodexEvent struct {
 	Type     string      `json:"type"` // thread.started, turn.started, turn.completed, item.started, item.completed, error
@@ -18,6 +20,35 @@ type CodexItem struct {
 	Type    string `json:"type"`    // agent_message, command_execution, mcp_tool_call
 	Content string `json:"content"` // older Codex CLI versions
 	Text    string `json:"text"`    // newer Codex CLI versions (v0.118+)
+	// Status is a tool item's state: in_progress, completed, failed (and
+	// declined for a command_execution).
+	Status string `json:"status"`
+
+	// mcp_tool_call: the server and tool, the call's arguments, and its
+	// result or error.
+	Server    string            `json:"server"`
+	Tool      string            `json:"tool"`
+	Arguments json.RawMessage   `json:"arguments"`
+	Result    *CodexToolResult  `json:"result"`
+	ToolError *CodexItemFailure `json:"error"`
+
+	// command_execution: the shell command, its output and exit code.
+	Command          string `json:"command"`
+	AggregatedOutput string `json:"aggregated_output"`
+	ExitCode         *int   `json:"exit_code"`
+}
+
+// CodexToolResult is an mcp_tool_call's result: MCP content blocks.
+type CodexToolResult struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// CodexItemFailure is a failed mcp_tool_call's error.
+type CodexItemFailure struct {
+	Message string `json:"message"`
 }
 
 // MessageText returns the agent message text, preferring Text over Content
