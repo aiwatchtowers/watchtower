@@ -1,13 +1,13 @@
 package ai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
+	"watchtower/internal/streamline"
 )
 
 // Usage holds token metrics from an AI call.
@@ -709,7 +710,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(sidCh)
 
 		args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "stream-json")
-		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
+		// runCtx ends the child when the read below fails, so the run never
+		// waits on a claude blocked writing into a pipe nobody reads.
+		runCtx, cancelRun := context.WithCancel(ctx)
+		defer cancelRun()
+		cmd := exec.CommandContext(runCtx, c.claudeCmd, args...)
 		_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
 		if err != nil {
 			errCh <- err
@@ -763,9 +768,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 		closePayloads()
 
-		scanner := bufio.NewScanner(stdout)
-		// Allow up to 1MB lines for large context responses
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		// Lines up to streamline.MaxLine are read (a tool result can carry
+		// megabytes); a longer one is skipped and counted, never failing the
+		// turn (L1).
+		lines := streamline.New(stdout)
+		defer logSkippedLines(lines)
 
 		// lastResult (declared above) remembers the most recent "result"
 		// event: its usage for the ledger, and its is_error/result fields —
@@ -777,18 +784,28 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 		var limits providers.ClaudeLimitTracker
 		chatEvents := newChatEventState()
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
+		for {
+			line, readErr := lines.Next()
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil {
+				cancelRun()
+				_ = cmd.Wait()
+				fail(fmt.Errorf("reading claude output: %w", readErr))
+				return
+			}
+			if len(line) == 0 {
 				continue
 			}
 
 			var event streamEvent
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
+			if err := json.Unmarshal(line, &event); err != nil {
+				lines.MarkUndecodable()
 				continue
 			}
 
-			hint := limits.Observe([]byte(line))
+			hint := limits.Observe(line)
 			if event.Type == "result" {
 				event.limit = hint
 				captured := event
@@ -842,12 +859,6 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
-			_ = cmd.Wait()
-			fail(fmt.Errorf("reading claude output: %w", err))
-			return
-		}
-
 		waitErr := cmd.Wait()
 
 		// The CLI can flag is_error in its own envelope regardless of exit
@@ -865,6 +876,18 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 	}()
 
 	return textCh, errCh, sidCh
+}
+
+// logSkippedLines logs how many lines of claude's stream-json output were
+// skipped as over the limit or were not a JSON event (counts, never
+// content: FILES-01); nothing for none.
+func logSkippedLines(lines *streamline.Reader) {
+	if n := lines.Skipped(); n > 0 {
+		log.Printf("claude: skipped %d stream-json line(s) over %d bytes", n, streamline.MaxLine)
+	}
+	if n := lines.Undecodable(); n > 0 {
+		log.Printf("claude: %d undecodable stream-json line(s) ignored", n)
+	}
 }
 
 // QuerySync sends a non-streaming request via the Claude Code CLI and returns

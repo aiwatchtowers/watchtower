@@ -1,10 +1,8 @@
 package codex
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -389,33 +387,6 @@ func TestQuery_LastLineWithoutNewline(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 10, OutputTokens: 2}}, usage)
-}
-
-// readStreamLine at its limit: a line of exactly limit bytes (newline
-// included) is returned, one byte more is oversized, and the reader goes on
-// with the next line either way — also when the line spans several fills of
-// the bufio buffer.
-func TestReadStreamLine_AtTheLimit(t *testing.T) {
-	const limit = 40
-	exact := strings.Repeat("a", limit-1) + "\n"
-	over := strings.Repeat("b", limit) + "\n"
-	tail := "last"
-	r := bufio.NewReaderSize(strings.NewReader(exact+over+tail), 16)
-
-	line, oversized, err := readStreamLine(r, limit)
-	require.NoError(t, err)
-	assert.False(t, oversized)
-	assert.Equal(t, exact, string(line))
-
-	line, oversized, err = readStreamLine(r, limit)
-	require.NoError(t, err)
-	assert.True(t, oversized)
-	assert.Nil(t, line)
-
-	line, oversized, err = readStreamLine(r, limit)
-	require.ErrorIs(t, err, io.EOF)
-	assert.False(t, oversized)
-	assert.Equal(t, tail, string(line), "a last line without a newline is returned")
 }
 
 // A completed turn with no answer text fails like QuerySync and the batch

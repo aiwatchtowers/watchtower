@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/digest"
 	"watchtower/internal/providers"
+	"watchtower/internal/streamline"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -328,12 +328,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			recordCodexCall(ctx, c.model, start, s.usage, true, systemPrompt+userMessage, s.answer.String(), ok)
 		}()
 
-		reader := bufio.NewReaderSize(stdout, 64*1024)
+		lines := streamline.NewWithLimit(stdout, maxStreamLine)
 		for {
-			line, oversized, readErr := readStreamLine(reader, maxStreamLine)
-			if oversized {
-				s.skipped++
-			} else if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && !s.handle(trimmed) {
+			line, readErr := lines.Next()
+			s.skipped = lines.Skipped()
+			if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && !s.handle(trimmed) {
 				_ = cmd.Wait()
 				s.finish()
 				errCh <- ctx.Err()
