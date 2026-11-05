@@ -295,6 +295,9 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
 	defer cancel()
 
+	if aiFlagEvents == "v2" {
+		enableChatEvents(aiClient)
+	}
 	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
 
 	if aiFlagEvents == "v2" {
@@ -561,8 +564,23 @@ func v2TurnID() string {
 	return "query"
 }
 
+// enableChatEvents switches a provider that offers them (codex, the
+// runtime B loop, the tool router) onto the protocol-v2 chat events — tool
+// starts/ends, the turn's usage, separated messages — as the chat session's
+// turn backend does; `ai query --events v2` renders them like the session.
+// A provider without them (claude, whose v2 stream is text and its own
+// translator is the session's, plain ollama) is left as is: a wrapper in
+// front of codex must forward EmitToolEvents, as toolRouteProvider does.
+func enableChatEvents(p ai.Provider) {
+	if e, ok := p.(interface{ EmitToolEvents() }); ok {
+		e.EmitToolEvents()
+	}
+}
+
 // streamQueryV2 renders a one-shot query as protocol-v2 events: turn_start,
-// text_delta per chunk (a tool boundary never wipes text), then turn_done —
+// text_delta per chunk (a tool boundary never wipes text), tool_start/
+// tool_end and usage from a provider with the chat events on
+// (enableChatEvents), then turn_done —
 // or, on failure, one classified turn error in its place.
 func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, errCh <-chan error, sidCh <-chan string) {
 	out := chat.NewEventWriter(w)

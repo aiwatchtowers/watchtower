@@ -74,6 +74,7 @@ case "$input" in
 *` + marker + `*) echo '{"type":"item.completed","item":{"type":"agent_message","text":"got:` + marker + `"}}' ;;
 *) echo '{"type":"item.completed","item":{"type":"agent_message","text":"marker-missing"}}' ;;
 esac
+echo '{"type":"turn.completed"}'
 `
 	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
 		t.Fatalf("writing fake codex binary: %v", err)
@@ -180,6 +181,7 @@ for a in "$@"; do
   prev="$a"
 done
 echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"model:$model\"}}"
+echo '{"type":"turn.completed"}'
 `
 	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
 		t.Fatalf("writing fake codex binary: %v", err)
@@ -288,7 +290,7 @@ func TestCodexGenerator_IsolatedChild(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-codex")
 	body := "#!/bin/sh\nenv > '" + dir + "/env'\nps -o pgid= -p $$ | tr -d ' ' > '" + dir + "/pgid'\necho $$ > '" + dir + "/pid'\n" +
-		"cat > /dev/null\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}'\n"
+		"cat > /dev/null\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}'\necho '{\"type\":\"turn.completed\"}'\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +409,7 @@ func TestCodexGenerateWithImage_WorkDir(t *testing.T) {
 	root := filepath.Join(dir, "media")
 	script := filepath.Join(dir, "fake-codex")
 	body := "#!/bin/sh\npwd -P > '" + dir + "/cwd'\necho \"$@\" > '" + dir + "/argv'\ncat > /dev/null\n" +
-		"echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Red\"}}'\n"
+		"echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Red\"}}'\necho '{\"type\":\"turn.completed\"}'\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}

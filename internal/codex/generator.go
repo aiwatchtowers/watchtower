@@ -142,7 +142,7 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
-	result, usage, parseErr := parseJSONLOutputForModel(output, model)
+	result, usage, parseErr := parseJSONLOutputForModel(output, model, stderrBuf.String())
 	if parseErr != nil {
 		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
 		return "", nil, parseErr
@@ -318,12 +318,14 @@ func noToolsArgs(profile providers.InvocationProfile, model, workDir string) ([]
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message
 // content and accumulated usage.
 func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
-	return parseJSONLOutputForModel(output, "")
+	return parseJSONLOutputForModel(output, "", "")
 }
 
-func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage, error) {
+// stderr is codex's, for the error of a run cut off before turn.completed.
+func parseJSONLOutputForModel(output []byte, model, stderr string) (string, *CodexUsage, error) {
 	var terminalFailure error
 	var lastContent string
+	completed := false
 	totalUsage := &CodexUsage{}
 
 	// The whole output is already in memory, so split it instead of using a
@@ -347,6 +349,7 @@ func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage,
 
 		if event.Type == "turn.completed" || event.Type == "turn.started" {
 			terminalFailure = nil
+			completed = event.Type == "turn.completed"
 		}
 		if event.Usage != nil {
 			totalUsage.add(event.Usage)
@@ -359,6 +362,11 @@ func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage,
 
 	if terminalFailure != nil {
 		return "", nil, terminalFailure
+	}
+	// A run that exited cleanly is a success only after turn.completed, as
+	// in the streaming Query: a cut-off run never returns its preamble.
+	if !completed {
+		return "", nil, incompleteRunError(model, output, stderr)
 	}
 	if lastContent == "" {
 		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, fmt.Errorf("no agent_message found in codex output"))

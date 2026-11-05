@@ -364,7 +364,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			// A clean exit is a success only after turn.completed (the claude
 			// backend's "exited without a result"): an empty or cut-off run
 			// is never a blank or partial "complete" answer.
-			errCh <- providers.ContextFailure("codex", ctx, s.incompleteError(stderrBuf.String()))
+			errCh <- providers.ContextFailure("codex", ctx, incompleteRunError(c.model, s.errLines, stderrBuf.String()))
 		default:
 			ok = true
 		}
@@ -409,7 +409,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)
 	}
 
-	result, codexUsage, parseErr := parseJSONLOutputForModel(output, c.model)
+	result, codexUsage, parseErr := parseJSONLOutputForModel(output, c.model, stderrBuf.String())
 	if parseErr != nil {
 		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, parseErr

@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/providers"
 )
 
@@ -57,6 +59,63 @@ func TestCodexLive_SystemPromptAndMCPTool(t *testing.T) {
 	text := liveQuery(t, c, sys, "Run the probe.")
 	assert.Contains(t, text, promptNonce, "the system prompt reached the model")
 	assert.Contains(t, text, toolNonce, "the mounted MCP tool was called")
+}
+
+// TestCodexLive_ChatToolStepAndUsage runs the real codex through the
+// streaming Query with the chat's v2 events on: the MCP call must come back
+// as one tool start/end pair under its claude-form name with the arguments
+// the model sent and the tool's result text, the answer must follow, and the
+// turn's usage must be streamed — the item and usage field names the
+// stub-driven tests assume, checked against codex itself.
+func TestCodexLive_ChatToolStepAndUsage(t *testing.T) {
+	bin, model := liveCodexSetup(t)
+	toolNonce := liveNonce(t)
+	t.Setenv(liveMCPNonceEnv, toolNonce)
+
+	c := NewClient(model, filepath.Join(t.TempDir(), "live.db"), bin)
+	c.SetMCPEnvVars([]string{liveMCPNonceEnv})
+	c.SetProcessGroup(true)
+	c.EmitToolEvents()
+	sys := "You are a connectivity probe. Call the get_nonce tool of the watchtower MCP server exactly once, " +
+		`with the argument label set to "probe". Then reply with only the text the tool returned.`
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	textCh, errCh, sidCh := c.Query(ctx, sys, "Run the probe.", "")
+	var starts, ends []ai.ToolEvent
+	var usage []ai.TurnUsage
+	var text strings.Builder
+	for ch := range textCh {
+		switch {
+		case ch.Tool != nil && ch.Tool.Done:
+			ends = append(ends, *ch.Tool)
+		case ch.Tool != nil:
+			starts = append(starts, *ch.Tool)
+		case ch.Usage != nil:
+			usage = append(usage, *ch.Usage)
+		}
+		text.WriteString(ch.Text)
+	}
+	for range sidCh {
+	}
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+	t.Logf("codex answered: %q; starts %+v; ends %+v; usage %+v", text.String(), starts, ends, usage)
+
+	require.Len(t, starts, 1, "one tool start")
+	require.Len(t, ends, 1, "one tool end")
+	assert.Equal(t, "mcp__watchtower__get_nonce", starts[0].Name)
+	assert.JSONEq(t, `{"label":"probe"}`, string(starts[0].Args))
+	assert.Equal(t, starts[0].ID, ends[0].ID)
+	assert.NotEmpty(t, ends[0].ID)
+	assert.Equal(t, starts[0].Name, ends[0].Name)
+	assert.True(t, ends[0].OK)
+	assert.Equal(t, toolNonce, ends[0].Result)
+	assert.Contains(t, text.String(), toolNonce)
+	require.Len(t, usage, 1)
+	assert.Equal(t, model, usage[0].Model)
+	assert.Positive(t, usage[0].InputTokens)
+	assert.Positive(t, usage[0].OutputTokens)
 }
 
 // TestCodexLive_ReadFolder: a read-folder run (code questions, the spec
@@ -160,7 +219,9 @@ func runFakeMCPServer(nonce string) int {
 			result = map[string]any{"tools": []any{map[string]any{
 				"name":        "get_nonce",
 				"description": "Returns the probe nonce.",
-				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+					"label": map[string]any{"type": "string", "description": "A label for the probe."},
+				}},
 			}}}
 		case "tools/call":
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": nonce}}}

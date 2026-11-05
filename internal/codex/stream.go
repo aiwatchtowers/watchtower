@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // maxStreamLine is the longest JSONL line Query decodes (the claude warm
@@ -212,17 +213,21 @@ func (s *queryStream) finish() {
 	}
 }
 
-// incompleteError is the error of a clean exit without turn.completed,
-// with what the run said about it: a top-level error event (as runError
-// reads it), else codex's stderr.
-func (s *queryStream) incompleteError(stderr string) error {
-	if turnErr := failedTurn(s.model, s.errLines); turnErr != nil {
+// incompleteRunError is the error of a codex run that exited cleanly
+// without turn.completed — the streaming Query, QuerySync and the batch
+// generator alike — with what the run said about it: a failed turn in its
+// JSONL events (classified as runError does); else codex's stderr, left
+// unclassified so the transport rules (digest.aiTransportFailure) still read
+// a "stream disconnected" or a 503 in it; else, with nothing said, an
+// invalid-output failure.
+func incompleteRunError(model string, jsonl []byte, stderr string) error {
+	if turnErr := failedTurn(model, jsonl); turnErr != nil {
 		return digest.WithCause(turnErr, errNoTurnCompleted)
 	}
 	if st := strings.TrimSpace(stderr); st != "" {
 		return logredact.Errorf("%w (stderr: %s)", errNoTurnCompleted, logredact.Text(st))
 	}
-	return errNoTurnCompleted
+	return providers.WithFailure("codex", providers.InvalidOutput, errNoTurnCompleted)
 }
 
 // toolName is the item's tool name in the claude CLI's form, so the chat

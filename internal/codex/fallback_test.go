@@ -18,7 +18,7 @@ import (
 )
 
 func TestFailureEnvelopeIdentity(t *testing.T) {
-	output := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"ok"},"error":{"message":"usage limit reached"}}`)
+	output := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"ok"},"error":{"message":"usage limit reached"}}` + "\n" + `{"type":"turn.completed"}`)
 	if err := failedTurn("m", output); err != nil {
 		t.Fatalf("content established CLI failure: %v", err)
 	}
@@ -198,7 +198,7 @@ printf '%s\n' "$@" >"$WT_PROFILE_CAPTURE/args"
 printf '%s' "$CODEX_HOME" >"$WT_PROFILE_CAPTURE/home"
 printf '%s' "$OPENAI_BASE_URL" >"$WT_PROFILE_CAPTURE/transport"
 cat >"$WT_PROFILE_CAPTURE/stdin"
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' '{"type":"turn.completed"}'
 `
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -343,7 +343,7 @@ if [ "$snapshot" = enabled ] || [ "$snapshot_v2" = enabled ]; then
  printf helper >"$WT_SNAPSHOT_CAPTURE/helper"
 fi
 cat >/dev/null
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' '{"type":"turn.completed"}'
 `
 	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
 		t.Fatal(err)

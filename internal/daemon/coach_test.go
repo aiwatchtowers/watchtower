@@ -250,7 +250,7 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			for _, provider := range []string{"claude", "codex"} {
 				response := `{"type":"result","subtype":"success","result":"ok"}`
 				if provider == "codex" {
-					response = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}`
+					response = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}` + "\n" + `{"type":"turn.completed"}`
 				}
 				if provider == preferred {
 					if provider == "claude" {

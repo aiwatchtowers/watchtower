@@ -265,7 +265,7 @@ func recordingCodex(t *testing.T, dir string) string {
 		"echo \"$CODEX_HOME\" > '" + dir + "/home'\n" +
 		"env > '" + dir + "/env'\n" +
 		"for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '" + dir + "/argv'\n" +
-		`echo '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'` + "\n"
+		`echo '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'; echo '{"type":"turn.completed"}'` + "\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
