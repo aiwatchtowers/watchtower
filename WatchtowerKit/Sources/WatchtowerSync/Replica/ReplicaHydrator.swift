@@ -99,11 +99,14 @@ public actor ReplicaHydrator {
 
     private func performHydration() async throws -> (applied: Int, deleted: Int) {
         try await pull?()
+        // Asked before the read: a load that finishes after the question can only add to what the read returns.
+        let loadComplete = await (transport as? any InitialLoadReporting)?.dataLoadComplete() ?? true
         let batch = try await transport.changes(in: .data, since: store.storedToken())
         // A locked keychain before the first unlock (or no link yet) throws
         // here: nothing of the batch is stored and the token is kept (F15).
-        let stored = try store.applyCounting(batch)
-        if stored != nil {
+        let applied = try store.applyCounting(batch, loadComplete: loadComplete)
+        let stored = applied?.stored
+        if applied?.tokenSaved == true {
             // Consumer-driven compaction of the CONSUMED data-zone buffer (see
             // CompactingTransport's retention note): safe here because the
             // replica is the ONLY data-zone consumer on this device and its

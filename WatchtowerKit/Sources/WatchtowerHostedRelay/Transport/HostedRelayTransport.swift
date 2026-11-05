@@ -18,7 +18,7 @@ import WatchtowerSync
 /// The socket is the device's one `HostedRelaySession` (R2): `init(session:…)` shares it with
 /// every other relay object of the process, and account-level signals go to `session.events`;
 /// `init(client:…)` builds a private session whose account-level signals are also `relayEvents`.
-public actor HostedRelayTransport: LiveTransport, ConditionalTransport, CompactingTransport {
+public actor HostedRelayTransport: LiveTransport, ConditionalTransport, CompactingTransport, InitialLoadReporting {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     /// How long a resync the relay refused partway waits before it starts again (`start()` ends
     /// the wait at once).
@@ -166,6 +166,14 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// Served from the local buffer (R5).
     public func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         try store.changes(in: zone, since: token)
+    }
+
+    /// False while a pull is paging or the data zone's first pull / a resync has pages left (that state is
+    /// persisted, so a pull that failed midway or an app restart still reads as loading); the buffer is whole
+    /// only after the load's last page.
+    public func dataLoadComplete() async -> Bool {
+        guard pullTask == nil else { return false }
+        return !((try? store.relayResyncPending(.data)) ?? true)
     }
 
     public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {

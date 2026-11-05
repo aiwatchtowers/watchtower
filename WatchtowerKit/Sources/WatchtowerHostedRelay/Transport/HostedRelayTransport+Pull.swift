@@ -53,6 +53,12 @@ extension HostedRelayTransport {
         }
         var resync = try store.relayResyncPending(zone)
         var since = try store.relayCursor(zone: zone)
+        if !resync, since == 0 {
+            // A zone's first pull is a load like a resync: persisted, so a failure midway or a restart shows it
+            // as unfinished (`dataLoadComplete`) and the next pull resumes it from the stored cursor.
+            try store.beginRelayResync(zone)
+            resync = true
+        }
         var fromZero = resync || since == 0
         var buffered = false
         while true {

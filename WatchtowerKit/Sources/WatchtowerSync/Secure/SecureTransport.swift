@@ -20,7 +20,7 @@ import os
 /// once per wire name through `onRejected`. Every opened record passes the rollback guard keyed by (wire name,
 /// sender) (F3); signals (DataZone only) are refused here. A locked keychain makes `changes` throw
 /// `SecureTransportError.keysUnavailable` so the consumer keeps its token and replays (Review Focus 1). `deletedRecordNames` are passed through as wire names.
-public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
+public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingTransport, InitialLoadReporting {
     private static let hubRelayKinds: Set<String> = [
         RelayRecordKind.action.rawValue, RelayRecordKind.recordingUpload.rawValue, RelayRecordKind.device.rawValue
     ]
@@ -292,6 +292,12 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
         guard let compacting = inner as? any CompactingTransport else { return }
         try await compacting.compact(in: zone, keepSince: token)
+    }
+
+    /// Forwards when `inner` reports its load; an inner transport that does not has nothing partial to read.
+    public func dataLoadComplete() async -> Bool {
+        guard let reporting = inner as? any InitialLoadReporting else { return true }
+        return await reporting.dataLoadComplete()
     }
 
     /// F1: forwards when `inner` conforms to `SweepingTransport`; otherwise a no-op returning 0.
