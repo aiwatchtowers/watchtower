@@ -451,10 +451,6 @@ func runConnectionProbe(ctx context.Context, provider string, gen digest.Generat
 // ran, but the system prompt did not reach the model.
 var errProbeNonceMissing = errors.New("the answer lacks the system prompt's nonce")
 
-// probeNonceMissingText is the owner-facing text for errProbeNonceMissing;
-// error_code stays invalid_output.
-const probeNonceMissingText = "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
-
 // The Desktop boundary contains classifications, never arbitrary child stderr,
 // owner paths, tokens or managed-configuration contents.
 func connectionTestCode(err error) providers.ErrorCategory {
@@ -466,8 +462,8 @@ func connectionTestCode(err error) providers.ErrorCategory {
 }
 
 func connectionTestError(err error) string {
-	if errors.Is(err, errProbeNonceMissing) {
-		return probeNonceMissingText
+	if errors.Is(err, errProbeNonceMissing) { // error_code stays invalid_output
+		return "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
 	}
 	var failure *providers.Failure
 	if errors.As(err, &failure) {

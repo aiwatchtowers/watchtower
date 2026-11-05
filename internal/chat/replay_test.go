@@ -1,9 +1,7 @@
 package chat
 
 import (
-	"bytes"
 	"database/sql"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/codex"
 	"watchtower/internal/db"
 )
 
@@ -215,7 +214,7 @@ func TestReplayFiles_NewestFirstWithinBudget(t *testing.T) {
 			{Name: "gone.txt", Mime: "text/plain", Path: filepath.Join(dir, "gone.txt")},
 		},
 	}
-	out := replayFiles(hist, files, nil, 100)
+	out, _ := replayFiles(hist, files, nil, 100)
 	assert.True(t, strings.HasPrefix(out, replayFilesHeader+"\n"), out)
 	assert.True(t, strings.HasSuffix(out, replayFilesFooter+"\n\n"), out)
 	assert.Contains(t, out, "<file name=\"new.csv\">\n"+strings.Repeat("n", 60)+"\n</file>")
@@ -225,7 +224,8 @@ func TestReplayFiles_NewestFirstWithinBudget(t *testing.T) {
 	assert.Contains(t, out, `[file "gone.txt" not replayed: file not found or unreadable]`)
 	assert.Less(t, strings.Index(out, "new.csv"), strings.Index(out, "old.csv"), "newest first")
 
-	assert.Empty(t, replayFiles(hist, nil, nil, 100), "no files → no block")
+	none, _ := replayFiles(hist, nil, nil, 100)
+	assert.Empty(t, none, "no files → no block")
 }
 
 func TestReplayFromDB_ReplaysEarlierTextFiles(t *testing.T) {
@@ -253,7 +253,7 @@ func TestReplayFiles_ResentFileIsReplayedOnce(t *testing.T) {
 	require.NoError(t, os.WriteFile(p, []byte(strings.Repeat("a", 60)), 0o600))
 	f := db.ChatProjectFile{Name: "a.csv", Mime: "text/csv", Path: p, Size: 60}
 	hist := []db.ChatMessage{msg(1, "user", "here", "t1"), msg(2, "assistant", "ok", "t1"), msg(3, "user", "again", "t2")}
-	out := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {f}, 3: {f}}, nil, 100)
+	out, _ := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {f}, 3: {f}}, nil, 100)
 	assert.Equal(t, 1, strings.Count(out, `<file name="a.csv">`), out)
 	assert.NotContains(t, out, "not replayed")
 }
@@ -262,7 +262,7 @@ func TestReplayFiles_ResentFileIsReplayedOnce(t *testing.T) {
 func TestReplayFiles_StoredSizeOverBudgetIsNotRead(t *testing.T) {
 	gone := filepath.Join(t.TempDir(), "big.csv") // never created: a read would say "unreadable"
 	hist := []db.ChatMessage{msg(1, "user", "here", "t1")}
-	out := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {{Name: "big.csv", Mime: "text/csv", Path: gone, Size: 101}}}, nil, 100)
+	out, _ := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {{Name: "big.csv", Mime: "text/csv", Path: gone, Size: 101}}}, nil, 100)
 	assert.Contains(t, out, `[file "big.csv" not replayed: over the replay's 100-byte budget for earlier files]`)
 }
 
@@ -282,30 +282,48 @@ func TestReplayFromDB_FileResentWithTheTurnIsNotReplayed(t *testing.T) {
 	assert.Contains(t, out, "  · attached: a.csv", "the transcript still says where it was first sent")
 }
 
-// Earlier files that can no longer be read are logged as a count only — no
-// names or paths (FILES-01); images and PDFs, left out on purpose, are not.
-func TestReplayFiles_LogsUnreadableCountOnly(t *testing.T) {
-	var buf bytes.Buffer
-	prev, flags := log.Writer(), log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() { log.SetOutput(prev); log.SetFlags(flags) })
-
+// The files a replay leaves out are counted by class for the log line
+// (counts only, FILES-01): gone or unreadable, refused (here: not UTF-8);
+// images and PDFs, left out on purpose, and budget misses are not counted.
+func TestReplayFiles_CountsLeftOutFiles(t *testing.T) {
 	dir := t.TempDir()
 	png := filepath.Join(dir, "shot.png")
 	require.NoError(t, os.WriteFile(png, fixturePNG, 0o600))
+	latin := filepath.Join(dir, "latin1.txt")
+	require.NoError(t, os.WriteFile(latin, []byte("caf\xe9 au lait"), 0o600))
 	hist := []db.ChatMessage{msg(1, "user", "here", "t1")}
-	replayFiles(hist, map[int64][]db.ChatProjectFile{1: {
+	_, skips := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {
 		{Name: "secret-plan.txt", Mime: "text/plain", Path: filepath.Join(dir, "secret-plan.txt")},
 		{Name: "gone.csv", Mime: "text/csv", Path: filepath.Join(dir, "gone.csv")},
+		{Name: "latin1.txt", Mime: "text/plain", Path: latin},
 		{Name: "shot.png", Mime: "image/png", Path: png},
+		{Name: "big.csv", Mime: "text/csv", Path: filepath.Join(dir, "big.csv"), Size: 101},
 	}}, nil, 100)
-	assert.Contains(t, buf.String(), "chat replay: 2 earlier file(s) could not be read\n")
-	for _, leak := range []string{"secret-plan", "gone.csv", "shot.png", dir} {
-		assert.NotContains(t, buf.String(), leak)
-	}
+	assert.Equal(t, replaySkips{unreadable: 2, rejected: 1}, skips)
+}
 
-	buf.Reset()
-	replayFiles(hist, map[int64][]db.ChatProjectFile{1: {{Name: "shot.png", Mime: "image/png", Path: png}}}, nil, 100)
-	assert.NotContains(t, buf.String(), "chat replay:", "nothing unreadable, nothing logged")
+// The turn backend hands the turn's attachments to the replay: a file sent
+// again with the turn reaches codex once, inlined with the turn.
+func TestTurnBackend_ResentFileReachesTheProviderOnce(t *testing.T) {
+	d, conv := seedConversation(t)
+	var id int64
+	require.NoError(t, d.QueryRow(`SELECT id FROM chat_messages WHERE role = 'user' AND turn_id = 't1'`).Scan(&id))
+	p := writeAttachmentFixture(t, "a.csv", []byte("a,b\n1,2"))
+	linkAttachment(t, d, conv, id, "a.csv", "text/csv", p)
+	stdin := filepath.Join(t.TempDir(), "stdin")
+	bin := filepath.Join(t.TempDir(), "codex")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n"+
+		`if [ "$1" = --version ]; then echo 'codex-cli 0.166.0'; exit; fi`+"\n"+
+		"cat > '"+stdin+"'\n"+
+		`echo '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"ok"}}'`+"\n"+
+		`echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`+"\n"), 0o755))
+
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", bin), d, conv), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again", Attachments: []Attachment{{Path: p, Mime: "text/csv", Name: "a.csv"}}})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+	sent, err := os.ReadFile(stdin)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(sent), `<file name="a.csv">`), string(sent))
 }

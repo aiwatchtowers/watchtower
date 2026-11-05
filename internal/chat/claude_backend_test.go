@@ -232,6 +232,25 @@ func TestClaudeBackend_NoteSessionIDIgnoresAReplacedChild(t *testing.T) {
 	assert.Equal(t, "sess-live", b.currentSession())
 }
 
+// The claude backend hands the turn's attachments to the Replay hook, so a
+// file sent again with the turn is left out of the replay.
+func TestClaudeBackend_ReplayGetsTheTurnsAttachments(t *testing.T) {
+	opts, _ := fakeClaude(t, "normal")
+	p := writeAttachmentFixture(t, "a.csv", []byte("a,b"))
+	var got []Attachment
+	opts.Replay = func(_ string, current []Attachment) (string, error) {
+		got = current
+		return "", nil
+	}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	att := Attachment{Path: p, Mime: "text/csv", Name: "a.csv"}
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x", Attachments: []Attachment{att}})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+	assert.Equal(t, []Attachment{att}, got)
+}
+
 // TestClaudeBackend_RespawnReplays (#604 Review Focus 2): the child dies
 // mid-conversation; the next turn goes to a new child carrying the replayed
 // history, never to a blank session.

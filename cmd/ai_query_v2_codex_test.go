@@ -120,6 +120,7 @@ ai:
 			_ = p.stdin.Close()
 			var types []string
 			var usage chat.Event
+			routed := false
 			for line := range p.lines {
 				var e chat.Event
 				require.NoError(t, json.Unmarshal([]byte(line), &e), line)
@@ -127,8 +128,11 @@ ai:
 				if e.Type == chat.EventUsage {
 					usage = e
 				}
+				// Only the tool router announces its pick (a routing chunk).
+				routed = routed || (e.Type == chat.EventSessionReady && e.RoutingMode != "")
 			}
 			require.NoError(t, p.wait(), p.stderr.String())
+			assert.Equal(t, name == "routed", routed, "the turn went through the tool router: %v", types)
 			assert.Contains(t, types, chat.EventToolStart)
 			assert.Contains(t, types, chat.EventToolEnd)
 			assert.Equal(t, 7, usage.TokensOut, "%v", types)

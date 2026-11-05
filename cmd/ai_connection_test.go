@@ -28,7 +28,7 @@ func TestAIConnectionStrictUnsavedProbeBothProviders(t *testing.T) {
 				t.Setenv("CODEX_HOME", t.TempDir())
 				var bin string
 				if provider == "codex" && !fails {
-					bin = nonceEchoCodexCLI(t)
+					bin = nonceEchoCodexCLI(t, "cat")
 				} else {
 					bin = routingCLI(t, provider, fails)
 				}
@@ -90,14 +90,9 @@ func TestAIConnectionStrictUnsavedProbeBothProviders(t *testing.T) {
 // nonceEchoCodexCLI is a fake codex that answers with the probe nonce it
 // finds in its model_instructions_file — the answer a real codex gives when
 // the system prompt reaches the model.
-func nonceEchoCodexCLI(t *testing.T) string {
-	t.Helper()
-	return nonceEchoCodexCLIWith(t, "cat")
-}
-
-// nonceEchoCodexCLIWith is nonceEchoCodexCLI with the nonce passed through
-// filter (a shell pipeline stage) before it is answered.
-func nonceEchoCodexCLIWith(t *testing.T, filter string) string {
+// The nonce passes through filter (a shell pipeline stage, "cat" to keep
+// it) before it is answered.
+func nonceEchoCodexCLI(t *testing.T, filter string) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "codex")
 	script := `#!/bin/sh
@@ -129,7 +124,7 @@ func TestAIConnectionCodexChecksSystemPromptNonce(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
 			bin := routingCLI(t, "codex", false) // answers "ok"
 			if nonceEcho {
-				bin = nonceEchoCodexCLIWith(t, filter)
+				bin = nonceEchoCodexCLI(t, filter)
 			}
 			cfg := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: codex}"), 0o600))

@@ -171,7 +171,36 @@ func ReplayFromDB(d *db.DB, conversationID int64, turnID string, current []Attac
 	if transcript == "" {
 		return "", nil
 	}
-	return replayFiles(hist, files, current, replayFileCapBytes) + transcript, nil
+	block, skips := replayFiles(hist, files, current, replayFileCapBytes)
+	if skips.unreadable+skips.rejected > 0 {
+		// Counts only, never names (FILES-01): the prompt's notes name them.
+		log.Printf("chat replay: earlier files left out: %d unreadable, %d rejected", skips.unreadable, skips.rejected)
+	}
+	return block + transcript, nil
+}
+
+// replaySkips counts the earlier files a replay left out for a reason other
+// than its budget or their kind: gone or unreadable, or refused (type, size,
+// encoding).
+type replaySkips struct{ unreadable, rejected int }
+
+// skip is the note's reason for a file loadAttachment refused, counted in
+// s: an image or PDF (a replay re-sends text only) is left out on purpose
+// and not counted.
+func (s *replaySkips) skip(err error) string {
+	var ae *AttachmentError
+	switch {
+	case !errors.As(err, &ae):
+		s.rejected++
+		return err.Error()
+	case ae.RequiresClaude:
+		return "images and PDFs are not replayed"
+	case ae.Reason == errUnreadable:
+		s.unreadable++
+	default:
+		s.rejected++
+	}
+	return ae.Reason
 }
 
 // ownerMessageIDs lists the ids of hist's owner messages: only they carry
@@ -193,12 +222,12 @@ func ownerMessageIDs(hist []db.ChatMessage) []int64 {
 // the reason instead, so the model can ask for it again. A file sent again
 // (the Desktop stores one copy per content, so the rows share its path) is
 // replayed once, at its newest place, and not at all when current (the
-// running turn's attachments) carries it again. A file that could not be read
-// is counted in one log line, never named (FILES-01). No owner files → "".
-func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, current []Attachment, capBytes int64) string {
+// running turn's attachments) carries it again. The files left out other
+// than for the budget or their kind are counted in skips. No owner files →
+// "".
+func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, current []Attachment, capBytes int64) (block string, skips replaySkips) {
 	var parts []string
 	var used int64
-	var unreadable int
 	seen := map[string]bool{}
 	for _, a := range current {
 		seen[a.Path] = true
@@ -219,10 +248,7 @@ func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, cu
 			l, err := loadAttachment(Attachment{Path: f.Path, Mime: f.Mime, Name: f.Name}, true)
 			switch {
 			case err != nil:
-				if !isImageOrPDF(err) {
-					unreadable++
-				}
-				parts = append(parts, replayFileNote(f.Name, replayFileSkipReason(err)))
+				parts = append(parts, replayFileNote(f.Name, skips.skip(err)))
 			case used+int64(len(l.data)) > capBytes:
 				parts = append(parts, overBudget(f.Name))
 			default:
@@ -231,38 +257,14 @@ func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, cu
 			}
 		}
 	}
-	if unreadable > 0 {
-		log.Printf("chat replay: %d earlier file(s) could not be read", unreadable)
-	}
 	if len(parts) == 0 {
-		return ""
+		return "", skips
 	}
-	return replayFilesHeader + "\n" + strings.Join(parts, "\n") + "\n" + replayFilesFooter + "\n\n"
+	return replayFilesHeader + "\n" + strings.Join(parts, "\n") + "\n" + replayFilesFooter + "\n\n", skips
 }
 
 func replayFileNote(name, reason string) string {
 	return fmt.Sprintf(`[file "%s" not replayed: %s]`, attachmentHeaderName(name), reason)
-}
-
-// replayFileSkipReason is the note's reason for a file loadAttachment
-// refused (always an *AttachmentError): an image or PDF (a replay re-sends
-// text only), or its own reason.
-func replayFileSkipReason(err error) string {
-	var ae *AttachmentError
-	if !errors.As(err, &ae) {
-		return err.Error()
-	}
-	if ae.RequiresClaude {
-		return "images and PDFs are not replayed"
-	}
-	return ae.Reason
-}
-
-// isImageOrPDF reports a file loadAttachment refused only because a replay
-// re-sends text: left out on purpose, not a failure.
-func isImageOrPDF(err error) bool {
-	var ae *AttachmentError
-	return errors.As(err, &ae) && ae.RequiresClaude
 }
 
 // Receipts are data about prior proposals, never instructions to execute them.

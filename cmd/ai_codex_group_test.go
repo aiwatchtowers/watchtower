@@ -63,7 +63,7 @@ func codexTreeStub(t *testing.T) (bin string, grandchild func() int) {
 		// no stub outlives the test.
 		for _, pid := range killed {
 			require.Eventually(t, func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH },
-				5*time.Second, 20*time.Millisecond, "codex stub process %d survived SIGKILL", pid)
+				5*time.Second, 20*time.Millisecond, "codex stub process %d is still alive or unreaped after SIGKILL", pid)
 		}
 	})
 	return bin, grandchild
