@@ -13,6 +13,8 @@ struct ArtifactPanelView: View {
     var onClose: () -> Void
 
     @State private var notice: String?
+    /// Drops a late notice raised on an artifact no longer shown.
+    @State private var noticeGate = ArtifactNoticeGate()
     /// Bumped by Reload on an html artifact.
     @State private var htmlReload = 0
     /// The comment list is open. Survives new comments, versions and
@@ -34,7 +36,10 @@ struct ArtifactPanelView: View {
             toolbar
         }
         // A notice belongs to the artifact it was raised on.
-        .onChange(of: shownArtifact) { notice = nil }
+        .onChange(of: shownArtifact) {
+            notice = nil
+            noticeGate.advance()
+        }
     }
 
     /// Which artifact and version the panel shows.
@@ -48,12 +53,12 @@ struct ArtifactPanelView: View {
     }
 
     /// Sets the notice of an action that answers later (a panel, a print
-    /// job) only while the same artifact is still shown.
+    /// job) only while the same artifact is still shown. The gate, not a
+    /// comparison of `shownArtifact`: the closure holds a copy of this view,
+    /// whose `model` stays the artifact it was raised on after the chat
+    /// shows another one in the same panel.
     private func noticeForShown() -> (String) -> Void {
-        let raisedOn = shownArtifact
-        return { message in
-            if shownArtifact == raisedOn { notice = message }
-        }
+        noticeGate.guarded { notice = $0 }
     }
 
     private var header: some View {
