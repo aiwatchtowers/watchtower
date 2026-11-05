@@ -248,6 +248,33 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(settings.workAlerts)
     }
 
+    /// A later toggle's record carries the switch too, and a failed write of the switch is owed to the next return.
+    func testAFailedWorkAlertsWriteIsOwedToTheNextForeground() async throws {
+        let transport = SpyTransport(failingSaves: [1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+        settings.reportsWorkAlertsOff = true
+        await settings.touchIfStale()
+        var saves = await transport.saves
+        XCTAssertEqual(saves.count, 1)
+
+        settings.workAlerts = false
+        await settings.sendWorkAlertsChange()
+        saves = await transport.saves
+        XCTAssertEqual(saves.count, 2)
+        XCTAssertNil(settings.lastError, "the switch is the phone's: a failed note to the hub is no error to show")
+
+        await settings.touchIfStale()
+        saves = await transport.saves
+        XCTAssertEqual(saves.count, 3, "the failed write leaves the record stale")
+        let last = try await deviceWrites(transport).last
+        XCTAssertEqual(last?.workAlertsOff, true)
+
+        await settings.setTypingRequested(true)
+        let typing = try await deviceWrites(transport).last
+        XCTAssertEqual(typing?.workAlertsOff, true, "any later write keeps saying it")
+    }
+
     /// The spy counts every save call: the in-memory transport collapses
     /// repeated saves of one record name, so it could not see a double write.
     func testTypeIntoSessionsWritesTypingRequestedOnceOnARepeatedToggle() async throws {

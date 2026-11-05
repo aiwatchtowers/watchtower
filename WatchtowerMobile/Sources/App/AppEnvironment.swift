@@ -123,6 +123,7 @@ final class AppEnvironment {
     /// scene phase the others have and its role.
     func add(_ session: HubSession) {
         sessions[session.hubID] = session
+        if case .available = relay.availability { session.deviceSettings.reportsWorkAlertsOff = true }
         unopenedHubIDs.remove(session.hubID)
         if !order.contains(session.hubID) {
             order.append(session.hubID)
@@ -353,10 +354,22 @@ final class AppEnvironment {
     }
 
     /// The phone-wide "When work stops" switch: every hub's settings follow, and each hub's push subscription is
-    /// registered or removed.
-    func setWorkAlerts(_ enabled: Bool) async {
+    /// registered or removed. While the relay is available each hub also hears it in its `device` record, sent at once
+    /// inside background work: a relay route's save only queues, and an owner who flips the switch and leaves would
+    /// strand it until the next wake.
+    func setWorkAlerts(_ enabled: Bool, startWork: BackgroundWork.Starter? = nil) async {
         for session in sessions.values { session.deviceSettings.workAlerts = enabled }
-        for session in sessions.values { await session.alertRegistrar?.apply(enabled: enabled) }
+        var endWork: (@MainActor () -> Void)?
+        if case .available = relay.availability {
+            endWork = (startWork ?? BackgroundWork.starter())("work-alerts-switch")
+        }
+        for session in sessions.values {
+            await session.alertRegistrar?.apply(enabled: enabled)
+            if await session.deviceSettings.sendWorkAlertsChange() {
+                await session.sendNow()
+            }
+        }
+        endWork?()
     }
     var workbenchReplica: WorkbenchReplicaModel { activeSession.workbenchReplica }
     var calendarReplica: CalendarReplicaModel { activeSession.calendarReplica }

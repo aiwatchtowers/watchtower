@@ -58,6 +58,11 @@ public struct DevicePayload: Codable, Equatable, Sendable {
     /// The `relay_auth` key's signature over `RelayIDProof.message`, unpadded base64url; wire `relay_id_sig`.
     public let relayIDSig: String?
 
+    /// The phone's "When work stops" switch is off, so the hub sends it no alert; wire `work_alerts_off`, true or
+    /// absent. An older hub ignores it.
+    let workAlertsOffFlag: Bool? // swiftlint:disable:this discouraged_optional_boolean
+
+    public var workAlertsOff: Bool { workAlertsOffFlag ?? false }
     public var recordName: String { "device-\(deviceID)" }
     public var permissionsRequested: Bool { permissionsAsked ?? false }
 
@@ -80,6 +85,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         case relayDeviceID = "relayDeviceId"
         case relayAuthPub
         case relayIDSig = "relayIdSig"
+        case workAlertsOffFlag = "workAlertsOff"
     }
 
     public init(
@@ -98,7 +104,8 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         updatedAt: Date,
         relayDeviceID: String? = nil,
         relayAuthPub: String? = nil,
-        relayIDSig: String? = nil
+        relayIDSig: String? = nil,
+        workAlertsOff: Bool = false
     ) {
         self.deviceID = deviceID
         self.name = name
@@ -116,6 +123,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         self.relayDeviceID = relayDeviceID
         self.relayAuthPub = relayAuthPub
         self.relayIDSig = relayIDSig
+        workAlertsOffFlag = workAlertsOff ? true : nil
     }
 
     public init(from decoder: Decoder) throws {
@@ -136,5 +144,6 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         relayDeviceID = try values.decodeIfPresent(String.self, forKey: .relayDeviceID).flatMap { RelayIDs.isValid($0) ? $0 : nil }
         relayAuthPub = try values.decodeIfPresent(String.self, forKey: .relayAuthPub)
         relayIDSig = try values.decodeIfPresent(String.self, forKey: .relayIDSig)
+        workAlertsOffFlag = try values.decodeIfPresent(Bool.self, forKey: .workAlertsOffFlag) == true ? true : nil
     }
 }

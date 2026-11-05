@@ -13,7 +13,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// app's boot state owns the root. Read through the root, since the link
     /// flow replaces its environment.
     @MainActor static weak var root: AppRoot? {
-        didSet { openPendingTap() }
+        didSet {
+            openPendingTap()
+            deliverPendingPushToken()
+        }
     }
 
     /// A tap that launched the app arrives before the root exists; it opens once the root does.
@@ -23,6 +26,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         guard let root, let tap = pendingTap else { return }
         pendingTap = nil
         root.open(tap)
+    }
+
+    /// An APNs token arriving before the root exists; it goes on once the root does.
+    @MainActor private static var pendingPushToken: Data?
+
+    /// The relay's copy of the token (`RelayPushRegistrar`): nothing while the relay is off.
+    @MainActor static func pushTokenArrived(_ token: Data) {
+        guard let root else {
+            pendingPushToken = token
+            return
+        }
+        root.relayPush?.tokenArrived(token)
+    }
+
+    @MainActor private static func deliverPendingPushToken() {
+        guard root != nil, let token = pendingPushToken else { return }
+        pendingPushToken = nil
+        pushTokenArrived(token)
+    }
+
+    /// Which sessions a silent push is for: a payload with `ck` is CloudKit's, anything else the relay's.
+    static func pushScope(_ userInfo: [AnyHashable: Any]) -> PushOrigin? {
+        PushRouting.origin(ofRemoteNotification: userInfo, cloudKit: TransportFactory.cloudKit.wake)
     }
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppDelegate")
@@ -101,6 +127,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         BatteryDiagnostics.shared.counter.record(event)
     }
 
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { @MainActor in Self.pushTokenArrived(deviceToken) }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        RelayPushRegistrar.logRegistrationFailure(error)
+    }
+
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
@@ -118,7 +152,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let arrivedAt = Date()
         let inForeground = application.applicationState == .active
         // Read before the hop: the payload is not Sendable.
-        let scope = TransportFactory.cloudKit.wake.origin(ofRemoteNotification: userInfo)
+        let scope = Self.pushScope(userInfo)
         Task { @MainActor in
             guard let env = Self.root?.env else {
                 Self.logger.warning("remote notification with no environment (degraded boot?)")
