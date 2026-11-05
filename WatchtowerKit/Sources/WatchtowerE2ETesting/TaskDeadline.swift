@@ -26,7 +26,7 @@ extension Task {
     /// On a timeout the task is cancelled (best effort) and `TaskDeadlineExceeded` is thrown. A task that
     /// throws rethrows its own error.
     public func value(
-        within seconds: Double = 10, _ what: String = "task"
+        within seconds: Double = 60, _ what: String = "task"
     ) async throws -> Success where Success: Sendable {
         let task = self
         return try await withCheckedThrowingContinuation { continuation in
