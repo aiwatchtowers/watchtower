@@ -17,9 +17,7 @@ struct SettingsView: View {
                 accountsSection
                 workbenchSection
                 notificationsSection
-                if let battery = model.battery {
-                    BatterySection(report: battery)
-                }
+                diagnosticsSection
                 SettingsCard(title: "Chat") {
                     SettingsRow(title: "Chat without the Mac — later") { EmptyView() }
                 }
@@ -35,13 +33,23 @@ struct SettingsView: View {
         .task(id: ObservationKey(store: ObjectIdentifier(env.store), deviceID: env.linkedDevice?.deviceID)) {
             model.start(store: env.store, deviceID: env.linkedDevice?.deviceID)
         }
-        // The counters change on every fetch; re-read them while Settings
-        // is on screen.
-        .task {
-            while !Task.isCancelled {
-                model.refreshBattery()
-                try? await Task.sleep(for: .seconds(30))
+    }
+
+    // MARK: - Diagnostics
+
+    static let diagnosticsTitle = "Diagnostics"
+
+    /// The row that opens the page holding the action timings and the Battery section.
+    private var diagnosticsSection: some View {
+        SettingsCard(title: Self.diagnosticsTitle) {
+            NavigationLink {
+                DiagnosticsView(settings: model)
+            } label: {
+                SettingsRow(title: "Action timings and battery") {
+                    Image(systemName: "chevron.right").font(TypeScale.badge)
+                }
             }
+            .buttonStyle(.plain)
         }
     }
 
