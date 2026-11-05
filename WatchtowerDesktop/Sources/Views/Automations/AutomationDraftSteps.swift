@@ -79,3 +79,16 @@ struct AutomationDraftSteps<Look: View, Footer: View>: View {
         }
     }
 }
+
+/// AUTO-06 seam (pending the owner's answer in ask #485): no step of the
+/// editor shows every hashed field, so what a save press under `step` is
+/// confirmed against goes here, above the footer on every step. Empty
+/// until the owner picks the shape; the press itself is unchanged.
+struct AutomationSaveConfirmation: View {
+    let column: AutomationDraftColumnModel
+    let step: AutomationEditorStep
+
+    var body: some View {
+        EmptyView()
+    }
+}

@@ -404,6 +404,7 @@ struct AutomationEditorPanel: View {
         )
         return VStack(alignment: .leading, spacing: Spacing.regular) {
             footerMessages(form, key: key, column: column)
+            AutomationSaveConfirmation(column: column, step: step)
             AutomationDraftFooterBar(
                 verdict: verdict,
                 step: step,
