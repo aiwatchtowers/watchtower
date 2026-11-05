@@ -1417,5 +1417,120 @@
         "retry_after_s": null
       }
     }
+  ],
+  "action_effect_kinds": [
+    {
+      "action_kind": "ask_answer",
+      "slice_kinds": [
+        "owner_ask",
+        "ask_alert"
+      ]
+    },
+    {
+      "action_kind": "board_target_status",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_target_priority",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_comment_add",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_comment_reply",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_target_create",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "automation_run",
+      "slice_kinds": [
+        "workbench"
+      ]
+    },
+    {
+      "action_kind": "permission_answer",
+      "slice_kinds": [
+        "permission_request",
+        "terminal_session"
+      ]
+    },
+    {
+      "action_kind": "session_interrupt",
+      "slice_kinds": [
+        "terminal_session"
+      ]
+    },
+    {
+      "action_kind": "session_report_request",
+      "slice_kinds": [
+        "session_report"
+      ]
+    },
+    {
+      "action_kind": "session_chat_request",
+      "slice_kinds": [
+        "session_chat"
+      ]
+    },
+    {
+      "action_kind": "session_input",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_finish_request",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_input_cancel",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_start",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_stop",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    }
   ]
 }

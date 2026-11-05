@@ -1263,6 +1263,8 @@ final class HubSession {
     func indexStoredRows() {
         do {
             let indexed = try store.indexPending()
+            // Slices that sat unopened until a key arrived are seen now, not when they were stored.
+            store.stampLatencyEffects(of: indexed, at: Date())
             if indexed.contains(where: { $0.kind == .deviceGrant }) {
                 keyboxSignal.handler?()
             }

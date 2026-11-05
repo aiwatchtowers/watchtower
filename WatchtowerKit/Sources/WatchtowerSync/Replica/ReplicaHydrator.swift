@@ -50,6 +50,8 @@ public actor ReplicaHydrator {
     private let onTransportMarker: (@Sendable (TransportMarker) async -> Bool)?
     /// The marker the handler last decided (or that did not decode) in this hydrator.
     private var lastMarker: Data?
+    /// The clock of the timing stamps; tests replace it.
+    private var now: @Sendable () -> Date = { Date() }
     private var loopTask: Task<Void, Never>?
     /// The currently-running cycle, if any. Concurrent `hydrateOnce` callers
     /// await this instead of starting their own — see `hydrateOnce`.
@@ -69,6 +71,8 @@ public actor ReplicaHydrator {
         self.onRecordsApplied = onRecordsApplied
         self.onTransportMarker = onTransportMarker
     }
+
+    func useClock(_ now: @escaping @Sendable () -> Date) { self.now = now }
 
     // MARK: - One cycle
 
@@ -120,6 +124,8 @@ public actor ReplicaHydrator {
         // locked open on the first cycle after unlock. Only what this pass
         // indexed is reported, so a dropped stale batch reports nothing new.
         let indexed = try store.indexPending()
+        // The first slice of an effect kind ends an open action timing (relay client Phase 4).
+        store.stampLatencyEffects(of: indexed, at: now())
         if let onRecordsApplied, !indexed.isEmpty {
             onRecordsApplied(indexed)
         }
