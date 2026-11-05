@@ -8,6 +8,7 @@ import (
 
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
@@ -417,5 +418,29 @@ func TestHubActsOnEntitlementControl(t *testing.T) {
 		if !ok || *c.Target != wire.TransportCloudKit || *c.By != wire.SwitchedByEntitlement {
 			t.Fatalf("notice %+v", c)
 		}
+	})
+}
+
+// G2 (relay client phase 4 launch conditions): the only paying phone is gone
+// (wiped after a subscription move: the relay revoked its slots and sent
+// neither SLOT_REMOVED nor ENTITLEMENT_EXPIRED, and the phone never asks).
+// The account read answers with nobody paying. This pins what the switcher
+// does today: nothing tells the desktop host, so it stays on the relay for
+// any amount of polling. A fix flips this test.
+func TestG2NoPayingPhoneLeftDoesNotMoveADesktopHostToday(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay)
+		w.mu.Lock()
+		w.paying = map[string]bool{} // the revoked slots are gone from the account
+		w.mu.Unlock()
+		for range 20 {
+			w.advance(switcher.OtherPoll)
+			w.sw.PollOther(w.ctx)
+			if err := w.sw.Step(w.ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.wantActive(transport.KindRelay)
 	})
 }
