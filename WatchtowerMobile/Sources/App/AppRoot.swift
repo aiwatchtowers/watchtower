@@ -347,6 +347,7 @@ final class AppRoot {
     func resumeRelayUpgrades() async {
         for hubID in env.order {
             await env.session(hubID)?.relayUpgrader?.resume()
+            await env.session(hubID)?.transportRequester?.resume()
         }
     }
 
@@ -403,7 +404,10 @@ final class AppRoot {
         session.onFetched = { [weak self, weak session] in
             self?.checkLink(hubID: hubID)
             // A pending upgrade goes on at the feed's cadence while the app is active (at most every 30 s).
-            if session?.isActive == true { session?.relayUpgrader?.resumeAfterFetch() }
+            if session?.isActive == true {
+                session?.relayUpgrader?.resumeAfterFetch()
+                session?.transportRequester?.resumeAfterFetch()
+            }
         }
         session.onKeyboxChanged = { [weak self] in
             guard let self, !self.isDemo else { return }
@@ -417,14 +421,21 @@ final class AppRoot {
         }
         guard !isDemo else { return }
         // The hub's switch controls and transport marker (relay client Phase 3 Task 11), read on this session's route.
-        let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self)
+        let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self, now: upgradeClock)
         let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
         session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
         session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }
         // The upgrade from iCloud to the relay (Phase 3b Task 19) and the hub's rejections of its request.
         let upgrader = RelayUpgrader(session: session, follower: follower, host: self, now: upgradeClock)
         session.attach(upgrader)
-        session.transportSignals.onRejection = { control in await upgrader.rejected(control) }
+        // Relay client Phase 4 Task 5: the request toward iCloud (the owner's, the lapse's). A rejection answers the
+        // request when one is open, else the upgrade.
+        let requester = TransportRequester(session: session, follower: follower, host: self, now: upgradeClock)
+        session.attach(requester)
+        session.transportSignals.onRejection = { control in
+            if requester.awaitsAnswer { return requester.rejected(control) }
+            return await upgrader.rejected(control)
+        }
         // The mailbox on the hub's other transport (Task 12), only for a hub with both routes.
         if session.sideReader == nil, followerLink(hubID: hubID)?.otherRoute != nil {
             let factory = factory
@@ -444,6 +455,7 @@ final class AppRoot {
         session.transportSignals.onMarker = nil
         session.transportSignals.onRejection = nil
         session.relayUpgrader?.stop()
+        session.transportRequester?.stop()
     }
 
     private func handle(_ signal: LinkSignal, hubID: String) {
@@ -1178,6 +1190,14 @@ extension AppRoot: RelayUpgradeHost {
 
     func makeRelaySide(hubID: String, mac: String) throws -> SideTransport {
         try factory.makeSide(hubID, .hostedRelay(macDeviceID: mac))
+    }
+}
+
+// MARK: - The request toward iCloud (relay client Phase 4 Task 5)
+
+extension AppRoot: TransportRequestHost {
+    func makeOtherSide(hubID: String, route: HubRoute) throws -> SideTransport {
+        try factory.makeSide(hubID, route)
     }
 }
 

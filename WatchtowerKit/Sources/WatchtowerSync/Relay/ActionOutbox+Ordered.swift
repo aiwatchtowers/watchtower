@@ -226,15 +226,17 @@ extension ActionOutbox {
     /// the caller writes into the other transport's mailbox too (rule 9's initiator write); an id already queued is a
     /// no-op. A hub on today's path reads no controls: `ActionOutboxError.legacyPath`, nothing queued.
     @discardableResult
-    public func enqueueSwitchRequest(target: TransportKind, id: String = UUID().uuidString) async throws -> String {
-        let id = try await onChain { try await self.queueSwitchRequest(target, id: id) }.value
+    public func enqueueSwitchRequest(
+        target: TransportKind, id: String = UUID().uuidString, reason: String? = nil
+    ) async throws -> String {
+        let id = try await onChain { try await self.queueSwitchRequest(target, id: id, reason: reason) }.value
         requestFlush()
         return id
     }
 
-    private func queueSwitchRequest(_ target: TransportKind, id: String) async throws -> String {
+    private func queueSwitchRequest(_ target: TransportKind, id: String, reason: String?) async throws -> String {
         guard try orderedPath() else { throw ActionOutboxError.legacyPath }
-        let control = try switchRequest(target: target, id: id)
+        let control = try switchRequest(target: target, id: id, reason: reason)
         let at = now()
         let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
         try store.enqueueControl(QueuedControl(
@@ -244,11 +246,23 @@ extension ActionOutbox {
     }
 
     /// The `transport_switch{target}` control with id `id`, for this phone and hub.
-    public func switchRequest(target: TransportKind, id: String) throws -> ControlPayload {
+    /// `reason` (the hub's own word for a move that spares its other phones) is absent on the wire when nil.
+    public func switchRequest(target: TransportKind, id: String, reason: String? = nil) throws -> ControlPayload {
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
         return ControlPayload(
-            id: id, kind: .transportSwitch, deviceID: device.uuidString, hubID: hub.uuidString, target: target.rawValue)
+            id: id, kind: .transportSwitch, deviceID: device.uuidString, hubID: hub.uuidString, target: target.rawValue,
+            reason: reason)
+    }
+
+    /// Takes the queued control `id` out of the queue (a request the owner's side gave up on); one already written is
+    /// not touched. No-op for an id not queued.
+    public func withdrawControl(id: String) async throws {
+        try await onChain { try await self.dropControl(id) }.value
+    }
+
+    private func dropControl(_ id: String) throws {
+        try store.controlWritten(id: id)
     }
 
     // MARK: A transport switch (relay client Phase 3)

@@ -325,6 +325,9 @@ final class HubSession {
     /// The hub's upgrade from iCloud to the relay (relay client Phase 3b Task 19), set by `AppRoot.wire`; nil for the
     /// demo.
     @ObservationIgnored private(set) var relayUpgrader: RelayUpgrader?
+    /// The hub's request to go back to iCloud and the lapse's (relay client Phase 4 Task 5), set by `AppRoot.wire`; nil
+    /// for the demo.
+    @ObservationIgnored private(set) var transportRequester: TransportRequester?
     /// On route `.relay`: since when this session's fetches find the relay unanswered (nil while it answers), on the
     /// session's clock: the start of an outage for the side reader's 60 s rule (sim rule 12).
     @ObservationIgnored private(set) var relayUnansweredSince: Date?
@@ -1422,6 +1425,40 @@ final class HubSession {
         guard let relayUpgrader else { return .refused(.relayOff) }
         return await relayUpgrader.upgrade()
     }
+
+    /// The request that the hub move to iCloud (relay client Phase 4 Task 5).
+    func attach(_ requester: TransportRequester) {
+        transportRequester = requester
+    }
+
+    /// Asks the Mac to move this phone to iCloud: from route `.relay` only (toward the relay the owner goes through
+    /// `upgradeToRelay()`; on an iCloud route the Mac is already there and nothing is written). The record is written
+    /// first, then the same control id goes through the outbox and, sealed, into the iCloud mailbox; a pass retries
+    /// what is missing. `reason` is the hub's own word for a move that spares its other phones; a **Try Again** passes
+    /// the record's. A session with no request wired (the demo) cannot ask.
+    func requestTransport(reason: String?) async -> TransportRequestOutcome {
+        guard let transportRequester else { return .refused(.unavailable) }
+        return await transportRequester.request(reason: reason)
+    }
+
+    /// The relay refused this phone because its subscription ended (a `ENTITLEMENT_INACTIVE` answer, a move learned
+    /// from the account state): `TransportFollowerPolicy.decide(.relayLapsed)` asks the hub for iCloud once, and a
+    /// repeated notice re-sends the request a failed copy left behind.
+    func lapseRelay() async {
+        await transportRequester?.lapse()
+    }
+
+    /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared, so
+    /// the Mac does not move behind the phone's back and a later lapse asks anew. An owner's request is left alone.
+    func lapseEnded() async {
+        await transportRequester?.lapseEnded()
+    }
+
+    /// The request toward iCloud, or the end it came to, as the hub's row holds it.
+    var transportRequest: TransportRequestRecord? { transportRequester?.record }
+
+    /// When the hub told this phone it stays on the relay for another paying phone, until the phone moves again.
+    var hubOnRelayAt: Date? { transportRequester?.hubOnRelayAt }
 
     /// Saves the phone's `device` record `payload` (sealed) and sends it now.
     func writeDeviceRecord(_ payload: DevicePayload) async throws {

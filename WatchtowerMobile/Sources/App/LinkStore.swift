@@ -52,6 +52,12 @@ struct LinkRecord: Codable, Equatable, Sendable {
     /// An iCloud link's upgrade to the relay (relay client Phase 3b Task 19): its step, request and refusal. Absent in
     /// every link saved before it and in every link that never upgraded. One this build cannot read reads as absent.
     var relayUpgrade: RelayUpgradeRecord?
+    /// This phone's request that the hub move to iCloud, or the end it came to (relay client Phase 4 Task 5). Absent
+    /// while none is open and on every CloudKit link. One this build cannot read reads as absent.
+    var transportRequest: TransportRequestRecord?
+    /// When the hub told this phone it stays on the relay for another paying phone (`hub_on_relay`, or a move to the
+    /// relay this phone cannot follow), while it has not moved since. Absent on every CloudKit link.
+    var hubOnRelayAt: Date?
 
     /// A `.relay` transport needs `relayMacDeviceID` (it is the route).
     init(
@@ -72,7 +78,9 @@ struct LinkRecord: Codable, Equatable, Sendable {
         switchedBy: String? = nil,
         switchedAt: Date? = nil,
         leftTransport: TransportKind? = nil,
-        relayUpgrade: RelayUpgradeRecord? = nil
+        relayUpgrade: RelayUpgradeRecord? = nil,
+        transportRequest: TransportRequestRecord? = nil,
+        hubOnRelayAt: Date? = nil
     ) {
         precondition(transport != .relay || relayMacDeviceID != nil, Self.relayWithoutMac)
         self.hubID = hubID
@@ -93,6 +101,8 @@ struct LinkRecord: Codable, Equatable, Sendable {
         self.switchedAt = switchedAt
         self.leftTransport = leftTransport
         self.relayUpgrade = relayUpgrade
+        self.transportRequest = transportRequest
+        self.hubOnRelayAt = hubOnRelayAt
     }
 
     /// A `.relay` link without its Mac's relay id does not decode: the row is
@@ -118,6 +128,8 @@ struct LinkRecord: Codable, Equatable, Sendable {
         leftTransport = try container.decodeIfPresent(TransportKind.self, forKey: .leftTransport)
         // A newer build's step or refusal must not make the whole link unreadable.
         relayUpgrade = try? container.decodeIfPresent(RelayUpgradeRecord.self, forKey: .relayUpgrade)
+        transportRequest = try? container.decodeIfPresent(TransportRequestRecord.self, forKey: .transportRequest)
+        hubOnRelayAt = try? container.decodeIfPresent(Date.self, forKey: .hubOnRelayAt)
         if lacksRelayMac {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: Self.relayWithoutMac))
         }
@@ -147,11 +159,14 @@ struct LinkRecord: Codable, Equatable, Sendable {
         try container.encodeIfPresent(switchedAt, forKey: .switchedAt)
         try container.encodeIfPresent(leftTransport, forKey: .leftTransport)
         try container.encodeIfPresent(relayUpgrade, forKey: .relayUpgrade)
+        try container.encodeIfPresent(transportRequest, forKey: .transportRequest)
+        try container.encodeIfPresent(hubOnRelayAt, forKey: .hubOnRelayAt)
     }
 
     private enum CodingKeys: String, CodingKey {
         case hubID, macName, scope, ownerName, userRecordName, nonce, dataShareURL, relayShareURL, deviceID, linkedAt
         case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport, relayUpgrade
+        case transportRequest, hubOnRelayAt
     }
 
     private static let relayWithoutMac = "a relay link without its Mac's relay device id"
