@@ -54,3 +54,67 @@ func TestClaudeQuery_ExitZeroWithoutResultIsInvalidOutput(t *testing.T) {
 		}
 	}
 }
+
+// L12 on QuerySync: a clean exit whose output holds no result object is a
+// typed invalid_output failure, never a blank or raw-output success, and
+// never echoes the output (it is model-derived text).
+func TestClaudeQuerySync_ExitZeroWithoutResultIsInvalidOutput(t *testing.T) {
+	cases := map[string]string{
+		"empty output":             `exit 0`,
+		"array without result":     `printf '[{"type":"system","subtype":"init"},{"type":"assistant","message":{"content":[{"type":"text","text":"half an answer"}]}}]'`,
+		"object that is no result": `printf '{"type":"system","subtype":"init"}'`,
+		"plain text":               `printf 'half an answer'`,
+	}
+	for name, script := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := NewClient("test-model", "", "")
+			c.claudeCmd = writeMockClaude(t, script)
+			text, usage, err := c.QuerySync(context.Background(), "system", "hello", "")
+			require.Error(t, err)
+			var failure *providers.Failure
+			require.ErrorAs(t, err, &failure)
+			assert.Equal(t, providers.InvalidOutput, failure.Category)
+			assert.Empty(t, text)
+			assert.Nil(t, usage)
+			assert.NotContains(t, logredact.Full(err), "half an answer", "the output is described, never echoed")
+		})
+	}
+}
+
+// A clean exit without a result whose stderr is one of the CLI's own auth or
+// rate-limit diagnostics takes that category ("sign in", "wait"), on Query
+// and QuerySync alike; stderr that names nothing stays invalid_output.
+func TestClaudeNoResult_StderrDiagnosticWins(t *testing.T) {
+	cases := []struct {
+		stderr string
+		want   providers.ErrorCategory
+	}{
+		{"Invalid API key · Please run /login", providers.Auth},
+		{"API Error: 401 {\"type\":\"error\"}", providers.Auth},
+		{"API Error: 429 rate limited", providers.RateLimit},
+		{"something unrelated happened", providers.InvalidOutput},
+	}
+	for _, tc := range cases {
+		script := `echo '` + tc.stderr + `' >&2
+exit 0`
+		t.Run("Query/"+tc.stderr, func(t *testing.T) {
+			c := NewClient("test-model", "", "")
+			c.claudeCmd = writeMockClaude(t, script)
+			textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+			for range textCh {
+			}
+			var failure *providers.Failure
+			require.ErrorAs(t, <-errCh, &failure)
+			assert.Equal(t, tc.want, failure.Category)
+		})
+		t.Run("QuerySync/"+tc.stderr, func(t *testing.T) {
+			c := NewClient("test-model", "", "")
+			c.claudeCmd = writeMockClaude(t, script)
+			_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+			var failure *providers.Failure
+			require.ErrorAs(t, err, &failure)
+			assert.Equal(t, tc.want, failure.Category)
+			assert.Contains(t, logredact.Full(err), tc.stderr)
+		})
+	}
+}

@@ -891,17 +891,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// A clean exit without a result event never ends as a blank or
 		// partial "complete" turn (L12): the answer may be cut short, and a
 		// skipped line may have been the answer or the result itself. Codex
-		// and the batch path refuse the same run. Whatever claude said on
-		// stderr rides along (redacted in logs).
+		// and the batch path refuse the same run.
 		if lastResult == nil {
 			err := errNoResultEvent
 			if n := lines.Skipped(); n > 0 {
 				err = fmt.Errorf("%w (%d line(s) over %d bytes skipped)", err, n, maxStreamLine)
 			}
-			if st := strings.TrimSpace(stderrBuf.String()); st != "" {
-				err = logredact.Errorf("%w (stderr: %s)", err, logredact.Text(st))
-			}
-			fail(providers.WithFailure("claude", providers.InvalidOutput, err))
+			fail(noResultFailure(err, stderrBuf.String()))
 		}
 	}()
 
@@ -911,6 +907,18 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // errNoResultEvent fails a claude run that exited cleanly without its
 // result event.
 var errNoResultEvent = errors.New("claude output had no result event")
+
+// noResultFailure is the typed failure of a claude run that exited 0
+// without its result (L12): claude's stderr rides along (redacted in logs)
+// and decides the category when it is one of the CLI's own auth or
+// rate-limit diagnostics, else invalid_output (providers.CleanExitFailure).
+func noResultFailure(cause error, stderr string) error {
+	stderr = strings.TrimSpace(stderr)
+	if stderr != "" {
+		cause = logredact.Errorf("%w (stderr: %s)", cause, logredact.Text(stderr))
+	}
+	return providers.CleanExitFailure("claude", stderr, cause)
+}
 
 // maxStreamLine is the longest stream-json line Query decodes
 // (streamline.MaxLine); a variable so tests can lower it.
@@ -979,10 +987,17 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, classifyError(err, stderrBuf.String())
 	}
 
+	// A clean exit must leave a result object (L12): empty output, an array
+	// without a result event, another event or plain text is never handed
+	// back as the answer. --output-format json always prints JSON, so no
+	// caller gets plain text; the parse error describes the output, never
+	// echoes it.
 	resp, err := parseCLIOutput(output)
+	if err == nil && resp.Type != "result" {
+		err = fmt.Errorf("claude CLI output is a %q object, not a result", resp.Type)
+	}
 	if err != nil {
-		// Fallback: treat as plain text if JSON parsing fails (e.g. old CLI version)
-		return strings.TrimRight(string(output), "\n"), nil, nil // intentional fallback to plain text
+		return "", nil, noResultFailure(fmt.Errorf("%w: %w", errNoResultEvent, err), stderrBuf.String())
 	}
 	envelope = &resp.resultUsage
 
