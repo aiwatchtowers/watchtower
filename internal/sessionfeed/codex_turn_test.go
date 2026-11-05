@@ -88,20 +88,20 @@ func TestCodexLastTurn_ReadsTheTailOnly(t *testing.T) {
 }
 
 func TestCodexLastTurn_ZstdAndMissing(t *testing.T) {
+	// A compressed rollout is read through its decompressed text, so its
+	// failed turn shows like a plain one's — also past the tail window.
 	p := filepath.Join(t.TempDir(), "rollout-z.jsonl")
-	require.NoError(t, os.WriteFile(p, append([]byte{0x28, 0xb5, 0x2f, 0xfd}, []byte(turnFailedLine)...), 0o600))
+	long := strings.Repeat(turnStartedLine+"\n", codexTurnTailBytes/len(turnStartedLine)+1) + turnFailedLine + "\n"
+	require.NoError(t, os.WriteFile(p, []byte(long), 0o600))
+	compressInPlace(t, p)
 	got, err := CodexLastTurn(p)
 	require.NoError(t, err)
-	assert.False(t, got.Failed, "a compressed rollout is not read")
+	assert.True(t, got.Failed, "a compressed rollout's failed turn is read")
 
-	// A compressed rollout longer than the tail window: the magic is read at
-	// the start, not in the tail.
-	long := append([]byte{0x28, 0xb5, 0x2f, 0xfd, '\n'}, []byte(strings.Repeat("x", codexTurnTailBytes)+"\n")...)
-	long = append(long, []byte(turnStartedLine+"\n"+turnFailedLine+"\n")...)
-	require.NoError(t, os.WriteFile(p, long, 0o600))
-	got, err = CodexLastTurn(p)
-	require.NoError(t, err)
-	assert.False(t, got.Failed, "a long compressed rollout is not read")
+	// A corrupt frame is a read failure, never a silent not-failed.
+	require.NoError(t, os.WriteFile(p, append([]byte{0x28, 0xb5, 0x2f, 0xfd}, []byte(turnFailedLine)...), 0o600))
+	_, err = CodexLastTurn(p)
+	require.Error(t, err)
 
 	_, err = CodexLastTurn(filepath.Join(t.TempDir(), "gone.jsonl"))
 	require.Error(t, err)

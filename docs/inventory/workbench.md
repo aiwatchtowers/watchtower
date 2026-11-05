@@ -1286,8 +1286,9 @@ transcript turn-order check for codex rows. The mapping:
 Codex v1 limits: the Error state comes from the rollout, not a hook, so it
 shows up to `codexTurnCheckEvery` (5 s) plus a poll after the turn failed —
 the Desktop runs `workbench session-probe` for a live codex row that reads
-Working once per interval (`SessionBackgroundProber`); a compressed rollout,
-or one whose last 256 KB hold no turn event, reads as not failed. Each
+Working once per interval (`SessionBackgroundProber`); a zstd-compressed
+rollout is read through `internal/rollout` like a plain one, and a rollout
+whose last 256 KB hold no turn event reads as not failed. Each
 check is one CLI child (a check that cannot run retries after 60 s). A turn
 that fails while the row reads Needs approval, or after a later state write
 on the row, is not shown as Error. No idle

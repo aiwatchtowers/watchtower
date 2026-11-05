@@ -3,10 +3,7 @@ package sessionfeed
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"os"
 	"time"
 )
 
@@ -31,17 +28,12 @@ type CodexTurn struct {
 
 // CodexLastTurn reads the end of the Codex rollout at path and reports
 // whether its last turn (the last task_started, task_complete or
-// turn_aborted event) failed. A running, finished, aborted or compressed
-// rollout is not failed; only a read failure is an error.
+// turn_aborted event) failed, plain or zstd-compressed. A running, finished
+// or aborted rollout is not failed; a read failure (a corrupt frame included)
+// is an error.
 func CodexLastTurn(path string) (CodexTurn, error) {
-	// The magic is at the file's start, which a long rollout's tail does not hold.
-	head, err := readHead(path, len(zstdMagic))
-	if err != nil {
-		return CodexTurn{}, fmt.Errorf("reading the codex rollout: %w", err)
-	}
-	if bytes.Equal(head, zstdMagic) {
-		return CodexTurn{}, nil
-	}
+	// readTail decompresses a zstd rollout in memory (internal/rollout), so a
+	// compressed rollout's failed turn is seen like a plain one's.
 	tail, err := readTail(path, codexTurnTailBytes)
 	if err != nil {
 		return CodexTurn{}, fmt.Errorf("reading the codex rollout: %w", err)
@@ -108,19 +100,4 @@ func codexErrorType(info json.RawMessage) string {
 		}
 	}
 	return ""
-}
-
-// readHead returns the first n bytes of path, fewer for a shorter file.
-func readHead(path string, n int) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	buf := make([]byte, n)
-	m, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return nil, err
-	}
-	return buf[:m], nil
 }
