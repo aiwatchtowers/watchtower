@@ -19,6 +19,12 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
         var restoreCalls = 0
         var updatesCalls = 0
         var continuation: AsyncStream<RelayTransaction>.Continuation?
+        var productCalls = 0
+        var unfinishedCalls = 0
+        var onPurchase: (@Sendable (UUID) -> RelayPurchaseResult)?
+        var onFinish: (@Sendable () -> Void)?
+        var purchaseParked = false
+        var parkedPurchase: CheckedContinuation<Void, Never>?
     }
 
     var productResult: RelayProduct? {
@@ -53,6 +59,41 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
     var finished: [RelayTransaction] { lock.withLock { state.finished } }
     var restoreCalls: Int { lock.withLock { state.restoreCalls } }
     var updatesCalls: Int { lock.withLock { state.updatesCalls } }
+    var productCalls: Int { lock.withLock { state.productCalls } }
+    var unfinishedCalls: Int { lock.withLock { state.unfinishedCalls } }
+    /// Every call the store took, of any kind.
+    var totalCalls: Int {
+        lock.withLock {
+            state.productCalls + state.unfinishedCalls + state.restoreCalls + state.updatesCalls + state.accountTokens.count
+                + state.finished.count
+        }
+    }
+    /// Answers `purchase` from the token it was given (the JWS carries it); nil uses `purchaseResult`.
+    var onPurchase: (@Sendable (UUID) -> RelayPurchaseResult)? {
+        get { lock.withLock { state.onPurchase } }
+        set { lock.withLock { state.onPurchase = newValue } }
+    }
+    /// Runs inside `finish`, for the order on the fakes.
+    var onFinish: (@Sendable () -> Void)? {
+        get { lock.withLock { state.onFinish } }
+        set { lock.withLock { state.onFinish = newValue } }
+    }
+    /// A purchase is waiting at `parkPurchase()`.
+    var purchaseIsParked: Bool { lock.withLock { state.parkedPurchase != nil } }
+
+    /// The next `purchase` waits until `releasePurchase()`: the App Store's sheet on screen.
+    func parkPurchase() {
+        lock.withLock { state.purchaseParked = true }
+    }
+
+    func releasePurchase() {
+        let waiter = lock.withLock {
+            state.purchaseParked = false
+            defer { state.parkedPurchase = nil }
+            return state.parkedPurchase
+        }
+        waiter?.resume()
+    }
 
     /// Delivers a transaction on the `updates()` stream, if one is open.
     func emit(_ transaction: RelayTransaction) {
@@ -60,22 +101,29 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
     }
 
     func product() async throws -> RelayProduct? {
-        let (product, error) = lock.withLock { (state.product, state.productError) }
+        let (product, error) = lock.withLock { () -> (RelayProduct?, Error?) in
+            state.productCalls += 1
+            return (state.product, state.productError)
+        }
         if let error { throw error }
         return product
     }
 
     func purchase(accountToken: UUID) async throws -> RelayPurchaseResult {
+        await waitWhileParked()
         let (result, error) = lock.withLock { () -> (RelayPurchaseResult, Error?) in
             state.accountTokens.append(accountToken)
-            return (state.purchaseResult, state.purchaseError)
+            return (state.onPurchase?(accountToken) ?? state.purchaseResult, state.purchaseError)
         }
         if let error { throw error }
         return result
     }
 
     func unfinished() async -> [RelayTransaction] {
-        lock.withLock { state.unfinished }
+        lock.withLock {
+            state.unfinishedCalls += 1
+            return state.unfinished
+        }
     }
 
     func restore() async throws -> RelayTransaction? {
@@ -96,7 +144,24 @@ final class FakeSubscriptionStore: RelaySubscriptionStore, @unchecked Sendable {
         }
     }
 
+    /// As StoreKit: a finished transaction leaves `unfinished`.
     func finish(_ transaction: RelayTransaction) async {
-        lock.withLock { state.finished.append(transaction) }
+        let onFinish = lock.withLock { () -> (@Sendable () -> Void)? in
+            state.finished.append(transaction)
+            state.unfinished.removeAll { $0.id == transaction.id }
+            return state.onFinish
+        }
+        onFinish?()
+    }
+
+    private func waitWhileParked() async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let parked = lock.withLock {
+                guard state.purchaseParked else { return false }
+                state.parkedPurchase = waiter
+                return true
+            }
+            if !parked { waiter.resume() }
+        }
     }
 }

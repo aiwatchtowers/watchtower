@@ -39,6 +39,8 @@ final class AppEnvironment {
     /// The process's one hosted relay session (R2), built on first use and only while the relay is available;
     /// `.off` on the demo and in tests.
     @ObservationIgnored let relay: SharedRelaySession
+    /// The Relay subscription, built only while the relay is available (`AppRoot.wireRelayAccount`).
+    var relayAccount: RelayAccountCenter?
     /// The selected tab and the Calendar stack.
     let navigation = AppNavigation()
     /// The ready recaps the owner has opened on this phone.
