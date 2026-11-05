@@ -161,6 +161,16 @@ def claude():
                     *se_msg_end(), cl_tool_result("toolu_fixture_2", "no target with id 999999", True),
                     se_msg_start("msg_b"), *se_text(0, "That target does not exist."), *se_msg_end(),
                     cl_result(result="That target does not exist.")) + ["#! hang"])
+    # a Quick Connection's read tool (L8): argv names the server
+    qc_res = '{"key":"PAY-1","status":"open"}'
+    write(t, "quick_connection.stream.jsonl",
+          ["#! argv-has mcp__acme", INIT, syn(cl_tool_use("msg_a", "toolu_fixture_4", "mcp__acme__get_issue", {"key": "PAY-1"})),
+           syn(cl_tool_result("toolu_fixture_4", qc_res)), syn(cl_text("msg_b", "PAY-1 is open.")), syn(cl_result(result="PAY-1 is open."))])
+    write(t, "quick_connection.chat.jsonl",
+          ["#! argv-has mcp__acme"] + chat_turn(se_msg_start("msg_a"), *se_tool(0, "toolu_fixture_4", "mcp__acme__get_issue", {"key": "PAY-1"}),
+                                                *se_msg_end(), cl_tool_result("toolu_fixture_4", qc_res),
+                                                se_msg_start("msg_b"), *se_text(0, "PAY-1 is open."), *se_msg_end(),
+                                                cl_result(result="PAY-1 is open.")) + ["#! hang"])
     # a 2 MiB tool result line
     big = cl_tool_result("toolu_fixture_1", PAD)
     big["synthetic"] = True
@@ -300,6 +310,10 @@ def codex():
                                                                  cx_msg(2, "Second message."), cx_done()]])
     write(t, "tool_ok.jsonl", live(t, "tool_ok.jsonl"), ["# expect-first I’ll check the Watchtower targets now."])
     write(t, "tool_failed.jsonl", live(t, "tool_failed.jsonl"), ["# expect-first I’ll find the Watchtower tool"])
+    qc = cx_tool(1, "get_issue", {"key": "PAY-1"}, result='{"key":"PAY-1","status":"open"}')
+    for e in qc:
+        e["item"]["server"] = "acme"
+    write(t, "quick_connection.jsonl", ["#! argv-has acme"] + CX_START + [cx(e) for e in qc + [cx_msg(2, "PAY-1 is open."), cx_done()]])
     big = cx_tool(1, "list_targets", {}, result=PAD)
     write(t, "oversized_line.jsonl", CX_START + [cx(big[0]), "#! emit " + syn(big[1]), cx(cx_msg(2, "After the big line.")), cx(cx_done())])
     # failures: the captured shapes of internal/codex/testdata/turn_failures.json
@@ -409,6 +423,7 @@ def runtime_b():
     write(t, "tool_ok.jsonl", [oa_resp("First message.", [("list_targets", {})]), nxt, oa_resp("Second message.")],
           ["# expect-first First message."])
     write(t, "tool_failed.jsonl", [oa_resp("", [("get_target", {"id": 999999})]), nxt, oa_resp("That target does not exist.")])
+    write(t, "quick_connection.jsonl", [oa_resp("", [("mcp__acme__get_issue", {"key": "PAY-1"})]), nxt, oa_resp("PAY-1 is open.")])
     for name, (status, body) in HTTP_FAILS.items():
         write(t, name + ".jsonl", ["#! status %d" % status, syn(body)])
     write(t, "no_completion.jsonl", [syn({"id": "chatcmpl-fixture", "object": "chat.completion", "choices": []})])

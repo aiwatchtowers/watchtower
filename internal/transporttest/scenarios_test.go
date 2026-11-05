@@ -39,6 +39,9 @@ type Fixture struct {
 	MaxTurns   int
 	// Session is the session level's script (sessions_test.go).
 	Session []sessionStep
+	// QuickConnection mounts a fake Quick Connection (an MCP server with
+	// the read tool get_issue) on the adapter.
+	QuickConnection bool
 	// ReadFeed reads the session's feed and title after the script;
 	// OlderWrite then tries a write stamped before the stored state.
 	ReadFeed, OlderWrite bool
@@ -78,6 +81,8 @@ var scenarios = append([]*Scenario{
 		Fixture: Fixture{File: "tool_ok"}, Assert: assertTool(true)},
 	{Name: "tool-failed", Levels: []Level{LevelStream, LevelChat}, Requires: []Cap{CapTools},
 		Fixture: Fixture{File: "tool_failed"}, Assert: assertTool(false)},
+	{Name: "quick-connection-tool", Levels: []Level{LevelStream, LevelChat}, Requires: []Cap{CapQuickConnections},
+		Fixture: Fixture{File: "quick_connection", QuickConnection: true}, Assert: assertQuickConnection},
 	{Name: "oversized-line", Levels: llmLevels, Requires: []Cap{CapChildProcess},
 		Fixture: Fixture{File: "oversized_line"}, Assert: assertOversized},
 	{Name: "fail-auth", Levels: llmLevels, Fixture: Fixture{File: "fail_auth"},
@@ -86,8 +91,8 @@ var scenarios = append([]*Scenario{
 		Assert: assertFailure(providers.Model, "")},
 	{Name: "fail-rate-limit", Levels: llmLevels, Fixture: Fixture{File: "fail_rate_limit"},
 		Assert: assertFailure(providers.RateLimit, chat.CodeRateLimit)},
-	{Name: "fail-quota", Levels: llmLevels, Fixture: Fixture{File: "fail_quota"},
-		Assert: assertFailure(providers.Quota, chat.CodeRateLimit)},
+	{Name: "fail-quota", Levels: llmLevels, Requires: []Cap{CapQuota}, Fixture: Fixture{File: "fail_quota"},
+		Assert: assertQuota},
 	{Name: "fail-overload", Levels: llmLevels, Fixture: Fixture{File: "fail_overload"},
 		Assert: assertFailure(providers.Overload, chat.CodeRateLimit)},
 	{Name: "no-completion", Levels: llmLevels, Fixture: Fixture{File: "no_completion"}, Assert: assertNoCompletion},
@@ -627,6 +632,47 @@ func (c *Cell) noWebSearchOffered() error {
 		if strings.Contains(strings.ToLower(body), "web_search") {
 			return errors.New("the request offered a web search")
 		}
+	}
+	return nil
+}
+
+// assertQuickConnection: a Quick Connection's read tool runs as a visible
+// step (L8). An HTTP transport's loop calls the server itself; a CLI's
+// fixture checks its argv names the server (argv-has).
+func assertQuickConnection(c *Cell) error {
+	if !c.Supported {
+		return c.noToolsOffered()
+	}
+	if err := c.completed(); err != nil {
+		return err
+	}
+	ends := c.O.eventsOf(chat.EventToolEnd)
+	starts := c.O.eventsOf(chat.EventToolStart)
+	if len(starts) != 1 || len(ends) != 1 || !strings.Contains(starts[0].Name, "get_issue") {
+		return fmt.Errorf("want one get_issue step, got %d start(s) %v", len(starts), starts)
+	}
+	if ends[0].OK == nil || !*ends[0].OK {
+		return errors.New("the Quick Connection call failed")
+	}
+	if !c.A.Caps.ChildProcess && len(c.O.QCCalls) != 1 {
+		return fmt.Errorf("the Quick Connection server ran %v, want one get_issue", c.O.QCCalls)
+	}
+	return nil
+}
+
+// assertQuota: a subscription quota is Quota with its reset; a transport
+// with no subscription reads the same quota-like refusal as a rate limit,
+// never as a quota.
+func assertQuota(c *Cell) error {
+	if c.Supported {
+		return assertFailure(providers.Quota, chat.CodeRateLimit)(c)
+	}
+	f, err := c.O.failure()
+	if err != nil {
+		return err
+	}
+	if f.Category != providers.RateLimit || !f.ResetAt.IsZero() {
+		return fmt.Errorf("category %q (reset %v), want a rate limit with no reset", f.Category, f.ResetAt)
 	}
 	return nil
 }

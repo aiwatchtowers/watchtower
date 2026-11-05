@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
@@ -24,6 +26,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
 
@@ -60,6 +63,10 @@ const (
 	CapCompressedTranscript Cap = "compressed_transcript"
 	CapSubagentFeed         Cap = "subagent_feed"
 	CapTranscriptWatch      Cap = "transcript_watch" // FailureSignal "pull": the §3.5 rollout watch
+	CapQuickConnections     Cap = "quick_connections"
+	// CapQuota: the transport can report a subscription quota with its reset
+	// (a local OpenAI-compatible server has no subscription).
+	CapQuota Cap = "quota"
 )
 
 // Caps is an adapter's capability row, the target values of the spec's
@@ -81,6 +88,7 @@ type Caps struct {
 	Interrupt    string // in_turn / kill_turn
 	WarmSession  bool
 	ChildProcess bool // structural: the transport runs a child process
+	Quota        bool // reports a subscription quota (Failure Quota, ResetAt)
 
 	FailureSignal        string // hook / pull / none
 	InterruptSignal      string // hook / pull / none
@@ -129,6 +137,10 @@ func (c Caps) Has(want Cap) bool {
 		return c.CompressedTranscript
 	case CapSubagentFeed:
 		return c.SubagentFeed
+	case CapQuota:
+		return c.Quota
+	case CapQuickConnections:
+		return c.Tools == "watchtower+quick_connections"
 	case CapTranscriptWatch:
 		return c.FailureSignal == "pull"
 	}
@@ -180,18 +192,19 @@ var adapters = []*Adapter{
 		Name: "claude",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "split",
 			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
-			Interrupt: "in_turn", WarmSession: true, ChildProcess: true,
+			Interrupt: "in_turn", WarmSession: true, ChildProcess: true, Quota: true,
 			FailureSignal: "hook", InterruptSignal: "hook", IdleSignal: true, PermissionWait: true,
-			MidturnInput: true, RegistryProbe: true},
+			MidturnInput: true, RegistryProbe: true, SubagentFeed: true},
 		Batch: func(r *run) digest.Generator {
 			g := digest.NewClaudeGenerator(fakeModel, fakeModel, bins.claude)
 			g.SetIsolatedChild() // cmd/generator.go routedGenerator
 			return g
 		},
 		Stream: func(r *run) chat.Querier {
-			c := ai.NewClient(fakeModel, "", bins.claude)
+			c := ai.NewClient(fakeModel, r.mcpDB(), bins.claude)
 			c.SetProcessGroup(true) // cmd/generator.go newQueryClient (#957)
 			c.EmitToolEvents()      // `ai query --events v2`
+			c.SetExternalMCPServers(r.external)
 			if r.readFolder != "" {
 				c.SetReadFolder(r.readFolder)
 			}
@@ -203,11 +216,15 @@ var adapters = []*Adapter{
 		},
 		Chat: func(r *run) chat.Backend {
 			// The main chat's tool flags (cmd/ai_session.go claudeSessionOptions).
-			return chat.NewClaudeBackend(chat.ClaudeOptions{Binary: bins.claude, Model: fakeModel,
+			opts := chat.ClaudeOptions{Binary: bins.claude, Model: fakeModel,
 				SystemPrompt: sysPrompt, WorkDir: r.workDir(), Warn: io.Discard,
-				Tools: ai.SessionBuiltinTools, AllowedTools: ai.AllowedTools(nil) + "," + ai.WebSearchTool,
-				DisallowedTools: ai.SessionDisallowedTools,
-				InterruptGrace:  2 * time.Second, CloseGrace: time.Second})
+				Tools: ai.SessionBuiltinTools, AllowedTools: ai.AllowedTools(r.external) + "," + ai.WebSearchTool,
+				DisallowedTools: ai.WithExternalDisallowed(ai.SessionDisallowedTools, r.external),
+				InterruptGrace:  2 * time.Second, CloseGrace: time.Second}
+			if len(r.external) > 0 {
+				opts.MCPConfig = ai.ChatMCPConfig(r.mcpDB(), nil, r.external)
+			}
+			return chat.NewClaudeBackend(opts)
 		},
 		Session: claudeSession,
 	},
@@ -215,7 +232,7 @@ var adapters = []*Adapter{
 		Name: "codex",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "message", Usage: "split",
 			Images: true, WebSearch: true, ReadFolder: "shell_sandbox", TurnCap: "counted",
-			Interrupt: "kill_turn", ChildProcess: true,
+			Interrupt: "kill_turn", ChildProcess: true, Quota: true,
 			// The session row's targets (§3.5): pulled failure and interrupt
 			// (S1, S2), the permission hook (S3, pending G7's spike), mid-turn
 			// input (S5), the probe (S6), compressed rollouts (S7, N1).
@@ -236,15 +253,17 @@ var adapters = []*Adapter{
 		Name:  "ollama",
 		Caps:  Caps{Tools: "none", TextStream: "token", Usage: "totals", ReadFolder: "none", TurnCap: "none", Interrupt: "kill_turn"},
 		Batch: func(r *run) digest.Generator { return ollama.NewGenerator(fakeModel, fakeModel, r.serverURL()) },
-		// `ai query --read-folder` on ollama builds the same client: the
-		// folder is not passed on (L9).
-		Stream: func(r *run) chat.Querier { return ollama.NewClient(fakeModel, r.serverURL()) },
+		Stream: func(r *run) chat.Querier {
+			c := ollama.NewClient(fakeModel, r.serverURL())
+			c.EmitToolEvents() // `ai query --events v2`
+			return readFolderRefusal(r, c)
+		},
 	},
 	{
 		Name: "runtime-b",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "final", Usage: "totals",
 			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn"},
-		Stream: func(r *run) chat.Querier { return runtimeB(r) },
+		Stream: func(r *run) chat.Querier { return readFolderRefusal(r, runtimeB(r)) },
 		Chat: func(r *run) chat.Backend {
 			return chat.NewTurnBackend(runtimeB(r), r.chatDB(), r.conv, chat.WithSystemPrompt(sysPrompt))
 		},
@@ -254,9 +273,10 @@ var adapters = []*Adapter{
 // codexClient is the codex chat/query client as cmd builds it: its own
 // process group (codexSessionClient, newQueryClient), the v2 tool events.
 func codexClient(r *run) *codex.Client {
-	c := codex.NewClient(fakeModel, "", bins.codex)
+	c := codex.NewClient(fakeModel, r.mcpDB(), bins.codex)
 	c.SetProcessGroup(true)
 	c.EmitToolEvents()
+	c.SetExternalMCPServers(r.external)
 	if r.readFolder != "" {
 		c.SetReadFolder(r.readFolder)
 	}
@@ -277,7 +297,32 @@ func runtimeB(r *run) *agentloop.Client {
 		agentloop.Options{MaxIterations: r.maxTurns})
 	r.capApplied = r.maxTurns > 0
 	c.EmitToolEvents()
+	if len(r.external) > 0 {
+		c.SetExternalMCPServers(r.external)
+	}
 	return c
+}
+
+// readFolderRefusal is `ai query --read-folder`'s rule in cmd/ai.go: a
+// client with no SetReadFolder is refused with a capability error before
+// it is called (L9).
+func readFolderRefusal(r *run, q chat.Querier) chat.Querier {
+	if _, ok := q.(interface{ SetReadFolder(string) }); ok || r.readFolder == "" {
+		return q
+	}
+	return refusingQuerier{providers.CapabilityError("ollama", providers.ReviewReadonly,
+		errors.New("--read-folder: the ollama provider has no file tools, so it cannot read the folder"))}
+}
+
+type refusingQuerier struct{ err error }
+
+func (q refusingQuerier) Query(context.Context, string, string, string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	textCh, errCh, sidCh := make(chan ai.StreamChunk), make(chan error, 1), make(chan string)
+	errCh <- q.err
+	close(textCh)
+	close(errCh)
+	close(sidCh)
+	return textCh, errCh, sidCh
 }
 
 // run is one cell's environment.
@@ -288,6 +333,9 @@ type run struct {
 	fakeLog    string // the fake CLI's invocation log
 	readFolder string // set: a read-folder run
 	maxTurns   int
+	// external are the Quick Connections a quick-connection cell mounts
+	// (a fake MCP server); nil = none.
+	external []ai.ExternalMCPServer
 	// capApplied is set by an adapter that put maxTurns in force (a codex
 	// client has no turn cap yet: L3).
 	capApplied bool
@@ -308,6 +356,16 @@ func newRun(t *testing.T, fixture string) *run {
 	t.Setenv("WT_FAKECLI_VERSION", codexVersion)
 	t.Cleanup(func() { reapAll(t, readLaunches(t, r.fakeLog)) })
 	return r
+}
+
+// mcpDB is the database path a CLI client mounts its MCP servers with when
+// the cell has Quick Connections: the fake CLI never starts the servers,
+// but the argv the client builds names them. "" otherwise (no mount).
+func (r *run) mcpDB() string {
+	if len(r.external) == 0 {
+		return ""
+	}
+	return filepath.Join(r.dir, "mcp.db")
 }
 
 func (r *run) workDir() string {
@@ -549,6 +607,8 @@ type Outcome struct {
 	FakeErrors []string
 	// CapApplied says the adapter put the scenario's turn cap in force.
 	CapApplied bool
+	// QCCalls are the tools the fake Quick Connection server ran.
+	QCCalls []string
 }
 
 func driveBatch(ctx context.Context, r *run, a *Adapter, o *Outcome) {
@@ -637,6 +697,11 @@ func runCell(t *testing.T, a *Adapter, s *Scenario, level Level) *Outcome {
 	path, _ := fixturePath(t, a, s, level)
 	r := newRun(t, path)
 	r.maxTurns = s.Fixture.MaxTurns
+	var qc *fakeMCP
+	if s.Fixture.QuickConnection {
+		qc = newFakeMCP(t)
+		r.external = []ai.ExternalMCPServer{qc.server()}
+	}
 	if s.Fixture.ReadFolder {
 		r.readFolder = r.workDir()
 	}
@@ -664,6 +729,9 @@ func runCell(t *testing.T, a *Adapter, s *Scenario, level Level) *Outcome {
 	}
 	o.Launches, o.FakeErrors = readFakeLog(t, r.fakeLog)
 	o.CapApplied = r.capApplied
+	if qc != nil {
+		o.QCCalls = qc.seen()
+	}
 	o.Requests = r.requests()
 	o.Calls = ledger.take()
 	return o
@@ -690,4 +758,40 @@ func fixturePath(t *testing.T, a *Adapter, s *Scenario, level Level) (path strin
 		t.Fatal(err)
 	}
 	return p, false
+}
+
+// fakeMCP is a Quick Connection: an MCP server over streamable HTTP with
+// one allowed read tool, get_issue.
+type fakeMCP struct {
+	url   string
+	mu    sync.Mutex
+	calls []string
+}
+
+func newFakeMCP(t *testing.T) *fakeMCP {
+	t.Helper()
+	f := &fakeMCP{}
+	server := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "1"}, nil)
+	server.AddTool(&mcp.Tool{Name: "get_issue", Description: "Read one issue.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"key": map[string]any{"type": "string"}}}},
+		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			f.mu.Lock()
+			f.calls = append(f.calls, "get_issue")
+			f.mu.Unlock()
+			return &mcp.CallToolResult{StructuredContent: map[string]any{"key": "PAY-1", "status": "open"}}, nil
+		})
+	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(srv.Close)
+	f.url = srv.URL
+	return f
+}
+
+func (f *fakeMCP) seen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func (f *fakeMCP) server() ai.ExternalMCPServer {
+	return ai.ExternalMCPServer{ID: 1, Name: "acme", Kind: "http", URL: f.url, AllowTools: []string{"get_issue"}}
 }

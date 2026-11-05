@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,11 +134,12 @@ type sessionResult struct {
 	// FeedEntries, FeedLiveOK and FeedErr are `workbench session-feed
 	// --json`'s; Title and TitleErr the AI title's owner text
 	// (terminal.OpenTranscript).
-	FeedEntries int
-	FeedLiveOK  bool
-	FeedErr     error
-	Title       string
-	TitleErr    error
+	FeedEntries   int
+	FeedSubagents int
+	FeedLiveOK    bool
+	FeedErr       error
+	Title         string
+	TitleErr      error
 	// OlderWrote says a write stamped before the stored state landed.
 	OlderWrote bool
 	Stderr     []string
@@ -204,8 +206,10 @@ var codexSession = &sessionAgent{
 		stepSubagentStop:  {{event: "SubagentStop", payload: "codex_hooks/subagent_stop.json"}},
 		stepForeignPrompt: {{event: "UserPromptSubmit", payload: "codex_hooks/user_prompt_submit.json",
 			set: map[string]any{"session_id": foreignSessionID}}},
-		// stepFailure and stepInterrupt: no hook (S1, S2) — the pull signal.
+		stepInterrupt: {{event: "Interrupt", payload: "codex_hooks/interrupt.json"}},
+		// stepFailure: no hook — the rollout pull below.
 	},
+	pull: codexPull,
 	transcriptPath: func(e *sessionEnv) string {
 		return filepath.Join(e.home, ".codex", "sessions", "2026", "11", "05", "rollout-2026-11-05T12-00-00-"+sessionID+".jsonl")
 	},
@@ -460,7 +464,7 @@ func (ag *sessionAgent) run(t *testing.T, s *Scenario) *sessionResult {
 		res.OlderWrote = wrote
 	}
 	if s.Fixture.ReadFeed {
-		res.FeedEntries, res.FeedLiveOK, res.FeedErr = e.feed()
+		res.FeedEntries, res.FeedSubagents, res.FeedLiveOK, res.FeedErr = e.feed()
 		res.Title, res.TitleErr = e.title(ag)
 	}
 	e.stopBackground()
@@ -509,7 +513,7 @@ func (e *sessionEnv) waitFor(cond func() bool) {
 
 // feed runs `workbench session-feed --json` for the row and counts its
 // entries.
-func (e *sessionEnv) feed() (int, bool, error) {
+func (e *sessionEnv) feed() (entries, subagents int, liveOK bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bins.watchtower, "workbench", "session-feed", "--session", strconv.FormatInt(e.row, 10), "--json")
@@ -518,16 +522,17 @@ func (e *sessionEnv) feed() (int, bool, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return 0, false, fmt.Errorf("session-feed: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return 0, 0, false, fmt.Errorf("session-feed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var out struct {
-		Entries []json.RawMessage `json:"entries"`
-		LiveOK  bool              `json:"live_ok"`
+		Entries   []json.RawMessage `json:"entries"`
+		Subagents []json.RawMessage `json:"subagents"`
+		LiveOK    bool              `json:"live_ok"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		return 0, false, fmt.Errorf("session-feed output: %w", err)
+		return 0, 0, false, fmt.Errorf("session-feed output: %w", err)
 	}
-	return len(out.Entries), out.LiveOK, nil
+	return len(out.Entries), len(out.Subagents), out.LiveOK, nil
 }
 
 // title is the owner text the AI title is made from.
@@ -542,6 +547,15 @@ func (e *sessionEnv) title(ag *sessionAgent) (string, error) {
 // writeClaudeTranscript writes a two-line Claude Code transcript (owner
 // prompt, assistant answer) at path, zstd-compressed for kind "zstd".
 func writeClaudeTranscript(t *testing.T, path, kind string) {
+	if kind == "subagents" {
+		// An Agent call in the main transcript, the subagent's own
+		// transcript and meta beside it (<session>/subagents/).
+		writeTranscript(t, path, kind, filepath.Join("testdata", "claude", "session_subagents.jsonl"))
+		sub := filepath.Join(strings.TrimSuffix(path, ".jsonl"), "subagents")
+		writeTranscript(t, filepath.Join(sub, "agent-ag1.meta.json"), kind, filepath.Join("testdata", "claude", "session_subagent.meta.json"))
+		writeTranscript(t, filepath.Join(sub, "agent-ag1.jsonl"), kind, filepath.Join("testdata", "claude", "session_subagent.jsonl"))
+		return
+	}
 	writeTranscript(t, path, kind, filepath.Join("testdata", "claude", "session_transcript.jsonl"))
 }
 
@@ -553,7 +567,15 @@ func writeCodexRollout(t *testing.T, path, kind string) {
 		src = "rollout_ok"
 	}
 	writeTranscript(t, path, kind, filepath.Join("testdata", "codex", "session_"+src+".jsonl"))
+	if kind == "subagents" {
+		// The spawned agent's own rollout, beside its parent's.
+		child := filepath.Join(filepath.Dir(path), "rollout-2026-11-05T12-00-01-"+codexChildID+".jsonl")
+		writeTranscript(t, child, kind, filepath.Join("testdata", "codex", "session_rollout_child.jsonl"))
+	}
 }
+
+// codexChildID is the subagent thread the codex subagents fixture spawns.
+const codexChildID = "00000000-0000-4000-8000-0000000000c1"
 
 func writeTranscript(t *testing.T, path, kind, src string) {
 	t.Helper()
@@ -708,6 +730,17 @@ var sessionScenarios = []*Scenario{
 			}
 			return nil
 		}), func(f *Fixture) { f.ReadFeed = true }),
+	// The session's subagents reach the feed's Subagents list (S8).
+	withFixture(sessionScenario("session-subagent-feed", []Cap{CapSubagentFeed}, "subagents", nil,
+		func(_ *Cell, r *sessionResult) error {
+			if r.FeedErr != nil {
+				return r.FeedErr
+			}
+			if r.FeedSubagents != 1 {
+				return fmt.Errorf("%d subagents listed in the feed, want 1", r.FeedSubagents)
+			}
+			return nil
+		}), func(f *Fixture) { f.ReadFeed = true }),
 	// A rollout the watch cannot read: the row never stays a silent
 	// working (§3.5). Without a transcript watch the hooks alone drive
 	// the row, which is the unsupported branch.
@@ -784,4 +817,48 @@ func migratedDB(t *testing.T) string {
 		t.Fatalf("migrating the template database: %v", migrated.err)
 	}
 	return migrated.path
+}
+
+// codexPull is codex's pull signal today: the rollout's last turn, read by
+// `workbench session-probe` (the Desktop's poll runs it every 5 s for a
+// working codex row, #959; G5 moves the watch into the session host). The
+// rollout is rewritten first with its turn ending now, as codex appends it
+// after the prompt. The watch-give-up and automation-wait intents have no
+// signal yet (S1).
+func codexPull(t *testing.T, e *sessionEnv, step sessionStep) error {
+	if step != stepFailure {
+		return fmt.Errorf("codex: no hook reports %q and no pull signal reads it", step)
+	}
+	writeCodexRollout(t, e.transcript, "rollout_failed")
+	restampRollout(t, e.transcript, time.Now())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bins.watchtower, "workbench", "session-probe",
+		"--workbench", strconv.FormatInt(e.workbench, 10), "--session", strconv.FormatInt(e.row, 10))
+	cmd.Dir = e.folder
+	cmd.Env = e.environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("session-probe: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+var rolloutStamp = regexp.MustCompile(`"timestamp":"[^"]*"`)
+
+// restampRollout gives the rollout's lines consecutive times ending at end.
+func restampRollout(t *testing.T, path string, end time.Time) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := len(rolloutStamp.FindAll(raw, -1))
+	i := 0
+	raw = rolloutStamp.ReplaceAllFunc(raw, func([]byte) []byte {
+		at := end.Add(time.Duration(i-n+1) * time.Millisecond).UTC().Format("2006-01-02T15:04:05.000Z")
+		i++
+		return []byte(`"timestamp":"` + at + `"`)
+	})
+	writeFile(t, path, string(raw))
 }
