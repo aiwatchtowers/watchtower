@@ -21,12 +21,22 @@ import WatchtowerCore
 /// one CLI child per 30 minutes, not one a minute; the log names the first
 /// failure of a streak and the flip to over, not every retry. Every
 /// bookkeeping entry is in memory only.
+///
+/// The same probe checks a live Codex session that reads Working for a
+/// failed turn (board #959, PROJ-11): Codex has no `StopFailure` hook and
+/// fires no Stop on a failed turn, so the CLI reads the turn's end from the
+/// session's rollout and stores the Error state itself. One check per
+/// session per `codexTurnCheckEvery`; a `failed` answer reads the rows
+/// again. A check that cannot run is logged once per streak and tried at
+/// the next interval.
 @MainActor
 final class SessionBackgroundProber {
     /// How soon a probe that could not run is tried again.
     nonisolated static let retryAfter: TimeInterval = 60
     /// Failed probes in a row for one count that show it over.
     nonisolated static let failuresShownOver = 2
+    /// How often a working Codex session is checked for a failed turn.
+    nonisolated static let codexTurnCheckEvery: TimeInterval = 5
 
     /// A probe ended a count, or what shows as over changed: the center
     /// reads the rows again. One subscriber.
@@ -55,6 +65,10 @@ final class SessionBackgroundProber {
     /// cancelled never clears a later one's entry.
     private var inFlight: [Int64: (token: Int, task: Task<Void, Never>)] = [:]
     private var probesStarted = 0
+    /// When each working Codex session's last turn check started.
+    private var codexChecks: [Int64: Date] = [:]
+    /// Codex sessions whose last turn check could not run (logged once).
+    private var codexCheckFailing: Set<Int64> = []
 
     init(runner: any CLIRunnerProtocol, policy: SessionBackgroundPolicy = .current) {
         self.runner = runner
@@ -84,6 +98,7 @@ final class SessionBackgroundProber {
         startedAt: [Int64: Date],
         now: Date
     ) {
+        checkCodexTurns(rows, statuses: statuses, now: now)
         for row in rows where inFlight[row.id] == nil {
             guard let status = statuses[row.id], let workbench = row.projectID, let agents = row.agentBackground,
                   let count = Self.count(of: row, live: status.state.live, startedAt: startedAt[row.id]),
@@ -107,6 +122,58 @@ final class SessionBackgroundProber {
         inFlight.values.forEach { $0.task.cancel() }
         inFlight = [:]
         entries = [:]
+        codexChecks = [:]
+        codexCheckFailing = []
+    }
+
+    /// Starts a turn check for every live Codex session that reads Working
+    /// and was not checked in the last `codexTurnCheckEvery`; forgets the
+    /// sessions that no longer do.
+    private func checkCodexTurns(_ rows: [SessionAgentStateRow], statuses: [Int64: SessionAgentStatus], now: Date) {
+        var working: Set<Int64> = []
+        for row in rows where row.kind == AgentKind.codex.rawValue {
+            guard let status = statuses[row.id], let workbench = row.projectID,
+                  status.state.live, status.state.kind == .working else { continue }
+            working.insert(row.id)
+            guard inFlight[row.id] == nil,
+                  now.timeIntervalSince(codexChecks[row.id] ?? .distantPast) >= Self.codexTurnCheckEvery else { continue }
+            codexChecks[row.id] = now
+            launch(session: row.id) { [weak self] in
+                await self?.checkCodexTurn(session: row.id, workbench: workbench)
+            }
+        }
+        codexChecks = codexChecks.filter { working.contains($0.key) }
+        codexCheckFailing.formIntersection(working)
+    }
+
+    private func checkCodexTurn(session: Int64, workbench: Int64) async {
+        let failure: String?
+        var failed = false
+        do {
+            let result = try await runProbe(session: session, workbench: workbench)
+            failure = result.ran ? nil : (result.error ?? "no outcome")
+            failed = result.outcome == .failed
+        } catch {
+            failure = error is DecodingError ? String(describing: error) : error.localizedDescription
+        }
+        guard !Task.isCancelled else { return }
+        if let failure {
+            if codexCheckFailing.insert(session).inserted {
+                print("[SessionProbe] session \(session): codex turn check failed: \(failure)")
+            }
+            return
+        }
+        codexCheckFailing.remove(session)
+        if failed {
+            print("[SessionProbe] session \(session): the codex turn failed")
+            onSettled?()
+        }
+    }
+
+    private func runProbe(session: Int64, workbench: Int64) async throws -> SessionProbeResult {
+        let args = ["workbench", "session-probe", "--workbench", String(workbench), "--session", String(session)]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(SessionProbeResult.self, from: data)
     }
 
     /// Agents working, or the same count shown over after failed probes —
@@ -117,10 +184,17 @@ final class SessionBackgroundProber {
     }
 
     private func start(session: Int64, workbench: Int64, count: Count) {
+        launch(session: session) { [weak self] in
+            await self?.probe(session: session, workbench: workbench, count: count)
+        }
+    }
+
+    /// Runs `body` as the session's one probe in flight.
+    private func launch(session: Int64, _ body: @escaping @MainActor () async -> Void) {
         probesStarted += 1
         let token = probesStarted
         let task = Task { [weak self] in
-            await self?.probe(session: session, workbench: workbench, count: count)
+            await body()
             self?.finished(session, token: token)
         }
         inFlight[session] = (token, task)
@@ -132,13 +206,11 @@ final class SessionBackgroundProber {
     }
 
     private func probe(session: Int64, workbench: Int64, count: Count) async {
-        let args = ["workbench", "session-probe", "--workbench", String(workbench), "--session", String(session)]
         let failure: String?
         var ended = false
         var outcome: SessionProbeResult.Outcome?
         do {
-            let data = try await runner.run(args: args)
-            let result = try JSONDecoder().decode(SessionProbeResult.self, from: data)
+            let result = try await runProbe(session: session, workbench: workbench)
             failure = result.ran ? nil : (result.error ?? "no outcome")
             ended = result.ended
             outcome = result.outcome

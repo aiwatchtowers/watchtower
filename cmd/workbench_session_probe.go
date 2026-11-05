@@ -9,8 +9,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/asks"
 	"watchtower/internal/claudesession"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionfeed"
 )
 
 // probeStaleAfter is how long a background agent count may go without a
@@ -27,6 +29,9 @@ const (
 	probeShell    = "shell"   // only background shells run, which the count does not track
 	probeUnknown  = "unknown" // no status, or one this version does not know
 	probeGone     = "gone"    // no registry entry, or its process is dead or its pid reused
+	// probeFailed: a working codex row's rollout ends its last turn on an
+	// error, and this probe stored it (board #959).
+	probeFailed = "failed"
 )
 
 // probeProcs is the process table the probe checks a registry entry's pid
@@ -35,8 +40,11 @@ var probeProcs claudesession.ProcInfo = claudesession.SystemProcs{}
 
 var workbenchSessionProbeCmd = &cobra.Command{
 	Use:   "session-probe",
-	Short: "Check a terminal session's stale background agent count against Claude Code's session registry",
-	Long: "--session S --workbench N: when the claude row S reads waiting with background subagents\n" +
+	Short: "Check a terminal session's stale background agent count, or a working codex turn's failure",
+	Long: "--session S --workbench N: when the codex row S reads working, reads its rollout and, when\n" +
+		"the last turn ended on an error, stores the Error state (outcome \"failed\"; codex has no\n" +
+		"StopFailure hook). Otherwise, " +
+		"when the row S reads waiting with background subagents\n" +
 		"and no report for 30 minutes, reads Claude Code's session registry entry of its\n" +
 		"conversation (~/.claude/sessions/<pid>.json, matched by sessionId). busy or\n" +
 		"waiting leave the row alone; idle, shell, a missing or unknown status, no entry or a\n" +
@@ -110,6 +118,17 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return sessionProbeResult{}, fmt.Errorf("terminal session %d is not in workbench %d", sessionID, workbenchID)
 	}
 	res := sessionProbeResult{OK: true, Outcome: probeNotStale}
+	if row.Kind == string(agentkind.Codex) && row.AgentState.String == agentStateWorking {
+		errType, failed, err := recordCodexTurnFailure(database, row)
+		if err != nil {
+			return sessionProbeResult{}, err
+		}
+		if failed {
+			res.Outcome = probeFailed
+			_, _ = fmt.Fprintf(logOut, "session-probe: session %d: codex turn failed (error %q)\n", sessionID, errType)
+		}
+		return res, nil
+	}
 	// GetTerminalSession keeps only the parsed time: an unparsable stamp is
 	// zero and never reaches the compare-and-clear.
 	if row.BackgroundAt.IsZero() {
@@ -134,6 +153,47 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 	_, _ = fmt.Fprintf(logOut, "session-probe: session %d: outcome %s (registry status %q), ended %v\n",
 		sessionID, res.Outcome, rawStatus, res.Ended)
 	return res, nil
+}
+
+// recordCodexTurnFailure stores the Error state on a working codex row whose
+// rollout ends its last turn on an error (board #959): Codex has no
+// StopFailure hook and its Stop does not fire on a failed turn, so the
+// rollout's task_complete is the only signal. The write is a StopFailure's —
+// `waiting` with agent_failed_at and the codex_error_info as the error —
+// stamped with the task_complete line's time, under recordAgentState's
+// guards: only over `working`, only for the conversation the row runs, and
+// only when that time is after the stored state's (a prompt that started a
+// new turn wins). The next prompt clears it as it clears Claude's. No
+// rollout, an unreadable one or a turn that did not fail writes nothing.
+func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession) (errType string, written bool, err error) {
+	sessionID := row.ClaudeSessionID.String
+	if sessionID == "" {
+		return "", false, nil
+	}
+	path, ok := sessionfeed.LocateCodex(terminalCodexHome(), sessionID, row.TranscriptPath.String)
+	if !ok {
+		return "", false, nil
+	}
+	turn, err := sessionfeed.CodexLastTurn(path)
+	if err != nil {
+		return "", false, err
+	}
+	if !turn.Failed || turn.At.IsZero() {
+		return "", false, nil
+	}
+	errType = briefClip(asks.OneLine(turn.Error), agentErrorRunes)
+	failure := &db.AgentFailure{Error: errType}
+	if err := recordAgentState(database, row.ID, row.WorkbenchID.Int64, sessionID, agentStateWaiting,
+		agentStateWorking, failure, false, turn.At, hookTurn{}); err != nil {
+		return "", false, err
+	}
+	after, err := database.GetTerminalSession(row.ID)
+	if err != nil {
+		return "", false, err
+	}
+	written = after.AgentFailure != nil && after.AgentState.String == agentStateWaiting &&
+		after.AgentFailure.At == db.AgentStateStamp(turn.At)
+	return errType, written, nil
 }
 
 // backgroundCountStale says row is waiting on a background count whose last

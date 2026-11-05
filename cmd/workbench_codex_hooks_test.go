@@ -403,10 +403,17 @@ func assertForeignNote(t *testing.T, errOut, stored string, row int64, name stri
 	assert.Contains(t, errOut, "ignored: terminal session "+strconv.FormatInt(row, 10)+" stores session "+stored, name)
 }
 
-// Codex has no StopFailure or Notification: a payload naming one records
-// nothing, and the Stop's waiting carries no error (business limit 1).
-func TestProj11_CodexRowNeverGetsFailure(t *testing.T) {
+// Codex has no StopFailure or Notification, and its Stop does not fire on a
+// failed turn: a hook payload naming one records nothing and the Stop's
+// waiting carries no error. The Error state comes only from the session's
+// rollout through `workbench session-probe` (board #959, owner approved in
+// ask #499): none without a failed last turn in the rollout — no rollout, a
+// turn that ended fine, a failure older than the stored state, a row not
+// working — and one, with codex_error_info as the error, with it; the next
+// prompt clears it as it clears Claude Code's.
+func TestProj11_CodexRowGetsFailureOnlyFromItsRollout(t *testing.T) {
 	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
 	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
 	before := rowSnapshot(t, database, row)
 	for _, event := range []map[string]any{
@@ -418,10 +425,100 @@ func TestProj11_CodexRowNeverGetsFailure(t *testing.T) {
 	}
 	assert.Equal(t, before, rowSnapshot(t, database, row))
 
-	runCodexStop(t, codexPayload(t, "stop", map[string]any{"error": "rate_limit"}))
+	// No rollout at all.
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+
+	now := time.Now().UTC()
+	for name, lines := range map[string][]string{
+		"ended fine":   {codexTurnLine(now, "task_started", ""), codexTurnLine(now, "task_complete", "")},
+		"aborted":      {codexTurnLine(now, "task_started", ""), codexTurnLine(now, "turn_aborted", "")},
+		"running":      {codexTurnLine(now, "task_started", "")},
+		"older failed": {codexTurnLine(now.Add(-2*time.Minute), "task_complete", "usage_limit_exceeded")},
+	} {
+		writeCodexRollout(t, home, codexTUISession, lines...)
+		assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"], name)
+		assert.Equal(t, before, rowSnapshot(t, database, row), name)
+	}
+
+	writeCodexRollout(t, home, codexTUISession,
+		codexTurnLine(now, "task_started", ""), codexTurnLine(now, "task_complete", "usage_limit_exceeded"))
+	got, logged := runSessionProbeLogged(t, pid, row)
+	assert.Equal(t, probeFailed, got["outcome"])
+	assert.Equal(t, false, got["ended"])
+	assert.Contains(t, logged, `codex turn failed (error "usage_limit_exceeded")`)
 	s := codexRow(t, database, row)
 	assert.Equal(t, agentStateWaiting, s.AgentState.String)
-	assert.Nil(t, s.AgentFailure)
+	require.NotNil(t, s.AgentFailure)
+	assert.Equal(t, "usage_limit_exceeded", s.AgentFailure.Error)
+	assert.Equal(t, db.AgentStateStamp(now), s.AgentFailure.At)
+	assert.Equal(t, now.Truncate(time.Millisecond), s.AgentStateAt, "agent_failed_at = agent_state_at: the Desktop reads Error")
+
+	// A failed row is not working: a second probe writes nothing.
+	failed := rowSnapshot(t, database, row)
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, failed, rowSnapshot(t, database, row))
+
+	// The Stop never carries an error, and the next prompt clears it.
+	runCodexStop(t, codexPayload(t, "stop", map[string]any{"error": "rate_limit"}))
+	assert.Equal(t, "usage_limit_exceeded", codexRow(t, database, row).AgentFailure.Error, "a plain waiting keeps it")
+	runCodexState(t, string(codexHookFixture(t, "user_prompt_submit")))
+	s = codexRow(t, database, row)
+	assert.Equal(t, agentStateWorking, s.AgentState.String)
+	assert.Nil(t, s.AgentFailure, "a prompt clears the error")
+}
+
+// A probe of another session's rollout, or of a row with no session id yet,
+// writes nothing.
+func TestSessionProbe_CodexFailureNeedsTheRowsOwnRollout(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	now := time.Now().UTC()
+	writeCodexRollout(t, home, codexExecSession, codexTurnLine(now, "task_complete", "other"))
+	before := rowSnapshot(t, database, row)
+
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+
+	_, err := database.Exec(`UPDATE terminal_sessions SET claude_session_id = NULL WHERE id = ?`, row)
+	require.NoError(t, err)
+	writeCodexRollout(t, home, codexTUISession, codexTurnLine(now, "task_complete", "other"))
+	before = rowSnapshot(t, database, row)
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+}
+
+// codexHomeFixture points the codex readers at an empty temp CODEX_HOME.
+func codexHomeFixture(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	prev := terminalCodexHome
+	terminalCodexHome = func() string { return home }
+	t.Cleanup(func() { terminalCodexHome = prev })
+	return home
+}
+
+// writeCodexRollout (re)writes session sessionID's rollout under home.
+func writeCodexRollout(t *testing.T, home, sessionID string, lines ...string) {
+	t.Helper()
+	dir := filepath.Join(home, "sessions", "2026", "11", "05")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	p := filepath.Join(dir, "rollout-2026-11-05T12-00-00-"+sessionID+".jsonl")
+	require.NoError(t, os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+}
+
+// codexTurnLine is one rollout turn lifecycle line stamped at; a
+// task_complete with errType carries the error a failed turn ends with.
+func codexTurnLine(at time.Time, typ, errType string) string {
+	payload := map[string]any{"type": typ, "turn_id": "t1"}
+	if errType != "" {
+		payload["error"] = map[string]any{"message": "example", "codex_error_info": errType}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"timestamp": at.UTC().Format("2006-01-02T15:04:05.000Z"), "type": "event_msg", "payload": payload,
+	})
+	return string(b)
 }
 
 // Interrupt (the owner's Esc; codex fires no Stop then) ends the turn as the

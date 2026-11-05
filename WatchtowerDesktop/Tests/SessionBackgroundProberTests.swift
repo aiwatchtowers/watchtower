@@ -312,4 +312,69 @@ final class SessionBackgroundProberTests: XCTestCase {
         runner.release(1)
         await settled(prober)
     }
+
+    // MARK: - Codex turn check (board #959, PROJ-11)
+
+    private func codexRow(state: String = "working", kind: String = "codex") -> SessionAgentStateRow {
+        SessionAgentStateRow(id: 1, projectID: 7, title: "Release work", agentState: state,
+                             agentStateAt: stamp(1), workbenchName: "acme", kind: kind)
+    }
+
+    /// A live Codex session that reads Working is checked once per
+    /// `codexTurnCheckEvery`, through the same `session-probe` call.
+    func testProj11_WorkingCodexSessionIsCheckedForAFailedTurn() async {
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("not_stale"))
+        let prober = makeProber(runner)
+        let first = started.addingTimeInterval(10)
+
+        XCTAssertEqual(pass(prober, [codexRow()], at: first)?.kind, .working)
+        await settled(prober)
+        XCTAssertEqual(runner.invocations, [["workbench", "session-probe", "--workbench", "7", "--session", "1"]])
+
+        pass(prober, [codexRow()], at: first.addingTimeInterval(SessionBackgroundProber.codexTurnCheckEvery - 1))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 1, "not again within the interval")
+
+        pass(prober, [codexRow()], at: first.addingTimeInterval(SessionBackgroundProber.codexTurnCheckEvery))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 2)
+    }
+
+    /// Never a Claude Code session (its StopFailure hook writes the Error),
+    /// a Codex session at its prompt, or one that is not live.
+    func testProj11_OnlyALiveWorkingCodexSessionIsChecked() async {
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("not_stale"))
+        let prober = makeProber(runner)
+        let at = started.addingTimeInterval(10)
+        pass(prober, [codexRow(kind: "claude")], at: at)
+        pass(prober, [codexRow(state: "waiting")], at: at)
+        pass(prober, [codexRow(state: "approval")], at: at)
+        pass(prober, [codexRow()], at: at, live: [])
+        await settled(prober)
+        XCTAssertEqual(runner.invocations, [])
+    }
+
+    /// A `failed` answer reads the rows again; any other answer, or a check
+    /// that cannot run, does not.
+    func testCodexFailedTurnAsksForARead() async {
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
+        let prober = makeProber(runner)
+        var settles = 0
+        prober.onSettled = { settles += 1 }
+        let at = started.addingTimeInterval(10)
+        let every = SessionBackgroundProber.codexTurnCheckEvery
+
+        pass(prober, [codexRow()], at: at)
+        await settled(prober)
+        runner.answer(json: ProbeAnswer.ran("not_stale"))
+        pass(prober, [codexRow()], at: at.addingTimeInterval(every))
+        await settled(prober)
+        XCTAssertEqual(settles, 0)
+
+        runner.answer(json: ProbeAnswer.ran("failed"))
+        pass(prober, [codexRow()], at: at.addingTimeInterval(2 * every))
+        await settled(prober)
+        XCTAssertEqual(settles, 1)
+        XCTAssertEqual(runner.invocations.count, 3)
+    }
 }
