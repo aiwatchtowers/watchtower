@@ -136,35 +136,34 @@ struct RelayBannerModel: Equatable {
         }
     }
 
-    /// S33, S34, and S34b while this hub's route has not moved: "back on iCloud" would be false until it does. Not said while
-    /// charged: nothing ended then.
+    /// S33, S34, and while this hub's route has not moved S41b and S34b: "back on iCloud" would be false until it does. Ended is
+    /// not said while charged: nothing ended then. A move is the relay's own word, as on the card.
     private static func lost(
         _ phase: RelayAccountCenter.Phase, charged: Bool, onRelay: Bool, request: TransportRequestRecord?, macName: String
     ) -> Self? {
         switch phase {
-        case .moved where !onRelay:
+        case .moved:
+            if onRelay { return notMovedYet(RelayCardModel.movedLine, actions: [.restore, .ok], request, macName: macName) }
             return Self(
                 text: "Your Relay subscription moved to another iPhone. This iPhone is back on iCloud.",
                 actions: [.restore, .ok], macName: macName
             )
         case .free(ended: true) where !charged:
-            if onRelay { return endedOnRelay(request, macName: macName) }
-            return Self(text: "Your Relay subscription ended. This iPhone is back on iCloud.", actions: [.subscribe, .ok], macName: macName)
-        case .checking, .unknown, .free, .moved, .paying:
+            let ended = "Your Relay subscription ended."
+            guard onRelay else {
+                return Self(text: "\(ended) This iPhone is back on iCloud.", actions: [.subscribe, .ok], macName: macName)
+            }
+            let text = request?.awaitsAnswer == true ? "\(ended) \(macName) moves to iCloud when it's back." : ended
+            return notMovedYet(text, actions: [.subscribe, .ok], request, macName: macName)
+        case .checking, .unknown, .free, .paying:
             return nil
         }
     }
 
-    /// The move is promised only while the Mac has a request to answer; a refusal says why it won't come.
-    private static func endedOnRelay(_ request: TransportRequestRecord?, macName: String) -> Self {
-        let ended = "Your Relay subscription ended."
-        if request?.awaitsAnswer == true {
-            return Self(text: "\(ended) \(macName) moves to iCloud when it's back.", actions: [.subscribe, .ok], macName: macName)
-        }
-        return Self(
-            text: ended, secondLine: request?.refusal?.message(macName: macName), secondLineTone: .red,
-            actions: [.subscribe, .ok], macName: macName
-        )
+    /// The route has not moved: a refusal says why it won't come. A request the Mac can still answer has no line.
+    private static func notMovedYet(_ text: String, actions: [Action], _ request: TransportRequestRecord?, macName: String) -> Self {
+        let refusal = request?.awaitsAnswer == true ? nil : request?.refusal
+        return Self(text: text, secondLine: refusal?.message(macName: macName), secondLineTone: .red, actions: actions, macName: macName)
     }
 
     /// S30, or S51's sentence where nothing says this phone can subscribe: not read yet, or just charged.

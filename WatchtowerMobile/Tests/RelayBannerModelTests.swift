@@ -390,7 +390,7 @@ final class RelayBannerModelTests: XCTestCase {
     }
 
     func testBackOnICloudIsNotSaidWhileThisHubIsStillOnTheRelay() throws {
-        XCTAssertNil(try banner(phase: .moved, wasPaying: true, route: relayRoute), "a lapse's move waits for the Mac")
+        XCTAssertFalse(try XCTUnwrap(try banner(phase: .moved, wasPaying: true, route: relayRoute)).text.contains("back on"))
         XCTAssertFalse(try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute)).text.contains("back on"))
         XCTAssertNotNil(try banner(phase: .free(ended: true), wasPaying: true, route: iCloudRoute))
         XCTAssertNotNil(try banner(phase: .free(ended: true), wasPaying: true, route: nil), "no hub: nothing contradicts it")
@@ -446,6 +446,41 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertEqual(
             try banner(phase: .free(ended: true), wasPaying: true, route: iCloudRoute, request: lapse)?.text,
             "Your Relay subscription ended. This iPhone is back on iCloud.", "the route moved: S34"
+        )
+    }
+
+    // MARK: - S41b: moved, the route not moved yet
+
+    func testAMovedPhoneOnARelayRouteSaysSoWithNoPromise() throws {
+        for request in [lapse, nil, request(refusal: .lapseNoAnswer, reason: TransportFollowerPolicy.lapseReason)] {
+            let s41b = try XCTUnwrap(try banner(phase: .moved, wasPaying: true, route: relayRoute, request: request))
+            XCTAssertEqual(s41b.text, "Your subscription moved to another iPhone.")
+            XCTAssertNil(s41b.secondLine)
+            XCTAssertEqual(s41b.actions, [.restore, .ok])
+        }
+    }
+
+    func testAMovedPhoneOnARefusingMacSeesTheRefusal() throws {
+        let refused = try XCTUnwrap(try banner(
+            phase: .moved, wasPaying: true, route: relayRoute,
+            request: request(refusal: .notSupported, reason: TransportFollowerPolicy.lapseReason)
+        ))
+        XCTAssertEqual(refused.text, "Your subscription moved to another iPhone.")
+        XCTAssertEqual(refused.secondLine, TransportRequestRefusal.notSupported.message(macName: "Work Mac"))
+        XCTAssertEqual(refused.secondLineTone, .red)
+        XCTAssertEqual(refused.actions, [.restore, .ok])
+    }
+
+    func testS41bGivesWayOnlyWhereItShould() throws {
+        XCTAssertNil(try banner(phase: .moved, wasPaying: false, route: relayRoute, request: lapse), "OK ends it")
+        XCTAssertEqual(
+            try banner(phase: .moved, wasPaying: true, route: relayRoute, relayOnly: true, request: lapse)?.text,
+            "Work Mac needs Relay. Your subscription moved to another iPhone."
+        )
+        XCTAssertEqual(try banner(phase: .moved, wasPaying: true, route: relayRoute, unansweredFor: 12 * 60, request: lapse)?.text, outage)
+        XCTAssertEqual(
+            try banner(phase: .moved, wasPaying: true, route: iCloudRoute, request: lapse)?.text,
+            "Your Relay subscription moved to another iPhone. This iPhone is back on iCloud.", "the route moved: S33"
         )
     }
 
