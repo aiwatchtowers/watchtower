@@ -1,8 +1,9 @@
 // Base.xcconfig — project-wide signing defaults, wired via xcodegen `configFiles`.
 //
 // Unsigned by default: simulator and CI builds must keep working with no team
-// ID and no provisioning. The Makefile / CI mobile jobs additionally force
-// CODE_SIGNING_ALLOWED=NO on the xcodebuild command line, which always wins.
+// ID and no provisioning. On the xcodebuild command line, which always wins,
+// `make mobile-build` forces CODE_SIGNING_ALLOWED=NO and `make mobile-test`
+// signs to run locally (no team, no profile) with StoreKitTesting.entitlements.
 CODE_SIGNING_ALLOWED = NO
 CODE_SIGNING_REQUIRED = NO
 CODE_SIGN_IDENTITY =

@@ -5,6 +5,7 @@ import XCTest
 
 /// The StoreKit seam against Xcode's local StoreKit configuration (`Support/Relay.storekit`). The signed JWS is
 /// Xcode-certificate signed, so the relay's own rules are tested on `FakeHostedRelay`, not here.
+/// Run it with `make mobile-test`: Xcode's GUI lacks that recipe's test-only signing and fails with an opaque refusal.
 final class StoreKitRelayStoreTests: XCTestCase {
     private static let productID = "com.aiwatchtowers.watchtower.relay.monthly"
     private var session: SKTestSession!
@@ -177,11 +178,13 @@ final class StoreKitRelayStoreTests: XCTestCase {
             return XCTFail("expected a purchase")
         }
         await store.finish(first)
-        let second = try await store.purchase(accountToken: UUID())
-        if case .purchased(let again) = second {
-            XCTAssertEqual(again.expiresAt, first.expiresAt, "no new period was bought")
-            XCTAssertEqual(again.originalID, first.originalID)
+        guard case .purchased(let again) = try await store.purchase(accountToken: UUID()) else {
+            return XCTFail("StoreKit Testing answers a second buy with the active subscription's transaction")
         }
+        XCTAssertEqual(again.id, first.id, "the same transaction, not a new one")
+        XCTAssertEqual(again.originalID, first.originalID)
+        XCTAssertEqual(again.expiresAt, first.expiresAt, "no new period was bought")
+        XCTAssertEqual(session.allTransactions().count, 1, "nothing was charged")
         var entitlements = 0
         for await verification in StoreKit.Transaction.currentEntitlements {
             if case .verified(let value) = verification, value.productID == Self.productID { entitlements += 1 }
