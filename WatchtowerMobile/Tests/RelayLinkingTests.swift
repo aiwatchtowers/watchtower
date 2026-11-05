@@ -460,6 +460,106 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual((kept[otherHub] as? [String: Any])?["state"] as? [String: [String: String]], ["fromANewerBuild": [:]])
     }
 
+    /// Rewrites `hubID`'s stored promoted entry as a newer build's (a `State` case this build cannot read).
+    private func makePromotedUnreadable(_ hubID: String) throws {
+        let key = "link.promoted"
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        var entry = try XCTUnwrap(json[hubID] as? [String: Any])
+        entry["state"] = ["fromANewerBuild": [String: Any]()]
+        json[hubID] = entry
+        defaults.set(try JSONSerialization.data(withJSONObject: json), forKey: key)
+    }
+
+    /// #1499: an entry this build cannot read is logged once per hub per `LinkStore`, however often it is read; a
+    /// clean read of the hub re-arms the line.
+    func testAnUnreadablePromotedEntryIsLoggedOncePerHub() throws {
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let readable = try seedPromoted(relayCode(), state: .confirmed)
+        try makePromotedUnreadable(otherHub)
+        let reader = LinkStore(defaults: defaults)
+        var logged: [String] = []
+        reader.onUnreadableLogged = { logged.append($0) }
+
+        for _ in 0..<4 {
+            _ = reader.promoted
+            _ = reader.unreadablePromotedHubIDs
+        }
+        reader.update(readable)
+        XCTAssertEqual(logged, [otherHub], "one line for the hub, none for the readable one")
+
+        reader.removeUnreadablePromoted(otherHub)
+        _ = reader.promoted
+        XCTAssertEqual(logged, [otherHub])
+        XCTAssertEqual(reader.promoted.keys.sorted(), [hub])
+    }
+
+    /// #1499: Unlink of a Mac removes the unreadable promoted entry of its hub; it does not come back on a later read
+    /// or write, and another hub's entries stay.
+    func testUnlinkRemovesTheUnreadablePromotedEntryOfThatHub() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let kept = try seedPromoted(relayCode(), state: .confirmed)
+        try makePromotedUnreadable(otherHub)
+        relay.slots = [otherMac.deviceID]
+        let model = makeModel()
+        model.refreshLinks()
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub])
+
+        await model.unlink(otherHub)
+
+        XCTAssertTrue(store.unreadablePromotedHubIDs.isEmpty)
+        XCTAssertEqual(store.promoted, [hub: kept], "the other hub's link is untouched")
+        var moved = kept
+        moved.state = .promoteSent
+        store.update(moved)
+        store.removePromoted(hub)
+        XCTAssertTrue(LinkStore(defaults: defaults).unreadablePromotedHubIDs.isEmpty, "not back after a write or a restart")
+        XCTAssertNil(defaults.object(forKey: "link.promoted"))
+    }
+
+    /// #1499: Forget of a registry row that cannot be read removes the unreadable entry of its hub too.
+    func testForgetRemovesTheUnreadablePromotedEntryOfThatHub() async throws {
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        try makePromotedUnreadable(otherHub)
+        host.unreadable = [otherHub]
+        let model = makeModel()
+
+        await model.forget(otherHub)
+
+        XCTAssertTrue(store.unreadablePromotedHubIDs.isEmpty)
+    }
+
+    /// #1499: the entry goes before the unlink's other steps. A kill right after it leaves the row, and the next
+    /// Unlink finds nothing to resurrect; a kill before it leaves everything as it was.
+    func testARestartAfterTheEntryWentLeavesTheRowUnlinkableAndNothingBack() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        try makePromotedUnreadable(otherHub)
+        store.removeUnreadablePromoted(otherHub)
+
+        let relaunched = makeModel()
+        relaunched.refreshLinks()
+        XCTAssertEqual(relaunched.links.map(\.hubID), [otherHub], "the row is still there")
+        await relaunched.unlink(otherHub)
+
+        XCTAssertTrue(relaunched.links.isEmpty)
+        XCTAssertTrue(store.unreadablePromotedHubIDs.isEmpty)
+    }
+
+    /// #1499: only an unreadable entry of an owner action goes: a readable one is not touched by the removal helper,
+    /// and a hub the owner never unlinks keeps its unreadable entry.
+    func testTheRemovalHelperNeverTouchesReadableEntriesOrOtherHubs() throws {
+        let readable = try seedPromoted(relayCode(), state: .confirmed)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        try makePromotedUnreadable(otherHub)
+
+        store.removeUnreadablePromoted(hub)
+        store.removeUnreadablePromoted(thirdHub)
+
+        XCTAssertEqual(store.promoted, [hub: readable])
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub])
+    }
+
     func testRemovingStateDisablesTheOtherRows() {
         let state = RelaySlotsState(macs: ["m1", "m2"], removing: "m1")
         let screen = RelaySlotsModel(state: state, links: [], promoted: [])
