@@ -42,7 +42,9 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
     /// the canonical block document re-encoded as text ("" for JSON null: a
     /// markdown card, whose `body` is then the markdown, else Go's plain
     /// text); `key` a living card's key ("" for feed); `contentHash` ""
-    /// for an output other than `inbox`.
+    /// for an output other than `inbox`; `actionsJSON` the card's own
+    /// buttons as `automation_outputs.actions` stores them ("[]" when none,
+    /// or from an older CLI).
     package struct Output: Decodable, Equatable, Sendable {
         package var kind = ""
         package var title = ""
@@ -51,9 +53,10 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
         package var blocksJSON = ""
         package var key = ""
         package var contentHash = ""
+        package var actionsJSON = "[]"
 
         enum CodingKeys: String, CodingKey {
-            case kind, title, body, priority, blocks, key
+            case kind, title, body, priority, blocks, key, actions
             case contentHash = "content_hash"
         }
 
@@ -66,6 +69,8 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
             key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
             contentHash = try c.decodeIfPresent(String.self, forKey: .contentHash) ?? ""
             blocksJSON = try c.decodeIfPresent(DraftJSONValue.self, forKey: .blocks)?.encodedText() ?? ""
+            let actions = try c.decodeIfPresent(DraftJSONValue.self, forKey: .actions)?.encodedText() ?? ""
+            actionsJSON = actions.isEmpty ? "[]" : actions
         }
     }
 
@@ -277,7 +282,7 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
 /// Any JSON value, decoded to be written back as text: a dry-run output's
 /// `blocks` document travels as raw JSON inside the draft result, and the
 /// Look pane decodes it with the Kit's block decoder (WatchtowerCore stays
-/// Kit-free). JSON null is "".
+/// Kit-free); so do its card `actions`. JSON null is "".
 private enum DraftJSONValue: Codable, Equatable {
     case null
     case bool(Bool)

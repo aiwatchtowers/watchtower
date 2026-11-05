@@ -246,4 +246,19 @@ final class AutomationLookPreviewModelTests: XCTestCase {
         XCTAssertEqual(chat.result?.dryRun?.outputs, [])
         XCTAssertEqual(state(chat: chat), .noCard(tokens: 9))
     }
+
+    /// The card's own buttons reach the pane in the stored form, so the
+    /// preview draws them as the Inbox will; none (or an older CLI) is "[]".
+    func testCardActionsReachThePane() throws {
+        let withActions = #"{"kind":"inbox","title":"A","body":"b","priority":"normal","blocks":null,"key":"","#
+            + #""content_hash":"h","actions":[{"label":"Ask","kind":"chat","chat":"why?","primary":true}]}"#
+        let older = #"{"kind":"inbox","title":"B","body":"b","priority":"normal","blocks":null,"key":"","content_hash":"h"}"#
+        let owner = try owner(Self.resultJSON(status: "succeeded", outputs: [withActions, older]), at: t0)
+        guard case let .preview(shown, _, _) = state(owner: owner) else { return XCTFail("preview") }
+        let actions = try JSONSerialization.jsonObject(with: Data(shown.cards[0].actionsJSON.utf8)) as? [[String: Any]]
+        XCTAssertEqual(actions?.count, 1)
+        XCTAssertEqual(actions?.first?["label"] as? String, "Ask")
+        XCTAssertEqual(actions?.first?["chat"] as? String, "why?")
+        XCTAssertEqual(shown.cards[1].actionsJSON, "[]")
+    }
 }

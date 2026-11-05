@@ -127,7 +127,8 @@ package enum AutomationLookPreviewModel {
                 priority: output.priority.isEmpty ? "normal" : output.priority,
                 key: output.key,
                 blocksJSON: output.blocksJSON,
-                body: output.body
+                body: output.body,
+                actionsJSON: output.actionsJSON
             )
         }
         return AutomationLookPaneContent.Shown(cards: cards, selected: min(max(selected, 0), max(cards.count - 1, 0)))
