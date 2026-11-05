@@ -122,6 +122,8 @@ final class RelayAccountCenter {
     private static let foregroundInterval: TimeInterval = 60
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RelayAccount")
 
+    /// Hears the identity points and `.reachable(true)` (this center is the one reader of the session's events).
+    @ObservationIgnored var pushRegistrar: RelayPushRegistrar?
     @ObservationIgnored private let link: RelayAccountLink
     @ObservationIgnored private let store: any RelaySubscriptionStore
     @ObservationIgnored private let defaults: UserDefaults
@@ -189,6 +191,7 @@ final class RelayAccountCenter {
     /// Runs what `start()` held back, with its first pass: an owner's press or a link got here. Idempotent, and nothing
     /// while there still is no identity.
     func identityAppeared() {
+        pushRegistrar?.identityMayExist()
         guard !running, (try? link.hasIdentity()) == true else { return }
         begin()
         startPass()
@@ -526,6 +529,7 @@ final class RelayAccountCenter {
             phase = .unknown
         case .reachable(true):
             updateRequired = false
+            pushRegistrar?.reachable()
             await pass()
         case .control, .attestation(.retryLater), .forbidden, .reachable(false):
             break

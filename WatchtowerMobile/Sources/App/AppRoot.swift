@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import os
 import UserNotifications
+import WatchtowerHostedRelay
 import WatchtowerSync
 
 /// The app's root for its lifetime: one `AppEnvironment` (a session per
@@ -67,6 +68,8 @@ final class AppRoot {
     let env: AppEnvironment
     let linking: LinkingViewModel
 
+    /// The APNs token's registrar; nil while the relay is off (`wireRelayPush`).
+    @ObservationIgnored private(set) var relayPush: RelayPushRegistrar?
     @ObservationIgnored private let registry: HubRegistry
     @ObservationIgnored private let paths: HubPaths
     @ObservationIgnored private let factory: HubSessionFactory
@@ -257,8 +260,9 @@ final class AppRoot {
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live(transports: transports)
         )
-        let productID = RelayConfig.from(bundle: .main).productID
-        root.wireRelayAccount { productID.map { StoreKitRelayStore(productID: $0) } }
+        let relayConfig = RelayConfig.from(bundle: .main)
+        root.wireRelayAccount { relayConfig.productID.map { StoreKitRelayStore(productID: $0) } }
+        root.wireRelayPush(environment: relayConfig.pushEnvironment)
         root.launch { Set([store.pending?.link.hubID].compactMap { $0 } + store.promoted.keys + store.unreadablePromotedHubIDs) }
         return root
     }
@@ -306,6 +310,15 @@ final class AppRoot {
         }
         env.relayAccount = center
         center.start()
+    }
+
+    /// Builds the APNs token's registrar, only while the relay is available. The account center forwards its identity
+    /// points and `.reachable(true)` to it.
+    func wireRelayPush(environment: RelayPushEnvironment?) {
+        guard case .available = env.relay.availability else { return }
+        let registrar = RelayPushRegistrar.live(relay: env.relay, environment: environment)
+        relayPush = registrar
+        env.relayAccount?.pushRegistrar = registrar
     }
 
     /// The launch's clean-up: links saved before encryption go first (their
@@ -373,6 +386,7 @@ final class AppRoot {
     @discardableResult
     func becameActive() -> Task<Void, Never> {
         env.relayAccount?.foreground()
+        relayPush?.foreground()
         if let farewellRetry { return farewellRetry }
         let retry = Task {
             await launched?.value
@@ -1020,7 +1034,8 @@ extension AppRoot: LinkHost {
             scope: payload.scope, userRecordName: payload.userRecordName, linkNonce: payload.linkNonce,
             unlinked: payload.unlinked, typingRequested: payload.typingRequested, startSessions: payload.startSessions,
             permissionsRequested: payload.permissionsRequested, seenAt: payload.seenAt, updatedAt: payload.updatedAt,
-            relayDeviceID: claim.relayDeviceID, relayAuthPub: claim.authPub, relayIDSig: claim.sig)
+            relayDeviceID: claim.relayDeviceID, relayAuthPub: claim.authPub, relayIDSig: claim.sig,
+            workAlertsOff: payload.workAlertsOff)
     }
 
     func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
@@ -1271,8 +1286,10 @@ extension AppRoot: TransportFollowerHost {
     /// ended (the feed marked and deleted the control on the old transport), the old session stops its transport and
     /// closes its files, then a new one opens the same replica (its tokens reset there, `ReplicaStore.adoptRoute`)
     /// on the new route's own transport store, and takes its place on screen. One socket at a time: the old relay
-    /// transport detaches before the new one attaches (carry-over 4). A session that cannot be built leaves the hub
-    /// unopened, as at launch.
+    /// transport detaches before the new one attaches (carry-over 4). The old session's alert subscription call ends
+    /// (or its cap passes) before the new session is built, so a queued delete or save does not overlap the new one's.
+    /// The row is read again after those waits: a hub removed meanwhile is the removal's, and never comes back. A
+    /// session that cannot be built leaves the hub unopened, as at launch, its alert subscription kept: it is still linked.
     private func performRouteMove(_ hubID: String) async {
         guard let old = env.session(hubID) else { return }
         await old.waitForFetches()
@@ -1289,14 +1306,17 @@ extension AppRoot: TransportFollowerHost {
         await old.relayUpgrader?.idle()
         unwire(old)
         await old.shutDown()
-        old.closeDatabases()
+        await old.alertRegistrar?.idle()
         do {
-            let session = try AppEnvironment.makeSession(for: row, factory: factory, identity: identity)
+            guard let fresh = try registry.row(hubID), fresh.state == .linked, env.session(hubID) === old else { return }
+            old.closeDatabases()
+            let session = try AppEnvironment.makeSession(for: fresh, factory: factory, identity: identity)
             wire(session)
             env.add(session)
             env.nameHubs(linkedHubs())
         } catch {
-            env.remove(hubID)
+            old.closeDatabases()
+            env.dropSession(hubID)
             env.markUnopened(hubID, error: error)
         }
     }

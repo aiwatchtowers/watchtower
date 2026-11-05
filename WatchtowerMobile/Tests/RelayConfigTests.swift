@@ -85,6 +85,19 @@ final class RelayConfigTests: XCTestCase {
         XCTAssertEqual(RelayConfig.url("https://example.com/terms")?.absoluteString, "https://example.com/terms")
     }
 
+    func testPushEnvironmentPerConfiguration() throws {
+        XCTAssertEqual(Self.settingLines(try Self.read("Base.xcconfig"), key: "WT_PUSH_ENV"), ["WT_PUSH_ENV = sandbox"])
+        XCTAssertNil(try Self.configSetting("WatchtowerMobile", config: "Debug", key: "WT_PUSH_ENV"), "Debug keeps the sandbox")
+        XCTAssertEqual(try Self.configSetting("WatchtowerMobile", config: "Release", key: "WT_PUSH_ENV"), "production")
+        XCTAssertTrue(try Self.read("Info.plist").contains("<key>WTPushEnvironment</key>\n\t<string>$(WT_PUSH_ENV)</string>"))
+
+        XCTAssertEqual(RelayConfig.pushEnvironment("sandbox"), .sandbox)
+        XCTAssertEqual(RelayConfig.pushEnvironment("production"), .production)
+        for raw in [nil, "", " ", "$(WT_PUSH_ENV)", "development"] {
+            XCTAssertNil(RelayConfig.pushEnvironment(raw), raw ?? "nil")
+        }
+    }
+
     func testBuildSettingsCarryTheProductAndEmptyLinks() throws {
         let base = try Self.read("Base.xcconfig")
         XCTAssertEqual(Self.settingLines(base, key: "WT_RELAY_PRODUCT_ID"),
