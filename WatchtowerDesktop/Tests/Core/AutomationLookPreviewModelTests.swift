@@ -6,6 +6,7 @@ import XCTest
 final class AutomationLookPreviewModelTests: XCTestCase {
     private typealias Model = AutomationLookPreviewModel
     private typealias Content = AutomationLookPaneContent
+    private typealias Newest = AutomationDraftEntry.Newest
 
     private static let text = "RECIPE v2"
     private static let blocks = #"{"v":1,"blocks":[{"type":"heading","text":"Waiting for you"}]}"#
@@ -59,7 +60,7 @@ final class AutomationLookPreviewModelTests: XCTestCase {
         running: Bool = false,
         selected: Int = 0
     ) -> Content {
-        Model.state(text: Self.text, outputs: outputs, chatEntry: chat, ownerResult: owner,
+        Model.state(text: Self.text, outputs: outputs, chatEntry: chat.map { .entry($0) } ?? Newest.none, ownerResult: owner,
                     running: running, selected: selected)
     }
 
@@ -222,9 +223,44 @@ final class AutomationLookPreviewModelTests: XCTestCase {
             Self.entryJSON(text: "RECIPE v3", result: Self.resultJSON(status: "succeeded")),
             "not json"
         ]
-        XCTAssertEqual(Model.chatEntry(in: entries, text: Self.text)?.recipeText, Self.text)
-        XCTAssertEqual(Model.chatEntry(in: entries, text: "RECIPE v9")?.recipeText, "RECIPE v3")
-        XCTAssertNil(Model.chatEntry(in: [], text: Self.text))
+        XCTAssertEqual(Model.chatEntry(in: entries, text: Self.text), .undecodable,
+                       "an unreadable newest entry is never replaced by an older one")
+        let readable = Array(entries.dropLast()) + [entries[1]]
+        guard case let .entry(this) = Model.chatEntry(in: ["not json"] + readable, text: Self.text),
+              case let .entry(other) = Model.chatEntry(in: readable, text: "RECIPE v9") else {
+            return XCTFail("readable newest entries")
+        }
+        XCTAssertEqual(this.recipeText, Self.text, "an older unreadable entry is passed over")
+        XCTAssertEqual(other.recipeText, "RECIPE v3")
+        XCTAssertEqual(Model.chatEntry(in: [], text: Self.text), Newest.none)
+    }
+
+    /// The newest cache entry does not decode: the pane says so instead of
+    /// showing an older entry's cards as the current preview.
+    func testUnreadableNewestEntryIsAnErrorNotAnOlderPreview() throws {
+        let entries = [
+            Self.entryJSON(result: Self.resultJSON(status: "succeeded", outputs: [Self.inboxOutput("Old")])),
+            #"{"recipe_text":"RECIPE v2","result":"#
+        ]
+        let chat = Model.chatEntry(in: entries, text: Self.text)
+        let pane = Model.state(text: Self.text, outputs: ["inbox"], chatEntry: chat, ownerResult: nil, running: false)
+        XCTAssertEqual(pane, .failed(message: Model.unreadableChatLine, steps: []))
+        let owner = try owner(Self.resultJSON(status: "succeeded", outputs: [Self.inboxOutput("Mine")]), at: t0)
+        guard case let .preview(shown, _, _) = Model.state(text: Self.text, outputs: ["inbox"], chatEntry: chat,
+                                                           ownerResult: owner, running: false) else {
+            return XCTFail("the owner's own Dry run of this text is still shown")
+        }
+        XCTAssertEqual(shown.cards.map(\.title), ["Mine"])
+    }
+
+    /// The only cache entry does not decode: an error, never `.empty`.
+    func testOnlyEntryUnreadableIsAnErrorNotEmpty() {
+        let chat = Model.chatEntry(in: ["not json"], text: Self.text)
+        XCTAssertEqual(chat, .undecodable)
+        XCTAssertEqual(Model.state(text: Self.text, outputs: ["inbox"], chatEntry: chat, ownerResult: nil, running: false),
+                       .failed(message: Model.unreadableChatLine, steps: []))
+        XCTAssertEqual(Model.state(text: Self.text, outputs: ["inbox"], chatEntry: chat, ownerResult: nil, running: true),
+                       .running(previous: nil))
     }
 
     func testEntryWithoutTimeIsOlderThanAnyOwnerRun() throws {

@@ -40,34 +40,49 @@ package enum AutomationLookPreviewModel {
     /// How many of the journal's last steps a failed run shows.
     package static let failedStepLimit = 5
     package static let notDryRunLine = "The recipe was checked but not dry-run."
-    package static let stoppedWithoutCards = "The dry run stopped before it made a card."
+    package static let unreadableChatLine = "Couldn't read the last check. Ask the chat to draft it again, or press Dry run."
 
-    /// The chat entry the pane compares: the newest entry of `text`, else
-    /// the newest entry of any text (a stale preview). Entries come oldest
-    /// first (`AutomationDraftCacheQueries.entries`); undecodable ones are
-    /// skipped.
-    package static func chatEntry(in entries: [String], text: String) -> AutomationDraftEntry? {
-        let decoded = entries.compactMap { try? JSONDecoder().decode(AutomationDraftEntry.self, from: Data($0.utf8)) }
-        return decoded.last { $0.recipeText == text } ?? decoded.last
+    /// The chat entry the pane compares. Entries come oldest first
+    /// (`AutomationDraftCacheQueries.entries`). A newest entry that does not
+    /// decode is `.undecodable` — never an older entry shown as current, nor
+    /// the empty state. Otherwise the newest entry of `text`, else the
+    /// newest entry (a stale preview); an older unreadable entry is passed
+    /// over, as one of other bytes would be.
+    package static func chatEntry(in entries: [String], text: String) -> AutomationDraftEntry.Newest {
+        let newest = AutomationDraftEntry.newest(in: entries)
+        guard case let .entry(last) = newest else { return newest }
+        for line in entries.reversed() {
+            if case let .entry(entry) = AutomationDraftEntry.decodeNewest(line), entry.recipeText == text {
+                return .entry(entry)
+            }
+        }
+        return .entry(last)
     }
 
     /// The pane's state. `outputs` is the recipe's declared outputs, nil
     /// while not known (no check yet): then the pane does not claim the
-    /// recipe has no Inbox output. `selected` is the picker's card.
+    /// recipe has no Inbox output. `chatEntry` is `chatEntry(in:text:)`: an
+    /// unreadable newest entry fails the pane with `unreadableChatLine`
+    /// unless the owner's own Dry run of this text is there to show.
+    /// `selected` is the picker's card.
     package static func state(
         text: String,
         outputs: [String]?,
-        chatEntry: AutomationDraftEntry?,
+        chatEntry: AutomationDraftEntry.Newest,
         ownerResult: Run?,
         running: Bool,
         selected: Int = 0
     ) -> AutomationLookPaneContent {
         if let outputs, !outputs.contains("inbox") { return .noInboxOutput }
-        let runs = [chatEntry.map(Run.init(entry:)), ownerResult].compactMap { $0 }
+        var chatRun: Run?
+        if case let .entry(entry) = chatEntry { chatRun = Run(entry: entry) }
+        let runs = [chatRun, ownerResult].compactMap { $0 }
         let current = newest(runs.filter { $0.text == text })
         let settled: AutomationLookPaneContent
         if let current {
             settled = state(of: current, selected: selected)
+        } else if chatEntry == .undecodable {
+            settled = .failed(message: unreadableChatLine, steps: [])
         } else if let other = newest(runs), let shown = cards(of: other, selected: selected), !shown.cards.isEmpty {
             settled = .stale(shown)
         } else {

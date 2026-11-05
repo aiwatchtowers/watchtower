@@ -1096,7 +1096,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         return AutomationLookPreviewModel.state(
             text: text,
             outputs: ["inbox"],
-            chatEntry: nil,
+            chatEntry: AutomationDraftEntry.Newest.none,
             ownerResult: center.previewResults[key],
             running: center.isPreviewRunning(key)
         )

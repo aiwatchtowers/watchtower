@@ -17,7 +17,7 @@ final class AutomationLookCardActionsTests: XCTestCase {
             + #""tokens":5,"status":"succeeded","error":""}}"#
         let decoded = try JSONDecoder().decode(AutomationDraftEntry.Result.self, from: Data(result.utf8))
         let run = AutomationLookPreviewModel.Run(text: "R", at: Date(), outcome: .result(decoded))
-        let content = AutomationLookPreviewModel.state(text: "R", outputs: ["inbox"], chatEntry: nil,
+        let content = AutomationLookPreviewModel.state(text: "R", outputs: ["inbox"], chatEntry: AutomationDraftEntry.Newest.none,
                                                        ownerResult: run, running: false)
         guard case let .preview(shown, _, _) = content else { return XCTFail("preview, got \(content)") }
 
