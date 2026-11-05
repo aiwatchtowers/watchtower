@@ -250,6 +250,10 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 func codexSessionClient(w sessionWiring) *codex.Client {
 	c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
 	c.SetMCPArgs(w.mcpArgs)
+	// Stop and close cancel the turn: the whole tree goes — codex, its MCP
+	// servers and any shell it started — like the warm claude session's
+	// group, and no descendant holding stdout delays the turn's end.
+	c.SetProcessGroup(true)
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
 	})

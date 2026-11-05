@@ -222,6 +222,12 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 	}
 
 	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
+	if c, ok := client.(*codex.Client); ok {
+		// The embedded chats and the read-folder code questions: a stop
+		// (SIGINT/SIGTERM on this process) ends codex with its MCP servers
+		// and shells, not codex alone.
+		c.SetProcessGroup(true)
+	}
 	if aiFlagTools == "chat" {
 		if c, ok := client.(mcpConfigurable); ok {
 			c.SetMCPArgs(chatMCPArgs()) // claude/codex reach tools via the MCP subprocess
