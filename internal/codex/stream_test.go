@@ -575,3 +575,38 @@ exec sleep 30
 	assert.False(t, tools[1].OK)
 	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 50, OutputTokens: 5}}, usage)
 }
+
+// Items without an id get a per-run one: two id-less tool calls stay two
+// steps, each start paired with its end, and two id-less agent messages
+// are still separated.
+func TestQuery_ItemsWithoutID(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"First."}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"ls","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"ls","aggregated_output":"a","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"pwd","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"pwd","aggregated_output":"/w","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Second."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var tools []ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			tools = append(tools, *ch.Tool)
+		}
+	}
+	require.Len(t, tools, 4)
+	assert.NotEmpty(t, tools[0].ID)
+	assert.NotEqual(t, tools[0].ID, tools[2].ID)
+	assert.Equal(t, []ai.ToolEvent{
+		{ID: tools[0].ID, Name: "shell", Args: json.RawMessage(`{"command":"ls"}`)},
+		{ID: tools[0].ID, Name: "shell", Done: true, OK: true, Result: "a"},
+		{ID: tools[2].ID, Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`)},
+		{ID: tools[2].ID, Name: "shell", Done: true, OK: true, Result: "/w"},
+	}, tools)
+	assert.Equal(t, "First.\n\nSecond.", textOf(chunks))
+}
