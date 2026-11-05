@@ -191,7 +191,9 @@ func TestClaudeBackend_CancelInterruptsAndProcessStaysWarm(t *testing.T) {
 
 func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnReplays(t *testing.T) {
 	opts, f := fakeClaude(t, "ignore_interrupt")
-	opts.Replay = func(string) (string, error) { return replayHeader + "\nOwner: long\n" + replayFooter + "\n\n", nil }
+	opts.Replay = func(string, []Attachment) (string, error) {
+		return replayHeader + "\nOwner: long\n" + replayFooter + "\n\n", nil
+	}
 	h := startSession(t, NewClaudeBackend(opts), nil)
 	h.next(EventSessionReady)
 
@@ -236,7 +238,7 @@ func TestClaudeBackend_NoteSessionIDIgnoresAReplacedChild(t *testing.T) {
 func TestClaudeBackend_RespawnReplays(t *testing.T) {
 	opts, f := fakeClaude(t, "crash_once")
 	var replayed []string
-	opts.Replay = func(turnID string) (string, error) {
+	opts.Replay = func(turnID string, _ []Attachment) (string, error) {
 		replayed = append(replayed, turnID)
 		return replayHeader + "\nOwner: x\n" + replayFooter + "\n\n", nil
 	}
@@ -300,7 +302,7 @@ func indexOf(list []string, s string) int {
 
 func TestClaudeBackend_ReplayCommandStartsFreshSession(t *testing.T) {
 	opts, f := fakeClaude(t, "normal")
-	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
+	opts.Replay = func(string, []Attachment) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
 	h := startSession(t, NewClaudeBackend(opts), nil)
 	h.next(EventSessionReady)
 	// Let the warm process actually start (a fresh script can take longer
@@ -755,10 +757,10 @@ func TestClaudeBackend_InternalToolsAreNotSteps(t *testing.T) {
 
 // blockingReplay returns a Replay func that signals entry and then blocks
 // until release is closed — a turn parked between restartFresh and send.
-func blockingReplay() (replay func(string) (string, error), entered chan struct{}, release chan struct{}) {
+func blockingReplay() (replay func(string, []Attachment) (string, error), entered chan struct{}, release chan struct{}) {
 	entered, release = make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	return func(string) (string, error) {
+	return func(string, []Attachment) (string, error) {
 		once.Do(func() { close(entered) })
 		<-release
 		return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil

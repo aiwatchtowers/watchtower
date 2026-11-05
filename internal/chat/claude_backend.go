@@ -57,8 +57,9 @@ type ClaudeOptions struct {
 	// when there is none). The first turn of every child is prefixed with it:
 	// no Claude session is stored (--no-session-persistence, #604 G11), so a
 	// new child knows the conversation only from Watchtower's own history.
-	// nil = no history to replay.
-	Replay func(turnID string) (string, error)
+	// nil = no history to replay. current is the turn's own attachments: a
+	// file among them is sent with the turn and left out of the replay.
+	Replay func(turnID string, current []Attachment) (string, error)
 	// ProjectAttachments are the project's binary files. They are sent ahead
 	// of the owner's own attachments on the first turn of every child
 	// (spec §6.1).
@@ -724,7 +725,7 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, emit func(Ev
 	text := c.Text
 	if b.nextChildIsNew() {
 		b.markFreshSession() // its history holds no project files either
-		prefix, err := b.replayText(c.TurnID)
+		prefix, err := b.replayText(c.TurnID, c.Attachments)
 		if err != nil {
 			return outcome{}, fmt.Errorf("building the replay: %w", err)
 		}
@@ -910,11 +911,11 @@ func (b *claudeBackend) restartFresh() {
 	}
 }
 
-func (b *claudeBackend) replayText(turnID string) (string, error) {
+func (b *claudeBackend) replayText(turnID string, current []Attachment) (string, error) {
 	if b.opts.Replay == nil {
 		return "", nil
 	}
-	return b.opts.Replay(turnID)
+	return b.opts.Replay(turnID, current)
 }
 
 // Cancel sends the interrupt control request; if the turn has not ended

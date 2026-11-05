@@ -139,8 +139,10 @@ func replayEntry(m db.ChatMessage, steps []string, files []db.ChatProjectFile) s
 // transcript (replayFiles) — a stateless provider (codex, ollama) starts
 // fresh every turn and would otherwise never see a file again after the
 // turn it came with. The files ride only with a non-empty transcript: an
-// owner message carrying them is always in it.
-func ReplayFromDB(d *db.DB, conversationID int64, turnID string) (string, error) {
+// owner message carrying them is always in it. current is the running
+// turn's own attachments: a file sent again with it is inlined with the turn
+// and left out here, so it does not reach the model twice.
+func ReplayFromDB(d *db.DB, conversationID int64, turnID string, current []Attachment) (string, error) {
 	path, err := d.ActiveChatPath(conversationID)
 	if err != nil {
 		return "", fmt.Errorf("reading the conversation: %w", err)
@@ -168,7 +170,7 @@ func ReplayFromDB(d *db.DB, conversationID int64, turnID string) (string, error)
 	if transcript == "" {
 		return "", nil
 	}
-	return replayFiles(hist, files, replayFileCapBytes) + transcript, nil
+	return replayFiles(hist, files, current, replayFileCapBytes) + transcript, nil
 }
 
 // ownerMessageIDs lists the ids of hist's owner messages: only they carry
@@ -189,11 +191,15 @@ func ownerMessageIDs(hist []db.ChatMessage) []int64 {
 // fit, an image or PDF, and a file that can no longer be read are named with
 // the reason instead, so the model can ask for it again. A file sent again
 // (the Desktop stores one copy per content, so the rows share its path) is
-// replayed once, at its newest place. No owner files → "".
-func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, capBytes int64) string {
+// replayed once, at its newest place, and not at all when current (the
+// running turn's attachments) carries it again. No owner files → "".
+func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, current []Attachment, capBytes int64) string {
 	var parts []string
 	var used int64
 	seen := map[string]bool{}
+	for _, a := range current {
+		seen[a.Path] = true
+	}
 	overBudget := func(name string) string {
 		return replayFileNote(name, fmt.Sprintf("over the replay's %d-byte budget for earlier files", capBytes))
 	}

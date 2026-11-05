@@ -288,8 +288,8 @@ func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.Clau
 		// attachment_unsupported; their prompt still lists the files.
 		ProjectAttachments: chat.ProjectAttachments(w.project, w.warn),
 		Warn:               w.warn,
-		Replay: func(turnID string) (string, error) {
-			return chat.ReplayFromDB(w.database, w.conv.ID, turnID)
+		Replay: func(turnID string, current []chat.Attachment) (string, error) {
+			return chat.ReplayFromDB(w.database, w.conv.ID, turnID, current)
 		},
 	}
 }
