@@ -16,12 +16,30 @@ final class RelayCardModelTests: XCTestCase {
         _ phase: RelayAccountCenter.Phase, unconfirmed: Bool = false, availability: RelayAvailability? = nil
     ) throws -> RelayCardModel {
         try XCTUnwrap(RelayCardModel(
-            availability: try availability ?? self.available(), phase: phase, unconfirmedPurchase: unconfirmed, slotLimit: 3
+            availability: try availability ?? self.available(), phase: phase, unconfirmedPurchase: unconfirmed
         ))
     }
 
     private func rows(_ model: RelayCardModel) -> [[String]] {
         model.rows.map { [$0.title, $0.value ?? ""] }
+    }
+
+    /// The subscription's three slots, never the phone's four Macs (`HubRegistry.limit`): the card takes no limit, so the
+    /// view cannot hand it the wrong one.
+    func testTheCardCountsAgainstTheRelaysSlots() throws {
+        let model = try card(.paying(grace: false, macs: ["a", "b"]))
+        XCTAssertEqual(model.rows.last?.value, "2 of 3")
+        XCTAssertEqual(HostedRelayLimits.maxMacSlots, 3)
+        XCTAssertNotEqual(HubRegistry.limit, HostedRelayLimits.maxMacSlots, "the two limits differ: keep them apart")
+    }
+
+    func testOnlyACardWithNoLinkRowIsItselfThePress() throws {
+        XCTAssertEqual(try card(.free(ended: false)).cardAction, .openSubscription)
+        XCTAssertEqual(try card(.free(ended: false), unconfirmed: true).cardAction, .openSubscription)
+        XCTAssertNil(try card(.free(ended: true)).cardAction, "Subscribe is its own link row")
+        XCTAssertNil(try card(.unknown).cardAction, "Retry is its own link row")
+        XCTAssertNil(try card(.moved).cardAction)
+        XCTAssertNil(try card(.paying(grace: false, macs: [])).cardAction)
     }
 
     func testEveryPhaseHasItsRowsAndAction() throws {
@@ -79,7 +97,7 @@ final class RelayCardModelTests: XCTestCase {
     func testAnUnavailableRelayHasNoCard() {
         for availability in [RelayAvailability.off(.notConfigured), .off(.unsupportedDevice)] {
             XCTAssertNil(RelayCardModel(
-                availability: availability, phase: .free(ended: false), unconfirmedPurchase: true, slotLimit: 3
+                availability: availability, phase: .free(ended: false), unconfirmedPurchase: true
             ))
         }
     }
@@ -88,10 +106,6 @@ final class RelayCardModelTests: XCTestCase {
         for (macs, text) in [([], "0 of 3"), (["a"], "1 of 3"), (["a", "b", "c"], "3 of 3")] {
             XCTAssertEqual(try card(.paying(grace: false, macs: macs)).rows.last?.value, text)
         }
-        let two = try XCTUnwrap(RelayCardModel(
-            availability: try available(), phase: .paying(grace: false, macs: ["a"]), unconfirmedPurchase: false, slotLimit: 2
-        ))
-        XCTAssertEqual(two.rows.last?.value, "1 of 2")
     }
 
     func testCardTonesAreDeclared() throws {
@@ -110,7 +124,7 @@ final class RelayCardModelTests: XCTestCase {
 
     func testAnEmptyOriginShowsNoRelayUI() throws {
         XCTAssertNil(RelayCardModel(
-            availability: .off(.notConfigured), phase: .free(ended: false), unconfirmedPurchase: false, slotLimit: 3
+            availability: .off(.notConfigured), phase: .free(ended: false), unconfirmedPurchase: false
         ))
         // The Macs list is today's: no transport line on any row.
         var link = LinkRecord(

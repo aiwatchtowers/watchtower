@@ -33,14 +33,16 @@ struct HubSessionFactory {
     /// (mobile E2E); the transport store's folder and stash take class C
     /// (D8, `AppEnvironment.liveTransportStore`).
     static func live(paths: HubPaths, keys: any PhoneKeyStore, transports: TransportFactory = .cloudKit) -> Self {
-        var factory = Self { _, hubID, route, device in
-            try session(hubID: hubID, route: route, device: device, paths: paths, keys: keys, transports: transports) { store, energy in
+        var factory = Self { row, hubID, route, device in
+            try session(
+                hubID: hubID, route: route, link: row?.link, device: device, paths: paths, keys: keys, transports: transports
+            ) { store, energy in
                 try transports.make(route, store, hubID, energy)
             }
         }
         factory.makePairing = { hubID, macDeviceID, slot in
             try session(
-                hubID: hubID, route: .hostedRelay(macDeviceID: macDeviceID), device: nil, paths: paths, keys: keys,
+                hubID: hubID, route: .hostedRelay(macDeviceID: macDeviceID), link: nil, device: nil, paths: paths, keys: keys,
                 transports: transports
             ) { store, energy in
                 try transports.makePairing(macDeviceID, slot, store, energy)
@@ -66,6 +68,7 @@ struct HubSessionFactory {
     private static func session(
         hubID: String,
         route: HubRoute,
+        link: LinkRecord?,
         device: LinkedDevice?,
         paths: HubPaths,
         keys: any PhoneKeyStore,
@@ -90,8 +93,9 @@ struct HubSessionFactory {
             recordingsDirectory: paths.recordingsDirectory(hubID),
             hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
             route: route,
-            // The work-alert push is CloudKit's alone until Phase 4's relay pushes.
-            pushWake: route.cloudKitScope != nil && transports.isAvailable() ? transports.wake : nil,
+            link: link,
+            // The wake behind the work-alert subscription, which stays on the hub's CloudKit route on the relay too.
+            pushWake: transports.isAvailable() ? transports.wake : nil,
             startsActive: active,
             uploadRetriesAllowed: active,
             replicaObservesSuspension: true,

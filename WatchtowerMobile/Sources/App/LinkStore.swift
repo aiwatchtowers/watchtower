@@ -212,11 +212,15 @@ struct LinkRecord: Codable, Equatable, Sendable {
         scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
     }
 
+    /// The hub offers CloudKit; an absent list offers it, as in `TransportFollower`'s refusal.
+    var offersCloudKit: Bool {
+        hubTransports?.contains(TransportKind.cloudKit.rawValue) ?? true
+    }
+
     /// The hub's route on the transport this link is not on, when the hub has both (relay client Phase 3 Task 12):
-    /// the relay needs the Mac's relay id, CloudKit a hub that offers it (an absent list offers it, as in
-    /// `TransportFollower`'s refusal). nil for a link with one route.
+    /// the relay needs the Mac's relay id, CloudKit a hub that offers it. nil for a link with one route.
     var otherRoute: HubRoute? {
-        guard let relayMacDeviceID, hubTransports?.contains(TransportKind.cloudKit.rawValue) ?? true else { return nil }
+        guard let relayMacDeviceID, offersCloudKit else { return nil }
         return transport == .relay ? cloudKitRoute : .hostedRelay(macDeviceID: relayMacDeviceID)
     }
 }

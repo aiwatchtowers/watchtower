@@ -1286,8 +1286,10 @@ extension AppRoot: TransportFollowerHost {
     /// ended (the feed marked and deleted the control on the old transport), the old session stops its transport and
     /// closes its files, then a new one opens the same replica (its tokens reset there, `ReplicaStore.adoptRoute`)
     /// on the new route's own transport store, and takes its place on screen. One socket at a time: the old relay
-    /// transport detaches before the new one attaches (carry-over 4). A session that cannot be built leaves the hub
-    /// unopened, as at launch.
+    /// transport detaches before the new one attaches (carry-over 4). The old session's alert subscription call ends
+    /// (or its cap passes) before the new session is built, so a queued delete or save does not overlap the new one's.
+    /// The row is read again after those waits: a hub removed meanwhile is the removal's, and never comes back. A
+    /// session that cannot be built leaves the hub unopened, as at launch, its alert subscription kept: it is still linked.
     private func performRouteMove(_ hubID: String) async {
         guard let old = env.session(hubID) else { return }
         await old.waitForFetches()
@@ -1304,14 +1306,17 @@ extension AppRoot: TransportFollowerHost {
         await old.relayUpgrader?.idle()
         unwire(old)
         await old.shutDown()
-        old.closeDatabases()
+        await old.alertRegistrar?.idle()
         do {
-            let session = try AppEnvironment.makeSession(for: row, factory: factory, identity: identity)
+            guard let fresh = try registry.row(hubID), fresh.state == .linked, env.session(hubID) === old else { return }
+            old.closeDatabases()
+            let session = try AppEnvironment.makeSession(for: fresh, factory: factory, identity: identity)
             wire(session)
             env.add(session)
             env.nameHubs(linkedHubs())
         } catch {
-            env.remove(hubID)
+            old.closeDatabases()
+            env.dropSession(hubID)
             env.markUnopened(hubID, error: error)
         }
     }
