@@ -4,8 +4,8 @@ import WatchtowerHostedRelay
 import WatchtowerSync
 
 /// An iCloud link's upgrade to the hosted relay (relay client Phase 3b Task 19, R22, R23): the steps, their state on
-/// the hub's `LinkRecord`, the refusals and their texts. The model only: Phase 4's per-Mac choice calls
-/// `HubSession.upgradeToRelay()`, and no view shows the texts yet.
+/// the hub's `LinkRecord`, the refusals and their texts. The Mac's Connection section (`MacTransportPress`,
+/// `MacTransportModel`) calls `HubSession.upgradeToRelay()` and shows the texts.
 enum RelayUpgrade {
     /// How long the phone waits, in wall time from a successful `add_slot`, to read the Mac's data zone on the relay
     /// before it asks for the switch: a running hub confirms within minutes, a Mac shut overnight within a day.
@@ -35,8 +35,8 @@ enum RelayUpgradeStep: String, Codable, CaseIterable, Sendable {
     case switched
 }
 
-/// Why an upgrade ended. Kept on the `LinkRecord` (all but the first checks', which write nothing) for Phase 4's
-/// screen.
+/// Why an upgrade ended. Kept on the `LinkRecord` (all but the first checks', which write nothing) for the Mac's
+/// Connection section.
 enum RelayUpgradeRefusal: Equatable, Sendable {
     /// The grant's relay pair is missing or not coherent.
     case noRelayIdentity
@@ -57,7 +57,7 @@ enum RelayUpgradeRefusal: Equatable, Sendable {
     /// `add_slot`'s `SLOT_REPLACEMENT_LIMIT`.
     case replacementLimit
 
-    /// The text Phase 4's screen shows; nil for the two refusals that hide the choice (no relay on this phone, a hub
+    /// The text the Connection section shows; nil for the two refusals that hide the choice (no relay on this phone, a hub
     /// that names no relay identity).
     func message(macName: String, now: Date) -> String? {
         switch self {

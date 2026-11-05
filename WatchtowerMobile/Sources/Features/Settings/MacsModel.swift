@@ -154,10 +154,19 @@ enum MacsModel {
 
     // MARK: - Each Mac's transport line (relay client Phase 4 Task 7, mockup S07)
 
+    /// The hub writes the asking phone's grant device id (`b.id.String()`, lower-case, matched by parsed UUID on its side);
+    /// a link keeps the id as the phone wrote it (`UUID.uuidString`, upper-case): compare as UUIDs.
     private static func sameDevice(_ by: String, _ own: String?) -> Bool {
         guard let own else { return false }
         if let a = UUID(uuidString: by), let b = UUID(uuidString: own) { return a == b }
         return by == own
+    }
+
+    /// Who changed the Mac's transport last, inside the Connection footnote's sentence; nil when nobody did.
+    static func switchedByText(_ link: LinkRecord, ownDeviceID: String?) -> String? {
+        guard let by = link.switchedBy, !by.isEmpty else { return nil }
+        if by == TransportFollowerPolicy.lapseReason { return "when your subscription ended" }
+        return sameDevice(by, ownDeviceID) ? "by this iPhone" : "by another iPhone"
     }
 
     /// "iCloud" or "Relay", then who switched it last and when ("switched by this iPhone, Today 10:42"); "your
@@ -171,8 +180,6 @@ enum MacsModel {
         if by == TransportFollowerPolicy.lapseReason {
             who = "your subscription ended"
         } else {
-            // The hub writes the asking phone's grant device id (`b.id.String()`, lower-case, matched by parsed UUID on
-            // its side); a link keeps the id as the phone wrote it (`UUID.uuidString`, upper-case): compare as UUIDs.
             who = sameDevice(by, ownDeviceID) ? "switched by this iPhone" : "switched by another iPhone"
         }
         guard let at = link.switchedAt else { return "\(name) · \(who)" }

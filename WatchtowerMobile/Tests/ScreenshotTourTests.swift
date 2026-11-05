@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftUI
 import UIKit
 import WatchtowerHostedRelay
@@ -344,7 +345,7 @@ final class ScreenshotTourTests: XCTestCase {
         ]
         for (number, slug, phase, unconfirmed) in cards {
             let card = try XCTUnwrap(RelayCardModel(
-                availability: .available(origin), phase: phase, unconfirmedPurchase: unconfirmed, slotLimit: 3
+                availability: .available(origin), phase: phase, unconfirmedPurchase: unconfirmed
             ))
             try await shot(number, slug, "bare stack, the Relay card", NavigationStack { MacsView(card: card) }.environment(twoMacs))
         }
@@ -367,6 +368,90 @@ final class ScreenshotTourTests: XCTestCase {
             "S07", "macs-transport-lines", "bare stack, iCloud / Relay / lapse / switching rows",
             NavigationStack { MacsView() }.environment(lines)
         )
+        rows += try await captureConnection(host: host, origin: origin, now: now) { macLink($0, $1, relay: $2) }
+        return rows
+    }
+
+    /// S08–S19, S49, S52, S54, S56: a Mac's Connection section in each state of Task 1's table, each light, dark and narrow,
+    /// handed to the view (`MacDetailView(model:)`).
+    private func captureConnection(
+        host: ScreenshotHost, origin: RelayOrigin, now: Date, makeLink: (String, String, Bool) -> LinkRecord
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32)).publicKey.rawRepresentation
+        let device = DemoSeed.device.deviceID
+        func grant(ordered: Bool = true) -> DeviceGrant {
+            DeviceGrant(
+                deviceID: device, hubID: "p4-work", name: "iPhone", scope: .private, linked: true, typingAllowed: true,
+                startSessionsAllowed: true, orderedActions: ordered ? 1 : nil, transports: ["cloudkit", "relay"],
+                relayDeviceID: RelayIDs.deviceID(publicKey: key), relayAuthPub: WireBytes.base64URL(key)
+            )
+        }
+        let at = Calendar.current.startOfDay(for: now).addingTimeInterval(10 * 3_600 + 42 * 60)
+        var iCloud = makeLink("p4-work", "Work Mac", false)
+        iCloud.switchedBy = device
+        iCloud.switchedAt = at
+        var onRelay = makeLink("p4-work", "Work Mac", true)
+        onRelay.switchedBy = device
+        onRelay.switchedAt = at
+        let freshICloud = makeLink("p4-work", "Work Mac", false)
+        var relayOnly = makeLink("p4-work", "build-box", true)
+        relayOnly.hubTransports = ["relay"]
+        let paying = RelayAccountCenter.Phase.paying(grace: false, macs: [])
+        let free = RelayAccountCenter.Phase.free(ended: false)
+        func request(_ refusal: TransportRequestRefusal? = nil) -> TransportRequestRecord {
+            TransportRequestRecord(target: .cloudKit, controlID: "c", reason: nil, at: now, refusal: refusal)
+        }
+        func facts(
+            step: RelayUpgradeStep? = nil, refusal: RelayUpgradeRefusal? = nil, request: TransportRequestRecord? = nil, reachable: Bool = true
+        ) -> SessionTransportFacts {
+            SessionTransportFacts(upgradeStep: step, upgradeRefusal: refusal, request: request, macReachable: reachable)
+        }
+        func model(
+            _ link: LinkRecord,
+            phase: RelayAccountCenter.Phase = paying,
+            grant given: DeviceGrant? = nil,
+            unconfirmed: Bool = false,
+            _ session: SessionTransportFacts? = nil
+        ) -> MacTransportModel {
+            MacTransportModel(
+                link: link, grant: given ?? grant(), phase: phase, unconfirmedPurchase: unconfirmed,
+                availability: .available(origin), session: session ?? facts(), macName: link.macName, ownDeviceID: device, now: now
+            )
+        }
+        let frames: [(String, String, MacTransportModel)] = [
+            ("S08", "connection-relay-chosen", model(onRelay)),
+            ("S09", "connection-icloud-chosen", model(iCloud)),
+            ("S10", "connection-free-phone", model(freshICloud, phase: free)),
+            ("S11", "connection-too-soon", model(freshICloud, facts(refusal: .tooSoon(retryAt: now.addingTimeInterval(240))))),
+            ("S12", "connection-mac-needs-update", model(freshICloud, grant: grant(ordered: false))),
+            ("S12b", "connection-relay-route-mac-needs-update", model(onRelay, grant: grant(ordered: false))),
+            ("S13", "connection-relay-only", model(relayOnly)),
+            ("S13b", "connection-relay-only-lapse", model(relayOnly, phase: free)),
+            ("S54", "connection-relay-no-answer", model(freshICloud, phase: .unknown)),
+            ("S56", "connection-purchase-not-confirmed", model(freshICloud, phase: free, unconfirmed: true)),
+            ("S14", "connection-slots-full", model(freshICloud, phase: .paying(grace: false, macs: ["a", "b", "c"]))),
+            ("S49", "connection-request-refused", model(onRelay, facts(request: request(.unavailable)))),
+            ("S52", "connection-no-answer", model(onRelay, facts(request: request(.macNoAnswer)))),
+            ("S52b", "connection-no-answer-lapse", model(onRelay, phase: free, facts(request: request(.lapseNoAnswer)))),
+            ("S15", "connection-upgrade-running", model(freshICloud, facts(step: .vouching))),
+            ("S16", "connection-waiting-closed-mac", model(freshICloud, facts(step: .requested, reachable: false))),
+            ("S17", "connection-toward-icloud", model(onRelay, facts(request: request()))),
+            ("S18", "connection-refusal", model(freshICloud, facts(refusal: .readerNotConfirmed))),
+            ("S19", "connection-checking", model(freshICloud, phase: .checking)),
+            ("S19b", "connection-checking-relay-route", model(onRelay, phase: .checking))
+        ]
+        let linking = try macsLinking([makeLink("p4-work", "Work Mac", false)], now: now)
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (number, slug, frame) in frames {
+            try await host.captureThree(
+                "\(number)-\(slug)", NavigationStack { MacDetailView(hubID: "p4-work", model: frame) }.environment(linking),
+                narrowScroll: Self.toTheEnd
+            )
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "MacDetailView", source: "Features/Settings/MacDetailView.swift",
+                reached: "bare stack, the Connection section, light/dark/narrow"
+            ))
+        }
         return rows
     }
 
