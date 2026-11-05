@@ -369,7 +369,7 @@ func parseJSONLOutputForModel(output []byte, model, stderr string) (string, *Cod
 		return "", nil, incompleteRunError(model, output, stderr)
 	}
 	if lastContent == "" {
-		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, fmt.Errorf("no agent_message found in codex output"))
+		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, errNoAgentMessage)
 	}
 
 	return lastContent, totalUsage, nil

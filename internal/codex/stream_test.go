@@ -18,6 +18,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // queryAll runs c.Query to its end and returns every chunk and the error.
@@ -409,4 +410,38 @@ func TestReadStreamLine_AtTheLimit(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 	assert.False(t, oversized)
 	assert.Equal(t, tail, string(line), "a last line without a newline is returned")
+}
+
+// A completed turn with no answer text fails like QuerySync and the batch
+// generator do — except a chat turn (v2) whose steps are its whole reply:
+// the chat shows those, as on Claude.
+func TestQuery_CompletedTurnWithoutAnswer(t *testing.T) {
+	toolOnly := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"update_target","arguments":{},"result":{"content":[{"type":"text","text":"ok"}]},"error":null,"status":"completed"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	t.Run("nothing at all", func(t *testing.T) {
+		for _, v2 := range []bool{false, true} {
+			c := NewClient("gpt-x", "", fakeCodexScript(t, `{"type":"turn.completed"}`, "", 0))
+			if v2 {
+				c.EmitToolEvents()
+			}
+			_, err := queryAll(t, c)
+			require.ErrorIs(t, err, errNoAgentMessage, "v2=%v", v2)
+			var failure *providers.Failure
+			require.ErrorAs(t, err, &failure)
+			assert.Equal(t, providers.InvalidOutput, failure.Category)
+		}
+	})
+	t.Run("tools only, v1", func(t *testing.T) {
+		_, err := queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, toolOnly, "", 0)))
+		require.ErrorIs(t, err, errNoAgentMessage)
+	})
+	t.Run("tools only, v2", func(t *testing.T) {
+		c := NewClient("gpt-x", "", fakeCodexScript(t, toolOnly, "", 0))
+		c.EmitToolEvents()
+		chunks, err := queryAll(t, c)
+		require.NoError(t, err)
+		assert.Empty(t, textOf(chunks))
+	})
 }

@@ -28,6 +28,10 @@ const messageSeparator = "\n\n"
 // errNoTurnCompleted fails a run that exited cleanly without turn.completed.
 var errNoTurnCompleted = errors.New("codex exited without completing the turn")
 
+// errNoAgentMessage fails a completed turn with no answer text (see
+// queryStream.answered for the one exception).
+var errNoAgentMessage = errors.New("no agent_message found in codex output")
+
 // readStreamLine reads one line (with its newline, if any) from r. A line
 // longer than limit is consumed and reported as oversized with no content.
 // err is the reader's: io.EOF after the last line. Unlike agentlog.NextLine,
@@ -211,6 +215,16 @@ func (s *queryStream) finish() {
 		_ = s.send(ai.StreamChunk{Usage: &ai.TurnUsage{Model: s.model,
 			InputTokens: s.usage.InputTokens, OutputTokens: s.usage.OutputTokens}})
 	}
+}
+
+// answered reports whether a completed turn is a success: it has answer
+// text — the rule QuerySync and the batch generator apply too — or, for a v2
+// consumer (the chat), it ran tool steps, which then are the whole visible
+// reply (an agent that only acted, as a Claude turn may end with an empty
+// result). A v1 consumer shows text only, so for it an empty answer is a
+// failure, never a blank "complete" one.
+func (s *queryStream) answered() bool {
+	return s.answer.Len() > 0 || (s.v2 && len(s.toolOrder) > 0)
 }
 
 // incompleteRunError is the error of a codex run that exited cleanly
