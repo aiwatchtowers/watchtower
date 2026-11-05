@@ -66,6 +66,8 @@ final class RelayAccountCenter {
         case boughtNotConfirmed
         /// No account id: nothing bought yet.
         case accountFailed
+        /// A Restore that stopped at the account or did not reach the relay. No word about money: it may follow a real charge.
+        case restoreFailed
         case restoring, noSubscriptionFound
         case refused, transferLimit, notImplemented, updateRequired
         /// The App Store call threw for a reason other than the owner's cancel. It says nothing about a charge.
@@ -306,7 +308,7 @@ final class RelayAccountCenter {
     /// Resets a finished press's state. A running press stays, and so does `.pending` until an approval arrives.
     func screenClosed() {
         switch purchase {
-        case .done, .noSubscriptionFound, .accountFailed, .refused, .transferLimit, .notImplemented, .updateRequired,
+        case .done, .noSubscriptionFound, .accountFailed, .restoreFailed, .refused, .transferLimit, .notImplemented, .updateRequired,
              .boughtNotConfirmed, .productFailed, .storeFailed:
             purchase = .idle
         default:
@@ -380,8 +382,8 @@ final class RelayAccountCenter {
             await confirm([transaction], tracksCharge: false)
         } catch RelayStoreError.cancelled {
             // A load does not write during a press, so S21 would stay with none running; and the account just answered, so
-            // S46 would no longer be true. `.idle`: the open screen loads.
-            let stale = prior == .loadingProduct || prior == .accountFailed
+            // S46b would no longer be true. `.idle`: the open screen loads.
+            let stale = prior == .loadingProduct || prior == .restoreFailed
             purchase = stale ? product.map(PurchaseState.ready) ?? .idle : prior
         } catch {
             Self.logger.error("relay account: restore failed: \(Self.code(error), privacy: .public)")
@@ -389,9 +391,9 @@ final class RelayAccountCenter {
         }
     }
 
-    /// **Try Again** on S46: the press that stopped at the account, run again. A failed Restore never becomes a purchase.
+    /// **Try Again** on S46 and S46b: the press that stopped, run again. A failed Restore never becomes a purchase.
     func retryAccount() async {
-        guard purchase == .accountFailed else { return }
+        guard purchase == .accountFailed || purchase == .restoreFailed else { return }
         switch lastPress {
         case .buy: await buy()
         case .restore: await restore()
@@ -416,7 +418,7 @@ final class RelayAccountCenter {
     private func pressAccountID() async -> UUID? {
         do {
             guard let account = try link.account() else {
-                purchase = .accountFailed
+                purchase = pressFailure
                 return nil
             }
             let id = try await account.accountID()
@@ -426,15 +428,20 @@ final class RelayAccountCenter {
             purchase = .updateRequired
         } catch {
             Self.logger.error("relay account: no account id: \(Self.code(error), privacy: .public)")
-            purchase = .accountFailed
+            purchase = pressFailure
         }
         return nil
     }
 
+    /// S46 only for a Buy, where nothing can have been charged yet. A Restore can follow a real charge: S46b, no word about money.
+    private var pressFailure: PurchaseState {
+        lastPress == .buy ? .accountFailed : .restoreFailed
+    }
+
     /// Submits for a press and ends it: on an entitlement once the read has answered too; else the state says why.
     /// `tracksCharge` false is a restore: Apple's row is not in `Transaction.unfinished`, as the old phone finished it, so
-    /// nothing would re-send it and "turns on as soon as Watchtower reaches it" would be false. It charges nothing, so a
-    /// relay it did not reach is S46, whose **Try Again** runs the restore again (a move's `UNAVAILABLE`: the read says paying).
+    /// nothing would re-send it and "turns on as soon as Watchtower reaches it" would be false. A relay it did not reach is
+    /// S46b, whose **Try Again** runs the restore again (a move's `UNAVAILABLE`: the read says paying).
     private func confirm(_ transactions: [RelayTransaction], tracksCharge: Bool) async {
         var outcome = SubmitAnswer.unreachable
         for transaction in transactions {
@@ -449,9 +456,9 @@ final class RelayAccountCenter {
             purchase = Self.pressState(refusal)
             await read()
         case .unreachable:
-            purchase = tracksCharge ? .boughtNotConfirmed : .accountFailed
+            purchase = tracksCharge ? .boughtNotConfirmed : .restoreFailed
             await read()
-            if purchase == .accountFailed, Self.isPaying(phase) { purchase = .done }
+            if purchase == .restoreFailed, Self.isPaying(phase) { purchase = .done }
         }
     }
 

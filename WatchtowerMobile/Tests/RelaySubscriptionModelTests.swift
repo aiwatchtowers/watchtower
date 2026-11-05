@@ -66,6 +66,8 @@ final class RelaySubscriptionModelTests: XCTestCase {
                 purchase: .accountFailed, primary: "Try Again", action: .retryAccount,
                 line: "Couldn't reach Relay. You weren't charged.", isError: true
             ),
+            // A Restore's failure says nothing about money: it can follow a real charge.
+            Case(purchase: .restoreFailed, primary: "Try Again", action: .retryAccount, line: "Couldn't reach Relay.", isError: true),
             Case(purchase: .pending, primary: nil, action: nil, line: "Waiting for approval. Relay turns on when it's approved."),
             Case(purchase: .boughtNotConfirmed, primary: "Try Again", action: .retryConfirm, line: notReached),
             Case(purchase: .refused, primary: manage, action: .manageSubscription, line: refused, isError: true),
@@ -154,7 +156,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
     /// Each of these says something false, or sells, over a period Apple already sold: "Waiting for approval" after the
     /// approval, **Subscribe** on "No subscription found", "You weren't charged" to a charged owner.
     func testAnUnconfirmedPurchaseWinsOverAResultThatWouldBeFalse() {
-        for purchase: RelayAccountCenter.PurchaseState in [.pending, .noSubscriptionFound, .accountFailed] {
+        for purchase: RelayAccountCenter.PurchaseState in [.pending, .noSubscriptionFound, .accountFailed, .restoreFailed] {
             for (unconfirmed, primary, line) in frames() {
                 let shown = model(purchase, unconfirmed: unconfirmed, product: price)
                 let name = "\(unconfirmed) over \(purchase)"
@@ -171,7 +173,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
     /// charges before the submit could say the app is too old: S43 first, not after the money.
     func testAnAppTooOldSellsNothing() {
         let selling: [RelayAccountCenter.PurchaseState] = [
-            .idle, .loadingProduct, .ready(price), .productFailed, .storeFailed, .noSubscriptionFound, .accountFailed
+            .idle, .loadingProduct, .ready(price), .productFailed, .storeFailed, .noSubscriptionFound, .accountFailed, .restoreFailed
         ]
         for purchase in selling {
             for product in [price, nil] {
@@ -237,7 +239,8 @@ final class RelaySubscriptionModelTests: XCTestCase {
         for grace in [false, true] {
             let paying = RelayAccountCenter.Phase.paying(grace: grace, macs: [])
             let states: [RelayAccountCenter.PurchaseState] = [
-                .idle, .ready(price), .loadingProduct, .productFailed, .noSubscriptionFound, .storeFailed, .accountFailed, .refused, .done
+                .idle, .ready(price), .loadingProduct, .productFailed, .noSubscriptionFound, .storeFailed, .accountFailed, .restoreFailed,
+                .refused, .done
             ]
             for purchase in states {
                 let shown = model(purchase, phase: paying, product: price)
@@ -258,7 +261,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
         }
         let others: [RelayAccountCenter.PurchaseState] = [
             .idle, .loadingProduct, .productFailed, .ready(price), .buying, .confirming, .pending, .boughtNotConfirmed,
-            .accountFailed, .restoring, .noSubscriptionFound, .updateRequired, .storeFailed, .done
+            .accountFailed, .restoreFailed, .restoring, .noSubscriptionFound, .updateRequired, .storeFailed, .done
         ]
         for purchase in others {
             XCTAssertNil(model(purchase).manageSubscriptionURL, "\(purchase)")
@@ -302,7 +305,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
             XCTAssertEqual(model(purchase).restoreTone, .secondary, "\(purchase)")
         }
         let others: [RelayAccountCenter.PurchaseState] = [
-            .idle, .loadingProduct, .productFailed, .ready(price), .pending, .boughtNotConfirmed, .accountFailed,
+            .idle, .loadingProduct, .productFailed, .ready(price), .pending, .boughtNotConfirmed, .accountFailed, .restoreFailed,
             .noSubscriptionFound, .refused, .transferLimit, .notImplemented, .updateRequired, .storeFailed, .done
         ]
         for purchase in others {
@@ -352,7 +355,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
     func testOnlyAnIdlePurchaseLoadsAgain() {
         XCTAssertTrue(Model.loadsProduct(on: .idle))
         let others: [RelayAccountCenter.PurchaseState] = [
-            .loadingProduct, .productFailed, .ready(price), .buying, .confirming, .pending, .boughtNotConfirmed, .accountFailed,
+            .loadingProduct, .productFailed, .ready(price), .buying, .confirming, .pending, .boughtNotConfirmed, .accountFailed, .restoreFailed,
             .restoring, .noSubscriptionFound, .refused, .transferLimit, .notImplemented, .updateRequired, .storeFailed, .done
         ]
         for purchase in others {
@@ -363,7 +366,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
     func testTonesAreDeclared() {
         let states: [RelayAccountCenter.PurchaseState] = [
             .idle, .loadingProduct, .productFailed, .ready(price), .buying, .confirming, .pending, .boughtNotConfirmed,
-            .accountFailed, .restoring, .noSubscriptionFound, .refused, .transferLimit, .notImplemented, .updateRequired,
+            .accountFailed, .restoreFailed, .restoring, .noSubscriptionFound, .refused, .transferLimit, .notImplemented, .updateRequired,
             .storeFailed, .done
         ]
         for purchase in states {

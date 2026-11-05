@@ -118,7 +118,7 @@ struct RelaySubscriptionModel: Equatable {
             return updateRequired && canLeadToAPurchase(purchase) ? .updateRequired : purchase
         }
         switch purchase {
-        case .idle, .loadingProduct, .productFailed, .ready, .storeFailed, .pending, .noSubscriptionFound, .accountFailed:
+        case .idle, .loadingProduct, .productFailed, .ready, .storeFailed, .pending, .noSubscriptionFound, .accountFailed, .restoreFailed:
             switch unconfirmed {
             case .confirming: return .confirming
             case .notReached: return .boughtNotConfirmed
@@ -132,10 +132,10 @@ struct RelaySubscriptionModel: Equatable {
         }
     }
 
-    /// **Subscribe**, or a press on the way to it (a load, S46's **Try Again**). The rest are answers: `updateRequired` leaves them.
+    /// **Subscribe**, or a press on the way to it (a load, **Try Again** on S46 and S46b). The rest are answers: `updateRequired` leaves them.
     private static func canLeadToAPurchase(_ purchase: RelayAccountCenter.PurchaseState) -> Bool {
         switch purchase {
-        case .idle, .loadingProduct, .ready, .productFailed, .storeFailed, .noSubscriptionFound, .accountFailed: true
+        case .idle, .loadingProduct, .ready, .productFailed, .storeFailed, .noSubscriptionFound, .accountFailed, .restoreFailed: true
         default: false
         }
     }
@@ -177,7 +177,7 @@ struct RelaySubscriptionModel: Equatable {
                 sells: product != nil, primary: subscribe(product) ?? loadPrice,
                 line: "The App Store didn't finish. Nothing changed; you can try again.", isError: true
             )
-        case .productFailed, .accountFailed, .pending, .boughtNotConfirmed, .refused, .transferLimit, .notImplemented,
+        case .productFailed, .accountFailed, .restoreFailed, .pending, .boughtNotConfirmed, .refused, .transferLimit, .notImplemented,
              .updateRequired, .done:
             return answer(state)
         }
@@ -198,6 +198,10 @@ struct RelaySubscriptionModel: Equatable {
             return Frame(
                 primary: Button(title: "Try Again", action: .retryAccount),
                 line: "Couldn't reach Relay. You weren't charged.", isError: true
+            )
+        case .restoreFailed:
+            return Frame(
+                primary: Button(title: "Try Again", action: .retryAccount), line: RelayCardModel.unreachable, isError: true
             )
         case .pending:
             return Frame(line: "Waiting for approval. Relay turns on when it's approved.")
