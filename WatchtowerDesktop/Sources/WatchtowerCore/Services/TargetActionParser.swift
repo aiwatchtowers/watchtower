@@ -17,7 +17,7 @@ package enum TargetActionParser {
         let matches = regex.matches(in: raw, range: NSRange(location: 0, length: full.length))
 
         var actions: [ProposedAction] = []
-        var seen: Set<String> = []
+        var seen: [String: Int] = [:]  // changeKey → index in actions
         var errors: [String] = []
         for match in matches where match.numberOfRanges >= 2 {
             let json = full.substring(with: match.range(at: 1))
@@ -25,8 +25,14 @@ package enum TargetActionParser {
                 let action = try JSONDecoder().decode(ProposedAction.self, from: Data(json.utf8))
                 try action.validate()
                 // A reply keeps the text before and after its tool calls, so
-                // a block repeated after a call is one action, applied once.
-                if seen.insert(action.changeKey).inserted { actions.append(action) }
+                // a block repeated after a call is one action, applied once;
+                // an execute copy wins over a proposed one (the owner's directive).
+                if let index = seen[action.changeKey] {
+                    if action.isExecute, !actions[index].isExecute { actions[index] = action }
+                } else {
+                    seen[action.changeKey] = actions.count
+                    actions.append(action)
+                }
             } catch let ProposedActionError.invalid(msg) {
                 errors.append(msg)
             } catch let decodingError as DecodingError {

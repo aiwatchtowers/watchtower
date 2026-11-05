@@ -132,4 +132,18 @@ final class TargetActionParserTests: XCTestCase {
         XCTAssertEqual(r.actions.first?.reason, "first")
         XCTAssertTrue(r.errors.isEmpty)
     }
+
+    /// The same change first proposed, then directed: the directive wins.
+    func testARepeatedBlockKeepsTheExecuteCopy() {
+        let proposed = """
+        ```watchtower-action
+        {"type":"update_due_date","due_date":"2026-09-01","reason":"maybe"}
+        ```
+        """
+        let directed = proposed.replacingOccurrences(of: "\"reason\":\"maybe\"",
+                                                     with: "\"reason\":\"owner said so\",\"mode\":\"execute\"")
+        let r = TargetActionParser.parse("\(proposed)\n\(directed)\n\(proposed)")
+        XCTAssertEqual(r.actions.count, 1)
+        XCTAssertEqual(r.actions.first?.isExecute, true)
+    }
 }
