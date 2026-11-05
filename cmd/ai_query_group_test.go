@@ -17,18 +17,19 @@ import (
 	"watchtower/internal/db"
 )
 
-// codexTreeStub is a fake codex that starts a grandchild (a background
-// sleep, which a non-interactive shell runs with SIGINT ignored, holding
-// codex's stdout) and waits for it. It writes its own pid to <dir>/codex.pid
-// and the grandchild's to <dir>/grandchild once it is running.
-func codexTreeStub(t *testing.T) (bin string, grandchild func() int) {
+// cliTreeStub is a fake provider CLI named name (codex or claude) that
+// answers --version with version and otherwise starts a grandchild (a
+// background sleep, which a non-interactive shell runs with SIGINT ignored,
+// holding the CLI's stdout) and waits for it. It writes its own pid to
+// <dir>/stub.pid and the grandchild's to <dir>/grandchild once it is running.
+func cliTreeStub(t *testing.T, name, version string) (bin string, grandchild func() int) {
 	t.Helper()
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "grandchild")
-	stubPidFile := filepath.Join(dir, "codex.pid")
-	bin = filepath.Join(dir, "codex")
+	stubPidFile := filepath.Join(dir, "stub.pid")
+	bin = filepath.Join(dir, name)
 	script := "#!/bin/sh\n" +
-		`case "$1" in --version) echo "codex-cli 0.200.0"; exit 0;; esac` + "\n" +
+		`case "$1" in --version) echo "` + version + `"; exit 0;; esac` + "\n" +
 		"echo $$ > " + stubPidFile + "\n" +
 		"cat > /dev/null\n" +
 		"sleep 30 &\n" +
@@ -63,7 +64,7 @@ func codexTreeStub(t *testing.T) (bin string, grandchild func() int) {
 		// no stub outlives the test.
 		for _, pid := range killed {
 			require.Eventually(t, func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH },
-				5*time.Second, 20*time.Millisecond, "codex stub process %d is still alive or unreaped after SIGKILL", pid)
+				5*time.Second, 20*time.Millisecond, "stub process %d is still alive or unreaped after SIGKILL", pid)
 		}
 	})
 	return bin, grandchild
@@ -93,18 +94,29 @@ func assertTreeDiesOnCancel(t *testing.T, p ai.Provider, grandchild func() int) 
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the cancelled codex query did not end: a descendant still holds its stdout")
+		t.Fatal("the cancelled query did not end: a descendant still holds its stdout")
 	}
 	require.Eventually(t, func() bool {
 		return syscall.Kill(pid, 0) == syscall.ESRCH
-	}, 5*time.Second, 50*time.Millisecond, "codex's grandchild %d survived the cancel", pid)
+	}, 5*time.Second, 50*time.Millisecond, "the CLI's grandchild %d survived the cancel", pid)
 }
 
-func codexGroupTestConfig(t *testing.T, bin string) (*config.Config, *db.DB, string) {
+// groupTestConfig is a workspace whose provider runs the stub bin, with
+// routed set a tool-router fallback to the other CLI.
+func groupTestConfig(t *testing.T, provider, bin string, routed bool) (*config.Config, *db.DB, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEX_HOME", t.TempDir())
-	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}, CodexPath: bin}
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: provider}}
+	other := "codex"
+	if provider == "codex" {
+		cfg.CodexPath, other = bin, "claude"
+	} else {
+		cfg.ClaudePath = bin
+	}
+	if routed {
+		cfg.AI.Fallback.Enabled, cfg.AI.Fallback.Provider = true, other
+	}
 	dbPath := cfg.DBPath()
 	database, err := db.Open(dbPath)
 	require.NoError(t, err)
@@ -115,8 +127,8 @@ func codexGroupTestConfig(t *testing.T, bin string) (*config.Config, *db.DB, str
 // Stop/close of a codex chat session cancels the turn: codex's whole
 // process tree dies, as the warm claude session's group does.
 func TestCodexSessionClient_CancelKillsTheProcessTree(t *testing.T) {
-	bin, grandchild := codexTreeStub(t)
-	cfg, database, dbPath := codexGroupTestConfig(t, bin)
+	bin, grandchild := cliTreeStub(t, "codex", "codex-cli 0.200.0")
+	cfg, database, dbPath := groupTestConfig(t, "codex", bin, false)
 	c := codexSessionClient(sessionWiring{cfg: cfg, database: database, dbPath: dbPath, model: "m",
 		mcpArgs: []string{"--chat", "--surface", "main"}})
 	assertTreeDiesOnCancel(t, c, grandchild)
@@ -125,17 +137,46 @@ func TestCodexSessionClient_CancelKillsTheProcessTree(t *testing.T) {
 // `ai query` on codex — the embedded chats (--tools chat) and the
 // read-folder code questions — ends the whole tree on a stop too.
 func TestCodexQueryClient_CancelKillsTheProcessTree(t *testing.T) {
+	queryClientTreeCases(t, "codex", "codex-cli 0.200.0")
+}
+
+// `ai query` on claude — the embedded chats (--tools chat), the read-folder
+// code questions, and the same through the provider router — ends claude's
+// whole tree on a stop, as the codex path does: its MCP servers and shells
+// die with it.
+func TestClaudeQueryClient_CancelKillsTheProcessTree(t *testing.T) {
+	queryClientTreeCases(t, "claude", "2.1.0 (Claude Code)")
+}
+
+// queryClientTreeCases runs a cancelled `ai query` on provider — direct and
+// through the tool router, with --tools chat and with a read folder — and
+// asserts the stub CLI's grandchild dies with it.
+func queryClientTreeCases(t *testing.T, provider, version string) {
 	oldTools, oldModel := aiFlagTools, aiFlagModel
 	t.Cleanup(func() { aiFlagTools, aiFlagModel = oldTools, oldModel })
-	for _, toolsFlag := range []string{"chat", ""} {
-		t.Run("tools="+toolsFlag, func(t *testing.T) {
-			bin, grandchild := codexTreeStub(t)
-			cfg, _, dbPath := codexGroupTestConfig(t, bin)
-			aiFlagTools, aiFlagModel = toolsFlag, "m"
+	for _, tc := range []struct {
+		name   string
+		tools  string
+		model  string
+		routed bool
+	}{
+		{name: "tools=chat", tools: "chat", model: "m"},
+		{name: "read-folder", model: "m"},
+		{name: "routed tools=chat", tools: "chat", routed: true},
+		{name: "routed read-folder", routed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, grandchild := cliTreeStub(t, provider, version)
+			cfg, _, dbPath := groupTestConfig(t, provider, bin, tc.routed)
+			aiFlagTools, aiFlagModel = tc.tools, tc.model
 			client, cleanup, err := newQueryClient(cfg, dbPath)
 			require.NoError(t, err)
 			t.Cleanup(cleanup)
-			if toolsFlag == "" {
+			if tc.routed {
+				_, ok := client.(*toolRouteProvider)
+				require.True(t, ok, "%T", client)
+			}
+			if tc.tools == "" {
 				c, ok := client.(readFolderConfigurable)
 				require.True(t, ok, "%T", client)
 				c.SetReadFolder(t.TempDir())

@@ -244,8 +244,17 @@ func featuresOff(keep []string) []string {
 	return args
 }
 
+// hideSkillListArg keeps the owner's skill list (the skills of CODEX_HOME,
+// ~/.agents and the repository's .agents, with their descriptions and local
+// paths) out of the model's context on every codex run Watchtower launches
+// itself — the codex counterpart of the skills claude's --setting-sources
+// leaves out (TestDisabledFeatures_LiveSkillListHidden). Why not
+// skip_host_skill_discovery, and the `$name` limit: see
+// testdata/codex_features.txt.
+const hideSkillListArg = "skills.include_instructions=false"
+
 // execPrefix is `codex exec` with the flags every run shares: JSON events,
-// no session file, no approvals, the read-only sandbox.
+// no session file, no approvals, the read-only sandbox, no skill list.
 func execPrefix(model string) []string {
 	return []string{
 		"exec",
@@ -255,6 +264,7 @@ func execPrefix(model string) []string {
 		"--skip-git-repo-check",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=read-only",
+		"-c", hideSkillListArg,
 	}
 }
 

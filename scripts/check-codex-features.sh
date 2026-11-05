@@ -12,6 +12,8 @@
 #      snapshot — a flag the CLI lists that the snapshot lacks fails;
 #      --update adds it as "undecided", which the offline guard then fails
 #      until it is marked off, batch or keep (and added to disabledFeatures);
+#      it also renders a run's prompt with `codex debug prompt-input` (no
+#      model call) to check the owner's skill list stays out of it;
 #   2. with --live, also runs TestCodexLive_* — real `codex exec` runs with
 #      the production argv (needs the network and the owner's codex sign-in,
 #      bills a few light-model turns): the system prompt and a mounted MCP

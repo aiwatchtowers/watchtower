@@ -16,6 +16,16 @@
 # test until each gets a decision).
 # Snapshot of codex-cli 0.159.2; codex_hooks is the legacy alias of hooks
 # (not listed by the CLI, still accepted).
+# Skills: every such run also passes `-c skills.include_instructions=false`
+# (hideSkillListArg in generator.go), which keeps the owner's skill list
+# (CODEX_HOME, ~/.agents and repository .agents skills, with their local
+# paths) out of the model's context; TestDisabledFeatures_LiveSkillListHidden
+# checks it with `codex debug prompt-input`. skip_host_skill_discovery stays
+# "keep": on 0.159.2 it is "under development" and turning it on changes
+# nothing in a `codex exec` run (the skill list and a skill named in the
+# input both still load). Neither key stops a skill named explicitly in the
+# input (`$name`) from loading: codex injects that skill's SKILL.md; only a
+# per-skill `skills.config` entry with enabled=false does.
 agent_message_board keep false
 analytics_plan_history keep false
 api_key_model_discovery keep false

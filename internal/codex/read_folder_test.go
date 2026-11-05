@@ -28,6 +28,7 @@ func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"--skip-git-repo-check",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=read-only",
+		"-c", "skills.include_instructions=false",
 		"-c", "features.shell_tool=false",
 		"-c", "features.unified_exec=false",
 		"-c", "features.view_image=false",
