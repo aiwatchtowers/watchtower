@@ -12,11 +12,17 @@ final class QuickConnectionsProviderNoticeTests: XCTestCase {
         XCTAssertNil(QuickConnectionsProviderNotice.caption(forProvider: "codex"))
     }
 
-    func testNonClaudeProvidersShowCaptionNamingClaude() {
-        let caption = QuickConnectionsProviderNotice.caption(forProvider: "ollama")
+    /// The ollama chat mounts Quick Connections through runtime B (L8).
+    func testOllamaProviderShowsNoCaption() {
+        XCTAssertNil(QuickConnectionsProviderNotice.caption(forProvider: "ollama"))
+    }
+
+    func testOtherProvidersShowCaptionNamingTheSupportedOnes() {
+        let caption = QuickConnectionsProviderNotice.caption(forProvider: "lmstudio")
         XCTAssertNotNil(caption)
         XCTAssertTrue(caption?.contains("claude") == true)
         XCTAssertTrue(caption?.contains("codex") == true)
+        XCTAssertTrue(caption?.contains("ollama") == true)
     }
 
     func testCodexImportNoticeShowsOnceForCodexUsersWithServers() {

@@ -176,7 +176,8 @@ func buildAIClient(cfg *config.Config, dbPath, modelOverride string) ai.Provider
 // tool-bearing chat surface (--tools chat) it wires tools two ways: claude/codex
 // get the MCP-args set on their client (the subprocess MCP path); the ollama
 // provider gets the runtime-B in-process tool loop (agentloop) instead, since it
-// has no subprocess. It returns a cleanup to run after the query drains (closing
+// has no subprocess. All three get the owner's Quick Connections except on
+// the automation editor. It returns a cleanup to run after the query drains (closing
 // the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
 func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
 	if toolRoutingEnabled(cfg, aiFlagModel) {
@@ -218,7 +219,13 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 			ContextID:      aiFlagContextID,
 			TurnID:         aiFlagTurn,
 		}
-		return agentloop.NewClient(model, cfg.AI.OllamaURL, reg, binding), func() { _ = database.Close() }, nil
+		loop := agentloop.NewClient(model, cfg.AI.OllamaURL, reg, binding)
+		// The owner's Quick Connections, as claude and codex get them; the
+		// editor chat carries only draft/save and read tools (D11).
+		if aiFlagSurface != tools.AutomationEditorSurface {
+			loop.SetExternalMCPServers(loadExternalMCPServersFrom(cfg, database, nil))
+		}
+		return loop, func() { _ = database.Close() }, nil
 	}
 
 	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
