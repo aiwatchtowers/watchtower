@@ -252,8 +252,9 @@ final class ActionLatencyTests: XCTestCase {
         let keys = try TestE2E.phoneStore()
         var store: ReplicaStore? = try ReplicaStore(path: path, opener: TestE2E.opener(store: keys))
         let old = base.addingTimeInterval(-ReplicaStore.latencyResultWait - 10)
-        try store?.latencyWritten(actionID: "old", kind: "board_target_status", transport: .relay, at: old)
+        // Fresh first: writing it would otherwise expire "old" in the same call, before the store closes.
         try store?.latencyWritten(actionID: "fresh", kind: "board_target_status", transport: .relay, at: base)
+        try store?.latencyWritten(actionID: "old", kind: "board_target_status", transport: .relay, at: old)
         store = nil
         let reopened = try ReplicaStore(path: path, opener: TestE2E.opener(store: keys))
         XCTAssertEqual(try pendingCount(reopened), 1, "only the fresh row survives the launch")

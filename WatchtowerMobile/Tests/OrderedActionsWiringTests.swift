@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import WatchtowerE2ETesting
 import WatchtowerKit
-import WatchtowerSync
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -351,6 +351,32 @@ final class OrderedActionsWiringTests: XCTestCase {
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }.compactMap(\.epoch)
         XCTAssertEqual(acks.max(), 2, "the boot acknowledged the raise")
         XCTAssertEqual(acks.filter { $0 == 2 }.count, 1)
+    }
+
+    // MARK: - Action timings
+
+    /// A slice stored while the keys were locked opens in `indexStoredRows` (a key arrived): that pass is where the
+    /// timing sees it, so the effect is stamped there (relay client Phase 4, Task 14).
+    func testALateIndexedSliceStampsTheActionTimingEffect() async throws {
+        let transport = SwitchableTransport()
+        let phoneKeys = try TestE2E.phoneStore()
+        let env = try await orderedSession(
+            over: transport, keys: PhoneKeys(store: phoneKeys, hubID: hubID))
+        let written = Date()
+        try env.store.latencyWritten(
+            actionID: "a", kind: "board_target_status", transport: .cloudKit, at: written)
+        try env.store.latencyAnswered(actionID: "a", applied: true, at: written)
+
+        phoneKeys.isLocked = true
+        try await TestPhone.hub(over: transport.inner).save([CloudRecord(
+            recordName: SliceKind.workbench.recordName(id: "1"), zone: .data, kind: SliceKind.workbench.rawValue,
+            modifiedAt: written, payload: Data("{\"id\":1}".utf8))])
+        await fetch(env)
+        XCTAssertEqual(try env.store.latencySamples(since: .distantPast), [], "stored but not opened yet")
+
+        phoneKeys.isLocked = false
+        env.indexStoredRows()
+        XCTAssertEqual(try env.store.latencySamples(since: .distantPast).count, 1)
     }
 
     // MARK: - Helpers
