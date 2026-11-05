@@ -50,6 +50,7 @@ import (
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
@@ -771,7 +772,7 @@ func errClass(err error) string {
 		{identity.ErrSealedKeyUnreadable, "sealed_key_unreadable"}, {identity.ErrInsecureMode, "insecure_mode"},
 		{identity.ErrKeysUnavailable, "keys_unavailable"}, {state.ErrNoDevice, "no_device"},
 		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"}, {cloudkit.ErrBridgeRefused, "bridge_refused"},
-		{transport.ErrUnsupportedZone, "unsupported_zone"},
+		{transport.ErrUnsupportedZone, "unsupported_zone"}, {link.ErrOwnerUnreadable, "owner_unreadable"},
 	} {
 		if errors.Is(err, c.err) {
 			return c.class

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/transport"
 )
@@ -31,7 +32,9 @@ import (
 // then come back as repeats the ledger answers.
 //
 // Only a record whose own content fails (contentError: it cannot be decoded,
-// sealed back or encoded) is struck — never one that met a busy store or a
+// sealed back or encoded) or whose creator check could not read the Mac's
+// iCloud user (link.ErrOwnerUnreadable, a device record left undecided for a
+// retry, which a long outage must not turn into a frozen mailbox) is struck — never one that met a busy store or a
 // transport error, and never the records queued behind it, which are simply
 // not attempted. A struck record is passed over (logged at error level) once
 // it failed MaxRecordStrikes times over at least StrikeWindow of wall-clock
@@ -145,7 +148,7 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if contentError(err) && p.strike(g.zone, rec, err) {
+			if (contentError(err) || errors.Is(err, link.ErrOwnerUnreadable)) && p.strike(g.zone, rec, err) {
 				continue // passed over: the phone's later records go on
 			}
 			failed[b.id] = true

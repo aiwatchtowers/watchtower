@@ -116,9 +116,25 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 // code is marked used by it, its row written with its keys and link nonce —
 // a re-link keeps the owner's grants and decision time and restarts its
 // action order — and its refusal, revoked row, rollback marks and held
-// actions are forgotten (they belong to the old link nonce's relay keys).
+// actions are forgotten (they belong to the old link nonce's relay keys). The
+// hello's relay id is its own claim, unproven (protocol §5.7): it is stored
+// only when no other row holds it, so a hello never takes an id from another
+// phone. The database cannot tell a proven id from a claimed one, so a held id
+// is safe either way, and the link goes through without it; a proven device
+// record (takeRelayID) is what moves an id.
 func linkPending(tx *sql.Tx, p pendingDevice, now time.Time) error {
 	id := strings.ToUpper(p.deviceID)
+	if p.relayDeviceID != "" {
+		var holders int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM devices WHERE relay_device_id = ? AND device_id <> ? COLLATE NOCASE`,
+			p.relayDeviceID, id).Scan(&holders); err != nil {
+			return err
+		}
+		if holders > 0 {
+			log.Printf("hub link: link request of %s names a relay id: %s", id, relayIDTaken)
+			p.relayDeviceID = ""
+		}
+	}
 	d := state.Device{
 		ID: id, Name: p.name, Scope: p.scope, LinkedAt: now, SigningKey: p.signingKey, AgreementKey: p.agreementKey,
 		LinkNonce: p.linkNonce, TypingRequested: p.typingRequested, StartSessionsAllowed: p.startSessions,

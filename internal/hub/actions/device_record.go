@@ -69,9 +69,22 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		log.Printf("hub: device record of device %s carries a code: a link needs a hello, ignored", b.id)
 		return p.markRead(ctx, b, rec, o)
 	}
+	if o.Verdict == secure.Same {
+		// This version was already decided and marked, whether it applied or
+		// was ignored (ApplyDeviceRecord returns nil for both). A re-delivery
+		// (a re-read zone) must not replay an old proof, which would take a
+		// relay id back from the phone it moved to. The proof carries no time;
+		// the mark is what dates it. A creator check that could not read the
+		// owner is an error, not a decision: no mark is written, the verdict
+		// stays newer and the next pass applies the record in full.
+		d.RelayDeviceID, d.RelayAuthPub, d.RelayIDSig = "", "", ""
+	}
 	shares, _ := p.cfg.Transport.(transport.Shares)
 	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares}
 	if err := p.cfg.Links.ApplyDeviceRecord(ctx, b.id.String(), r); err != nil {
+		if o.Verdict == secure.Same && errors.Is(err, link.ErrOwnerUnreadable) {
+			return nil // decided and marked already: nothing to do, nothing to hold
+		}
 		return err
 	}
 	err := p.decide(ctx, b, func(tx *sql.Tx) error { return mark(tx, b, rec.Name, o) })
