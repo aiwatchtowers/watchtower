@@ -1060,26 +1060,25 @@ func TestLocalOpener_TooLarge(t *testing.T) {
 
 // --- sips, sniffing, policy, classes ----------------------------------------
 
-// The stub writes its pids and a partial output, marks itself ready and
-// waits on a forked sleep. The deadline must fire after the stub is ready,
-// or there is no group to prove killed: an attempt whose deadline beat the
-// stub's start (a loaded machine) is retried with a doubled deadline, and
-// every assertion runs on the attempt that reached the wait.
+// The deadline must fire after the stub is ready, or there is no group to
+// prove killed: an attempt whose deadline beat the stub's start (a loaded
+// machine) is retried with a doubled deadline.
 func TestRunSips_TimeoutKillsGroup(t *testing.T) {
 	prevPath, prevTimeout := sipsPath, sipsTimeout
 	t.Cleanup(func() { sipsPath, sipsTimeout = prevPath, prevTimeout })
-	for timeout := 300 * time.Millisecond; ; timeout *= 2 {
+	for timeout := 300 * time.Millisecond; timeout < 10*time.Second; timeout *= 2 {
 		if runSipsTimeoutAttempt(t, timeout) {
 			return
 		}
-		require.Less(t, timeout, 10*time.Second, "the stub never got ready before the deadline")
 		t.Logf("stub not ready within %v; retrying with a longer deadline", timeout)
 	}
+	t.Fatal("the stub never got ready before a deadline under 10 s")
 }
 
-// runSipsTimeoutAttempt runs one stub under timeout and reports whether the
-// stub was ready when the deadline fired (false: retry, nothing asserted
-// about the group).
+// runSipsTimeoutAttempt runs one stub under timeout: it writes its pids and
+// a partial output, marks itself ready and waits on a forked sleep. The
+// result and cleanup are asserted on every attempt; the group kill only when
+// the stub was ready (false: retry).
 func runSipsTimeoutAttempt(t *testing.T, timeout time.Duration) bool {
 	t.Helper()
 	dir := t.TempDir()
