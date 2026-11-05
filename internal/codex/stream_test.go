@@ -1,8 +1,10 @@
 package codex
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -311,4 +313,100 @@ func TestQuery_IncompleteRunKeepsItsReason(t *testing.T) {
 	_, err = queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, "", "stream closed early", 0)))
 	require.ErrorIs(t, err, errNoTurnCompleted)
 	assert.Contains(t, logredact.Full(err), "stream closed early")
+}
+
+// A top-level error event that the turn recovers from (codex's
+// "Reconnecting…" retry notice) does not fail a turn that then completes.
+func TestQuery_TransientErrorThenCompletedSucceeds(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"turn.started"}`,
+		`{"type":"error","message":"Reconnecting... 1/5"}`,
+		`{"type":"error","message":"Reconnecting... 2/5","error":{"message":"stream disconnected"}}`,
+		`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"All good."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	chunks, err := queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0)))
+	require.NoError(t, err)
+	assert.Equal(t, "All good.", textOf(chunks))
+}
+
+// A tool item codex reports only once, at item.completed, is still one
+// start and one end.
+func TestQuery_ToolSeenOnlyAtCompletion(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"error":null,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Nothing open."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var tools []ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			tools = append(tools, *ch.Tool)
+		}
+	}
+	assert.Equal(t, []ai.ToolEvent{
+		{ID: "item_1", Name: "mcp__watchtower__list_targets", Args: json.RawMessage(`{}`)},
+		{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, OK: true, Result: "[]"},
+	}, tools)
+	assert.Equal(t, "Nothing open.", textOf(chunks))
+}
+
+// rawCodexScript writes a codex stub whose stdout is exactly stdout (printf,
+// no trailing newline added).
+func rawCodexScript(t *testing.T, stdout string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex")
+	body := "#!/bin/sh\ncat > /dev/null\nprintf '%s' '" + stdout + "'\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
+	return path
+}
+
+// codex's last line without a trailing newline (turn.completed here) is
+// still read: the run completes.
+func TestQuery_LastLineWithoutNewline(t *testing.T) {
+	stdout := `{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Done."}}` + "\n" +
+		`{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}`
+	c := NewClient("gpt-x", "", rawCodexScript(t, stdout))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	assert.Equal(t, "Done.", textOf(chunks))
+	var usage []ai.TurnUsage
+	for _, ch := range chunks {
+		if ch.Usage != nil {
+			usage = append(usage, *ch.Usage)
+		}
+	}
+	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 10, OutputTokens: 2}}, usage)
+}
+
+// readStreamLine at its limit: a line of exactly limit bytes (newline
+// included) is returned, one byte more is oversized, and the reader goes on
+// with the next line either way — also when the line spans several fills of
+// the bufio buffer.
+func TestReadStreamLine_AtTheLimit(t *testing.T) {
+	const limit = 40
+	exact := strings.Repeat("a", limit-1) + "\n"
+	over := strings.Repeat("b", limit) + "\n"
+	tail := "last"
+	r := bufio.NewReaderSize(strings.NewReader(exact+over+tail), 16)
+
+	line, oversized, err := readStreamLine(r, limit)
+	require.NoError(t, err)
+	assert.False(t, oversized)
+	assert.Equal(t, exact, string(line))
+
+	line, oversized, err = readStreamLine(r, limit)
+	require.NoError(t, err)
+	assert.True(t, oversized)
+	assert.Nil(t, line)
+
+	line, oversized, err = readStreamLine(r, limit)
+	require.ErrorIs(t, err, io.EOF)
+	assert.False(t, oversized)
+	assert.Equal(t, tail, string(line), "a last line without a newline is returned")
 }
