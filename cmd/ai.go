@@ -676,6 +676,11 @@ func resolveReadFolder(dbPath string) (string, error) {
 // the flag is a no-op there — the Desktop already builds an honest prompt.
 type mcpConfigurable interface{ SetMCPArgs(extra []string) }
 
+// processGroupConfigurable is implemented by ai.Client (claude) and
+// codex.Client: the CLI runs in its own process group, killed as a whole
+// on cancel (ai.ConfigureChild).
+type processGroupConfigurable interface{ SetProcessGroup(v bool) }
+
 // externalMCPConfigurable is implemented by ai.Client (claude: the chat's
 // mcp-config and tool allowlist) and codex.Client (the -c mcp_servers
 // override, enabled_tools per server) — it mounts owner-added external MCP

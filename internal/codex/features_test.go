@@ -3,6 +3,7 @@ package codex
 import (
 	"bufio"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +112,7 @@ func TestDisabledFeatures_EveryRunTurnsThemOff(t *testing.T) {
 	}
 	for name, args := range runs {
 		require.NotEmpty(t, args, name)
+		assert.True(t, hasConfig(args, hideSkillListArg), "%s: the owner's skill list must stay out of the context", name)
 		readsFolder := name == "read folder" || name == "spec review"
 		hasTools := name != "batch" && name != "image"
 		for _, f := range disabledFeatures {
@@ -128,8 +130,8 @@ func TestDisabledFeatures_EveryRunTurnsThemOff(t *testing.T) {
 	}
 }
 
-// liveFeaturesEnv opts into TestDisabledFeatures_LiveCLI ("check" or
-// "update"); see scripts/check-codex-features.sh.
+// liveFeaturesEnv opts into the live TestDisabledFeatures_* checks
+// ("check" or "update"); see scripts/check-codex-features.sh.
 const liveFeaturesEnv = "WATCHTOWER_CHECK_CODEX_FEATURES"
 
 // TestDisabledFeatures_LiveCLI compares the installed codex CLI's feature
@@ -167,24 +169,12 @@ func TestDisabledFeatures_LiveCLI(t *testing.T) {
 }
 
 // liveFeatureDefaults runs `codex features list` and returns the default
-// ("true"/"false") of each flag not marked removed. The child runs in its
-// own process group, killed and reaped on every path.
+// ("true"/"false") of each flag not marked removed.
 func liveFeatureDefaults(t *testing.T, bin string) map[string]string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "features", "list")
-	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(), "PATH="+RichPATH())
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	out, err := cmd.Output()
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	require.NoError(t, err, "codex features list")
+	out := runCodexCLI(t, bin, t.TempDir(), append(os.Environ(), "PATH="+RichPATH()), "features", "list")
 	flags := map[string]string{}
-	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
 		if len(f) >= 3 && f[len(f)-2] != "removed" {
@@ -192,6 +182,30 @@ func liveFeatureDefaults(t *testing.T, bin string) map[string]string {
 		}
 	}
 	return flags
+}
+
+// runCodexCLI runs the installed codex CLI with args in dir and returns its
+// stdout. The child runs in its own process group, killed and reaped on
+// every path; a failure names the args, a fired deadline and codex's stderr.
+func runCodexCLI(t *testing.T, bin, dir string, env []string, args ...string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir, cmd.Env = dir, env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	out, err := cmd.Output()
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	var stderr []byte
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		stderr = ee.Stderr
+	}
+	require.NoError(t, err, "codex %v (deadline: %v): %s", args, ctx.Err(), stderr)
+	return string(out)
 }
 
 // markUndecided writes each name as "<name> undecided <default>", replacing
@@ -218,4 +232,64 @@ func markUndecided(t *testing.T, flags map[string]string) {
 	slices.Sort(lines)
 	out := strings.Join(append(header, lines...), "\n") + "\n"
 	require.NoError(t, os.WriteFile(featuresSnapshot, []byte(out), 0o644))
+}
+
+// TestDisabledFeatures_LiveSkillListHidden checks with the installed codex
+// CLI (opt-in with the feature check, never in CI) that a run's flags keep
+// the owner's skill list out of the model's context: `codex debug
+// prompt-input` (local, no model call) renders the prompt of a folder whose
+// home, CODEX_HOME and repository each hold a probe skill, once without and
+// once with the production `-c` flags of a tool run and a read-folder run.
+func TestDisabledFeatures_LiveSkillListHidden(t *testing.T) {
+	if os.Getenv(liveFeaturesEnv) == "" {
+		t.Skipf("set %s=check to run against the installed codex CLI", liveFeaturesEnv)
+	}
+	bin := FindBinary("")
+	require.NotEmpty(t, bin, "codex CLI not found")
+	home, codexHome, repo := t.TempDir(), t.TempDir(), t.TempDir()
+	probes := map[string]string{
+		"probe-home-skill-wt":      filepath.Join(home, ".agents", "skills"),
+		"probe-codexhome-skill-wt": filepath.Join(codexHome, "skills"),
+		"probe-repo-skill-wt":      filepath.Join(repo, ".agents", "skills"),
+	}
+	for name, root := range probes {
+		dir := filepath.Join(root, name)
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		body := "---\nname: " + name + "\ndescription: Probe skill " + name + ".\n---\nProbe.\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o600))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(repo, ".git"), 0o700))
+	env := append(os.Environ(), "HOME="+home, "CODEX_HOME="+codexHome, "PATH="+RichPATH())
+
+	render := func(configs []string) string {
+		args := append(append([]string{"debug", "prompt-input"}, configs...), "hi")
+		return runCodexCLI(t, bin, repo, env, args...)
+	}
+	// Only the -c pairs: prompt-input takes no exec flags.
+	configsOf := func(args []string) []string {
+		var out []string
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "-c" {
+				out = append(out, "-c", args[i+1])
+			}
+		}
+		return out
+	}
+
+	bare := render(nil)
+	for name := range probes {
+		require.Contains(t, bare, name, "the probe must be discovered without the flags, or the check proves nothing")
+	}
+	toolRun := NewClient("m", "", "codex") // the argv of a tool run; no mount needed
+	readFolder := NewClient("m", "", "codex")
+	readFolder.SetReadFolder(repo)
+	for run, args := range map[string][]string{
+		"tools":       toolRun.execArgs(),
+		"read folder": readFolder.execArgs(),
+	} {
+		got := render(configsOf(args))
+		for name := range probes {
+			assert.NotContains(t, got, name, "%s run: skill %s reached the context", run, name)
+		}
+	}
 }
