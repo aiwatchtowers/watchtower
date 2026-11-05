@@ -498,3 +498,80 @@ func TestQuery_UndecodableLinesAreCounted(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(sink.String(), "codex: 1 undecodable JSONL line(s)"), "the batch parse logs its count too")
 	sink.AssertClean(t)
 }
+
+// A stopped v2 turn still closes its open steps and streams the usage codex
+// reported so far: the consumer, still draining, gets them after the stop.
+func TestQuery_StoppedTurnStreamsItsEnd(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := filepath.Join(dir, "codex")
+	body := `#!/bin/sh
+echo $$ > '` + pidFile + `'
+cat > /dev/null
+echo '{"type":"turn.started"}'
+echo '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}'
+echo '{"type":"usage","usage":{"input_tokens":50,"output_tokens":5}}'
+exec sleep 30
+`
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
+	t.Cleanup(func() {
+		b, _ := os.ReadFile(pidFile)
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		if pid <= 0 {
+			return
+		}
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		deadline := time.Now().Add(10 * time.Second)
+		for syscall.Kill(pid, 0) != syscall.ESRCH {
+			if time.Now().After(deadline) {
+				t.Errorf("stub %d still alive", pid)
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+
+	c := NewClient("gpt-x", "", script)
+	c.SetProcessGroup(true)
+	c.EmitToolEvents()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	textCh, errCh, sidCh := c.Query(ctx, "sys", "user", "")
+	var tools []ai.ToolEvent
+	var usage []ai.TurnUsage
+	timeout := time.After(20 * time.Second)
+	for done := false; !done; {
+		select {
+		case ch, ok := <-textCh:
+			if !ok {
+				done = true
+				break
+			}
+			if ch.Tool != nil {
+				tools = append(tools, *ch.Tool)
+				if !ch.Tool.Done {
+					cancel() // the owner presses Stop once the step shows
+				}
+			}
+			if ch.Usage != nil {
+				usage = append(usage, *ch.Usage)
+			}
+		case <-timeout:
+			t.Fatal("the stopped run did not end")
+		}
+	}
+	for range sidCh {
+	}
+	var err error
+	for e := range errCh {
+		if err == nil {
+			err = e
+		}
+	}
+	require.ErrorIs(t, err, context.Canceled)
+	require.Len(t, tools, 2)
+	assert.True(t, tools[1].Done)
+	assert.False(t, tools[1].OK)
+	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 50, OutputTokens: 5}}, usage)
+}

@@ -9,6 +9,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/digest"
@@ -188,6 +189,24 @@ func (s *queryStream) message(item *CodexItem) bool {
 	s.boundary = false
 	s.answer.WriteString(text)
 	return s.send(ai.StreamChunk{Text: text})
+}
+
+// flushGrace bounds the end of a stopped run's stream (queryStream.end).
+const flushGrace = time.Second
+
+// end runs finish on every way a run's read ends: EOF, a read error, a stop.
+// After a stop (the consumer's ctx ended) finish's sends get flushGrace in
+// all instead of failing at once — a select on a closed ctx would drop them
+// at random — so a consumer still draining the channel, as the chat does,
+// gets the closed steps and the usage of a stopped turn, and one that
+// stopped reading holds the run at most that long.
+func (s *queryStream) end() {
+	if s.ctx.Err() != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), flushGrace)
+		defer cancel()
+		s.ctx = ctx
+	}
+	s.finish()
 }
 
 // finish ends the stream once codex's output is read: skipped and
