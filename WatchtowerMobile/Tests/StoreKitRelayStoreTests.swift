@@ -75,6 +75,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
             return nil
         }
         XCTAssertEqual(signed?.appAccountToken, token)
+        XCTAssertEqual(transaction.appAccountToken, token)
     }
 
     func testAFailedPurchaseThrows() async throws {
@@ -180,10 +181,11 @@ final class StoreKitRelayStoreTests: XCTestCase {
 
     func testARowWithNoExpiryIsNotATransaction() {
         XCTAssertNil(StoreKitRelayStore.map(
-            id: 1, originalID: 1, jws: "x", revocationDate: nil, isRenewal: false, expirationDate: nil
+            id: 1, originalID: 1, appAccountToken: nil, jws: "x", revocationDate: nil, isRenewal: false, expirationDate: nil
         ))
         let mapped = StoreKitRelayStore.map(
-            id: 2, originalID: 1, jws: "x", revocationDate: Date(), isRenewal: true, expirationDate: Date(timeIntervalSince1970: 9)
+            id: 2, originalID: 1, appAccountToken: nil, jws: "x", revocationDate: Date(), isRenewal: true,
+            expirationDate: Date(timeIntervalSince1970: 9)
         )
         XCTAssertEqual(mapped?.revoked, true)
         XCTAssertEqual(mapped?.isRenewal, true)

@@ -193,6 +193,8 @@ final class RelayAccountCenterTests: XCTestCase {
         first.signedTransaction = bed.row(token: oldToken).jws
         _ = try await oldPhone.submitTransaction(first)
         bed.clock.advance(by: .seconds(20 * 60))
+        // A phone that held it: only a claim sends a row sold to another account by itself.
+        bed.defaults.set(true, forKey: RelayAccountCenter.holdsSubscriptionKey)
         // Signed after the old phone's last submit, past the 10-minute window.
         let stale = bed.row(token: oldToken, signedAgo: 15 * 60)
         bed.store.unfinishedResult = [stale]
@@ -1537,6 +1539,327 @@ final class RelayAccountCenterTests: XCTestCase {
 
         bed.emit(.attestation(.notSupported))
         try await bed.until("unknown") { center.phase == .unknown }
+    }
+
+    // MARK: - Who may send by itself
+
+    /// Two phones on one Apple ID over one relay: `a` bought the subscription, `b` has an identity and never held it.
+    private func twoPhones() async throws -> (a: AccountBed, b: AccountBed, token: UUID, centerA: RelayAccountCenter) {
+        let (a, token) = try await registeredBed()
+        let b = AccountBed(sharing: a)
+        try await b.register()
+        let centerA = await started(a)
+        a.sell(a.row(token: token))
+        await centerA.buy()
+        XCTAssertEqual(centerA.phase, .paying(grace: false, macs: []))
+        a.store.unfinishedResult = []
+        a.clock.advance(by: .seconds(5))
+        return (a, b, token, centerA)
+    }
+
+    /// The owner presses Restore on `bed`: the subscription moves there.
+    private func restore(on bed: AccountBed, token: UUID) async throws -> RelayAccountCenter {
+        let center = await started(bed)
+        bed.store.restoreResult = bed.row(id: 5, token: token)
+        await center.restore()
+        XCTAssertEqual(center.purchase, .done)
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
+        bed.clock.advance(by: .seconds(5))
+        return center
+    }
+
+    private func moved(_ center: RelayAccountCenter, _ bed: AccountBed) async {
+        await center.refresh()
+        XCTAssertEqual(center.phase, .moved)
+    }
+
+    func testAMovedPhonesRenewalDoesNotMoveIt() async throws {
+        let (a, b, token, centerA) = try await twoPhones()
+        let centerB = try await restore(on: b, token: token)
+        await moved(centerA, a)
+        let sent = a.submitted.count
+        let renewal = a.row(id: 2, token: token, renewal: true)
+        a.store.unfinishedResult = [renewal]
+        let reads = a.reads
+
+        a.store.emit(renewal)
+        try await a.until("the delivery's read") { a.reads > reads }
+        await foreground(centerA, a)
+
+        XCTAssertEqual(a.submitted.count, sent, "only a press moves it")
+        XCTAssertEqual(a.store.finished.filter { $0.id == 2 }, [], "it stays unfinished")
+        XCTAssertNil(centerA.unconfirmed, "moved, not \"not confirmed\"")
+        XCTAssertEqual(centerA.phase, .moved)
+        await centerB.refresh()
+        XCTAssertEqual(centerB.phase, .paying(grace: false, macs: []))
+    }
+
+    func testAPhoneThatNeverHeldItDoesNotTakeIt() async throws {
+        let (a, b, token, centerA) = try await twoPhones()
+        let sent = a.submitted.count
+        let renewal = a.row(id: 2, token: token, renewal: true)
+        b.store.unfinishedResult = [renewal]
+        let centerB = await started(b)
+        let reads = b.reads
+        b.store.emit(renewal)
+        try await b.until("the delivery's read") { b.reads > reads }
+
+        XCTAssertEqual(b.submitted.count, sent)
+        XCTAssertEqual(centerB.phase, .free(ended: false))
+        XCTAssertNil(centerB.unconfirmed)
+        XCTAssertEqual(centerB.claim, .unset)
+        XCTAssertEqual(b.store.finished, [])
+        await centerA.refresh()
+        XCTAssertEqual(centerA.phase, .paying(grace: false, macs: []))
+    }
+
+    /// Off the network through the move: the next launch learns of it before anything can be sent.
+    func testAPhoneOfflineDuringTheMoveDoesNotTakeItAtTheNextLaunch() async throws {
+        let (a, b, token, _) = try await twoPhones()
+        let centerB = try await restore(on: b, token: token)
+        let sent = a.submitted.count
+        a.store.unfinishedResult = [a.row(id: 2, token: token, renewal: true)]
+
+        let relaunched = await started(a)
+
+        XCTAssertEqual(a.submitted.count, sent)
+        XCTAssertEqual(relaunched.phase, .moved)
+        XCTAssertEqual(relaunched.claim, .movedAway)
+        XCTAssertNil(relaunched.unconfirmed)
+        await centerB.refresh()
+        XCTAssertEqual(centerB.phase, .paying(grace: false, macs: []))
+    }
+
+    /// StoreKit hands a launch its rows on `updates()` too, ahead of the first foreground: the same read goes first.
+    func testADeliveryAtLaunchOnAPhoneOfflineDuringTheMoveDoesNotTakeIt() async throws {
+        let (a, b, token, _) = try await twoPhones()
+        let centerB = try await restore(on: b, token: token)
+        let sent = a.submitted.count
+        let renewal = a.row(id: 2, token: token, renewal: true)
+
+        let relaunched = a.makeCenter()
+        relaunched.start()
+        a.store.emit(renewal)
+        try await a.until("the move learned") { relaunched.phase == .moved }
+
+        XCTAssertEqual(a.submitted.count, sent)
+        await centerB.refresh()
+        XCTAssertEqual(centerB.phase, .paying(grace: false, macs: []))
+    }
+
+    func testAnExpirySignalOnAMovedPhoneDoesNotTakeIt() async throws {
+        for event in [HostedRelayEvent.control(kind: .entitlementExpired, detail: ""), .entitlementInactive] {
+            let (a, b, token, centerA) = try await twoPhones()
+            let centerB = try await restore(on: b, token: token)
+            let sent = a.submitted.count
+            a.store.unfinishedResult = [a.row(id: 2, token: token, renewal: true)]
+
+            a.emit(event)
+
+            try await a.until("the move learned") { centerA.phase == .moved }
+            XCTAssertEqual(a.submitted.count, sent, "\(event)")
+            await centerB.refresh()
+            XCTAssertEqual(centerB.phase, .paying(grace: false, macs: []), "\(event)")
+        }
+    }
+
+    func testAKilledFirstPurchaseStillSubmitsAndClaims() async throws {
+        let (bed, token) = try await registeredBed()
+        let row = bed.row(token: token)
+        bed.store.unfinishedResult = [row]
+
+        let center = await started(bed)
+
+        XCTAssertEqual(bed.submitted, [row.jws])
+        XCTAssertEqual(center.claim, .holds, "an entitlement answer")
+    }
+
+    func testAPressOnAMovedPhoneMovesIt() async throws {
+        let (a, b, token, centerA) = try await twoPhones()
+        let centerB = try await restore(on: b, token: token)
+        await moved(centerA, a)
+        XCTAssertEqual(centerA.claim, .movedAway)
+        let row = a.row(id: 7, token: token)
+        a.store.restoreResult = row
+
+        await centerA.restore()
+
+        XCTAssertEqual(a.submitted.last, row.jws)
+        XCTAssertEqual(centerA.purchase, .done)
+        XCTAssertEqual(centerA.phase, .paying(grace: false, macs: []))
+        XCTAssertEqual(centerA.claim, .holds)
+        await centerB.refresh()
+        XCTAssertEqual(centerB.phase, .moved)
+        XCTAssertEqual(centerB.claim, .movedAway)
+    }
+
+    func testTwoPhonesRenewalsDoNotPingPong() async throws {
+        let (a, b, token, centerA) = try await twoPhones()
+        let centerB = try await restore(on: b, token: token)
+        await moved(centerA, a)
+        for period in 0..<4 {
+            a.clock.advance(by: .seconds(5))
+            let renewal = a.row(id: UInt64(10 + period), token: token, renewal: true)
+            for bed in [a, b] { bed.store.unfinishedResult = [renewal] }
+            let sent = a.submitted.count
+
+            await foreground(centerA, a)
+            await foreground(centerB, b)
+
+            XCTAssertEqual(a.submitted.count, sent + 1, "only the holder sends, period \(period)")
+            XCTAssertEqual(b.store.finished.last, renewal)
+            await centerA.refresh()
+            XCTAssertEqual(centerA.phase, .moved, "period \(period)")
+            await centerB.refresh()
+            XCTAssertEqual(centerB.phase, .paying(grace: false, macs: []), "period \(period)")
+        }
+    }
+
+    func testTheClaimSurvivesARelaunch() async throws {
+        let (a, b, token, centerA) = try await twoPhones()
+        XCTAssertEqual(centerA.claim, .holds)
+        let centerB = try await restore(on: b, token: token)
+        XCTAssertEqual(centerB.claim, .holds)
+        await moved(centerA, a)
+
+        XCTAssertEqual(a.defaults.object(forKey: RelayAccountCenter.holdsSubscriptionKey) as? Bool, false)
+        XCTAssertEqual(a.makeCenter().claim, .movedAway)
+        // The holder's relaunch still sends a row sold to the old account: it holds the subscription now.
+        let relaunched = b.makeCenter()
+        XCTAssertEqual(relaunched.claim, .holds)
+        let renewal = b.row(id: 2, token: token, renewal: true)
+        b.store.unfinishedResult = [renewal]
+        relaunched.start()
+        await relaunched.foreground()?.value
+        XCTAssertEqual(b.submitted.last, renewal.jws)
+        XCTAssertEqual(b.store.finished.last, renewal)
+    }
+
+    func testAMoveControlAndAPayingReadWriteTheClaim() async throws {
+        let (bed, token) = try await registeredBed()
+        let center = await started(bed)
+        XCTAssertEqual(center.claim, .unset, "free: no claim")
+        try await paying(bed, token)
+        await center.refresh()
+        XCTAssertEqual(center.claim, .holds)
+
+        bed.emit(.control(kind: .subscriptionMoved, detail: ""))
+
+        try await bed.until("the control") { center.claim == .movedAway }
+    }
+
+    /// A phone with a claim reads first: an order `pass()` keeps on every path.
+    func testAClaimReadsBeforeItSends() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let center = await started(bed)
+        let renewal = bed.row(id: 2, token: token, renewal: true)
+        bed.store.unfinishedResult = [renewal]
+        let before = bed.ops.count
+
+        await foreground(center, bed)
+
+        XCTAssertEqual(Array(bed.ops.dropFirst(before)), ["getAccountState", "submitTransaction", "getAccountState"])
+    }
+
+    /// With a claim and nothing to send, one read is the whole pass.
+    func testAClaimWithNothingToSendReadsOnce() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let center = await started(bed)
+        let before = bed.ops.count
+
+        await foreground(center, bed)
+
+        XCTAssertEqual(Array(bed.ops.dropFirst(before)), ["getAccountState"])
+    }
+
+    /// No answer says nothing about a move: nothing goes until a read says it has not moved.
+    func testAFailedReadSendsNothingOnAClaim() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let center = await started(bed)
+        let renewal = bed.row(id: 2, token: token, renewal: true)
+        bed.store.unfinishedResult = [renewal]
+        // `UNAVAILABLE` is retried on the manual clock: an error that is not, as the read's failure.
+        bed.fake.failNext("getAccountState", with: .unspecified)
+
+        await foreground(center, bed)
+
+        XCTAssertEqual(bed.submitted, [])
+        XCTAssertEqual(center.phase, .unknown)
+
+        await foreground(center, bed)
+        XCTAssertEqual(bed.submitted, [renewal.jws])
+    }
+
+    // MARK: - A lapse and a paying answer
+
+    func testAPayingReadDuringALapseStopsItBeforeTheNextHub() async throws {
+        let (bed, token) = try await registeredBed()
+        try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "expired", for: .zero)
+        let first = FakeLapseTarget(isOnRelay: true)
+        let second = FakeLapseTarget(isOnRelay: true)
+        first.parksLapse = true
+        bed.targets = [first, second]
+        let center = bed.makeCenter()
+        center.start()
+        center.foreground()
+        try await bed.until("the first hub's lapse") { first.lapseParked }
+
+        try await paying(bed, token)
+        await center.refresh()
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
+        first.releaseLapse()
+        await center.passTask?.value
+
+        XCTAssertEqual(second.lapses, 0, "a paying phone's Mac stays")
+    }
+
+    // MARK: - A restore that did not reach the relay
+
+    func testARestoreThatDidNotReachTheRelaySaysSoAndTryAgainRestores() async throws {
+        let (bed, token) = try await registeredBed()
+        let center = await started(bed)
+        // A move's row was finished on the old phone: not in `Transaction.unfinished` here, so nothing re-sends it.
+        let row = bed.row(token: token)
+        bed.store.restoreResult = row
+        bed.fake.crash()
+
+        await center.restore()
+
+        XCTAssertEqual(center.purchase, .accountFailed, "no promise that it turns on by itself")
+        XCTAssertNil(center.unconfirmed)
+        let frame = RelaySubscriptionModel(
+            purchase: center.purchase, unconfirmed: center.unconfirmed, phase: center.phase,
+            config: RelayConfig(origin: nil)
+        )
+        XCTAssertEqual(frame.line, "Couldn't reach Relay. You weren't charged.")
+        XCTAssertEqual(frame.primary?.title, "Try Again")
+        XCTAssertEqual(frame.primary?.action, .retryAccount)
+
+        bed.fake.restart()
+        await center.retryAccount()
+
+        XCTAssertEqual(bed.store.restoreCalls, 2, "the restore runs again, not a purchase")
+        XCTAssertEqual(bed.store.accountTokens, [])
+        XCTAssertEqual(center.purchase, .done)
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
+    }
+
+    /// `UNAVAILABLE` while the old phone's revocation goes out: the move is done and the read says so.
+    func testARestoreAnsweredUnavailableWhoseReadPaysIsDone() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let center = await started(bed)
+        bed.store.restoreResult = bed.row(id: 2, token: token)
+        // The client gives up on `UNAVAILABLE` as on any error that is no refusal.
+        bed.fake.failNext("submitTransaction", with: .unspecified)
+
+        await center.restore()
+
+        XCTAssertEqual(center.purchase, .done)
+        XCTAssertNil(center.unconfirmed)
     }
 
     // MARK: - Wiring

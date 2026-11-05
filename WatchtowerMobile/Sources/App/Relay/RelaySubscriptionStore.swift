@@ -11,6 +11,8 @@ struct RelayProduct: Equatable, Sendable {
 struct RelayTransaction: Equatable, Sendable {
     let id: UInt64
     let originalID: UInt64
+    /// The token the purchase carried (`Transaction.appAccountToken`): the relay account it was first sold to.
+    let appAccountToken: UUID?
     let jws: String
     let revoked: Bool
     /// `Transaction.reason == .renewal`.

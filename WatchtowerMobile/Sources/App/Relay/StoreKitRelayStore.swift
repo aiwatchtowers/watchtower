@@ -101,7 +101,8 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
         }
         guard transaction.productID == productID else { return nil }
         guard let mapped = Self.map(
-            id: transaction.id, originalID: transaction.originalID, jws: verification.jwsRepresentation,
+            id: transaction.id, originalID: transaction.originalID, appAccountToken: transaction.appAccountToken,
+            jws: verification.jwsRepresentation,
             revocationDate: transaction.revocationDate, isRenewal: transaction.reason == .renewal,
             expirationDate: transaction.expirationDate
         ) else {
@@ -114,11 +115,11 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
 
     /// The plain-field mapping. A transaction with no expiry is not a subscription period: nil.
     static func map(
-        id: UInt64, originalID: UInt64, jws: String, revocationDate: Date?, isRenewal: Bool, expirationDate: Date?
+        id: UInt64, originalID: UInt64, appAccountToken: UUID?, jws: String, revocationDate: Date?, isRenewal: Bool, expirationDate: Date?
     ) -> RelayTransaction? {
         guard let expirationDate else { return nil }
         return RelayTransaction(
-            id: id, originalID: originalID, jws: jws, revoked: revocationDate != nil, isRenewal: isRenewal,
+            id: id, originalID: originalID, appAccountToken: appAccountToken, jws: jws, revoked: revocationDate != nil, isRenewal: isRenewal,
             expiresAt: expirationDate
         )
     }
