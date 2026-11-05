@@ -88,7 +88,7 @@ func fakeCLI(t *testing.T, out string) string {
 // ModelAttemptUsage debits fresh input plus output; a leaf that reported only
 // cached input is authoritative (zero input, not estimated), and only a leaf
 // that reported nothing at all and is estimated gets an estimate. Aggregate
-// usage (no leaf calls) follows the same rule.
+// usage (no leaf calls) with no input or output tokens is an estimate.
 func TestModelAttemptUsageDebitsFreshInput(t *testing.T) {
 	a := providerrouting.Attempt{InputBytes: 400}
 	for _, tc := range []struct {
@@ -103,8 +103,7 @@ func TestModelAttemptUsageDebitsFreshInput(t *testing.T) {
 		{"cache only leaf", providerrouting.Outcome{Calls: []llmusage.Call{{CacheRead: 900}}}, 0, 0, false},
 		{"estimated cache only leaf", providerrouting.Outcome{Calls: []llmusage.Call{{CacheRead: 900, Estimated: true}}}, 0, 0, true},
 		{"estimated empty leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Estimated: true}}}, 100, 0, true},
-		{"aggregate cache only", providerrouting.Outcome{Result: providerrouting.Result{Usage: &digest.Usage{TotalAPITokens: 900}}}, 0, 0, false},
-		{"aggregate none", providerrouting.Outcome{Result: providerrouting.Result{Usage: &digest.Usage{}}}, 100, 0, true},
+		{"aggregate none", providerrouting.Outcome{Result: providerrouting.Result{Usage: &digest.Usage{TotalAPITokens: 900}}}, 100, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := automations.ModelAttemptUsage(a, tc.o)

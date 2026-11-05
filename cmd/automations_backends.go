@@ -419,8 +419,7 @@ func automationAgentEnv(runID int64) []string {
 }
 
 // agentResult is a finished agent() loop: the provider's usage and cost
-// (claude's total_cost_usd), or, when it reported no tokens at all (a fully
-// cached input counts as reported), an estimate of
+// (claude's total_cost_usd), or, when it reported no tokens, an estimate of
 // ceil(len(instruction+text)/4) tokens (the reply's share as output).
 func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult {
 	res := automations.AgentResult{Text: text}
@@ -428,7 +427,7 @@ func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult 
 		cost := u.CostUSD
 		res.ReportedCostUSD = &cost
 	}
-	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalAPITokens > 0) {
+	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
 		res.InputTokens, res.OutputTokens = int64(u.InputTokens), int64(u.OutputTokens)
 		return res
 	}

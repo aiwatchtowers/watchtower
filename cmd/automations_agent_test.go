@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"watchtower/internal/ai"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
@@ -723,14 +722,4 @@ func TestAgent_BudgetDebitsUncachedInputOnEveryProvider(t *testing.T) {
 			assert.False(t, run.TokensEstimated)
 		})
 	}
-}
-
-// agentResult treats a reply whose input was all served from the cache as
-// reported usage (zero fresh input), never as an estimate.
-func TestAgentResult_CacheOnlyUsageIsReported(t *testing.T) {
-	res := agentResult("triage", "done", &ai.Usage{TotalAPITokens: 900})
-	assert.Zero(t, res.InputTokens+res.OutputTokens)
-	assert.False(t, res.Estimated)
-	res = agentResult("triage", "done", &ai.Usage{})
-	assert.True(t, res.Estimated, "no tokens at all is an estimate")
 }

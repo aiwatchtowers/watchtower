@@ -275,12 +275,11 @@ func generateTier(ctx context.Context, g digest.Generator, tier, user string) (s
 	return r, u, err
 }
 
-// modelUsage converts the provider's usage. None (nil, or zero tokens with no
-// cached input either) is an
+// modelUsage converts the provider's usage. None (nil or zero tokens) is an
 // estimate of ceil((promptBytes+replyBytes)/4) tokens, the reply's share
 // counted as output. A reported dollar cost is kept for display only.
 func modelUsage(u *digest.Usage, promptBytes, replyBytes int) ModelUsage {
-	if u == nil || (u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalAPITokens == 0) {
+	if u == nil || (u.InputTokens == 0 && u.OutputTokens == 0) {
 		total := int64(promptBytes+replyBytes+3) / 4
 		out := min(total, int64(replyBytes+3)/4)
 		return ModelUsage{InputTokens: total - out, OutputTokens: out, Estimated: true}
