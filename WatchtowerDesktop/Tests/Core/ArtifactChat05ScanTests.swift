@@ -17,6 +17,9 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "Views/Chat/ArtifactPanelView.swift",
             "Views/Chat/ArtifactCardView.swift",
             "Views/Chat/ArtifactActionPerformer.swift",
+            // Print… / Export as Word: the print panel and a local file only.
+            "WatchtowerCore/Services/Chat/ArtifactPrint.swift",
+            "Views/Chat/ArtifactPrinter.swift",
             "Views/Chat/ChatMessageRow.swift",
             "Views/Chat/ChatInspectorContent.swift",
             // Artifact comments (projects POC phase 6): comments reach the

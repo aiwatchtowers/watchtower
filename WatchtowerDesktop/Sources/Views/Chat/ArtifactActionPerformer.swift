@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import WatchtowerCore
 
 struct ArtifactActionOutcome: Equatable {
@@ -56,5 +57,37 @@ enum ArtifactExporter {
                 onError("Export failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Export as Word: the document rendered (`ArtifactPrint.documentPage`,
+    /// which has nothing that loads), read by AppKit's HTML importer into an
+    /// attributed string and written as Office Open XML.
+    static func exportWord(_ draft: ArtifactDraft, onError: @escaping (String) -> Void) {
+        guard ArtifactPrint.canExportWord(draft) else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = ArtifactPrint.wordFileName(for: draft)
+        panel.allowedContentTypes = [UTType(filenameExtension: "docx") ?? .data]
+        panel.canCreateDirectories = true
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try wordData(markdown: draft.content, title: draft.title).write(to: url, options: .atomic)
+            } catch {
+                onError("Export failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    static func wordData(markdown: String, title: String) throws -> Data {
+        let html = Data(ArtifactPrint.documentPage(markdown: markdown, title: title).utf8)
+        let text = try NSAttributedString(
+            data: html,
+            options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue],
+            documentAttributes: nil
+        )
+        return try text.data(
+            from: NSRange(location: 0, length: text.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML]
+        )
     }
 }

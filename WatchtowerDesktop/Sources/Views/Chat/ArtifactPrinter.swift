@@ -1,0 +1,90 @@
+import AppKit
+import WatchtowerCore
+import WebKit
+
+/// Print… for an html or document artifact: the standard print panel, whose
+/// PDF menu is the PDF export. The page is laid out in an offscreen web view
+/// made exactly like `SandboxedHTMLView` (same content rules — no network —,
+/// no bridge, links open nothing); printing turns nothing on (CHAT-05).
+/// Each job keeps itself alive until the panel is dismissed.
+@MainActor
+final class ArtifactPrinter: NSObject {
+    private static var jobs: Set<ArtifactPrinter> = []
+    /// A4 at 72 dpi less the default margins; WebKit paginates from the
+    /// view's width, and a zero-size view prints blank pages.
+    private static let pageFrame = NSRect(x: 0, y: 0, width: 540, height: 760)
+
+    private let coordinator = SandboxedHTMLView.Coordinator()
+    private let title: String
+    private let onError: (String) -> Void
+    private var webView: WKWebView?
+    private var started = false
+
+    private init(title: String, onError: @escaping (String) -> Void) {
+        self.title = title
+        self.onError = onError
+    }
+
+    /// Opens the print panel on `window` for `draft`; nothing happens for an
+    /// artifact that cannot be printed (`ArtifactPrint.canPrint`).
+    static func print(_ draft: ArtifactDraft, window: NSWindow?, onError: @escaping (String) -> Void) {
+        guard let page = ArtifactPrint.printPage(for: draft) else { return }
+        guard let window else { return onError("Print failed: no window to show the print panel in.") }
+        let job = ArtifactPrinter(title: draft.title, onError: onError)
+        jobs.insert(job)
+        job.start(page, window: window)
+    }
+
+    private func start(_ page: String, window: NSWindow) {
+        webView = SandboxedHTMLView.makeWebView(coordinator: coordinator, frame: Self.pageFrame)
+        coordinator.onLoaded = { [weak self, weak window] webView in
+            guard let self else { return }
+            guard let window else { return self.finish(error: nil) } // the chat closed meanwhile
+            self.run(webView, window: window)
+        }
+        coordinator.onFailed = { [weak self] message in
+            guard let self, !self.started else { return }
+            self.finish(error: "Print failed: \(message)")
+        }
+        coordinator.show(.page(page), token: 0)
+    }
+
+    private func run(_ webView: WKWebView, window: NSWindow) {
+        guard !started else { return }
+        started = true
+        let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
+        info.horizontalPagination = .fit
+        info.verticalPagination = .automatic
+        info.isHorizontallyCentered = false
+        info.isVerticallyCentered = false
+        let operation = webView.printOperation(with: info)
+        operation.jobTitle = title // the PDF's default file name
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        // The operation's view must have a size, or the pages come out blank.
+        operation.view?.frame = webView.bounds
+        // WebKit prints asynchronously: only the sheet-modal run produces pages.
+        operation.runModal(
+            for: window, delegate: self,
+            didRun: #selector(printOperationDidRun(_:success:contextInfo:)), contextInfo: nil
+        )
+    }
+
+    @objc private func printOperationDidRun(
+        _ operation: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?
+    ) {
+        finish(error: nil)
+    }
+
+    private func finish(error: String?) {
+        if let error { onError(error) }
+        coordinator.cancel()
+        coordinator.onLoaded = nil
+        coordinator.onFailed = nil
+        webView?.stopLoading()
+        webView?.navigationDelegate = nil
+        webView?.uiDelegate = nil
+        webView = nil
+        Self.jobs.remove(self)
+    }
+}

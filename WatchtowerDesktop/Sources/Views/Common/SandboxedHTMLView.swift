@@ -82,6 +82,17 @@ struct SandboxedHTMLView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
+        let webView = Self.makeWebView(coordinator: context.coordinator, frame: .zero)
+        context.coordinator.focusOnLoad = focusOnLoad
+        context.coordinator.show(content, token: reloadToken)
+        return webView
+    }
+
+    /// A web view with this view's whole configuration, driven by
+    /// `coordinator` (its `show` loads the content once the rules are in).
+    /// Also the offscreen view `ArtifactPrinter` prints from: the same
+    /// barrier, nothing enabled for printing.
+    static func makeWebView(coordinator: Coordinator, frame: NSRect) -> WKWebView {
         let config = WKWebViewConfiguration()
         if let failure = Self.lockDown(config.preferences) {
             htmlPreviewLog.error("WebRTC stays on in the preferences (\(failure, privacy: .public)); the page script removes it")
@@ -93,13 +104,11 @@ struct SandboxedHTMLView: NSViewRepresentable {
         config.userContentController.addUserScript(
             WKUserScript(source: Self.removeWebRTC, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
-        config.setURLSchemeHandler(context.coordinator.files, forURLScheme: HTMLPreviewPolicy.scheme)
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        context.coordinator.webView = webView
-        context.coordinator.focusOnLoad = focusOnLoad
-        context.coordinator.show(content, token: reloadToken)
+        config.setURLSchemeHandler(coordinator.files, forURLScheme: HTMLPreviewPolicy.scheme)
+        let webView = WKWebView(frame: frame, configuration: config)
+        webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
+        coordinator.webView = webView
         return webView
     }
 
@@ -118,6 +127,10 @@ struct SandboxedHTMLView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var webView: WKWebView?
         var focusOnLoad = false
+        /// Called when the content (never a failure message) finished
+        /// loading, and when it could not be shown, with why (the printer).
+        var onLoaded: (@MainActor (WKWebView) -> Void)?
+        var onFailed: (@MainActor (String) -> Void)?
         /// Serves a file preview's folder under `HTMLPreviewPolicy.scheme`.
         let files = SandboxedHTMLSchemeHandler()
         /// Where the rule list comes from (a test swaps in a failing one).
@@ -127,6 +140,8 @@ struct SandboxedHTMLView: NSViewRepresentable {
         /// The preview URL of the file shown; nil for an in-memory page.
         private var page: URL?
         private var focused = false
+        /// The view shows `showMessage`'s text, not the content.
+        private var showingMessage = false
         private var load: Task<Void, Never>?
         /// The rule list in force. A different one is added before this one
         /// goes, so the view is never without a block.
@@ -146,11 +161,13 @@ struct SandboxedHTMLView: NSViewRepresentable {
                     guard !Task.isCancelled else { return }
                     // Fail closed: without the network block nothing is shown.
                     htmlPreviewLog.error("HTML preview rules did not compile: \(error.localizedDescription, privacy: .public)")
+                    self.onFailed?("The page could not be prepared: \(error.localizedDescription)")
                     self.showMessage("The preview could not be prepared: \(error.localizedDescription)")
                     return
                 }
                 guard !Task.isCancelled, let webView = self.webView else { return }
                 self.install(rules, on: webView.configuration.userContentController)
+                self.showingMessage = false
                 switch content {
                 case let .page(html):
                     self.page = nil
@@ -170,6 +187,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
 
         /// A fixed message in place of the page; never the content.
         private func showMessage(_ text: String) {
+            showingMessage = true
             page = nil
             files.serve(nil)
             let escaped = text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
@@ -197,9 +215,18 @@ struct SandboxedHTMLView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if !showingMessage { onLoaded?(webView) }
             guard focusOnLoad, !focused, let window = webView.window else { return }
             focused = true
             window.makeFirstResponder(webView)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            onFailed?("The page could not be loaded: \(error.localizedDescription)")
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            onFailed?("The page could not be loaded: \(error.localizedDescription)")
         }
 
         // MARK: WKUIDelegate — nothing leaves the view
