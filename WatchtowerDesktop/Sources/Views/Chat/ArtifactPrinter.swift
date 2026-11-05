@@ -32,7 +32,10 @@ final class ArtifactPrinter: NSObject {
     /// artifact that cannot be printed (`ArtifactPrint.canPrint`).
     static func print(_ draft: ArtifactDraft, window: NSWindow?, onError: @escaping (String) -> Void) {
         guard let page = ArtifactPrint.printPage(for: draft) else { return }
-        guard let window else { return onError("Print failed: no window to show the print panel in.") }
+        guard let window else {
+            artifactExportLog.error("Print failed: no window to show the print panel in")
+            return onError("Print failed: no window to show the print panel in.")
+        }
         let job = ArtifactPrinter(title: draft.title, onError: onError)
         jobs.insert(job)
         job.start(page, window: window)
@@ -42,11 +45,17 @@ final class ArtifactPrinter: NSObject {
         webView = SandboxedHTMLView.makeWebView(coordinator: coordinator, frame: Self.pageFrame)
         coordinator.onLoaded = { [weak self, weak window] webView in
             guard let self else { return }
-            guard let window else { return self.finish(error: nil) } // the chat closed meanwhile
+            guard let window else { // the chat closed meanwhile
+                artifactExportLog.notice("Print dropped: the window closed before the page loaded")
+                return self.finish(error: nil)
+            }
             self.run(webView, window: window)
         }
         coordinator.onFailed = { [weak self] message in
-            guard let self, !self.started else { return }
+            guard let self else { return }
+            guard !self.started else { // the print panel is up; its run ends the job
+                return artifactExportLog.error("Print page failed under the print panel: \(message, privacy: .public)")
+            }
             self.finish(error: "Print failed: \(message)")
         }
         coordinator.show(.page(page), token: 0)
@@ -81,11 +90,16 @@ final class ArtifactPrinter: NSObject {
     @objc private func printOperationDidRun(
         _ operation: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?
     ) {
+        // false also when the owner cancelled the panel: no notice for it.
+        if !success { artifactExportLog.notice("Print operation ended without printing (cancelled or failed)") }
         finish(error: nil)
     }
 
     private func finish(error: String?) {
-        if let error { onError(error) }
+        if let error {
+            artifactExportLog.error("\(error, privacy: .public)")
+            onError(error)
+        }
         loadTimeout?.cancel()
         loadTimeout = nil
         coordinator.cancel()
