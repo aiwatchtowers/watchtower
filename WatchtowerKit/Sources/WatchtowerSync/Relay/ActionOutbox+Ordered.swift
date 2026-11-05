@@ -313,6 +313,7 @@ extension ActionOutbox {
 
     private func listUnechoed(reason: UndeliveredReason) throws -> Int {
         let ids = try store.outboxRows([.queued, .sent]).map(\.actionID)
+        for id in ids { stampLatency { try self.store.latencyDrop(actionID: id) } }
         try store.markUndelivered(actionIDs: ids, reason: reason, message: Self.message(for: reason))
         return ids.count
     }
@@ -372,11 +373,13 @@ extension ActionOutbox {
             if try store.removeAppliedAction(id: action.id) {
                 appliedObserver?(action)
             }
+            stampLatency { try self.store.latencyAnswered(actionID: action.id, applied: true, at: self.now()) }
             return true
         case .failed, .expired, .cancelled:
             try store.settleFailedAction(
                 id: action.id, errorMessage: action.errorMessage ?? Self.noMessageFallback, reason: action.reason,
                 result: action.result)
+            stampLatency { try self.store.latencyAnswered(actionID: action.id, applied: false, at: self.now()) }
             return true
         }
     }
@@ -469,15 +472,18 @@ extension ActionOutbox {
         var rewritingEcho = false
         for attempt in 0..<2 {
             let canWriteAgain = attempt == 0
+            let started = now()
             switch try await saveOne(record, expect: expect) {
             case .saved(let version):
                 try written(row, version: version, rewritingEcho: rewritingEcho)
+                stampWritten(row, isResend: isResend, at: started)
                 return .written
             case .refused(.permanent(let code)) where code == Self.goneCode && canWriteAgain && expect != .absent:
                 // The record is gone (the hub or hygiene deleted it, the TTL purged it): written again as new.
                 expect = .absent
             case .refused(let refusal) where refusal.isPermanent:
                 // This record alone: the hub's gap rule asks for it and `resend_from` skips it.
+                stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
                 try store.markUndelivered(actionIDs: [row.actionID], reason: .refused, message: Self.refusedMessage)
                 return .undelivered
             case .refused(let refusal):
@@ -528,6 +534,34 @@ extension ActionOutbox {
             try store.markRewritten(actionID: row.actionID, recordSeq: version, at: now())
         } else {
             try store.markSent(actionID: row.actionID, recordSeq: version, at: now())
+        }
+    }
+
+    // MARK: Timing stamps (relay client Phase 4)
+
+    /// The save that landed started at `started`. A rewrite (`resend_from`, a new transport) is not a first save:
+    /// its row is dropped, and the legacy path never gets here.
+    private func stampWritten(_ row: OutboxRow, isResend: Bool, at started: Date) {
+        let transport: TransportKind
+        switch route {
+        case .cloudKit: transport = .cloudKit
+        case .hostedRelay: transport = .relay
+        }
+        stampLatency {
+            if isResend {
+                try self.store.latencyDrop(actionID: row.actionID)
+            } else if let kind = try self.store.actionKindForLatency(id: row.actionID) {
+                try self.store.latencyWritten(actionID: row.actionID, kind: kind, transport: transport, at: started)
+            }
+        }
+    }
+
+    /// A failed stamp logs its error type and never fails the action: the timing sits outside the action's path.
+    func stampLatency(_ body: () throws -> Void) {
+        do {
+            try body()
+        } catch {
+            logger.error("latency stamp failed: \(String(describing: type(of: error)), privacy: .public)")
         }
     }
 
