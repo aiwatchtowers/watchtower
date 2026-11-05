@@ -53,6 +53,15 @@ package enum AutomationEditorTarget: Hashable, Sendable {
     case newDraft(contextID: String, scope: AutomationScopeChoice, startText: String?)
 }
 
+/// The editor's draft-column step (Inbox builder A, spec "The Look step"):
+/// what the recipe collects, how its Inbox card looks, when it runs. Kept
+/// per editor key in `AutomationEditorCenter`.
+package enum AutomationEditorStep: String, CaseIterable, Hashable, Sendable {
+    case collects
+    case look
+    case when
+}
+
 /// The Automations tab's right panel.
 package enum AutomationsPanel: Equatable, Sendable {
     case empty

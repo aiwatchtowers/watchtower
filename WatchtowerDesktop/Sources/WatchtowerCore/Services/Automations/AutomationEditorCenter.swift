@@ -97,6 +97,14 @@ package final class AutomationEditorCenter {
     /// Drafts whose save or confirm landed but whose turn-on failed: the
     /// panel offers **Turn On** (`retryTurnOn`).
     package private(set) var turnOnPending: Set<Int64> = []
+    /// The draft column's chosen step, by editor key (survives navigation
+    /// and closing the panel; `.collects` until the owner picks one).
+    package private(set) var steps: [Int64: AutomationEditorStep] = [:]
+    /// The owner's newest finished **Dry run** of the Look step, by editor
+    /// key: the text it ran, when, and its result or failure.
+    package private(set) var previewResults: [Int64: AutomationLookPreviewModel.Run] = [:]
+    /// Editor keys whose owner **Dry run** is in flight.
+    package private(set) var previewRunning: Set<Int64> = []
 
     /// The approval hash `keepAuto` was checked under, by draft key.
     @ObservationIgnored private var keepAutoHash: [Int64: String] = [:]
@@ -123,6 +131,11 @@ package final class AutomationEditorCenter {
     @ObservationIgnored private var prefilled: Set<Int64> = []
     /// The `beginEdit` start text each draft adopted already.
     @ObservationIgnored private var startAdopted: [Int64: String] = [:]
+    /// The in-flight owner Dry run per key; cancelling it terminates the CLI.
+    @ObservationIgnored private var previewTasks: [Int64: Task<Void, Never>] = [:]
+    /// Bumped by every press and cancel: only the current press records a result.
+    @ObservationIgnored private var previewGenerations: [Int64: Int] = [:]
+    @ObservationIgnored private let now: () -> Date
 
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "automation-editor")
 
@@ -130,14 +143,15 @@ package final class AutomationEditorCenter {
     /// and the card's detail after a write. `draftCache` is the database
     /// whose `automation_draft_cache` rows a new draft's save removes (the
     /// view model removes them in the app). `sleep` is the debounce's wait
-    /// (a test seam).
+    /// and `now` the clock of a Dry run's result (test seams).
     package init(
         cli: AutomationsCLI,
         grants: @escaping @MainActor (Int64) async throws -> [AutomationToolGrant],
         refresh: @escaping @MainActor (Int64) async -> Void,
         draftCache: (any DatabaseWriter)? = nil,
         checkDelay: Duration = .milliseconds(500),
-        sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        now: @escaping () -> Date = Date.init
     ) {
         self.cli = cli
         self.grants = grants
@@ -145,6 +159,7 @@ package final class AutomationEditorCenter {
         self.draftCache = draftCache
         self.checkDelay = checkDelay
         self.sleep = sleep
+        self.now = now
     }
 
     // MARK: - Drafts
@@ -236,6 +251,8 @@ package final class AutomationEditorCenter {
         guard saving[id] != .saving else { return }
         checkTasks[id]?.cancel()
         checkTasks[id] = nil
+        cancelPreview(id)
+        previewResults[id] = nil
         drafts[id] = nil
         saving[id] = nil
         validatedTexts[id] = nil
@@ -642,6 +659,70 @@ package final class AutomationEditorCenter {
     package func closeConfirmation(_ id: Int64) {
         guard confirmations[id] != .confirming else { return }
         confirmations[id] = nil
+    }
+
+    // MARK: - Look step
+
+    /// The draft column's step for `key`; `.collects` until one is chosen.
+    package func step(for key: Int64) -> AutomationEditorStep {
+        steps[key] ?? .collects
+    }
+
+    package func setStep(_ step: AutomationEditorStep, for key: Int64) {
+        steps[key] = step
+    }
+
+    /// Whether the owner's Dry run of `key` is in flight.
+    package func isPreviewRunning(_ key: Int64) -> Bool {
+        previewRunning.contains(key)
+    }
+
+    /// The Look step's **Dry run**: `automations preview` of the draft's
+    /// text as it is now (the pending keystroke flushed). The center owns
+    /// the run, so it and its result outlive the panel and the tab; a press
+    /// while one runs is ignored. The result — or the failure, never an
+    /// empty state — is kept with the text it ran.
+    package func runPreview(_ key: Int64) {
+        guard let draft = drafts[key], !previewRunning.contains(key) else { return }
+        let generation = (previewGenerations[key] ?? 0) + 1
+        previewGenerations[key] = generation
+        previewRunning.insert(key)
+        let target = Self.previewTarget(key, draft.detail)
+        let cli = cli
+        previewTasks[key] = Task { [weak self] in
+            await draft.buffer.flush()
+            let text = draft.renderedText()
+            let outcome: AutomationLookPreviewModel.Run.Outcome
+            do {
+                outcome = .result(try await cli.preview(text: text, slug: target.slug,
+                                                        workbench: target.workbench, builtin: target.builtin))
+            } catch {
+                outcome = .failure(Self.message(for: error))
+            }
+            guard let self, previewGenerations[key] == generation, !Task.isCancelled else { return }
+            previewResults[key] = AutomationLookPreviewModel.Run(text: text, at: now(), outcome: outcome)
+            previewRunning.remove(key)
+            previewTasks[key] = nil
+        }
+    }
+
+    /// The Look step's **Stop**: cancels the in-flight Dry run, which
+    /// terminates its CLI process; the pane returns to what it showed before.
+    package func cancelPreview(_ key: Int64) {
+        guard let task = previewTasks[key] else { return }
+        previewGenerations[key] = (previewGenerations[key] ?? 0) + 1
+        task.cancel()
+        previewTasks[key] = nil
+        previewRunning.remove(key)
+    }
+
+    /// `preview`'s flags for a draft: a built-in by its id, a saved recipe
+    /// by its slug (and workbench), a new workbench draft by its workbench.
+    private static func previewTarget(_ key: Int64, _ detail: AutomationDetail)
+        -> (slug: String?, workbench: Int64?, builtin: String?) {
+        if let builtin = detail.builtin { return (nil, nil, builtin.id) }
+        let workbench = detail.scope == "workbench" && detail.projectID > 0 ? detail.projectID : nil
+        return (isNewDraft(key) ? nil : detail.slug, workbench, nil)
     }
 
     // MARK: - Helpers

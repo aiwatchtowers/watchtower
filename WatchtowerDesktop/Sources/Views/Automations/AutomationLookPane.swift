@@ -166,12 +166,37 @@ struct AutomationLookCard: View {
                     Chip(text: "High", color: Tone.priority("high"))
                 }
             }
-            ArtifactCardBody(blocksJSON: card.blocksJSON, actionsJSON: card.actionsJSON, text: card.body,
-                             mode: .preview)
+            let decoded = AutomationLookDecodedCards.card(blocksJSON: card.blocksJSON, actionsJSON: card.actionsJSON)
+            ArtifactCardBody(result: decoded.result, text: card.body, cardActions: decoded.cardActions, mode: .preview)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.medium)
         .card()
+    }
+}
+
+/// The Look pane's decoded cards by their stored JSON: the pane is drawn
+/// again on every change of the editor's state, and a card's document is
+/// decoded once, not on every draw. Bounded: a full cache starts over.
+@MainActor
+enum AutomationLookDecodedCards {
+    typealias Decoded = (result: ArtifactDecodeResult, cardActions: [ArtifactAction])
+
+    private struct Key: Hashable {
+        let blocksJSON: String
+        let actionsJSON: String
+    }
+
+    static let limit = 64
+    private static var cache: [Key: Decoded] = [:]
+
+    static func card(blocksJSON: String, actionsJSON: String) -> Decoded {
+        let key = Key(blocksJSON: blocksJSON, actionsJSON: actionsJSON)
+        if let hit = cache[key] { return hit }
+        let decoded = ArtifactDocument.decodeCard(blocksJSON: blocksJSON, actionsJSON: actionsJSON)
+        if cache.count >= limit { cache.removeAll() }
+        cache[key] = decoded
+        return decoded
     }
 }
 
