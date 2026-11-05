@@ -249,6 +249,53 @@ final class HostedRelayAccountTests: HostedRelayScenarioCase {
         await assertRefusal(.notImplemented) { _ = try await phone.account.submit(jws: try jws(id)) }
     }
 
+    func testTheRelaysReadableFiveHundredIsUnreachable() async throws {
+        let failing = FailingSubmitHTTP()
+        let phone = try await phone(seed: 61, wrapHTTP: failing.wrapping)
+        let id = try await phone.account.accountID()
+        failing.isFailing = true
+
+        // Worker `http/op.ts`: a failed dispatch is HTTP 500 with a readable UNSPECIFIED error.
+        await assertRefusal(.unreachable) { _ = try await phone.account.submit(jws: try jws(id)) }
+    }
+
+    func testARestoreFromALapsedHolderActivatesTheCaller() async throws {
+        let old = try await phone(seed: 62)
+        let new = try await phone(seed: 63)
+        let oldID = try await old.account.accountID()
+        _ = try await new.account.accountID()
+        _ = try await old.account.submit(jws: try jws(oldID))
+        try await stand.setEntitlement(accountID: oldID.uuidString.lowercased(), state: "expired", for: .seconds(86_400))
+        try clock.advance(by: .seconds(60))
+
+        let entitlement = try await new.account.submit(jws: try jws(oldID))
+
+        XCTAssertEqual(entitlement, .active, "a live transaction activates, whatever the old holder was")
+        let state = try await new.account.state()
+        XCTAssertTrue(state.paying)
+    }
+
+    func testARestoreNeverDowngradesAPayingCaller() async throws {
+        let old = try await phone(seed: 64)
+        let new = try await phone(seed: 65)
+        let oldID = try await old.account.accountID()
+        let newID = try await new.account.accountID()
+        _ = try await old.account.submit(jws: try jws(oldID))
+        try await stand.setEntitlement(accountID: oldID.uuidString.lowercased(), state: "expired", for: .seconds(86_400))
+        try await stand.setEntitlement(accountID: newID.uuidString.lowercased(), state: "grace", for: .seconds(86_400))
+        _ = try relay.takeEvents(for: new.client.deviceID)
+        try clock.advance(by: .seconds(60))
+
+        let entitlement = try await new.account.submit(jws: try jws(oldID))
+
+        XCTAssertEqual(entitlement, .grace)
+        let controls = try relay.takeEvents(for: new.client.deviceID).compactMap { event -> Relay_V1_ControlKind? in
+            if case .control(let control) = event.kind { return control.kind }
+            return nil
+        }
+        XCTAssertFalse(controls.contains(.entitlementExpired), "the caller never lapsed")
+    }
+
     // MARK: - register_push
 
     func testRegisterPushIsSentWithItsEnvironment() async throws {
@@ -305,6 +352,45 @@ final class HostedRelayAccountTests: HostedRelayScenarioCase {
             for message in ["invalid transaction", "not implemented", "transfer limit", "garbage", payload.lowercased()] {
                 XCTAssertFalse(text.contains(message), "\(message) in \(text)")
             }
+        }
+    }
+}
+
+/// Answers `submit_transaction` with the relay's real failure: HTTP 500, a readable UNSPECIFIED error.
+private final class FailingSubmitHTTP: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failing = false
+
+    var isFailing: Bool {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    func wrapping(_ inner: any RelayHTTP) -> any RelayHTTP {
+        Wrapper(owner: self, inner: inner)
+    }
+
+    private struct Wrapper: RelayHTTP {
+        let owner: FailingSubmitHTTP
+        let inner: any RelayHTTP
+
+        func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
+            if owner.isFailing, let request = try? Relay_V1_Request(serializedBytes: body), case .submitTransaction? = request.op {
+                var response = Relay_V1_Response()
+                response.id = request.id
+                response.error.code = .unspecified
+                response.error.message = "internal error"
+                return (500, try response.serializedData())
+            }
+            return try await inner.post(url, body: body, headers: headers)
+        }
+
+        func put(_ url: URL, file: URL, headers: [String: String]) async throws -> Int {
+            try await inner.put(url, file: file, headers: headers)
+        }
+
+        func get(_ url: URL, to file: URL, maxBytes: Int64, headers: [String: String]) async throws -> Int {
+            try await inner.get(url, to: file, maxBytes: maxBytes, headers: headers)
         }
     }
 }

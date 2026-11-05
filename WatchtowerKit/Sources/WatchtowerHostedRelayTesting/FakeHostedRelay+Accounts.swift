@@ -350,7 +350,10 @@ extension FakeHostedRelay {
     }
 
     /// `moveSubscription`'s body, with the lock held; the subscriptions owned by `fromID` follow.
-    func moveEntitlement(fromAccount fromID: String, toAccount toID: String) throws {
+    /// `grant` is what the new account ends with; nil copies the old holder's entitlement.
+    func moveEntitlement(
+        fromAccount fromID: String, toAccount toID: String, grant: (kind: Relay_V1_EntitlementKind, until: Date?)? = nil
+    ) throws {
         guard var from = state.accounts[fromID] else { throw RelayStandError.notFound }
         let fromPhone = from.phoneID
         for (otid, subscription) in state.subscriptions where subscription.owner == fromID {
@@ -371,7 +374,7 @@ extension FakeHostedRelay {
         from.moved = true
         state.accounts[fromID] = from
         sendControl(.subscriptionMoved, "", to: fromPhone)
-        applyEntitlement(entitlement, until: until, to: toID)
+        applyEntitlement(grant?.kind ?? entitlement, until: grant != nil ? grant?.until : until, to: toID)
         for mac in macs where state.accounts[toID].map({ $0.macs.count < state.limits.maxMacSlots }) == true {
             state.accounts[toID]?.macs.insert(mac)
         }
@@ -493,7 +496,12 @@ extension FakeHostedRelay {
         guard subscription.transfers.filter({ $0.at > windowStart }).count < Self.transfersPer30Days else {
             throw RelayFailure(.transferLimit, "transfer limit")
         }
-        try moveEntitlement(fromAccount: subscription.owner, toAccount: accountID)
+        // Worker `transfer` applies the live transaction: a paying caller keeps what it has, any other ends active.
+        let caller = state.accounts[accountID]
+        let grant = caller?.paying == true
+            ? (kind: caller?.entitlement ?? .active, until: caller?.until)
+            : (kind: Relay_V1_EntitlementKind.active, until: Optional(now.addingTimeInterval(Self.subscriptionPeriod)))
+        try moveEntitlement(fromAccount: subscription.owner, toAccount: accountID, grant: grant)
         state.subscriptions[otid]?.owner = accountID
         state.subscriptions[otid]?.lastSigned = payload.signedDate
         state.subscriptions[otid]?.transfers.append(

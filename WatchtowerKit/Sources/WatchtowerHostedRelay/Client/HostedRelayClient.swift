@@ -292,6 +292,11 @@ public actor HostedRelayClient {
             throw HostedRelayError.undecodable(status: status)
         }
         if case .error(let error) = response.result {
+            // The relay's failed dispatch is HTTP 5xx with a readable UNSPECIFIED error: "retry with backoff".
+            if (500..<600).contains(status), error.code == .unspecified {
+                Self.logger.error("relay \(Self.name(op), privacy: .public): HTTP \(status), failed on the relay")
+                throw HostedRelayError.undecodable(status: status)
+            }
             if error.code == .unspecified, error.message == Self.notImplementedMessage {
                 Self.logger.error("relay \(Self.name(op), privacy: .public): not implemented, HTTP \(status)")
                 throw NotImplemented()
