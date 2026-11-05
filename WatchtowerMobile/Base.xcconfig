@@ -14,8 +14,15 @@ CODE_SIGN_IDENTITY =
 WATCHTOWER_RELAY_ORIGIN =
 
 // App Attest environment for the Debug entitlement (WatchtowerMobile.entitlements). Release uses
-// WatchtowerMobile-Release.entitlements, which has no App Attest key until Phase 4.
+// WatchtowerMobile-Release.entitlements, which names production.
 WT_APP_ATTEST_ENV = development
+
+// The Relay subscription's product id (Info.plist WTRelayProductID, read by RelayConfig), and the Terms and
+// Privacy pages the subscription screen links to (WTTermsURL, WTPrivacyURL). The links are empty until the
+// owner sets them; an empty value reads as "no link". In an xcconfig write a URL as `https:/$()/host/path`.
+WT_RELAY_PRODUCT_ID = com.aiwatchtowers.watchtower.relay.monthly
+WT_TERMS_URL =
+WT_PRIVACY_URL =
 
 // Optional signing overrides: Signing.xcconfig (gitignored — copy
 // Signing.xcconfig.template) re-enables signing with a real DEVELOPMENT_TEAM
