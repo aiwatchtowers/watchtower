@@ -327,6 +327,8 @@ func parseJSONLOutputForModel(output []byte, model, stderr string) (string, *Cod
 	var lastContent string
 	completed := false
 	totalUsage := &CodexUsage{}
+	undecodable := 0
+	defer func() { logUndecodable(undecodable) }()
 
 	// The whole output is already in memory, so split it instead of using a
 	// bufio.Scanner: a command_execution / mcp_tool_call item can exceed any
@@ -340,6 +342,7 @@ func parseJSONLOutputForModel(output []byte, model, stderr string) (string, *Cod
 
 		var event CodexEvent
 		if err := json.Unmarshal(line, &event); err != nil {
+			undecodable++
 			continue
 		}
 

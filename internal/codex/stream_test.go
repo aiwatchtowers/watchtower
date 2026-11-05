@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/logcanary"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 )
@@ -228,7 +229,7 @@ func TestQuery_LineOverLimitIsSkippedAndTheRunEnds(t *testing.T) {
 		}
 	}
 	require.Len(t, tools, 2)
-	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "shell", Done: true, Result: "this tool's result was too large to show"}, tools[1])
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "shell", Done: true, Result: "codex's report of this tool's result could not be read"}, tools[1])
 }
 
 // A tool codex never reports the end of is closed as failed when the
@@ -464,4 +465,36 @@ func TestQuery_SkippedAnswerFails(t *testing.T) {
 	_, err := queryAll(t, c)
 	require.ErrorIs(t, err, errNoAgentMessage)
 	assert.Contains(t, err.Error(), "1 line(s) over 512 bytes skipped")
+}
+
+// Undecodable JSONL lines are counted and logged as a count, never their
+// content (FILES-01), in the stream and in the batch parse alike; a tool
+// left open after unreadable lines is closed with a neutral reason.
+func TestQuery_UndecodableLinesAreCounted(t *testing.T) {
+	canary := logcanary.Text("jsonl")
+	sink := logcanary.Capture(t)
+	stdout := strings.Join([]string{
+		`{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"id":"item_1" ` + canary,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Partial."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var last *ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			last = ch.Tool
+		}
+	}
+	require.NotNil(t, last)
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, Result: "codex's report of this tool's result could not be read"}, *last)
+	assert.Contains(t, sink.String(), "codex: 1 undecodable JSONL line(s)")
+
+	_, _, err = NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0)).QuerySync(context.Background(), "sys", "hi", "")
+	require.NoError(t, err)
+	assert.Equal(t, 2, strings.Count(sink.String(), "codex: 1 undecodable JSONL line(s)"), "the batch parse logs its count too")
+	sink.AssertClean(t)
 }

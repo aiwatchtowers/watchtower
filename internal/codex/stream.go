@@ -79,8 +79,9 @@ type queryStream struct {
 	// started tools (id, name) in order, for closing the open ones.
 	toolsOpen map[string]bool
 	toolOrder []ai.ToolEvent
-	// skipped counts the lines over maxStreamLine.
-	skipped int
+	// skipped counts the lines over maxStreamLine, undecodable the lines
+	// that are not a JSON event.
+	skipped, undecodable int
 	// completed: codex reported turn.completed — the only successful end.
 	completed bool
 
@@ -105,6 +106,7 @@ func (s *queryStream) send(c ai.StreamChunk) bool {
 func (s *queryStream) handle(line []byte) bool {
 	var event CodexEvent
 	if err := json.Unmarshal(line, &event); err != nil {
+		s.undecodable++
 		return true
 	}
 	switch event.Type {
@@ -188,10 +190,11 @@ func (s *queryStream) message(item *CodexItem) bool {
 	return s.send(ai.StreamChunk{Text: text})
 }
 
-// finish ends the stream once codex's output is read: a skipped line is
-// logged (a count, never content); for a v2 consumer every tool still open
-// gets a failed end — its result was in a skipped line, or codex stopped
-// before reporting it — so no step stays running; then the turn's usage
+// finish ends the stream once codex's output is read: skipped and
+// undecodable lines are logged (counts, never content); for a v2 consumer
+// every tool still open gets a failed end — its result may have been in a
+// line that could not be read, or codex stopped before reporting it — so no
+// step stays running; then the turn's usage
 // (the chat message's tokens; codex's input_tokens already count the cached
 // ones). A send cut by ctx needs no handling: the caller's Wait and
 // outcome follow either way.
@@ -199,12 +202,13 @@ func (s *queryStream) finish() {
 	if s.skipped > 0 {
 		log.Printf("codex: skipped %d JSONL line(s) over %d bytes", s.skipped, maxStreamLine)
 	}
+	logUndecodable(s.undecodable)
 	if !s.v2 {
 		return
 	}
 	reason := "codex stopped before reporting this tool's result"
-	if s.skipped > 0 {
-		reason = "this tool's result was too large to show"
+	if s.skipped > 0 || s.undecodable > 0 {
+		reason = "codex's report of this tool's result could not be read"
 	}
 	for _, t := range s.toolOrder {
 		if s.toolsOpen[t.ID] {
@@ -237,6 +241,15 @@ func (s *queryStream) noAnswer() error {
 		return nil
 	}
 	return providers.WithFailure("codex", providers.InvalidOutput, errNoAgentMessage)
+}
+
+// logUndecodable logs how many lines of codex's JSONL output were not a JSON
+// event (a count, never content: FILES-01); nothing for none. A garbled
+// turn.completed then explains an "exited without completing the turn".
+func logUndecodable(n int) {
+	if n > 0 {
+		log.Printf("codex: %d undecodable JSONL line(s) ignored", n)
+	}
 }
 
 // incompleteRunError is the error of a codex run that exited cleanly
