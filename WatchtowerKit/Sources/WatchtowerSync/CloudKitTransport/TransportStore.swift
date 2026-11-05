@@ -27,6 +27,15 @@ public final class TransportStore: Sendable {
     private let assetsDirectory: URL?
     private let logger = Logger(subsystem: "WatchtowerKit", category: "TransportStore")
 
+    /// false for a short-lived write-only open beside a running engine's store (the request's iCloud copy): the launch
+    /// sweep could delete a file the engine just stashed and not yet buffered.
+    @TaskLocal static var sweepsStashAtOpen = true
+
+    /// Runs `body` (which opens stores) without the launch sweep of the stash.
+    public static func withoutStashSweep<T>(_ body: () throws -> T) rethrows -> T {
+        try $sweepsStashAtOpen.withValue(false, operation: body)
+    }
+
     public init(path: String) throws {
         queue = try DatabaseQueue(path: path)
         assetsDirectory = URL(fileURLWithPath: path)
@@ -36,7 +45,7 @@ public final class TransportStore: Sendable {
         // Launch pass: stash files an earlier run leaked (before the
         // eviction/wipe sweeps existed, or a crash between a buffer and its
         // compaction) are unreferenced by any row now.
-        sweepUnreferencedStash()
+        if Self.sweepsStashAtOpen { sweepUnreferencedStash() }
     }
 
     private init(queue: DatabaseQueue) throws {

@@ -228,7 +228,7 @@ final class SideMailboxReader {
     /// The other transport stays open only for a drain still owed or an outage going on.
     private func needsSide(_ link: LinkRecord) -> Bool {
         if let other = link.otherRoute, drainOwed(link, HubSession.transportKind(of: other)) { return true }
-        if link.transportRequest?.isOpen == true, link.transport == .relay { return true }
+        if link.transportRequest?.awaitsAnswer == true, link.transport == .relay { return true }
         return link.transport == .relay && outage?.relayUnreachableSince != nil
     }
 
@@ -338,7 +338,7 @@ final class SideMailboxReader {
     /// An open request toward iCloud: the CloudKit mailbox is read every `otherMailboxEvery`, the relay answering or
     /// not; the controls found go to the follower, a rejection to the request.
     private func pollForRequest(_ cloudKit: HubRoute, session: HubSession) async {
-        guard currentLink()?.transportRequest?.isOpen == true else {
+        guard currentLink()?.transportRequest?.awaitsAnswer == true else {
             requestPolledAt = nil
             return
         }

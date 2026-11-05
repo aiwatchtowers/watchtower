@@ -51,7 +51,7 @@ struct TransportRequestRecord: Codable, Equatable, Sendable {
     var controlID: String
     /// The hub's own word for a move that spares its other phones (`TransportFollowerPolicy.lapseReason`); nil for a
     /// plain request.
-    let reason: String?
+    var reason: String?
     /// When the request started (the 24 h limit counts from it).
     let at: Date
     /// The sealed copy is in the iCloud mailbox (the way past a relay that refuses writes).
@@ -106,6 +106,9 @@ struct TransportRequestRecord: Codable, Equatable, Sendable {
 
     /// The request still waits for an answer.
     var isOpen: Bool { refusal == nil }
+
+    /// The hub may still answer in the iCloud mailbox: open, or a lapse's copy that stays after the day.
+    var awaitsAnswer: Bool { isOpen || refusal == .lapseNoAnswer }
 }
 
 /// Where a request stands after a call (`HubSession.requestTransport(reason:)`).
@@ -150,6 +153,8 @@ final class TransportRequester {
     private var last: Task<Void, Never>?
     private var lastResumeAt: Date?
     private var stopped = false
+    /// A test seam: runs between the queue step and the iCloud copy.
+    var beforeCopy: (@MainActor () async -> Void)?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "TransportRequest")
 
     init(session: HubSession, follower: TransportFollower, host: any TransportRequestHost, now: @escaping @MainActor () -> Date) {
@@ -279,10 +284,22 @@ final class TransportRequester {
             Self.logger.notice("a request toward iCloud on an iCloud route writes nothing")
             return .refused(.unavailable)
         }
-        if link.transportRequest?.isOpen == true {
-            // One open request per hub: a second press (or a repeated lapse notice) goes on with it.
-            await pass()
-            return outcome()
+        if let existing = link.transportRequest {
+            let lapseReason = TransportFollowerPolicy.lapseReason
+            if existing.isOpen, !lapse || existing.reason == lapseReason {
+                // One open request per hub: a second press (or a repeated lapse notice) goes on with it.
+                await pass()
+                return outcome()
+            }
+            if !existing.isOpen, lapse, existing.reason == lapseReason {
+                // The notice repeats at every refusal; a closed answer stays closed until the owner presses Try Again.
+                return .refused(existing.refusal ?? .unavailable)
+            }
+            if existing.isOpen {
+                // A lapse joins an owner's plain request: it must carry the lapse's reason (and keep its copy), so the
+                // plain one is withdrawn and the lapse asks in its place.
+                await withdraw(existing, link: link)
+            }
         }
         do {
             guard try await session.outbox.orderedActions() else { return .refused(.notOrdered) }
@@ -351,6 +368,9 @@ final class TransportRequester {
             case .failed: break
             }
         }
+        await beforeCopy?()
+        // An unlink or a move during the queue step wins: nothing more is written, no store opened.
+        guard !stopped, host.followerLink(hubID: hubID)?.transportRequest == request else { return }
         var written = request.iCloudWritten
         if !written, let other = link.otherRoute {
             written = await writeCopy(request, to: other, host: host, session: session)
@@ -418,13 +438,19 @@ final class TransportRequester {
         guard update(request, { $0.transportRequest?.refusal = lapse ? .lapseNoAnswer : .macNoAnswer }) != nil else { return }
         Self.logger.notice("a request toward iCloud had no answer for a day")
         guard !lapse else { return }
+        await withdraw(request, link: link)
+    }
+
+    /// Takes an owner's request back, best effort: the queued row and the iCloud copy (whether or not its write was
+    /// saved: a copy a lost commit left would move the Mac later).
+    private func withdraw(_ request: TransportRequestRecord, link: LinkRecord) async {
+        guard !stopped, let host, let session else { return }
         do {
             try await session.outbox.withdrawControl(id: request.controlID)
         } catch {
             Self.logger.warning("the queued request was not withdrawn: \(String(describing: type(of: error)), privacy: .public)")
         }
-        guard let other = link.otherRoute else { return }
-        // Whether or not the write was saved: a copy a lost commit left would move the Mac later.
+        guard let other = link.otherRoute, !stopped, host.followerLink(hubID: hubID) != nil else { return }
         await withSide(other, host: host, session: session) { secure in
             do {
                 let wire = try secure.wireName(plain: "c-\(request.controlID)", zone: .relay)
@@ -444,7 +470,8 @@ final class TransportRequester {
     ) async -> T? {
         let side: SideTransport
         do {
-            side = try host.makeOtherSide(hubID: hubID, route: route)
+            // Write-only, beside the reader's running engine on the same file: no launch sweep of the stash.
+            side = try TransportStore.withoutStashSweep { try host.makeOtherSide(hubID: hubID, route: route) }
         } catch {
             Self.logger.error("no transport to the other route: \(String(describing: type(of: error)), privacy: .public)")
             return nil

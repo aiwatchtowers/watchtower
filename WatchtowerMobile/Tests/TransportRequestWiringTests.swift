@@ -201,7 +201,7 @@ final class TransportRequestWiringTests: XCTestCase {
         await session.lapseRelay()
         await session.outbox.drain()
 
-        XCTAssertNotEqual(outcome, .underWay)
+        XCTAssertEqual(outcome, .refused(.unavailable))
         XCTAssertNil(try bed.row()?.link.transportRequest)
         let queued = try await queuedRequests(session)
         XCTAssertTrue(queued.isEmpty)
@@ -479,6 +479,148 @@ final class TransportRequestWiringTests: XCTestCase {
         await reader.tick()
 
         XCTAssertTrue(bed.sides.cloud.isEmpty, "the relay answers and nothing is asked: iCloud is not touched")
+    }
+
+    // MARK: - Fix round 1
+
+    func testANewerEpochSwitchToCloudKitClearsHubOnRelayOnAnICloudPhone() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let session = try await bed.orderedSession()
+        bed.relayOps.paying = false
+        _ = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
+        await bed.fetch(session)
+        XCTAssertNotNil(try bed.row()?.link.hubOnRelayAt)
+
+        try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
+        await bed.fetch(session)
+
+        XCTAssertNil(try bed.row()?.link.hubOnRelayAt, "the Mac is back on iCloud")
+    }
+
+    func testANewerEpochMarkerTowardCloudKitClearsHubOnRelayOnAnICloudPhone() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let session = try await bed.orderedSession()
+        bed.relayOps.paying = false
+        _ = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
+        await bed.fetch(session)
+        XCTAssertNotNil(try bed.row()?.link.hubOnRelayAt)
+
+        try await bed.writeMarker(target: .cloudKit, epoch: 2)
+        await bed.fetch(session)
+
+        XCTAssertNil(try bed.row()?.link.hubOnRelayAt)
+    }
+
+    func testARepeatedLapseNoticeKeepsAClosedLapseRefusal() async throws {
+        let (bed, session) = try await relayBed()
+        await session.outbox.holdFlushes()
+        await session.lapseRelay()
+        let first = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        bed.clock.advance(25 * 3600)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .lapseNoAnswer)
+
+        await session.lapseRelay()
+        await session.lapseRelay()
+
+        let record = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        XCTAssertEqual(record.controlID, first.controlID, "no new request")
+        XCTAssertEqual(record.refusal, .lapseNoAnswer)
+        let onCloud = try await bed.cloudControls(.transportSwitch)
+        XCTAssertEqual(onCloud.map(\.id), [first.controlID])
+    }
+
+    func testARepeatedLapseNoticeDoesNotLoopOnNotSupported() async throws {
+        let (bed, session) = try await relayBed()
+        await session.lapseRelay()
+        let first = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        try await bed.writeRejection(RelayUpgrade.notSupported, on: .relay)
+        await bed.fetch(session)
+        XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .notSupported)
+
+        await session.lapseRelay()
+        await bed.fetch(session)
+        await session.lapseRelay()
+
+        let record = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        XCTAssertEqual(record.controlID, first.controlID)
+        XCTAssertEqual(record.refusal, .notSupported)
+        let onCloud = try await bed.cloudControls(.transportSwitch)
+        XCTAssertEqual(onCloud.count, 1)
+    }
+
+    func testALapseMayReplaceAnExpiredOwnerRequest() async throws {
+        let (bed, session) = try await relayBed()
+        await session.outbox.holdFlushes()
+        _ = await session.requestTransport(reason: nil)
+        let owner = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        bed.clock.advance(25 * 3600)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .macNoAnswer)
+
+        await session.lapseRelay()
+
+        let record = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        XCTAssertNil(record.refusal)
+        XCTAssertNotEqual(record.controlID, owner.controlID)
+        XCTAssertEqual(record.reason, "entitlement_expired")
+    }
+
+    func testAKeptLapseCopyIsStillReadForTheAnswer() async throws {
+        let (bed, session) = try await relayBed()
+        await session.outbox.holdFlushes()
+        await session.lapseRelay()
+        bed.clock.advance(25 * 3600)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .lapseNoAnswer)
+        let reader = try XCTUnwrap(session.sideReader)
+
+        // The Mac is back, reads the kept copy and answers in the iCloud mailbox.
+        try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
+        await reader.tick()
+        await bed.root.routeMoves[hubID]?.value
+
+        XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+        XCTAssertNil(try bed.row()?.link.transportRequest)
+    }
+
+    func testAnUnlinkInsideAPassWritesNoCopy() async throws {
+        let (bed, session) = try await relayBed()
+        let requester = try XCTUnwrap(session.transportRequester)
+        // The unlink lands while the pass is between its queue step and its iCloud copy.
+        requester.beforeCopy = { [bed, hubID] in
+            await bed.root.linking.unlink(hubID)
+        }
+
+        _ = await session.requestTransport(reason: nil)
+
+        XCTAssertNil(try bed.row())
+        let saves = await bed.cloud.conditionalSaves
+        XCTAssertTrue(saves.isEmpty, "nothing written for a link that is gone")
+        XCTAssertTrue(bed.sides.cloud.isEmpty, "no store opened")
+    }
+
+    func testALapseJoiningAnOwnersRequestCarriesTheLapseReason() async throws {
+        let (bed, session) = try await relayBed()
+        await session.outbox.holdFlushes()
+        _ = await session.requestTransport(reason: nil)
+        let owner = try XCTUnwrap(try bed.row()?.link.transportRequest)
+
+        await session.lapseRelay()
+
+        let record = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        XCTAssertEqual(record.reason, "entitlement_expired")
+        XCTAssertNotEqual(record.controlID, owner.controlID)
+        let onCloud = try await bed.cloudControls(.transportSwitch)
+        XCTAssertEqual(onCloud.map(\.id), [record.controlID], "the owner's plain copy is withdrawn")
+        let queued = try await queuedRequests(session)
+        XCTAssertEqual(queued, [record.controlID])
+
+        bed.clock.advance(25 * 3600)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .lapseNoAnswer)
+        let kept = try await bed.cloudControls(.transportSwitch)
+        XCTAssertEqual(kept.map(\.id), [record.controlID], "a lapse's copy stays")
     }
 
     // MARK: - Unlink

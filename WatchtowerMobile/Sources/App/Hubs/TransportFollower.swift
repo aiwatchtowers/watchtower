@@ -327,9 +327,12 @@ final class TransportFollower {
         let clearsHubOnRelay: Bool
 
         init(plan: Plan, moves: Bool) {
+            let routeMoved = plan.move != nil
             setsHubOnRelay = plan.listUndelivered
             clearsRequest = moves || plan.answered || plan.listUndelivered
-            clearsHubOnRelay = !plan.listUndelivered && (moves || plan.answered)
+            // A newer-epoch move or marker toward the route the phone is already on (an iCloud phone, the Mac back on
+            // iCloud) moves nothing but still ends it.
+            clearsHubOnRelay = !plan.listUndelivered && (routeMoved || plan.answered)
         }
 
         func apply(to link: inout LinkRecord, at date: Date) {
