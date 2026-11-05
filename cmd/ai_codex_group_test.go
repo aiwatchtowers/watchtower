@@ -19,29 +19,40 @@ import (
 
 // codexTreeStub is a fake codex that starts a grandchild (a background
 // sleep, which a non-interactive shell runs with SIGINT ignored, holding
-// codex's stdout) and waits for it. It writes the grandchild's pid to
-// <dir>/grandchild once it is running.
+// codex's stdout) and waits for it. It writes its own pid to <dir>/codex.pid
+// and the grandchild's to <dir>/grandchild once it is running.
 func codexTreeStub(t *testing.T) (bin string, grandchild func() int) {
 	t.Helper()
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "grandchild")
+	stubPidFile := filepath.Join(dir, "codex.pid")
 	bin = filepath.Join(dir, "codex")
 	script := "#!/bin/sh\n" +
 		`case "$1" in --version) echo "codex-cli 0.200.0"; exit 0;; esac` + "\n" +
+		"echo $$ > " + stubPidFile + "\n" +
 		"cat > /dev/null\n" +
 		"sleep 30 &\n" +
 		"echo $! > " + pidFile + ".tmp; mv " + pidFile + ".tmp " + pidFile + "\n" +
 		"wait\n"
 	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
-	grandchild = func() int {
-		b, err := os.ReadFile(pidFile)
+	readPid := func(path string) int {
+		b, err := os.ReadFile(path)
 		if err != nil {
 			return 0
 		}
 		n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
 		return n
 	}
+	grandchild = func() int { return readPid(pidFile) }
 	t.Cleanup(func() {
+		// The stub's group when it has one (the fixed wiring), and both
+		// pids by name either way (an unfixed run left them in ours).
+		if pid := readPid(stubPidFile); pid > 0 {
+			if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
 		if pid := grandchild(); pid > 0 {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}

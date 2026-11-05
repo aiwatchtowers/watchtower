@@ -252,7 +252,7 @@ func codexSessionClient(w sessionWiring) *codex.Client {
 	c.SetMCPArgs(w.mcpArgs)
 	// Stop and close cancel the turn: the whole tree goes — codex, its MCP
 	// servers and any shell it started — like the warm claude session's
-	// group, and no descendant holding stdout delays the turn's end.
+	// group, and no descendant holding stdout delays the stopped turn's end.
 	c.SetProcessGroup(true)
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
