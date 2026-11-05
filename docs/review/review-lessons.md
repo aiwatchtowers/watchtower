@@ -2690,3 +2690,12 @@ Entry format:
 - weak-dimension: 7. The library-level hold test passes with a lock-less `HoldTempFile`, and the codex-level guard never runs a sweep mid-run, so the composition "sweep while codex is running" is proven only by the fsutil sweep test. Codex could not run tests in its read-only sandbox. [7]
 - rule-gap (candidate, dim 8): *when a change overturns a contract that a CLAUDE.md index entry summarises, update that summary line in the same change. The inventory and feature note alone leave the agent-facing index wrong.*
 - outcome: TBD
+
+## 2026-11-05 — feature/codex-parity (17cd4431a: codex `turn.completed` required on Query/QuerySync/generator, v2 tool steps + usage, 64 MiB line skip, process groups, `disabledFeatures` snapshot guard, chat file replay, AUTO-08 fresh-input budget; 50 files +2552/−193; panel: prosecutor (8) + codex (0, read-only, no tests) + all three pr-review-toolkit specialists; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: whether `ai query --events v2` with no Desktop caller is a speculative surface (prosecutor F3, major). Dismissed: the flag and its v2 path predate the branch on origin/main, and the branch only adds codex parity to it. Before invoking §2's "no caller" rule, check `git show origin/main:<file>` to see whether the surface is new. Only the "wiring untested" half held (2 lanes). [2/7]
+- false-positive: F3 as above. The code-reviewer's "test globals race" and "missing index" notes were also dropped (restored after drain; the table is small and only the Desktop writes it).
+- miss: only the specialists (silent-failure-hunter + test analyzer) caught `toolEnd` violating its own "never an empty reason" doc comment on a failed `mcp_tool_call` with a nil error. The prosecutor and codex both read past it. A function whose doc comment promises an invariant gets a table row for every input shape that could break it. [6/9]
+- weak-dimension: 7. The wiring tests call the helper the wiring calls (`enableChatEvents`, `configureLeaf`) instead of going through the entry point, so deleting the wiring stays green. Codex ran no tests in its read-only sandbox.
+- rule-gap: none new. The AUTO-08 inventory change was handled correctly as needs-owner (ask #488). A provider-usage meaning change (`InputTokens` = fresh input) reaches stored pipeline rows as well as the budget, so the owner decision should name both.
+- outcome: TBD
