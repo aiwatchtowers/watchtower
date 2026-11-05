@@ -94,6 +94,15 @@ func TestCodexLastTurn_ZstdAndMissing(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, got.Failed, "a compressed rollout is not read")
 
+	// A compressed rollout longer than the tail window: the magic is read at
+	// the start, not in the tail.
+	long := append([]byte{0x28, 0xb5, 0x2f, 0xfd, '\n'}, []byte(strings.Repeat("x", codexTurnTailBytes)+"\n")...)
+	long = append(long, []byte(turnStartedLine+"\n"+turnFailedLine+"\n")...)
+	require.NoError(t, os.WriteFile(p, long, 0o600))
+	got, err = CodexLastTurn(p)
+	require.NoError(t, err)
+	assert.False(t, got.Failed, "a long compressed rollout is not read")
+
 	_, err = CodexLastTurn(filepath.Join(t.TempDir(), "gone.jsonl"))
 	require.Error(t, err)
 }
