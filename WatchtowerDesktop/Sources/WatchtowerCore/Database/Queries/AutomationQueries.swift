@@ -130,10 +130,6 @@ package enum AutomationQueries {
     /// is a third, separate state (`read_at`, written when the owner opens it).
     private static let openInbox = "o.kind = 'inbox' AND o.done_at IS NULL AND o.dismissed_at IS NULL"
     private static let unreadInbox = "\(openInbox) AND o.read_at IS NULL"
-    /// The card's order key. Go writes `changed_at` on every row since the
-    /// blocks migration (which backfilled it); `created_at` covers a row
-    /// written by a tool that predates it.
-    private static let changedAt = "COALESCE(o.changed_at, o.created_at)"
 
     /// Open inbox outputs, the most recently changed first (`changed_at`: a
     /// living card moves up only when its content changed, never on a
@@ -151,7 +147,7 @@ package enum AutomationQueries {
             SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority, o.created_at, o.link,
                 o.actions_json, o.read_at, o.pressed_action, o.pressed_run_id,
                 o.blocks_json, o.output_key, o.content_hash, o.written_at,
-                \(changedAt) AS changed_at,
+                o.changed_at,
                 COALESCE(NULLIF(a.name, ''), a.slug) AS name, a.project_id, a.parse_error,
                 a.removed_at IS NOT NULL AS removed,
                 (a.parse_error = '' AND a.removed_at IS NULL AND a.confirmed_hash != a.approval_hash)
@@ -163,10 +159,12 @@ package enum AutomationQueries {
             """
         var arguments = StatementArguments()
         if let since {
-            sql += " AND \(changedAt) >= ?"
+            sql += " AND o.changed_at >= ?"
             arguments += [AutomationDates.format(since)]
         }
-        sql += " ORDER BY \(changedAt) DESC, o.id DESC"
+        // `changed_at` is backfilled by migration 00173 and written by every
+        // Go writer since, so the order uses `idx_automation_outputs_changed`.
+        sql += " ORDER BY o.changed_at DESC, o.id DESC"
         if let limit {
             sql += " LIMIT ?"
             arguments += [limit]
