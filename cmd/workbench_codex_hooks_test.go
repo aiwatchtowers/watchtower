@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 )
 
@@ -795,4 +796,33 @@ func TestHookCwd_CodexHooksRecordTheMainAgentCwd(t *testing.T) {
 	_, errOut := runCodexStop(t, codexPayload(t, "stop", map[string]any{"cwd": "/tmp/acme/wt-b"}))
 	assert.Empty(t, errOut)
 	assert.Equal(t, "/tmp/acme/wt-b", storedCwd(t, database, row).Path, "the Stop records it with the state")
+}
+
+// S10 (plan 2026-11-05 Task G7, spike (c)): codex reports no idle prompt and
+// no MCP elicitation, so its capability row says so, the Desktop discloses it
+// (Settings → Notifications) and PROJ-11's Codex v1 limits name it with that
+// pointer; nothing pretends a codex row can get Claude's idle_prompt.
+func TestProj11_CodexNoIdleSignalIsDisclosedNotSilent(t *testing.T) {
+	caps := agentkind.Codex.SessionCaps()
+	assert.False(t, caps.IdleSignal, "codex has no idle signal")
+	assert.False(t, caps.Elicitation, "codex reports no elicitation")
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "codex_hooks", "hook_events.json"))
+	require.NoError(t, err)
+	var recorded struct {
+		Events []string `json:"events"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &recorded))
+	assert.NotContains(t, recorded.Events, "Notification", "a codex Notification event would carry an idle signal")
+	for ev := range codexStateEvents {
+		assert.Contains(t, recorded.Events, ev, "a recorded codex state event must exist in the spike's event set")
+	}
+	assert.False(t, codexStateEvents["Notification"], "a codex payload naming Notification must record nothing")
+
+	inv, err := os.ReadFile(filepath.Join("..", "docs", "inventory", "workbench.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(inv), "no idle notice and no elicitation approval",
+		"PROJ-11's Codex v1 limits must name the missing idle signal")
+	assert.Contains(t, string(inv), "Idle notices are not available for Codex sessions.",
+		"the v1 limits line must point at the Settings caption")
 }

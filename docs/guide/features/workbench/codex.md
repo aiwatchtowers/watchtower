@@ -21,6 +21,9 @@ Differences from Claude Code you may notice:
 - Watchtower types answers and comments the way Codex expects: Return submits, Ctrl+J starts a new line.
 - **Hand to Session** (⌥⌘↩ from a code question) works with either agent.
 - A turn that stops on an error, such as a usage limit or a provider error, shows **Error: …** a few seconds after it stops, for example "Error: usage limit exceeded". Your next prompt clears it.
+- A line you send from Workchat while Codex works waits for the end of the turn: Codex can open a form mid-turn that Watchtower cannot see.
+- Codex permission prompts are answered in the terminal only: no Workchat card, no answer from the iPhone.
+- Codex reports no idle prompt and no MCP form, so a Codex session sends no idle notice. **Settings → Features → Notifications** says **Idle notices are not available for Codex sessions.** under **Workbench notifications**.
 
 ## Using it
 <!-- learn

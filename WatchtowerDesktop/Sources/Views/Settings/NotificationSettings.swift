@@ -40,8 +40,7 @@ struct NotificationSettings: View {
                 Toggle("Decision notifications", isOn: $notifyDecisions)
                 Toggle("Briefing notifications", isOn: $notifyBriefing)
                     .help("Tells you when a new briefing is ready")
-                Toggle("Workbench notifications", isOn: $notifyWorkbenches)
-                    .help("Agent questions and asks, finished targets, proposals awaiting approval")
+                Self.workbenchRow(isOn: $notifyWorkbenches)
                 Toggle("Claude plan limits", isOn: $notifyPlanUsage)
                     .help("Warns when a session or weekly limit will be hit before it resets, and at 90%")
                 Toggle("Notify about unknown voices", isOn: $notifyUnknownVoices)
@@ -96,6 +95,24 @@ struct NotificationSettings: View {
         .onAppear {
             Task { await checkPermission() }
         }
+    }
+
+    /// The Workbench notifications switch, captioned (U7).
+    static func workbenchRow(isOn: Binding<Bool>) -> some View {
+        SettingRow(
+            title: "Workbench notifications",
+            caption: workbenchCaption(idleCaption: AgentSessionCaps.idleNoticeCaption())
+        ) {
+            Toggle("Workbench notifications", isOn: isOn).labelsHidden()
+        }
+    }
+
+    /// The Workbench notifications row's caption: what it notifies about,
+    /// then U7's line from the session capabilities when an agent has no
+    /// idle signal (`AgentSessionCaps.idleNoticeCaption`).
+    static func workbenchCaption(idleCaption: String?) -> String {
+        ["Agent questions and asks, finished targets, proposals.", idleCaption]
+            .compactMap(\.self).joined(separator: "\n")
     }
 
     private func checkPermission() async {
