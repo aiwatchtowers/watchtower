@@ -56,11 +56,13 @@
 | Lane | Tasks | Main files | DB tables | Swift |
 |---|---|---|---|---|
 | W1-a | G1 | `internal/ai/client.go`, new `internal/streamline` (reader extracted from `internal/codex/stream.go`) | — | — |
-| W1-b | G3 | `internal/agentloop`, `internal/ollama`, `internal/providers` (new `ollama_failure.go`, `CodeForFailure` home), `internal/chat/turn_backend.go`, `cmd/ai.go`, `cmd/ai_session.go` (runtime B wiring only, :219-224), `cmd/generator.go` (runtime B branch only, :204-221) | — | — |
+| W1-b | G3 | `internal/agentloop`, `internal/ollama`, `internal/providers` (new `ollama_failure.go`, `CodeForFailure` home), `internal/chat/turn_backend.go`, `cmd/ai.go`, `cmd/ai_session.go` (runtime B wiring only, :219-224), `cmd/generator.go` (runtime B branch only, :204-221), Swift `WatchtowerCore/Services/QuickConnectionsProviderNotice.swift` (copy only) | — | light: one-file copy edit, not Swift-heavy |
 | W1-c | G6 | `internal/sessionfeed/{codex,live,feed,parse}.go`, `internal/terminal/codex_rollout.go`, new `internal/rollout` (zstd-aware opener), `go.mod` | — | — |
 | W1-d | A1 | new `internal/transporttest`, `scripts/record-transport-fixtures.sh`, `internal/chat/testdata/scrub_fixtures.py` | — (temp DBs) | — |
 | W1-e | A6 | new `internal/transporttest/guard_test.go` (or `internal/providers`), `WatchtowerDesktop/Tests/Core/LLMTransportGuardTests.swift`, `docs/inventory/llm-transport.md`, `docs/inventory/README.md` | — | light (one Core test) |
 | W1-f | G7 | `internal/hub/actions/handlers/{session_input,permission,deps}.go`, Swift `SessionInputHandlers.swift`, `PermissionAnswerHandlers.swift`, `WorkchatModel.swift`, `WorkchatComposer.swift`, Kit `ActionReason.swift`, phone `SessionInputSender.swift` | `permission_requests` (only if the spike enables codex) | **heavy** |
+
+Swift build order in wave 1: G7 (the Swift-heavy lane) builds first. W1-b's one-file copy edit runs only its own `make test-swift FILTER=QuickConnectionsProviderNoticeTests`, after G7's Swift build, never alongside it. A6's single Core test does the same.
 
 Conflict notes:
 - G1 and G2 both touch `internal/codex/stream.go`. G1 only moves the line reader out into `internal/streamline`, and G2 runs in wave 2 on top of it.
@@ -371,10 +373,10 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   All of these FAIL.
 - [ ] **Step 2b (S10, its own step, failing first):** the outcome of spike (c) decides which of two test sets is written; S10 never closes silently.
   - If codex can signal it: `TestProj11_CodexIdlePromptIsWaiting` (the idle signal stores `waiting` like Claude's `idle_prompt`), `TestProj11_CodexElicitationIsApproval` (an elicitation stores `approval`), `SessionAgentStateCenterTests.testCodexIdleNoticeFires` (the Desktop idle notice fires for a codex row).
-  - If it cannot: the session capability row records `idle_signal: false` and `elicitation: false` for codex (in `AgentSessionCaps`, later A5's fixture), and the UI says so: `SessionNoticePresentationTests.testIdleNoticeDisclosedAsUnavailableForCodex` (the place that offers the idle notice shows "Not available for Codex sessions" from the capability, not from the kind) and `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent` (the capability row and the inventory's Codex v1 limits line agree). The PROJ-11 Codex v1 limits keep "no idle notice" with that pointer.
+  - If it cannot: the session capability row records `idle_signal: false` and `elicitation: false` for codex (in `AgentSessionCaps`, later A5's fixture), and the UI says so: `SessionNoticePresentationTests.testIdleNoticeDisclosedAsUnavailableForCodex` (Settings → Notifications → Workbench notifications shows the U7 caption "Idle notices are not available for Codex sessions." from the capability, not from the kind; the caption disappears when every kind has `idle_signal: true`), with the row on the kit's `SettingRow(title:caption:)` (`Views/Settings/NotificationSettings.swift`) and `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent` (the capability row and the inventory's Codex v1 limits line agree). The PROJ-11 Codex v1 limits keep "no idle notice" with that pointer.
   - Run with Step 2's commands plus `go test ./cmd -run 'TestProj11_Codex(Idle|Elicitation|NoIdle)'` and `make test-swift FILTER='SessionAgentStateCenterTests|SessionNoticePresentationTests'`.
 - [ ] **Step 3:** Implement: the refusals first, then whatever the spikes proved, then Step 2b's branch.
-- [ ] **Step 4:** PASS; `make lint-diff`; `make desktop-shots` for U2.
+- [ ] **Step 4:** PASS; `make lint-diff`; register U2 and (no-signal branch only) U7 in `DesignShotCatalog` on fixture data and run `make desktop-shots DESKTOP_SHOTS=<dir>`; look at both light and dark PNGs and attach them to the review.
 - [ ] **Step 5:** Amend PROJ-16 and PROJ-21, and PROJ-11's Codex v1 limits for S10's outcome. Flip A1's session cells for S3, S4, S5 and S10 to `pass` or `unsupported` (the honest-UI assertion). Commit `fix(hub): codex sessions get an honest not_supported on the phone and in Workchat (S3, S4, S5, S10)`.
 
 ### Task G8: codex rollout importer for analytics and the coach (S9; decision D)
@@ -637,7 +639,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 
 ### Final: gate, review and hand-off
 
-- [ ] After each wave, the controller runs the full gate (`make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`, and `make mobile-test` for waves 1 and 2). Then it runs a `local-review` panel over the wave's merged diff.
+- [ ] After each wave, the controller runs the full gate (`make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`, plus `make kit-test` and `make mobile-test` in every wave whose merged diff touches `WatchtowerKit/` or `WatchtowerMobile/`: waves 1, 2 and 4, and wave 3 if A2 or A3 touched either tree; this matches Global Constraints). Then it runs a `local-review` panel over the wave's merged diff.
 - [ ] Check that the matrix golden has no `gap:` cell left, or that each remaining one is a disclosed limit the spec names (claude.ai tools, Claude plan, Ollama vision, codex `agent()` file login).
 - [ ] Check that the A6 baselines hold only permanent entries, each with its reason.
 - [ ] Manual check (an owner ask, kind check), covering these cases:
