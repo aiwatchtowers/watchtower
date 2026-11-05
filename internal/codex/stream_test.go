@@ -445,3 +445,23 @@ func TestQuery_CompletedTurnWithoutAnswer(t *testing.T) {
 		assert.Empty(t, textOf(chunks))
 	})
 }
+
+// An answer lost to a skipped (oversized) line never ends as a blank
+// "complete" turn — not even a v2 one with tool steps, since the skipped
+// line may have been the answer.
+func TestQuery_SkippedAnswerFails(t *testing.T) {
+	old := maxStreamLine
+	maxStreamLine = 512
+	t.Cleanup(func() { maxStreamLine = old })
+
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"error":null,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"` + strings.Repeat("a", 2048) + `"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	_, err := queryAll(t, c)
+	require.ErrorIs(t, err, errNoAgentMessage)
+	assert.Contains(t, err.Error(), "1 line(s) over 512 bytes skipped")
+}

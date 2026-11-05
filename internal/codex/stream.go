@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ const messageSeparator = "\n\n"
 var errNoTurnCompleted = errors.New("codex exited without completing the turn")
 
 // errNoAgentMessage fails a completed turn with no answer text (see
-// queryStream.answered for the one exception).
+// queryStream.noAnswer for the exception).
 var errNoAgentMessage = errors.New("no agent_message found in codex output")
 
 // readStreamLine reads one line (with its newline, if any) from r. A line
@@ -217,14 +218,25 @@ func (s *queryStream) finish() {
 	}
 }
 
-// answered reports whether a completed turn is a success: it has answer
-// text — the rule QuerySync and the batch generator apply too — or, for a v2
-// consumer (the chat), it ran tool steps, which then are the whole visible
-// reply (an agent that only acted, as a Claude turn may end with an empty
-// result). A v1 consumer shows text only, so for it an empty answer is a
-// failure, never a blank "complete" one.
-func (s *queryStream) answered() bool {
-	return s.answer.Len() > 0 || (s.v2 && len(s.toolOrder) > 0)
+// noAnswer is the error of a completed turn that is no success, nil for one
+// that is. A turn needs answer text — the rule QuerySync and the batch
+// generator apply too — except, for a v2 consumer (the chat), a turn that
+// ran tool steps: they are then the whole visible reply (an agent that only
+// acted, as a Claude turn may end with an empty result). A v1 consumer shows
+// text only, so for it an empty answer is never a blank "complete" one. With
+// a line skipped as oversized the empty answer fails even then: the skipped
+// line may have been the answer.
+func (s *queryStream) noAnswer() error {
+	switch {
+	case s.answer.Len() > 0:
+		return nil
+	case s.skipped > 0:
+		return providers.WithFailure("codex", providers.InvalidOutput,
+			fmt.Errorf("%w (%d line(s) over %d bytes skipped)", errNoAgentMessage, s.skipped, maxStreamLine))
+	case s.v2 && len(s.toolOrder) > 0:
+		return nil
+	}
+	return providers.WithFailure("codex", providers.InvalidOutput, errNoAgentMessage)
 }
 
 // incompleteRunError is the error of a codex run that exited cleanly

@@ -365,10 +365,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			// backend's "exited without a result"): an empty or cut-off run
 			// is never a blank or partial "complete" answer.
 			errCh <- providers.ContextFailure("codex", ctx, incompleteRunError(c.model, s.errLines, stderrBuf.String()))
-		case !s.answered():
-			errCh <- providers.ContextFailure("codex", ctx, providers.WithFailure("codex", providers.InvalidOutput, errNoAgentMessage))
 		default:
-			ok = true
+			if noAnswer := s.noAnswer(); noAnswer != nil {
+				errCh <- providers.ContextFailure("codex", ctx, noAnswer)
+			} else {
+				ok = true
+			}
 		}
 
 		// Codex doesn't support session resumption — emit empty session ID.
