@@ -424,6 +424,7 @@ final class ScreenshotTourTests: XCTestCase {
             ("S10", "connection-free-phone", model(freshICloud, phase: free)),
             ("S11", "connection-too-soon", model(freshICloud, facts(refusal: .tooSoon(retryAt: now.addingTimeInterval(240))))),
             ("S12", "connection-mac-needs-update", model(freshICloud, grant: grant(ordered: false))),
+            ("S12b", "connection-relay-route-mac-needs-update", model(onRelay, grant: grant(ordered: false))),
             ("S13", "connection-relay-only", model(relayOnly)),
             ("S13b", "connection-relay-only-lapse", model(relayOnly, phase: free)),
             ("S54", "connection-relay-no-answer", model(freshICloud, phase: .unknown)),
@@ -436,7 +437,8 @@ final class ScreenshotTourTests: XCTestCase {
             ("S16", "connection-waiting-closed-mac", model(freshICloud, facts(step: .requested, reachable: false))),
             ("S17", "connection-toward-icloud", model(onRelay, facts(request: request()))),
             ("S18", "connection-refusal", model(freshICloud, facts(refusal: .readerNotConfirmed))),
-            ("S19", "connection-checking", model(freshICloud, phase: .checking))
+            ("S19", "connection-checking", model(freshICloud, phase: .checking)),
+            ("S19b", "connection-checking-relay-route", model(onRelay, phase: .checking))
         ]
         let linking = try macsLinking([makeLink("p4-work", "Work Mac", false)], now: now)
         var rows: [ScreenshotHost.IndexRow] = []

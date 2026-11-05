@@ -31,7 +31,6 @@ struct MacTransportModel: Equatable {
     static let needsRelay = "This hub needs Relay"
     static let checking = "Checking…"
     static let needsUpdate = "Update Watchtower on this Mac to use Relay"
-    static let needsUpdateForICloud = "Update Watchtower on this Mac to switch it to iCloud."
     static let notConfirmed = "Your purchase isn't confirmed yet."
     static let subscribe = "Subscribe to use Relay"
     static let unreachable = "Couldn't reach Relay."
@@ -287,10 +286,12 @@ struct MacTransportModel: Equatable {
         }
 
         /// Why a Relay route cannot ask for iCloud: `requestTransport` refuses a hub with no ordered actions before it
-        /// writes anything, so the press would show nothing. nil when the press goes.
+        /// writes anything, so the press would show nothing. An unread grant blocks nothing: it may stay unread for good
+        /// (a corrupt or newer-format keybox) and the press is the way back; on a fresh link one press may end silently
+        /// until the first grant arrives. nil when the press goes.
         private var iCloudBlocked: String? {
-            guard let grant else { return MacTransportModel.checking }
-            return grant.runsOrderedActions ? nil : MacTransportModel.needsUpdateForICloud
+            guard let grant, !grant.runsOrderedActions else { return nil }
+            return TransportRequestRefusal.notOrdered.message(macName: macName)
         }
 
         private var chosenICloud: Row { iCloudRow(line: nil, chosen: true, enabled: true) }

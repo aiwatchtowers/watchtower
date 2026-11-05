@@ -171,15 +171,17 @@ final class MacTransportModelTests: XCTestCase {
                 relay: Expected(line: "Checking…", chosen: true), iCloud: Expected(line: "Checking…")
             ),
             Case(
-                name: "S12's look on a Relay route: no ordered actions, the press could only be refused",
+                name: "S12b Relay route, no ordered actions: the press could only be refused",
                 model: try model(link: relayRoute, grant: .some(grant(ordered: false))),
                 relay: Expected(line: relayLine, chosen: true, enabled: true),
-                iCloud: Expected(line: "Update Watchtower on this Mac to switch it to iCloud.")
+                iCloud: Expected(line: "Update Watchtower on Work Mac to change how it connects.")
             ),
             Case(
-                name: "Relay route, no grant read yet: nothing proves the press would go",
+                name: "S08 Relay route, a grant that may stay unread for good: the way back stays open",
                 model: try model(link: relayRoute, grant: .some(nil)),
-                relay: Expected(line: relayLine, chosen: true, enabled: true), iCloud: Expected(line: "Checking…")
+                relay: Expected(line: relayLine, chosen: true, enabled: true),
+                iCloud: Expected(line: free2, enabled: true, action: .chooseICloud),
+                footnote: "Applies to every phone of this Mac."
             ),
             Case(
                 name: "S10 free, an old refusal kept", model: try model(phase: free, facts: facts(refusal: .unavailable)),

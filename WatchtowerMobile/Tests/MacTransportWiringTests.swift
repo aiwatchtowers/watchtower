@@ -183,7 +183,7 @@ final class MacTransportWiringTests: XCTestCase {
 
         let row = try model(bed, session).rows.last
 
-        XCTAssertEqual(row?.line, "Update Watchtower on this Mac to switch it to iCloud.")
+        XCTAssertEqual(row?.line, "Update Watchtower on Work Mac to change how it connects.")
         XCTAssertEqual(row?.enabled, false)
         XCTAssertNil(row?.action)
     }
