@@ -20,7 +20,20 @@ package struct AutomationDraftFooter: Equatable, Sendable {
             case .save: "Save"
             }
         }
+
+        /// The press writes the recipe (not only a confirm of its bytes).
+        package var saves: Bool {
+            switch self {
+            case .saveAndTurnOn, .saveTurnedOff, .saveAndConfirm, .save: true
+            case .confirmAndTurnOn, .confirmTurnedOff, .confirm: false
+            }
+        }
     }
+
+    /// The primary save's title on the Look step (spec "The Look step").
+    nonisolated package static let saveLookTitle = "Save Look"
+    /// The AI-step line (spec "The AI-step warning").
+    nonisolated package static let aiStepLine = "This change adds an AI step: every run will use the model."
 
     nonisolated package static let turnsOnHint = "Saving confirms exactly what's listed above and turns it on"
     nonisolated package static let saveHint = "Saving confirms exactly what's listed above"
@@ -38,10 +51,26 @@ package struct AutomationDraftFooter: Equatable, Sendable {
         hidden && canSave
     }
 
+    /// The footer's line above Save when the change adds an `llm()` step,
+    /// on every step: `aiStepLine`, plus the tokens of a dry run of these
+    /// bytes when one exists. nil when the change adds none.
+    package static func aiStepWarning(addsLLM: Bool, dryRunTokens: Int?) -> String? {
+        guard addsLLM else { return nil }
+        guard let dryRunTokens else { return aiStepLine }
+        return aiStepLine + " This dry run used "
+            + AutomationCardPresentation.tokensText(Int64(dryRunTokens), estimated: false) + "."
+    }
+
     package let primary: Action
     package let primaryEnabled: Bool
     package let secondary: Action?
     package let hint: String
+
+    /// The primary button's title on `step`: **Save Look** for a save on
+    /// the Look step; a confirm keeps its own title.
+    package func primaryTitle(on step: AutomationEditorStep) -> String {
+        step == .look && primary.saves ? Self.saveLookTitle : primary.title
+    }
 
     /// `bytesChanged`: the draft differs from the saved file;
     /// `needsConfirmation`: the saved file's hash is not confirmed;

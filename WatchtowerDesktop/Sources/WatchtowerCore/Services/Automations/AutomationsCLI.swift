@@ -384,6 +384,10 @@ extension AutomationsCLI {
         /// The hashed fields the manifest keys do not carry (`fields`): `{}`
         /// when the text does not parse, nil from an older CLI.
         package let fields: Fields?
+        /// The text adds an AI step (`adds_llm`): more `llm()` call sites
+        /// than the confirmed text, or a new `llm:` permission; for a new
+        /// recipe, any. False from an older CLI.
+        package let addsLLM: Bool
 
         /// `fields`: the trigger in one line ("schedule: 0 9 * * 1-5",
         /// "event: slack.new_messages where account=\"a\"", "button", "button
@@ -399,6 +403,10 @@ extension AutomationsCLI {
             package let missed: String
             package let concurrency: String
             package let budget: Budget?
+            /// `artifacts`: `feed` (a new card each run) or `living` (one card
+            /// per key, kept current); "" from an older CLI, which knows only
+            /// feed.
+            package let artifacts: String
 
             /// Every field present: what the column needs to show them all.
             package var isComplete: Bool {
@@ -411,9 +419,10 @@ extension AutomationsCLI {
                 missed = try c.decodeIfPresent(String.self, forKey: .missed) ?? ""
                 concurrency = try c.decodeIfPresent(String.self, forKey: .concurrency) ?? ""
                 budget = try c.decodeIfPresent(Budget.self, forKey: .budget)
+                artifacts = try c.decodeIfPresent(String.self, forKey: .artifacts) ?? ""
             }
 
-            private enum CodingKeys: String, CodingKey { case trigger, missed, concurrency, budget }
+            private enum CodingKeys: String, CodingKey { case trigger, missed, concurrency, budget, artifacts }
         }
 
         /// The validated text is `ok` and every hashed field can be shown
@@ -425,6 +434,7 @@ extension AutomationsCLI {
             case changesKnown = "changes_known"
             case approvalHash = "approval_hash", contentHash = "content_hash"
             case feedsSourcesToLLM = "feeds_sources_to_llm"
+            case addsLLM = "adds_llm"
         }
 
         package init(from decoder: Decoder) throws {
@@ -443,6 +453,7 @@ extension AutomationsCLI {
             changes = try c.decodeIfPresent([AutomationChange].self, forKey: .changes) ?? []
             changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
             fields = try c.decodeIfPresent(Fields.self, forKey: .fields)
+            addsLLM = try c.decodeIfPresent(Bool.self, forKey: .addsLLM) ?? false
         }
     }
 

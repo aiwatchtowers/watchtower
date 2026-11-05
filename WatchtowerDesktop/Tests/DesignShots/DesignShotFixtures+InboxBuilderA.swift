@@ -132,33 +132,26 @@ enum InboxBuilderAShotFixtures {
 
     // MARK: - The Look step
 
-    private enum Step: Hashable { case collects, look, schedule }
-
-    /// The draft column on its Look step: the step picker, the pane, and
-    /// the footer with **Save Look** (and the AI-step line when `llmTokens`).
+    /// The editor's draft column on its Look step, drawn by the live views:
+    /// `AutomationDraftSteps` with the pane and the footer bar (**Save Look**,
+    /// the AI-step line when `llmTokens`), as an edit of an automation that
+    /// is on.
     private static func lookColumn(_ content: AutomationLookPaneContent, llmTokens: Int?, now: Date) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Spacing.medium) {
-                    KitSegmentedPicker(title: "Step", selection: .constant(Step.look), segments: [
-                        KitSegment(value: Step.collects, title: "What it collects"),
-                        KitSegment(value: Step.look, title: "Look"),
-                        KitSegment(value: Step.schedule, title: "When it runs")
-                    ])
-                    AutomationLookPane(content: content, onDryRun: {}, now: now)
-                }
+        let column = AutomationDraftColumnModel(text: "", validated: nil, isChecking: false, newestChatEntry: nil,
+                                                confirmedText: nil, isNew: false, plan: nil, checkFailed: true)
+        let verdict = AutomationDraftFooter.make(isNew: false, bytesChanged: true, enabled: true,
+                                                 needsConfirmation: false)
+        return AnyView(AutomationDraftSteps(
+            step: .constant(.look), column: column, keepAuto: .constant([]), onDryRunAgain: nil,
+            look: { AutomationLookPane(content: content, onDryRun: {}, now: now) },
+            footer: {
+                AutomationDraftFooterBar(
+                    verdict: verdict, step: .look, ready: true, checking: false, isSaving: false,
+                    aiStepWarning: llmTokens.flatMap { AutomationDraftFooter.aiStepWarning(addsLLM: true, dryRunTokens: $0) }
+                ) { _ in }
                 .padding(Spacing.large)
             }
-            Divider()
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                if let llmTokens { AutomationLLMStepWarning(dryRunTokens: llmTokens) }
-                HStack {
-                    Spacer()
-                    Button("Save Look") {}.buttonStyle(.kitPrimary)
-                }
-            }
-            .padding(Spacing.large)
-        }
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .detailBackground())
     }

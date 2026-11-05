@@ -4,8 +4,8 @@ import Foundation
 /// The draft column beside the editor chat and the form (spec A4): what the
 /// owner is about to save. Every box comes from `validate` of the exact bytes
 /// on screen (`validated`, its `content_hash` matching `text`): It may, Sends
-/// and Changed from the manifest keys, When, Each run and Missed and
-/// Concurrency from `fields`. Only then does `showsAllFields` hold, and only
+/// and Changed from the manifest keys, When, Each run, Missed and
+/// Concurrency and Inbox cards from `fields`. Only then does `showsAllFields` hold, and only
 /// then may a save or confirm be offered (AUTO-06). A dry run is shown only
 /// when the chat's newest draft is this very text.
 package struct AutomationDraftColumnModel: Equatable, Sendable {
@@ -55,6 +55,13 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
     package let sends: [String]
     package let eachRun: String
     package let missedAndConcurrency: String
+    /// `fields.artifacts` in words: a new card each run, or one card per
+    /// key kept current; nil for a recipe that makes no Inbox card (feed is
+    /// then the hash's absent key) and while the boxes show no values.
+    package let artifacts: String?
+    /// `adds_llm` of these bytes: the footer's AI-step line. False while
+    /// the boxes show no values.
+    package let addsLLM: Bool
     /// The hashed fields that differ from the confirmed recipe; empty for a
     /// new recipe (no Changed box).
     package let changes: [String]
@@ -118,6 +125,9 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             (when, whenDetail) = Self.when(fields)
             eachRun = SaveAutomationCardModel.budget(tokens: budget.tokens, minutes: budget.minutes)
             missedAndConcurrency = Self.missedAndConcurrency(fields)
+            artifacts = shown.outputs.contains("inbox") || fields.artifacts == "living"
+                ? Self.artifacts(fields) : nil
+            addsLLM = shown.addsLLM
             let permissions = shown.permissions
             // The mark is relative to a confirmed text: a recipe never
             // confirmed has none, so no line carries it.
@@ -134,6 +144,8 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             (when, whenDetail) = (line, nil)
             eachRun = line
             missedAndConcurrency = line
+            artifacts = nil
+            addsLLM = false
             mayDo = []
             sends = []
             changes = []
@@ -191,6 +203,15 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
         default: return (line, nil)
         }
     }
+
+    /// The Inbox cards' lifecycle; an older CLI's "" is feed, the only one
+    /// it knows.
+    private static func artifacts(_ fields: AutomationsCLI.ValidateResult.Fields) -> String {
+        fields.artifacts == "living" ? livingLine : feedLine
+    }
+
+    package static let feedLine = "A new card each run"
+    package static let livingLine = "One card per key, kept current"
 
     /// Every run's limits: a missed time, then how many run at once.
     private static func missedAndConcurrency(_ fields: AutomationsCLI.ValidateResult.Fields) -> String {

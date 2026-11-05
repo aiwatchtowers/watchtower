@@ -297,4 +297,38 @@ final class AutomationLookPreviewModelTests: XCTestCase {
         XCTAssertEqual(actions?.first?["chat"] as? String, "why?")
         XCTAssertEqual(shown.cards[1].actionsJSON, "[]")
     }
+
+    // MARK: - Tokens for the AI-step line
+
+    /// The footer's "This dry run used N tokens." comes from the newest dry
+    /// run of the text on screen, the chat's or the owner's.
+    func testDryRunTokensOfThisTextOnly() throws {
+        let chat = try Self.entry(Self.entryJSON(result: Self.resultJSON(status: "succeeded", tokens: 1200)))
+        let owner = try owner(Self.resultJSON(status: "succeeded", tokens: 5800), at: t0)
+        XCTAssertEqual(Model.dryRunTokens(text: Self.text, chatEntry: .entry(chat), ownerResult: nil), 1200)
+        XCTAssertEqual(Model.dryRunTokens(text: Self.text, chatEntry: .none, ownerResult: owner), 5800)
+        // Both at t0 (the entry's `at`): the owner's wins the tie, as the pane's does.
+        XCTAssertEqual(Model.dryRunTokens(text: Self.text, chatEntry: .entry(chat), ownerResult: owner), 5800)
+        let later = try self.owner(Self.resultJSON(status: "succeeded", tokens: 700), at: Date.distantFuture)
+        XCTAssertEqual(Model.dryRunTokens(text: Self.text, chatEntry: .entry(chat), ownerResult: later), 700)
+
+        // Other bytes, nothing, an unreadable cache: no dry run of this text.
+        XCTAssertNil(Model.dryRunTokens(text: "RECIPE v3", chatEntry: .entry(chat), ownerResult: owner))
+        XCTAssertNil(Model.dryRunTokens(text: Self.text, chatEntry: .none, ownerResult: nil))
+        XCTAssertNil(Model.dryRunTokens(text: Self.text, chatEntry: .undecodable, ownerResult: nil))
+    }
+
+    /// A run that did not dry-run — a CLI failure, a check without a dry
+    /// run, a refused draft (D16) — gives no token line.
+    func testDryRunTokensNeedADryRun() throws {
+        let failed = Model.Run(text: Self.text, at: t0, outcome: .failure("watchtower exited with code 1"))
+        XCTAssertNil(Model.dryRunTokens(text: Self.text, chatEntry: .none, ownerResult: failed))
+        let refused = try owner(Self.resultJSON(status: "refused", tokens: 0), at: t0)
+        XCTAssertNil(Model.dryRunTokens(text: Self.text, chatEntry: .none, ownerResult: refused))
+        let checkedOnly = try owner(#"{"ok":false,"errors":["bad"],"manifest":\#(Self.manifest),"widening":[]}"#, at: t0)
+        XCTAssertNil(Model.dryRunTokens(text: Self.text, chatEntry: .none, ownerResult: checkedOnly))
+        // A failed run of this text still used tokens, and says so.
+        let ended = try owner(Self.resultJSON(status: "failed", tokens: 900, error: "boom"), at: t0)
+        XCTAssertEqual(Model.dryRunTokens(text: Self.text, chatEntry: .none, ownerResult: ended), 900)
+    }
 }

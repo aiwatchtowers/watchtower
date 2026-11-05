@@ -100,11 +100,17 @@ package final class AutomationEditorCenter {
     /// The draft column's chosen step, by editor key (survives navigation
     /// and closing the panel; `.collects` until the owner picks one).
     package private(set) var steps: [Int64: AutomationEditorStep] = [:]
+    /// A step asked for a new draft whose key is not known yet (its chat
+    /// opens first), by the draft's context id; `claimPendingStep` moves it.
+    @ObservationIgnored private var pendingSteps: [String: AutomationEditorStep] = [:]
     /// The owner's newest finished **Dry run** of the Look step, by editor
     /// key: the text it ran, when, and its result or failure.
     package private(set) var previewResults: [Int64: AutomationLookPreviewModel.Run] = [:]
     /// Editor keys whose owner **Dry run** is in flight.
     package private(set) var previewRunning: Set<Int64> = []
+    /// The Look step's card picker choice, by editor key (survives
+    /// navigation; the model clamps it to the cards shown).
+    package private(set) var previewSelection: [Int64: Int] = [:]
 
     /// The approval hash `keepAuto` was checked under, by draft key.
     @ObservationIgnored private var keepAutoHash: [Int64: String] = [:]
@@ -253,6 +259,7 @@ package final class AutomationEditorCenter {
         checkTasks[id] = nil
         cancelPreview(id)
         previewResults[id] = nil
+        previewSelection[id] = nil
         drafts[id] = nil
         saving[id] = nil
         validatedTexts[id] = nil
@@ -670,6 +677,30 @@ package final class AutomationEditorCenter {
 
     package func setStep(_ step: AutomationEditorStep, for key: Int64) {
         steps[key] = step
+    }
+
+    /// Opens `target` at `step` (`AppState.openAutomationEditor(_:step:)`):
+    /// a saved automation's step is set now; a new draft's waits for its key.
+    package func setStep(_ step: AutomationEditorStep, for target: AutomationEditorTarget) {
+        switch target {
+        case let .existing(id, _): steps[id] = step
+        case let .newDraft(contextID, _, _): pendingSteps[contextID] = step
+        }
+    }
+
+    /// The panel knows a new draft's key: a step asked for it before applies.
+    package func claimPendingStep(contextID: String, key: Int64) {
+        guard let step = pendingSteps.removeValue(forKey: contextID) else { return }
+        steps[key] = step
+    }
+
+    /// The Look step's chosen card for `key`; the first until one is picked.
+    package func selectedCard(for key: Int64) -> Int {
+        previewSelection[key] ?? 0
+    }
+
+    package func selectCard(_ index: Int, for key: Int64) {
+        previewSelection[key] = index
     }
 
     /// Whether the owner's Dry run of `key` is in flight.

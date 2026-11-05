@@ -292,10 +292,16 @@ struct AutomationEditorPanel: View {
     @ViewBuilder private var draftSide: some View {
         if let key, let form {
             let column = columnModel(form, key: key)
-            VStack(spacing: 0) {
-                AutomationDraftColumn(model: column, keepAuto: keepAutoBinding(key), onDryRunAgain: dryRunAgain)
-                footer(form, key: key, column: column)
-            }
+            let step = editor.step(for: key)
+            let editor = editor
+            AutomationDraftSteps(
+                step: Binding(get: { step }, set: { editor.setStep($0, for: key) }),
+                column: column,
+                keepAuto: keepAutoBinding(key),
+                onDryRunAgain: dryRunAgain,
+                look: { lookPane(form, key: key) },
+                footer: { footer(form, key: key, column: column, step: step) }
+            )
         } else if let key, case let .failed(message) = editor.saving[key] {
             // The save landed but its last step did not ("not turned on",
             // "auto could not be kept"): the draft is gone.
@@ -352,43 +358,60 @@ struct AutomationEditorPanel: View {
         )
     }
 
+    /// The Look step: the card a dry run of the text on screen made — the
+    /// chat's newest draft of it or the owner's own **Dry run**, whichever
+    /// is newer (`AutomationLookPreviewModel`).
+    private func lookPane(_ form: AutomationFormModel, key: Int64) -> some View {
+        let text = form.renderedText()
+        let editor = editor
+        return AutomationLookPane(
+            content: AutomationLookPreviewModel.state(
+                text: text,
+                // Unknown until a check of a valid text finished: the pane
+                // does not claim there is no Inbox output meanwhile.
+                outputs: editor.lastChecked[key].flatMap { $0.ok ? $0.outputs : nil },
+                chatEntry: chat?.draft.lookEntry(text: text) ?? .none,
+                ownerResult: editor.previewResults[key],
+                running: editor.isPreviewRunning(key),
+                selected: editor.selectedCard(for: key)
+            ),
+            onDryRun: isSaving ? nil : { editor.runPreview(key) },
+            onStop: { editor.cancelPreview(key) },
+            onSelect: { editor.selectCard($0, for: key) }
+        )
+    }
+
     private var dryRunAgain: (() -> Void)? {
         guard let chat, chat.toolsAvailable, !chat.engine.isBusy else { return nil }
         return { chat.dryRunAgain() }
     }
 
-    private func footer(_ form: AutomationFormModel, key: Int64, column: AutomationDraftColumnModel) -> some View {
+    private func footer(
+        _ form: AutomationFormModel,
+        key: Int64,
+        column: AutomationDraftColumnModel,
+        step: AutomationEditorStep
+    ) -> some View {
         let enabled = vm.items.first { $0.id == key }?.automation.enabled ?? form.detail.enabled
         let verdict = AutomationDraftFooter.make(
             isNew: isNew, bytesChanged: form.buffer.isDirty, enabled: enabled,
             needsConfirmation: form.detail.needsConfirmation, showsAllFields: column.showsAllFields,
             hasErrors: !column.errors.isEmpty, isBuiltin: turnOnBuiltin != nil
         )
-        let ready = editor.canSave(key) && !isSaving
-        let checking = column.status == .checking && !isFailed(key)
+        let tokens = AutomationLookPreviewModel.dryRunTokens(
+            text: column.recipeText, chatEntry: chat?.draft.lookEntry(text: column.recipeText) ?? .none,
+            ownerResult: editor.previewResults[key]
+        )
         return VStack(alignment: .leading, spacing: Spacing.regular) {
             footerMessages(form, key: key, column: column)
-            if !checking {
-                Text(verdict.hint)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: Spacing.regular) {
-                if isSaving { ProgressView().controlSize(.mini) }
-                Spacer(minLength: 0)
-                if let secondary = verdict.secondary {
-                    Button(secondary.title) { press(secondary, key: key) }
-                        .buttonStyle(.kitSecondary)
-                        .disabled(!ready)
-                }
-                Button(checking ? AutomationDraftColumnModel.checkingLine : verdict.primary.title) {
-                    press(verdict.primary, key: key)
-                }
-                .buttonStyle(.kitPrimary)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!ready || !verdict.primaryEnabled)
-            }
+            AutomationDraftFooterBar(
+                verdict: verdict,
+                step: step,
+                ready: editor.canSave(key) && !isSaving,
+                checking: column.status == .checking && !isFailed(key),
+                isSaving: isSaving,
+                aiStepWarning: AutomationDraftFooter.aiStepWarning(addsLLM: column.addsLLM, dryRunTokens: tokens)
+            ) { press($0, key: key) }
         }
         .controlSize(.small)
         .padding(Spacing.large)
@@ -553,9 +576,10 @@ struct AutomationEditorPanel: View {
         case let .existing(id, startText):
             // The form and Script still work when the chat cannot open.
             await editor.beginEdit(id, chatNewestText: made?.draft.shownRecipeText, startText: startText)
-        case let .newDraft(_, scope, startText):
+        case let .newDraft(contextID, scope, startText):
             guard let made else { return }
             let key = AutomationEditorCenter.newDraftKey(conversationID: made.conversationID)
+            editor.claimPendingStep(contextID: contextID, key: key)
             newKey = key
             if finishIfSaved() { return }
             editor.beginNew(key: key, scope: scope, recipeDir: scope.recipeDir(workspaceDir: workspaceDir),

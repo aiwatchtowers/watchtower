@@ -42,7 +42,9 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         changesKnown: Bool = true,
         feeds: Bool = false,
         fields: String? = fullFields,
-        permissions: [String] = ["gmail:read@work", "llm:light"]
+        permissions: [String] = ["gmail:read@work", "llm:light"],
+        outputs: String = #"["inbox"]"#,
+        addsLLM: String = ""
     ) throws -> AutomationsCLI.ValidateResult {
         let errorsJSON = String(data: try JSONSerialization.data(withJSONObject: errors), encoding: .utf8) ?? "[]"
         let wideningJSON = String(data: try JSONSerialization.data(withJSONObject: widening), encoding: .utf8) ?? "[]"
@@ -52,9 +54,10 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         let hash = AutomationDraftColumnModel.contentHash(text)
         let json = #"{"ok":\#(ok),"errors":\#(errorsJSON),"slug":"acme-digest","name":"acme digest","#
             + #""scope":"personal","approval_hash":"h2","content_hash":"\#(hash)","#
-            + #""permissions":\#(permissionsJSON),"outputs":["inbox"],"#
+            + #""permissions":\#(permissionsJSON),"outputs":\#(outputs),"#
             + #""widening":\#(wideningJSON),"feeds_sources_to_llm":\#(feeds),"#
-            + #""changes":\#(changes),"changes_known":\#(changesKnown)\#(fieldsJSON)}"#
+            + #""changes":\#(changes),"changes_known":\#(changesKnown)\#(fieldsJSON)"#
+            + (addsLLM.isEmpty ? "" : #","adds_llm":\#(addsLLM)"#) + "}"
         return try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
     }
 
@@ -321,5 +324,35 @@ final class AutomationDraftColumnModelTests: XCTestCase {
                        "Changed outside Watchtower · 10 min ago")
         XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "", changedAt: nil, now: now),
                        "Changed outside Watchtower")
+    }
+
+    // MARK: - Inbox builder A: the AI-step flag and the Inbox cards box
+
+    /// `adds_llm` of the bytes on screen drives the footer's AI-step line;
+    /// an older CLI without it, a check of other bytes or a recipe that does
+    /// not validate says nothing.
+    func testAddsLLMFromTheCheckOfTheseBytes() throws {
+        XCTAssertTrue(model(validated: try validated(addsLLM: "true")).addsLLM)
+        XCTAssertFalse(model(validated: try validated(addsLLM: "false")).addsLLM)
+        XCTAssertFalse(model(validated: try validated()).addsLLM, "older CLI: no adds_llm key")
+        XCTAssertFalse(model(text: Self.confirmed, validated: try validated(addsLLM: "true")).addsLLM, "other bytes")
+        XCTAssertFalse(model(validated: try validated(addsLLM: "true"), isChecking: true).addsLLM)
+        XCTAssertFalse(model(validated: try validated(ok: false, errors: ["bad"], fields: "{}", addsLLM: "true")).addsLLM)
+    }
+
+    /// `fields.artifacts` (hashed, AUTO-06) is shown on **When it runs**:
+    /// living as kept current, feed — and an older CLI's missing key — as a
+    /// new card each run; a recipe with no Inbox card has no box.
+    func testArtifactsLine() throws {
+        let living = #"{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"1","artifacts":"living","#
+            + #""budget":{"tokens":40000,"minutes":5}}"#
+        let feed = living.replacingOccurrences(of: "living", with: "feed")
+        XCTAssertEqual(model(validated: try validated(fields: living)).artifacts, "One card per key, kept current")
+        XCTAssertEqual(model(validated: try validated(fields: feed)).artifacts, "A new card each run")
+        XCTAssertEqual(model(validated: try validated()).artifacts, "A new card each run", "older CLI: feed")
+        XCTAssertNil(model(validated: try validated(fields: feed, outputs: #"["report"]"#)).artifacts)
+        XCTAssertNil(model(validated: nil, isChecking: true).artifacts)
+        // Artifacts is not needed to show every field: an older CLI still saves.
+        XCTAssertTrue(model(validated: try validated()).showsAllFields)
     }
 }

@@ -201,22 +201,15 @@ enum AutomationLookDecodedCards {
 }
 
 /// The footer line above Save when the change adds an `llm()` step (spec
-/// "The AI-step warning"), on every step of the editor.
+/// "The AI-step warning"), on every step of the editor: the text is
+/// `AutomationDraftFooter.aiStepWarning`.
 struct AutomationLLMStepWarning: View {
-    /// The dry run of this text, when one exists.
-    let dryRunTokens: Int?
-
-    static let text = "This change adds an AI step: every run will use the model."
+    let text: String
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
             Image(systemName: "exclamationmark.triangle")
-            if let dryRunTokens {
-                Text(Self.text + " This dry run used "
-                    + AutomationCardPresentation.tokensText(Int64(dryRunTokens), estimated: false) + ".")
-            } else {
-                Text(Self.text)
-            }
+            Text(text)
         }
         .font(.callout)
         .foregroundStyle(Tone.warning)
