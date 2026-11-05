@@ -252,7 +252,7 @@ func TestQuerySync_SmallPromptsNeverReachArgv(t *testing.T) {
 	useRealVersionProbe(t)
 	body := `#!/bin/sh
 [ "$1" = "--version" ] && { echo "codex-cli 0.145.0"; exit 0; }
-reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; echo '{"type":"turn.completed"}'; exit 0; }
 case "$*" in *MARKER-566*) reply on-argv ;; esac
 input=$(cat)
 case "$input" in *` + userMarker + `*) ;; *) reply user-missing ;; esac

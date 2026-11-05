@@ -1133,7 +1133,7 @@ func TestAskGuardModelChildIsIsolated(t *testing.T) {
 			b, err := json.Marshal(map[string]any{"type": "item.completed",
 				"item": map[string]any{"type": "agent_message", "text": e1Verdict}})
 			require.NoError(t, err)
-			return b
+			return append(b, "\n{\"type\":\"turn.completed\"}"...)
 		}},
 	} {
 		t.Run(tc.provider, func(t *testing.T) {

@@ -47,6 +47,7 @@ func TestQuerySync_ParsesJSONLOutput(t *testing.T) {
 	stdout := strings.Join([]string{
 		`{"type":"item.completed","item":{"type":"agent_message","text":"Hello, world!"}}`,
 		`{"type":"usage","usage":{"input_tokens":42,"output_tokens":17}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 
@@ -191,6 +192,7 @@ func TestGenerate_ParsesJSONL(t *testing.T) {
 	stdout := strings.Join([]string{
 		`{"type":"item.completed","item":{"type":"agent_message","text":"Generated text"}}`,
 		`{"type":"usage","usage":{"input_tokens":10,"output_tokens":5}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 

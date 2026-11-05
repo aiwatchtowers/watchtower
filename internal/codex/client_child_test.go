@@ -27,7 +27,7 @@ func TestCodexQuerySync_ChildEnvReplacesEnviron(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "env.txt")
 	c := NewClient("m", "", "")
 	c.codexCmd = writeStubCodex(t, "env > "+out+"\n"+
-		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'`+"\n")
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' '{"type":"turn.completed"}'`+"\n")
 	c.SetChildEnv([]string{"HOME=/tmp/acme-home", "FOO=bar"})
 
 	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")

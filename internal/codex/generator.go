@@ -322,6 +322,7 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage, error) {
 	var terminalFailure error
 	var lastContent string
+	completed := false
 	totalUsage := &CodexUsage{}
 
 	// The whole output is already in memory, so split it instead of using a
@@ -345,6 +346,7 @@ func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage,
 
 		if event.Type == "turn.completed" || event.Type == "turn.started" {
 			terminalFailure = nil
+			completed = event.Type == "turn.completed"
 		}
 		if event.Usage != nil {
 			totalUsage.add(event.Usage)
@@ -357,6 +359,11 @@ func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage,
 
 	if terminalFailure != nil {
 		return "", nil, terminalFailure
+	}
+	// A run that exited cleanly is a success only after turn.completed, as
+	// in the streaming Query: a cut-off run never returns its preamble.
+	if !completed {
+		return "", nil, incompleteRunError(model, output, "")
 	}
 	if lastContent == "" {
 		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, fmt.Errorf("no agent_message found in codex output"))

@@ -1,8 +1,15 @@
 package codex
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 func TestParseJSONLOutput_Success(t *testing.T) {
@@ -30,6 +37,7 @@ func TestParseJSONLOutput_LastAgentMessage(t *testing.T) {
 	// Multiple agent messages — last one wins.
 	jsonl := `{"type":"item.completed","item":{"id":"i1","type":"agent_message","content":"first"}}
 {"type":"item.completed","item":{"id":"i2","type":"agent_message","content":"second"}}
+{"type":"turn.completed"}
 `
 	result, _, err := parseJSONLOutput([]byte(jsonl))
 	if err != nil {
@@ -62,6 +70,7 @@ func TestParseJSONLOutput_Error(t *testing.T) {
 func TestParseJSONLOutput_IgnoresNonAgentItems(t *testing.T) {
 	jsonl := `{"type":"item.completed","item":{"id":"i1","type":"command_execution","content":"ls output"}}
 {"type":"item.completed","item":{"id":"i2","type":"agent_message","content":"result"}}
+{"type":"turn.completed"}
 `
 	result, _, err := parseJSONLOutput([]byte(jsonl))
 	if err != nil {
@@ -100,6 +109,7 @@ func TestParseJSONLOutput_InvalidJSON(t *testing.T) {
 	// Invalid JSON lines are silently skipped.
 	jsonl := `not json
 {"type":"item.completed","item":{"id":"i1","type":"agent_message","content":"ok"}}
+{"type":"turn.completed"}
 `
 	result, _, err := parseJSONLOutput([]byte(jsonl))
 	if err != nil {
@@ -113,6 +123,7 @@ func TestParseJSONLOutput_InvalidJSON(t *testing.T) {
 func TestParseJSONLOutput_TextFieldFallback(t *testing.T) {
 	// Newer Codex CLI uses "text" instead of "content".
 	jsonl := `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"hello from text"}}
+{"type":"turn.completed"}
 `
 	result, _, err := parseJSONLOutput([]byte(jsonl))
 	if err != nil {
@@ -143,7 +154,8 @@ func TestParseJSONLOutput_OversizedLineDoesNotHideFinalMessage(t *testing.T) {
 	big := strings.Repeat("x", 2*1024*1024)
 	jsonl := `{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"Let me look that up"}}` + "\n" +
 		`{"type":"item.completed","item":{"id":"i1","type":"command_execution","aggregated_output":"` + big + `"}}` + "\n" +
-		`{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"final answer"}}` + "\n"
+		`{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"final answer"}}` + "\n" +
+		`{"type":"turn.completed"}` + "\n"
 	result, _, err := parseJSONLOutput([]byte(jsonl))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -151,4 +163,28 @@ func TestParseJSONLOutput_OversizedLineDoesNotHideFinalMessage(t *testing.T) {
 	if result != "final answer" {
 		t.Fatalf("result = %q, want the final agent_message", result)
 	}
+}
+
+// A batch run that exited cleanly without turn.completed is an invalid
+// output (or its failed turn), never its last message: a cut-off run must
+// not return its preamble as the answer.
+func TestParseJSONLOutput_RequiresTurnCompleted(t *testing.T) {
+	_, _, err := parseJSONLOutput([]byte(`{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"Let me look that up"}}` + "\n"))
+	require.ErrorIs(t, err, errNoTurnCompleted)
+	var failure *providers.Failure
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, providers.InvalidOutput, failure.Category)
+
+	_, _, err = parseJSONLOutput([]byte(`{"type":"error","message":"429 Too Many Requests"}` + "\n"))
+	require.ErrorIs(t, err, errNoTurnCompleted)
+	assert.Contains(t, logredact.Full(err), "429 Too Many Requests")
+}
+
+// QuerySync and the generator follow the same rule on a clean exit.
+func TestBatchCallsRequireTurnCompleted(t *testing.T) {
+	stdout := `{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"preamble"}}`
+	_, _, err := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0)).QuerySync(context.Background(), "sys", "hi", "")
+	require.ErrorIs(t, err, errNoTurnCompleted)
+	_, _, _, err = NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, "", 0)).Generate(context.Background(), "sys", "hi", "")
+	require.ErrorIs(t, err, errNoTurnCompleted)
 }

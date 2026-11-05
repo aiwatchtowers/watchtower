@@ -354,7 +354,7 @@ func TestChat04_TerminalTitleArgvCarriesNoContent(t *testing.T) {
 		reply    string
 	}{
 		{"claude", `{"type":"result","result":"A title","is_error":false}`},
-		{"codex", `{"type":"item.completed","item":{"type":"agent_message","text":"A title"}}`},
+		{"codex", `{"type":"item.completed","item":{"type":"agent_message","text":"A title"}}` + "\n" + `{"type":"turn.completed"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {
