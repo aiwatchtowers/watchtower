@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"time"
 
@@ -178,20 +177,16 @@ func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount [
 	return args, stdin, promptFile, nil
 }
 
-// execArgs is the `codex exec` prefix: the shared execArgs, or for a
-// read-folder run the read-only sandbox with the shell on and web search
-// off (SetReadFolder). The MCP servers come from mount.
+// execArgs is the `codex exec` prefix: the batch prefix (every
+// disabledFeatures flag off) less toolRunFeatures, which the run's tools
+// need; for a read-folder run also the read-only sandbox with the shell on
+// and web search off (SetReadFolder). The MCP servers come from mount.
 func (c *Client) execArgs() []string {
 	if c.readFolder == "" {
-		return execArgs(c.model)
+		return append(execPrefix(c.model), featuresOff(toolRunFeatures)...)
 	}
-	args := slices.Clone(execArgs(c.model))
-	for i, a := range args {
-		if a == "features.shell_tool=false" {
-			args[i] = "features.shell_tool=true"
-		}
-	}
-	return append(args, "--sandbox", "read-only", "-c", `web_search="disabled"`)
+	args := append(execPrefix(c.model), featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
+	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", `web_search="disabled"`)
 }
 
 // runMount is one launch's MCP mount: the -c flags, the environment the

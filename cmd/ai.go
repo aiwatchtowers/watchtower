@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -404,7 +405,7 @@ func runAITest(_ *cobra.Command, _ []string) error {
 	defer cancel()
 	err = providers.Allowed(cfg.AI.Provider)
 	if err == nil {
-		_, _, _, err = gen.Generate(digest.WithSource(ctx, "probe"), "", "respond with exactly: OK", "")
+		err = runConnectionProbe(digest.WithSource(ctx, "probe"), cfg.AI.Provider, gen)
 	}
 	if err != nil {
 		return enc.Encode(map[string]any{"ok": false, "error": connectionTestError(err), "error_code": connectionTestCode(err), "provider": cfg.AI.Provider, "model": model})
@@ -415,6 +416,29 @@ func runAITest(_ *cobra.Command, _ []string) error {
 		"provider": cfg.AI.Provider,
 		"model":    model,
 	})
+}
+
+// runConnectionProbe sends the test request. Codex gets a system prompt
+// naming a fresh nonce, so the probe goes through the system-prompt path
+// every codex call uses (the model_instructions_file, or stdin on a codex
+// too old for one): an answer without the nonce means the prompt never
+// reached the model and fails as invalid_output, with a content-free stderr
+// line. Claude and Ollama keep the bare request.
+func runConnectionProbe(ctx context.Context, provider string, gen digest.Generator) error {
+	if provider != "codex" {
+		_, _, _, err := gen.Generate(ctx, "", "respond with exactly: OK", "")
+		return err
+	}
+	nonce := "wt-probe-" + rand.Text()
+	text, _, _, err := gen.Generate(ctx, "You are a connection test. Reply with exactly this word and nothing else: "+nonce, "Reply now.", "")
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(text, nonce) {
+		stderrLogf("ai test: the codex answer (%d chars) lacks the system prompt's nonce", len(text))
+		return providers.WithFailure("codex", providers.InvalidOutput, errors.New("the answer lacks the system prompt's nonce"))
+	}
+	return nil
 }
 
 // The Desktop boundary contains classifications, never arbitrary child stderr,
