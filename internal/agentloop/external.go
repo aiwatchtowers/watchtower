@@ -127,6 +127,12 @@ func (c *Client) mountExternal(ctx context.Context) mountedExternal {
 				log.Printf("runtime B: Quick Connection %d: a tool skipped, its name is not a valid function name", s.ID)
 				continue
 			}
+			// Names may contain "__", so two server/tool pairs can render the
+			// same name: the first keeps it, and a call never reaches the other.
+			if _, dup := m.tools[name]; dup {
+				log.Printf("runtime B: Quick Connection %d: a tool skipped, its name is taken by another connection's tool", s.ID)
+				continue
+			}
 			params := d.InputSchema
 			if params == nil {
 				params = json.RawMessage(`{"type":"object"}`)

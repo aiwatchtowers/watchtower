@@ -307,3 +307,23 @@ func TestAgentloop_AnnotatedWriteNeverOfferedEvenIfAllowed(t *testing.T) {
 	assert.Empty(t, offered(requests()[0]))
 	assert.Zero(t, called.Load(), "the write never reached the server")
 }
+
+// Two server/tool pairs that render the same function name: the first keeps
+// it, the name is offered once, and its call reaches that server only.
+func TestAgentloop_CollidingToolNamesOfferedOnce(t *testing.T) {
+	first, second := newFakeMCP(t), newFakeMCP(t)
+	model, requests := recordingServer(t, toolCallResp("mcp__acme__get_issue", `{"key":"PAY-1"}`), finalResp("ok"))
+	c := clientWith(&fakeReg{tools: map[string]*tools.Tool{}}, model.URL)
+	// Two connections with one name stand in for any colliding pair
+	// (server "acme__get" + tool "issue" renders the same name).
+	a, b := first.server(), second.server()
+	b.ID = 9
+	c.SetExternalMCPServers([]ai.ExternalMCPServer{a, b})
+	_, err := collect(t, c)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mcp__acme__get_issue"}, offered(requests()[0]))
+	calls, _ := first.seen()
+	assert.Equal(t, []string{"get_issue"}, calls)
+	calls, _ = second.seen()
+	assert.Empty(t, calls)
+}
