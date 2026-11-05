@@ -1,7 +1,9 @@
 package chat
 
 import (
+	"bytes"
 	"database/sql"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,4 +280,32 @@ func TestReplayFromDB_FileResentWithTheTurnIsNotReplayed(t *testing.T) {
 	assert.NotContains(t, out, `<file name="a.csv">`)
 	assert.NotContains(t, out, "not replayed")
 	assert.Contains(t, out, "  · attached: a.csv", "the transcript still says where it was first sent")
+}
+
+// Earlier files that can no longer be read are logged as a count only — no
+// names or paths (FILES-01); images and PDFs, left out on purpose, are not.
+func TestReplayFiles_LogsUnreadableCountOnly(t *testing.T) {
+	var buf bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prev); log.SetFlags(flags) })
+
+	dir := t.TempDir()
+	png := filepath.Join(dir, "shot.png")
+	require.NoError(t, os.WriteFile(png, fixturePNG, 0o600))
+	hist := []db.ChatMessage{msg(1, "user", "here", "t1")}
+	replayFiles(hist, map[int64][]db.ChatProjectFile{1: {
+		{Name: "secret-plan.txt", Mime: "text/plain", Path: filepath.Join(dir, "secret-plan.txt")},
+		{Name: "gone.csv", Mime: "text/csv", Path: filepath.Join(dir, "gone.csv")},
+		{Name: "shot.png", Mime: "image/png", Path: png},
+	}}, nil, 100)
+	assert.Contains(t, buf.String(), "chat replay: 2 earlier file(s) could not be read\n")
+	for _, leak := range []string{"secret-plan", "gone.csv", "shot.png", dir} {
+		assert.NotContains(t, buf.String(), leak)
+	}
+
+	buf.Reset()
+	replayFiles(hist, map[int64][]db.ChatProjectFile{1: {{Name: "shot.png", Mime: "image/png", Path: png}}}, nil, 100)
+	assert.NotContains(t, buf.String(), "chat replay:", "nothing unreadable, nothing logged")
 }

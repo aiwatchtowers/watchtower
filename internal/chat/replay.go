@@ -3,6 +3,7 @@ package chat
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"unicode/utf8"
 
@@ -192,10 +193,12 @@ func ownerMessageIDs(hist []db.ChatMessage) []int64 {
 // the reason instead, so the model can ask for it again. A file sent again
 // (the Desktop stores one copy per content, so the rows share its path) is
 // replayed once, at its newest place, and not at all when current (the
-// running turn's attachments) carries it again. No owner files → "".
+// running turn's attachments) carries it again. A file that could not be read
+// is counted in one log line, never named (FILES-01). No owner files → "".
 func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, current []Attachment, capBytes int64) string {
 	var parts []string
 	var used int64
+	var unreadable int
 	seen := map[string]bool{}
 	for _, a := range current {
 		seen[a.Path] = true
@@ -216,6 +219,9 @@ func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, cu
 			l, err := loadAttachment(Attachment{Path: f.Path, Mime: f.Mime, Name: f.Name}, true)
 			switch {
 			case err != nil:
+				if !isImageOrPDF(err) {
+					unreadable++
+				}
 				parts = append(parts, replayFileNote(f.Name, replayFileSkipReason(err)))
 			case used+int64(len(l.data)) > capBytes:
 				parts = append(parts, overBudget(f.Name))
@@ -224,6 +230,9 @@ func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, cu
 				parts = append(parts, inlineFile(l.name, string(l.data)))
 			}
 		}
+	}
+	if unreadable > 0 {
+		log.Printf("chat replay: %d earlier file(s) could not be read", unreadable)
 	}
 	if len(parts) == 0 {
 		return ""
@@ -247,6 +256,13 @@ func replayFileSkipReason(err error) string {
 		return "images and PDFs are not replayed"
 	}
 	return ae.Reason
+}
+
+// isImageOrPDF reports a file loadAttachment refused only because a replay
+// re-sends text: left out on purpose, not a failure.
+func isImageOrPDF(err error) bool {
+	var ae *AttachmentError
+	return errors.As(err, &ae) && ae.RequiresClaude
 }
 
 // Receipts are data about prior proposals, never instructions to execute them.
