@@ -369,7 +369,7 @@ RC §5 and relay sim rules 1–7a, 15. Same handlers and outcomes as §7.2; only
 2. **Counter.** Per phone per hub, a persisted gapless `action_seq` (u64 from 1, drawn when an action enters the outbox, never reset while the link lives, continues across epochs). It travels inside the sealed payload; the envelope `seq` stays the rollback counter.
 3. **Record name.** Plain `a-<DEVICE_ID>-<action_seq>` (`DEVICE_ID` uppercase), wire `RecordName(K_meta, relay, "a", "<DEVICE_ID>-<action_seq>")`. Deterministic, so a resend overwrites the same record. The hub drops a record whose `action_seq` is 0 or whose frame name differs.
 4. **Outbox.** The phone writes queued actions in order with `expect: absent`, stops at the first failure and resumes next pass; a conflict resolves per sim rule 3.
-5. **Order.** The hub keeps `last_applied_action_seq` per phone. `last + 1` is applied, then any held actions that now follow; `≤ last` is a repeat (echoed again with the stored final outcome, never dispatched); `> last + 1` is held (echo `held`, no reason) and `resend_from(last + 1)` is written once per gap. Each pass applies or holds at most 200 actions.
+5. **Order.** The hub keeps `last_applied_action_seq` per phone. `last + 1` is applied, then any held actions that now follow; `≤ last` is a repeat (echoed again with the stored final outcome, never dispatched); `> last + 1` is held (echo `held`, no reason) and `resend_from(last + 1)` is written once per gap (ask #1073: repeated when the ask is 10 minutes old, or dated in the future, and another action is read ahead of that gap). Each pass applies or holds at most 200 actions.
 6. **Echo.** Every action record read gets an echo by overwrite with `expect: seq`. On a final echo the phone settles its outbox row and deletes the echo (`expect: seq`).
 7. **Skip.** A phone asked to resend from a seq it no longer has writes `skip_to(m)`; the hub moves `last` to `m − 1` when that moves it forward and applies what now follows. The hub drops a `skip_to` without `device_id` and `hub_id`, or with `m > last + 1 + 65536`. The phone must surface each missing action to the owner as not delivered and may offer to send it again as a new action at the end of the queue; nothing is dropped silently (UI: relay client spec).
 8. **Re-link** restarts the order at 1 and forgets held actions and marks; the ledger key of an ordered action is scoped to the link.
@@ -418,7 +418,7 @@ Phone outbox                         Mailbox                              Hub
   | a-DEV-8 (seq 8) expect absent ---->|                                    |
   |                                    |--- reads 8 first ----------------->| last = 6: hold 8
   |<--- echo a-DEV-8 {held} -----------|<-- overwrite expect seq -----------| (no reason)
-  |<--- c-<uuid> resend_from(7) -------|<-- once per gap -------------------|
+  |<--- c-<uuid> resend_from(7) -------|<-- once per gap (timed, #1073) ----|
   | resend a-DEV-7, same bytes ------->|                                    |
   |                                    |--- reads 7 ----------------------->| apply 7, then held 8
   |<--- echo a-DEV-7 {applied} --------|<-----------------------------------| last = 8

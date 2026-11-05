@@ -160,12 +160,14 @@ extension ReplicaStore {
     }
 
     /// A written row: `sent` with the version of its write. Only a `queued` row moves — a row a `resend_from`
-    /// requeued meanwhile, or one an echo settled, is left as it is.
+    /// requeued meanwhile, or one an echo settled, is left as it is. `sent_at` keeps the first write's time: it is the
+    /// 24 h rule's clock, and a resend must not restart it, or a row the hub never accepts would stay "sending" for as
+    /// long as the owner keeps acting.
     func markSent(actionID: String, recordSeq: UInt64?, at date: Date) throws {
         try writer.write { db in
             try db.execute(
                 sql: """
-                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = ?
+                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = COALESCE(sent_at, ?)
                     WHERE action_id = ? AND delivery = 'queued'
                     """,
                 arguments: [recordSeq.map { Int64(clamping: $0) }, date.timeIntervalSince1970, actionID])
@@ -178,7 +180,7 @@ extension ReplicaStore {
         try writer.write { db in
             try db.execute(
                 sql: """
-                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = ?
+                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = COALESCE(sent_at, ?)
                     WHERE action_id = ? AND delivery IN ('queued','sent')
                     """,
                 arguments: [Int64(clamping: recordSeq), date.timeIntervalSince1970, actionID])

@@ -607,7 +607,7 @@ extension ActionOutbox {
 
     // MARK: 24 h without an answer (Ruling 5)
 
-    /// Every ordered row `queued` or `sent` since before `cutoff` (by `sent_at`, else `created_at`) is withdrawn and
+    /// Every ordered row `queued` or `sent` since before `cutoff` (by its first write's `sent_at`, else `created_at`) is withdrawn and
     /// listed as Not delivered with `no_answer`. A never-written row is listed at once; a written one first has its
     /// own record deleted under the version it wrote, so a later Retry cannot apply the action twice. An echo met
     /// on the way is applied instead (not listed); a refusal leaves the row for the next sweep.

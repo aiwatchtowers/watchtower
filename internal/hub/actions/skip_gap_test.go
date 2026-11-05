@@ -2,6 +2,7 @@ package actions
 
 import (
 	"database/sql"
+	"slices"
 	"testing"
 	"time"
 
@@ -210,5 +211,178 @@ func TestASkipOfOnePhoneLeavesTheOther(t *testing.T) {
 		if e, ok := other.Echoes[2]; !ok || e.Status != wire.StatusApplied {
 			t.Fatalf("second phone's action 2: %+v %v", e, ok)
 		}
+	})
+}
+
+// A skip_to read from a lapsed phone leaves its held action held: the lapse
+// check comes first, as for its actions (sim rule 16).
+func TestASkipFromALapsedPhoneLeavesItsHeldActionAndEnds(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		if _, err := w.phone.Queue(w.phone.NewAction("test_noop")); err != nil {
+			t.Fatal(err)
+		}
+		w.act("test_noop") // 3: held
+		w.pass()
+		sw := &fakeSwitch{active: w.tr.Kind(), lapsed: true, spinLimit: 1000}
+		w.withSwitch(sw)
+		if err := w.phone.SkipTo(3); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		w.wantCalls(noops(1)...)
+		sw.lapsed = false
+		w.pass()
+		w.wantCalls(noops(1, 3)...)
+	})
+}
+
+// A lapse that commits mid-drain reaches the same loop through an action: the
+// drain ends when apply did not move the order.
+func TestALapseCommittedMidDrainEndsTheDrain(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		two, err := w.phone.Queue(w.phone.NewAction("test_noop"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.act("test_noop") // 3: held
+		w.pass()
+		// The pass's start, 2's read and 2's decision: not lapsed; 3's decision: lapsed.
+		sw := &fakeSwitch{active: w.tr.Kind(), lapsedAt: 4, spinLimit: 1000}
+		w.withSwitch(sw)
+		if err := w.phone.Send(two); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		w.wantCalls(noops(1, 2)...)
+		if d := w.device(w.phone); d.LastAppliedActionSeq != 2 {
+			t.Fatalf("last applied %d", d.LastAppliedActionSeq)
+		}
+	})
+}
+
+// A resend_requested_at in the future (the Mac's clock ran fast) is no reason
+// to wait for the clock to catch up: the ask counts as old.
+func TestAnAskDatedInTheFutureCountsAsOld(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		if _, err := w.phone.Queue(w.phone.NewAction("test_noop")); err != nil {
+			t.Fatal(err)
+		}
+		w.act("test_noop") // 3: held, asked
+		w.pass()
+		w.loseMailbox()
+		future := w.clock().Add(24 * time.Hour)
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+			return state.SetResendRequested(tx, w.phone.ID().String(), 2, future)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w.act("test_noop") // 4: held, asked again
+		w.pass()
+		if n := w.resendFroms(); n != 1 {
+			t.Fatalf("%d resend_from, want 1", n)
+		}
+	})
+}
+
+// A skip that moves the order to a new gap (skip_to(3), 3 refused for good in
+// the same pass, 4 written): the hub holds 4 with 3 missing and must ask for
+// it, not wait for the next action (a held Interrupt waits on this). The ask
+// keeps the once-per-window rule.
+func TestASkipThatLeavesHeldRowsBehindAGapAsks(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		for range 2 { // 2 and 3 never reach the mailbox
+			if _, err := w.phone.Queue(w.phone.NewAction("test_noop")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.act("test_noop") // 4: held, resend_from(2)
+		w.pass()
+		w.loseMailbox()
+		if err := w.phone.SkipTo(3); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		if d := w.device(w.phone); d.LastAppliedActionSeq != 2 || d.ResendRequestedFrom != 3 {
+			t.Fatalf("after the skip: last %d, asked %d", d.LastAppliedActionSeq, d.ResendRequestedFrom)
+		}
+		if n := w.resendFroms(); n != 1 {
+			t.Fatalf("%d resend_from for the new gap, want 1", n)
+		}
+		// The same skip again moves nothing and does not ask again.
+		if err := w.phone.SkipTo(3); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		if n := w.resendFroms(); n != 1 {
+			t.Fatalf("%d resend_from after a second skip, want 1", n)
+		}
+		// A pass with nothing to read does not ask, however old the ask is: a
+		// phone away for a week must not find a mailbox full of them.
+		w.advance(time.Hour)
+		w.pass()
+		if n := w.resendFroms(); n != 1 {
+			t.Fatalf("%d resend_from after an idle pass, want 1", n)
+		}
+	})
+}
+
+// The Swift phone's real order on a resend: the rows first, a refused one
+// listed, then the skip past it. The hub reads the rewritten row as held again,
+// then the skip, and the order moves on.
+func TestARowRefusedOnAResendIsSkippedAfterTheRows(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		two, err := w.phone.Queue(w.phone.NewAction("test_noop"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.phone.RefusedForGood = map[uint64]bool{two: true}
+		w.act("test_noop") // 3: held, resend_from(2)
+		w.settle()
+		w.wantCalls(noops(1, 3)...)
+		if !slices.Equal(w.phone.Undelivered, []uint64{two}) {
+			t.Fatalf("undelivered %v", w.phone.Undelivered)
+		}
+		w.act("test_noop")
+		w.settle()
+		w.wantCalls(noops(1, 3, 4)...)
+		w.wantEmptyMailbox()
+	})
+}
+
+// A copy of a record the hub began and then skipped past: nobody knows whether
+// it ran, so it is answered outcome_unknown (a final answer, never applied).
+func TestALateCopyOfABegunRecordIsAnsweredOutcomeUnknown(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		two, err := w.phone.Queue(w.phone.NewAction("test_noop"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := w.ledgerKey(two)
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error { return state.Begin(tx, key, w.clock()) }); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.phone.SkipTo(3); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		if err := w.phone.Send(two); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		w.sync(w.phone)
+		w.wantEcho(two, wire.StatusFailed, reasonOutcomeUnknown)
+		w.wantCalls(noops(1)...)
 	})
 }

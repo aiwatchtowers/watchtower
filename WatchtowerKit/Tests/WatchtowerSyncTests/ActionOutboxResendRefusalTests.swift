@@ -1,3 +1,4 @@
+import os
 import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
@@ -314,5 +315,72 @@ final class ActionOutboxResendRefusalTests: XCTestCase {
         XCTAssertEqual(settled.state, .failed, "still in the owner's sight, with Retry")
         let applied = await rig.hub.applied
         XCTAssertEqual(applied, [1, 3])
+    }
+
+    /// A rig on a clock the test moves.
+    private func rigOnAClock() async throws -> (rig: OrderedRig, clock: OSAllocatedUnfairLock<Date>) {
+        let clock = OSAllocatedUnfairLock(initialState: OrderedRig.base)
+        let now: @Sendable () -> Date = { clock.withLock { $0 } }
+        let rig = try await OrderedRig.make(now: now)
+        return (rig, clock)
+    }
+
+    /// End to end: the hub asks, the row is refused for good, the skip is lost; the next action 10 minutes on draws a
+    /// new ask, the phone answers it with a new skip, and the order moves.
+    func testALostSkipIsRepairedByTheHubsTimedAsk() async throws {
+        let (rig, clock) = try await rigOnAClock()
+        for _ in 0..<3 { try await rig.insert() }
+        _ = try await rig.outbox.flush()
+        try await rig.inner.delete(recordNames: [try rig.wire(2)], in: .relay)
+        try await rig.hub.sync()
+        await rig.inner.refuseNext(refused, count: 1)
+        _ = try await rig.feed.pollOnce()
+        let lost = try await skips(rig)
+        XCTAssertEqual(lost.map(\.seq), [3])
+        try await rig.inner.delete(recordNames: lost.map { try rig.wire($0) }, in: .relay)
+
+        clock.withLock { $0 = $0.addingTimeInterval(OrderedHubFake.resendAskAgainAfter) }
+        _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        await rig.outbox.drain()
+        try await rig.hub.sync()
+        let asks = await rig.hub.resendsWritten
+        XCTAssertEqual(asks, [2, 2], "asked again")
+
+        _ = try await rig.feed.pollOnce()
+        try await rig.hub.sync()
+        let applied = await rig.hub.applied
+        XCTAssertEqual(applied, [1, 3, 4])
+    }
+
+    /// The hub reads row 2 and drops it with no answer, so the phone cannot skip it and only the 24 h rule can list it.
+    /// A resend (each later ask) must not start that clock again: the first write's time decides, whatever came after.
+    func testAResendDoesNotRestartThe24HourClock() async throws {
+        let (rig, clock) = try await rigOnAClock()
+        await rig.hub.dropsUnanswered(2)
+        for _ in 0..<3 { try await rig.insert() }
+        _ = try await rig.outbox.flush()
+        try await rig.hub.sync() // 1 applied, 2 dropped, 3 held, resend_from(2)
+        let two = try XCTUnwrap(try row(rig, seq: 2))
+        let firstWrite = try XCTUnwrap(two.sentAt)
+
+        clock.withLock { $0 = $0.addingTimeInterval(20 * 3_600) }
+        _ = try await rig.feed.pollOnce() // the resend: rows 2 and 3 written again
+        let afterResend = try XCTUnwrap(try row(rig, seq: 2))
+        XCTAssertEqual(afterResend.delivery, .sent)
+        XCTAssertEqual(afterResend.sentAt, firstWrite, "the first write's time stays")
+        try await rig.hub.sync()
+
+        clock.withLock { $0 = $0.addingTimeInterval(5 * 3_600) } // 25 h after the first write, 5 h after the resend
+        let listed = try await rig.outbox.sweepSilentPending()
+        XCTAssertTrue(listed.contains(two.actionID), "listed Not delivered at 24 h from the first write")
+        let pending = try XCTUnwrap(try rig.store.pendingActions().first { $0.id == two.actionID })
+        XCTAssertEqual(pending.undeliveredReason, .noAnswer)
+
+        // And the listed row's gap gets its skip, so the phone goes on.
+        _ = try await rig.outbox.flush()
+        let skip = try await skips(rig)
+        XCTAssertFalse(skip.isEmpty)
+        await rig.outbox.drain()
+        try await actionGoesThrough(rig, 4)
     }
 }

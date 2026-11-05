@@ -224,8 +224,9 @@ func (p *Processor) markRead(ctx context.Context, b mailbox, rec transport.Store
 
 // skipTo is sim rule 6: the phone no longer has the actions before m, so the
 // order continues from m — last becomes m-1 when that moves it forward — and
-// the held actions that are now next are applied. m must lie within
-// MaxSkipAhead of the next expected seq. Each seq passed is answered in the
+// the held actions that are now next are applied, unless the phone lapsed or
+// the hub is on standby. m must lie within MaxSkipAhead of the next expected
+// seq. Each seq passed is answered in the
 // ledger: a late copy of one is told expired (as sim rule 16's are), never
 // applied, and a repeat's stored answer goes back to the phone.
 func (p *Processor) skipTo(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, c wire.Control, ps *pass) error {
@@ -269,7 +270,7 @@ func (p *Processor) skipTo(ctx context.Context, b mailbox, rec transport.Stored,
 	}); err != nil {
 		return err
 	}
-	return p.drainHeld(ctx, b, ps)
+	return p.drainHeldActive(ctx, b, ps)
 }
 
 // epochAck records the newest hub epoch the phone confirmed (never lowered;

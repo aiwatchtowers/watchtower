@@ -188,15 +188,19 @@ func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.St
 
 // repeat answers an action already decided (ordered: at or below the last
 // applied seq; legacy: done in the ledger under key) with its stored final
-// echo (applied when the ledger has none: skipped or pruned), never
-// dispatching it again.
+// echo, never dispatching it again. A begun record a skip_to passed is
+// answered outcome_unknown (nobody knows whether it ran); a seq the ledger has
+// no row for (pruned, a skip's row included, after 8 days) is answered applied.
 func (p *Processor) repeat(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, key, plain string, ps *pass) error {
-	_, _, stored, err := p.cfg.Store.Phase(key)
+	phase, _, stored, err := p.cfg.Store.Phase(key)
 	if err != nil {
 		return err
 	}
 	out, ok := decodeStored(stored)
-	if !ok {
+	switch {
+	case phase == state.PhaseBegun:
+		out = failed(reasonOutcomeUnknown, restartedMessage)
+	case !ok:
 		out = Outcome{Status: wire.StatusApplied}
 	}
 	q, err := p.sealEcho(b, r.name, plain, a, out, r.expect)
@@ -218,7 +222,7 @@ func (p *Processor) repeat(ctx context.Context, b mailbox, r record, o secure.Op
 
 // hold keeps an action that arrived ahead of a gap, echoes it held and asks
 // for the gap once: resend_from(last+1) unless that gap was already asked and
-// the ask is younger than ResendAskAgainAfter.
+// the ask is younger than ResendAskAgainAfter (askDue).
 func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, seq uint64, dev state.Device, plain string, ps *pass) error {
 	echo, err := p.sealEcho(b, r.name, plain, a, Outcome{Status: wire.StatusHeld}, r.expect)
 	if err != nil {
@@ -227,7 +231,7 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 	from := dev.LastAppliedActionSeq + 1
 	var resend *queued
 	now := p.cfg.Clock()
-	if dev.ResendRequestedFrom != from || now.Sub(dev.ResendRequestedAt) >= ResendAskAgainAfter {
+	if askDue(dev, from, now) {
 		q, err := p.sealResendFrom(b, from)
 		if err != nil {
 			return err
@@ -259,6 +263,17 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 	ps.report.Held++
 	ps.report.Echoed++
 	return nil
+}
+
+// askDue reports whether the gap at from should be asked now: it was not asked
+// yet, or its ask is old enough to count as lost. An ask dated in the future
+// (the Mac's clock ran fast) counts as old, so it never waits for the clock.
+func askDue(dev state.Device, from uint64, now time.Time) bool {
+	if dev.ResendRequestedFrom != from {
+		return true
+	}
+	age := now.Sub(dev.ResendRequestedAt)
+	return age >= ResendAskAgainAfter || age < 0
 }
 
 // apply decides and commits the outcome of the next action: a begun record
@@ -474,7 +489,12 @@ func sameID(s string, id secure.ID) bool {
 
 // drainHeld applies the held actions that are next in line now, in order.
 // A held action that no longer opens (its epoch's keys are gone, or a newer
-// copy rolled it back) is dropped and its gap asked for again.
+// copy rolled it back) is dropped and its gap asked for again. It ends when
+// apply did not move the order (a lapse committed mid-pass leaves the action
+// held), and it asks for a gap nobody asked yet that leaves held actions behind
+// it: an Interrupt held there must not wait for the phone's next action. An
+// older ask of the same gap is repeated only by hold, so an idle pass writes
+// nothing.
 func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 	device := b.id.String()
 	if p.fault != nil {
@@ -482,6 +502,7 @@ func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 			return err
 		}
 	}
+	var tried uint64
 	for {
 		dev, linked, err := p.cfg.Store.Device(device)
 		if err != nil || !linked {
@@ -491,24 +512,33 @@ func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 			return errRelinked
 		}
 		last := dev.LastAppliedActionSeq
+		if tried > last {
+			return nil
+		}
 		held, err := p.cfg.Store.HeldActions(device)
 		if err != nil {
 			return err
 		}
 		var next *state.Held
 		var stale []uint64
+		ahead := false
 		for i := range held {
 			switch h := held[i]; {
 			case h.ActionSeq <= last:
 				stale = append(stale, h.ActionSeq) // passed by a skip_to
 			case h.ActionSeq == last+1:
 				next = &held[i]
+			default:
+				ahead = true
 			}
 		}
 		if err := p.dropHeld(ctx, b, stale); err != nil {
 			return err
 		}
 		if next == nil {
+			if ahead && dev.ResendRequestedFrom != last+1 {
+				return p.askGap(ctx, b, last+1)
+			}
 			return nil
 		}
 		o, err := p.cfg.Opener.FromPhone(b.zone, next.RecordName, next.Envelope)
@@ -530,7 +560,23 @@ func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 		if err := p.apply(ctx, b, r, o, a, seq, plain, ps); err != nil {
 			return err
 		}
+		tried = seq
 	}
+}
+
+// askGap writes resend_from(from) for held actions left behind a gap.
+func (p *Processor) askGap(ctx context.Context, b mailbox, from uint64) error {
+	q, err := p.sealResendFrom(b, from)
+	if err != nil {
+		return err
+	}
+	device := b.id.String()
+	return p.decide(ctx, b, func(tx *sql.Tx) error {
+		if err := state.Enqueue(tx, q.control(b.queue)); err != nil {
+			return err
+		}
+		return state.SetResendRequested(tx, device, from, p.cfg.Clock())
+	})
 }
 
 func (p *Processor) dropHeld(ctx context.Context, b mailbox, seqs []uint64) error {
