@@ -493,6 +493,28 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(reader.promoted.keys.sorted(), [hub])
     }
 
+    /// #1499: a clean read of the hub re-arms the line: unreadable (logged), readable, unreadable again (logged again).
+    func testACleanReadReArmsTheUnreadableLog() throws {
+        let seeded = try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let stored = try XCTUnwrap(defaults.data(forKey: "link.promoted"))
+        let reader = LinkStore(defaults: defaults)
+        var logged: [String] = []
+        reader.onUnreadableLogged = { logged.append($0) }
+
+        try makePromotedUnreadable(otherHub)
+        _ = reader.promoted
+        _ = reader.promoted
+        XCTAssertEqual(logged, [otherHub])
+
+        defaults.set(stored, forKey: "link.promoted")
+        XCTAssertEqual(reader.promoted[otherHub], seeded)
+        XCTAssertEqual(logged, [otherHub], "a readable entry logs nothing")
+
+        try makePromotedUnreadable(otherHub)
+        _ = reader.promoted
+        XCTAssertEqual(logged, [otherHub, otherHub], "logged again after a clean read")
+    }
+
     /// #1499: Unlink of a Mac removes the unreadable promoted entry of its hub; it does not come back on a later read
     /// or write, and another hub's entries stay.
     func testUnlinkRemovesTheUnreadablePromotedEntryOfThatHub() async throws {
