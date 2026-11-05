@@ -64,7 +64,9 @@ func TestCodexGeneratorRecords(t *testing.T) {
 	out, usage, _, err := g.Generate(llmusage.WithPurpose(context.Background(), "digest.channel"), "sys", "msg", "")
 	require.NoError(t, err)
 	require.Equal(t, "Generated text", out)
-	require.Equal(t, 100, usage.InputTokens, "the returned usage is unchanged")
+	require.Equal(t, 40, usage.InputTokens, "claude's shape: input without the cached part")
+	require.Equal(t, 100, usage.TotalAPITokens, "the whole input, cached part included")
+	require.Equal(t, 7, usage.OutputTokens)
 
 	got := calls.all()
 	require.Len(t, got, 1)

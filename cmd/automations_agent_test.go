@@ -677,3 +677,49 @@ func TestAgent_RoutingQuotaAfterProposalNeverRestartsChild(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "pending", receipt.Status)
 }
+
+// The run budget debits the same quantity for the same work whichever
+// provider ran agent(), with provider routing off or on: uncached input plus
+// output. Claude reports input_tokens without its cache reads and writes;
+// codex's input_tokens includes cached_input_tokens, which the budget leaves
+// out (the LLM usage ledger still records the full split).
+func TestAgent_BudgetDebitsUncachedInputOnEveryProvider(t *testing.T) {
+	const (
+		claudeReply = `{"type":"result","result":"done","usage":{"input_tokens":100,"cache_read_input_tokens":900,"cache_creation_input_tokens":200,"output_tokens":50}}`
+		codexReply  = `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}` + "\n" +
+			`{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":50}}`
+	)
+	for _, tc := range []struct {
+		name     string
+		provider string
+		routed   bool
+	}{
+		{"claude/direct", "claude", false},
+		{"codex/direct", "codex", false},
+		{"claude/routed", "claude", true},
+		{"codex/routed", "codex", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claude := newClaudeStub(t, claudeReply)
+			codex := newClaudeStub(t, codexReply)
+			cfg := claude.config(t)
+			cfg.CodexPath = codex.path
+			cfg.AI.Provider = tc.provider
+			if tc.routed {
+				reserve := "codex"
+				if tc.provider == "codex" {
+					reserve = "claude"
+				}
+				cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+				cfg.AI.Providers = map[string]config.AIProviderConfig{"claude": {Models: config.AIModels{Light: "claude-haiku-5-5"}}, "codex": {Models: config.AIModels{Light: "gpt-6-light"}}}
+			}
+			f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
+			run := f.run(t, db.TriggerManual)
+			require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+			require.Equal(t, tc.provider, f.agentStep(t, run.ID).Name)
+			assert.Equal(t, int64(100), run.InputTokens, "uncached input only")
+			assert.Equal(t, int64(50), run.OutputTokens)
+			assert.False(t, run.TokensEstimated)
+		})
+	}
+}

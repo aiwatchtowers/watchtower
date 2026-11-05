@@ -68,6 +68,13 @@ type CodexUsage struct {
 	OutputTokens      int `json:"output_tokens"`
 }
 
+// freshInput is the input not served from codex's cache: InputTokens minus
+// CachedInputTokens (at most InputTokens). The run budget debits it, and the
+// ledger records it as fresh input (docs/features/automations.md#budgets).
+func (t *CodexUsage) freshInput() int {
+	return t.InputTokens - min(t.CachedInputTokens, t.InputTokens)
+}
+
 // add sums u into the receiver.
 func (t *CodexUsage) add(u *CodexUsage) {
 	t.InputTokens += u.InputTokens

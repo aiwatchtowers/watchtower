@@ -39,7 +39,7 @@ since: 0.25.0
 action: nav:automations
 -->
 
-Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
+Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. A model call counts its fresh input and its output. Input the provider reads from or writes to its prompt cache does not count, so on Claude most of a long prompt is not counted, and on Codex everything it did not read from its cache is. There is no daily cap across runs. At most two runs execute at the same time.
 
 A run also has one read budget for your synced data, shared by its `tool()` reads and `mcp()` calls: 300 reads or 5,000 rows. Past it a read throws a **ValidationError** the script can catch, and the run goes on. One read over 256 KB throws **ResultTooLarge**. An `agent()` step counts on its own.
 
