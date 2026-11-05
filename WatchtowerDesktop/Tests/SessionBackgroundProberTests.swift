@@ -364,17 +364,43 @@ final class SessionBackgroundProberTests: XCTestCase {
         let at = started.addingTimeInterval(10)
         let every = SessionBackgroundProber.codexTurnCheckEvery
 
+        // `ProbeAnswer.failed` is a probe that could not run, not the `failed` outcome.
         pass(prober, [codexRow()], at: at)
         await settled(prober)
         runner.answer(json: ProbeAnswer.ran("not_stale"))
-        pass(prober, [codexRow()], at: at.addingTimeInterval(every))
+        pass(prober, [codexRow()], at: at.addingTimeInterval(SessionBackgroundProber.retryAfter))
         await settled(prober)
         XCTAssertEqual(settles, 0)
 
         runner.answer(json: ProbeAnswer.ran("failed"))
-        pass(prober, [codexRow()], at: at.addingTimeInterval(2 * every))
+        pass(prober, [codexRow()], at: at.addingTimeInterval(SessionBackgroundProber.retryAfter + every))
         await settled(prober)
         XCTAssertEqual(settles, 1)
         XCTAssertEqual(runner.invocations.count, 3)
+    }
+
+    /// A check that could not run is tried again only after `retryAfter`,
+    /// not every `codexTurnCheckEvery`; one that ran goes back to the short
+    /// interval.
+    func testCodexCheckThatCannotRunBacksOff() async {
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
+        let prober = makeProber(runner)
+        let at = started.addingTimeInterval(10)
+        let every = SessionBackgroundProber.codexTurnCheckEvery
+
+        pass(prober, [codexRow()], at: at)
+        await settled(prober)
+        pass(prober, [codexRow()], at: at.addingTimeInterval(every))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 1, "no retry before retryAfter")
+
+        runner.answer(json: ProbeAnswer.ran("not_stale"))
+        let back = at.addingTimeInterval(SessionBackgroundProber.retryAfter)
+        pass(prober, [codexRow()], at: back)
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 2)
+        pass(prober, [codexRow()], at: back.addingTimeInterval(every))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 3, "a check that ran keeps the short interval")
     }
 }

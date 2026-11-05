@@ -468,6 +468,43 @@ func TestProj11_CodexRowGetsFailureOnlyFromItsRollout(t *testing.T) {
 	assert.Nil(t, s.AgentFailure, "a prompt clears the error")
 }
 
+// A prompt sent before any probe saw the failed turn (the row still reads
+// working, so the prompt is a repeat) restamps the row: the old turn's error
+// never lands on the new turn while its task_started is not yet written.
+func TestProj11_CodexPromptAfterAnUnseenFailureIsNeverMarkedFailed(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	writeCodexRollout(t, home, codexTUISession,
+		codexTurnLine(time.Now().Add(-30*time.Second), "task_complete", "usage_limit_exceeded"))
+
+	runCodexState(t, string(codexHookFixture(t, "user_prompt_submit")))
+	before := rowSnapshot(t, database, row)
+
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWorking, s.AgentState.String)
+	assert.Nil(t, s.AgentFailure)
+}
+
+// A failed turn whose time cannot be read cannot be ordered against the
+// stored state: nothing is written, one stderr line says why.
+func TestSessionProbe_CodexFailureWithoutATimeIsLoggedNotWritten(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	line := strings.Replace(codexTurnLine(time.Now(), "task_complete", "other"), `"timestamp":"`, `"timestamp":"x`, 1)
+	writeCodexRollout(t, home, codexTUISession, line)
+	before := rowSnapshot(t, database, row)
+
+	got, logged := runSessionProbeLogged(t, pid, row)
+
+	assert.Equal(t, probeNotStale, got["outcome"])
+	assert.Contains(t, logged, "the codex turn failed but its time is unreadable")
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+}
+
 // A probe of another session's rollout, or of a row with no session id yet,
 // writes nothing.
 func TestSessionProbe_CodexFailureNeedsTheRowsOwnRollout(t *testing.T) {

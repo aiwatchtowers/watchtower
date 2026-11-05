@@ -29,9 +29,7 @@ const (
 	probeShell    = "shell"   // only background shells run, which the count does not track
 	probeUnknown  = "unknown" // no status, or one this version does not know
 	probeGone     = "gone"    // no registry entry, or its process is dead or its pid reused
-	// probeFailed: a working codex row's rollout ends its last turn on an
-	// error, and this probe stored it (board #959).
-	probeFailed = "failed"
+	probeFailed   = "failed"  // a working codex row's last turn failed and this probe stored it (board #959)
 )
 
 // probeProcs is the process table the probe checks a registry entry's pid
@@ -43,8 +41,7 @@ var workbenchSessionProbeCmd = &cobra.Command{
 	Short: "Check a terminal session's stale background agent count, or a working codex turn's failure",
 	Long: "--session S --workbench N: when the codex row S reads working, reads its rollout and, when\n" +
 		"the last turn ended on an error, stores the Error state (outcome \"failed\"; codex has no\n" +
-		"StopFailure hook). Otherwise, " +
-		"when the row S reads waiting with background subagents\n" +
+		"StopFailure hook). Otherwise, when the row S reads waiting with background subagents\n" +
 		"and no report for 30 minutes, reads Claude Code's session registry entry of its\n" +
 		"conversation (~/.claude/sessions/<pid>.json, matched by sessionId). busy or\n" +
 		"waiting leave the row alone; idle, shell, a missing or unknown status, no entry or a\n" +
@@ -96,11 +93,13 @@ type sessionProbeFailure struct {
 	Error string `json:"error"`
 }
 
-// probeSession reads terminal row sessionID of workbench workbenchID and,
-// when its background count is stale at now, ends it on the registry's
-// verdict. Only EndTerminalBackground writes. An ending outcome logs one line
-// to logOut naming the registry's raw status, so a format change that reads
-// as unknown or gone leaves a trace.
+// probeSession reads terminal row sessionID of workbench workbenchID. A
+// working codex row gets its rollout read for a failed turn
+// (recordCodexTurnFailure, board #959) and nothing else. Otherwise, when its
+// background count is stale at now, it ends it on the registry's verdict,
+// and only EndTerminalBackground writes. An ending outcome logs one line to
+// logOut naming the registry's raw status, so a format change that reads as
+// unknown or gone leaves a trace.
 func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer) (sessionProbeResult, error) {
 	if workbenchID <= 0 || sessionID <= 0 {
 		return sessionProbeResult{}, errors.New("--workbench and --session take positive ids")
@@ -119,7 +118,7 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 	}
 	res := sessionProbeResult{OK: true, Outcome: probeNotStale}
 	if row.Kind == string(agentkind.Codex) && row.AgentState.String == agentStateWorking {
-		errType, failed, err := recordCodexTurnFailure(database, row)
+		errType, failed, err := recordCodexTurnFailure(database, row, logOut)
 		if err != nil {
 			return sessionProbeResult{}, err
 		}
@@ -165,7 +164,7 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 // only when that time is after the stored state's (a prompt that started a
 // new turn wins). The next prompt clears it as it clears Claude's. No
 // rollout, an unreadable one or a turn that did not fail writes nothing.
-func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession) (errType string, written bool, err error) {
+func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession, logOut io.Writer) (errType string, written bool, err error) {
 	sessionID := row.ClaudeSessionID.String
 	if sessionID == "" {
 		return "", false, nil
@@ -178,7 +177,12 @@ func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession) (errType s
 	if err != nil {
 		return "", false, err
 	}
-	if !turn.Failed || turn.At.IsZero() {
+	if !turn.Failed {
+		return "", false, nil
+	}
+	if turn.At.IsZero() {
+		// No time, no ordering against the stored state: never written.
+		_, _ = fmt.Fprintf(logOut, "session-probe: session %d: the codex turn failed but its time is unreadable\n", row.ID)
 		return "", false, nil
 	}
 	errType = briefClip(asks.OneLine(turn.Error), agentErrorRunes)
@@ -187,6 +191,8 @@ func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession) (errType s
 		agentStateWorking, failure, false, turn.At, hookTurn{}); err != nil {
 		return "", false, err
 	}
+	// recordAgentState does not say whether its guards let the write land:
+	// the row read back carries this failure's stamp only when it did.
 	after, err := database.GetTerminalSession(row.ID)
 	if err != nil {
 		return "", false, err

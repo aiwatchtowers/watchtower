@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"time"
 )
 
@@ -28,87 +26,57 @@ type CodexTurn struct {
 	At time.Time
 }
 
-type codexTurnEvent struct {
-	Type  string          `json:"type"`
-	Error json.RawMessage `json:"error"`
-}
-
 // CodexLastTurn reads the end of the Codex rollout at path and reports
 // whether its last turn (the last task_started, task_complete or
 // turn_aborted event) failed. A running, finished, aborted or compressed
 // rollout is not failed; only a read failure is an error.
 func CodexLastTurn(path string) (CodexTurn, error) {
-	f, err := os.Open(path)
+	tail, err := readTail(path, codexTurnTailBytes)
 	if err != nil {
-		return CodexTurn{}, fmt.Errorf("opening the codex rollout: %w", err)
+		return CodexTurn{}, fmt.Errorf("reading the codex rollout: %w", err)
 	}
-	defer f.Close()
-	head := make([]byte, len(zstdMagic))
-	if n, _ := io.ReadFull(f, head); n == len(zstdMagic) && bytes.Equal(head, zstdMagic) {
+	if bytes.HasPrefix(tail, zstdMagic) {
 		return CodexTurn{}, nil
 	}
-	st, err := f.Stat()
-	if err != nil {
-		return CodexTurn{}, fmt.Errorf("reading the codex rollout: %w", err)
-	}
-	start := max(st.Size()-codexTurnTailBytes, 0)
-	tail := make([]byte, st.Size()-start)
-	if _, err := f.ReadAt(tail, start); err != nil && err != io.EOF {
-		return CodexTurn{}, fmt.Errorf("reading the codex rollout: %w", err)
-	}
-	if start > 0 {
-		// The first line is cut: skip to the next one.
-		if i := bytes.IndexByte(tail, '\n'); i >= 0 {
-			tail = tail[i+1:]
-		} else {
-			tail = nil
-		}
-	}
-	// A line still being written has no newline yet: only complete lines.
-	if i := bytes.LastIndexByte(tail, '\n'); i >= 0 {
-		tail = tail[:i]
+	// Only newline-terminated records are committed to a rollout.
+	if last := bytes.LastIndexByte(tail, '\n'); last >= 0 {
+		tail = tail[:last]
 	} else {
 		tail = nil
 	}
-	return lastCodexTurn(tail), nil
-}
-
-// lastCodexTurn walks complete lines from the end to the last turn
-// lifecycle event.
-func lastCodexTurn(lines []byte) CodexTurn {
-	for len(lines) > 0 {
-		var line []byte
-		if i := bytes.LastIndexByte(lines, '\n'); i >= 0 {
-			line, lines = lines[i+1:], lines[:i]
-		} else {
-			line, lines = lines, nil
-		}
+	var turn CodexTurn
+	for _, line := range bytes.Split(tail, []byte{'\n'}) {
 		var l codexLine
 		if json.Unmarshal(line, &l) != nil || l.Type != "event_msg" {
 			continue
 		}
-		var ev codexTurnEvent
+		var ev struct {
+			Type  string          `json:"type"`
+			Error json.RawMessage `json:"error"`
+		}
 		if json.Unmarshal(l.Payload, &ev) != nil {
 			continue
 		}
 		switch ev.Type {
 		case "task_started", "turn_aborted":
-			return CodexTurn{}
+			turn = CodexTurn{}
 		case "task_complete":
-			return failedCodexTurn(l.Timestamp, ev.Error)
+			turn = failedCodexTurn(l.Timestamp, ev.Error)
 		}
 	}
-	return CodexTurn{}
+	return turn, nil
 }
 
+// failedCodexTurn is a task_complete's outcome: failed when it carries a
+// non-null error.
 func failedCodexTurn(timestamp string, raw json.RawMessage) CodexTurn {
-	var e struct {
-		Info json.RawMessage `json:"codex_error_info"`
-	}
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		return CodexTurn{}
 	}
 	turn := CodexTurn{Failed: true}
+	var e struct {
+		Info json.RawMessage `json:"codex_error_info"`
+	}
 	if json.Unmarshal(raw, &e) == nil {
 		turn.Error = codexErrorType(e.Info)
 	}

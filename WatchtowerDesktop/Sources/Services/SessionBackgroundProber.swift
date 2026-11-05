@@ -26,9 +26,10 @@ import WatchtowerCore
 /// failed turn (board #959, PROJ-11): Codex has no `StopFailure` hook and
 /// fires no Stop on a failed turn, so the CLI reads the turn's end from the
 /// session's rollout and stores the Error state itself. One check per
-/// session per `codexTurnCheckEvery`; a `failed` answer reads the rows
-/// again. A check that cannot run is logged once per streak and tried at
-/// the next interval.
+/// session per `codexTurnCheckEvery` (a CLI child each time: the cost of
+/// reading the error from the rollout, owned in PROJ-11's Codex limits); a
+/// `failed` answer reads the rows again. A check that cannot run is logged
+/// once per streak and tried again only after `retryAfter`.
 @MainActor
 final class SessionBackgroundProber {
     /// How soon a probe that could not run is tried again.
@@ -131,12 +132,13 @@ final class SessionBackgroundProber {
     /// sessions that no longer do.
     private func checkCodexTurns(_ rows: [SessionAgentStateRow], statuses: [Int64: SessionAgentStatus], now: Date) {
         var working: Set<Int64> = []
-        for row in rows where row.kind == AgentKind.codex.rawValue {
+        for row in rows where row.agent == .codex {
             guard let status = statuses[row.id], let workbench = row.projectID,
                   status.state.live, status.state.kind == .working else { continue }
             working.insert(row.id)
+            let every = codexCheckFailing.contains(row.id) ? Self.retryAfter : Self.codexTurnCheckEvery
             guard inFlight[row.id] == nil,
-                  now.timeIntervalSince(codexChecks[row.id] ?? .distantPast) >= Self.codexTurnCheckEvery else { continue }
+                  now.timeIntervalSince(codexChecks[row.id] ?? .distantPast) >= every else { continue }
             codexChecks[row.id] = now
             launch(session: row.id) { [weak self] in
                 await self?.checkCodexTurn(session: row.id, workbench: workbench)
@@ -147,33 +149,40 @@ final class SessionBackgroundProber {
     }
 
     private func checkCodexTurn(session: Int64, workbench: Int64) async {
-        let failure: String?
-        var failed = false
-        do {
-            let result = try await runProbe(session: session, workbench: workbench)
-            failure = result.ran ? nil : (result.error ?? "no outcome")
-            failed = result.outcome == .failed
-        } catch {
-            failure = error is DecodingError ? String(describing: error) : error.localizedDescription
-        }
+        let run = await runProbe(session: session, workbench: workbench)
         guard !Task.isCancelled else { return }
-        if let failure {
+        switch run {
+        case let .failed(failure):
             if codexCheckFailing.insert(session).inserted {
                 print("[SessionProbe] session \(session): codex turn check failed: \(failure)")
             }
-            return
-        }
-        codexCheckFailing.remove(session)
-        if failed {
-            print("[SessionProbe] session \(session): the codex turn failed")
-            onSettled?()
+        case let .ran(result):
+            if codexCheckFailing.remove(session) != nil {
+                print("[SessionProbe] session \(session): codex turn check runs again")
+            }
+            if result.outcome == .failed {
+                print("[SessionProbe] session \(session): the codex turn failed")
+                onSettled?()
+            }
         }
     }
 
-    private func runProbe(session: Int64, workbench: Int64) async throws -> SessionProbeResult {
+    /// One `session-probe` run: its answer when it ran, else why not.
+    private enum ProbeRun {
+        case ran(SessionProbeResult)
+        case failed(String)
+    }
+
+    private func runProbe(session: Int64, workbench: Int64) async -> ProbeRun {
         let args = ["workbench", "session-probe", "--workbench", String(workbench), "--session", String(session)]
-        let data = try await runner.run(args: args)
-        return try JSONDecoder().decode(SessionProbeResult.self, from: data)
+        do {
+            let data = try await runner.run(args: args)
+            let result = try JSONDecoder().decode(SessionProbeResult.self, from: data)
+            return result.ran ? .ran(result) : .failed(result.error ?? "no outcome")
+        } catch {
+            // A DecodingError's localizedDescription drops the key path.
+            return .failed(error is DecodingError ? String(describing: error) : error.localizedDescription)
+        }
     }
 
     /// Agents working, or the same count shown over after failed probes —
@@ -209,14 +218,13 @@ final class SessionBackgroundProber {
         let failure: String?
         var ended = false
         var outcome: SessionProbeResult.Outcome?
-        do {
-            let result = try await runProbe(session: session, workbench: workbench)
-            failure = result.ran ? nil : (result.error ?? "no outcome")
+        switch await runProbe(session: session, workbench: workbench) {
+        case let .ran(result):
+            failure = nil
             ended = result.ended
             outcome = result.outcome
-        } catch {
-            // A DecodingError's localizedDescription drops the key path.
-            failure = error is DecodingError ? String(describing: error) : error.localizedDescription
+        case let .failed(reason):
+            failure = reason
         }
         // A probe `stop()` cancelled applies nothing.
         guard !Task.isCancelled, var entry = entries[session], entry.count == count else { return }

@@ -111,6 +111,9 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
 
+    /// The row's agent; nil for a shell or a row built without a kind.
+    package var agent: AgentKind? { kind.flatMap(AgentKind.init(rawValue:)) }
+
     package enum CodingKeys: String, CodingKey {
         case id, title
         case projectID = "project_id"

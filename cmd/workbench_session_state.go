@@ -246,8 +246,7 @@ func recordSubagentToolRun(database *db.DB, rowID, workbenchID int64, sessionID,
 // so a payload naming one records nothing (a hook never sets a codex row's
 // agent_failed_at: `workbench session-probe` reads a failed turn from the
 // rollout, board #959), and its Stop is the drift check's. Interrupt (the
-// owner's Esc) ends the turn as a Stop does, with no drift check (board
-// #959).
+// owner's Esc) ends the turn as a Stop does, with no drift check.
 var codexStateEvents = map[string]bool{
 	"UserPromptSubmit": true, "PermissionRequest": true, "PostToolUse": true,
 	"SubagentStart": true, "SubagentStop": true, "Interrupt": true,
@@ -306,11 +305,25 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 		err = recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Codex)
 	case subagentToolRun:
 		err = recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at)
+	case in.Event == "UserPromptSubmit":
+		err = recordCodexPrompt(database, rowID, workbenchID, in.SessionID, at, turn)
 	default:
-		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil,
-			in.Event == "UserPromptSubmit", at, turn)
+		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil, false, at, turn)
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
+	return err
+}
+
+// recordCodexPrompt records a Codex prompt's `working` as Claude Code's
+// does, then restamps a row that already read working (a turn that failed
+// with no Stop, board #959): the session probe records a failure only when
+// it is later than agent_state_at, so the failed turn's error never lands on
+// this prompt's turn before its task_started reaches the rollout.
+func recordCodexPrompt(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, turn hookTurn) error {
+	if err := recordAgentState(database, rowID, workbenchID, sessionID, agentStateWorking, "", nil, true, at, turn); err != nil {
+		return err
+	}
+	_, err := database.RestampCodexPromptTurn(rowID, workbenchID, sessionID, at.Truncate(time.Millisecond))
 	return err
 }
 
