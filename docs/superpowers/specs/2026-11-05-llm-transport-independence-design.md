@@ -18,7 +18,7 @@ You asked for "our data flows and all our functionality to be independent of the
 - Ollama and other OpenAI-compatible servers (HTTP);
 - the coding agents in Workbench terminals (Claude Code and Codex).
 
-Each of these grew its own code for the same jobs: reading the answer, showing tool steps, counting tokens, stopping the process, telling an error apart, and knowing whether a session is working, waiting or failed. When the codex path was written, it copied some of those jobs and missed others. The last branch found and fixed nine such misses, such as invisible tool steps and glued text in codex chats. This design found 21 more (§2.2). Most are small, but they share one root cause: the code asks "is this Claude?" when it should ask "can this transport do X?"
+Each of these grew its own code for the same jobs: reading the answer, showing tool steps, counting tokens, stopping the process, telling an error apart, and knowing whether a session is working, waiting or failed. When the codex path was written, it copied some of those jobs and missed others. The last branch found and fixed nine such misses, such as invisible tool steps and glued text in codex chats. This design found 21 more (§2.2); one of them (L2) has since been fixed on `feature/codex-parity` (#957), which leaves 20 open. Most are small, but they share one root cause: the code asks "is this Claude?" when it should ask "can this transport do X?"
 
 ## What changes for you
 
@@ -60,7 +60,7 @@ Each of these grew its own code for the same jobs: reading the answer, showing t
 
 - One contract test suite runs every scenario against every transport: claude, codex, Ollama/HTTP, and the two workbench agents. It uses fake CLIs that replay recorded real output. Each pair of transport and scenario either passes or is asserted to be "not supported, and the user is told". Nothing is skipped.
 - The guard test finds no provider-name check outside the adapters. Its allow list is empty, or each remaining entry carries a reason you approved.
-- The 21 gaps in §2.2 are each fixed or turned into a disclosed limit.
+- The 20 open gaps in §2.2 are each fixed or turned into a disclosed limit.
 
 ---
 
@@ -81,7 +81,7 @@ Each of these grew its own code for the same jobs: reading the answer, showing t
 
 ## 2. Seam inventory
 
-Branch `feature/transport-neutral` at `eab991fa7`, non-test code. Marks:
+Branch `feature/transport-neutral` at `eab991fa7`, rechecked after merging `feature/codex-parity` at `69a239b63` (#957 process groups, #958 codex skill list), non-test code. Marks:
 - **(a)** neutral behind an interface;
 - **(b)** knows the transport, but every transport behaves the same;
 - **(c)** parity gap: one transport silently gets less.
@@ -93,7 +93,7 @@ Line numbers are as of that commit.
 | Surface | (a) neutral | (b) leaky, equivalent | (c) gaps |
 |---|---|---|---|
 | Main chat (`ai session`) | `chat.Backend`, `chat.ChunkEvents`, `RoutingEvent()` probe, replay | factory switch `cmd/ai_session.go:211`; `EmitToolEvents()` probe `internal/chat/turn_backend.go:44`; claude interrupt over `control_request` vs kill-per-turn (`claude_backend.go:921`); claude.ai gate `internal/chat/gate.go` | L5, L6, L7, L8, L10, L11 |
-| Embedded chats / one-shot `ai query` (v1, `--events v2`) | shared v2 decoder (Swift `ChatEvent.parse`, `WatchtowerCore/Services/Chat/ChatEvent.swift:136`) | `buildAIClient` switch `cmd/generator.go:164`; `*codex.Client` type asserts `cmd/generator.go:225,239`; `mcpConfigurable`/`externalMCPConfigurable`/`readFolderConfigurable` probes; codex-only nonce probe in `ai test` `cmd/ai.go:433` | L1, L2, L7, L9, L10 |
+| Embedded chats / one-shot `ai query` (v1, `--events v2`) | shared v2 decoder (Swift `ChatEvent.parse`, `WatchtowerCore/Services/Chat/ChatEvent.swift:136`) | `buildAIClient` switch `cmd/generator.go:164`; `*codex.Client` type assert `cmd/generator.go:239`; `processGroupConfigurable`/`mcpConfigurable`/`externalMCPConfigurable`/`readFolderConfigurable` probes (`cmd/ai.go:677-690`, `cmd/generator.go:225`); codex-only nonce probe in `ai test` `cmd/ai.go:433` | L1, L7, L9, L10 (L2 fixed) |
 | Background generators (digest, people, tracks, briefing, coach, review overview) | `digest.Generator`, `digest.ImageCapable`, `providers.Failure` | four copies of the provider switch: `cmd/generator.go:84`, `internal/daemon/coach.go:47` and `:62`, `cmd/ai.go:380`; `SetIsolatedChild` probe; dead `SetStdinOnly` probe (`internal/daemon/coach.go`, `cmd/coach.go:59`, no implementer); `providers.ClaudeNoToolsArgs` | L10 (ollama untyped) |
 | Usage and metering | `llmusage.Call` split, `automations.ModelAttemptUsage` | `ai.Usage.InputTokens` = fresh but `ai.TurnUsage.InputTokens` = all input (`internal/ai/provider.go:32`); the same Ollama server is recorded as `ollama` (`internal/ollama/client.go:65`) and `http` (`internal/agentloop/client.go:379`); codex reports no cost or cache writes | — |
 | Automations `llm()` / `agent()` | `llm()` over `digest.Generator` and the attempt meter | runner switch `cmd/automations_backends.go:141`; capability table `:219`; scrubbed `CODEX_HOME` | L3 |
@@ -110,12 +110,12 @@ Line numbers are as of that commit.
 
 ### 2.2 The (c) gaps
 
-**LLM calls (11)**
+**LLM calls (11 found, 10 open)**
 
 | # | Who loses | What | Where |
 |---|---|---|---|
 | L1 | claude one-shot | A stream-json line over 1 MiB fails the whole embedded-chat or read-folder turn ("reading claude output"). Codex and the warm chat accept 64 MiB and skip an oversized line. | `internal/ai/client.go:766-768`, `:847` |
-| L2 | claude one-shot | No process group of its own. A Stop sends SIGINT to `claude` alone, so its MCP children depend on claude to exit. Codex gets a group. | `cmd/generator.go:225-230`; non-group branch of `ai.ConfigureChild` `internal/ai/client.go:249-254` |
+| L2 | claude one-shot | **Fixed on `feature/codex-parity` by #957 (merge `69a239b63`).** Was: no process group of its own, so a Stop sent SIGINT to `claude` alone. Now `newQueryClient` sets a group with a 1 s group kill for claude and codex through the `processGroupConfigurable` probe (`cmd/generator.go:225-230`). Kept in the table for the record; the suite still asserts it (§4.1 "timeout and context kill"). | `cmd/generator.go:225-230` |
 | L3 | codex `agent()` | No turn cap. Claude gets `SetMaxTurns(12)`. | `cmd/automations_backends.go:259` vs `:265` |
 | L4 | codex spec reviewer | No turn cap. Claude gets `specreview.MaxTurns`. | `cmd/workbench_spec_review.go:129` vs `:136-141` |
 | L5 | codex, ollama main chat | No web search. The prompt says "no internet" (`WebSearch` is set only when the provider is not codex or ollama), while codex's own web search is neither offered nor turned off in chat. | `cmd/ai_session.go:186`; `internal/chat/prompt.go:30` |
@@ -226,12 +226,12 @@ Rules:
 
 ### 3.4 One child-process runner and one client factory
 
-- **Runner.** `ai.ConfigureChild` already serves claude and codex. It becomes group-only, and the opt-in `SetProcessGroup` is removed, which fixes L2 for every caller.
+- **Runner.** `ai.ConfigureChild` already serves claude and codex. Every caller now opts into group mode (#957 closed the last claude one-shot gap, L2). The runner becomes group-only, and the opt-in `SetProcessGroup` and its `processGroupConfigurable` probe are removed, so a new caller cannot forget it.
   - It also gains the one line reader from `internal/codex/stream.go`: a 64 MiB cap, an oversized line counted and skipped, stdout drained before `Wait`. The claude one-shot reader moves onto it, which fixes L1.
   - `digest.IsolateChild` and the warm backend's `killGroup` keep their semantics, but they are expressed through the runner, so the "reaped group" assertion covers them.
   - CHAT-04 is kept: prompts still travel over inherited pipes or stdin.
 - **Factory.** `internal/providers` gains `Transport` rows: `NewGenerator`, `NewQuerier`, `NewChatBackend` and `NewAgentRunner`, each nil when the transport cannot do it. These replace the switches at `cmd/generator.go:84,164`, `cmd/ai_session.go:211`, `internal/daemon/coach.go:47,62`, `cmd/ai.go:380` and `cmd/automations_backends.go:141`.
-  - The optional-method probes (`mcpConfigurable`, `externalMCPConfigurable`, `readFolderConfigurable`, `SetIsolatedChild`, `EmitToolEvents`) become an options struct passed to the constructor. The dead `SetStdinOnly` probe is deleted.
+  - The optional-method probes (`processGroupConfigurable`, `mcpConfigurable`, `externalMCPConfigurable`, `readFolderConfigurable`, `SetIsolatedChild`, `EmitToolEvents`) become an options struct passed to the constructor. The dead `SetStdinOnly` probe is deleted.
   - `*codex.Client` type assertions disappear. The env-skip for Quick Connections becomes an option, `ChildEnv`.
   - To avoid an import cycle, constructors are registered by the adapter packages' `init`-free wiring in `cmd`. The registry holds function values, and only `cmd/transport_wiring.go` imports the adapters.
 
@@ -375,7 +375,7 @@ The gaps come first. Each package is one lane, with its own worktree and one PR 
 
 | # | Package | Depends on | Touches | Risk |
 |---|---|---|---|---|
-| G1 | **claude one-shot reader and group** (L1, L2): shared line reader, group-only `ConfigureChild`, drop `SetProcessGroup` | — | `internal/ai/client.go`, `internal/codex/stream.go` (extract the reader), `cmd/generator.go`, `cmd/automations_backends.go`, `cmd/workbench_spec_review.go`, `cmd/ai_session.go` | low; reaping tests exist |
+| G1 | **claude one-shot line reader** (L1): the claude one-shot `Query` moves onto the shared 64 MiB skip-oversize reader extracted from codex, stdout drained before `Wait` (L2 is fixed by #957; group-only `ConfigureChild` moves to A4) | — | `internal/ai/client.go`, `internal/codex/stream.go` (extract the reader) | low |
 | G2 | **codex turn cap** (L3, L4) | decision A | `internal/codex/client.go`/`stream.go` (count tool starts, cancel the group at N), `cmd/automations_backends.go`, `cmd/workbench_spec_review.go`, `docs/inventory/automations.md` | medium (AUTO-08 amendment) |
 | G3 | **runtime B / ollama stream parity** (L7, L9, L10): usage chunk, typed failures (`providers/ollama_failure.go`), `--read-folder` refused with a capability error, `CodeForFailure` | — | `internal/agentloop`, `internal/ollama`, `internal/providers`, `internal/chat/turn_backend.go`, `cmd/ai.go` | low |
 | G4 | **codex chat images and web search** (L5, L6 Go half): codex `Query` takes `--image` for image attachments; web search on or off explicitly, matching the prompt | — (spike first: `codex exec --image` with tools and MCP) | `internal/codex/client.go`, `internal/chat/attachments.go`, `cmd/ai_session.go`, `internal/chat/prompt*.go` | medium (live check needed) |
@@ -386,7 +386,7 @@ The gaps come first. Each package is one lane, with its own worktree and one PR 
 | A1 | **contract suite harness + fixtures + matrix golden**, recording today's truth (the current gaps show as `unsupported` or failing rows marked `gap:Lx` in the golden) | — | new `internal/transporttest`, `scripts/record-transport-fixtures.sh`, `internal/chat/testdata/scrub_fixtures.py` | low; can start day one in parallel with G1–G8 |
 | A2 | **capability rows**: `providers.Capabilities`, `ai models --json` / `session_ready` `capabilities`, consumers and Swift read them (L6 UI half, L11, the Swift name checks); hand tables replaced | A1 (the matrix reads `Caps`) | `internal/providers`, `cmd/ai_session*.go`, `cmd/tool_routing.go`, `cmd/automations_backends.go`, `internal/providerrouting/router.go`, `internal/chat/attachments.go`, Swift `AIModelCatalog`, `ChatEvent`, `TargetChatViewModel`, `AutomationEditorChatSurface`, `CodeQuestionSurface`, `ChatSessionPool`, `QuickConnectionsProviderNotice`, `ChatViewModel`, composer | medium (touches the fallback router: coordinate with #1480) |
 | A3 | **usage block** `llmusage.Tokens` embedded in `ai.Usage`/`TurnUsage`/`digest.Usage`, the v2 `usage` keys, one provider label | A1 | `internal/llmusage`, `internal/ai`, `internal/digest`, `internal/codex`, `internal/ollama`, `internal/agentloop`, `internal/chat`, `internal/automations/attempt_meter.go`, Swift `ChatEvent` | medium (many files, no behaviour change) |
-| A4 | **one factory + options struct**, the switches and probes removed | A2 | `cmd/generator.go`, `cmd/ai.go`, `cmd/ai_session.go`, `internal/daemon/coach.go`, `cmd/coach.go`, `cmd/automations_backends.go`, new `cmd/transport_wiring.go` | medium (wide, mechanical) |
+| A4 | **one factory + options struct**, the switches and probes removed, `ConfigureChild` group-only (`SetProcessGroup` gone) | A2 | `internal/ai/client.go`, `cmd/generator.go`, `cmd/ai.go`, `cmd/ai_session.go`, `cmd/workbench_spec_review.go`, `internal/daemon/coach.go`, `cmd/coach.go`, `cmd/automations_backends.go`, new `cmd/transport_wiring.go` | medium (wide, mechanical) |
 | A5 | **`internal/sessionagent`**: adapters, `Event` (moved `hookEvent`), `Caps`, `agent_capabilities.json` dual path | G5, A1 | `cmd/workbench_*` hook entry points, `internal/devpack`, `internal/agentkind`, `internal/sessionfeed`, `internal/terminal`, Swift `AgentKind`, Kit | high (PROJ-11/12/13 guards must stay green) |
 | A6 | **LLMTRANSPORT-01 guard** (Go + Swift) with a full baseline, then shrink it in A2/A4/A5 | — (land early); shrinkage after A2, A4, A5 | `internal/transporttest` (or `internal/providers`) test, `Tests/Core`, `docs/inventory/llm-transport.md`, `docs/inventory/README.md` | low |
 
