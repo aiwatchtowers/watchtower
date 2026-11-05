@@ -555,3 +555,90 @@ func TestAccountRefreshUpdatesTargets(t *testing.T) {
 		t.Fatalf("send_alert requests %v", sent)
 	}
 }
+
+// TestWorkAlertsOffOnTheRelayStopsSendAlert (Open decision 1, option A): the
+// phone's device record over the relay turns its alerts off and on again. While
+// off an alert is not pushed; the next one after it is, once.
+func TestWorkAlertsOffOnTheRelayStopsSendAlert(t *testing.T) {
+	pr := startPushRig(t)
+	record := func(off *bool, name string) {
+		t.Helper()
+		pr.clock.Advance(time.Second)
+		if _, err := pr.l.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: pr.l.phone.ID().String(), Name: name,
+			Scope: wire.ScopePrivate, StartSessions: true, WorkAlertsOff: off,
+			UpdatedAt: wire.Time{Time: pr.clock.Now()}}, ""); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, 15*time.Second, "the device record applied", func() bool { return pr.device(t).Name == name })
+	}
+	off := true
+	record(&off, "Switch off")
+	if !pr.device(t).WorkAlertsOff {
+		t.Fatal("the switch was not stored")
+	}
+	pr.raise(workAlert("ask-off"))
+	eventually(t, 15*time.Second, "the phone's action reached the source", func() bool {
+		items, err := pr.src.Items(t.Context())
+		return err == nil && len(items) == 1
+	})
+	time.Sleep(time.Second) // a push would have gone by now
+	if sent := pr.srv.Alerts(); len(sent) != 0 {
+		t.Fatalf("pushed while off: %v", sent)
+	}
+	record(nil, "Switch on")
+	pr.raise(workAlert("ask-on"))
+	eventually(t, 15*time.Second, "the push after the switch came on", func() bool { return len(pr.srv.Alerts()) == 1 })
+	if sent := pr.sendAlerts(); len(sent) != 1 {
+		t.Fatalf("send_alert %v, want one", sent)
+	}
+}
+
+// TestFarewellOverTheRelay: the farewell a phone flushes while it still holds
+// the slot unlinks; one the hub reaches only after the slot went cannot be read
+// (the Worker's rule, EnforceMailboxRead), and the row stays for the owner.
+func TestFarewellOverTheRelay(t *testing.T) {
+	farewell := func(t *testing.T, pr *pushRig) {
+		t.Helper()
+		unlinked := true
+		if _, err := pr.l.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: pr.l.phone.ID().String(), Name: "Test Phone",
+			Scope: wire.ScopePrivate, Unlinked: &unlinked, UpdatedAt: wire.Time{Time: pr.clock.Now()}}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	devices := func(t *testing.T, pr *pushRig) int {
+		t.Helper()
+		st, err := state.OpenReadOnly(pr.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		ds, err := st.Devices()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ds)
+	}
+	t.Run("the slot still held", func(t *testing.T) {
+		pr := startPushRig(t)
+		pr.srv.EnforceMailboxRead()
+		farewell(t, pr)
+		eventually(t, 15*time.Second, "the row gone", func() bool { return devices(t, pr) == 0 })
+	})
+	t.Run("the slot gone first", func(t *testing.T) {
+		pr := startPushRig(t)
+		pr.srv.EnforceMailboxRead()
+		if err := pr.stop(); err != nil {
+			t.Fatal(err)
+		}
+		farewell(t, pr)
+		pr.srv.RemoveSlot(pr.phone, pr.l.lp.RelayDeviceID)
+		r2 := &vouchRig{rig: newRig(t, pr.dir), srv: pr.srv, clock: pr.clock}
+		o := r2.options()
+		o.newTransport, o.RelayOrigin, o.Clock, o.linkEvery = nil, pr.srv.URL, pr.clock.Now, time.Hour
+		r2.start(o)
+		time.Sleep(time.Second) // the hub is up and has tried its mailbox
+		if got := devices(t, pr); got != 1 {
+			t.Fatalf("devices %d: the row stays for the owner", got)
+		}
+	})
+}

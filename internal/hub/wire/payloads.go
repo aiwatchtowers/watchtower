@@ -188,6 +188,9 @@ type DevicePayload struct {
 	RelayDeviceID        string  `json:"relay_device_id,omitempty"`
 	RelayAuthPub         string  `json:"relay_auth_pub,omitempty"`
 	RelayIDSig           string  `json:"relay_id_sig,omitempty"`
+	// WorkAlertsOff is the phone's "When work stops" switch being off (true or
+	// absent, protocol §5.5): the hub sends this phone no relay alert.
+	WorkAlertsOff *bool `json:"work_alerts_off,omitempty"`
 }
 
 // DeviceHello is the plain payload of a hello, sealed to the hub's key.

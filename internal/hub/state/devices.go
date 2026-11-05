@@ -49,6 +49,10 @@ type Device struct {
 	RelayLapsedAt   *time.Time
 	RelaySkipBefore *time.Time
 	RelaySkipSeq    uint64
+	// WorkAlertsOff is the phone's "When work stops" switch being off, from its
+	// device record: the hub pushes it no alert. Read only: the device record's
+	// rewrite writes it, LinkDevice clears it.
+	WorkAlertsOff bool
 }
 
 // MarkRelayAdmitted stamps at on the linked phones among relayIDs (their
@@ -82,9 +86,10 @@ const deviceColumns = `device_id, name, scope, linked_at, signing_key, agreement
 	start_sessions_allowed, start_sessions_granted,
 	last_applied_action_seq, ordered, relay_device_id, resend_requested_from, acked_epoch`
 
-// deviceRead is what a read selects: the link's columns and the relay's
-// admission stamp, which only MarkRelayAdmitted writes (a re-link clears it).
-const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq`
+// deviceRead is what a read selects: the link's columns, the relay's admission
+// stamp, which only MarkRelayAdmitted writes (a re-link clears it), and the
+// switch only a device record's rewrite writes (a re-link clears it too).
+const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq, work_alerts_off`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -102,7 +107,7 @@ func scanDevice(r rowScanner) (Device, error) {
 	err := r.Scan(&d.ID, &d.Name, &d.Scope, &linked, &d.SigningKey, &d.AgreementKey, &nonce,
 		&d.TypingAllowed, &d.TypingRequested, &d.PermissionsAllowed, &d.PermissionsRequested,
 		&d.StartSessionsAllowed, &d.StartSessionsGranted,
-		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq)
+		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq, &d.WorkAlertsOff)
 	if err != nil {
 		return Device{}, err
 	}

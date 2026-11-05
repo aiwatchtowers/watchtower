@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
@@ -18,8 +19,8 @@ import (
 // device-<DEVICE_ID> in its mailbox, rewritten by the phone whenever its name
 // or one of its toggles changes, never deleted by the hub. The Swift hub's
 // RelayProcessor hands it to MobileLinkCenter.handleDevice; here the link
-// center applies it (link.Center.ApplyDeviceRecord). Read in CloudKit's
-// shared RelayZone only: the relay path is unchanged.
+// center applies it (link.Center.ApplyDeviceRecord). Read in CloudKit's shared
+// RelayZone and in a phone's own mailbox on the hosted relay.
 
 const (
 	kindDevice   = "device"
@@ -80,7 +81,8 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		d.RelayDeviceID, d.RelayAuthPub, d.RelayIDSig = "", "", ""
 	}
 	shares, _ := p.cfg.Transport.(transport.Shares)
-	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares}
+	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares, Hosted: !b.shared,
+		Superseded: func(tx *sql.Tx) (bool, error) { return supersededTx(tx, rec.Name, o) }}
 	if err := p.cfg.Links.ApplyDeviceRecord(ctx, b.id.String(), r); err != nil {
 		if o.Verdict == secure.Same && errors.Is(err, link.ErrOwnerUnreadable) {
 			return nil // decided and marked already: nothing to do, nothing to hold
@@ -92,6 +94,16 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		return nil // unlinked (by this record, or meanwhile): nothing to mark
 	}
 	return err
+}
+
+// supersededTx reports whether a newer version of the record than o is marked
+// by now: the other transport's processor applied one after o was opened.
+func supersededTx(tx *sql.Tx, wireName string, o secure.Opened) (bool, error) {
+	epoch, seq, ok, err := state.RelaySeenTx(tx, wireName, o.Sender.String())
+	if err != nil || !ok {
+		return false, err
+	}
+	return secure.CompareVersion(epoch, seq, o.Epoch, o.Seq) == secure.Older, nil
 }
 
 // minTime is the earlier of a and b.
