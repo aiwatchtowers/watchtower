@@ -52,9 +52,8 @@ struct DiagnosticsView: View {
         switch model.state {
         case let .rows(rows):
             SettingsCard(title: LatencyDiagnosticsModel.header, footer: LatencyDiagnosticsModel.footer) {
-                ForEach(Array(rows.enumerated()), id: \.element.title) { index, row in
-                    if index > 0 { CardRowDivider() }
-                    timingRows(row)
+                VStack(alignment: .leading, spacing: Spacing.medium) {
+                    ForEach(rows, id: \.title) { timingRows($0) }
                 }
             }
         case .loading:
@@ -83,10 +82,17 @@ struct DiagnosticsView: View {
 
     private func timingRows(_ row: LatencyDiagnosticsModel.Row) -> some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
-                Text(row.title).font(TypeScale.rowTitle)
-                Spacer(minLength: Spacing.medium)
-                Text(row.count).font(.subheadline).foregroundStyle(PhoneTone.secondary.color)
+            // The count drops under the title when both do not fit (the largest text sizes).
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
+                    Text(row.title).font(TypeScale.rowTitle)
+                    Spacer(minLength: Spacing.medium)
+                    count(row)
+                }
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text(row.title).font(TypeScale.rowTitle)
+                    count(row)
+                }
             }
             Text(row.result).font(TypeScale.meta).foregroundStyle(PhoneTone.secondary.color)
             Text(row.answer).font(TypeScale.meta).foregroundStyle(PhoneTone.secondary.color)
@@ -94,6 +100,10 @@ struct DiagnosticsView: View {
         .padding(.vertical, Spacing.regular)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    private func count(_ row: LatencyDiagnosticsModel.Row) -> some View {
+        Text(row.count).font(.subheadline).foregroundStyle(PhoneTone.secondary.color).fixedSize(horizontal: true, vertical: false)
     }
 
     private func message(_ text: String, tone: PhoneTone) -> some View {

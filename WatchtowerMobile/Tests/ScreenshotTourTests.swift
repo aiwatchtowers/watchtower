@@ -375,6 +375,9 @@ final class ScreenshotTourTests: XCTestCase {
             ("S37", "diagnostics-rows", .rows([
                 .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
             ])),
+            ("S37b", "diagnostics-rows-icloud", .rows([
+                .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+            ])),
             ("S38", "diagnostics-empty", .empty),
             ("S48", "diagnostics-needs-mac-update", .needsMacUpdate),
             ("S39", "diagnostics-loading", .loading),
@@ -382,7 +385,7 @@ final class ScreenshotTourTests: XCTestCase {
         ]
         for (number, slug, state) in diagnostics {
             let view = NavigationStack { DiagnosticsView(settings: settings, reader: LatencyDiagnosticsReader(fixed: state)) }
-            try await host.captureThree("\(number)-\(slug)", view, narrowScroll: Self.toTheEnd)
+            try await host.captureThree("\(number)-\(slug)", view)
             rows.append(ScreenshotHost.IndexRow(
                 number: number, view: "DiagnosticsView", source: "Features/Settings/DiagnosticsView.swift",
                 reached: "bare stack, a fixed reader, light/dark/narrow"))
