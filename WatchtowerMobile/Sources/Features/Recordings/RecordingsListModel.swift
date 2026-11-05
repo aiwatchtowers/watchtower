@@ -335,6 +335,15 @@ struct RecordingsFormat {
         return day.string(from: date)
     }
 
+    /// A moment inside a sentence: "at 10:00", "yesterday at 10:00", or "on Mon, Oct 5".
+    func inSentence(_ date: Date) -> String {
+        if calendar.isDate(date, inSameDayAs: now) { return "at \(clock.string(from: date))" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
+            return "yesterday at \(clock.string(from: date))"
+        }
+        return "on \(day.string(from: date))"
+    }
+
     /// "14:32", or "1:02:10".
     func duration(_ seconds: Int) -> String {
         Self.offset(seconds)

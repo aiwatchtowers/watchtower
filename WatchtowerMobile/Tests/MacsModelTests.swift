@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -173,5 +174,98 @@ final class MacsModelTests: XCTestCase {
         XCTAssertEqual(MacsModel.cancelQuestion("build-box"), "Cancel the link to build-box? It frees its Relay slot.")
         XCTAssertEqual(MacsModel.cancelLink, "Cancel Link")
         XCTAssertEqual(MacsModel.keepTrying, "Keep Trying")
+    }
+
+    // MARK: - Transport lines (relay client Phase 4 Task 7, mockup S07)
+
+    private var calendar: Calendar { .current }
+
+    /// Today at 10:42, with "now" at noon: the line's time reads "Today 10:42".
+    private var morning: (at: Date, now: Date) {
+        let start = calendar.startOfDay(for: Date())
+        return (start.addingTimeInterval(10 * 3_600 + 42 * 60), start.addingTimeInterval(12 * 3_600))
+    }
+
+    private func link(_ transport: TransportKind?, by: String? = nil, at: Date? = nil) -> LinkRecord {
+        var record = LinkRecord(
+            hubID: "hub-acme", macName: "Acme Mac", scope: .private, ownerName: "", userRecordName: "", nonce: "n",
+            dataShareURL: nil, relayShareURL: nil, deviceID: "device-1"
+        )
+        if transport == .relay { record.setRelay(mac: String(repeating: "m", count: 52)) }
+        record.switchedBy = by
+        record.switchedAt = at
+        return record
+    }
+
+    func testTransportLines() {
+        let (at, now) = morning
+        let own = "device-1"
+        let table: [(LinkRecord, Bool, String)] = [
+            (link(nil), false, "iCloud"),
+            (link(.cloudKit), false, "iCloud"),
+            (link(.relay), false, "Relay"),
+            (link(.relay, by: "device-1", at: at), false, "Relay · switched by this iPhone, Today 10:42"),
+            (link(.relay, by: "device-2", at: at), false, "Relay · switched by another iPhone, Today 10:42"),
+            (link(.cloudKit, by: "device-1", at: at), false, "iCloud · switched by this iPhone, Today 10:42"),
+            (link(.cloudKit, by: "device-2", at: at), false, "iCloud · switched by another iPhone, Today 10:42"),
+            (link(.cloudKit, by: "entitlement_expired", at: at), false, "iCloud · your subscription ended, Today 10:42"),
+            (link(.relay, by: "entitlement_expired", at: at), false, "Relay · your subscription ended, Today 10:42"),
+            (link(.relay, by: "device-1"), false, "Relay · switched by this iPhone"),
+            (link(.cloudKit, by: "entitlement_expired"), false, "iCloud · your subscription ended"),
+            (link(.relay, at: at), false, "Relay"),
+            (link(.relay, by: "device-1", at: at), true, "Switching…"),
+            (link(nil), true, "Switching…")
+        ]
+        for (record, inFlight, expected) in table {
+            XCTAssertEqual(MacsModel.transportLine(record, ownDeviceID: own, inFlight: inFlight, now: now), expected)
+        }
+        XCTAssertEqual(
+            MacsModel.transportLine(link(.relay, by: "device-1", at: at), ownDeviceID: nil, inFlight: false, now: now),
+            "Relay · switched by another iPhone, Today 10:42", "no own id: nobody is this iPhone"
+        )
+    }
+
+    /// The hub writes the phone's device id lower-case (`b.id.String()`); the link keeps `UUID.uuidString`.
+    func testThisIPhoneIsTheGrantDeviceIDWhateverItsCase() {
+        let (at, now) = morning
+        let id = UUID()
+        var record = link(.relay, by: id.uuidString.lowercased(), at: at)
+        XCTAssertEqual(
+            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, now: now),
+            "Relay · switched by this iPhone, Today 10:42"
+        )
+        record.switchedBy = UUID().uuidString.lowercased()
+        XCTAssertEqual(
+            MacsModel.transportLine(record, ownDeviceID: id.uuidString, inFlight: false, now: now),
+            "Relay · switched by another iPhone, Today 10:42"
+        )
+    }
+
+    func testAnotherPhonesIDNeverShows() {
+        let (at, now) = morning
+        for by in ["device-2", "7B1E5C0A-1234-4F6A-9B1F-0123456789AB", "entitlement_expired", "device-1"] {
+            let line = MacsModel.transportLine(link(.relay, by: by, at: at), ownDeviceID: "device-1", inFlight: false, now: now)
+            XCTAssertFalse(line.contains("device-"), line)
+            XCTAssertFalse(line.contains("7B1E5C0A"), line)
+            XCTAssertFalse(line.contains("entitlement_expired"), line)
+        }
+    }
+
+    func testTheRowsInFlightFollowTheUpgradeAndTheRequest() {
+        var record = link(nil)
+        XCTAssertFalse(HubListModel.isSwitching(record))
+        record.relayUpgrade = RelayUpgradeRecord(step: .vouching)
+        XCTAssertTrue(HubListModel.isSwitching(record), "an upgrade under way")
+        record.relayUpgrade = RelayUpgradeRecord(step: .switched)
+        XCTAssertFalse(HubListModel.isSwitching(record))
+        record.relayUpgrade = RelayUpgradeRecord(step: .requested, refusal: .relayOff)
+        XCTAssertFalse(HubListModel.isSwitching(record), "a refused upgrade is over")
+        record.relayUpgrade = nil
+        var request = TransportRequestRecord(target: .cloudKit, controlID: "c1", reason: nil, at: Date())
+        record.transportRequest = request
+        XCTAssertTrue(HubListModel.isSwitching(record), "an open request")
+        request.refusal = .lapseNoAnswer
+        record.transportRequest = request
+        XCTAssertFalse(HubListModel.isSwitching(record), "a lapse nobody answered shows nothing of its own")
     }
 }

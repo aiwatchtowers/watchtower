@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerSync
 
 /// One linked Mac in the switcher (multi-hub spec §5.6).
 struct HubListItem: Identifiable, Equatable {
@@ -24,6 +25,9 @@ struct HubListItem: Identifiable, Equatable {
     /// Why the hub cannot be opened, or why its last fetch failed (§6.3);
     /// nil after a good one.
     let problem: String?
+    /// "iCloud", "Relay · switched by this iPhone, Today 10:42", "Switching…": only while the relay is available
+    /// (`HubListModel.items(showsTransport:)`); nil otherwise, as the row was before Relay.
+    var transportLine: String?
 
     /// The online dot: green only while online (`MacStatusRow`'s rule).
     var dotTone: PhoneTone { online ? .green : .secondary }
@@ -70,6 +74,7 @@ enum HubListModel {
         unreadable: [String] = [],
         sessions: [String: HubSession],
         unopened unopenedHubIDs: Set<String> = [],
+        showsTransport: Bool = false,
         activeHubID: String?,
         now: Date
     ) -> [HubListItem] {
@@ -93,7 +98,10 @@ enum HubListModel {
                 removedByMac: removed,
                 unopened: unopened,
                 canForget: removed || unopened || (offlineDays ?? 0) >= forgetAfterDays,
-                problem: unopened ? unopenedProblem : session?.lastFetchError
+                problem: unopened ? unopenedProblem : session?.lastFetchError,
+                transportLine: showsTransport ? MacsModel.transportLine(
+                    row.link, ownDeviceID: row.link.deviceID, inFlight: isSwitching(row.link), now: now
+                ) : nil
             )
         }
         let taken = Set(rows.map(\.sortOrder))
@@ -112,6 +120,12 @@ enum HubListModel {
         return (known + unknown).enumerated()
             .sorted { ($0.element.order, $0.offset) < ($1.element.order, $1.offset) }
             .map(\.element.item)
+    }
+
+    /// An upgrade to the relay is under way (not refused, not done) or this phone's request is open.
+    static func isSwitching(_ link: LinkRecord) -> Bool {
+        if let upgrade = link.relayUpgrade, upgrade.step != .switched, upgrade.refusal == nil { return true }
+        return link.transportRequest?.isOpen == true
     }
 
     /// The open asks of every hub but the one on screen that can still

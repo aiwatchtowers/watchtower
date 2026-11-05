@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerSync
 
 /// Settings → Macs' decisions, apart from the view (multi-hub spec §5.6).
 enum MacsModel {
@@ -149,5 +150,39 @@ enum MacsModel {
         guard let from = source.first, items.indices.contains(from),
               let to = targetIndex(from: from, destination: destination) else { return nil }
         return (items[from].id, to)
+    }
+
+    // MARK: - Each Mac's transport line (relay client Phase 4 Task 7, mockup S07)
+
+    /// The hub writes the asking phone's grant device id (`b.id.String()`, lower-case, matched by parsed UUID on its side);
+    /// a link keeps the id as the phone wrote it (`UUID.uuidString`, upper-case): compare as UUIDs.
+    private static func sameDevice(_ by: String, _ own: String?) -> Bool {
+        guard let own else { return false }
+        if let a = UUID(uuidString: by), let b = UUID(uuidString: own) { return a == b }
+        return by == own
+    }
+
+    /// Who changed the Mac's transport last, inside the Connection footnote's sentence; nil when nobody did.
+    static func switchedByText(_ link: LinkRecord, ownDeviceID: String?) -> String? {
+        guard let by = link.switchedBy, !by.isEmpty else { return nil }
+        if by == TransportFollowerPolicy.lapseReason { return "when your subscription ended" }
+        return sameDevice(by, ownDeviceID) ? "by this iPhone" : "by another iPhone"
+    }
+
+    /// "iCloud" or "Relay", then who switched it last and when ("switched by this iPhone, Today 10:42"); "your
+    /// subscription ended" when the hub moved for a lapse; "Switching…" while an upgrade or a request runs. Another
+    /// phone's device id never shows: only "this iPhone" or "another iPhone".
+    static func transportLine(_ link: LinkRecord, ownDeviceID: String?, inFlight: Bool, now: Date) -> String {
+        if inFlight { return "Switching…" }
+        let name = link.transport == .relay ? "Relay" : "iCloud"
+        guard let by = link.switchedBy, !by.isEmpty else { return name }
+        let who: String
+        if by == TransportFollowerPolicy.lapseReason {
+            who = "your subscription ended"
+        } else {
+            who = sameDevice(by, ownDeviceID) ? "switched by this iPhone" : "switched by another iPhone"
+        }
+        guard let at = link.switchedAt else { return "\(name) · \(who)" }
+        return "\(name) · \(who), \(RecordingsFormat(calendar: .current, now: now).when(at))"
     }
 }

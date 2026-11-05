@@ -16,9 +16,34 @@ struct MacsView: View {
     /// `cancelling`: a finishing link's Cancel confirmation already open (the screenshot tour's frame).
     /// Opened once the screen is on (an alert set before it has a window is not presented).
     private let initialCancel: MacsModel.FinishingRow?
+    /// A card to show in place of the environment's (the screenshot tour's frames); its actions do nothing.
+    private let cardOverride: RelayCardModel?
+    /// Opens the subscription screen (Task 9 wires it); the card's `.openSubscription` and `.restore` end here.
+    private let openSubscription: () -> Void
 
-    init(cancelling: MacsModel.FinishingRow? = nil) {
+    init(cancelling: MacsModel.FinishingRow? = nil, card: RelayCardModel? = nil, openSubscription: @escaping () -> Void = {}) {
         initialCancel = cancelling
+        cardOverride = card
+        self.openSubscription = openSubscription
+    }
+
+    /// The Relay card: only while the relay is available and its account center was built (never on a dark build).
+    private var relayCard: RelayCardModel? {
+        if let cardOverride { return cardOverride }
+        guard let center = env.relayAccount else { return nil }
+        return RelayCardModel(
+            availability: env.relay.availability, phase: center.phase, unconfirmedPurchase: center.unconfirmed != nil
+        )
+    }
+
+    private func act(_ action: RelayCardModel.Action) {
+        switch action {
+        case .openSubscription: openSubscription()
+        case .retry: Task { await env.relayAccount?.refresh() }
+        case .restore:
+            Task { await env.relayAccount?.restore() }
+            openSubscription()
+        }
     }
 
     var body: some View {
@@ -72,7 +97,7 @@ struct MacsView: View {
         return List {
             Section {
                 ForEach(items) { item in
-                    HubListRow(item: item)
+                    macRow(item)
                         .macsListRow()
                         .swipeActions(edge: .trailing) { actions(item) }
                         .contextMenu { actions(item) }
@@ -112,8 +137,33 @@ struct MacsView: View {
                     }
                 }
             }
+            if let card = relayCard {
+                Section {
+                    RelayCardView(card: card, act: act).macsListRow()
+                }
+            }
         }
         .macsList()
+    }
+
+    /// A row opens its Mac's screen only with an available relay and a built account center (never on a dark build, whose
+    /// list is today's), and only for a linked Mac whose session runs: the screen exists for nothing else.
+    static func opensDetail(account: RelayAccountCenter?, availability: RelayAvailability, row: HubRow?, session: HubSession?) -> Bool {
+        guard account != nil, case .available = availability, row?.state == .linked else { return false }
+        return session != nil
+    }
+
+    @ViewBuilder private func macRow(_ item: HubListItem) -> some View {
+        let row = linking.links.first { $0.hubID == item.id }
+        if Self.opensDetail(account: env.relayAccount, availability: env.relay.availability, row: row, session: env.session(item.id)) {
+            NavigationLink {
+                MacDetailView(hubID: item.id, openSubscription: openSubscription)
+            } label: {
+                HubListRow(item: item)
+            }
+        } else {
+            HubListRow(item: item)
+        }
     }
 
     /// The demo has no link to end: only a live build offers Unlink and
@@ -275,5 +325,83 @@ extension View {
     /// One row of such a list: the flat row's insets, no separator or plate.
     func macsListRow() -> some View {
         listRowInsets(RowInsets.flat).listRowBackground(Color.clear).listRowSeparator(.hidden)
+    }
+}
+
+/// The Relay card (mockup S01–S06, S41, S55): the account's rows on a `SettingsCard`, then its line and the one
+/// action. Texts and tones come from `RelayCardModel`.
+struct RelayCardView: View {
+    let card: RelayCardModel
+    let act: (RelayCardModel.Action) -> Void
+
+    var body: some View {
+        SettingsCard(title: RelayCardModel.sectionTitle) {
+            if let action = card.cardAction {
+                // No link row: the rows (or the line) open the subscription.
+                Button { act(action) } label: { content.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+            } else {
+                content
+            }
+        }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(card.rows, id: \.title) { row in
+                HStack(spacing: Spacing.medium) {
+                    // The value drops under the title when both do not fit (the largest text sizes).
+                    ViewThatFits(in: .horizontal) {
+                        cardRow(row, stacked: false)
+                        cardRow(row, stacked: true)
+                    }
+                    if card.line == nil, card.cardAction == .openSubscription {
+                        chevron
+                    }
+                }
+            }
+            if let line = card.line {
+                lineRow(line)
+            }
+            if let title = card.actionTitle, let action = card.action {
+                Button(title) { act(action) }
+                    .font(TypeScale.rowTitle)
+                    .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
+                    .foregroundStyle(PhoneTone.accent.color)
+                    .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
+    }
+
+    private func cardRow(_ row: RelayCardModel.Row, stacked: Bool) -> some View {
+        let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: Spacing.tight)) : AnyLayout(HStackLayout())
+        return layout {
+            Text(row.title).font(TypeScale.rowTitle).lineLimit(stacked ? nil : 1)
+            if !stacked { Spacer(minLength: Spacing.medium) }
+            if let value = row.value {
+                Text(value).font(.subheadline).foregroundStyle(.secondary).lineLimit(stacked ? nil : 1)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func lineRow(_ line: String) -> some View {
+        let tone = card.toneUses.first { $0.element == "relay card line" }?.tone ?? .secondary
+        return HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
+            Text(line)
+                .font(TypeScale.meta)
+                .foregroundStyle(tone.color)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if card.cardAction == .openSubscription {
+                chevron
+            }
+        }
+        .frame(minHeight: PhoneMetrics.minTouch, alignment: .leading)
     }
 }
