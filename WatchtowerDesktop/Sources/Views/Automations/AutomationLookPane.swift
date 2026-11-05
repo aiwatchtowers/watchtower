@@ -167,7 +167,9 @@ struct AutomationLookCard: View {
                 }
             }
             let decoded = AutomationLookDecodedCards.card(blocksJSON: card.blocksJSON, actionsJSON: card.actionsJSON)
+            // The Inbox's renderer; `.preview` draws every button disabled.
             ArtifactCardBody(result: decoded.result, text: card.body, cardActions: decoded.cardActions, mode: .preview)
+                .environment(\.artifactEnvironment, ArtifactEnvironment(markdown: InboxArtifactCard.markdown))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.medium)
