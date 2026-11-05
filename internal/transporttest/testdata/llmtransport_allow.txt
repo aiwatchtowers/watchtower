@@ -29,8 +29,6 @@ cmd/connections.go | runConnectionsList | "http" | 1 | permanent: a Quick Connec
 cmd/connections.go | runConnectionsOAuth | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | validateConnectionAddFlags | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | validateHTTPURL | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
-cmd/connections.go | warnIfProviderIgnoresConnections | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/connections.go | warnIfProviderIgnoresConnections | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
 cmd/connections_import.go | importCandidateLine | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | importConnection | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | runConnectionsImport | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
@@ -87,7 +85,6 @@ internal/db/chat_routing.go | (*DB).SetChatRouting | "ollama" | 1 | permanent: v
 internal/db/terminal_sessions.go | (*DB).GetTerminalSession | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 internal/externalmcp/discover.go | discoveryTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/externalmcp/importsrc.go | claudeCandidate | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
-internal/hub/actions/handlers/session_input.go | (*Handlers).sendLine | "claude" | 1 | G7: phone session action decided by agent kind; becomes a capability (not_supported)
 internal/hub/actions/handlers/session_start.go | (*Handlers).launch | "codex" | 1 | G7: phone session action decided by agent kind; becomes a capability (not_supported)
 internal/hub/hub.go | FromEnv | "http" | 1 | permanent: URL scheme check, not an LLM transport
 internal/hub/slices/sources/workbench.go | wireAgent | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
