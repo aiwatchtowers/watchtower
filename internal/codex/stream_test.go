@@ -514,8 +514,8 @@ func TestQuery_StoppedTurnStreamsItsEnd(t *testing.T) {
 echo $$ > '` + pidFile + `'
 cat > /dev/null
 echo '{"type":"turn.started"}'
-echo '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}'
 echo '{"type":"usage","usage":{"input_tokens":50,"output_tokens":5}}'
+echo '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}'
 exec sleep 30
 `
 	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
