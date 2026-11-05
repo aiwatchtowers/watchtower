@@ -86,3 +86,24 @@ printf '{"type":"result","subtype":"success","result":"","usage":{"input_tokens"
 	require.Len(t, chunks, 1)
 	assert.True(t, chunks[0].ToolBoundary)
 }
+
+// Separate assistant messages are separated as the session translator
+// separates them: a later message's text starts after a blank line, while
+// two text blocks of one message (one message id) are glued.
+func TestQuery_ChatEventsSeparateMessagesLikeTheTranslator(t *testing.T) {
+	script := `
+printf '{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"One"}]}}\n'
+printf '{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":" more."}]}}\n'
+printf '{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Two."}]}}\n'
+printf '{"type":"result","subtype":"success","result":"Two.","usage":{"input_tokens":1,"output_tokens":1}}\n'
+`
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = writeMockClaude(t, script)
+	c.EmitToolEvents()
+
+	var text strings.Builder
+	for _, ch := range collectChunks(t, c) {
+		text.WriteString(ch.Text)
+	}
+	assert.Equal(t, "One more.\n\nTwo.", text.String())
+}

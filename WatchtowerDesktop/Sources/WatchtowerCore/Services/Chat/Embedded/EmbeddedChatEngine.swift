@@ -518,35 +518,39 @@ package final class EmbeddedChatEngine {
         endRunningTurn()
     }
 
-    /// A tool step or the turn's usage: shown on the live row and written in
-    /// order with the turn's other writes, a step as it starts and as it
-    /// ends (CHAT-02). False for any other event.
+    /// A tool step is shown on the live row and written as it starts and as
+    /// it ends, in order with the turn's other writes (CHAT-02); the usage is
+    /// kept on the turn and written with the reply's final state. False for
+    /// any other event. A failed step write raises the banner and leaves the
+    /// turn running, as the main chat leaves it (bookkeeping never ends the
+    /// owner's answer), also when it fails after the turn ended.
     private func recordStepOrUsage(_ event: StreamEvent, turn: LiveTurn) -> Bool {
         let now = clock()
         let store = store
         let messageID = turn.messageID
-        let write: () async throws -> Void
         switch event {
         case .toolStart(let start):
             let seq = turn.startStep(start, at: now)
-            write = { try await store.stepStarted(messageID: messageID, seq: seq, start: start, at: now) }
+            persistStep { try await store.stepStarted(messageID: messageID, seq: seq, start: start, at: now) }
         case .toolEnd(let end):
             turn.finishStep(end, at: now)
-            write = { try await store.stepFinished(messageID: messageID, end: end, at: now) }
+            persistStep { try await store.stepFinished(messageID: messageID, end: end, at: now) }
         case .usage(let usage):
             turn.setUsage(usage)
-            write = { try await store.saveUsage(messageID: messageID, usage: usage) }
         default:
             return false
         }
+        return true
+    }
+
+    private func persistStep(_ write: @escaping @MainActor () async throws -> Void) {
         writes.start { [self] in
             do {
                 try await write()
             } catch {
-                if isCurrent(turn) { failForStore(error, prefix: "Couldn't save the reply's steps") }
+                report(error, prefix: "Couldn't save a step of the reply")
             }
         }
-        return true
     }
 
     /// Records the turn's failure; the first one wins.
@@ -792,7 +796,9 @@ package final class EmbeddedChatEngine {
         let store = store
         let errorCode = failure.map { ($0.code ?? .internalError).rawValue }
         do {
+            let usage = turn.usage
             try await writes.runThrowing {
+                if let usage { try await store.saveUsage(messageID: turn.messageID, usage: usage) }
                 try await store.finalize(messageID: turn.messageID, text: text, status: status,
                                          errorCode: errorCode, errorMessage: failure?.message)
             }
@@ -861,7 +867,14 @@ package final class EmbeddedChatEngine {
 
     private func reload() throws {
         let rows = try store.loadMessages()
-        let steps = try store.steps(messageIDs: rows.filter { !$0.isUser }.map(\.id))
+        // The messages still show when their steps cannot be read.
+        let steps: [Int64: [ChatTurnStep]]
+        do {
+            steps = try store.steps(messageIDs: rows.filter { !$0.isUser }.map(\.id))
+        } catch {
+            log("reading the replies' steps: \(error)")
+            steps = [:]
+        }
         messages = rows.map {
             ChatThreadItem(message: $0, steps: steps[$0.id] ?? [], siblingIndex: 1, siblingCount: 1)
         }

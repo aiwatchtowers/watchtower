@@ -188,18 +188,16 @@ package final class ProviderConnection {
         + "It may use paid quota. It does not test the light model or enable reserve."
     package static let modelRequired = "Enter a strong model or wait for the model catalog before testing."
     package static let metadataFailure = "Couldn't read connection metadata. Retry the connection check."
-    package static let testFailure = "Connection test failed. Retry the explicit test to send another request."
-    /// `ai test` error codes whose message names its own next step (codex
-    /// ignoring the probe's system prompt: update the CLI or its config, then
-    /// test again), where "retry the test" would contradict it.
-    private static let codesWithTheirOwnNextStep: Set<String> = ["invalid_output"]
+    private static let testFailed = "Connection test failed."
+    package static let testFailure = testFailed + " Retry the explicit test to send another request."
     /// The failed test's line: the CLI's message after `testFailure`, or
-    /// after a bare "Connection test failed." when that message carries its
-    /// own next step.
+    /// after a bare "Connection test failed." for `invalid_output`, whose
+    /// message names its own next step (codex ignoring the probe's system
+    /// prompt: update the CLI or its config, then test again) that "retry
+    /// the test" would contradict.
     package static func testFailureMessage(code: String?, error: String?) -> String {
         guard let error, !error.isEmpty else { return testFailure }
-        if let code, codesWithTheirOwnNextStep.contains(code) { return "Connection test failed. " + error }
-        return testFailure + " " + error
+        return (code == "invalid_output" ? testFailed : testFailure) + " " + error
     }
     package static let mismatchedResult = "The response didn't match the selected provider and model. Connection is not verified."
     package static func name(_ id: String) -> String { id == "ollama" ? "Ollama / Local" : id == "codex" ? "Codex" : "Claude" }

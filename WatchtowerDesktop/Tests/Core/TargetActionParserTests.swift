@@ -117,4 +117,19 @@ final class TargetActionParserTests: XCTestCase {
         XCTAssertTrue(r.errors[0].lowercased().contains("type"))
         XCTAssertNotEqual(r.errors[0], "malformed action JSON")
     }
+
+    /// A reply keeps its text on both sides of a tool call, so a block the
+    /// assistant repeats after the call is one action, never applied twice.
+    func testARepeatedBlockIsOneAction() {
+        let block = """
+        ```watchtower-action
+        {"type":"update_due_date","due_date":"2026-09-01","reason":"first","mode":"execute"}
+        ```
+        """
+        let again = block.replacingOccurrences(of: "first", with: "said again")
+        let r = TargetActionParser.parse("Let me check.\n\(block)\n\nDone.\n\(again)")
+        XCTAssertEqual(r.actions.count, 1)
+        XCTAssertEqual(r.actions.first?.reason, "first")
+        XCTAssertTrue(r.errors.isEmpty)
+    }
 }

@@ -957,6 +957,7 @@ type streamEvent struct {
 }
 
 type streamMessage struct {
+	ID      string          `json:"id"`
 	Model   string          `json:"model"`
 	Content []streamContent `json:"content"`
 }
@@ -1012,14 +1013,20 @@ func ToolResultText(raw json.RawMessage) string {
 }
 
 // chatEventState maps one run's stream-json events onto the chat-event
-// chunks (EmitToolEvents). A subagent's events are dropped, as the chat
-// session's translator drops them.
+// chunks (EmitToolEvents). It is not chat.ClaudeTranslator (the warm
+// session's, which reads partial-message deltas and cannot be imported
+// here): this one reads whole messages, so the two must hide the same tools
+// (IsClaudeInternalTool) and separate messages alike. A subagent's events
+// are dropped, as the translator drops them.
 type chatEventState struct {
 	model  string
 	names  map[string]string // tool_use id → raw name, until its result
 	hidden map[string]bool   // tool_use ids of Claude-internal tools
-	// wroteText and afterTool put a blank line between the text before a
-	// tool call and the text after it, instead of gluing them together.
+	// textMessage is the id of the message that last emitted text and
+	// afterTool records a tool call since then: a later message's text, or
+	// any text after a tool call, starts after a blank line, as the
+	// translator separates messages.
+	textMessage          string
 	wroteText, afterTool bool
 }
 
@@ -1047,14 +1054,14 @@ func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
 					continue
 				}
 				text := b.Text
-				if s.wroteText && s.afterTool {
+				if s.wroteText && (s.afterTool || e.Message.ID != s.textMessage) {
 					text = "\n\n" + text
 				}
-				s.wroteText, s.afterTool = true, false
+				s.wroteText, s.afterTool, s.textMessage = true, false, e.Message.ID
 				out = append(out, StreamChunk{Text: text})
 			case "tool_use":
 				s.afterTool = true
-				if claudeInternalTools[b.Name] {
+				if IsClaudeInternalTool(b.Name) {
 					s.hidden[b.ID] = true
 					continue
 				}

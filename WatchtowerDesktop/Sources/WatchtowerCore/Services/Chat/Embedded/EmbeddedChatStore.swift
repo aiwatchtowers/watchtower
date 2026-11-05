@@ -22,7 +22,8 @@ package protocol EmbeddedChatStore: AnyObject {
     @discardableResult
     func append(role: String, text: String) async throws -> Int64
     /// A reply's tool step, written as it starts and as it ends (CHAT-02's
-    /// "as it happens" for a database chat), and the turn's usage.
+    /// "as it happens" for a database chat), and the turn's usage (written
+    /// just before the reply's final state).
     func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws
     func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws
     func saveUsage(messageID: Int64, usage: ChatUsage) async throws
@@ -33,11 +34,11 @@ package protocol EmbeddedChatStore: AnyObject {
     var dbPath: String? { get }
 }
 
-/// A store that keeps none of these (the memory store: its steps are shown
-/// while the turn runs, and a finished row has none).
 extension EmbeddedChatStore {
     package func actions(turnID: String) throws -> [AgentAction] { [] }
     package func saveActual(messageID: Int64, provider: String, model: String) async throws {}
+    // A store that keeps no steps or usage (the memory store: its steps are
+    // shown while the turn runs, and a finished row has none).
     package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {}
     package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws {}
     package func saveUsage(messageID: Int64, usage: ChatUsage) async throws {}

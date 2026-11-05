@@ -421,6 +421,25 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(gate.active.count, 0, "the slot is given back")
     }
 
+    /// A step that cannot be saved raises the banner and leaves the turn
+    /// running: bookkeeping never ends the owner's answer (as in the main chat).
+    func testAFailedStepWriteRaisesTheBannerAndTheReplyStillCompletes() async throws {
+        let store = FlakyStore()
+        store.failSteps = true
+        let engine = makeEngine(store: store)
+        engine.send("q")
+        await engine.finished()
+        ai.emit(.toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")))
+        expectTrue(await waitForCondition { engine.bannerError?.contains("Couldn't save a step of the reply") == true })
+        ai.emit(.text("Done."), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        let reply = try XCTUnwrap(engine.messages.last?.message)
+        XCTAssertEqual(reply.status, "complete")
+        XCTAssertEqual(reply.text, "Done.")
+        XCTAssertNotNil(engine.bannerError, "a banner raised while the turn ran stays")
+    }
+
     func testAFailedProgressWriteFailsTheTurnAndFreesTheSlot() async throws {
         let store = FlakyStore()
         var postTurnRan = false
@@ -1011,8 +1030,13 @@ private final class FlakyStore: EmbeddedChatStore {
     /// Fails the next finalize only (a transient lock).
     var failFinalizeOnce = false
     var failAppend = false
+    var failSteps = false
 
     var dbPath: String? { nil }
+
+    func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {
+        if failSteps { throw Failure() }
+    }
 
     func loadMessages() throws -> [ChatMessageRecord] {
         if failLoad { throw Failure() }
