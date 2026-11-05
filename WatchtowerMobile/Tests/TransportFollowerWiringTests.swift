@@ -96,8 +96,8 @@ final class TransportFollowerWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
 
         try await bed.writeMarker(target: .relay, epoch: 1)
-        await bed.fetch(first)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.fetch(first)
+        try await bed.root.routeMoves[hubID]?.value(within: 10, "bed.root.routeMoves[hubID]")
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertTrue(bed.root.env.session(hubID) === first)
@@ -118,7 +118,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         let control = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
 
         let listed = try Bed.rows(first, .undelivered)
         XCTAssertEqual(listed.count, 2)
@@ -136,8 +136,8 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await bed.fetch(first)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.fetch(first)
+        try await bed.root.routeMoves[hubID]?.value(within: 10, "bed.root.routeMoves[hubID]")
 
         XCTAssertEqual(try Bed.rows(first, .undelivered).count, 2)
         XCTAssertTrue(try Bed.handled(first, bed.switchID))
@@ -153,7 +153,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
 
         XCTAssertFalse(try Bed.handled(first, bed.switchID))
         let cloudNames = try await bed.cloudMailboxNames()
@@ -174,13 +174,13 @@ final class TransportFollowerWiringTests: XCTestCase {
         let bed = try await Bed.make(self, on: .cloudKit)
         let first = try await bed.orderedSession()
         try await bed.publishBriefings(["kept", "gone"], on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         XCTAssertEqual(try bed.briefings(first), ["briefing-gone", "briefing-kept"])
         try await bed.publishBriefings(["kept"], on: .relay)
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
         let second = try await bed.fetchAndFollow(first)
-        await bed.fetch(second)
+        try await bed.fetch(second)
 
         XCTAssertEqual(try bed.briefings(second), ["briefing-kept"])
         XCTAssertNotNil(try second.keybox(deviceID: TestE2E.deviceID), "the keybox stays")
@@ -214,7 +214,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         let first = try bed.session()
         await first.waitForBoot()
         try await bed.publishGrant(ordered: false)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         let ordered = try await first.outbox.orderedActions()
         XCTAssertFalse(ordered)
 
@@ -256,7 +256,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         first.transportSignals.onControl = { control in await follower.handle(control: control, on: .cloudKit) }
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         XCTAssertEqual(try bed.row()?.link.transport, .relay, "the move was written")
         XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1], "the merge failed")
         XCTAssertFalse(try Bed.handled(first, bed.switchID))
@@ -322,8 +322,8 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         let control = try await bed.writeHubControl(.hubOnRelay, on: .relay)
-        await bed.fetch(first)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.fetch(first)
+        try await bed.root.routeMoves[hubID]?.value(within: 10, "bed.root.routeMoves[hubID]")
 
         XCTAssertEqual(try bed.row()?.link.transport, .relay)
         XCTAssertNil(try bed.row()?.link.leftTransport)
@@ -350,17 +350,17 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertFalse(try Bed.handled(first, control.id))
         let cloudNames = try await bed.cloudMailboxNames()
         XCTAssertTrue(cloudNames.contains(try bed.switchWire))
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.root.routeMoves[hubID]?.value(within: 10, "bed.root.routeMoves[hubID]")
         let second = try XCTUnwrap(bed.root.env.session(hubID))
         await second.waitForBoot()
-        await second.outboxWork?.value
+        try await second.outboxWork?.value(within: 10, "second.outboxWork")
         await second.outbox.drain()
         let relayWrites = try await bed.relayMailbox().count
 
         // Read again: the same epoch on the same route answers the request and changes nothing.
         let again = TransportFollower(hubID: hubID, outbox: second.outbox, host: bed.root)
         let decidedAgain = await again.handle(control: control, on: .cloudKit)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.root.routeMoves[hubID]?.value(within: 10, "bed.root.routeMoves[hubID]")
         XCTAssertTrue(decidedAgain)
         XCTAssertEqual(try bed.row()?.link, moved)
         XCTAssertTrue(bed.root.env.session(hubID) === second, "no second move")
@@ -671,30 +671,30 @@ final class Bed {
         let session = try session()
         await session.waitForBoot()
         try await publishGrant(ordered: true)
-        await fetch(session)
+        try await fetch(session)
         let on = try await session.outbox.orderedActions()
         XCTAssertTrue(on)
-        await session.epochAckWork?.value
+        try await session.epochAckWork?.value(within: 10, "session.epochAckWork")
         await session.outbox.drain()
         return session
     }
 
     /// One fetch, then the outbox work it started.
-    func fetch(_ session: HubSession) async {
+    func fetch(_ session: HubSession) async throws {
         _ = await session.refresh(.pull)
-        await session.outboxWork?.value
+        try await session.outboxWork?.value(within: 10, "session.outboxWork")
         await session.outbox.drain()
     }
 
     /// A fetch that follows a move: the move, then the new session booted and its outbox flushed.
     func fetchAndFollow(_ session: HubSession) async throws -> HubSession {
-        await fetch(session)
-        await root.routeMoves[hubID]?.value
+        try await fetch(session)
+        try await root.routeMoves[hubID]?.value(within: 10, "root.routeMoves[hubID]")
         let next = try self.session()
         XCTAssertFalse(next === session, "the session moved")
         await next.waitForBoot()
-        await fetch(next)
-        await next.epochAckWork?.value
+        try await fetch(next)
+        try await next.epochAckWork?.value(within: 10, "next.epochAckWork")
         await next.outbox.drain()
         return next
     }
@@ -1148,7 +1148,7 @@ extension TransportFollowerWiringTests {
             _ = try await bed.mac.save(save)
             let session = try bed.session()
             await session.waitForBoot()
-            await bed.fetch(session)
+            try await bed.fetch(session)
         }
         func dataReads(after count: Int) -> [(since: UInt64, resync: Bool)] {
             bed.fake.log.dropFirst(count).compactMap { op in
@@ -1172,7 +1172,7 @@ extension TransportFollowerWiringTests {
         try await bed.relaunch(self)
         let reopened = try bed.session()
         await reopened.waitForBoot()
-        await bed.fetch(reopened)
+        try await bed.fetch(reopened)
         let reads = dataReads(after: before)
         XCTAssertEqual(reads.first?.since, 0, "the first read after the open starts at 0: \(reads)")
         XCTAssertEqual(reads.first?.resync, true)

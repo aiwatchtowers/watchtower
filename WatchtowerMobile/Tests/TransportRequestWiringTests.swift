@@ -180,7 +180,7 @@ final class TransportRequestWiringTests: XCTestCase {
         let session = try bed.session()
         await session.waitForBoot()
         try await bed.publishGrant(ordered: false)
-        await bed.fetch(session)
+        try await bed.fetch(session)
 
         let outcome = await session.requestTransport(reason: nil)
         await session.lapseRelay()
@@ -322,14 +322,14 @@ final class TransportRequestWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         _ = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         XCTAssertEqual(try bed.row()?.link.hubOnRelayAt, bed.clock.now)
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
 
         // A free phone told to follow the hub to the relay is the same fact.
         bed.clock.advance(10)
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         XCTAssertEqual(try bed.row()?.link.hubOnRelayAt, bed.clock.now, "kept, and set again by the refused move")
 
         // Paying again, the hub moves to the relay with this phone: the route becomes relay and the flag clears.
@@ -364,7 +364,7 @@ final class TransportRequestWiringTests: XCTestCase {
 
         // The hub answers with the transport it already runs on, in the epoch the phone holds.
         let control = try await bed.writeSwitch(target: .relay, epoch: epoch, on: .relay)
-        await bed.fetch(session)
+        try await bed.fetch(session)
 
         XCTAssertTrue(try Bed.handled(session, control.id))
         XCTAssertNil(try bed.row()?.link.transportRequest)
@@ -378,7 +378,7 @@ final class TransportRequestWiringTests: XCTestCase {
         let first = try XCTUnwrap(try bed.row()?.link.transportRequest)
 
         try await bed.writeRejection(RelayUpgrade.unavailable, retryAfter: 60, on: .relay)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         let waiting = try XCTUnwrap(try bed.row()?.link.transportRequest)
         XCTAssertNil(waiting.refusal)
         XCTAssertEqual(waiting.retryAt, bed.clock.now.addingTimeInterval(60))
@@ -393,7 +393,7 @@ final class TransportRequestWiringTests: XCTestCase {
         XCTAssertEqual(asked.map(\.id), [first.controlID, second.controlID])
 
         try await bed.writeRejection(RelayUpgrade.unavailable, retryAfter: 60, on: .relay)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .unavailable)
         bed.clock.advance(120)
         await bed.root.resumeRelayUpgrades()
@@ -407,7 +407,7 @@ final class TransportRequestWiringTests: XCTestCase {
         await session.outbox.drain()
 
         try await bed.writeRejection(RelayUpgrade.notSupported, on: .relay)
-        await bed.fetch(session)
+        try await bed.fetch(session)
 
         XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .notSupported)
     }
@@ -419,7 +419,7 @@ final class TransportRequestWiringTests: XCTestCase {
 
         for reason in [RelayUpgrade.tooSoon, RelayUpgrade.notPaying] {
             try await bed.writeRejection(reason, retryAfter: 30, on: .relay)
-            await bed.fetch(session)
+            try await bed.fetch(session)
             let record = try XCTUnwrap(try bed.row()?.link.transportRequest)
             XCTAssertNil(record.refusal, reason)
             XCTAssertNil(record.retryAt, reason)
@@ -431,7 +431,7 @@ final class TransportRequestWiringTests: XCTestCase {
         XCTAssertNil(try bed.row()?.link.transportRequest)
 
         try await bed.writeRejection(RelayUpgrade.unavailable, retryAfter: 60, on: .relay)
-        await bed.fetch(session)
+        try await bed.fetch(session)
 
         XCTAssertNil(try bed.row()?.link.transportRequest)
     }
@@ -488,11 +488,11 @@ final class TransportRequestWiringTests: XCTestCase {
         let session = try await bed.orderedSession()
         bed.relayOps.paying = false
         _ = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         XCTAssertNotNil(try bed.row()?.link.hubOnRelayAt)
 
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
-        await bed.fetch(session)
+        try await bed.fetch(session)
 
         XCTAssertNil(try bed.row()?.link.hubOnRelayAt, "the Mac is back on iCloud")
     }
@@ -502,11 +502,11 @@ final class TransportRequestWiringTests: XCTestCase {
         let session = try await bed.orderedSession()
         bed.relayOps.paying = false
         _ = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         XCTAssertNotNil(try bed.row()?.link.hubOnRelayAt)
 
         try await bed.writeMarker(target: .cloudKit, epoch: 2)
-        await bed.fetch(session)
+        try await bed.fetch(session)
 
         XCTAssertNil(try bed.row()?.link.hubOnRelayAt)
     }
@@ -535,11 +535,11 @@ final class TransportRequestWiringTests: XCTestCase {
         await session.lapseRelay()
         let first = try XCTUnwrap(try bed.row()?.link.transportRequest)
         try await bed.writeRejection(RelayUpgrade.notSupported, on: .relay)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         XCTAssertEqual(try bed.row()?.link.transportRequest?.refusal, .notSupported)
 
         await session.lapseRelay()
-        await bed.fetch(session)
+        try await bed.fetch(session)
         await session.lapseRelay()
 
         let record = try XCTUnwrap(try bed.row()?.link.transportRequest)

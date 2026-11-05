@@ -279,7 +279,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let env = try await orderedSession(over: transport, keys: keys)
 
         env.keysMerged(newestEpochRaised: false)
-        await env.epochAckWork?.value
+        try await env.epochAckWork?.value(within: 10, "env.epochAckWork")
         await env.outbox.drain()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
         XCTAssertEqual(adopted.map(\.epoch), [1], "the adoption's ack only: no raise, no new ack")
@@ -289,10 +289,10 @@ final class OrderedActionsWiringTests: XCTestCase {
             epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
         try keys.store.saveHubLink(link)
         env.keysMerged(newestEpochRaised: true)
-        await env.epochAckWork?.value
+        try await env.epochAckWork?.value(within: 10, "env.epochAckWork")
         await env.outbox.drain()
         env.keysMerged(newestEpochRaised: true)
-        await env.epochAckWork?.value
+        try await env.epochAckWork?.value(within: 10, "env.epochAckWork")
         await env.outbox.drain()
 
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -310,7 +310,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await first.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
         await fetch(first)
-        await first.epochAckWork?.value
+        try await first.epochAckWork?.value(within: 10, "first.epochAckWork")
         await first.shutDown()
         first.closeDatabases()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -319,7 +319,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let second = try session(over: transport, path: path, keys: keys)
         await second.waitForBoot()
         await fetch(second)
-        await second.epochAckWork?.value
+        try await second.epochAckWork?.value(within: 10, "second.epochAckWork")
         await second.outbox.drain()
         let after = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
         XCTAssertEqual(after.map(\.epoch), [1], "no raise: no second ack")
@@ -335,7 +335,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await first.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
         await fetch(first)
-        await first.epochAckWork?.value
+        try await first.epochAckWork?.value(within: 10, "first.epochAckWork")
         await first.shutDown()
         first.closeDatabases()
 
@@ -346,7 +346,7 @@ final class OrderedActionsWiringTests: XCTestCase {
 
         let second = try session(over: transport, path: path, keys: keys)
         await second.waitForBoot()
-        await second.epochAckWork?.value
+        try await second.epochAckWork?.value(within: 10, "second.epochAckWork")
         await second.outbox.drain()
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }.compactMap(\.epoch)
         XCTAssertEqual(acks.max(), 2, "the boot acknowledged the raise")
@@ -418,7 +418,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let on = try await env.outbox.orderedActions()
         XCTAssertTrue(on)
         // The adoption's epoch_ack is written before the test starts counting saves.
-        await env.epochAckWork?.value
+        try await env.epochAckWork?.value(within: 10, "env.epochAckWork")
         await env.outbox.drain()
         return env
     }

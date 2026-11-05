@@ -157,7 +157,7 @@ final class RelayLinkingE2ETests: XCTestCase {
         )
         try await macSave(bed.mac, zone: pairZone, try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date()))
         bed.linkClock.release()
-        await flow.value
+        try await flow.value(within: 10, "flow")
 
         XCTAssertEqual(root.linking.phase, .linked(macName: "build-box"))
         XCTAssertEqual(root.linking.links.first?.link.route, .hostedRelay(macDeviceID: bed.mac.deviceID))

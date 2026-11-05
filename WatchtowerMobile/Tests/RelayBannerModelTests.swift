@@ -173,10 +173,10 @@ final class RelayBannerModelTests: XCTestCase {
         let bed = try await Bed.make(self, on: .relay)
         let session = try await bed.orderedSession()
         bed.fake.crash()
-        await bed.fetch(session)
+        try await bed.fetch(session)
         let since = try XCTUnwrap(session.relayUnansweredSince, "the outage started")
         bed.clock.advance(3_600)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         XCTAssertEqual(session.relayUnansweredSince, since)
 
         let offer = try XCTUnwrap(RelayBannerModel.banner(
@@ -587,11 +587,11 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertNil(try model())
 
         _ = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         XCTAssertEqual(try model()?.text, s30)
 
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
-        await bed.fetch(session)
+        try await bed.fetch(session)
         XCTAssertNil(try bed.row()?.link.hubOnRelayAt)
         XCTAssertNil(try model())
     }
@@ -672,7 +672,7 @@ final class RelayBannerModelTests: XCTestCase {
         let changed = expectation(description: "the view hears the outage")
         withObservationTracking { _ = session.relayUnansweredSince } onChange: { changed.fulfill() }
         bed.fake.crash()
-        await bed.fetch(session)
+        try await bed.fetch(session)
         await fulfillment(of: [changed], timeout: 5)
     }
 }
