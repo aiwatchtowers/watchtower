@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -247,7 +248,13 @@ func claudeSettingsHooks(t *testing.T, path string) map[string][]string {
 func newSessionEnv(t *testing.T, ag *sessionAgent) *sessionEnv {
 	e := &sessionEnv{t: t, home: t.TempDir(), folder: t.TempDir(), sessionID: sessionID}
 	writeFile(t, filepath.Join(e.home, ".config", "watchtower", "config.yaml"), "active_workspace: test\n")
-	d, err := db.Open(filepath.Join(e.home, ".local", "share", "watchtower", "test", "watchtower.db"))
+	path := filepath.Join(e.home, ".local", "share", "watchtower", "test", "watchtower.db")
+	raw, err := os.ReadFile(migratedDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, string(raw))
+	d, err := db.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,4 +734,36 @@ func hooksOnly(r *sessionResult) error {
 		return fmt.Errorf("a hook-driven row got watch issue %q", r.WatchIssue)
 	}
 	return nil
+}
+
+var migrated struct {
+	once sync.Once
+	path string
+	err  error
+}
+
+// migratedDB is a workspace database migrated once for the whole run:
+// every session cell starts from a copy, so the migrations (slow under
+// -race) run once, not per cell.
+func migratedDB(t *testing.T) string {
+	t.Helper()
+	migrated.once.Do(func() {
+		migrated.path = filepath.Join(bins.dir, "migrated.db")
+		d, err := db.Open(migrated.path)
+		if err != nil {
+			migrated.err = err
+			return
+		}
+		// One file to copy: the WAL folded in.
+		if _, err := d.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			migrated.err = err
+		}
+		if err := d.Close(); err != nil && migrated.err == nil {
+			migrated.err = err
+		}
+	})
+	if migrated.err != nil {
+		t.Fatalf("migrating the template database: %v", migrated.err)
+	}
+	return migrated.path
 }
