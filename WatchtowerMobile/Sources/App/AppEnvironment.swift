@@ -343,6 +343,18 @@ final class AppEnvironment {
         preconditionFailure("no hub session")
     }
 
+    /// Settings → Diagnostics reads every hub's timings, in the registry's order (relay client Phase 4 Task 15).
+    func latencySources() -> [LatencyHubSource] {
+        order.compactMap { sessions[$0] }.map { session in
+            let store = session.store
+            let outbox = session.outbox
+            return LatencyHubSource(
+                samples: { try store.latencySamples(since: $0) },
+                ordered: { try await outbox.orderedActions() }
+            )
+        }
+    }
+
     var store: ReplicaStore { activeSession.store }
     var outbox: ActionOutbox { activeSession.outbox }
     var reportRequests: SessionReportRequester { activeSession.reportRequests }
