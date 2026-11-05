@@ -13,10 +13,11 @@ final class StoreKitRelayStoreTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         session = try SKTestSession(configurationFileNamed: "Relay")
+        // storekitd keeps failTransactionsEnabled and askToBuyEnabled across sessions, and a new session or
+        // assigning false does not clear them.
+        session.resetToDefaultState()
         session.disableDialogs = true
         session.clearTransactions()
-        session.failTransactionsEnabled = false
-        session.askToBuyEnabled = false
         store = StoreKitRelayStore(productID: Self.productID)
     }
 
@@ -25,6 +26,26 @@ final class StoreKitRelayStoreTests: XCTestCase {
         session = nil
         store = nil
         try await super.tearDown()
+    }
+
+    /// `Transaction.updates` can hand back the purchase itself first: reads on to the event a test is about.
+    private static func next(
+        _ iterator: inout AsyncStream<RelayTransaction>.AsyncIterator, where wanted: (RelayTransaction) -> Bool
+    ) async throws -> RelayTransaction {
+        while true {
+            let transaction = try await next(&iterator)
+            if wanted(transaction) { return transaction }
+        }
+    }
+
+    /// StoreKit's transaction lists catch up with a purchase shortly after it returns: reads until there is a value.
+    private func eventually<Value>(_ read: () async -> Value?) async -> Value? {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let value = await read() { return value }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return await read()
     }
 
     func testProductLoadsWithItsPrice() async throws {
@@ -46,19 +67,25 @@ final class StoreKitRelayStoreTests: XCTestCase {
             return XCTFail("expected a purchase")
         }
         XCTAssertFalse(transaction.jws.isEmpty)
-        var signed: StoreKit.Transaction?
-        for await verification in StoreKit.Transaction.all {
-            if case .verified(let value) = verification, value.id == transaction.id { signed = value }
+        let signed = await eventually { () -> StoreKit.Transaction? in
+            for await verification in StoreKit.Transaction.all {
+                if case .verified(let value) = verification, value.id == transaction.id { return value }
+            }
+            return nil
         }
         XCTAssertEqual(signed?.appAccountToken, token)
     }
 
-    func testAFailedPurchaseThrows() async {
+    func testAFailedPurchaseThrows() async throws {
+        let loaded = try await store.product()
+        XCTAssertNotNil(loaded, "a missing product also throws, which is not this test")
         session.failTransactionsEnabled = true
         do {
             _ = try await store.purchase(accountToken: UUID())
             XCTFail("expected a throw")
-        } catch {}
+        } catch {
+            XCTAssertNil(error as? RelayStoreError, "expected StoreKit's failure, got \(error)")
+        }
     }
 
     func testAskToBuyIsPending() async throws {
@@ -71,8 +98,11 @@ final class StoreKitRelayStoreTests: XCTestCase {
         guard case .purchased(let bought) = try await store.purchase(accountToken: UUID()) else {
             return XCTFail("expected a purchase")
         }
-        let before = await store.unfinished()
-        XCTAssertEqual(before.map(\.id), [bought.id])
+        let before = await eventually { () -> [RelayTransaction]? in
+            let listed = await self.store.unfinished()
+            return listed.isEmpty ? nil : listed
+        }
+        XCTAssertEqual(before?.map(\.id), [bought.id])
         await store.finish(bought)
         let after = await store.unfinished()
         XCTAssertTrue(after.isEmpty)
@@ -85,7 +115,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
         await store.finish(first)
         var iterator = store.updates().makeAsyncIterator()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
-        let renewal = try await Self.next(&iterator)
+        let renewal = try await Self.next(&iterator) { $0.id != first.id }
         XCTAssertEqual(renewal.originalID, first.originalID)
         XCTAssertNotEqual(renewal.id, first.id)
         XCTAssertGreaterThan(renewal.expiresAt, first.expiresAt)
@@ -99,7 +129,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
         XCTAssertFalse(bought.revoked)
         var iterator = store.updates().makeAsyncIterator()
         try session.refundTransaction(identifier: UInt(bought.id))
-        let refunded = try await Self.next(&iterator)
+        let refunded = try await Self.next(&iterator) { $0.revoked }
         XCTAssertEqual(refunded.id, bought.id)
         XCTAssertTrue(refunded.revoked)
     }
@@ -108,9 +138,11 @@ final class StoreKitRelayStoreTests: XCTestCase {
         guard case .purchased(let bought) = try await store.purchase(accountToken: UUID()) else {
             return XCTFail("expected a purchase")
         }
-        var expiry: Date?
-        for await verification in StoreKit.Transaction.all {
-            if case .verified(let value) = verification, value.id == bought.id { expiry = value.expirationDate }
+        let expiry = await eventually { () -> Date? in
+            for await verification in StoreKit.Transaction.all {
+                if case .verified(let value) = verification, value.id == bought.id { return value.expirationDate }
+            }
+            return nil
         }
         XCTAssertEqual(bought.expiresAt, expiry)
         XCTAssertGreaterThan(bought.expiresAt, Date())
@@ -136,7 +168,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
         await store.finish(first)
         var iterator = store.updates().makeAsyncIterator()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
-        let renewal = try await Self.next(&iterator)
+        let renewal = try await Self.next(&iterator) { $0.id != first.id }
         XCTAssertTrue(renewal.isRenewal)
     }
 
@@ -158,6 +190,8 @@ final class StoreKitRelayStoreTests: XCTestCase {
     }
 
     /// The next update, or a failure after ten seconds.
+    private struct NoUpdate: Error {}
+
     private static func next(_ iterator: inout AsyncStream<RelayTransaction>.AsyncIterator) async throws -> RelayTransaction {
         try await withThrowingTaskGroup(of: RelayTransaction?.self) { [iterator] group in
             var iterator = iterator
@@ -168,7 +202,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
             }
             defer { group.cancelAll() }
             guard let first = try await group.next(), let value = first else {
-                throw XCTSkip("no StoreKit update within 10 s")
+                throw NoUpdate()
             }
             return value
         }
