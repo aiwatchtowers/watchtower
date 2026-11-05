@@ -128,7 +128,7 @@ Line numbers are as of that commit.
 | L4 | codex spec reviewer | No turn cap. Claude gets `specreview.MaxTurns`. | `cmd/workbench_spec_review.go:129` vs `:136-141` |
 | L5 | codex, ollama main chat | No web search. The prompt says "no internet" (`WebSearch` is set only when the provider is not codex or ollama), while codex's own web search is neither offered nor turned off in chat. | `cmd/ai_session.go:186`; `internal/chat/prompt.go:30` |
 | L6 | codex, ollama main chat | No image or PDF attachments, and no project binaries, even though `codex exec --image` already works for media (`internal/codex/generator.go:66-98`). The Swift composer accepts the file, and the turn fails after Send. | `internal/chat/attachments.go:127`; `internal/chat/prompt_sections.go:436`; `WatchtowerCore/Services/Chat/AttachmentValidator.swift` (no provider input) |
-| L7 | runtime B, plain ollama | No `usage` event, so the chat message has no tokens. Runtime B streams the final answer as one chunk. | `internal/agentloop/client.go` `Query` (usage is returned by `run` and never emitted); `internal/ollama/client.go:173-238` |
+| L7 | runtime B, plain ollama | No `usage` event, so the chat message has no tokens. Runtime B streams the final answer as one chunk. Fixed: the usage chunk in G3; in G3b runtime B streams each model message's text as it arrives, before its tool steps, a later message after a blank line, and a stop keeps the text already shown. | `internal/agentloop/client.go` `Query` (usage is returned by `run` and never emitted); `internal/ollama/client.go:173-238` |
 | L8 | runtime B chat | No Quick Connections: `agentloop` gets the Watchtower registry only. | `cmd/ai_session.go:219-224` |
 | L9 | ollama `ai query --read-folder` | The folder is silently ignored and the answer comes from the prompt alone. The caller gets no error or flag. Swift avoids it only by checking the name. | `cmd/ai.go:288-292` |
 | L10 | ollama/http (and codex for chat codes) | Errors are never typed as `providers.Failure`. The chat error code comes from Claude-oriented text matching even when a typed failure exists. | no `Failure` in `internal/ollama`, `internal/agentloop`; `internal/chat/turn_backend.go:100`; `cmd/ai.go:640-660` |
@@ -209,7 +209,7 @@ Add `Caps Capabilities` to the registry row `providers.Provider` (`internal/prov
 |---|---|---|---|---|
 | `tools` | none / watchtower / watchtower+quick_connections | w+qc | w+qc | none (plain) / watchtower+quick_connections (runtime B, once G3 closes L8; decision B) |
 | `tool_events` | bool | yes | yes | runtime B yes |
-| `text_stream` | token / message / final | token | message | token (plain) / final (runtime B) |
+| `text_stream` | token / message / final | token | message | token (plain and runtime B, G3b; a server that does not stream gives runtime B whole messages) |
 | `usage` | none / totals / split | split | split (no cache write) | totals |
 | `cost_reported` | bool | yes | no | no |
 | `images`, `pdfs` | bool | yes, yes | images yes (L6), pdfs no | no |
