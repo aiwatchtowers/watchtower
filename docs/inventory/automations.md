@@ -367,7 +367,9 @@ the script outside it.
 **Status:** Enforced
 
 **Observable:** Active time ≤ `budget.minutes` (time spent waiting is
-excluded), tokens ≤ `budget.tokens` (input + output per model call; a call
+excluded), tokens ≤ `budget.tokens` (fresh input + output per model call,
+on every provider and on both the direct and the routed path; cache reads
+and cache writes are not debited, ask #488; a call
 without provider usage debits `ceil(len/4)` and marks the run estimated), and
 waits ≤ `pause_timeout_hours` (→ `expired`). There is no token cap across runs
 (ask #294): what other runs spent never stops a run. The deadline, budget and
@@ -461,6 +463,7 @@ model quota.
 - C2 built-ins (more): `internal/daemon/morning_brief_test.go` — `TestMorningBrief_InterruptedRunDoesNotBlockNextCycle`; `internal/automations/sdk_builtin_test.go` — `TestBuiltinSDK_UsageCountsAgainstBudget` (a primitive's reported usage is debited from the run's budget)
 - `internal/automations/sdk_readlimit_test.go` — `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes`, `TestAuto08_MCPOverTheByteCapIsDropped` (board #606: the read budget bounds a run)
 - `internal/automations/sdk_output_card_test.go` — `TestAuto08_ResumeRebuildsInboxCard` (2026-10-21: a resumed run's replayed `output.inbox` rebuilds its card with the link and actions)
+- `internal/automations/budget_cache_test.go` — `TestLLMBudgetDebitsUncachedInputOnEveryProvider`; `cmd/automations_agent_test.go` — `TestAgent_BudgetDebitsUncachedInputOnEveryProvider` (2026-11-05, ask #488: `llm()` and `agent()` debit fresh input + output on claude and codex, direct and routed)
 
 **Locked since:** 2026-10-14
 
@@ -671,6 +674,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-05 (codex parity, branch `feature/codex-parity`, **owner approved in ask #488**, superseding ask #487): **AUTO-08 amended** — the run's token budget counts fresh input + output per model call on every provider and on both paths (direct and routed through provider fallback); cache reads and cache writes are not debited (owner: accept the fresh-input budget; do not count Claude cache writes). The Observable's "input + output" becomes "fresh input + output". Side effect, approved in the same ask: codex `InputTokens`, and so the stored `input_tokens` of codex rows (digests, people, tracks, briefing, pipeline progress), now hold fresh input only, so codex rows written before this change are not comparable with later ones; the `llm_calls` ledger is unchanged and keeps the full split. The other AUTO-08 guards are unchanged; no guard relaxed. Guards added: `TestLLMBudgetDebitsUncachedInputOnEveryProvider` (`internal/automations`), `TestAgent_BudgetDebitsUncachedInputOnEveryProvider` (`cmd`).
 - 2026-10-28 (board #1194, **AUTO-06 amended, owner approved in ask #692**): quick run gains a third origin, the iPhone (`QuickRunCenter.runFromPhone` through `AutomationRunHandler`), for workbench recipes only; the not-runnable states refuse as on the Mac, and a `confirm: true` recipe needs the phone's own confirmation, carried as `confirmed: true` and checked by the hub. No guard relaxed (`testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun` unchanged). Guards added: `AutomationRunHandlerTests.testAConfirmRecipeRunsOnlyWhenThePhoneConfirmedIt`, `testARecipeThatCannotRunIsRefusedWithItsReason`.
 - 2026-10-25 (board #606, ask #567): **AUTO-08 amended** — a run is also bounded by the read budget (READ-01, key `run:<id>`, `mcp()` counts as a call); reaching it is a catchable `ValidationError`, not an interrupt; an `agent()` CLI child keeps its own counter under the same key. Strengthening, no guard relaxed. Guards added: `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes`.
 - 2026-10-23 (board #801, C2 final review fix batch 1): **AUTO-08 strengthened** — a runaway-disabled built-in stays off until the owner turns it on (the slot runner, Run Now and `automations run` check `disabled_reason`; the built-in sync's mirror never turns such a row on; only the owner's `features enable` — the card's Turn On — clears it, and not under AI-agent markers), and a CLI inline built-in run (a running `manual` run) is swept at daemon start only past its deadline, as a live CLI dry run is. No guard relaxed. Guards added: `TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives`, `TestSetBuiltinEnabled_NeverTurnsOnARunawayStop`, `TestRunner_RunawayStoppedBuiltinStaysOff`, `TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn`.
