@@ -21,6 +21,8 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // ClaudeOptions configures the warm Claude backend.
@@ -667,6 +669,10 @@ func (b *claudeBackend) currentSessionLocked() string {
 	return sid
 }
 
+// errNoResult is a clean child exit mid-turn: claude ended without the
+// turn's result line.
+var errNoResult = errors.New("claude ended the turn without a result")
+
 type outcomeKind int
 
 const (
@@ -680,6 +686,7 @@ type outcome struct {
 	msg    string
 	failed bool   // outcomeDone whose terminal event was an error
 	code   string // that error's code (msg holds its message)
+	cause  error  // outcomeExited with a typed failure (a clean exit, L12)
 }
 
 // Turn sends one owner message to the warm process and relays its events.
@@ -713,7 +720,7 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 	case outcomeContext:
 		return ctx.Err()
 	default:
-		emit(b.exitedTerminal(c.TurnID, out.msg))
+		emit(b.exitedTerminal(c.TurnID, out))
 		return nil
 	}
 }
@@ -753,16 +760,24 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, emit func(Ev
 
 // exitedTerminal is the terminal event of a turn whose child exited without a
 // result: interrupted when the owner cancelled (the child was killed after
-// the grace), otherwise the classified exit message.
-func (b *claudeBackend) exitedTerminal(turnID, msg string) Event {
+// the grace), a typed failure when the exit carries one (a clean exit, L12),
+// otherwise the classified exit message.
+func (b *claudeBackend) exitedTerminal(turnID string, out outcome) Event {
 	b.mu.Lock()
 	cancelled, sid := b.cancelled, b.currentSessionLocked()
 	b.mu.Unlock()
 	if cancelled {
 		return Event{Type: EventTurnDone, TurnID: turnID, Status: StatusInterrupted, SessionID: sid}
 	}
-	code, retry := ClassifyClaudeError(msg)
-	return errorEvent(turnID, code, msg, retry)
+	if out.cause != nil {
+		code, reason, retry := ClassifyFailure(out.cause)
+		event := errorEvent(turnID, code, out.msg, retry)
+		event.Reason = reason
+		event.Cause = out.cause
+		return event
+	}
+	code, retry := ClassifyClaudeError(out.msg)
+	return errorEvent(turnID, code, out.msg, retry)
 }
 
 // await relays events until the turn's terminal event, the child's exit, or
@@ -799,7 +814,18 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 		return o
 	}
 	waitClosed(p.errDone, 500*time.Millisecond)
-	msg := strings.TrimSpace(p.stderr.String())
+	stderr := strings.TrimSpace(p.stderr.String())
+	if p.cmd.ProcessState.Success() {
+		// A clean exit mid-turn left the answer without its end: never a
+		// blank or partial success (L12), as codex and the batch path.
+		msg, cause := errNoResult.Error(), errNoResult
+		if stderr != "" {
+			msg += ": " + stderr
+			cause = logredact.Errorf("%w: %s", errNoResult, logredact.Text(stderr))
+		}
+		return outcome{kind: outcomeExited, msg: msg, cause: providers.WithFailure("claude", providers.InvalidOutput, cause)}
+	}
+	msg := stderr
 	if msg == "" {
 		msg = "claude exited: " + p.cmd.ProcessState.String()
 	}

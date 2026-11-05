@@ -888,16 +888,26 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			return
 		}
 
-		// Without a result event a skipped line may have been the answer or
-		// the result itself: never a blank or partial "complete" turn.
-		if lastResult == nil && lines.Skipped() > 0 {
-			fail(providers.WithFailure("claude", providers.InvalidOutput,
-				fmt.Errorf("claude output had no result event (%d line(s) over %d bytes skipped)", lines.Skipped(), maxStreamLine)))
+		// A clean exit without a result event never ends as a blank or
+		// partial "complete" turn (L12): the answer may be cut short, and a
+		// skipped line may have been the answer or the result itself. Codex
+		// and the batch path refuse the same run.
+		if lastResult == nil {
+			if n := lines.Skipped(); n > 0 {
+				fail(providers.WithFailure("claude", providers.InvalidOutput,
+					fmt.Errorf("%w (%d line(s) over %d bytes skipped)", errNoResultEvent, n, maxStreamLine)))
+				return
+			}
+			fail(providers.WithFailure("claude", providers.InvalidOutput, errNoResultEvent))
 		}
 	}()
 
 	return textCh, errCh, sidCh
 }
+
+// errNoResultEvent fails a claude run that exited cleanly without its
+// result event.
+var errNoResultEvent = errors.New("claude output had no result event")
 
 // maxStreamLine is the longest stream-json line Query decodes
 // (streamline.MaxLine); a variable so tests can lower it.

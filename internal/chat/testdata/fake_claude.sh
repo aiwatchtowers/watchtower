@@ -166,6 +166,11 @@ while IFS= read -r line; do
       case "$FAKE_MODE" in
         crash_once)
           if first_time; then exit 3; fi ;;
+        exit_clean)
+          # Exit 0 mid-turn with partial text and no result line (L12).
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}'
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}}'
+          exit 0 ;;
         crash_always)
           printf '%b\n' "${FAKE_CRASH:-panic: cannot decode content block}" >&2
           exit 3 ;;
