@@ -369,6 +369,15 @@ Every state below is built from the design kit (`docs/design/desktop-style-guide
     ● Working · not watched                                         Chip(Tone.status working) + .caption .secondary
       tooltip: Watchtower can't read this Codex session's log (compressed). Watching starts again with the next prompt.
 
+**U7. Idle notice not available for Codex** (S10, only if G7's spike shows codex has no idle signal). The place that offers the idle notice is Settings → Notifications → **Workbench notifications** (`Views/Settings/NotificationSettings.swift`, the `WorkbenchNotificationCenter.enabledKey` toggle; its notices come from `SessionAgentStateCenter`). The toggle row gains a caption from the session capability (`idle_signal: false` on any agent kind): the row moves onto the kit's `SettingRow(title:caption:)`, whose caption is `.caption` `.secondary`. The text is built from the capability table, never from a kind check, and disappears when every kind reports `idle_signal: true`.
+
+    Notifications
+    ┌──────────────────────────────────────────────────────────────┐
+    │ Workbench notifications                                 (●) │  SettingRow, small switch
+    │ Agent questions and asks, finished targets, proposals.       │  caption (.caption .secondary)
+    │ Idle notices are not available for Codex sessions.           │  caption, from idle_signal
+    └──────────────────────────────────────────────────────────────┘
+
 ## 4. The contract test suite
 
 ### 4.1 Shape
