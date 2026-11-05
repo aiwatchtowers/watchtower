@@ -60,6 +60,15 @@ package enum AutomationEditorStep: String, CaseIterable, Hashable, Sendable {
     case collects
     case look
     case schedule
+
+    /// The step picker's segment title.
+    package var title: String {
+        switch self {
+        case .collects: "What it collects"
+        case .look: "Look"
+        case .schedule: "When it runs"
+        }
+    }
 }
 
 /// The Automations tab's right panel.

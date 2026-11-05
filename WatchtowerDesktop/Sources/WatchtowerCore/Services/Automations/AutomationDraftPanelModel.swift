@@ -171,6 +171,8 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     /// Recipe text → the sessions of the newest cached draft with that text
     /// and a dry run (the save card's block); only `load` fills it.
     package private(set) var dryRunSessions: [String: AutomationDryRunSessions] = [:]
+    /// The conversation's cache entries, oldest first; only `load` fills it.
+    package private(set) var entries: [String] = []
 
     package static let empty = Self(entry: nil)
     package static let unreadable = Self(entry: nil, unreadable: true)
@@ -191,7 +193,16 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
         }
         var model = Self(newest: AutomationDraftEntry.newest(in: entries))
         model.dryRunSessions = dryRunSessions(in: entries)
+        model.entries = entries
         return model
+    }
+
+    /// The Look step's chat entry for `text`
+    /// (`AutomationLookPreviewModel.chatEntry`): a cache that could not be
+    /// read is `.undecodable`, never "no draft yet".
+    package func lookEntry(text: String) -> AutomationDraftEntry.Newest {
+        if isUnreadable, entries.isEmpty { return .undecodable }
+        return AutomationLookPreviewModel.chatEntry(in: entries, text: text)
     }
 
     /// Every decodable cache entry, oldest first, keyed by its recipe text:

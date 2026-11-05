@@ -1236,6 +1236,42 @@ final class AutomationEditorCenterTests: XCTestCase {
         center.discard(7)
         XCTAssertEqual(center.step(for: 7), .look, "the step outlives closing the panel")
     }
+
+    /// `openAutomationEditor(_:step: .look)`: a saved automation opens on
+    /// Look at once; a new draft's step waits for its key (its chat opens
+    /// first) and is claimed once.
+    func testOpenAtStep() async throws {
+        let center = makeCenter()
+        center.setStep(.look, for: .existing(7))
+        XCTAssertEqual(center.step(for: 7), .look)
+        center.setStep(.schedule, for: .existing(7, startText: "RECIPE"))
+        XCTAssertEqual(center.step(for: 7), .schedule)
+
+        let draft = AutomationEditorTarget.newDraft(contextID: "automation-draft:acme", scope: .personal, startText: nil)
+        center.setStep(.look, for: draft)
+        let key = AutomationEditorCenter.newDraftKey(conversationID: 42)
+        XCTAssertEqual(center.step(for: key), .collects, "not applied before the key is known")
+        center.claimPendingStep(contextID: "automation-draft:other", key: key)
+        XCTAssertEqual(center.step(for: key), .collects, "another draft's step is not taken")
+        center.claimPendingStep(contextID: "automation-draft:acme", key: key)
+        XCTAssertEqual(center.step(for: key), .look)
+        center.setStep(.collects, for: key)
+        center.claimPendingStep(contextID: "automation-draft:acme", key: key)
+        XCTAssertEqual(center.step(for: key), .collects, "claimed once: the owner's later choice stays")
+    }
+
+    /// The Look step's card picker is kept per key across navigation, and
+    /// starts over with a discarded draft.
+    func testCardChoiceIsKeptPerKey() async throws {
+        let center = makeCenter()
+        XCTAssertEqual(center.selectedCard(for: 7), 0)
+        center.selectCard(3, for: 7)
+        XCTAssertEqual(center.selectedCard(for: 7), 3)
+        XCTAssertEqual(center.selectedCard(for: 8), 0)
+        await center.beginEdit(7, chatNewestText: nil)
+        center.discard(7)
+        XCTAssertEqual(center.selectedCard(for: 7), 0)
+    }
 }
 
 /// A panel's only part in a Dry run: the press. Dropped by the test to

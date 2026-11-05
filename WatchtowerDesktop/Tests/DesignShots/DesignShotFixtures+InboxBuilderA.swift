@@ -55,7 +55,20 @@ enum InboxBuilderAShotFixtures {
             DesignShot(name: name, size: NSSize(width: 480, height: 640)) {
                 lookColumn(content, llmTokens: llmTokens, now: now)
             }
-        }
+        } + [
+            // AUTO-06 (ask #486): Save pressed on Look with a scope and a script change.
+            DesignShot(name: "look-save-changed-row", size: NSSize(width: 480, height: 640)) {
+                lookColumn(.preview(.init(cards: waiting), tokens: 3100, at: now), llmTokens: nil, now: now,
+                           changes: #"[{"field":"scope","old":"personal","new":"workbench:3"},"#
+                               + #"{"field":"script","old":"","new":""}]"#)
+            },
+            // AUTO-06: a never-confirmed recipe with long lines and every
+            // footer warning — the row scrolls, Save stays on the pane.
+            DesignShot(name: "look-save-long-confirmation", size: NSSize(width: 480, height: 640)) {
+                lookColumn(.preview(.init(cards: waiting), tokens: 5800, at: now), column: longConfirmationColumn(),
+                           llmTokens: 5800, now: now)
+            }
+        ]
     }
 
     private static var targetShots: [DesignShot] {
@@ -132,35 +145,85 @@ enum InboxBuilderAShotFixtures {
 
     // MARK: - The Look step
 
-    private enum Step: Hashable { case collects, look, schedule }
+    /// The editor's draft column on its Look step, drawn by the live views:
+    /// `AutomationDraftSteps` with the pane and the footer bar (**Save Look**,
+    /// the AI-step line when `llmTokens`, the pinned Changed row for
+    /// `changes`), as an edit of an automation that is on.
+    private static func lookColumn(
+        _ content: AutomationLookPaneContent,
+        llmTokens: Int?,
+        now: Date,
+        changes: String = "[]"
+    ) -> AnyView {
+        lookColumn(content, column: lookColumnModel(addsLLM: llmTokens != nil, changes: changes),
+                   llmTokens: llmTokens, now: now)
+    }
 
-    /// The draft column on its Look step: the step picker, the pane, and
-    /// the footer with **Save Look** (and the AI-step line when `llmTokens`).
-    private static func lookColumn(_ content: AutomationLookPaneContent, llmTokens: Int?, now: Date) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Spacing.medium) {
-                    KitSegmentedPicker(title: "Step", selection: .constant(Step.look), segments: [
-                        KitSegment(value: Step.collects, title: "What it collects"),
-                        KitSegment(value: Step.look, title: "Look"),
-                        KitSegment(value: Step.schedule, title: "When it runs")
-                    ])
-                    AutomationLookPane(content: content, onDryRun: {}, now: now)
+    private static func lookColumn(
+        _ content: AutomationLookPaneContent,
+        column: AutomationDraftColumnModel,
+        llmTokens: Int?,
+        now: Date
+    ) -> AnyView {
+        let verdict = AutomationDraftFooter.make(isNew: false, bytesChanged: true, enabled: true,
+                                                 needsConfirmation: false)
+        return AnyView(AutomationDraftSteps(
+            step: .constant(.look), column: column, keepAuto: .constant([]), onDryRunAgain: nil,
+            look: { AutomationLookPane(content: content, onDryRun: {}, now: now) },
+            footer: {
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    AutomationSaveConfirmation(column: column, step: .look)
+                    AutomationDraftFooterBar(
+                        verdict: verdict, step: .look, ready: true, checking: false, isSaving: false,
+                        warnings: AutomationDraftFooter.Warnings(column: column, dryRunTokens: llmTokens)
+                    ) { _ in }
                 }
                 .padding(Spacing.large)
             }
-            Divider()
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                if let llmTokens { AutomationLLMStepWarning(dryRunTokens: llmTokens) }
-                HStack {
-                    Spacer()
-                    Button("Save Look") {}.buttonStyle(.kitPrimary)
-                }
-            }
-            .padding(Spacing.large)
-        }
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .detailBackground())
+    }
+
+    /// A checked edit of "Waiting for me" (living Inbox cards), with
+    /// `adds_llm` as given.
+    private static func lookColumnModel(addsLLM: Bool, changes: String) -> AutomationDraftColumnModel {
+        let text = "---\nname: Waiting for me\n---\n"
+        let json = #"{"ok":true,"errors":[],"slug":"waiting","name":"Waiting for me","scope":"personal","#
+            + #""approval_hash":"h2","content_hash":"\#(AutomationDraftColumnModel.contentHash(text))","#
+            + #""permissions":["slack:read@acme","llm:light"],"outputs":["inbox"],"widening":[],"#
+            + #""changes":\#(changes),"changes_known":true,"adds_llm":\#(addsLLM),"#
+            + #""fields":{"trigger":"schedule: */30 9-18 * * 1-5","missed":"skip","concurrency":"1","#
+            + #""artifacts":"living","budget":{"tokens":20000,"minutes":5}}}"#
+        let validated = try? JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
+        return AutomationDraftColumnModel(text: text, validated: validated, isChecking: false, newestChatEntry: nil,
+                                          confirmedText: text, isNew: false, plan: nil) { $0 == 3 ? "acme-app" : nil }
+    }
+
+    /// A workbench recipe never confirmed, with many long permissions, a
+    /// shell command and auto on for a Slack send: the "Also confirms" row
+    /// lists every field, and the footer carries every warning.
+    private static func longConfirmationColumn() -> AutomationDraftColumnModel {
+        let text = "---\nname: Release watch\n---\n"
+        let permissions = [
+            "slack:read@acme", "slack:write@acme", "gmail:read@work", "jira:read@ACME", "jira:write@ACME",
+            "confluence:read@acme", "calendar:read@work", "llm:strong", "shell:\"make release-notes VERSION=next\""
+        ]
+        let list = permissions.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\\\"") + "\"" }
+            .joined(separator: ",")
+        let json = #"{"ok":true,"errors":[],"slug":"release-watch","name":"Release watch","scope":"workbench","#
+            + #""approval_hash":"h2","content_hash":"\#(AutomationDraftColumnModel.contentHash(text))","#
+            + #""permissions":[\#(list)],"outputs":["inbox","report","slack"],"widening":[],"#
+            + #""changes":[],"changes_known":false,"adds_llm":true,"feeds_sources_to_llm":true,"#
+            + #""fields":{"trigger":"event: slack.new_messages where account=\"acme\", channel=\"release-*\"","#
+            + #""missed":"skip","concurrency":"1","artifacts":"living","budget":{"tokens":60000,"minutes":15}}}"#
+        let validated = try? JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
+        let saved = AutomationDraftColumnModel.Saved(changedBy: "", changedAt: nil, needsConfirmation: true,
+                                                     llmAutoWrites: ["send_slack_message"])
+        return AutomationDraftColumnModel(text: text, validated: validated, isChecking: false, newestChatEntry: nil,
+                                          confirmedText: nil, isNew: false, plan: nil, saved: saved) { _ in
+            "acme-release"
+        }
     }
 
     private static func waitingCard(sample name: String = "waiting-living") -> AutomationLookPaneContent.Card {

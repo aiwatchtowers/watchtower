@@ -93,10 +93,16 @@ struct InboxArtifactCard: View {
         return InboxCardButtons.caption(reply)
     }
 
+    /// The chat's markdown renderer for a block's `md` text: the Inbox
+    /// card's, and the editor's Look preview's ("drawn as the Inbox draws it").
+    static func markdown(_ text: String) -> AnyView {
+        AnyView(MarkdownView(text: text))
+    }
+
     private func environment(reply: InboxReplyState) -> ArtifactEnvironment {
         let byIndex = Dictionary(layout.pressable.map { ($0.index, $0) }) { first, _ in first }
         return ArtifactEnvironment(
-            markdown: { AnyView(MarkdownView(text: $0)) },
+            markdown: Self.markdown,
             avatar: { Self.avatar(people[$0]) },
             onAction: { index in
                 guard let action = byIndex[index] else { return }
