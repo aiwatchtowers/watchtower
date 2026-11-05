@@ -994,7 +994,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	// echoes it.
 	resp, err := parseCLIOutput(output)
 	if err == nil && resp.Type != "result" {
-		err = fmt.Errorf("claude CLI output is a %q object, not a result", resp.Type)
+		err = logredact.Errorf("claude CLI output is a %q object, not a result", logredact.Text(resp.Type))
 	}
 	if err != nil {
 		return "", nil, noResultFailure(fmt.Errorf("%w: %w", errNoResultEvent, err), stderrBuf.String())

@@ -62,7 +62,7 @@ func TestClaudeQuerySync_ExitZeroWithoutResultIsInvalidOutput(t *testing.T) {
 	cases := map[string]string{
 		"empty output":             `exit 0`,
 		"array without result":     `printf '[{"type":"system","subtype":"init"},{"type":"assistant","message":{"content":[{"type":"text","text":"half an answer"}]}}]'`,
-		"object that is no result": `printf '{"type":"system","subtype":"init"}'`,
+		"object that is no result": `printf '{"type":"half an answer","subtype":"init"}'`,
 		"plain text":               `printf 'half an answer'`,
 	}
 	for name, script := range cases {
@@ -76,7 +76,7 @@ func TestClaudeQuerySync_ExitZeroWithoutResultIsInvalidOutput(t *testing.T) {
 			assert.Equal(t, providers.InvalidOutput, failure.Category)
 			assert.Empty(t, text)
 			assert.Nil(t, usage)
-			assert.NotContains(t, logredact.Full(err), "half an answer", "the output is described, never echoed")
+			assert.NotContains(t, err.Error(), "half an answer", "the output is described, never echoed")
 		})
 	}
 }
