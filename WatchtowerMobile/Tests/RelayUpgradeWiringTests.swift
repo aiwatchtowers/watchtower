@@ -72,6 +72,20 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(dark.relayOps.proofs, 0)
     }
 
+    /// The upgrade's record is rebuilt with the relay id: the switch stays in it.
+    func testAnUpgradingRecordKeepsTheAlertSwitch() async throws {
+        let (bed, session) = try await upgradeBed()
+        let settings = session.deviceSettings
+        let before = settings.workAlerts
+        addTeardownBlock { @MainActor in settings.workAlerts = before }
+        _ = await session.upgradeToRelay()
+        settings.workAlerts = false
+        let device = try XCTUnwrap(session.linkedDevice)
+        let payload = bed.root.devicePayload(hubID: hubID, for: device, linkNonce: nil, unlinked: false, now: Date())
+        XCTAssertNotNil(payload.relayDeviceID)
+        XCTAssertTrue(payload.workAlertsOff)
+    }
+
     // MARK: - The reader wait
 
     func testTheSwitchIsAskedOnlyAfterTheFirstDataZoneRead() async throws {
