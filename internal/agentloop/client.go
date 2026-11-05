@@ -232,16 +232,17 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 	out.startMessage()
 	if lastContent != "" {
 		const note = "(Note: I reached the tool-call limit before finishing.)"
+		capped := lastContent + messageSeparator + note
 		if out.shown {
 			out.send(note)
 		} else {
-			out.send(lastContent + messageSeparator + note)
+			out.send(capped)
 		}
-		return lastContent + messageSeparator + note, usage, nil
+		return capped, usage, nil
 	}
-	const note = "I couldn't complete that within the tool-call limit."
-	out.send(note)
-	return note, usage, nil
+	const limitNote = "I couldn't complete that within the tool-call limit."
+	out.send(limitNote)
+	return limitNote, usage, nil
 }
 
 // meteredChat is one model call between the BeforeModelCall and

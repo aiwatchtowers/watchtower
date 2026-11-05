@@ -61,3 +61,31 @@ type oaUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 }
+
+// Streaming wire types: the chat.completion.chunk subset the loop reads.
+type oaStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+type oaStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content   string            `json:"content"`
+			ToolCalls []oaToolCallDelta `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *oaUsage `json:"usage"`
+	// Error is an object ({message,type}) or a string; Object "error" with
+	// Message is the legacy vLLM shape (the ollama client reads the same).
+	Error   json.RawMessage `json:"error"`
+	Object  string          `json:"object"`
+	Message string          `json:"message"`
+}
+
+type oaToolCallDelta struct {
+	Index    *int       `json:"index"`
+	ID       string     `json:"id"`
+	Type     string     `json:"type"`
+	Function oaFunction `json:"function"`
+}

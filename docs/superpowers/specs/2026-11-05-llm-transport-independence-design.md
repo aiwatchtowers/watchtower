@@ -209,7 +209,7 @@ Add `Caps Capabilities` to the registry row `providers.Provider` (`internal/prov
 |---|---|---|---|---|
 | `tools` | none / watchtower / watchtower+quick_connections | w+qc | w+qc | none (plain) / watchtower+quick_connections (runtime B, once G3 closes L8; decision B) |
 | `tool_events` | bool | yes | yes | runtime B yes |
-| `text_stream` | token / message / final | token | message | token (plain and runtime B: runtime B streams its requests, and a server that answers one with a whole JSON body has that message sent whole, as soon as it arrives; G3b) |
+| `text_stream` | token / message / final | token | message | token (plain and runtime B, G3b; a server that does not stream gives runtime B whole messages) |
 | `usage` | none / totals / split | split | split (no cache write) | totals |
 | `cost_reported` | bool | yes | no | no |
 | `images`, `pdfs` | bool | yes, yes | images yes (L6), pdfs no | no |

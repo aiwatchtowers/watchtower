@@ -81,8 +81,9 @@ func (o *textOut) boundary() {
 
 // jsonBody reports whether a 200 answer to a streaming request is one JSON
 // body (a server that does not stream) rather than SSE: its first
-// non-whitespace byte opens an object. A read error reports false, so
-// readStream meets and types it.
+// non-whitespace byte opens an object. The body decides, not Content-Type,
+// which OpenAI-compatible servers do not all set. A read error reports
+// false, so readStream meets and types it.
 func jsonBody(br *bufio.Reader) bool {
 	for n := 1; ; n++ {
 		b, err := br.Peek(n)
@@ -96,34 +97,6 @@ func jsonBody(br *bufio.Reader) bool {
 			return false
 		}
 	}
-}
-
-// Streaming wire types: the chat.completion.chunk subset the loop reads.
-type oaStreamOptions struct {
-	IncludeUsage bool `json:"include_usage"`
-}
-
-type oaStreamChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content   string            `json:"content"`
-			ToolCalls []oaToolCallDelta `json:"tool_calls"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *oaUsage `json:"usage"`
-	// Error is an object ({message,type}) or a string; Object "error" with
-	// Message is the legacy vLLM shape (the ollama client reads the same).
-	Error   json.RawMessage `json:"error"`
-	Object  string          `json:"object"`
-	Message string          `json:"message"`
-}
-
-type oaToolCallDelta struct {
-	Index    *int       `json:"index"`
-	ID       string     `json:"id"`
-	Type     string     `json:"type"`
-	Function oaFunction `json:"function"`
 }
 
 // streamMessage assembles one streamed assistant message.
@@ -202,26 +175,27 @@ func (m *streamMessage) add(ch *oaStreamChunk, out *oaResponse, onText func(stri
 const maxStreamErrorMessage = 1024
 
 // streamError reports an error the chunk carries, as the owner reads it:
-// capped on a rune boundary, never empty.
+// capped on a rune boundary, never empty. The shapes and the cap are the
+// ollama client's (internal/ollama asError/formatChatError), its twin for
+// plain chat.
 func (ch *oaStreamChunk) streamError() (string, bool) {
-	var msg string
+	var e struct{ Message, Type string }
 	switch raw := strings.TrimSpace(string(ch.Error)); {
 	case ch.Object == "error":
-		msg = ch.Message
+		e.Message = ch.Message
 	case raw == "" || raw == "null":
 		return "", false
-	case json.Unmarshal(ch.Error, &msg) == nil:
+	case strings.HasPrefix(raw, `"`):
+		_ = json.Unmarshal(ch.Error, &e.Message) // the chunk decoded, so this is a string
 	default:
-		var e struct{ Message, Type string }
-		_ = json.Unmarshal(ch.Error, &e) // the chunk decoded, so this is an object
-		msg = strings.TrimSpace(e.Message)
-		if e.Type != "" {
-			msg += " (" + e.Type + ")"
-		}
+		_ = json.Unmarshal(ch.Error, &e) // and this an object
 	}
-	msg = strings.TrimSpace(msg)
-	if msg == "" || strings.HasPrefix(msg, "(") {
-		msg = strings.TrimSpace("the model server reported an error with no message " + msg)
+	msg := strings.TrimSpace(e.Message)
+	if msg == "" {
+		msg = "the model server reported an error with no message"
+	}
+	if e.Type != "" {
+		msg += " (" + e.Type + ")"
 	}
 	if len(msg) > maxStreamErrorMessage {
 		cut := maxStreamErrorMessage
@@ -258,31 +232,42 @@ func readStream(ctx context.Context, br *bufio.Reader, out *oaResponse, onText f
 			continue
 		}
 		if err := m.add(&ch, out, onText); err != nil {
+			m.into(out)
 			return err
 		}
 	}
-	if m.choice {
-		// Set on a failure too: the ledger row estimates what was streamed.
-		out.Choices = []oaChoice{{
-			Message:      oaMessage{Role: "assistant", Content: m.content.String(), ToolCalls: m.calls},
-			FinishReason: m.finish,
-		}}
-	}
+	m.into(out)
 	if err := streamEnd(ctx, sc.Err(), done || m.finish != ""); err != nil {
 		return err
 	}
 	return m.check(skipped)
 }
 
+// into sets out's message from m, on a failure too: the ledger row
+// estimates what was streamed.
+func (m *streamMessage) into(out *oaResponse) {
+	if m.choice {
+		out.Choices = []oaChoice{{
+			Message:      oaMessage{Role: "assistant", Content: m.content.String(), ToolCalls: m.calls},
+			FinishReason: m.finish,
+		}}
+	}
+}
+
 // check refuses a completed stream that cannot be the model's message: a
-// tool_calls finish with no call assembled, or nothing at all after an
-// undecodable chunk (it may have held the answer). Counts only (FILES-01).
+// tool_calls finish with no call assembled, a tool call next to an
+// undecodable chunk (it may have held a fragment of the arguments), or
+// nothing at all after one (it may have held the answer). A lost text
+// fragment only shortens the text. Counts only (FILES-01).
 func (m *streamMessage) check(skipped int) error {
 	switch {
 	case m.finish == "tool_calls" && len(m.calls) == 0:
 		return providers.WithFailure("ollama", providers.InvalidOutput,
 			fmt.Errorf("model stream finished for tool calls with none read (%d undecodable chunks)", skipped))
-	case skipped > 0 && m.content.Len() == 0 && len(m.calls) == 0:
+	case skipped > 0 && len(m.calls) > 0:
+		return providers.WithFailure("ollama", providers.InvalidOutput,
+			fmt.Errorf("model stream had %d undecodable chunks beside its tool calls", skipped))
+	case skipped > 0 && m.content.Len() == 0:
 		return providers.WithFailure("ollama", providers.InvalidOutput,
 			fmt.Errorf("model stream had no message, %d undecodable chunks", skipped))
 	}

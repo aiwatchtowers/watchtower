@@ -316,6 +316,10 @@ func TestAgentloopQuery_StreamedToolCallShapes(t *testing.T) {
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_targets","arguments":"{"}}]}}]}`,
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"list_targets","arguments":"}"}}]}}]}`,
 		},
+		"same index, new id": {
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_targets","arguments":"{}"}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"b","type":"function","function":{"name":"list_targets","arguments":"{}"}}]}}]}`,
+		},
 		"no index, repeated id": {
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"a","type":"function","function":{"name":"list_targets","arguments":"{"}}]}}]}`,
 			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"a","function":{"arguments":"}"}}]}}]}`,
@@ -328,7 +332,11 @@ func TestAgentloopQuery_StreamedToolCallShapes(t *testing.T) {
 			reg := listTargetsReg()
 			_, err := collect(t, clientWith(reg, srv.URL))
 			require.NoError(t, err)
-			assert.Equal(t, []string{"list_targets"}, reg.reads)
+			want := []string{"list_targets"}
+			if name == "same index, new id" {
+				want = append(want, "list_targets") // older Ollama: every call at index 0
+			}
+			assert.Equal(t, want, reg.reads)
 		})
 	}
 }
@@ -377,6 +385,12 @@ func TestAgentloopQuery_UndecodableChunkIsInvalidOutput(t *testing.T) {
 			sseFinish("tool_calls"), sseDone,
 		},
 		"tool_calls finish, no call": {sseFinish("tool_calls"), sseDone},
+		"argument fragment lost": {
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"list_targets","arguments":"{\"id\":"}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":12}}]}}]}`,
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"3}"}}]}}]}`,
+			sseFinish("tool_calls"), sseDone,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := newSSEServer(t, lines)
@@ -441,4 +455,16 @@ func TestFILES01_AgentloopStreamErrorStaysOnTheError(t *testing.T) {
 	log.Printf("agentloop stream: %v", err)
 	require.Contains(t, sink.String(), "model stream error")
 	sink.AssertClean(t)
+}
+
+// An error inside the stream still hands the text already streamed to the
+// ledger estimate.
+func TestAgentloopQuery_StreamErrorRecordsStreamedText(t *testing.T) {
+	calls := captureCalls(t)
+	srv := newSSEServer(t, []string{sseText("Some text first."), `data: {"error":"boom"}`})
+	_, err := collect(t, clientWith(listTargetsReg(), srv.URL))
+	require.Error(t, err)
+	got := calls.all()
+	require.Len(t, got, 1)
+	assert.Equal(t, llmusage.EstimateTokens("Some text first."), got[0].Output)
 }
