@@ -18,7 +18,13 @@ public struct FollowerState: Equatable, Sendable {
     public var route: TransportKind
     /// The newest epoch the phone adopted.
     public var newestEpoch: UInt32
-    public var canUseRelay: RelayUse
+    public var canUseRelay: RelayUse {
+        // Paying again ends the lapse: a later lapse asks again.
+        didSet { if canUseRelay == .yes { lapseRequested = false } }
+    }
+    /// The phone already asked the hub to move it to CloudKit because its subscription lapsed (sim rule 16). Reset by a
+    /// move to CloudKit or a `canUseRelay` of `.yes`.
+    public var lapseRequested: Bool
     /// A transport the phone left whose mailbox is still to drain (rule 15).
     public var leftTransport: TransportKind?
     /// When the relay stopped answering on route `.relay`; nil while it answers.
@@ -38,7 +44,8 @@ public struct FollowerState: Equatable, Sendable {
         leftTransport: TransportKind? = nil,
         relayUnreachableSince: Date? = nil,
         otherMailboxPolledAt: Date? = nil,
-        relaySwitchRequested: Bool = false
+        relaySwitchRequested: Bool = false,
+        lapseRequested: Bool = false
     ) {
         self.route = route
         self.newestEpoch = newestEpoch
@@ -47,6 +54,7 @@ public struct FollowerState: Equatable, Sendable {
         self.relayUnreachableSince = relayUnreachableSince
         self.otherMailboxPolledAt = otherMailboxPolledAt
         self.relaySwitchRequested = relaySwitchRequested
+        self.lapseRequested = lapseRequested
     }
 }
 
@@ -62,6 +70,8 @@ public enum FollowerInput: Sendable {
     case hubOnRelay(controlID: String)
     case relayReachable(Bool, at: Date)
     case oldMailboxDrained(TransportKind)
+    /// The relay refused the phone because its subscription ended (sim rule 16).
+    case relayLapsed
 }
 // swiftlint:enable enum_case_associated_values_count
 
@@ -85,6 +95,8 @@ public enum FollowerCommand: Equatable, Sendable {
     case pollOtherMailbox(on: TransportKind)
     /// The control is decided: delete it and its copy on the other transport.
     case markHandled(controlID: String)
+    /// Ask the hub to move this phone to `target`, with the hub's own `reason` (the lapse: `lapseReason`).
+    case requestSwitch(target: TransportKind, reason: String)
     /// Nothing to do, and nothing to keep.
     case ignore
 }
@@ -97,6 +109,8 @@ public enum TransportFollowerPolicy {
     public static let otherMailboxAfter: TimeInterval = 60
     /// How often it reads it while the outage lasts.
     public static let otherMailboxEvery: TimeInterval = 30
+    /// The one reason the hub knows for a move to CloudKit that spares the Mac's other phones (`switcher.Request`).
+    public static let lapseReason = "entitlement_expired"
 
     public static func decide(
         _ input: FollowerInput, state: FollowerState, now: Date
@@ -133,6 +147,12 @@ public enum TransportFollowerPolicy {
             var next = state
             if next.leftTransport == kind { next.leftTransport = nil }
             return (next, [])
+        case .relayLapsed:
+            var next = state
+            next.canUseRelay = .no
+            guard state.route == .relay, !state.lapseRequested else { return (next, [.ignore]) }
+            next.lapseRequested = true
+            return (next, [.requestSwitch(target: .cloudKit, reason: lapseReason)])
         }
     }
 
@@ -153,6 +173,7 @@ public enum TransportFollowerPolicy {
         if target != left {
             next.route = target
             next.leftTransport = left
+            if target == .cloudKit { next.lapseRequested = false }
             commands.append(.resendUnechoedOnNewTransport)
         }
         commands.append(.sendEpochAck(epoch))
@@ -169,6 +190,7 @@ public enum TransportFollowerPolicy {
         if state.route == .relay {
             next.route = .cloudKit
             next.leftTransport = .relay
+            next.lapseRequested = false
             commands.append(.moveRoute(to: .cloudKit, epoch: state.newestEpoch, by: "", at: now))
         }
         commands.append(.listUnechoedAsUndelivered)

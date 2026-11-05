@@ -660,7 +660,7 @@ actor KitFollower {
             case .sendEpochAck(let epoch): ack = epoch
             case .listUnechoedAsUndelivered: _ = try await outbox.listUnechoedAsUndelivered(reason: .hubOnRelay)
             case .markHandled, .ignore, .requestAnswered: handled = true
-            case .mergeKeybox, .drainMailbox, .pollOtherMailbox: break
+            case .mergeKeybox, .drainMailbox, .pollOtherMailbox, .requestSwitch: break
             }
         }
         if move?.to == .relay || commands.contains(.requestAnswered) { relayRequested = false }
