@@ -924,46 +924,79 @@ func TestClaudeBackend_CancelDuringStuckWriteEndsInterrupted(t *testing.T) {
 	require.NoError(t, h.finish())
 }
 
+// runOneTurn starts b, runs turn t1 and returns its events.
+func runOneTurn(t *testing.T, b Backend) []Event {
+	t.Helper()
+	t.Cleanup(func() { _ = b.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	_, err := b.Start(ctx)
+	require.NoError(t, err)
+	var events []Event
+	require.NoError(t, b.Turn(ctx, Command{Type: CommandTurn, TurnID: "t1", Text: "hello"}, func(e Event) { events = append(events, e) }))
+	require.NotEmpty(t, events)
+	return events
+}
+
+// requireTypedTurnError checks the turn's text and that it ended with a
+// turn-scoped error typed want, coded through ClassifyFailure.
+func requireTypedTurnError(t *testing.T, events []Event, want providers.ErrorCategory) Event {
+	t.Helper()
+	var text strings.Builder
+	for _, e := range events {
+		if e.Type == EventTextDelta {
+			text.WriteString(e.Text)
+		}
+	}
+	assert.Equal(t, "partial", text.String(), "the partial text is delivered")
+	last := events[len(events)-1]
+	require.Equal(t, EventError, last.Type)
+	assert.Equal(t, "t1", last.TurnID)
+	var failure *providers.Failure
+	require.ErrorAs(t, last.Cause, &failure, "the error carries a typed cause")
+	assert.Equal(t, want, failure.Category)
+	code, reason, retryable := ClassifyFailure(failure)
+	assert.Equal(t, code, last.Code)
+	assert.Equal(t, reason, last.Reason)
+	assert.Equal(t, retryable, last.Retryable)
+	return last
+}
+
 // L12: a warm child that exits 0 mid-turn without its result line ends the
-// turn with a typed invalid_output failure, through CodeForFailure, after
-// the partial text; never a blank success or an untyped internal error.
-// Its stderr, if any, is in the message.
+// turn with a typed failure, through ClassifyFailure, after the partial
+// text; never a blank success or an untyped internal error. Its stderr is in
+// the message and decides the category when it is one of the CLI's own auth
+// or rate-limit diagnostics; else the failure is invalid_output.
 func TestClaudeBackend_CleanExitWithoutResultIsInvalidOutput(t *testing.T) {
-	for _, tc := range []struct{ stderr, wantMsg string }{
-		{"", "claude ended the turn without a result"},
-		{"mcp server failed to start", "claude ended the turn without a result: mcp server failed to start"},
+	for _, tc := range []struct {
+		stderr, wantMsg string
+		want            providers.ErrorCategory
+	}{
+		{"", "claude ended the turn without a result", providers.InvalidOutput},
+		{"mcp server failed to start", "claude ended the turn without a result: mcp server failed to start", providers.InvalidOutput},
+		{"Invalid API key · Please run /login", "claude ended the turn without a result: Invalid API key · Please run /login", providers.Auth},
+		{"API Error: 429 slow down", "claude ended the turn without a result: API Error: 429 slow down", providers.RateLimit},
 	} {
 		t.Run(tc.wantMsg, func(t *testing.T) {
 			opts, _ := fakeClaude(t, "exit_clean")
 			opts.Env = append(opts.Env, "FAKE_STDERR="+tc.stderr)
-			b := NewClaudeBackend(opts)
-			t.Cleanup(func() { _ = b.Close() })
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			t.Cleanup(cancel)
-			_, err := b.Start(ctx)
-			require.NoError(t, err)
-
-			var events []Event
-			require.NoError(t, b.Turn(ctx, Command{Type: CommandTurn, TurnID: "t1", Text: "hello"}, func(e Event) { events = append(events, e) }))
-			require.NotEmpty(t, events)
-			var text strings.Builder
-			for _, e := range events {
-				if e.Type == EventTextDelta {
-					text.WriteString(e.Text)
-				}
-			}
-			assert.Equal(t, "partial", text.String(), "the partial text is delivered")
-
-			last := events[len(events)-1]
-			require.Equal(t, EventError, last.Type)
-			assert.Equal(t, "t1", last.TurnID)
-			var failure *providers.Failure
-			require.ErrorAs(t, last.Cause, &failure, "the error carries a typed cause")
-			assert.Equal(t, providers.InvalidOutput, failure.Category)
-			code, retryable := CodeForFailure(providers.InvalidOutput)
-			assert.Equal(t, code, last.Code)
-			assert.Equal(t, retryable, last.Retryable)
+			last := requireTypedTurnError(t, runOneTurn(t, NewClaudeBackend(opts)), tc.want)
 			assert.Equal(t, tc.wantMsg, last.Message)
 		})
 	}
+}
+
+// A stdout line longer than the warm reader takes ends the turn with a
+// typed invalid_output failure instead of leaving it waiting until a cancel;
+// the child is ended so the next turn gets a fresh one, which replays.
+func TestClaudeBackend_OverlongLineFailsTheTurn(t *testing.T) {
+	old := maxWarmLine
+	maxWarmLine = 64 << 10
+	t.Cleanup(func() { maxWarmLine = old })
+	opts, f := fakeClaude(t, "long_line")
+	opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10))
+	b := NewClaudeBackend(opts)
+	last := requireTypedTurnError(t, runOneTurn(t, b), providers.InvalidOutput)
+	assert.Contains(t, last.Message, "reading claude output")
+	waitGone(t, readPIDFile(t, f.pid), "the child whose output could not be read")
 }

@@ -92,7 +92,14 @@ type claudeProc struct {
 	// unreadable is set once a JSON line the translator could not read was
 	// reported, so a protocol change is noted once per child, not per line.
 	unreadable atomic.Bool
+	// readErr holds the readError that stopped the stdout reader (a line
+	// over maxWarmLine, a failed read); exitOutcome turns it into the turn's
+	// failure.
+	readErr atomic.Value
 }
+
+// readError is what claudeProc.readErr holds.
+type readError struct{ err error }
 
 // exitedOutputWait bounds how long an exited child's stdout may take to be
 // fully read before the exit is judged (exitOutcome). It waits after a
@@ -574,6 +581,10 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	return p, nil
 }
 
+// maxWarmLine is the longest stdout line the warm reader takes (tool
+// results arrive as one line each); a variable so tests can lower it.
+var maxWarmLine = 64 << 20
+
 // read translates the child's stdout into events on p.events.
 func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer close(p.outDone)
@@ -583,7 +594,7 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer b.gate.procGone(p)
 	sc := bufio.NewScanner(r)
 	// Tool results arrive as one line each; allow multi-megabyte lines.
-	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
+	sc.Buffer(make([]byte, 0, 64<<10), maxWarmLine)
 	for sc.Scan() {
 		if b.routeStatusAnswer(sc.Bytes()) || b.routeControl(p, sc.Bytes()) {
 			continue
@@ -612,6 +623,17 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			case <-p.stop:
 				return
 			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		// The rest of the stream cannot be read, so the turn's result never
+		// arrives: end the child, and the turn ends through exitOutcome with
+		// a typed failure instead of waiting for a cancel. The next turn gets
+		// a fresh child, which replays.
+		p.readErr.Store(readError{err})
+		fmt.Fprintf(b.warn(), "chat: reading claude output: %v\n", err)
+		if p.pgid > 1 {
+			killGroup(p)
 		}
 	}
 }
@@ -809,22 +831,39 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 	if o, done := drainPending(p.events, handle); done {
 		return o
 	}
+	if re, ok := p.readErr.Load().(readError); ok {
+		return readOutcome(re.err)
+	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	stderr := strings.TrimSpace(p.stderr.String())
 	if p.cmd.ProcessState.Success() {
 		// A clean exit mid-turn left the answer without its end: never a
-		// blank or partial success (L12), as codex and the batch path.
+		// blank or partial success (L12), as codex and the batch path. Its
+		// stderr decides the category when it is one of the CLI's own auth
+		// or rate-limit diagnostics (providers.CleanExitFailure).
 		cause := errNoResult
 		if stderr != "" {
 			cause = logredact.Errorf("%w: %s", errNoResult, logredact.Text(stderr))
 		}
-		return outcome{kind: outcomeExited, msg: logredact.Full(cause), cause: providers.WithFailure("claude", providers.InvalidOutput, cause)}
+		return outcome{kind: outcomeExited, msg: logredact.Full(cause), cause: providers.CleanExitFailure("claude", stderr, cause)}
 	}
 	msg := stderr
 	if msg == "" {
 		msg = "claude exited: " + p.cmd.ProcessState.String()
 	}
 	return outcome{kind: outcomeExited, msg: msg}
+}
+
+// readOutcome is the outcome of a turn whose child was ended because its
+// stdout could not be read: a line over maxWarmLine is invalid output, any
+// other read failure a broken transport.
+func readOutcome(err error) outcome {
+	cause := fmt.Errorf("reading claude output: %w", err)
+	category := providers.Transport
+	if errors.Is(err, bufio.ErrTooLong) {
+		category = providers.InvalidOutput
+	}
+	return outcome{kind: outcomeExited, msg: cause.Error(), cause: providers.WithFailure("claude", category, cause)}
 }
 
 // send writes the user message to the live child (spawning one if needed).
