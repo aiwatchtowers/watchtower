@@ -584,6 +584,7 @@
                 "reply": "v",
                 "data": {
                   "a": "<&>",
+                  "big": 531995931301175800000,
                   "f": 1.5,
                   "n": [
                     1,
@@ -598,15 +599,15 @@
         ]
       },
       "card_actions": "[]",
-      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"v\",\"data\":{\"a\":\"\\u003c\\u0026\\u003e\",\"f\":1.5,\"n\":[1,{\"b\":null}]},\"primary\":true}]}]}",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"v\",\"data\":{\"a\":\"\\u003c\\u0026\\u003e\",\"big\":531995931301175800000,\"f\":1.5,\"n\":[1,{\"b\":null}]},\"primary\":true}]}]}",
       "plain_text": "",
       "actions": [
         "Reply"
       ],
       "action_hashes": [
-        "6fa8d616cda2eba4"
+        "31a9faffb8f40ef3"
       ],
-      "content_hash": "d8737cba056fd2995eb9da5d1ff91b62113e65ebc3efcd4967896e19c15e4163"
+      "content_hash": "6cbcc3f508c9b92c26f23a6a91667386b342e01258855bad515d3ce17ca8b42a"
     }
   ],
   "invalid": [
