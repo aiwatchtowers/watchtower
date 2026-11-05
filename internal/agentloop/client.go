@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
 
@@ -52,13 +54,14 @@ type Client struct {
 	opts    Options
 	allowed map[string]bool // nil = every surface tool (Options.Tools nil)
 
-	toolEvents bool // emit ai.StreamChunk{Tool: …} around each dispatch (EmitToolEvents)
+	toolEvents bool // the protocol-v2 chat events: tool start/end chunks and the turn's usage (EmitToolEvents)
 }
 
-// EmitToolEvents makes Query report every tool call as a start and an end
-// chunk (ai.StreamChunk.Tool) around its dispatch, so a protocol-v2 chat can
-// show the call as a step. Off by default: v1 consumers see only the
-// boundary and the text, unchanged.
+// EmitToolEvents switches on the protocol-v2 chat events: Query reports
+// every tool call as a start and an end chunk (ai.StreamChunk.Tool) around
+// its dispatch, so a chat can show the call as a step, and ends a turn with
+// one ai.StreamChunk{Usage} when the server reported usage. Off by default:
+// v1 consumers see only the boundary and the text, unchanged.
 func (c *Client) EmitToolEvents() { c.toolEvents = true }
 
 // Options restrict and meter a runtime-B loop (an automation's agent(),
@@ -122,8 +125,10 @@ func NewClientWithOptions(model, baseURL string, reg *tools.Registry, b tools.Bi
 // tool call emits an ai.StreamChunk{ToolBoundary: true} before the tools run —
 // so a consumer that showed any pre-tool text discards it and starts the visible
 // answer fresh from the text after the last boundary, matching claude/codex
-// (ai.StreamChunk's contract). The final answer is streamed as one Text chunk;
-// write proposals still surface through the Desktop's AgentActionFeed.
+// (ai.StreamChunk's contract). The final answer is streamed as one Text chunk
+// (text_stream=final); with the chat events on, the turn's summed usage
+// follows it. Write proposals still surface through the Desktop's
+// AgentActionFeed.
 func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	textCh := make(chan ai.StreamChunk, 8)
 	errCh := make(chan error, 1)
@@ -132,8 +137,14 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(textCh)
 		defer close(errCh)
 		defer close(sidCh)
-		if _, _, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch }); err != nil {
+		_, usage, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch })
+		if err != nil {
 			errCh <- err
+			return
+		}
+		if c.toolEvents && usage != nil {
+			textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
+				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}}
 		}
 	}()
 	return textCh, errCh, sidCh
@@ -238,7 +249,7 @@ func (c *Client) meteredChat(ctx context.Context, msgs []oaMessage, oaTools []oa
 		c.opts.AfterModelCall(in, out)
 	}
 	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("model returned no choices")
+		return nil, providers.WithFailure("ollama", providers.InvalidOutput, errors.New("model returned no choices"))
 	}
 	return resp, nil
 }
@@ -357,16 +368,17 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("model request failed: %w", err)
+		return nil, providers.OllamaRequestFailure(fmt.Errorf("model request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("model returned HTTP %d: %s", resp.StatusCode, string(b))
+		return nil, providers.OllamaFailure(resp.StatusCode, string(b),
+			fmt.Errorf("model returned HTTP %d: %s", resp.StatusCode, string(b)))
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decoding model response: %w", err)
+		return nil, providers.OllamaRequestFailure(fmt.Errorf("decoding model response: %w", err))
 	}
 	ok = len(out.Choices) > 0
 	return &out, nil

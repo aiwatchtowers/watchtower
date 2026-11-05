@@ -3,14 +3,18 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
@@ -148,7 +152,7 @@ func TestAIQueryReadFolder_AbsentKeepsTodaysRun(t *testing.T) {
 }
 
 // The codex provider gets the folder as its working root under the
-// read-only sandbox; ollama has no file tools at all.
+// read-only sandbox; ollama has no file tools at all, so its run is refused.
 func TestAIQueryReadFolder_ProviderWiring(t *testing.T) {
 	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
 	codexClient := newAIClientWithModel(cfg, "", "gpt-5.4")
@@ -157,7 +161,50 @@ func TestAIQueryReadFolder_ProviderWiring(t *testing.T) {
 	_, ok = newAIClientWithModel(&config.Config{AI: config.AIConfig{Provider: "claude"}}, "", "m").(readFolderConfigurable)
 	assert.True(t, ok, "claude reads the folder with its own tools")
 	_, ok = newAIClientWithModel(&config.Config{AI: config.AIConfig{Provider: "ollama"}}, "", "m").(readFolderConfigurable)
-	assert.False(t, ok, "ollama has no file tools: a read-folder run answers from the prompt alone")
+	assert.False(t, ok, "ollama has no file tools: a read-folder run is refused (TestAIQuery_ReadFolderWithoutFileToolsIsRefused)")
+}
+
+// TestAIQuery_ReadFolderWithoutFileToolsIsRefused (L9): a provider with no
+// file tools refuses --read-folder before any model call — non-zero exit and
+// a v2 error with reason required_capability_missing — instead of quietly
+// answering from the prompt alone.
+func TestAIQuery_ReadFolderWithoutFileToolsIsRefused(t *testing.T) {
+	f := newReadFolderFixture(t)
+	var hits atomic.Int32
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "must not be called", http.StatusTeapot)
+	}))
+	t.Cleanup(model.Close)
+	require.NoError(t, os.WriteFile(f.config, fmt.Appendf(nil, `active_workspace: test-ws
+workspaces:
+  test-ws:
+    slack_token: "xoxp-test-token"
+ai:
+  provider: ollama
+  ollama_url: %q
+  models:
+    strong: llama
+`, model.URL), 0o600))
+
+	code, stdout, stderr := f.run(t, "--read-folder", f.folder, "--events", "v2")
+	assert.NotEqual(t, 0, code, "the refusal is a failed command")
+	assert.Contains(t, stderr, "read")
+	assert.Zero(t, hits.Load(), "no model call")
+
+	var errEv *chat.Event
+	for _, line := range stdout {
+		var ev chat.Event
+		require.NoError(t, json.Unmarshal([]byte(line), &ev), line)
+		if ev.Type == chat.EventError {
+			errEv = &ev
+		}
+		assert.NotEqual(t, chat.EventTextDelta, ev.Type, "no answer from the prompt alone")
+	}
+	require.NotNil(t, errEv, "a v2 error event: %v", stdout)
+	assert.Equal(t, "required_capability_missing", errEv.Reason)
+	assert.False(t, errEv.Retryable)
+	assert.NotEmpty(t, errEv.Message)
 }
 
 func firstText(t *testing.T, lines []string) string {
