@@ -433,6 +433,7 @@ func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
 		"publish private pages, slide decks and documents to the owner's claude.ai account",
 		"Pages, decks and documents stay in-app html or document artifacts by default",
 		"Publish to claude.ai only when the owner explicitly asks for it",
+		"a change to a page or doc already published in this chat goes to the same link",
 		"Artifact tool",
 		"Claude Docs",
 		"Write the page's source file with the Write tool at an absolute path inside " + testPublishDir + " only",

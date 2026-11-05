@@ -56,14 +56,16 @@ Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in 
 
 ### Publishing to claude.ai
 <!-- learn
-id: artifacts-publish-claude-ai
+id: artifacts-publish-claude-ai-on-ask
 title: Publish a page to claude.ai
 text: On the Claude provider, ask to publish a page or doc to claude.ai; **Copy Link** shares it.
 area: assistant
 level: power
 kind: feature
-since: 0.24.0
+since: next
 action: nav:chat
+replaces: [artifacts-publish-claude-ai]
+changed: Pages and docs now stay in the app unless you ask for claude.ai.
 -->
 
 On the Claude provider, signed in with a claude.ai account, the main chat can publish a page, a slide deck or a document privately to your claude.ai account. Pages, decks and documents open in the artifact panel by default; ask for it on claude.ai ("publish it to claude.ai", "make it a Claude Doc") to get a link instead. Drafts to send, tables and code always stay in the panel.
