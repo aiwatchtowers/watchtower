@@ -238,20 +238,21 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - Phase 4, Open decision 17: One banner at a time on Now, in a fixed order — ask #1038
 - Phase 4, Open decision 18: The CloudKit alert subscription stays for any hub offering CloudKit, silent on the relay — ask #1038
 - Phase 4, Open decision 19: A refused purchase is left unfinished, sent once per launch by the automatic paths with an owner's press exempt, counted only while its paid period is current — ask #1038
-- Phase 4: An upgrade running when the subscription lapses is refused by the hub (`not_paying`) and shows Phase 3b's refusal; the superseding path looks unreachable on an iCloud route — decided by the agent, Task 5; pending ask #1040
+- Phase 4: An upgrade running when the subscription lapses is refused by the hub (`not_paying`) and shows Phase 3b's refusal; the superseding path looks unreachable on an iCloud route — decided by the agent, Task 5
 - Phase 4: A store failure is `PurchaseState.storeFailed`, S57, "The App Store didn't finish. Nothing changed; you can try again."; a cancelled sign-in is not a failure — decided by the agent, Task 6; pending ask #1040
-- Phase 4: The center's first pass runs from `foreground()`, not `start()`, so a push launch stays frugal — decided by the agent, Task 6, amends its brief's "at launch and each foreground"; pending ask #1040
+- Phase 4: The center's first pass runs from `foreground()`, not `start()`, so a push launch stays frugal — decided by the agent, Task 6, amends its brief's "at launch and each foreground"
 - Phase 4: An expiry control and `.entitlementInactive` sweep before they read, so an unsent renewal cannot lapse Macs — decided by the agent, Task 6; pending ask #1040
-- Phase 4: A paying read corrects an expiry control, so no lapse; a failed read after a control still lapses — decided by the agent, Task 6's review, amends its brief's "refresh, then lapse"; pending ask #1040
-- Phase 4: A non-nil `unconfirmed` wins over `.storeFailed`, `.pending`, `.noSubscriptionFound` and `.accountFailed`, so a charged owner never reads false text — decided by the agent, Tasks 6 and 9, overrides their "What shows"; pending ask #1040
+- Phase 4: A paying read corrects an expiry control, so no lapse; a failed read after a control still lapses — decided by the agent, Task 6's review, amends its brief's "refresh, then lapse"
+- Phase 4: A non-nil `unconfirmed` wins over `.storeFailed`, `.pending`, `.noSubscriptionFound` and `.accountFailed`, so a charged owner never reads false text — decided by the agent, Tasks 6 and 9, overrides their "What shows"
 - Phase 4: `updateRequired` stops a sale, not an answer: it overrides `.idle`, `.loadingProduct`, `.ready`, `.productFailed`, `.storeFailed`, `.noSubscriptionFound`, `.accountFailed`; S43 shows with no press and no `unconfirmed`; order: running press, paying, unconfirmed, latch, result — decided by the agent, Task 9, corrected in its fix round; pending ask #1040
 - Phase 4: A retry on a result with no price reads **Load the Price** (S45b, S57b) — decided by the agent, Task 9; pending ask #1040
-- Phase 4: An iCloud row with no `ordered_actions` on a relay route is disabled and reuses `.notOrdered`'s text (S12b), replacing a first ruling's new string — decided by the agent, Task 8; pending ask #1040
-- Phase 4: The registrar's foreground gate stands against the spec's "at every launch": a token waits for the next open — decided by the agent, Task 13; pending ask #1040
-- Phase 4: `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case — decided by the agent, Task 13; the move is in Launch conditions; pending ask #1040
+- Phase 4: An iCloud row with no `ordered_actions` on a relay route is disabled and reuses `.notOrdered`'s text (S12b), replacing a first ruling's new string — decided by the agent, Task 8
+- Phase 4: The registrar's foreground gate stands against the spec's "at every launch": a token waits for the next open — decided by the agent, Task 13
+- Phase 4: `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case — decided by the agent, Task 13; the move is in Launch conditions
 - Phase 4: A push launch opens no socket until the first activation: new Task 19; a tap launch can connect at activation rather than in the boot — decided by the agent, Tasks 13 and 19; pending ask #1040
 - Phase 4: `AlertSubscriptionRegistrar.idle()` is capped at 10 s, like `outboxDrainCap`, against its brief's "no cap": a hung CloudKit call must not leave a stopped session with no error — decided by the agent, Task 18; pending ask #1040
-- Phase 4: New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again — decided by the agent, Task 10; pending ask #1040
+- Phase 4: New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again — decided by the agent, Task 10
 - Phase 4: Now's banner is a plain card, not the mockup's amber, because orange means waiting for you (`PhoneTone`, `OrangeToneTests`) — decided by the agent, Task 10; pending ask #1040
 - Phase 4: S34b's text: "Your Relay subscription ended. Work Mac moves to iCloud when it's back." with **Subscribe** **OK** — decided by the agent, Task 10; pending ask #1040
 - Phase 4: The Go hub's `headless-host-run` Learn card waits for launch too: it tells users to pair a phone their build cannot pair — decided by the agent, under Open decision 16
+- Phase 4: Phone tests are signed locally with the private test key `com.apple.appstored.octane` (`StoreKitTesting.entitlements`), which never reaches an archive or TestFlight — decided by the agent, Task 4; pending ask #1040

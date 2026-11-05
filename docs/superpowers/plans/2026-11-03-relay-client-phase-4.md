@@ -146,7 +146,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | G4, a `push_off` alert at a switch to iCloud: checked, and fixed or accepted | Go hub session, owner's ruling |
 | #1537, a hello lost on a failed owner read: fixed | Go hub session |
 | The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together.** The same change moves the fixture case `work_alerts_off` from `device_payload_kit_only` into `device_payload` in `hub_contract_cases.json`, adds it to the exact-name list in `HubContractFixtureTests` and points `testDevicePayloadWorkAlertsOff` at the new section, so `device_payload` pins it on both sides | Go hub session, approved by name in Open decision 1 |
-| The Learn cards `iphone-relay-subscribe`, `iphone-alerts-relay` and `headless-host-run`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), in the release that sets the origin | Relay client session |
+| The Learn cards `iphone-relay-subscribe`, `iphone-alerts-relay` and `headless-host-run`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), and `iphone-alerts.md`'s "will ask the Mac to stop sending" reworded to the present once the Go half and G1 are in, in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
 | Manual checks M1–M10 on staging | Owner, Open decision 14 |
@@ -1222,20 +1222,20 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | A failed replica fails the Diagnostics read | decided by the agent |
 | Legacy actions are not timed, and Diagnostics says to update the Mac | decided by the agent |
 | Now shows one banner at most, in a fixed order | decided by the agent; Open decision 17 |
-| An upgrade running when the subscription lapses is refused by the hub (`not_paying`) and shows Phase 3b's refusal; the superseding path looks unreachable on an iCloud route | decided by the agent, Task 5; pending ask #1040 (the list) |
+| An upgrade running when the subscription lapses is refused by the hub (`not_paying`) and shows Phase 3b's refusal; the superseding path looks unreachable on an iCloud route | decided by the agent, Task 5 |
 | A store failure is `PurchaseState.storeFailed`, S57, "The App Store didn't finish. Nothing changed; you can try again."; a cancelled sign-in is not a failure | decided by the agent, Task 6; pending ask #1040 (the list) |
-| The center's first pass runs from `foreground()`, not `start()`, so a push launch stays frugal | decided by the agent, Task 6, amends its brief's "at launch and each foreground"; pending ask #1040 (the list) |
+| The center's first pass runs from `foreground()`, not `start()`, so a push launch stays frugal | decided by the agent, Task 6, amends its brief's "at launch and each foreground" |
 | An expiry control and `.entitlementInactive` sweep before they read, so an unsent renewal cannot lapse Macs | decided by the agent, Task 6; pending ask #1040 (the list) |
-| A paying read corrects an expiry control, so no lapse; a failed read after a control still lapses | decided by the agent, Task 6's review, amends its brief's "refresh, then lapse"; pending ask #1040 (the list) |
-| A non-nil `unconfirmed` wins over `.storeFailed`, `.pending`, `.noSubscriptionFound` and `.accountFailed`, so a charged owner never reads false text | decided by the agent, Tasks 6 and 9, overrides their "What shows"; pending ask #1040 (the list) |
+| A paying read corrects an expiry control, so no lapse; a failed read after a control still lapses | decided by the agent, Task 6's review, amends its brief's "refresh, then lapse" |
+| A non-nil `unconfirmed` wins over `.storeFailed`, `.pending`, `.noSubscriptionFound` and `.accountFailed`, so a charged owner never reads false text | decided by the agent, Tasks 6 and 9, overrides their "What shows" |
 | `updateRequired` stops a sale, not an answer: it overrides `.idle`, `.loadingProduct`, `.ready`, `.productFailed`, `.storeFailed`, `.noSubscriptionFound`, `.accountFailed`; S43 shows with no press and no `unconfirmed`; order: running press, paying, unconfirmed, latch, result | decided by the agent, Task 9, corrected in its fix round; pending ask #1040 (the list) |
 | A retry on a result with no price reads **Load the Price** (S45b, S57b) | decided by the agent, Task 9; pending ask #1040 (the list) |
-| An iCloud row with no `ordered_actions` on a relay route is disabled and reuses `.notOrdered`'s text (S12b), replacing a first ruling's new string | decided by the agent, Task 8; pending ask #1040 (the list) |
-| The registrar's foreground gate stands against the spec's "at every launch": a token waits for the next open | decided by the agent, Task 13; pending ask #1040 (the list) |
-| `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case | decided by the agent, Task 13; the move is in Launch conditions; pending ask #1040 (the list) |
+| An iCloud row with no `ordered_actions` on a relay route is disabled and reuses `.notOrdered`'s text (S12b), replacing a first ruling's new string | decided by the agent, Task 8 |
+| The registrar's foreground gate stands against the spec's "at every launch": a token waits for the next open | decided by the agent, Task 13 |
+| `device_payload_kit_only` stands until the Go half, because Go's `TestDevicePayloadCases` re-marshals every case | decided by the agent, Task 13; the move is in Launch conditions |
 | A push launch opens no socket until the first activation: new Task 19; a tap launch can connect at activation rather than in the boot | decided by the agent, Tasks 13 and 19; pending ask #1040 (the list) |
 | `AlertSubscriptionRegistrar.idle()` is capped at 10 s, like `outboxDrainCap`, against its brief's "no cap": a hung CloudKit call must not leave a stopped session with no error | decided by the agent, Task 18; pending ask #1040 (the list) |
-| New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again | decided by the agent, Task 10; pending ask #1040 (the list) |
+| New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again | decided by the agent, Task 10 |
 | Now's banner is a plain card, not the mockup's amber, because orange means waiting for you (`PhoneTone`, `OrangeToneTests`) | decided by the agent, Task 10; pending ask #1040 (owner rules on it by name) |
 | S34b's text: "Your Relay subscription ended. Work Mac moves to iCloud when it's back." with **Subscribe** **OK** | decided by the agent, Task 10; pending ask #1040 (owner rules on it by name) |
 | Task 5 starts beside Task 4's investigation, off next | decided by the agent, execution order only |
@@ -1243,11 +1243,13 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | Tasks 7 and 13 run in parallel off Task 6; Tasks 9 and 15 run in parallel, on separate simulators | decided by the agent, execution order only |
 | S01's chevron, the card's button trait and `lineRow`'s Spacer wrap go to Task 8, which edits the same file | decided by the agent, execution order only |
 | The Go hub's `headless-host-run` Learn card waits for launch too: it tells users to pair a phone their build cannot pair | decided by the agent, under Open decision 16 |
+| Phone tests are signed locally with the private test key `com.apple.appstored.octane` (`StoreKitTesting.entitlements`), which never reaches an archive or TestFlight | decided by the agent, Task 4; pending ask #1040 (the list) |
+| `iphone-relay.md` and the other Relay passages stand on a dark build, against `docs/guide/WRITING.md` rule 7 ("Only what ships on `main`"): do not delete them as unshipped. They leave or change at launch (Launch conditions) | owner's comment on ask #1012, which overrides rule 7 for this page |
 | Every one of the 19 Open decisions below on its recommended option | ask #1038 |
 
 ## Open decisions for the owner
 
-**Answered:** ask #1038 approved all 19 on their recommended options. Open decision 3's price stays with the owner, in App Store Connect. Ask #1040 is open on the banner's colour, the S34b text and the list of the agent's decisions above.
+**Answered:** ask #1038 approved all 19 on their recommended options. Open decision 3's price stays with the owner, in App Store Connect. Ask #1040 is open on the banner's colour, the S34b text and seven of the agent's decisions, each marked above.
 
 Each is a proposal with a recommended option. Approving the plan accepts each recommendation; a comment on the approval overrides that decision. Anything raised later goes into its own ask before that task's review. Each Alternative or "Refused" says what changes if it is not taken, and in which task.
 

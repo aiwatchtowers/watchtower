@@ -21,7 +21,7 @@ When your Mac runs over Relay, each alert is pushed through the relay to every l
 
 A phone gets these pushes only after Watchtower was opened on it once. Very long text is shortened in the push; the ask itself stays complete. An alert that cannot be sent within 5 minutes is dropped rather than arriving late, and none is sent once you are back at the Mac.
 
-Turning **When work stops** off on the phone asks the Mac to stop sending it these pushes, because the relay's push address also carries the phone's silent updates and the phone can't drop one without the other. A Mac switch from Relay to iCloud can bring one alert twice.
+Turning **When work stops** off on the phone will ask the Mac to stop sending it these pushes. A Mac switch from Relay to iCloud can bring one alert twice.
 
 If the Mac shows "Relay has no notifications configured.", the relay this Mac uses cannot send pushes; the ask or the stopped session still shows in the app. A phone without a Relay subscription gets no alerts while the Mac runs over Relay, and no updates at all: see [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md). More on [iPhone: Relay](iphone-relay.md).
 

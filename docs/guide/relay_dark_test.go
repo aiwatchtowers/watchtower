@@ -11,6 +11,9 @@ import (
 
 // relayNotYetLine opens every Relay passage a phone user can read until the
 // release that sets the relay origin (ask #1012, Phase 4 Open decision 16).
+// The test walks iphone* pages only: features/headless-host.md, concepts/privacy.md
+// and the headless host entry in README.md carry the line unguarded, so an edit there
+// checks it by hand.
 const relayNotYetLine = "Relay isn't in the current version of Watchtower for iPhone."
 
 // cardsHeldUntilLaunch are Learn cards that would send a phone user to something
