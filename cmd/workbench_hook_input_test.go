@@ -209,6 +209,9 @@ var codexFixtureWants = map[string]hookEvent{
 	"subagent_stop": {Cwd: codexCwd, Event: "SubagentStop", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000009",
 		AgentID: codexSubagentID, AgentType: "default", LastAssistantMessage: "example", TranscriptPath: codexExecRollout},
 	"session_end": {Cwd: codexCwd, Event: "SessionEnd", SessionID: codexExecSession, TranscriptPath: codexExecRollout},
+	// Captured 2026-11-05 (codex 0.159.2, board #959): Esc during a turn.
+	"interrupt": {Cwd: codexCwd, Event: "Interrupt", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
+		TranscriptPath: codexTUIRollout},
 }
 
 func TestParseHookEvent_CodexFixtures(t *testing.T) {

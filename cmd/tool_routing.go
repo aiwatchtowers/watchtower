@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"maps"
 	"sync"
@@ -47,13 +46,15 @@ func (p *toolRouteProvider) SetReadFolder(dir string) { p.readFolder = dir }
 // (enableChatEvents).
 func (p *toolRouteProvider) EmitToolEvents() { p.chatEvents = true }
 
-// configureLeaf hands the leaf what was set on the router: the read folder
-// and the chat events.
-func (p *toolRouteProvider) configureLeaf(leaf ai.Provider) error {
+// configureLeaf hands the selected provider's leaf what was set on the
+// router: the read folder (refused as a capability error when the leaf has
+// no file tools) and the chat events.
+func (p *toolRouteProvider) configureLeaf(selected string, leaf ai.Provider) error {
 	if p.readFolder != "" {
 		c, ok := leaf.(readFolderConfigurable)
 		if !ok {
-			return fmt.Errorf("selected provider cannot read folders")
+			return providers.CapabilityError(selected, providers.ReviewReadonly,
+				errors.New("--read-folder: the selected provider has no file tools, so it cannot read the folder"))
 		}
 		c.SetReadFolder(p.readFolder)
 	}
@@ -129,7 +130,7 @@ func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(conte
 		return providerrouting.Result{}, err
 	}
 	defer cleanup()
-	if err := p.configureLeaf(leaf); err != nil {
+	if err := p.configureLeaf(selected, leaf); err != nil {
 		return providerrouting.Result{}, err
 	}
 	req.Preferred, req.Mode, req.Retry = selected, providerrouting.Pinned, providerrouting.Never

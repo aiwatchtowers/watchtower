@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
@@ -222,4 +223,18 @@ func wantOutcome(t *testing.T, got actions.Outcome, status, reason string) {
 	if got.Status != status || got.Reason != reason {
 		t.Fatalf("outcome = %+v, want %s/%s", got, status, reason)
 	}
+}
+
+// withSessionCaps gives kind the row caps for the test (the handlers read
+// sessionCaps, not the kind).
+func withSessionCaps(t *testing.T, kind agentkind.Kind, caps agentkind.SessionCaps) {
+	t.Helper()
+	prev := sessionCaps
+	sessionCaps = func(k agentkind.Kind) agentkind.SessionCaps {
+		if k == kind {
+			return caps
+		}
+		return prev(k)
+	}
+	t.Cleanup(func() { sessionCaps = prev })
 }

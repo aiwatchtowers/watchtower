@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/hubtest"
@@ -237,7 +238,7 @@ func (le *lineEnv) liveSession() int64 {
 func (le *lineEnv) agentSession(kind string) int64 {
 	le.t.Helper()
 	var agentID any
-	if kind == "claude" {
+	if kind == "claude" || kind == "codex" {
 		agentID = "00000000-0000-4000-8000-0000000000" + strconv.Itoa(10+le.seq)
 		le.seq++
 	}
@@ -475,9 +476,36 @@ func TestProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt(t *testing.T) {
 	wantPastes(t, le, "Also update the changelog")
 }
 
-// Send while busy is Claude only: a Codex session is refused before any line
-// check, and nothing types.
-func TestProj16_AWorkingCodexSessionStillHoldsTheLine(t *testing.T) {
+// Codex takes phone lines, but a working Codex session holds them until it
+// is idle: codex takes a line pasted mid-turn (G7 spike (a)), yet an MCP form
+// it opens mid-turn raises no state (spike (c)), so a line could answer it.
+// Nothing types while it works; the line goes once it stops, not while busy.
+func TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle(t *testing.T) {
+	le := newLineEnv(t)
+	sid := le.agentSession("codex")
+	le.lp.start(sid)
+	le.setState(sid, "working")
+	line := le.input(sid, "Also update the changelog")
+
+	out := le.send(le.h, line)
+
+	wantOutcome(t, out, wire.StatusHeld, inputReasonAgentBusy)
+	wantPastes(t, le)
+
+	le.setStateAt(sid, "stopped", le.clock.Now().Add(time.Second))
+	le.h.DeliverHeld(context.Background())
+	settled(le.h)
+	wantPastes(t, le, "Also update the changelog")
+	if got := le.echoes.of(line); len(got) == 0 || got[len(got)-1].Result["while_busy"] != nil {
+		t.Fatalf("echoes = %+v, want a last applied echo without while_busy", got)
+	}
+}
+
+// The other side of the same gate: a Codex row that reported every mid-turn
+// dialog (TakesLineWhileWorking) takes the line while it works, sent while
+// busy, as Claude's does; Needs approval still holds the next one.
+func TestProj16_ACodexRowThatTakesLinesWhileWorkingGetsTheLine(t *testing.T) {
+	withSessionCaps(t, agentkind.Codex, agentkind.Claude.SessionCaps())
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")
 	le.lp.start(sid)
@@ -485,7 +513,48 @@ func TestProj16_AWorkingCodexSessionStillHoldsTheLine(t *testing.T) {
 
 	out := le.send(le.h, le.input(sid, "Also update the changelog"))
 
+	wantLine(t, out, deliverySubmitted, true)
+	wantPastes(t, le, "Also update the changelog")
+	le.setStateAt(sid, "needs_approval", le.clock.Now().Add(30*time.Second))
+	wantOutcome(t, le.send(le.h, le.input(sid, "and the readme")), wire.StatusHeld, inputReasonNeedsApproval)
+}
+
+// A board session whose agent takes no phone input is refused not_supported
+// with the owner-readable message, never "no longer exists" (S4, PROJ-16
+// amended): nothing types, nothing is held.
+func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
+	withSessionCaps(t, agentkind.Codex, agentkind.SessionCaps{})
+	le := newLineEnv(t)
+	sid := le.agentSession("codex")
+	le.lp.start(sid)
+	le.setState(sid, "stopped")
+
+	for _, r := range []actions.Request{le.input(sid, "Also update the changelog"), le.finish(sid)} {
+		out := le.send(le.h, r)
+		wantOutcome(t, out, wire.StatusFailed, reasonNotSupported)
+		if want := "Codex sessions can't take messages from the phone yet. Type it on the Mac."; out.Message != want {
+			t.Fatalf("message = %q, want %q", out.Message, want)
+		}
+	}
+	wantPastes(t, le)
+	if n := le.heldRows(); n != 0 {
+		t.Fatalf("held rows = %d", n)
+	}
+}
+
+// not_found keeps its meaning: a session id with no board row (deleted) is
+// still "no longer exists on the Mac", whatever the capability table says.
+func TestProj16_DeletedSessionStillNotFound(t *testing.T) {
+	le := newLineEnv(t)
+	sid := le.agentSession("codex")
+	le.exec(`DELETE FROM terminal_sessions WHERE id = ?`, sid)
+
+	out := le.send(le.h, le.input(sid, "Hello"))
+
 	wantOutcome(t, out, wire.StatusFailed, reasonNotFound)
+	if out.Message != sessionGoneMessage {
+		t.Fatalf("message = %q, want %q", out.Message, sessionGoneMessage)
+	}
 	wantPastes(t, le)
 }
 

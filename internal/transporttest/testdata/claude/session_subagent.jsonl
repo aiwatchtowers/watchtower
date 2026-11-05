@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"SESSION","timestamp":"2026-11-05T12:00:02.000Z","uuid":"00000000-0000-4000-8000-0000000000d3","isSidechain":true,"agentId":"ag1","message":{"role":"user","content":"do it"},"synthetic":true}
+{"type":"assistant","sessionId":"SESSION","timestamp":"2026-11-05T12:00:03.000Z","uuid":"00000000-0000-4000-8000-0000000000d4","isSidechain":true,"agentId":"ag1","message":{"id":"msg_fixture_2","role":"assistant","content":[{"type":"text","text":"report"}]},"synthetic":true}

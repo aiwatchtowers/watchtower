@@ -6,7 +6,6 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
-	"watchtower/internal/logredact"
 )
 
 // Querier is the one-shot streaming call a stateless provider offers;
@@ -97,10 +96,7 @@ func (b *turnBackend) Turn(ctx context.Context, c Command, emit func(Event)) err
 	case qerr != nil && ctx.Err() != nil:
 		return ctx.Err()
 	case qerr != nil:
-		code, retry := ClassifyClaudeError(logredact.Full(qerr))
-		event := errorEvent(c.TurnID, code, logredact.Full(qerr), retry)
-		event.Cause = qerr
-		emit(event)
+		emit(failureEvent(c.TurnID, qerr))
 	default:
 		emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusComplete})
 	}

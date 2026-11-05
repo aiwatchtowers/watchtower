@@ -29,6 +29,12 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all)
     }
 
+    func testSessionCapsShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter {
+            ["workchat-hold-caption", "settings-notifications-idle-caption"].contains($0.name)
+        })
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }

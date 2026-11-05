@@ -20,6 +20,10 @@ Differences from Claude Code you may notice:
 - Session titles come from Codex's own history.
 - Watchtower types answers and comments the way Codex expects: Return submits, Ctrl+J starts a new line.
 - **Hand to Session** (⌥⌘↩ from a code question) works with either agent.
+- A turn that stops on an error, such as a usage limit or a provider error, shows **Error: …** a few seconds after it stops, for example "Error: usage limit exceeded". Your next prompt clears it.
+- A line you send from Workchat while Codex works waits for the end of the turn: Codex can open a form mid-turn that Watchtower cannot see.
+- Codex permission prompts are answered in the terminal only: no Workchat card, no answer from the iPhone.
+- Codex reports no idle prompt and no MCP form, so a Codex session sends no idle notice. **Settings → Features → Notifications** says **Idle notices are not available for Codex sessions.** under **Workbench notifications**.
 
 ## Using it
 <!-- learn
@@ -42,6 +46,7 @@ action: nav:projects
 - **"(not installed)" next to Codex.** Watchtower cannot find the `codex` command. **Settings → System → Workbench** shows a path field for it when Codex is the default.
 - **"Codex: not set up".** Click **Set up Codex**.
 - **A Codex session shows no state.** The hooks may not be trusted yet. Try **Repair install** (it is available only when something is broken), then start a new session.
+- **A Codex session stays Working after you press Esc.** A Watchtower update added a Codex hook that is not trusted yet. Click **Repair install**, then start a new session.
 - **Sessions only report from Watchtower's terminal.** A Codex run elsewhere has no board tools.
 
 ## Related

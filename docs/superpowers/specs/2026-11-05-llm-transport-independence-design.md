@@ -18,7 +18,7 @@ You asked for "our data flows and all our functionality to be independent of the
 - Ollama and other OpenAI-compatible servers (HTTP);
 - the coding agents in Workbench terminals (Claude Code and Codex).
 
-Each of these grew its own code for the same jobs: reading the answer, showing tool steps, counting tokens, stopping the process, telling an error apart, and knowing whether a session is working, waiting or failed. When the codex path was written, it copied some of those jobs and missed others. The last branch found and fixed nine such misses, such as invisible tool steps and glued text in codex chats. This design found 21 more (§2.2); one of them (L2) has since been fixed on `feature/codex-parity` (#957), which leaves 20 open. Most are small, but they share one root cause: the code asks "is this Claude?" when it should ask "can this transport do X?"
+Each of these grew its own code for the same jobs: reading the answer, showing tool steps, counting tokens, stopping the process, telling an error apart, and knowing whether a session is working, waiting or failed. When the codex path was written, it copied some of those jobs and missed others. The last branch found and fixed nine such misses, such as invisible tool steps and glued text in codex chats. This design found 21 more (§2.2), and its contract suite (Task A1) two more (L12, L13); one of them (L2) has since been fixed on `feature/codex-parity` (#957), which leaves 22 open. Most are small, but they share one root cause: the code asks "is this Claude?" when it should ask "can this transport do X?"
 
 ## What changes for you
 
@@ -61,14 +61,14 @@ These were decided by the design, not by the owner. N1–N5 were signed off by t
 | N2 | A table-rebuild migration of `terminal_sessions` when a fourth agent kind is added | Keep `CHECK(kind IN ('claude','codex','shell'))` and widen it by the `add-migration` rebuild (one transaction, foreign keys off) the day a new kind lands; nothing is rebuilt now | The CHECK keeps a typo out of the column; dropping it would trade that for one cheaper future migration |
 | N3 | Existing `llm_calls` rows labelled `http` | No migration and no rewrite. Runtime B records `ollama` from A3 on; `watchtower usage llm` reads a stored `http` as `ollama`, because every `http` row ever written came from runtime B, whose only base URL is `ai.ollama_url` (its three callers: `cmd/ai_session.go:226`, `cmd/generator.go:221`, `cmd/automations_backends.go:463`). The mapping goes when the 90-day retention has aged the last such row out; a future non-Ollama server gets its own label, never `http` | One line in one reader, history untouched, and spool lines from an older process are covered the same way. A rewrite migration would also need the spool importer to map |
 | N4 | The unit of decision A's cap | The cap counts **model turns** (model responses), with the same meaning as Claude's `--max-turns` and runtime B's `MaxIterations`, not raw tool calls; parallel tool calls of one response are one turn (rule in §3.4). Decision A said "count the tool calls"; this refines it | Counting tool calls would stop a codex run that makes parallel calls far sooner than Claude stops the same work, so "the same cap" would not mean the same thing |
-| N5 | The exact rollout counter for codex `agent()` | **Never switches on by itself.** G2 ships the stream rule. Its first step is a spike that records whether codex ever runs the calls of one response one after another. If it does, G2 stops and comes back to the owner with that recording before anything changes; the proposal it would bring is: for `agent()` only, drop `--ephemeral` (its `CODEX_HOME` is already a private temp dir, `codexAgentHome`, `cmd/automations_backends.go:369`) and count `token_count` events in that run's rollout. If it does not, this row closes with no change | The stream rule can only over-count in that case (stops early, never late); a second counting path is extra code the owner should approve with evidence in hand |
+| N5 | The exact rollout counter for codex `agent()` and the codex spec reviewer | **Decided in ask #522: count `token_count` events in the run's rollout.** Live recording (A1, codex 0.159.2: `internal/transporttest/testdata/codex/live/parallel_tools.jsonl`) showed one response's three parallel calls executed one after another, which the stream rule cannot tell from three turns. So `agent()` and the codex spec reviewer drop `--ephemeral`, run in a private temp `CODEX_HOME` (`codexAgentHome`, `cmd/automations_backends.go:369`; the reviewer gets its own), and count `token_count` events in that run's rollout, one per model response; the temp home (rollout included) is deleted after the run. The stream rule stays only as a fallback when the rollout cannot be read, logged once | Same meaning as claude's `--max-turns`; the rollout never outlives the run |
 | N6 | What `session({wait})` does when the session is not watched (§3.5) | **Decided in ask #516: return at once.** The wait ends immediately with `{session_id, status: "not_watched", summary: "", reason}` by default, `reason` one of `missing`/`permission`/`compressed`/`unreadable`; there is no opt-in flag. The reason also goes to the run log. Every recipe that waits on a session must handle `not_watched`. Docs: `docs/features/automations.md`'s `session()` paragraph lists the status and says recipes must handle it (treat it as "outcome unknown": report it, or retry later; never as success); the shipped `create-automation` skill (`internal/skills/shipped/create-automation.md`) gains the same rule for recipe authors. The shipped templates that wait on `session()` (`internal/automations/templates/{deploy-test,deploy-stage,release,pr-review-rounds}.md`) are updated in G5 | The owner preferred an immediate, visible outcome over a silent wait to the deadline. Until G6's zstd reader lands, a compressed rollout ends such a wait at once; the templates and the skill make recipes read it as unknown, not as success |
 
 ## How we will know it is done
 
 - One contract test suite runs every scenario against every transport: claude, codex, Ollama/HTTP, and the two workbench agents. It uses fake CLIs that replay recorded real output. Each pair of transport and scenario either passes or is asserted to be "not supported, and the user is told". Nothing is skipped.
 - The guard test finds no provider-name check outside the adapters. Its allow list is empty, or each remaining entry carries a reason you approved.
-- The 20 open gaps in §2.2 are each fixed or turned into a disclosed limit.
+- The 22 open gaps in §2.2 are each fixed or turned into a disclosed limit.
 
 ---
 
@@ -118,7 +118,7 @@ Line numbers are as of that commit.
 
 ### 2.2 The (c) gaps
 
-**LLM calls (11 found, 10 open)**
+**LLM calls (13 found, 12 open)**
 
 | # | Who loses | What | Where |
 |---|---|---|---|
@@ -128,11 +128,13 @@ Line numbers are as of that commit.
 | L4 | codex spec reviewer | No turn cap. Claude gets `specreview.MaxTurns`. | `cmd/workbench_spec_review.go:129` vs `:136-141` |
 | L5 | codex, ollama main chat | No web search. The prompt says "no internet" (`WebSearch` is set only when the provider is not codex or ollama), while codex's own web search is neither offered nor turned off in chat. | `cmd/ai_session.go:186`; `internal/chat/prompt.go:30` |
 | L6 | codex, ollama main chat | No image or PDF attachments, and no project binaries, even though `codex exec --image` already works for media (`internal/codex/generator.go:66-98`). The Swift composer accepts the file, and the turn fails after Send. | `internal/chat/attachments.go:127`; `internal/chat/prompt_sections.go:436`; `WatchtowerCore/Services/Chat/AttachmentValidator.swift` (no provider input) |
-| L7 | runtime B, plain ollama | No `usage` event, so the chat message has no tokens. Runtime B streams the final answer as one chunk. | `internal/agentloop/client.go` `Query` (usage is returned by `run` and never emitted); `internal/ollama/client.go:173-238` |
+| L7 | runtime B, plain ollama | No `usage` event, so the chat message has no tokens. Runtime B streams the final answer as one chunk. Fixed: the usage chunk in G3; in G3b runtime B streams each model message's text as it arrives, before its tool steps, a later message after a blank line, and a stop keeps the text already shown. | `internal/agentloop/client.go` `Query` (usage is returned by `run` and never emitted); `internal/ollama/client.go:173-238` |
 | L8 | runtime B chat | No Quick Connections: `agentloop` gets the Watchtower registry only. | `cmd/ai_session.go:219-224` |
 | L9 | ollama `ai query --read-folder` | The folder is silently ignored and the answer comes from the prompt alone. The caller gets no error or flag. Swift avoids it only by checking the name. | `cmd/ai.go:288-292` |
 | L10 | ollama/http (and codex for chat codes) | Errors are never typed as `providers.Failure`. The chat error code comes from Claude-oriented text matching even when a typed failure exists. | no `Failure` in `internal/ollama`, `internal/agentloop`; `internal/chat/turn_backend.go:100`; `cmd/ai.go:640-660` |
 | L11 | ollama main chat (Swift) | No "Current provider · model" line and no routing card, because the presentation knows only Claude and Codex. | `ViewModels/ChatViewModel.swift:93-103`; `WatchtowerCore/Services/ProviderFallbackPreview.swift:4-7` |
+| L12 | claude one-shot, warm chat | claude exits 0 with no `result` line: the one-shot `ai.Client.Query` returns a blank or partial success, and the warm backend ends the turn with an untyped `internal` error instead of a typed `invalid_output` `providers.Failure`. Codex and the claude batch path refuse it. Found by the contract suite (A1, ask #519 follow-up); fixed by G1b. | `internal/ai/client.go:851-863` (no error when `lastResult` is nil); `internal/chat/claude_backend.go:757-765` (`exitedTerminal`, no `Cause`) |
+| L13 | runtime B `agent()` / chat | At `MaxIterations` the loop returns a success text ("I couldn't complete that within the tool-call limit") instead of a `providers.Budget` failure, while claude's `error_max_turns` is `budget`. Found by the contract suite (A1); fixed with the turn cap in G2. | `internal/agentloop/client.go:206-216` |
 
 **Workbench sessions (10)**
 
@@ -207,7 +209,7 @@ Add `Caps Capabilities` to the registry row `providers.Provider` (`internal/prov
 |---|---|---|---|---|
 | `tools` | none / watchtower / watchtower+quick_connections | w+qc | w+qc | none (plain) / watchtower+quick_connections (runtime B, once G3 closes L8; decision B) |
 | `tool_events` | bool | yes | yes | runtime B yes |
-| `text_stream` | token / message / final | token | message | token (plain) / final (runtime B) |
+| `text_stream` | token / message / final | token | message | token (plain and runtime B, G3b; a server that does not stream gives runtime B whole messages) |
 | `usage` | none / totals / split | split | split (no cache write) | totals |
 | `cost_reported` | bool | yes | no | no |
 | `images`, `pdfs` | bool | yes, yes | images yes (L6), pdfs no | no |
@@ -218,6 +220,7 @@ Add `Caps Capabilities` to the registry row `providers.Provider` (`internal/prov
 | `warm_session` | bool | yes | no (replay) | no (replay) |
 | `claude_ai_tools` | bool | yes | no | no |
 | `reserve_peer` | provider id or "" | codex | claude | "" (the fallback pair rule of ask #937, kept as data) |
+| `quota` | bool: reports a subscription quota (`Quota` with its `ResetAt`) | yes | yes | no: a local server has no subscription, so a quota-like 429 is `rate_limit` with no reset (added by A1) |
 
 Rules:
 - **Consumers read capabilities, never names.**
@@ -397,7 +400,7 @@ A scenario lists the levels it applies to and the capabilities it `Requires`.
 | tool call ok / failed | `tool_start`/`tool_end` pair with a matching id; a failed tool has a non-empty reason; text before the tool is kept |
 | oversized tool line (2 MiB) | the turn completes and the skip is counted (L1) |
 | failed turn: 401, 400 model, 429 rate limit, quota with reset, 5xx/overloaded | `providers.Failure` category, `ResetAt` where the transport reports it, chat code via `CodeForFailure`; owner text kept (CHAT-01 at the Go level) |
-| exit 0 with no completion / no answer | a failure (`invalid_output`), never a blank success |
+| exit 0 with no completion / no answer | a failure (`invalid_output`), never a blank success. An HTTP stream that ends without `[DONE]` or a finish_reason may be `transport` instead: a clean close cannot be told from a dropped connection, and `transport` is retryable, which is what the owner needs |
 | interrupt mid-text / mid-tool | `turn_done interrupted`; partial text delivered; for `interrupt=in_turn` the child survives, for `kill_turn` the whole group is gone |
 | timeout and context kill | the process group is reaped: no pid of the fake's grandchild survives (checked with `kill(pid, 0)` until ESRCH) |
 | usage with cache | the split matches the fixture; `tokens_in` = fresh + cache; the AUTO-08 debit = fresh + output |
