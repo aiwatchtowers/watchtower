@@ -241,6 +241,10 @@ final class DeviceSettings {
     /// today's, byte for byte.
     @ObservationIgnored var reportsWorkAlertsOff = false
 
+    /// Sends the queue on after a saved record, on a relay route, where a save only queues (`HubSession`); nil
+    /// elsewhere.
+    @ObservationIgnored var sendAfterWrite: (@MainActor () async -> Void)?
+
     /// The alerts switch moved: the hub hears it in a new `device` record. A failed write is logged and clears the
     /// last write's stamp, so the next return to the foreground sends it (`touchIfStale`); the switch stays as set, its
     /// truth being the phone's. Any other write says it too. Returns whether a write ran: the caller then sends it,
@@ -327,6 +331,7 @@ final class DeviceSettings {
         do {
             try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
             defaults.set(payload.updatedAt.timeIntervalSince1970, forKey: keys.lastDeviceWrite)
+            await sendAfterWrite?()
             return nil
         } catch {
             Self.logger.error("device record write failed: \(error.localizedDescription, privacy: .public)")

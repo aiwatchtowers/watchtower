@@ -260,6 +260,22 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(settings.workAlerts)
     }
 
+    /// A saved record is sent on (a relay route's save only queues); a failed save sends nothing.
+    func testASavedRecordIsSentOnAndAFailedOneIsNot() async throws {
+        let transport = SpyTransport(failingSaves: [1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+        var sent = 0
+        settings.sendAfterWrite = { sent += 1 }
+
+        await settings.setPermissionsRequested(true)
+        XCTAssertEqual(sent, 1)
+
+        await settings.setTypingRequested(true)
+        XCTAssertEqual(sent, 1, "the second save failed")
+        XCTAssertFalse(settings.typingRequested)
+    }
+
     /// A later toggle's record carries the switch too, and a failed write of the switch is owed to the next return.
     func testAFailedWorkAlertsWriteIsOwedToTheNextForeground() async throws {
         let transport = SpyTransport(failingSaves: [1])

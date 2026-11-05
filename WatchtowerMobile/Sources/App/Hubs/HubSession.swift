@@ -549,6 +549,9 @@ final class HubSession {
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
         observeOutboxBacklog()
+        if case .hostedRelay? = route {
+            deviceSettings.sendAfterWrite = { [weak self] in await self?.sendNow() }
+        }
 
         startBoot(startWork, notifications: notifications)
     }

@@ -257,6 +257,20 @@ final class AlertSubscriptionTests: XCTestCase {
         XCTAssertEqual(tasks.ended.count, 1, "and the task ended")
     }
 
+    /// A permission request on a relay route reaches the relay at once, with no pull (G1): it would wait for the
+    /// session's next fetch otherwise.
+    func testOnARelayRouteAToggleIsSentAtOnce() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let env = bed.root.env
+        await env.waitForBoot()
+        let saves = { bed.fake.log.filter { if case .save = $0 { true } else { false } }.count }
+        let before = saves()
+
+        await env.deviceSettings.setPermissionsRequested(true)
+
+        XCTAssertGreaterThan(saves(), before, "the record reached the relay")
+    }
+
     /// The dark ship: with an empty origin the switch writes no record and the record is today's, byte for byte.
     func testAnEmptyOriginWritesNoWorkAlertsOff() async throws {
         let bed = try await alertsBed(relayOff: true)
