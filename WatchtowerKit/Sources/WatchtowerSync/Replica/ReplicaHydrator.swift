@@ -124,16 +124,8 @@ public actor ReplicaHydrator {
         // locked open on the first cycle after unlock. Only what this pass
         // indexed is reported, so a dropped stale batch reports nothing new.
         let indexed = try store.indexPending()
-        // The first slice of an effect kind ends an open action timing (relay client Phase 4). A failed stamp
-        // never fails the cycle.
-        if !indexed.isEmpty {
-            let at = now()
-            do {
-                for kind in Set(indexed.map(\.kind.rawValue)) { try store.latencyEffect(kind: kind, at: at) }
-            } catch {
-                logger.error("latency stamp failed: \(String(describing: type(of: error)), privacy: .public)")
-            }
-        }
+        // The first slice of an effect kind ends an open action timing (relay client Phase 4).
+        store.stampLatencyEffects(of: indexed, at: now())
         if let onRecordsApplied, !indexed.isEmpty {
             onRecordsApplied(indexed)
         }

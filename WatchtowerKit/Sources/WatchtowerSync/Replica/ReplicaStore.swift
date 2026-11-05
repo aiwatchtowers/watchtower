@@ -103,7 +103,11 @@ public final class ReplicaStore: Sendable {
         writer = try DatabasePool(path: path, configuration: configuration)
         self.opener = opener
         try createSchema()
-        try? latencySweep(now: Date())
+        do {
+            try latencySweep(now: Date())
+        } catch {
+            logger.error("latency sweep failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
     }
 
     private init(writer: any DatabaseWriter, opener: any ReplicaOpening) throws {

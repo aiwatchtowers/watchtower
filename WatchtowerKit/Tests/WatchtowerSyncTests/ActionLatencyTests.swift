@@ -218,6 +218,59 @@ final class ActionLatencyTests: XCTestCase {
         XCTAssertEqual(try pendingCount(phone.store), 0)
     }
 
+    func testAResendThatDoesNotLandLeavesNoRow() async throws {
+        let phone = try await makePhone()
+        let sent = try await send(phone)
+        await phone.inner.refuseNext(.unreachable, count: 1)
+        try await phone.outbox.resendFrom(sent.seq)
+        XCTAssertEqual(try pendingCount(phone.store), 0, "the resend stopped; its round trip must not count")
+        phone.advance(by: 1)
+        try await phone.outbox.applyEcho(echo(sent, .applied))
+        try phone.store.latencyEffect(kind: "workbench", at: phone.now)
+        XCTAssertEqual(try samples(phone.store), [])
+    }
+
+    func testAPermanentRefusalOfAResendDropsTheRow() async throws {
+        let phone = try await makePhone()
+        let sent = try await send(phone)
+        await phone.inner.refuseNext(.permanent(code: "zoneNotFound"), count: 1)
+        try await phone.outbox.resendFrom(sent.seq)
+        XCTAssertEqual(try pendingCount(phone.store), 0)
+    }
+
+    func testListingUnechoedActionsDropsTheirRows() async throws {
+        let phone = try await makePhone()
+        _ = try await send(phone)
+        XCTAssertEqual(try pendingCount(phone.store), 1)
+        _ = try await phone.outbox.listUnechoedAsUndelivered(reason: .refused)
+        XCTAssertEqual(try pendingCount(phone.store), 0)
+    }
+
+    func testTheLaunchSweepDropsAnExpiredRow() throws {
+        let path = NSTemporaryDirectory() + "latency-\(UUID().uuidString).sqlite"
+        defer { for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) } }
+        let keys = try TestE2E.phoneStore()
+        var store: ReplicaStore? = try ReplicaStore(path: path, opener: TestE2E.opener(store: keys))
+        let old = base.addingTimeInterval(-ReplicaStore.latencyResultWait - 10)
+        try store?.latencyWritten(actionID: "old", kind: "board_target_status", transport: .relay, at: old)
+        try store?.latencyWritten(actionID: "fresh", kind: "board_target_status", transport: .relay, at: base)
+        store = nil
+        let reopened = try ReplicaStore(path: path, opener: TestE2E.opener(store: keys))
+        XCTAssertEqual(try pendingCount(reopened), 1, "only the fresh row survives the launch")
+    }
+
+    func testRowsIndexedLaterStampTheEffectAtIndexTime() throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: try TestE2E.phoneStore()))
+        try store.latencyWritten(actionID: "a", kind: "board_target_status", transport: .relay, at: base)
+        try store.latencyAnswered(actionID: "a", applied: true, at: base.addingTimeInterval(1))
+        let record = AppliedSliceRecord(
+            recordName: "workbench-1", kind: .workbench, notifyLevel: nil, modifiedAt: base)
+        store.stampLatencyEffects(of: [record], at: base.addingTimeInterval(5))
+        XCTAssertEqual(try samples(store), [
+            LatencySample(at: base.addingTimeInterval(5), transport: .relay, answerMs: 1000, resultMs: 5000)
+        ])
+    }
+
     // MARK: - Storage
 
     func testPruneKeepsSevenDaysAndFiveThousandRows() throws {

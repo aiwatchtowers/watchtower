@@ -90,6 +90,18 @@ extension ReplicaStore {
         }
     }
 
+    /// Stamps the effect of each kind among `indexed` at `at`, the moment the slices became visible: the hydrator's
+    /// pass and the session's late index (a key arrived) both end here, so a timing never counts a slice that sat
+    /// unopened as seen. A failure logs its error type only and never fails the caller.
+    public func stampLatencyEffects(of indexed: [AppliedSliceRecord], at: Date) {
+        guard !indexed.isEmpty else { return }
+        do {
+            for kind in Set(indexed.map(\.kind.rawValue)) { try latencyEffect(kind: kind, at: at) }
+        } catch {
+            logger.error("latency stamp failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
     func latencyDrop(actionID: String) throws {
         try writer.write { db in
             try db.execute(sql: "DELETE FROM latency_pending WHERE action_id = ?", arguments: [actionID])

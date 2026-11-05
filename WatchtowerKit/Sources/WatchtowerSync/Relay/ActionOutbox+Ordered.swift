@@ -153,6 +153,10 @@ extension ActionOutbox {
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
         _ = try store.requeue(fromSeq: seq)
+        // A rewrite is not a first save: the rows put back leave no timing, whatever the pass ends in.
+        for row in try store.outboxRows([.queued]) where row.actionSeq >= seq {
+            stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
+        }
         // Before `first` is read: a row of an older epoch that does not open is listed here, so the skip covers it.
         try await resealOlderEpochs(from: seq)
         // Seqs in [seq, first) are settled, already Not delivered (each keeps its first reason) or gone (an
@@ -308,7 +312,10 @@ extension ActionOutbox {
     }
 
     private func requeueForNewTransport() throws -> Int {
-        try store.requeueForNewTransport()
+        for row in try store.outboxRows([.queued, .sent]) {
+            stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
+        }
+        return try store.requeueForNewTransport()
     }
 
     private func listUnechoed(reason: UndeliveredReason) throws -> Int {
