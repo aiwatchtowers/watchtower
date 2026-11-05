@@ -36,11 +36,17 @@ public final class TransportStore: Sendable {
         try $sweepsStashAtOpen.withValue(false, operation: body)
     }
 
-    public init(path: String) throws {
+    /// The stash folder every store used before each route had its own (board #1496): two route stores of one hub
+    /// shared it, and one store's sweep deleted the other's files. The default still names it, so a store that keeps
+    /// it (the CloudKit one) keeps its files.
+    public static let sharedStashFolder = "transport-assets"
+
+    /// `stashFolder` names the fetched-asset folder next to the database. Stores that sit in one folder pass
+    /// different names.
+    public init(path: String, stashFolder: String = TransportStore.sharedStashFolder) throws {
         queue = try DatabaseQueue(path: path)
-        assetsDirectory = URL(fileURLWithPath: path)
-            .deletingLastPathComponent()
-            .appendingPathComponent("transport-assets", isDirectory: true)
+        assetsDirectory = URL(fileURLWithPath: path).deletingLastPathComponent()
+            .appendingPathComponent(stashFolder, isDirectory: true)
         try createSchema()
         // Launch pass: stash files an earlier run leaked (before the
         // eviction/wipe sweeps existed, or a crash between a buffer and its
@@ -54,8 +60,8 @@ public final class TransportStore: Sendable {
         try createSchema()
     }
 
-    /// The fetched-asset stash directory (`transport-assets/` next to the
-    /// database); nil for an in-memory store. The phone sets its file
+    /// The fetched-asset stash directory (`stashFolder` next to the
+    /// database, `transport-assets/` by default); nil for an in-memory store. The phone sets its file
     /// protection class (mobile E2E D8); the store creates it on demand.
     public var stashDirectory: URL? { assetsDirectory }
 
