@@ -102,7 +102,7 @@ func tomlBasicString(s string) (string, error) {
 var probeCodexVersion = codexVersion
 
 // instructionsSupport caches instructionsFileSupported per binary path
-// (string → probeResult): a read version for good, a failed probe for
+// (string → *probeEntry): a read version for good, a failed probe for
 // instructionsProbeRetry.
 var instructionsSupport sync.Map
 
@@ -110,9 +110,14 @@ var instructionsSupport sync.Map
 // the next run probes again; tests shorten it.
 var instructionsProbeRetry = time.Minute
 
-// probeResult is one cached version probe; failedAt is zero for a version
-// that was read (kept for the process lifetime).
-type probeResult struct {
+// probeEntry is one binary's cached version probe. mu serialises its
+// probes: concurrent first calls wait for one probe (one log line), and a
+// probe never runs once a version was read, so a late failure cannot
+// replace a success. probed is false until the first probe; failedAt is
+// zero for a version that was read (kept for the process lifetime).
+type probeEntry struct {
+	mu       sync.Mutex
+	probed   bool
 	ok       bool
 	failedAt time.Time
 }
@@ -125,26 +130,26 @@ type probeResult struct {
 // daemon start does not keep every system prompt on stdin until a restart.
 // The fallback is logged once per probe.
 func instructionsFileSupported(bin string) bool {
-	if v, ok := instructionsSupport.Load(bin); ok {
-		r := v.(probeResult)
-		if r.failedAt.IsZero() || time.Since(r.failedAt) < instructionsProbeRetry {
-			return r.ok
-		}
+	v, _ := instructionsSupport.LoadOrStore(bin, &probeEntry{})
+	e := v.(*probeEntry)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.probed && (e.failedAt.IsZero() || time.Since(e.failedAt) < instructionsProbeRetry) {
+		return e.ok
 	}
-	v, err := probeCodexVersion(bin)
-	ok := err == nil && !versionLess(v, minInstructionsFileVersion)
-	r := probeResult{ok: ok}
+	ver, err := probeCodexVersion(bin)
+	ok := err == nil && !versionLess(ver, minInstructionsFileVersion)
+	e.probed, e.ok, e.failedAt = true, ok, time.Time{}
 	if err != nil {
-		r.failedAt = time.Now()
+		e.failedAt = time.Now()
 	}
-	instructionsSupport.Store(bin, r)
 	switch {
 	case err != nil:
 		log.Printf("codex: could not read the version of %s (%v); the system prompt rides on stdin until the next probe in %s",
 			bin, err, instructionsProbeRetry)
 	case !ok:
 		log.Printf("codex: %s (version %d.%d.%d) predates model_instructions_file %d.%d.%d; the system prompt rides on stdin instead",
-			bin, v[0], v[1], v[2], minInstructionsFileVersion[0], minInstructionsFileVersion[1], minInstructionsFileVersion[2])
+			bin, ver[0], ver[1], ver[2], minInstructionsFileVersion[0], minInstructionsFileVersion[1], minInstructionsFileVersion[2])
 	}
 	return ok
 }
