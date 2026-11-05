@@ -442,8 +442,11 @@ func (s *Switcher) PollOther(ctx context.Context) {
 		cancel()
 	}
 	s.writeOwedMarkers(ctx, "")
-	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
+	// G2 reads first on its tick: on an unvouched hub the reader answers a
+	// read inside its window from the last one, and G2 alone refuses that
+	// (a lapse recheck first would make every G2 read land in the window).
 	s.checkNoPayer(ctx)  // G2: nobody pays any more
+	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
 	if s.Pending() && s.stepDue() {
 		s.Kick()
 	}

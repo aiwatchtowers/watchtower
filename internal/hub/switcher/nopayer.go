@@ -61,15 +61,20 @@ func (s *Switcher) fingerprint() (string, bool) {
 	return fmt.Sprintf("%d|%s", routes, strings.Join(ids, ",")), !recent
 }
 
-// checkNoPayer is G2: a desktop host on the relay whose account no longer
-// lists any paying phone (a subscription move revokes the old account's
-// slots with no control, and the old phone may be wiped) moves to CloudKit by
-// itself, as on rule 16 with no other payer (by = entitlement_expired). It
-// moves only on two reads that answered, at least NoPayerPoll apart, with the
-// same linked phones and iCloud routes, none linked within the interval, at least one phone with an iCloud route; a read that failed or
-// timed out, a paying phone, a pending switch or a phone linking resets the
-// count and moves nothing. An answer with no phones at all cannot be told
-// from a revoked account, so the two reads and the phone list are its guard.
+// checkNoPayer is G2, a backstop for what a subscription move leaves when
+// no control reaches the hub (a lost ENTITLEMENT_EXPIRED or SLOT_REMOVED,
+// slots dropped because the new account is full, a transfer stuck past five
+// minutes, a relay-side gap, a wiped old phone). A desktop host on the relay
+// whose account lists no paying phone moves to CloudKit by itself, as on
+// rule 16 with no other payer (by = entitlement_expired). It moves only on
+// two reads that answered, at least NoPayerPoll apart, with the same linked
+// phones and iCloud routes, none linked within the interval and at least one
+// phone with an iCloud route. A read that failed or timed out, a paying
+// phone, a pending switch or a phone linking resets the count and moves
+// nothing; a read that was not made afresh (ErrNotFresh) leaves the count
+// and is tried again at the next poll. An answer with no phones at all
+// cannot be told from a revoked account, so the two reads and the phone
+// list are its guard.
 func (s *Switcher) checkNoPayer(ctx context.Context) {
 	if s.c.AnyPaying == nil || s.c.Relay == nil || s.c.CloudKit == nil {
 		return

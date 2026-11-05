@@ -80,11 +80,23 @@ func (r *accountReader) invalidate() {
 // starts (the lock is not held over it): a read during a slow one answers
 // the answer before it.
 func (r *accountReader) State(ctx context.Context) (*relayv1.AccountState, error) {
+	return r.get(ctx, false)
+}
+
+// get is State and Fresh over one locked decision: inside the window a plain
+// read answers the last answer, a fresh one never does.
+func (r *accountReader) get(ctx context.Context, fresh bool) (*relayv1.AccountState, error) {
 	r.mu.Lock()
 	now := r.clock()
 	if !r.vouched() && !r.at.IsZero() && now.Sub(r.at) < unvouchedPoll {
 		last, lastErr := r.last, r.lastErr
 		r.mu.Unlock()
+		if fresh {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, switcher.ErrNotFresh
+		}
 		if last == nil {
 			if lastErr == nil {
 				lastErr = errors.New("hub: the account state is being read")
@@ -113,17 +125,7 @@ func (r *accountReader) State(ctx context.Context) (*relayv1.AccountState, error
 // new one (the G2 check): inside the window it answers the last read's error
 // if that read failed, else switcher.ErrNotFresh, never the cached state.
 func (r *accountReader) Fresh(ctx context.Context) (*relayv1.AccountState, error) {
-	r.mu.Lock()
-	if !r.vouched() && !r.at.IsZero() && r.clock().Sub(r.at) < unvouchedPoll {
-		lastErr := r.lastErr
-		r.mu.Unlock()
-		if lastErr != nil {
-			return nil, lastErr
-		}
-		return nil, switcher.ErrNotFresh
-	}
-	r.mu.Unlock()
-	return r.State(ctx)
+	return r.get(ctx, true)
 }
 
 // readAccount is the hub's account-state read: through the reader, then the

@@ -398,6 +398,15 @@ final class MacTransportModelTests: XCTestCase {
             XCTAssertEqual(try model(link: link(relay: true, switchedBy: by, switchedAt: at)).footnote, expected, by ?? "nil")
             XCTAssertEqual(try model(link: link(switchedBy: by, switchedAt: at)).footnote, expected, by ?? "nil")
         }
+        // A phone whose own subscription ended or moved is told so; one that never subscribed is not.
+        for (phase, expected) in [
+            (RelayAccountCenter.Phase.free(ended: true), "\(applies) Last changed when your subscription ended at 10:42."),
+            (.moved, "\(applies) Last changed when your subscription ended at 10:42."),
+            (.free(ended: false), applies)
+        ] {
+            let record = link(relay: true, switchedBy: lapse, switchedAt: today)
+            XCTAssertEqual(try model(link: record, phase: phase).footnote, expected, "\(phase)")
+        }
         let yesterday = try model(link: link(switchedBy: own, switchedAt: today.addingTimeInterval(-86_400)), at: today)
         XCTAssertEqual(yesterday.footnote, "\(applies) Last changed by this iPhone yesterday at 10:42.")
         let older = try model(link: link(switchedBy: own, switchedAt: today.addingTimeInterval(-5 * 86_400)), at: today)

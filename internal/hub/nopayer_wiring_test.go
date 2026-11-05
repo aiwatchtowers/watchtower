@@ -167,3 +167,26 @@ func TestG2AFailedReadBetweenTheTwoDoesNotLetTheCacheAnswer(t *testing.T) {
 		t.Fatal("moved on a cached answer after a failed read")
 	}
 }
+
+// A lapsed phone's row makes every poll's lapse recheck read the account.
+// G2 reads first on its tick, so its read is the real one and the recheck
+// takes the cached answer (the unvouched window): G2 is not starved by it.
+func TestG2IsNotStarvedByTheLapseRecheck(t *testing.T) {
+	g := startG2(t, true)
+	st, err := state.Open(g.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE devices SET relay_lapsed_at = 1`)
+		return err
+	})
+	_ = st.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.fake.SetAccountState(&relayv1.AccountState{})
+	g.poll() // count 1
+	g.poll()
+	eventually(t, 10*time.Second, "the host on CloudKit", func() bool { return g.h.sw.IsActive(transport.KindCloudKit) })
+}

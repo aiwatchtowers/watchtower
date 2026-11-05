@@ -423,10 +423,12 @@ func TestHubActsOnEntitlementControl(t *testing.T) {
 	})
 }
 
-// G2 (relay client launch conditions): the only paying phone is gone (wiped
-// after a subscription move: the relay revoked its slots and sent neither
-// SLOT_REMOVED nor ENTITLEMENT_EXPIRED, and the phone never asks). nopayer.go
-// moves the desktop host to CloudKit by itself, on two quiet reads.
+// G2 (relay client launch conditions): the account lists no paying phone and
+// no control or request told the hub (a lost ENTITLEMENT_EXPIRED, slots
+// dropped, a stuck transfer, a relay-side gap, a wiped phone that never asks).
+// nopayer.go moves the desktop host to CloudKit by itself, on two quiet reads.
+// A healthy subscription move is not this case: it adopts the Mac into the
+// new account's slots, so a paying phone stays listed.
 
 // g2World is a hub on the relay whose phone was linked long ago and whose
 // account lists nobody paying.
@@ -702,6 +704,46 @@ func TestG2AfterTheMoveTheAntiFlapStillHolds(t *testing.T) {
 		w.onCloudKit(a)
 		w.ask(a, wire.TransportRelay) // a paying phone asks at once: too soon
 		w.settle(a)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A read that was not made afresh (the reader answered from an earlier read)
+// counts for nothing and resets nothing: the count stays and the next poll
+// tries again at once, not an interval later.
+func TestG2ANotFreshReadKeepsTheCountAndRetriesAtOnce(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		w.pollAfterInterval() // count 1
+		w.mu.Lock()
+		w.payErr = switcher.ErrNotFresh
+		w.mu.Unlock()
+		w.pollAfterInterval() // not fresh: nothing counted, nothing reset
+		w.wantActive(transport.KindRelay)
+		w.mu.Lock()
+		w.payErr = nil
+		w.mu.Unlock()
+		w.sw.PollOther(w.ctx) // no interval to wait: the count was kept
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// The number of phones with an iCloud route is part of what the two reads
+// must agree on, by itself: the phones and their ids stay the same here.
+func TestG2ARouteLostBetweenTheReadsRestartsTheCountAlone(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		b := w.addPhone(false)
+		w.route(b, true)
+		w.advance(switcher.NoPayerPoll) // b is no longer new
+		w.pollAfterInterval()           // count 1, two routes
+		w.route(b, false)               // one route left, the same phones
+		w.pollAfterInterval()           // the routes changed: count 1 again
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
 		w.wantActive(transport.KindCloudKit)
 	})
 }
