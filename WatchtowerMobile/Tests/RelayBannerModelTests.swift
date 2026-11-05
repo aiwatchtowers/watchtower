@@ -240,15 +240,56 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertNil(session.transportRequest, "nothing was written")
     }
 
-    /// A failed write on a hub still on the relay: the press must not look dead. The line only ever shows in an outage on a
-    /// relay route, so the harmless `.unavailable` paths cannot show a false one.
+    /// A failed write on a hub still on the relay: the press must not look dead.
     func testAPressReturnsAnyRefusal() async throws {
-        let bed = try await Bed.make(self, on: .cloudKit)
+        let bed = try await Bed.make(self, on: .relay)
         let session = try await bed.orderedSession()
+        try failingRowWrites(bed, session)
+
         let press = try XCTUnwrap(RelayBannerPress.run(.switchToICloud, session: session, center: nil) {})
         let refusal = await press.value
+
         XCTAssertEqual(refusal, .unavailable)
-        XCTAssertNil(try banner(route: session.route, pressRefusal: refusal), "an iCloud route shows no line for it")
+        XCTAssertNil(try bed.row()?.link.transportRequest, "nothing was written")
+        let model = try XCTUnwrap(try banner(route: session.route, unansweredFor: 12 * 60, pressRefusal: refusal))
+        XCTAssertEqual(model.secondLine, TransportRequestRefusal.unavailable.message(macName: "Work Mac"))
+        XCTAssertEqual(model.actions, [.switchToICloud])
+    }
+
+    /// The Connection section's press, on the same failure: the line and Try Again come back, and Try Again asks again.
+    func testAConnectionPressReturnsAnyRefusal() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let session = try await bed.orderedSession()
+        let host = try failingRowWrites(bed, session)
+
+        let refusal = await MacTransportPress.run(.chooseICloud, session: session, center: nil)
+        XCTAssertEqual(refusal, .unavailable)
+        XCTAssertNil(try bed.row()?.link.transportRequest)
+
+        let link = try XCTUnwrap(try bed.row()?.link)
+        var facts = SessionTransportFacts(link: link, store: session.store, now: now)
+        facts.pressRefusal = refusal
+        let model = MacTransportModel(
+            link: link, grant: nil, phase: .paying(grace: false, macs: []), unconfirmedPurchase: false, availability: try available(),
+            session: facts, macName: "Work Mac", ownDeviceID: link.deviceID, now: now
+        )
+        let row = try XCTUnwrap(model.rows.first { $0.title == MacTransportModel.iCloudTitle })
+        XCTAssertEqual(row.line, TransportRequestRefusal.unavailable.message(macName: "Work Mac"))
+        XCTAssertEqual(row.action, .tryAgain)
+
+        host.persistFails = false
+        let again = await MacTransportPress.run(.tryAgain, session: session, center: nil)
+        XCTAssertNil(again)
+        XCTAssertEqual(try bed.row()?.link.transportRequest?.isOpen, true, "Try Again on the relay asks for iCloud, never an upgrade")
+    }
+
+    /// The session's request now writes through a host whose row writes fail.
+    @discardableResult
+    private func failingRowWrites(_ bed: Bed, _ session: HubSession) throws -> RowWriteFailingHost {
+        let host = RowWriteFailingHost(root: bed.root)
+        let follower = TransportFollower(hubID: session.hubID, outbox: session.outbox, host: bed.root)
+        session.attach(TransportRequester(session: session, follower: follower, host: host) { [clock = bed.clock] in clock.now })
+        return host
     }
 
     func testARefusedRequestAsksAgainWithItsOwnReason() async throws {
@@ -421,7 +462,7 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertEqual(refused.text, "Your Relay subscription ended.")
         XCTAssertEqual(refused.secondLine, TransportRequestRefusal.notSupported.message(macName: "Work Mac"))
         XCTAssertEqual(refused.secondLineTone, .red)
-        XCTAssertEqual(refused.actions, [.subscribe, .ok])
+        XCTAssertEqual(refused.actions, [.switchToICloud, .subscribe, .ok], "its line says try again: the press stays, as on S50")
 
         let nothingAsked = try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute))
         XCTAssertEqual(nothingAsked.text, "Your Relay subscription ended.")
@@ -468,7 +509,7 @@ final class RelayBannerModelTests: XCTestCase {
         XCTAssertEqual(refused.text, "Your subscription moved to another iPhone.")
         XCTAssertEqual(refused.secondLine, TransportRequestRefusal.notSupported.message(macName: "Work Mac"))
         XCTAssertEqual(refused.secondLineTone, .red)
-        XCTAssertEqual(refused.actions, [.restore, .ok])
+        XCTAssertEqual(refused.actions, [.switchToICloud, .restore, .ok], "its line says try again: the press stays, as on S50")
     }
 
     func testS41bGivesWayOnlyWhereItShould() throws {
@@ -623,4 +664,19 @@ final class RelayBannerModelTests: XCTestCase {
         await bed.fetch(session)
         await fulfillment(of: [changed], timeout: 5)
     }
+}
+
+/// `AppRoot` as the request's host, while its row writes fail.
+@MainActor
+private final class RowWriteFailingHost: TransportRequestHost {
+    private let root: AppRoot
+    var persistFails = true
+
+    init(root: AppRoot) {
+        self.root = root
+    }
+
+    func followerLink(hubID: String) -> LinkRecord? { root.followerLink(hubID: hubID) }
+    func persistRoute(_ link: LinkRecord) -> Bool { persistFails ? false : root.persistRoute(link) }
+    func makeOtherSide(hubID: String, route: HubRoute) throws -> SideTransport { try root.makeOtherSide(hubID: hubID, route: route) }
 }

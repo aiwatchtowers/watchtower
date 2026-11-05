@@ -160,10 +160,16 @@ struct RelayBannerModel: Equatable {
         }
     }
 
-    /// The route has not moved: a refusal says why it won't come. A request the Mac can still answer has no line.
+    /// The route has not moved: a refusal says why it won't come, and the press stays, as on S50. A request the Mac can still
+    /// answer has no line.
     private static func notMovedYet(_ text: String, actions: [Action], _ request: TransportRequestRecord?, macName: String) -> Self {
-        let refusal = request?.awaitsAnswer == true ? nil : request?.refusal
-        return Self(text: text, secondLine: refusal?.message(macName: macName), secondLineTone: .red, actions: actions, macName: macName)
+        guard request?.awaitsAnswer != true, let refusal = request?.refusal else {
+            return Self(text: text, actions: actions, macName: macName)
+        }
+        return Self(
+            text: text, secondLine: refusal.message(macName: macName), secondLineTone: .red,
+            actions: [.switchToICloud] + actions, macName: macName
+        )
     }
 
     /// S30, or S51's sentence where nothing says this phone can subscribe: not read yet, or just charged.
@@ -250,8 +256,6 @@ enum RelayBannerPress {
     /// **Try Again** on a refused request keeps the record's reason, as the Connection section's does.
     private static func switchToICloud(_ session: HubSession, center: RelayAccountCenter?) async -> TransportRequestRefusal? {
         let reason = session.transportRequest.flatMap { $0.isOpen ? nil : $0.reason } ?? center?.switchReason
-        let outcome = await session.requestTransport(reason: reason)
-        if case let .refused(refusal) = outcome { return refusal }
-        return nil
+        return await session.requestTransport(reason: reason).refusal
     }
 }
