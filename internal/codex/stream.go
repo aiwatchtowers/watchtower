@@ -81,9 +81,11 @@ type queryStream struct {
 	toolsOpen map[string]bool
 	toolOrder []ai.ToolEvent
 	// anonymous numbers the ids given to items codex sent without one;
-	// anonOpen lists the id-less tools started and not yet completed.
+	// anonOpen lists the id-less tools started and not yet completed,
+	// anonMsg the id-less agent message started and not yet completed.
 	anonymous int
 	anonOpen  []string
+	anonMsg   string
 	// skipped counts the lines over maxStreamLine, undecodable the lines
 	// that are not a JSON event.
 	skipped, undecodable int
@@ -144,7 +146,7 @@ func (s *queryStream) handle(line []byte) bool {
 		return s.tool(event.Type, item)
 	case item.Type == "agent_message" && item.MessageText() != "":
 		if item.ID == "" {
-			item.ID = s.newAnon()
+			item.ID = s.anonMessage(event.Type)
 		}
 		return s.message(item)
 	}
@@ -156,6 +158,20 @@ func (s *queryStream) handle(line []byte) bool {
 func (s *queryStream) newAnon() string {
 	s.anonymous++
 	return "anon-" + strconv.Itoa(s.anonymous)
+}
+
+// anonMessage is the id of an id-less agent message's event: its stages up
+// to item.completed share one id (no separator inside one message), and
+// the next message gets a new one.
+func (s *queryStream) anonMessage(eventType string) string {
+	if s.anonMsg == "" {
+		s.anonMsg = s.newAnon()
+	}
+	id := s.anonMsg
+	if eventType == "item.completed" {
+		s.anonMsg = ""
+	}
+	return id
 }
 
 // anonTool is the id of an id-less tool item's event: item.started opens a
