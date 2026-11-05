@@ -5,15 +5,7 @@ Relay isn't in the current version of Watchtower for iPhone, and a headless host
 A headless host runs your workbenches on a Linux box or on a Mac without the Watchtower app, and you drive them from your iPhone. It is for a small always-on machine, like a Raspberry Pi on a shelf, that has no screen and no Watchtower window.
 
 ## Why use it
-<!-- learn
-id: headless-host-run
-title: Run workbenches on a Linux box
-text: On a Linux box run `watchtower service install`, then `watchtower hub pair` to drive its sessions from your phone.
-area: iphone
-level: power
-kind: feature
-since: next
--->
+<!-- learn: none -->
 
 You start a Claude Code session on the Pi's workbench from your phone before you leave. The agent works while you are out; its asks, permission prompts and chat reach the phone, and you answer them there. Your laptop can stay shut.
 

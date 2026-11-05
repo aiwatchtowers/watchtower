@@ -13,6 +13,10 @@ import (
 // release that sets the relay origin (ask #1012, Phase 4 Open decision 16).
 const relayNotYetLine = "Relay isn't in the current version of Watchtower for iPhone."
 
+// cardsHeldUntilLaunch are Learn cards that would send a phone user to something
+// their build lacks, whatever their id says. Removed with the line at launch.
+var cardsHeldUntilLaunch = []string{"iphone-relay-subscribe", "iphone-alerts-relay", "headless-host-run"}
+
 func readGuidePage(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(name)
@@ -102,6 +106,11 @@ func TestRelayGuideSaysNotYet(t *testing.T) {
 		for _, block := range cardBlock.FindAllString(readGuidePage(t, p), -1) {
 			if m := cardID.FindStringSubmatch(block); m != nil {
 				t.Errorf("%s has the Learn card %q: Relay cards wait for launch", p, m[1])
+			}
+			for _, held := range cardsHeldUntilLaunch {
+				if regexp.MustCompile(`(?m)^id:\s*` + regexp.QuoteMeta(held) + `\s*$`).MatchString(block) {
+					t.Errorf("%s has the Learn card %q: it is held until launch", p, held)
+				}
 			}
 		}
 		return nil

@@ -146,7 +146,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | G4, a `push_off` alert at a switch to iCloud: checked, and fixed or accepted | Go hub session, owner's ruling |
 | #1537, a hello lost on a failed owner read: fixed | Go hub session |
 | The Go half of Open decision 1, option A: `wire.DevicePayload` reads `work_alerts_off`, `ApplyDeviceRecord` stores it in the sidecar, `alerts.Eligible` skips the phone. **A dual path with Task 13's Kit field, changing together.** The same change moves the fixture case `work_alerts_off` from `device_payload_kit_only` into `device_payload` in `hub_contract_cases.json`, adds it to the exact-name list in `HubContractFixtureTests` and points `testDevicePayloadWorkAlertsOff` at the new section, so `device_payload` pins it on both sides | Go hub session, approved by name in Open decision 1 |
-| The Learn cards `iphone-relay-subscribe` and `iphone-alerts-relay`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), in the release that sets the origin | Relay client session |
+| The Learn cards `iphone-relay-subscribe`, `iphone-alerts-relay` and `headless-host-run`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
 | Manual checks M1–M10 on staging | Owner, Open decision 14 |
@@ -1242,6 +1242,7 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | Tasks 6 and 14 start before Tasks 2, 4 and 5 clear CI, on branches built from their reviewed heads | decided by the agent, execution order only |
 | Tasks 7 and 13 run in parallel off Task 6; Tasks 9 and 15 run in parallel, on separate simulators | decided by the agent, execution order only |
 | S01's chevron, the card's button trait and `lineRow`'s Spacer wrap go to Task 8, which edits the same file | decided by the agent, execution order only |
+| The Go hub's `headless-host-run` Learn card waits for launch too: it tells users to pair a phone their build cannot pair | decided by the agent, under Open decision 16 |
 | Every one of the 19 Open decisions below on its recommended option | ask #1038 |
 
 ## Open decisions for the owner

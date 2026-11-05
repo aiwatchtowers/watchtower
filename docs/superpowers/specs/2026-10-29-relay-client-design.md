@@ -254,3 +254,4 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - Phase 4: New frames S34b, S34c, S36b, S41b, S41c: back-on-iCloud is said only once the route moved; a refusal keeps the press; "Switching to iCloud…" alone once the relay answers again — decided by the agent, Task 10; pending ask #1040
 - Phase 4: Now's banner is a plain card, not the mockup's amber, because orange means waiting for you (`PhoneTone`, `OrangeToneTests`) — decided by the agent, Task 10; pending ask #1040
 - Phase 4: S34b's text: "Your Relay subscription ended. Work Mac moves to iCloud when it's back." with **Subscribe** **OK** — decided by the agent, Task 10; pending ask #1040
+- Phase 4: The Go hub's `headless-host-run` Learn card waits for launch too: it tells users to pair a phone their build cannot pair — decided by the agent, under Open decision 16
