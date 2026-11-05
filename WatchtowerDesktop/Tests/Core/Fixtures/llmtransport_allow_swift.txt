@@ -25,6 +25,7 @@ WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.s
 WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | outcome | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice+Payload.swift | wireAgent | .claude | 1 | A5: agent kind wire mapping for the phone slice; moves to the session adapter's capabilities
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice+Payload.swift | wireAgent | .codex | 1 | A5: agent kind wire mapping for the phone slice; moves to the session adapter's capabilities
+WatchtowerDesktop/Sources/Services/SessionBackgroundProber.swift | checkCodexTurns | .codex | 1 | G5: codex rollout pull by agent kind; G5 moves it into the session host behind the A5 adapter
 WatchtowerDesktop/Sources/Services/TerminalCenter.swift | codexResumes | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/Services/TerminalCenter.swift | hasTranscript | .claude | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/Services/TerminalCenter.swift | hasTranscript | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
@@ -98,6 +99,7 @@ WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderSettingsCopy.swift | p
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderSettingsHealth.swift | var copy | "codex" | 1 | A2: health preview decided from the provider name; reads the capability row
 WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | caption | "claude" | 1 | A2: Quick Connections support decided from the provider name; reads the capability row
 WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | caption | "codex" | 1 | A2: Quick Connections support decided from the provider name; reads the capability row
+WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | caption | "ollama" | 1 | A2: Quick Connections support decided from the provider name; A2 replaces it with the quick_connections capability
 WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | codexImportNotice | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
 WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionSwitcherPresentation.swift | var agentTag | .codex | 1 | permanent: display-name suffix of the session's agent
 WatchtowerDesktop/Sources/WatchtowerCore/Services/TerminalLaunch.swift | exitMessage | .claude | 1 | A5: launch argv by agent kind; moves behind the session adapter

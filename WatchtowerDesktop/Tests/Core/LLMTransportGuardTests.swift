@@ -88,20 +88,20 @@ final class LLMTransportGuardTests: XCTestCase {
     private static let cases = "claude|codex|ollama|claudeCode|codexCLI"
     private static let enumCase = #"(?:\b[A-Z]\w*(?:\.[A-Z]\w*)*)?\.(\#(cases))\b"#
 
-    /// A comparison against a literal or an enum case, either side.
+    // A comparison against a literal or an enum case, either side.
     // swiftlint:disable:next force_try
     private static let comparison = try! NSRegularExpression(
         pattern: #"[=!]=\s*(?:"(\#(literals))"|\#(enumCase))|(?:"(\#(literals))"|\#(enumCase))\s*[=!]="#
     )
-    /// A literal or an enum case in a `case` pattern (switch, `if case`).
+    // A literal or an enum case in a `case` pattern (switch, `if case`).
     // swiftlint:disable:next force_try
     private static let caseItem = try! NSRegularExpression(
         pattern: #""(\#(literals))"|(?<![\w.])\#(enumCase)"#
     )
-    /// An array literal tested with `.contains(`.
+    // An array literal tested with `.contains(`.
     // swiftlint:disable:next force_try
     private static let membership = try! NSRegularExpression(pattern: #"\[[^\[\]]*\]\s*\.contains\("#)
-    /// The declaration a hit belongs to: a function, an init or a computed var.
+    // The declaration a hit belongs to: a function, an init or a computed var.
     // swiftlint:disable:next force_try
     private static let declaration = try! NSRegularExpression(
         pattern: #"\bfunc\s+([A-Za-z_]\w*)|(?<![\w.])(init)[?!]?\s*[(<]"#
@@ -253,17 +253,30 @@ final class LLMTransportGuardTests: XCTestCase {
             .deletingLastPathComponent() // repository root
     }
 
-    private nonisolated(unsafe) static var cachedHits: [String: Int]?
+    /// The file that declares which capabilities each agent kind has: the
+    /// only place outside the decoders where a kind maps to its caps.
+    private static let capabilityFiles: Set<String> = [
+        "WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentSessionCaps.swift"
+    ]
+
+    nonisolated(unsafe) private static var cachedHits: [String: Int]?
 
     /// Scans both source trees once per test run.
     private static func repoHits() throws -> [String: Int] {
         if let cachedHits { return cachedHits }
+        for file in capabilityFiles {
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent(file).path),
+                "\(file) is allowlisted as a capability file but does not exist"
+            )
+        }
         var out: [String: Int] = [:]
         for dir in ["WatchtowerDesktop/Sources", "WatchtowerKit/Sources"] {
             let files = try swiftFiles(in: dir)
             XCTAssertFalse(files.isEmpty, "\(dir) has no Swift files: the guard would pass vacuously")
             for url in files {
                 let rel = String(url.standardizedFileURL.path.dropFirst(repoRoot.standardizedFileURL.path.count + 1))
+                if capabilityFiles.contains(rel) { continue }
                 let text = try String(contentsOf: url, encoding: .utf8)
                 out.merge(hits(in: text, file: rel)) { $0 + $1 }
             }

@@ -44,6 +44,12 @@ var adapterFiles = []string{
 	"internal/chat/claude_translate.go",
 }
 
+// capabilityFiles declare which capabilities each agent kind has: the only
+// places outside the adapters where a kind maps to its caps.
+var capabilityFiles = []string{
+	"internal/agentkind/caps.go",
+}
+
 // plannedAdapters are adapter paths the transport independence plan creates
 // later (A4, A5). Only these may be missing; once one exists the test asks
 // for its removal from this set, so a typo in the lists above cannot hide.
@@ -209,7 +215,7 @@ func scanRepo(root string) (map[string]int, error) {
 		err := walkGo(root, dir, func(rel string, d fs.DirEntry) bool {
 			return d.Name() == "testdata" || isAdapterDir(rel)
 		}, func(rel string) error {
-			if isAdapterFile(rel) {
+			if isAdapterFile(rel) || slices.Contains(capabilityFiles, rel) {
 				return nil
 			}
 			f, err := parser.ParseFile(fset, filepath.Join(root, rel), nil, parser.SkipObjectResolution)
@@ -260,7 +266,7 @@ func walkGo(root, dir string, skipDir func(rel string, d fs.DirEntry) bool, visi
 // checkAdapterPaths fails on a listed adapter path that does not exist,
 // unless it is planned, and on a planned path that now exists.
 func checkAdapterPaths(root string) error {
-	for _, p := range slices.Concat(adapterDirs, adapterFiles) {
+	for _, p := range slices.Concat(adapterDirs, adapterFiles, capabilityFiles) {
 		_, err := os.Stat(filepath.Join(root, p))
 		switch {
 		case err == nil && plannedAdapters[p]:
