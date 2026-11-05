@@ -501,6 +501,24 @@ func TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle(t *testing.T) {
 	}
 }
 
+// The other side of the same gate: a Codex row that reported every mid-turn
+// dialog (TakesLineWhileWorking) takes the line while it works, sent while
+// busy, as Claude's does; Needs approval still holds the next one.
+func TestProj16_ACodexRowThatTakesLinesWhileWorkingGetsTheLine(t *testing.T) {
+	withSessionCaps(t, agentkind.Codex, agentkind.Claude.SessionCaps())
+	le := newLineEnv(t)
+	sid := le.agentSession("codex")
+	le.lp.start(sid)
+	le.setState(sid, "working")
+
+	out := le.send(le.h, le.input(sid, "Also update the changelog"))
+
+	wantLine(t, out, deliverySubmitted, true)
+	wantPastes(t, le, "Also update the changelog")
+	le.setStateAt(sid, "needs_approval", le.clock.Now().Add(30*time.Second))
+	wantOutcome(t, le.send(le.h, le.input(sid, "and the readme")), wire.StatusHeld, inputReasonNeedsApproval)
+}
+
 // A board session whose agent takes no phone input is refused not_supported
 // with the owner-readable message, never "no longer exists" (S4, PROJ-16
 // amended): nothing types, nothing is held.

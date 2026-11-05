@@ -335,6 +335,19 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertTrue(typed.isEmpty)
     }
 
+    /// The other side of the same gate: a Codex row that reported every
+    /// mid-turn dialog takes the line while it works, sent while busy.
+    func testACodexRowThatTakesLinesWhileWorkingGetsTheLine() async throws {
+        let session = try await liveSession(kind: .codex)
+        setState(session, .working)
+        let fullRow: (AgentKind) -> AgentSessionCaps = { _ in AgentSessionCaps.of(AgentKind.claude) }
+
+        let outcome = try await makeHandlers(caps: fullRow).handle(input(session, "Also update the changelog"))
+
+        XCTAssertEqual(outcome.result, ["delivery": .string("submitted"), "while_busy": .bool(true)])
+        XCTAssertEqual(pastes, ["Also update the changelog"])
+    }
+
     /// A board session whose agent takes no phone input is refused
     /// `not_supported` with the owner-readable message, never "no longer
     /// exists" (S4, PROJ-16 amended); nothing types.
