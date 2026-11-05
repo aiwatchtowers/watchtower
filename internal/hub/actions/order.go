@@ -269,9 +269,12 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 // yet, or its ask is old enough to count as lost. An ask dated in the future
 // (the Mac's clock ran fast) counts as old, so it never waits for the clock.
 func askDue(dev state.Device, from uint64, now time.Time) bool {
-	if dev.ResendRequestedFrom != from {
-		return true
-	}
+	return dev.ResendRequestedFrom != from || askOld(dev, now)
+}
+
+// askOld reports whether the device's last ask, of any gap, is old enough to
+// repeat (an ask with no time is).
+func askOld(dev state.Device, now time.Time) bool {
 	age := now.Sub(dev.ResendRequestedAt)
 	return age >= ResendAskAgainAfter || age < 0
 }
@@ -494,7 +497,8 @@ func sameID(s string, id secure.ID) bool {
 // held), and it asks for a gap nobody asked yet that leaves held actions behind
 // it: an Interrupt held there must not wait for the phone's next action. An
 // older ask of the same gap is repeated only by hold, so an idle pass writes
-// nothing.
+// nothing. An ask dropped as refused for good (from 0) is repeated here at most
+// once per ResendAskAgainAfter, so the refusal does not cost a write per pass.
 func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 	device := b.id.String()
 	if p.fault != nil {
@@ -536,7 +540,8 @@ func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 			return err
 		}
 		if next == nil {
-			if ahead && dev.ResendRequestedFrom != last+1 {
+			forgotten := dev.ResendRequestedFrom == 0
+			if ahead && dev.ResendRequestedFrom != last+1 && (!forgotten || askOld(dev, p.cfg.Clock())) {
 				return p.askGap(ctx, b, last+1)
 			}
 			return nil

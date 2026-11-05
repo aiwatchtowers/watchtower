@@ -95,13 +95,14 @@ func (s *Store) ControlDone(id int64) error {
 
 // DropResendFrom removes a resend_from that can never be written and forgets
 // that its gap was asked (resend_requested_from = 0), in one transaction, so
-// the next held action asks for the gap again.
+// the next held action asks for the gap again. resend_requested_at stays: it
+// is what keeps a drain from asking again every pass while the refusal lasts.
 func (s *Store) DropResendFrom(id int64, device string) error {
 	return s.write(func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`DELETE FROM control_queue WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("removing a control: %w", err)
 		}
-		if err := SetResendRequested(tx, device, 0, time.Time{}); err != nil && !errors.Is(err, ErrNoDevice) {
+		if err := updateDevice(tx, device, 0, `UPDATE devices SET resend_requested_from = ? WHERE device_id = ? COLLATE NOCASE`); err != nil && !errors.Is(err, ErrNoDevice) {
 			return err
 		}
 		return nil

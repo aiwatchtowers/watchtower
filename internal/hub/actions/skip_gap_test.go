@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"context"
 	"database/sql"
 	"slices"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 )
 
@@ -384,5 +386,53 @@ func TestALateCopyOfABegunRecordIsAnsweredOutcomeUnknown(t *testing.T) {
 		w.sync(w.phone)
 		w.wantEcho(two, wire.StatusFailed, reasonOutcomeUnknown)
 		w.wantCalls(noops(1)...)
+	})
+}
+
+// countWrites counts the records the hub tries to write.
+type countWrites struct {
+	*memfake.Fake
+	n int
+}
+
+func (f *countWrites) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	f.n += len(items)
+	return f.Fake.Save(ctx, items)
+}
+
+// An ask refused for good is forgotten so the gap can be asked again, but its
+// time stays: a drain asks at most once per ResendAskAgainAfter, not once per
+// pass, until the refusal ends. The order then recovers.
+func TestAnAskRefusedForGoodIsNotRepeatedEveryPass(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		if _, err := w.phone.Queue(w.phone.NewAction("test_noop")); err != nil { // 2 never sent
+			t.Fatal(err)
+		}
+		w.act("test_noop") // 3: held
+		saves := &countWrites{Fake: w.fake}
+		w.use(saves)
+		w.fake.RefuseWrites(w.phone.Zone(), transport.ErrForbidden)
+		w.pass() // the held echo and the ask, both refused and dropped
+		if d := w.device(w.phone); d.ResendRequestedFrom != 0 {
+			t.Fatalf("resend_requested_from %d: the gap stays marked asked", d.ResendRequestedFrom)
+		}
+		saves.n = 0
+
+		const step = 30 * time.Second
+		passes := int(2 * ResendAskAgainAfter / step) // two windows of clock
+		for range passes {
+			w.advance(step)
+			w.pass()
+		}
+		if saves.n < 1 || saves.n > 2 {
+			t.Fatalf("%d refused writes over %d passes and two windows, want one per window at most, and some", saves.n, passes)
+		}
+
+		w.fake.RefuseWrites(w.phone.Zone(), nil)
+		w.advance(ResendAskAgainAfter)
+		w.settle()
+		w.wantCalls(noops(1, 2, 3)...)
 	})
 }
