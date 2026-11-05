@@ -271,6 +271,35 @@ final class AlertSubscriptionTests: XCTestCase {
         XCTAssertGreaterThan(saves(), before, "the record reached the relay")
     }
 
+    /// A new link or a re-link starts the hub's column at "on", so a phone whose switch is off says so at once; the
+    /// extension has no switch check of its own.
+    func testALinkWithTheSwitchOffWritesOneRecord() async throws {
+        let bed = try await alertsBed()
+        let session = try XCTUnwrap(bed.root.env.session(bed.hubID))
+        let device = try XCTUnwrap(session.linkedDevice)
+        let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
+        session.deviceSettings.workAlerts = false
+
+        try await bed.root.linked(record, device: device)
+
+        let written = try await deviceRecords(bed)
+        XCTAssertEqual(written.last?.workAlertsOff, true)
+    }
+
+    func testALinkWithTheSwitchOnWritesNoRecord() async throws {
+        let bed = try await alertsBed()
+        let session = try XCTUnwrap(bed.root.env.session(bed.hubID))
+        let device = try XCTUnwrap(session.linkedDevice)
+        let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
+        let before = try await deviceRecords(bed)
+
+        try await bed.root.linked(record, device: device)
+
+        let after = try await deviceRecords(bed)
+        XCTAssertEqual(after.count, before.count)
+        XCTAssertEqual(after.last?.updatedAt, before.last?.updatedAt)
+    }
+
     /// The dark ship: with an empty origin the switch writes no record and the record is today's, byte for byte.
     func testAnEmptyOriginWritesNoWorkAlertsOff() async throws {
         let bed = try await alertsBed(relayOff: true)

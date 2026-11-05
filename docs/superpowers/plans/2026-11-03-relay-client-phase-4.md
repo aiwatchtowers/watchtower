@@ -150,7 +150,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | The Learn cards `iphone-relay-subscribe`, `iphone-alerts-relay` and `headless-host-run`, and the "not in the current version" line out of every guide page that has it (with `TestRelayGuideSaysNotYet`), and `iphone-alerts.md`'s "will ask the Mac to stop sending" reworded to the present once the Go half and G1 are in, in the release that sets the origin | Relay client session |
 | Group #1495, "Relay 3a: deferred review findings" (todo; its text says to close it before Relay is on) | Relay client session |
 | Owner-only steps 1–5 above, the signed Release archive included (Task 17 Step 6) | Owner |
-| Manual checks M1–M10 on staging | Owner, Open decision 14 |
+| Manual checks M1–M11 on staging | Owner, Open decision 14 |
 
 ## Lanes
 
@@ -1173,6 +1173,7 @@ They need what only the owner can provide (see "Owner-only steps") or a physical
 - **M8. The goal.** Settings → Diagnostics on a good network: Relay p50 under 500 ms.
 - **M9. Confirmations and screens** that shots cannot capture on iOS 26 or the demo hides: Forget This Mac's layout and confirmation, Cancel Link; the banners' subscription sheet and its **Close**; **Manage Subscription** opens Apple's subscriptions page (`https://apps.apple.com/account/subscriptions`).
 - **M10. Xcode-signed builds:** `WTPushEnvironment` matches the signed `aps-environment`; a mismatch shows Desktop's no-token line.
+- **M11. A real unlink.** Unlink a Mac on a relay route with the Mac open, on staging: the Mac's device list loses the phone within seconds and the slot is free. Nothing else runs `unlinkRow` against the Worker: the interop run measures the Kit's flush, and the phone's order is tested on a fake clock.
 
 ## Decisions
 

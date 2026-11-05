@@ -1480,8 +1480,9 @@ extension LinkingViewModel {
     /// slot). A slot freed leaves its Mac's relay farewell undeliverable: it is dropped.
     func retrySlotRemovals() async {
         guard let host else { return }
-        if relayFarewellResent, !host.pendingSlotRemovals().isEmpty {
-            relayFarewellResent = false
+        let owesPause = relayFarewellResent
+        relayFarewellResent = false
+        if owesPause, !host.pendingSlotRemovals().isEmpty {
             do {
                 try await clock.sleep(for: Self.farewellReadPause)
             } catch {

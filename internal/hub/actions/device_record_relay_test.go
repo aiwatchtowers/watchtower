@@ -19,8 +19,7 @@ import (
 // G1: a phone on the hosted relay writes its device record into its own
 // mailbox, and the hub applies it there as it does on CloudKit. What differs:
 // the relay names no creator, so the record's authority is the envelope (a key
-// only this phone and the hub derive) and the relay's mailbox rule; and a
-// record dated before the link is ignored, since a re-link wipes the marks.
+// only this phone and the hub derive) and the relay's mailbox rule.
 
 func onRelay(t *testing.T) *world {
 	t.Helper()
@@ -239,7 +238,7 @@ func TestDeviceRecordOnTheRelayRewindStripsTheProof(t *testing.T) {
 	}
 }
 
-// failingLinks applies a record, then fails as a crash before its mark would.
+// failingLinks applies a record, then fails as a crash right after its commit.
 type failingLinks struct {
 	Links
 	fail *bool
@@ -257,7 +256,9 @@ func (f failingLinks) ApplyDeviceRecord(ctx context.Context, device string, r li
 	return nil
 }
 
-func TestDeviceRecordOnTheRelayCrashBeforeTheMarkAppliesAgain(t *testing.T) {
+// A crash after the commit: the record and its mark are in, and the re-read is
+// Same and applies nothing new.
+func TestDeviceRecordOnTheRelayCrashAfterTheCommitAppliesAgain(t *testing.T) {
 	w := onRelay(t)
 	fail := true
 	w.proc.cfg.Links = failingLinks{w.links, &fail}
@@ -269,16 +270,44 @@ func TestDeviceRecordOnTheRelayCrashBeforeTheMarkAppliesAgain(t *testing.T) {
 	if _, err := w.proc.Pass(w.ctx); !errors.Is(err, errCrash) {
 		t.Fatalf("pass: %v", err)
 	}
-	if _, _, ok, err := w.st.RelaySeen(name, w.phone.ID().String()); err != nil || ok {
-		t.Fatalf("marked before the crash: %v %v", ok, err)
+	if _, _, ok, err := w.st.RelaySeen(name, w.phone.ID().String()); err != nil || !ok {
+		t.Fatalf("the mark did not commit with the record: %v %v", ok, err)
 	}
 	fail = false
 	w.pass()
 	if got := w.device(w.phone).Name; got != "Renamed" {
 		t.Fatalf("name %q", got)
 	}
+}
+
+// A failure inside the transaction takes record and mark back together.
+func TestDeviceRecordOnTheRelayFailedCommitAppliesNothing(t *testing.T) {
+	w := onRelay(t)
+	name, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: w.phone.ID().String(), Name: "Renamed",
+		Scope: wire.ScopePrivate, UpdatedAt: wire.Time{Time: w.clock()}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string) {
+		t.Helper()
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error { _, err := tx.Exec(q); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`CREATE TRIGGER no_marks BEFORE INSERT ON relay_seen BEGIN SELECT RAISE(ABORT, 'crash'); END`)
+	if _, err := w.proc.Pass(w.ctx); err == nil {
+		t.Fatal("no error")
+	}
+	if got := w.device(w.phone).Name; got != "Test Phone" {
+		t.Fatalf("applied with no mark: %q", got)
+	}
+	exec(`DROP TRIGGER no_marks`)
+	w.pass()
+	if got := w.device(w.phone).Name; got != "Renamed" {
+		t.Fatalf("name %q", got)
+	}
 	if _, _, ok, err := w.st.RelaySeen(name, w.phone.ID().String()); err != nil || !ok {
-		t.Fatalf("not marked after the retry: %v %v", ok, err)
+		t.Fatalf("not marked: %v %v", ok, err)
 	}
 }
 
@@ -346,6 +375,94 @@ func TestDeviceRecordOlderLaneDoesNotOverwriteNewer(t *testing.T) {
 	}
 }
 
+// afterApply runs after, once, the first apply returns: the moment between a
+// record's commit and anything its processor does next.
+type afterApply struct {
+	Links
+	after *func()
+}
+
+func (a afterApply) ApplyDeviceRecord(ctx context.Context, device string, r link.DeviceRecord) error {
+	err := a.Links.ApplyDeviceRecord(ctx, device, r)
+	if f := *a.after; f != nil {
+		*a.after = nil
+		f()
+	}
+	return err
+}
+
+// The other lane runs between this record's commit and whatever follows it: its
+// older record, saying typing off, must not overwrite the newer one nor revoke
+// the grant. The mark commits with the record, so there is no such window.
+func TestDeviceRecordOlderLaneBetweenCommitAndMarkDoesNotOverwrite(t *testing.T) {
+	w := onRelay(t)
+	device := w.phone.ID().String()
+	w.rewrite(wire.DevicePayload{TypingRequested: true})
+	if err := w.links.Allow(device, link.GrantTyping, true); err != nil {
+		t.Fatal(err)
+	}
+	record := func(name string, typing bool) string {
+		t.Helper()
+		id, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: device, Name: name, Scope: wire.ScopePrivate,
+			TypingRequested: typing, UpdatedAt: wire.Time{Time: w.clock()}}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	wireName := record("Older", false)
+	stale := w.envelope(w.phone.Zone(), wireName)
+	record("Newer", true)
+	boxes, err := w.proc.mailboxes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	hook := func() {
+		ran = true
+		if err := w.proc.handle(w.ctx, boxes[0], transport.Stored{Name: wireName, Envelope: stale}, w.proc.newPass()); err != nil {
+			t.Error(err)
+		}
+	}
+	w.proc.cfg.Links = afterApply{w.links, &hook}
+	w.pass()
+	if !ran {
+		t.Fatal("the other lane never ran")
+	}
+	if d := w.device(w.phone); d.Name != "Newer" || !d.TypingRequested || !d.TypingAllowed {
+		t.Fatalf("the older lane overwrote the newer record: %+v", d)
+	}
+}
+
+// A record opened under a link that no longer stands applies nothing: the claim
+// checks the link in the rewrite's transaction.
+func TestDeviceRecordOpenedBeforeARelinkAppliesNothing(t *testing.T) {
+	w := onRelay(t)
+	name, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: w.phone.ID().String(), Name: "Old link",
+		Scope: wire.ScopePrivate, UpdatedAt: wire.Time{Time: w.clock()}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := false
+	w.proc.fault = func(stage string) error {
+		if !done && stage == "opened" {
+			done = true
+			w.relink(w.phone)
+		}
+		return nil
+	}
+	w.pass()
+	if !done {
+		t.Fatal("never opened")
+	}
+	if got := w.device(w.phone).Name; got != "Test Phone" {
+		t.Fatalf("name %q", got)
+	}
+	if _, _, ok, err := w.st.RelaySeen(name, w.phone.ID().String()); err != nil || ok {
+		t.Fatalf("marked under the new link: %v %v", ok, err)
+	}
+}
+
 // A farewell read, a re-link (marks gone), a switch's rewind: the old farewell
 // is read again. It no longer opens, since the relay key takes the link nonce.
 func TestOldFarewellAfterARelinkAndARewindKeepsTheLink(t *testing.T) {
@@ -364,66 +481,6 @@ func TestOldFarewellAfterARelinkAndARewindKeepsTheLink(t *testing.T) {
 	if !w.stillLinked(w.phone) {
 		t.Fatal("an old farewell unlinked the new link")
 	}
-}
-
-// The date check is what stands if a record from before the link does open. A
-// farewell dated before the link leaves the link.
-func TestFarewellDatedBeforeTheLinkKeepsTheLinkOnTheRelay(t *testing.T) {
-	w := onRelay(t)
-	unlinked := true
-	if _, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: w.phone.ID().String(), Name: "Test Phone", Scope: wire.ScopePrivate,
-		Unlinked: &unlinked, UpdatedAt: wire.Time{Time: w.clock().Add(-11 * time.Minute)}}, ""); err != nil {
-		t.Fatal(err)
-	}
-	w.pass()
-	if !w.stillLinked(w.phone) {
-		t.Fatal("a farewell from before the link unlinked it")
-	}
-}
-
-// An old rewrite is ignored and marked the same way.
-func TestDeviceRecordFromBeforeTheLinkIsIgnoredOnTheRelay(t *testing.T) {
-	w := onRelay(t)
-	name, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: w.phone.ID().String(), Name: "Old", Scope: wire.ScopePrivate,
-		UpdatedAt: wire.Time{Time: w.clock().Add(-time.Hour)}}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.pass()
-	if got := w.device(w.phone).Name; got != "Test Phone" {
-		t.Fatalf("name %q", got)
-	}
-	if _, _, ok, err := w.st.RelaySeen(name, w.phone.ID().String()); err != nil || !ok {
-		t.Fatalf("decided but not marked: %v %v", ok, err)
-	}
-}
-
-// The first toggle after a link survives a phone clock behind the hub's, up to
-// the slack.
-func TestDeviceRecordWithinTheClockSlackAppliesOnTheRelay(t *testing.T) {
-	w := onRelay(t)
-	if _, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: w.phone.ID().String(), Name: "Renamed", Scope: wire.ScopePrivate,
-		UpdatedAt: wire.Time{Time: w.clock().Add(-9 * time.Minute)}}, ""); err != nil {
-		t.Fatal(err)
-	}
-	w.pass()
-	if got := w.device(w.phone).Name; got != "Renamed" {
-		t.Fatalf("name %q", got)
-	}
-}
-
-// CloudKit keeps its old rule: the before-the-link check is the relay path's.
-func TestDeviceRecordFromBeforeTheLinkStillAppliesOnCloudKit(t *testing.T) {
-	onShared(t, func(t *testing.T, w *world) {
-		if _, err := w.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: w.phone.ID().String(), Name: "Renamed", Scope: wire.ScopePrivate,
-			UpdatedAt: wire.Time{Time: w.clock().Add(-time.Hour)}}, ""); err != nil {
-			t.Fatal(err)
-		}
-		w.pass()
-		if got := w.device(w.phone).Name; got != "Renamed" {
-			t.Fatalf("name %q", got)
-		}
-	})
 }
 
 // On standby a device record is read as on the active side.

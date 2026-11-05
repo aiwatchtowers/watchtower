@@ -1000,6 +1000,10 @@ extension AppRoot: LinkHost {
         _ = await session.adoption?.value
         await session.setLinkedDevice(device, writesAllowed: true)
         env.activate(record.hubID)
+        // The hub's switch starts on with every link, and the hello carries none it keeps.
+        if !session.deviceSettings.workAlerts, await session.deviceSettings.sendWorkAlertsChange() {
+            await session.sendNow()
+        }
     }
 
     /// The phone's `device` record for `hubID`. While the hub's link has an upgrade to the relay

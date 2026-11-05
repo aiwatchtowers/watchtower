@@ -593,6 +593,38 @@ func TestWorkAlertsOffOnTheRelayStopsSendAlert(t *testing.T) {
 	}
 }
 
+// TestAnAlertOpenWhenTheSwitchComesBackOnIsNotPushed: Enqueue fires on an
+// alert's first save only, so an alert raised while off stays unpushed through
+// the next cycles after the switch came back on.
+func TestAnAlertOpenWhenTheSwitchComesBackOnIsNotPushed(t *testing.T) {
+	pr := startPushRig(t)
+	record := func(off *bool, name string) {
+		t.Helper()
+		pr.clock.Advance(time.Second)
+		if _, err := pr.l.phone.WriteDeviceRecord(wire.DevicePayload{DeviceID: pr.l.phone.ID().String(), Name: name,
+			Scope: wire.ScopePrivate, StartSessions: true, WorkAlertsOff: off,
+			UpdatedAt: wire.Time{Time: pr.clock.Now()}}, ""); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, 15*time.Second, "the device record applied", func() bool { return pr.device(t).Name == name })
+	}
+	off := true
+	record(&off, "Switch off")
+	open := workAlert("ask-open")
+	pr.raise(open)
+	eventually(t, 15*time.Second, "the phone's action reached the source", func() bool {
+		items, err := pr.src.Items(t.Context())
+		return err == nil && len(items) == 1
+	})
+	time.Sleep(time.Second)
+	record(nil, "Switch on")
+	pr.raise(open) // the next cycle, the alert still open
+	time.Sleep(time.Second)
+	if sent := pr.srv.Alerts(); len(sent) != 0 {
+		t.Fatalf("pushed after the switch came on: %v", sent)
+	}
+}
+
 // TestFarewellOverTheRelay: the farewell a phone flushes while it still holds
 // the slot unlinks; one the hub reaches only after the slot went cannot be read
 // (the Worker's rule, EnforceMailboxRead), and the row stays for the owner.

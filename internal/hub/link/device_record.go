@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -29,16 +28,13 @@ type DeviceRecord struct {
 	Creator string
 	Shares  transport.Shares
 	Hosted  bool
-	// Superseded, in the rewrite's transaction, reports a newer version of
-	// this record already applied: each transport has its own processor, and
-	// the rollback check ran when this one was opened. Nil: never.
-	Superseded func(tx *sql.Tx) (bool, error)
+	// Claim, first in the rewrite's transaction, decides this version of the
+	// record and writes its rollback mark, so record and mark commit together:
+	// each transport has its own processor, and the rollback check ran when this
+	// one was opened. False: a newer version got there first, and nothing
+	// applies. An error rolls the rewrite back. Nil: always applies.
+	Claim func(tx *sql.Tx) (bool, error)
 }
-
-// beforeLinkSlack is how far before the link a hosted record may be dated and
-// still apply: the phone's clock against the hub's. An older one is from before
-// this link, and is ignored.
-const beforeLinkSlack = 10 * time.Minute
 
 // ApplyDeviceRecord applies a linked phone's own rewrite of its device
 // record (the Swift MobileLinkCenter.handleLinkedRewrite). It acts only when
@@ -72,10 +68,6 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 	}
 	if !accepts(row, r) {
 		log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
-		return nil
-	}
-	if r.Hosted && r.Payload.UpdatedAt.Before(row.LinkedAt.Add(-beforeLinkSlack)) {
-		log.Printf("hub link: device record of phone %s dated before its link: ignored", strings.ToUpper(device))
 		return nil
 	}
 	if !r.Hosted {
@@ -163,9 +155,9 @@ func (c *Center) rewrite(ctx context.Context, device string, r DeviceRecord) err
 	var asked, typingRevoked, permsRevoked, changed, relayNamed, relayMoved bool
 	var askedName, relayRefused string
 	err := c.st.WithTx(ctx, func(tx *sql.Tx) error {
-		if r.Superseded != nil {
-			superseded, err := r.Superseded(tx)
-			if err != nil || superseded {
+		if r.Claim != nil {
+			claimed, err := r.Claim(tx)
+			if err != nil || !claimed {
 				return err
 			}
 		}

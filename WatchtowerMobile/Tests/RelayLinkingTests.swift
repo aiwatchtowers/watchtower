@@ -1162,6 +1162,26 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(clock.slept, 3, "once")
     }
 
+    /// Resent with no removal waiting: a removal kept later owes nothing to that farewell.
+    func testAResentFarewellWithNoRemovalLeavesNoPauseOwed() async throws {
+        host.keptFarewells = [PendingFarewell(
+            hubID: otherHub, route: .hostedRelay(macDeviceID: otherMac.deviceID), userRecordName: "",
+            record: CloudRecord(recordName: "wire", zone: .relay, kind: "wt", modifiedAt: Date(), payload: Data([1])), since: clock.now()
+        )]
+        host.resendSucceeds = true
+        let model = makeModel()
+        await model.retryFarewells()
+        XCTAssertTrue(host.keptFarewells.isEmpty)
+        await model.retrySlotRemovals()
+
+        host.slotRemovals = [mac.deviceID]
+        relay.slots = [mac.deviceID]
+        await model.retrySlotRemovals()
+
+        XCTAssertEqual(clock.slept, 0)
+        XCTAssertTrue(relay.slots.isEmpty)
+    }
+
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
         for _ in 0..<2000 where !condition() {
             try? await Task.sleep(for: .milliseconds(5))
