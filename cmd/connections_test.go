@@ -44,7 +44,7 @@ func writeConnectionsConfig(t *testing.T) *config.Config {
 
 // writeConnectionsConfigWithProvider is the writeConnectionsConfig precedent,
 // but stamps ai.provider so ConfiguredProviderID() resolves to a specific
-// value — used to exercise warnIfProviderIgnoresConnections under codex/ollama.
+// value — used to check that no provider warns about Quick Connections.
 func writeConnectionsConfigWithProvider(t *testing.T, provider string) *config.Config {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -396,21 +396,18 @@ func TestConnections_AddRejectsWatchtowerPrefix(t *testing.T) {
 	assert.Len(t, conns, 3, "only the allowed names created a row")
 }
 
-// TestConnectionsEnable_WarnsUnderNonClaudeProvider covers the provider-
-// honesty warning: ollama chats never wire external connections (they route
-// through runtime B), so enabling a connection there is inert; claude and
-// codex mount them. The warning must not
-// block the enable — the row still ends up Enabled either way.
-func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
+// TestConnectionsEnable_NoProviderWarning: claude, codex and (through the
+// runtime-B loop, 2026-11-05) ollama all mount the connections, so enabling
+// one warns under none of them; the row ends up Enabled.
+func TestConnectionsEnable_NoProviderWarning(t *testing.T) {
 	stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
 	tests := []struct {
-		name        string
-		provider    string
-		wantWarning bool
+		name     string
+		provider string
 	}{
-		{"ollama provider warns", "ollama", true},
-		{"claude provider silent", "claude", false},
-		{"codex provider silent", "codex", false},
+		{"claude", "claude"},
+		{"codex", "codex"},
+		{"ollama (runtime B mounts them)", "ollama"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -428,8 +425,7 @@ func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
 			idArg := strconv.FormatInt(conns[0].ID, 10)
 
 			// Re-run for "enable" with SPLIT stdout/stderr buffers so this
-			// assertion only sees the enable output (not the add warning above)
-			// AND can prove which stream the warning landed on.
+			// assertion only sees the enable output.
 			stdout, stderr, err := runConnectionsSplit(t, "", "enable", idArg)
 			require.NoError(t, err, stdout+stderr)
 
@@ -437,30 +433,22 @@ func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, enabledConn.Enabled, "enable must still succeed regardless of provider")
 
-			if tt.wantWarning {
-				assert.Contains(t, stderr, "only")
-				assert.Contains(t, stderr, "claude")
-				assert.Contains(t, stderr, "My-Server")
-				assert.NotContains(t, stdout, "warning", "the warning belongs on stderr, never stdout")
-			} else {
-				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
-			}
+			assert.Empty(t, stderr, "every provider mounts the connections: no warning")
 		})
 	}
 }
 
-// TestConnectionsAdd_WarnsUnderNonClaudeProvider mirrors the enable case for
-// "connections add" — non-claude warns (row still created disabled, as
-// always), claude stays silent.
-func TestConnectionsAdd_WarnsUnderNonClaudeProvider(t *testing.T) {
+// TestConnectionsAdd_NoProviderWarning mirrors the enable case for
+// "connections add": no warning under any provider, the row created
+// disabled as always.
+func TestConnectionsAdd_NoProviderWarning(t *testing.T) {
 	tests := []struct {
-		name        string
-		provider    string
-		wantWarning bool
+		name     string
+		provider string
 	}{
-		{"ollama provider warns", "ollama", true},
-		{"claude provider silent", "claude", false},
-		{"codex provider silent", "codex", false},
+		{"claude", "claude"},
+		{"codex", "codex"},
+		{"ollama (runtime B mounts them)", "ollama"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -477,14 +465,7 @@ func TestConnectionsAdd_WarnsUnderNonClaudeProvider(t *testing.T) {
 			require.Len(t, conns, 1)
 			assert.False(t, conns[0].Enabled, "add must still create the row disabled regardless of provider")
 
-			if tt.wantWarning {
-				assert.Contains(t, stderr, "only")
-				assert.Contains(t, stderr, "claude")
-				assert.Contains(t, stderr, "My-Server")
-				assert.NotContains(t, stdout, "warning", "the warning belongs on stderr, never stdout")
-			} else {
-				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
-			}
+			assert.Empty(t, stderr, "every provider mounts the connections: no warning")
 		})
 	}
 }
@@ -817,20 +798,18 @@ func TestConnectionsOAuth_PreservesExistingSecret(t *testing.T) {
 	assert.Equal(t, "bar", secret.Env["FOO"], "pre-existing Env must survive an oauth sign-in")
 }
 
-// TestConnectionsOAuth_WarnsUnderNonClaudeProvider mirrors the add/enable
-// provider-honesty warning for "connections oauth": a successful sign-in
-// under a non-claude provider still enables the connection but warns on
-// stderr; claude stays silent. The add/enable precedent's table shape.
-func TestConnectionsOAuth_WarnsUnderNonClaudeProvider(t *testing.T) {
+// TestConnectionsOAuth_NoProviderWarning mirrors the add/enable case for
+// "connections oauth": a successful sign-in enables the connection and
+// warns under no provider.
+func TestConnectionsOAuth_NoProviderWarning(t *testing.T) {
 	stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
 	tests := []struct {
-		name        string
-		provider    string
-		wantWarning bool
+		name     string
+		provider string
 	}{
-		{"ollama provider warns", "ollama", true},
-		{"claude provider silent", "claude", false},
-		{"codex provider silent", "codex", false},
+		{"claude", "claude"},
+		{"codex", "codex"},
+		{"ollama (runtime B mounts them)", "ollama"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -845,13 +824,7 @@ func TestConnectionsOAuth_WarnsUnderNonClaudeProvider(t *testing.T) {
 			require.NoError(t, err, stdout+stderr)
 			assert.Contains(t, stdout, "signed in and enabled")
 
-			if tt.wantWarning {
-				assert.Contains(t, stderr, "only")
-				assert.Contains(t, stderr, "claude")
-				assert.Contains(t, stderr, "Web-Tool")
-			} else {
-				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
-			}
+			assert.Empty(t, stderr, "every provider mounts the connections: no warning")
 		})
 	}
 }

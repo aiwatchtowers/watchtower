@@ -80,7 +80,7 @@ func TestToolRouteProvider_ForwardsChatEvents(t *testing.T) {
 	leaf := codex.NewClient("gpt-x", "", v2CodexStub(t))
 	p := &toolRouteProvider{}
 	enableChatEvents(p)
-	require.NoError(t, p.configureLeaf(leaf))
+	require.NoError(t, p.configureLeaf("codex", leaf))
 	evs := v2Events(t, leaf)
 	var tools int
 	for _, e := range evs {

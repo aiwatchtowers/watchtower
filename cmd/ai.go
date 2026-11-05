@@ -286,10 +286,15 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 	if readFolder != "" {
-		// Ollama has no file tools: it answers from the prompt alone.
-		if c, ok := aiClient.(readFolderConfigurable); ok {
-			c.SetReadFolder(readFolder)
+		c, ok := aiClient.(readFolderConfigurable)
+		if !ok {
+			// A provider with no file tools (ollama) would answer from the
+			// prompt alone: refused before any model call, never a silent
+			// answer (spec 2026-11-05 §3.3, read_folder none).
+			return refuseQuery(enc, providers.CapabilityError(cfg.AI.Provider, providers.ReviewReadonly,
+				fmt.Errorf("--read-folder: the %s provider has no file tools, so it cannot read the folder; use Claude or Codex for questions about code", cfg.AI.Provider)))
 		}
+		c.SetReadFolder(readFolder)
 	}
 
 	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
@@ -336,16 +341,7 @@ func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan
 	// Check for errors
 	for err := range errCh {
 		if err != nil {
-			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
-			reason := ""
-			var failure *providers.Failure
-			if errors.Is(err, providerrouting.ErrDeferred) {
-				retry, reason = false, "quota_wait"
-			} else if errors.As(err, &failure) && failure.Category == providers.Quota {
-				retry, reason = false, "quota_exhausted"
-			} else if failure != nil && failure.Category == providers.Capability {
-				retry, reason = false, "required_capability_missing"
-			}
+			code, reason, retry := queryErrorClass(err)
 			_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err), Code: code, Retryable: retry, Reason: reason})
 		}
 	}
@@ -575,12 +571,11 @@ func v2TurnID() string {
 }
 
 // enableChatEvents switches a provider that offers them (claude, codex, the
-// runtime B loop, the tool router) onto the protocol-v2 chat events — tool
-// starts/ends, the turn's usage, separated messages — as the chat session's
-// turn backend does; `ai query --events v2` renders them like the session.
-// A provider without them (plain ollama, which has no tools) is left as is:
-// a wrapper in front of a leaf must forward EmitToolEvents, as
-// toolRouteProvider does.
+// runtime B loop, plain ollama — its usage only —, the tool router) onto the
+// protocol-v2 chat events — tool starts/ends, the turn's usage, separated
+// messages — as the chat session's turn backend does; `ai query --events v2`
+// renders them like the session. A wrapper in front of a leaf must forward
+// EmitToolEvents, as toolRouteProvider does.
 func enableChatEvents(p ai.Provider) {
 	if e, ok := p.(interface{ EmitToolEvents() }); ok {
 		e.EmitToolEvents()
@@ -608,24 +603,40 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 	}
 	for err := range errCh {
 		if err != nil {
-			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
-			reason := ""
-			var failure *providers.Failure
-			if errors.Is(err, providerrouting.ErrDeferred) {
-				retry = false
-				reason = "quota_wait"
-			} else if errors.As(err, &failure) && failure.Category == providers.Quota {
-				retry = false
-				reason = "quota_exhausted"
-			} else if failure != nil && failure.Category == providers.Capability {
-				retry = false
-				reason = "required_capability_missing"
-			}
+			code, reason, retry := queryErrorClass(err)
 			_ = out.Emit(chat.Event{Reason: reason, Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
 			return
 		}
 	}
 	_ = out.Emit(chat.Event{Type: chat.EventTurnDone, TurnID: turnID, Status: chat.StatusComplete, SessionID: sid})
+}
+
+// queryErrorClass is a failed query's code, reason and retry hint: the
+// router's deferral is "quota_wait", anything else chat.ClassifyFailure (a
+// typed failure first, the Claude text matcher only for an untyped error).
+func queryErrorClass(err error) (code, reason string, retryable bool) {
+	code, reason, retryable = chat.ClassifyFailure(err)
+	if errors.Is(err, providerrouting.ErrDeferred) {
+		return code, "quota_wait", false
+	}
+	return code, reason, retryable
+}
+
+// refuseQuery ends a query refused before any model call: the error as the
+// requested protocol's event (v2: one classified error; v1: error + done),
+// and a failed exit carrying err for stderr. Unlike emitError's setup
+// errors (exit 0), a refused capability is a failed command: a caller that
+// skipped its own capability check must not read the run as answered.
+func refuseQuery(enc *json.Encoder, err error) error {
+	code, reason, retry := queryErrorClass(err)
+	if aiFlagEvents == "v2" {
+		_ = enc.Encode(chat.Event{Type: chat.EventError, TurnID: v2TurnID(), Code: code, Reason: reason,
+			Message: logredact.Full(err), Retryable: retry})
+	} else {
+		_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err), Code: code, Reason: reason, Retryable: retry})
+		_ = enc.Encode(aiStreamEvent{Type: "done"})
+	}
+	return &exitCodeError{code: 1, err: err}
 }
 
 // readFolderConfigurable is implemented by the CLI-backed providers (claude,
@@ -685,8 +696,9 @@ type processGroupConfigurable interface{ SetProcessGroup(v bool) }
 // mcp-config and tool allowlist) and codex.Client (the -c mcp_servers
 // override, enabled_tools per server) — it mounts owner-added external MCP
 // servers ("Quick Connections", internal/externalmcp) alongside the built-in
-// watchtower server. The ollama client has no MCP subprocess, so the
-// type-assert in newQueryClient simply skips it there.
+// watchtower server. agentloop.Client (runtime B, the ollama chat) offers
+// the same servers' allowed tools in-process; newQueryClient wires it in its
+// own branch. The plain ollama client has no tools.
 type externalMCPConfigurable interface {
 	SetExternalMCPServers(servers []ai.ExternalMCPServer)
 }

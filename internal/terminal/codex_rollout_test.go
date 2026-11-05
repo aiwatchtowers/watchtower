@@ -102,8 +102,14 @@ func TestCodexRollout_TruncatedLastLineIgnored(t *testing.T) {
 	assertOwnerText(t, fixture(t, "truncated_tail.jsonl"), "example 1\nexample 2")
 }
 
-func TestCodexRollout_ZstdIsUnsupported(t *testing.T) {
-	assertUnsupported(t, fixture(t, "zstd_header.jsonl"))
+// zstd_header.jsonl is paginated.jsonl as a zstd frame: Codex compresses
+// older rollouts under the same name, and the title reads them the same.
+func TestCodexTitle_CompressedRollout(t *testing.T) {
+	assertOwnerText(t, fixture(t, "zstd_header.jsonl"), "example 1\nexample 2\nexample 2b\nexample 3")
+}
+
+func TestCodexRollout_CorruptZstdIsUnsupported(t *testing.T) {
+	assertUnsupported(t, []byte("\x28\xb5\x2f\xfdnot a frame\n"))
 }
 
 func TestCodexRollout_UnknownFormatIsUnsupported(t *testing.T) {

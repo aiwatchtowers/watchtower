@@ -20,8 +20,12 @@ yourself beyond verifying codex's claims; you do not fix anything.
    silently rejects):
 
    ```bash
-   timeout 300 codex review --base "$BASE_BRANCH" -c sandbox_mode="read-only" -c approval_policy="never" 2>&1 | tail -100
+   timeout 590 codex review --base "$BASE_BRANCH" -c sandbox_mode="read-only" -c approval_policy="never" 2>&1 | tail -100
    ```
+
+   Call it with the Bash tool's `timeout` set to `600000` (its foreground maximum): the default
+   120 s tool timeout would cut codex off long before it finishes a large diff, and 300 s proved
+   too short for a 20+ file branch.
 
 3. Parse the output into findings: severity (blocker / major / minor / nit), `file:line`, one-line
    claim each. Verify each `file:line` actually exists in the diff (`git diff $BASE_BRANCH... --name-only`,

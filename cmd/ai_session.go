@@ -221,10 +221,7 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		if w.model == "" {
 			return nil, errors.New("no Ollama model is configured: pick one in Settings → AI")
 		}
-		// Runtime B: the registry runs in-process; proposals bind to the
-		// running turn through the same turn file.
-		loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), sessionToolBinding(w))
-		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
+		return chat.NewTurnBackend(runtimeBSessionClient(w), w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	default:
 		ext := loadExternalMCPServers(w.cfg, w.dbPath)
 		if w.onMounted != nil {
@@ -260,6 +257,21 @@ func codexSessionClient(w sessionWiring) *codex.Client {
 	// CHAT-04 (spec §9): the client always routes the system prompt and
 	// replayed history through stdin, never this process's argv.
 	return c
+}
+
+// runtimeBSessionClient is the ollama chat session's loop (runtime B): the
+// registry runs in-process and proposals bind to the running turn through
+// the turn file. The enabled Quick Connections load per turn on the
+// session's open database, as for codex (QC-04 refresh; the QC-02 allowed
+// list and the organization's policy applied by loadExternalMCPServersFrom);
+// the session's surfaces are main and target only, never automation_editor
+// (D11).
+func runtimeBSessionClient(w sessionWiring) *agentloop.Client {
+	loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), sessionToolBinding(w))
+	loop.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
+		return loadExternalMCPServersFrom(w.cfg, w.database, nil)
+	})
+	return loop
 }
 
 // sessionToolBinding is the in-process registry's binding (runtime B): the

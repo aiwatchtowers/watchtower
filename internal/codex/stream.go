@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,13 +14,14 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
+	"watchtower/internal/streamline"
 )
 
-// maxStreamLine is the longest JSONL line Query decodes (the claude warm
-// reader's limit). A longer line — a tool item carrying a huge output — is
-// read to its end and skipped, so the stream goes on and codex never blocks
-// on a full pipe. A variable so tests can lower it.
-var maxStreamLine = 64 << 20
+// maxStreamLine is the longest JSONL line Query decodes (streamline.MaxLine).
+// A longer line — a tool item carrying a huge output — is read to its end
+// and skipped, so the stream goes on and codex never blocks on a full pipe.
+// A variable so tests can lower it.
+var maxStreamLine = streamline.MaxLine
 
 // messageSeparator goes between the text of two agent messages of one turn
 // (the claude translator's separator).
@@ -33,28 +33,6 @@ var errNoTurnCompleted = errors.New("codex exited without completing the turn")
 // errNoAgentMessage fails a completed turn with no answer text (see
 // queryStream.answerErr for the exception).
 var errNoAgentMessage = errors.New("no agent_message found in codex output")
-
-// readStreamLine reads one line (with its newline, if any) from r. A line
-// longer than limit is consumed and reported as oversized with no content.
-// err is the reader's: io.EOF after the last line. Unlike agentlog.NextLine,
-// a last line without a newline is returned, not left unread: codex has
-// exited by then and nothing will complete it.
-func readStreamLine(r *bufio.Reader, limit int) (line []byte, oversized bool, err error) {
-	for {
-		frag, err := r.ReadSlice('\n')
-		if !oversized {
-			if len(line)+len(frag) > limit {
-				oversized, line = true, nil
-			} else {
-				line = append(line, frag...)
-			}
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return line, oversized, err
-	}
-}
 
 // queryStream is one Query run's view of codex's JSONL events: what it
 // streams to the consumer and what decides the run's outcome.

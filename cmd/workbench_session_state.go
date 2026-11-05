@@ -243,11 +243,13 @@ func recordSubagentToolRun(database *db.DB, rowID, workbenchID int64, sessionID,
 
 // codexStateEvents are the Codex events `session-state --agent codex`
 // records (spec 2026-10-12 §6.3). Codex has no Notification or StopFailure,
-// so a payload naming one records nothing (a codex row never gets
-// agent_failed_at), and its Stop is the drift check's.
+// so a payload naming one records nothing (a hook never sets a codex row's
+// agent_failed_at: `workbench session-probe` reads a failed turn from the
+// rollout, board #959), and its Stop is the drift check's. Interrupt (the
+// owner's Esc) ends the turn as a Stop does, with no drift check.
 var codexStateEvents = map[string]bool{
 	"UserPromptSubmit": true, "PermissionRequest": true, "PostToolUse": true,
-	"SubagentStart": true, "SubagentStop": true,
+	"SubagentStart": true, "SubagentStop": true, "Interrupt": true,
 }
 
 // runCodexSessionStateHook is `workbench session-state --agent codex`: the
@@ -297,16 +299,37 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
 	turn.transcriptPath = ""
 	switch {
+	case in.Event == "Interrupt":
+		err = recordCodexStopState(database, row, in, at)
 	case in.agentTurnEvent():
 		err = recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Codex)
 	case subagentToolRun:
 		err = recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at)
+	case in.Event == "UserPromptSubmit":
+		err = recordCodexPrompt(database, rowID, workbenchID, in.SessionID, at, turn)
 	default:
-		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil,
-			in.Event == "UserPromptSubmit", at, turn)
+		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil, false, at, turn)
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
 	return err
+}
+
+// recordCodexPrompt restamps a row that already reads working (a turn that
+// failed with no Stop, board #959), then records the prompt's `working` as
+// Claude Code's does. The session probe records a failure only when it is
+// later than agent_state_at, so the failed turn's error never lands on this
+// prompt's turn before its task_started reaches the rollout. The restamp goes
+// first: a probe write landing before it turns the row to an older failed
+// `waiting`, which the prompt's `working` then replaces (and clears); one
+// landing after it is older than the new stamp and held back.
+func recordCodexPrompt(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, turn hookTurn) error {
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
+	if _, err := database.RestampCodexPromptTurn(rowID, workbenchID, sessionID, at.Truncate(time.Millisecond)); err != nil {
+		return err
+	}
+	return recordAgentState(database, rowID, workbenchID, sessionID, agentStateWorking, "", nil, true, at, turn)
 }
 
 // agentTurnEvent says the event starts or ends a subagent's or teammate's

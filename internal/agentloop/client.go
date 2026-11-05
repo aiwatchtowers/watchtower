@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,7 +24,9 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/llmusage"
+	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
 
@@ -52,13 +55,17 @@ type Client struct {
 	opts    Options
 	allowed map[string]bool // nil = every surface tool (Options.Tools nil)
 
-	toolEvents bool // emit ai.StreamChunk{Tool: …} around each dispatch (EmitToolEvents)
+	toolEvents bool // the protocol-v2 chat events: tool start/end chunks and the turn's usage (EmitToolEvents)
+
+	extLoader   func() []ai.ExternalMCPServer // the Quick Connections of a turn (external.go); nil = none
+	extListings map[string]externalListing    // tools/list per server, for the client's life
 }
 
-// EmitToolEvents makes Query report every tool call as a start and an end
-// chunk (ai.StreamChunk.Tool) around its dispatch, so a protocol-v2 chat can
-// show the call as a step. Off by default: v1 consumers see only the
-// boundary and the text, unchanged.
+// EmitToolEvents switches on the protocol-v2 chat events: Query reports
+// every tool call as a start and an end chunk (ai.StreamChunk.Tool) around
+// its dispatch, so a chat can show the call as a step, and ends a turn with
+// one ai.StreamChunk{Usage} when the server reported usage. Off by default:
+// v1 consumers see only the boundary and the text, unchanged.
 func (c *Client) EmitToolEvents() { c.toolEvents = true }
 
 // Options restrict and meter a runtime-B loop (an automation's agent(),
@@ -122,8 +129,10 @@ func NewClientWithOptions(model, baseURL string, reg *tools.Registry, b tools.Bi
 // tool call emits an ai.StreamChunk{ToolBoundary: true} before the tools run —
 // so a consumer that showed any pre-tool text discards it and starts the visible
 // answer fresh from the text after the last boundary, matching claude/codex
-// (ai.StreamChunk's contract). The final answer is streamed as one Text chunk;
-// write proposals still surface through the Desktop's AgentActionFeed.
+// (ai.StreamChunk's contract). The final answer is streamed as one Text chunk
+// (text_stream=final); with the chat events on, the turn's summed usage
+// follows it. Write proposals still surface through the Desktop's
+// AgentActionFeed.
 func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	textCh := make(chan ai.StreamChunk, 8)
 	errCh := make(chan error, 1)
@@ -132,8 +141,18 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(textCh)
 		defer close(errCh)
 		defer close(sidCh)
-		if _, _, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch }); err != nil {
+		_, usage, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch })
+		if err != nil {
 			errCh <- err
+			return
+		}
+		if c.toolEvents && usage != nil {
+			// The answer is complete: a stop now drops the usage, nothing else.
+			select {
+			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
+				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 	return textCh, errCh, sidCh
@@ -161,13 +180,15 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 			emit(ai.StreamChunk{ToolBoundary: true})
 		}
 	}
+	ext := c.mountExternal(ctx)
+	systemPrompt = ai.WithExternalDataRule(systemPrompt, ext.servers)
 	msgs := make([]oaMessage, 0, 4)
 	if systemPrompt != "" {
 		msgs = append(msgs, oaMessage{Role: "system", Content: systemPrompt})
 	}
 	msgs = append(msgs, oaMessage{Role: "user", Content: userMessage})
 
-	oaTools := c.buildTools()
+	oaTools := append(c.buildTools(), ext.defs...)
 	var usage *ai.Usage
 	var lastContent string
 
@@ -192,7 +213,7 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 		msgs = append(msgs, m)
 		for _, call := range m.ToolCalls {
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments)})
-			result := c.dispatch(ctx, call)
+			result := c.dispatch(ctx, call, ext)
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Done: true,
 				OK: !strings.HasPrefix(result, `{"error":`), Result: result})
 			msgs = append(msgs, oaMessage{
@@ -238,7 +259,7 @@ func (c *Client) meteredChat(ctx context.Context, msgs []oaMessage, oaTools []oa
 		c.opts.AfterModelCall(in, out)
 	}
 	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("model returned no choices")
+		return nil, providers.WithFailure("ollama", providers.InvalidOutput, errors.New("model returned no choices"))
 	}
 	return resp, nil
 }
@@ -253,13 +274,16 @@ func (c *Client) emitTool(emit func(ai.StreamChunk), ev *ai.ToolEvent) {
 // dispatch runs one tool call against the registry and returns the JSON string
 // that becomes the tool-result message. A tool error is returned as an error
 // JSON fed back to the model, never up the stack — one bad call must not kill
-// the turn.
-func (c *Client) dispatch(ctx context.Context, call oaToolCall) string {
+// the turn. A name in ext is a mounted Quick Connection tool (external.go).
+func (c *Client) dispatch(ctx context.Context, call oaToolCall, ext mountedExternal) string {
 	name := call.Function.Name
 	// The allowlist is checked first: a tool outside it was never offered,
 	// whatever the registry or the surface would say about it.
 	if c.allowed != nil && !c.allowed[name] {
 		return errJSON("tool " + name + " is not offered here")
+	}
+	if t, ok := ext.tools[name]; ok {
+		return c.callExternal(ctx, t, json.RawMessage(call.Function.Arguments))
 	}
 	t, ok := c.reg.Get(name)
 	if !ok {
@@ -357,16 +381,17 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("model request failed: %w", err)
+		return nil, providers.OllamaRequestFailure(fmt.Errorf("model request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("model returned HTTP %d: %s", resp.StatusCode, string(b))
+		return nil, providers.OllamaFailure(resp.StatusCode, string(b),
+			logredact.Errorf("model returned HTTP %d: %s", resp.StatusCode, logredact.Text(b)))
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decoding model response: %w", err)
+		return nil, providers.OllamaRequestFailure(fmt.Errorf("decoding model response: %w", err))
 	}
 	ok = len(out.Choices) > 0
 	return &out, nil
