@@ -591,6 +591,32 @@ func TestDraftAutomation_FeedOutputKeyEmpty(t *testing.T) {
 	}
 }
 
+// TestDraftAutomation_OutputCarriesCardActions (Inbox builder A, Task 11):
+// a would-be inbox output carries its own buttons as automation_outputs
+// stores them, and `[]` (never null or absent) when it has none.
+func TestDraftAutomation_OutputCarriesCardActions(t *testing.T) {
+	f := newDraftFixture(t)
+	script := `output.inbox({title: "a", body: "b", actions: [{label: "Ask", chat: "why?"}]});
+output.inbox({title: "c", body: "d"}); return 1`
+	res, raw := f.call(t, map[string]any{"recipe_text": recipeText(nil, "outputs: [inbox]\n", script)})
+	if res.DryRun == nil || len(res.DryRun.Outputs) != 2 {
+		t.Fatalf("dry run = %+v (errors %v); want two outputs", res.DryRun, res.Errors)
+	}
+	stored, err := json.Marshal([]db.InboxAction{{Label: "Ask", Kind: "chat", Chat: "why?", Primary: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(res.DryRun.Outputs[0].Actions); got != string(stored) {
+		t.Errorf("actions = %s; want the stored form %s", got, stored)
+	}
+	if got := string(res.DryRun.Outputs[1].Actions); got != "[]" {
+		t.Errorf("actions without buttons = %s; want []", got)
+	}
+	if !strings.Contains(raw, `"actions":[]`) {
+		t.Errorf("JSON %s; want actions:[] on the wire", raw)
+	}
+}
+
 // TestEvaluateDraft_DryRunsAnUnconfirmedRecipe: the owner's preview shares
 // draft_automation's evaluation without the D16 refusal (chat path only,
 // ask #445) and writes nothing.

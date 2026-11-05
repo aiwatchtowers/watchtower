@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -21,6 +25,14 @@ const previewOwnerHint = "only the owner can preview a recipe; use Dry run in th
 // previewUsage is the refusal of a preview without --stdin and --json, or
 // with nothing on stdin.
 const previewUsage = "usage: watchtower automations preview --stdin --json [--slug S] [--workbench N] [--builtin ID] < recipe.md"
+
+// previewSignalContext is the preview's signal context (a test seam): the
+// Desktop's Stop (SIGTERM) or an interrupt cancels it.
+var previewSignalContext = notifyPreviewSignals
+
+func notifyPreviewSignals(ctx context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+}
 
 // runAutomationsPreview is the owner's Dry run in the editor's Look step
 // (Inbox builder A, ask #445): the recipe text on stdin is evaluated as
@@ -65,7 +77,12 @@ func runAutomationsPreview(cmd *cobra.Command, _ []string) error {
 	deps.Backends = func() automations.Backends {
 		return automationBackends(cfg, database, automationsDryRunGenerator(cfg))
 	}
-	res, err := authoring.EvaluateDraft(cmd.Context(), deps, text, target)
+	// The Desktop's Stop terminates this process: the cancelled context
+	// ends the in-flight model child too, instead of leaving it to spend
+	// tokens (as `dry-run` does).
+	ctx, stop := previewSignalContext(cmd.Context())
+	defer stop()
+	res, err := authoring.EvaluateDraft(ctx, deps, text, target)
 	if err != nil {
 		return err
 	}

@@ -44,6 +44,9 @@ package struct AutomationsCLI {
         case trackStart(Int)
         /// Rewrites a bound watch's instruction line from stdin (owner only).
         case trackInstruction(Int)
+        /// The owner's Dry run in the editor's Look step: the recipe text on
+        /// stdin, dry-run in memory as `draft_automation` does (owner only).
+        case preview(slug: String?, workbench: Int64?, builtin: String?)
     }
 
     /// How a `session()` step's session ended, as `session-ended --status`
@@ -126,6 +129,12 @@ package struct AutomationsCLI {
             return ["tracks", "start", String(trackID), "--json"]
         case let .trackInstruction(trackID):
             return ["tracks", "instruction", String(trackID), "--text-file", "-"]
+        case let .preview(slug, workbench, builtin):
+            var out = ["automations", "preview", "--stdin", "--json"]
+            if let slug { out += ["--slug", slug] }
+            if let workbench { out += ["--workbench", String(workbench)] }
+            if let builtin { out += ["--builtin", builtin] }
+            return out
         }
     }
 
@@ -265,6 +274,16 @@ package struct AutomationsCLI {
     /// text; refused (stderr) for a recipe changed in the chat.
     package func trackInstruction(_ trackID: Int, text: String) async throws {
         _ = try await runner.run(args: Self.args(.trackInstruction(trackID)), stdin: Data(text.utf8))
+    }
+
+    /// The owner's **Dry run** of `text` (`preview --stdin --json`): the
+    /// `draft_automation` result, nothing written. It goes through the
+    /// runner's stdin path, which registers the launch with
+    /// `OwnerConfirmGrants`, so the CLI's owner confirmation (AGENT-07) is
+    /// granted without a window. Cancelling the calling task terminates it.
+    package func preview(text: String, slug: String?, workbench: Int64?, builtin: String?) async throws
+        -> AutomationDraftEntry.Result {
+        try await decode(.preview(slug: slug, workbench: workbench, builtin: builtin), stdin: Data(text.utf8))
     }
 
     private func decode<T: Decodable>(_ op: Op) async throws -> T {

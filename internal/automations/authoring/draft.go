@@ -99,7 +99,9 @@ type DraftStep struct {
 // canonical block document, JSON null when it has none (a markdown body;
 // Body is then the markdown, else the blocks' plain text); Key a living
 // artifact's key ("" for a feed output); ContentHash the card's content hash
-// (blocks.ContentHash; "" for an output other than inbox).
+// (blocks.ContentHash; "" for an output other than inbox); Actions the
+// card's own buttons as automation_outputs.actions stores them (`[]` when
+// none), so the Look preview draws the card as the Inbox will.
 type DraftOutput struct {
 	Kind        string          `json:"kind"`
 	Title       string          `json:"title"`
@@ -108,6 +110,7 @@ type DraftOutput struct {
 	Blocks      json.RawMessage `json:"blocks"`
 	Key         string          `json:"key"`
 	ContentHash string          `json:"content_hash"`
+	Actions     json.RawMessage `json:"actions"`
 }
 
 // noBlocks is DraftOutput.Blocks of an output without a block document.
@@ -249,7 +252,9 @@ func evaluate(ctx context.Context, d Deps, a draftArgs, opts evalOptions) (*Draf
 	if err != nil {
 		return nil, fmt.Errorf("draft_automation: %w", err)
 	}
-	res.DryRun = dryRunOf(rep)
+	if res.DryRun, err = dryRunOf(rep); err != nil {
+		return nil, err
+	}
 	return res, nil
 }
 
@@ -367,7 +372,7 @@ func isUnconfirmedRecipe(d *db.DB, scope automations.Scope, hash string) (bool, 
 	return false, nil
 }
 
-func dryRunOf(rep *automations.DryRunReport) *DraftDryRun {
+func dryRunOf(rep *automations.DryRunReport) (*DraftDryRun, error) {
 	out := &DraftDryRun{
 		Steps: make([]DraftStep, 0, len(rep.Steps)), Outputs: make([]DraftOutput, 0, len(rep.Outputs)),
 		Tokens: rep.InputTokens + rep.OutputTokens, Status: rep.Status, Error: rep.Error,
@@ -383,12 +388,20 @@ func dryRunOf(rep *automations.DryRunReport) *DraftDryRun {
 		if o.BlocksJSON != "" {
 			doc = json.RawMessage(o.BlocksJSON)
 		}
+		actions := o.Actions
+		if actions == nil {
+			actions = []db.InboxAction{}
+		}
+		actionsJSON, err := json.Marshal(actions) // the form CommitAutomationRun stores
+		if err != nil {
+			return nil, fmt.Errorf("draft_automation: encoding output %d's actions: %w", len(out.Outputs), err)
+		}
 		out.Outputs = append(out.Outputs, DraftOutput{
 			Kind: o.Kind, Title: o.Title, Body: o.Body, Priority: o.Priority,
-			Blocks: doc, Key: o.OutputKey, ContentHash: o.ContentHash,
+			Blocks: doc, Key: o.OutputKey, ContentHash: o.ContentHash, Actions: actionsJSON,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func nonNil(s []string) []string {
