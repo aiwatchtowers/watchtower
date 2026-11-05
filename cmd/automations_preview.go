@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,14 @@ const previewOwnerHint = "only the owner can preview a recipe; use Dry run in th
 // previewUsage is the refusal of a preview without --stdin and --json, or
 // with nothing on stdin.
 const previewUsage = "usage: watchtower automations preview --stdin --json [--slug S] [--workbench N] [--builtin ID] < recipe.md"
+
+// previewSignalContext is the preview's signal context (a test seam): the
+// Desktop's Stop (SIGTERM) or an interrupt cancels it.
+var previewSignalContext = notifyPreviewSignals
+
+func notifyPreviewSignals(ctx context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+}
 
 // runAutomationsPreview is the owner's Dry run in the editor's Look step
 // (Inbox builder A, ask #445): the recipe text on stdin is evaluated as
@@ -71,7 +80,7 @@ func runAutomationsPreview(cmd *cobra.Command, _ []string) error {
 	// The Desktop's Stop terminates this process: the cancelled context
 	// ends the in-flight model child too, instead of leaving it to spend
 	// tokens (as `dry-run` does).
-	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := previewSignalContext(cmd.Context())
 	defer stop()
 	res, err := authoring.EvaluateDraft(ctx, deps, text, target)
 	if err != nil {
