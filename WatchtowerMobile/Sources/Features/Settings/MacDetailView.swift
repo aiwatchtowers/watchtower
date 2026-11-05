@@ -15,6 +15,7 @@ struct MacDetailView: View {
     private let modelOverride: MacTransportModel?
 
     @State private var pressing: MacTransportModel.Action?
+    @State private var pressRefusal: TransportRequestRefusal?
     @State private var asking: MacsModel.Ask?
     @State private var showsSlots = false
     @State private var showsSubscription = false
@@ -118,7 +119,8 @@ struct MacDetailView: View {
             link: link, grant: Self.grant(of: link, session: session), phase: center.phase,
             unconfirmedPurchase: center.unconfirmed != nil, availability: env.relay.availability,
             session: SessionTransportFacts(
-                link: link, store: session.store, now: now, pressedRelay: pressing == .chooseRelay || retriesUpgrade
+                link: link, store: session.store, now: now, pressedRelay: pressing == .chooseRelay || retriesUpgrade,
+                pressRefusal: pressRefusal
             ),
             macName: name, ownDeviceID: link.deviceID, now: now
         )
@@ -129,8 +131,9 @@ struct MacDetailView: View {
         Self.route(action, openSubscription: { showsSubscription = true }, manageMacs: { showsSlots = true }, start: { action in
             guard pressing == nil, let session = env.session(hubID) else { return }
             pressing = action
+            pressRefusal = nil
             Task {
-                await MacTransportPress.run(action, session: session, center: env.relayAccount)
+                pressRefusal = await MacTransportPress.run(action, session: session, center: env.relayAccount)
                 pressing = nil
             }
         })

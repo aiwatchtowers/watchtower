@@ -118,6 +118,12 @@ enum TransportRequestOutcome: Equatable, Sendable {
     /// Ended, or never started (`notOrdered`; `unavailable` also for a call that has nothing to ask: an iCloud route,
     /// an unlinked hub).
     case refused(TransportRequestRefusal)
+
+    /// Why it ended or never started; nil while under way.
+    var refusal: TransportRequestRefusal? {
+        if case let .refused(refusal) = self { return refusal }
+        return nil
+    }
 }
 
 /// What the requester needs from the app (`AppRoot`): the hub's row and the hub's route on the other transport.
@@ -164,6 +170,11 @@ final class TransportRequester {
         self.host = host
         self.now = now
         follower.onRequestSwitch = { [weak self] target, reason in await self?.requested(target, reason: reason) }
+    }
+
+    /// The hub's row.
+    var link: LinkRecord? {
+        host?.followerLink(hubID: hubID)
     }
 
     /// The request on the hub's row, kept or ended.

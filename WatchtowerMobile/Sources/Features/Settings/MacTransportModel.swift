@@ -140,10 +140,7 @@ struct MacTransportModel: Equatable {
             }
         }
 
-        private var isRelayOnly: Bool {
-            let cloudKit = TransportKind.cloudKit.rawValue
-            return link.hubTransports?.contains(cloudKit) == false || grant?.transports?.contains(cloudKit) == false
-        }
+        private var isRelayOnly: Bool { link.isRelayOnly(grant: grant) }
 
         var choice: Choice {
             relayOnlyRule() ?? refusedRequestRule() ?? openRequestRule() ?? upgradeRule() ?? checkingRule()
@@ -157,7 +154,9 @@ struct MacTransportModel: Equatable {
         }
 
         private func refusedRequestRule() -> Choice? {
-            guard onRelay, let request = session.request, let refusal = request.refusal else { return nil }
+            // A record speaks for itself; an open one has no refusal, whatever a press came to before it.
+            let refusal = session.request == nil ? session.pressRefusal : session.request?.refusal
+            guard onRelay, let refusal else { return nil }
             // A lapse's copy still waits for the Mac: the line promises the move, and there is nothing to press.
             let waits = refusal == .lapseNoAnswer
             return Choice(
@@ -287,8 +286,8 @@ struct MacTransportModel: Equatable {
 
         /// Why a Relay route cannot ask for iCloud: `requestTransport` refuses a hub with no ordered actions before it
         /// writes anything, so the press would show nothing. An unread grant blocks nothing: it may stay unread for good
-        /// (a corrupt or newer-format keybox) and the press is the way back; on a fresh link one press may end silently
-        /// until the first grant arrives. nil when the press goes.
+        /// (a corrupt or newer-format keybox) and the press is the way back; on a fresh link one press may be refused
+        /// (`pressRefusal`) until the first grant arrives. nil when the press goes.
         private var iCloudBlocked: String? {
             guard let grant, !grant.runsOrderedActions else { return nil }
             return TransportRequestRefusal.notOrdered.message(macName: macName)
@@ -324,6 +323,8 @@ struct SessionTransportFacts: Equatable {
     let upgradeRefusal: RelayUpgradeRefusal?
     let request: TransportRequestRecord?
     let macReachable: Bool
+    /// The last press toward iCloud wrote nothing: no record says why.
+    var pressRefusal: TransportRequestRefusal?
 }
 
 extension SessionTransportFacts {
@@ -333,38 +334,44 @@ extension SessionTransportFacts {
     }
 
     /// `pressedRelay`: the owner's press is running and its first decision is not on the row yet.
-    init(link: LinkRecord, store: ReplicaStore, now: Date, pressedRelay: Bool = false) {
+    init(link: LinkRecord, store: ReplicaStore, now: Date, pressedRelay: Bool = false, pressRefusal: TransportRequestRefusal? = nil) {
         let upgrade = link.relayUpgrade
         let pending = upgrade?.isPending == true ? upgrade?.step : nil
         self.init(
             upgradeStep: pending ?? (pressedRelay ? .namingRelayID : nil),
             upgradeRefusal: pressedRelay ? nil : upgrade?.refusal,
             request: link.transportRequest,
-            macReachable: Self.macReachable(RelayFeed.desktopReachability(store: store, now: now))
+            macReachable: Self.macReachable(RelayFeed.desktopReachability(store: store, now: now)),
+            pressRefusal: pressRefusal
         )
     }
 }
 
-/// A press on the Connection section, apart from the view. The state it leaves is on the hub's row, which the model reads:
-/// `requestTransport`'s `.refused(.unavailable)` on a call with nothing to ask is no failure and shows nothing.
+/// A press on the Connection section, apart from the view. The state it leaves is on the hub's row, which the model reads. The
+/// returned refusal is what the row cannot say, a request refused before anything was written (a failed write included), for
+/// `SessionTransportFacts.pressRefusal`; it shows only on a relay route, so a call with nothing to ask shows no false line.
 @MainActor
 enum MacTransportPress {
     /// `.openSubscription` and `.manageMacs` open a screen: the view's.
-    static func run(_ action: MacTransportModel.Action, session: HubSession, center: RelayAccountCenter?) async {
+    @discardableResult
+    static func run(_ action: MacTransportModel.Action, session: HubSession, center: RelayAccountCenter?) async -> TransportRequestRefusal? {
         switch action {
         case .chooseRelay:
             await upgrade(session, center)
         case .chooseICloud:
-            _ = await session.requestTransport(reason: center?.switchReason)
+            return await session.requestTransport(reason: center?.switchReason).refusal
         case .tryAgain:
             if let request = session.transportRequest, !request.isOpen {
-                _ = await session.requestTransport(reason: request.reason)
-            } else {
-                await upgrade(session, center)
+                return await session.requestTransport(reason: request.reason).refusal
             }
+            if session.isOnRelay {
+                return await session.requestTransport(reason: center?.switchReason).refusal
+            }
+            await upgrade(session, center)
         case .openSubscription, .manageMacs:
             break
         }
+        return nil
     }
 
     /// The upgrader reads the account on its own and the center is not told, so its read goes stale here: a refusal for

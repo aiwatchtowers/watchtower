@@ -221,4 +221,37 @@ final class NowWiringTests: XCTestCase {
         XCTAssertTrue(rows.toneUses.contains { $0.element == "not delivered row" && $0.tone == .red && $0.role == .status })
         XCTAssertFalse(rows.toneUses.contains { $0.tone == .orange })
     }
+
+    // MARK: - The Relay banner (relay client Phase 4 Task 10)
+
+    func testTheBannerSitsAboveWaitingToSend() {
+        XCTAssertEqual(NowView.topBlocks, [.chip, .relayBanner, .outbox])
+    }
+
+    @MainActor
+    func testSubscribeOpensTheSheet() async throws {
+        var opened = 0
+        XCTAssertNil(RelayBannerPress.run(.subscribe, session: nil, center: nil) { opened += 1 })
+        XCTAssertEqual(opened, 1)
+        XCTAssertNil(RelayBannerPress.run(.confirmPurchase, session: nil, center: nil) { opened += 1 })
+        XCTAssertEqual(opened, 2)
+    }
+
+    /// Restore goes through the card's press: the product's load first, the restore, and the sheet shows its result.
+    @MainActor
+    func testRestoreOpensTheSheetAndRestores() async throws {
+        let bed = AccountBed()
+        _ = try await bed.register()
+        bed.store.productResult = RelayProduct(id: "relay", displayPrice: "$4.99")
+        let center = bed.makeCenter()
+        center.start()
+        await center.foreground()?.value
+        var opened = 0
+        let press = RelayBannerPress.run(.restore, session: nil, center: center) { opened += 1 }
+        XCTAssertEqual(opened, 1, "the sheet opens at once, so its S44 shows")
+        _ = await press?.value
+        XCTAssertEqual(bed.store.restoreCalls, 1)
+        XCTAssertEqual(center.purchase, .noSubscriptionFound)
+        XCTAssertNotNil(center.product, "the load went first: S45 can sell")
+    }
 }

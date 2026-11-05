@@ -13,12 +13,12 @@ The phone shows "Mac offline", never finds the Mac, an answered ask stays on **W
 
 ## Why
 
-The Mac is the hub. It publishes your data into your iCloud and applies the phone's changes only while Watchtower runs on an awake Mac with **Mobile sync** on. The phone calls the Mac online while its heartbeat, written every 15 minutes, is under 35 minutes old. Quitting Watchtower or sleeping the Mac stops the hub; closing the window does not. Over Relay, only a phone with a Relay subscription gets updates, and the relay keeps a limited amount of storage for the Mac and for each phone.
+The Mac is the hub. It publishes your data into your iCloud and applies the phone's changes only while Watchtower runs on an awake Mac with **Mobile sync** on. The phone calls the Mac online while its heartbeat, written every 15 minutes, is under 35 minutes old. Quitting Watchtower or sleeping the Mac stops the hub; closing the window does not. Relay isn't in the current version of Watchtower for iPhone. Over Relay, only a phone with a Relay subscription gets updates, and the relay keeps a limited amount of storage for the Mac and for each phone.
 
 ## Fix
 
 1. On the Mac, open Watchtower (closing the window is fine), keep the Mac awake and open **Settings → Mobile**. Turn on **Mobile sync**.
-2. **Needs a signed build:** the Mac build has no iCloud signing, so it cannot use iCloud; phones on Relay keep working. Use the downloaded Developer ID app.
+2. **Needs a signed build:** the Mac build has no iCloud signing, so it cannot use iCloud. Use the downloaded Developer ID app.
 3. Check iCloud: both devices must be signed in to iCloud. A Mac with iCloud off says "Mobile isn't available on this Mac: iCloud is off." A Mac whose iCloud account can't be used for now says "Paused until iCloud is available on this Mac. It goes on by itself.": sign in to iCloud on the Mac, or wait.
 4. The phone never sees the Mac: check the build pairing. The downloaded Mac app pairs with a TestFlight or App Store phone. A phone run from Xcode pairs only with a Mac built for the Development environment; mixed pairs fail silently.
 5. **Code expired or can't be used:** press **New code** on the Mac and scan again. A code lasts 10 minutes and works for one phone.
@@ -30,7 +30,7 @@ The Mac is the hub. It publishes your data into your iCloud and applies the phon
 11. **Relay unavailable for <N> min.:** the Mac cannot reach the relay. Check the Mac's internet connection; phones keep their changes and send them when it is back.
 12. **This Mac's Relay storage is full (5 GB):** the Mac's space on the relay holds what your phones see, including each meeting transcript from the last 30 days. In Watchtower on the Mac, open each recording you no longer need and click **Delete**. The line clears at the Mac's next change that the relay accepts.
 13. **<phone>'s Relay mailbox is full:** the Mac's replies to that phone are piling up unread. Open Watchtower on that phone so it reads them.
-14. **Doesn't get updates: this Mac runs over Relay:** that phone has no Relay subscription. Subscribe on it, or switch the Mac to iCloud from a subscribed phone.
+14. **Doesn't get updates: this Mac runs over Relay:** Relay isn't in the current version of Watchtower for iPhone. That phone has no Relay subscription. Subscribe on it, or switch the Mac to iCloud from a subscribed phone. See [iPhone: Relay](../features/iphone-relay.md).
 15. **On this Mac's side, <N> actions from this phone are not applied yet:** the Mac holds them until the phone sends the ones before them. Open Watchtower on the phone and keep it online until the line goes away.
 16. **Notifications aren't set up on this iPhone:** open Watchtower on that iPhone once.
 

@@ -12,6 +12,15 @@ You answer an ask away from your desk. With ordered delivery, you can see whethe
 
 Ordered delivery starts when the linked hub supports it. Until then, your phone keeps its existing delivery behavior.
 
+### Over Relay
+<!-- learn: none -->
+
+Relay isn't in the current version of Watchtower for iPhone.
+
+While the relay gives no answer, **Now** shows "Relay unavailable for 3 min. Your changes wait on this iPhone." above **Waiting to send**. The rows stay queued and go out in order when the relay is back, or over iCloud after **Switch Work Mac to iCloud**, which appears at 10 minutes.
+
+When your subscription ends and the Mac moves to iCloud, changes the Mac had not confirmed go out again over iCloud. If the Mac stays on Relay because another subscribed phone uses it, they land under **Not delivered** with "Work Mac runs over Relay now". See [iPhone: Relay](iphone-relay.md).
+
 ## Using it
 <!-- learn: none -->
 
