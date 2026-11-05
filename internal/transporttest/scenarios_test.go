@@ -403,15 +403,19 @@ func assertFailure(want providers.ErrorCategory, wantCode string) func(c *Cell) 
 	}
 }
 
+// assertNoCompletion: a run that ends without its completion is a typed
+// failure, never success. A CLI's is invalid_output; an HTTP stream that
+// ends without [DONE] may be transport, since a clean close cannot be told
+// from a dropped connection (spec §4.1).
 func assertNoCompletion(c *Cell) error {
 	f, err := c.O.failure()
 	if err != nil {
 		return fmt.Errorf("not a typed failure: %w", err)
 	}
-	if f.Category != providers.InvalidOutput {
-		return fmt.Errorf("category %q, want %q", f.Category, providers.InvalidOutput)
+	if f.Category == providers.InvalidOutput || (!c.A.Caps.ChildProcess && c.Level == LevelStream && f.Category == providers.Transport) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("category %q, want %q", f.Category, providers.InvalidOutput)
 }
 
 func assertInterrupted(c *Cell) error {

@@ -220,6 +220,7 @@ Add `Caps Capabilities` to the registry row `providers.Provider` (`internal/prov
 | `warm_session` | bool | yes | no (replay) | no (replay) |
 | `claude_ai_tools` | bool | yes | no | no |
 | `reserve_peer` | provider id or "" | codex | claude | "" (the fallback pair rule of ask #937, kept as data) |
+| `quota` | bool: reports a subscription quota (`Quota` with its `ResetAt`) | yes | yes | no: a local server has no subscription, so a quota-like 429 is `rate_limit` with no reset (added by A1) |
 
 Rules:
 - **Consumers read capabilities, never names.**
@@ -399,7 +400,7 @@ A scenario lists the levels it applies to and the capabilities it `Requires`.
 | tool call ok / failed | `tool_start`/`tool_end` pair with a matching id; a failed tool has a non-empty reason; text before the tool is kept |
 | oversized tool line (2 MiB) | the turn completes and the skip is counted (L1) |
 | failed turn: 401, 400 model, 429 rate limit, quota with reset, 5xx/overloaded | `providers.Failure` category, `ResetAt` where the transport reports it, chat code via `CodeForFailure`; owner text kept (CHAT-01 at the Go level) |
-| exit 0 with no completion / no answer | a failure (`invalid_output`), never a blank success |
+| exit 0 with no completion / no answer | a failure (`invalid_output`), never a blank success. An HTTP stream that ends without `[DONE]` or a finish_reason may be `transport` instead: a clean close cannot be told from a dropped connection, and `transport` is retryable, which is what the owner needs |
 | interrupt mid-text / mid-tool | `turn_done interrupted`; partial text delivered; for `interrupt=in_turn` the child survives, for `kill_turn` the whole group is gone |
 | timeout and context kill | the process group is reaped: no pid of the fake's grandchild survives (checked with `kill(pid, 0)` until ESRCH) |
 | usage with cache | the split matches the fixture; `tokens_in` = fresh + cache; the AUTO-08 debit = fresh + output |
