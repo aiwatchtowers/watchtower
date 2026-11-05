@@ -210,10 +210,7 @@ actor SimPhone {
 
     /// The relay refused a write because the subscription ended: back to CloudKit (§6).
     private func lapsed() async {
-        follower.canUseRelay = .no
-        if current == .relay, pending == nil {
-            await requestSwitch(.cloudkit, SimEnvelope.reasonEntitlementExpired)
-        }
+        await follow(.relayLapsed)
     }
 
     /// Writes the pending transport_switch to every transport that lacks it.
@@ -477,6 +474,12 @@ actor SimPhone {
                 break // no keys in the sim; the caller deletes a handled control
             case .requestAnswered:
                 pending = nil
+            case let .requestSwitch(target, reason):
+                if pending == nil {
+                    await requestSwitch(SimKind(target), reason)
+                } else {
+                    follower.lapseRequested = false // a switch is already in flight; a later lapse asks again
+                }
             case let .moveRoute(target, _, by, at):
                 pending = nil
                 if !by.isEmpty { lastSwitch = SimSwitchInfo(target: SimKind(target), by: by, at: at) }

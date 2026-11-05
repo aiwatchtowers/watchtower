@@ -244,4 +244,50 @@ final class TransportFollowerPolicyTests: XCTestCase {
         XCTAssertEqual(commands, [])
         XCTAssertNil(next.leftTransport)
     }
+
+    // MARK: - The lapse (sim rule 16)
+
+    func testALapseAsksForCloudKitOnce() {
+        let (first, commands) = TransportFollowerPolicy.decide(.relayLapsed, state: state(canUseRelay: .yes), now: base)
+        XCTAssertEqual(commands, [.requestSwitch(target: .cloudKit, reason: TransportFollowerPolicy.lapseReason)])
+        XCTAssertEqual(TransportFollowerPolicy.lapseReason, "entitlement_expired")
+        XCTAssertTrue(first.lapseRequested)
+        let (again, second) = TransportFollowerPolicy.decide(.relayLapsed, state: first, now: base)
+        XCTAssertEqual(second, [.ignore])
+        XCTAssertEqual(again, first)
+    }
+
+    func testALapseOnICloudAsksNothing() {
+        let (next, commands) = TransportFollowerPolicy.decide(.relayLapsed, state: state(route: .cloudKit), now: base)
+        XCTAssertEqual(commands, [.ignore])
+        XCTAssertEqual(next.canUseRelay, .no)
+        XCTAssertFalse(next.lapseRequested)
+    }
+
+    func testALapseMakesRelayUnusable() {
+        let (lapsed, _) = TransportFollowerPolicy.decide(.relayLapsed, state: state(), now: base)
+        XCTAssertEqual(lapsed.canUseRelay, .no)
+        let (_, commands) = TransportFollowerPolicy.decide(switched(to: .relay, epoch: 5), state: lapsed, now: base)
+        XCTAssertTrue(commands.contains(.listUnechoedAsUndelivered), "R32: unechoed actions are Not delivered")
+    }
+
+    func testALapseEndsWithAMoveToCloudKit() {
+        let (lapsed, _) = TransportFollowerPolicy.decide(.relayLapsed, state: state(), now: base)
+        XCTAssertTrue(lapsed.lapseRequested)
+        let (moved, _) = TransportFollowerPolicy.decide(switched(to: .cloudKit, epoch: 2), state: lapsed, now: base)
+        XCTAssertEqual(moved.route, .cloudKit)
+        XCTAssertFalse(moved.lapseRequested)
+        // The hub-on-relay move back to iCloud ends it too.
+        let (without, _) = TransportFollowerPolicy.decide(.hubOnRelay(controlID: "c-1"), state: lapsed, now: base)
+        XCTAssertFalse(without.lapseRequested)
+    }
+
+    func testPayingAgainResetsTheLapse() {
+        var (lapsed, _) = TransportFollowerPolicy.decide(.relayLapsed, state: state(), now: base)
+        XCTAssertTrue(lapsed.lapseRequested)
+        lapsed.canUseRelay = .yes
+        XCTAssertFalse(lapsed.lapseRequested)
+        let (_, commands) = TransportFollowerPolicy.decide(.relayLapsed, state: lapsed, now: base)
+        XCTAssertEqual(commands, [.requestSwitch(target: .cloudKit, reason: TransportFollowerPolicy.lapseReason)])
+    }
 }

@@ -173,7 +173,7 @@ final class TransportFollower {
             case .sendEpochAck(let epoch): plan.ack = epoch
             case .listUnechoedAsUndelivered: plan.listUndelivered = true
             case .drainMailbox(let kind): logger.notice("the \(kind.rawValue, privacy: .public) mailbox is left to drain")
-            case .pollOtherMailbox: break
+            case .pollOtherMailbox, .requestSwitch: break // `requestSwitch` is wired in `HubSession.requestTransport` (Task 5)
             case .markHandled: plan.handled = true
             case .ignore: plan.decided = true
             }
