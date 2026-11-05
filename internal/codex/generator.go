@@ -153,9 +153,7 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	}
 	recordCodexCall(ctx, model, start, reported, ran, prompt, result, true)
 
-	// claude's shape (digest.Usage): InputTokens without the cached part,
-	// TotalAPITokens with it, so a run budget debits the same quantity on
-	// either provider (docs/features/automations.md "Budgets").
+	// claude's shape: InputTokens without the cached part (freshInput).
 	digestUsage := &digest.Usage{
 		Model:          model,
 		InputTokens:    usage.freshInput(),
