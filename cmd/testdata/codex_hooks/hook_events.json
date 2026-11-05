@@ -1,0 +1,5 @@
+{
+  "synthetic": true,
+  "codex_version": "0.159.2",
+  "events": ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop", "Stop", "Interrupt"]
+}
