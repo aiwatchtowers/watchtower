@@ -216,19 +216,29 @@ func (s *queryStream) finish() {
 // incompleteRunError is the error of a codex run that exited cleanly
 // without turn.completed — the streaming Query, QuerySync and the batch
 // generator alike — with what the run said about it: a failed turn in its
-// JSONL events (classified as runError does); else codex's stderr, left
-// unclassified so the transport rules (digest.aiTransportFailure) still read
-// a "stream disconnected" or a 503 in it; else, with nothing said, an
-// invalid-output failure.
+// JSONL events (classified as runError does); else codex's stderr, typed a
+// transport failure when it reports codex's lost model stream
+// (streamDisconnected) and otherwise left unclassified for the transport
+// rules (digest.aiTransportFailure: a 5xx, 429 or login phrasing); else, with
+// nothing said, an invalid-output failure.
 func incompleteRunError(model string, jsonl []byte, stderr string) error {
 	if turnErr := failedTurn(model, jsonl); turnErr != nil {
 		return digest.WithCause(turnErr, errNoTurnCompleted)
 	}
 	if st := strings.TrimSpace(stderr); st != "" {
-		return logredact.Errorf("%w (stderr: %s)", errNoTurnCompleted, logredact.Text(st))
+		err := logredact.Errorf("%w (stderr: %s)", errNoTurnCompleted, logredact.Text(st))
+		if strings.Contains(strings.ToLower(st), streamDisconnected) {
+			return providers.WithFailure("codex", providers.Transport, err)
+		}
+		return err
 	}
 	return providers.WithFailure("codex", providers.InvalidOutput, errNoTurnCompleted)
 }
+
+// streamDisconnected is how codex words a model stream it lost
+// ("stream disconnected before completion: …"), lowercased: the network to
+// the provider failed, not the request.
+const streamDisconnected = "stream disconnected"
 
 // toolName is the item's tool name in the claude CLI's form, so the chat
 // shows and summarises it the same way: mcp__watchtower__<tool> for the
