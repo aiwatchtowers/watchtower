@@ -2,16 +2,21 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/logcanary"
 )
 
 // useRealVersionProbe restores the real `codex --version` probe for one
@@ -310,4 +315,46 @@ reply gone
 			}
 		})
 	}
+}
+
+// Concurrent runs on one binary probe it once and log once, and a probe
+// that fails after another one succeeded never replaces the success.
+func TestInstructionsFileSupported_ConcurrentProbesOnce(t *testing.T) {
+	sink := logcanary.Capture(t)
+	prevProbe, prevRetry := probeCodexVersion, instructionsProbeRetry
+	t.Cleanup(func() { probeCodexVersion, instructionsProbeRetry = prevProbe, prevRetry })
+	bin := filepath.Join(t.TempDir(), "codex")
+
+	var probes atomic.Int32
+	// The first probe fails; every later one: the first succeeds, slowly,
+	// and the rest fail.
+	probeCodexVersion = func(string) ([3]int, error) {
+		n := probes.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		if n == 2 {
+			return minInstructionsFileVersion, nil
+		}
+		return [3]int{}, errors.New("probe failed")
+	}
+	instructionsProbeRetry = time.Hour
+	run := func() []bool {
+		got := make([]bool, 8)
+		var wg sync.WaitGroup
+		for i := range got {
+			wg.Go(func() { got[i] = instructionsFileSupported(bin) })
+		}
+		wg.Wait()
+		return got
+	}
+
+	assert.Equal(t, make([]bool, 8), run(), "the failed first probe: stdin for all")
+	assert.Equal(t, int32(1), probes.Load(), "one probe for concurrent first calls")
+	assert.Equal(t, 1, strings.Count(sink.String(), "could not read the version"), "one log line")
+
+	instructionsProbeRetry = 0
+	assert.Equal(t, []bool{true, true, true, true, true, true, true, true}, run())
+	assert.Equal(t, int32(2), probes.Load(), "one retry probe for concurrent calls")
+	instructionsProbeRetry = time.Hour
+	assert.True(t, instructionsFileSupported(bin), "the success stays cached")
+	assert.Equal(t, int32(2), probes.Load())
 }

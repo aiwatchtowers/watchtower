@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/digest"
@@ -27,6 +29,10 @@ const messageSeparator = "\n\n"
 
 // errNoTurnCompleted fails a run that exited cleanly without turn.completed.
 var errNoTurnCompleted = errors.New("codex exited without completing the turn")
+
+// errNoAgentMessage fails a completed turn with no answer text (see
+// queryStream.answerErr for the exception).
+var errNoAgentMessage = errors.New("no agent_message found in codex output")
 
 // readStreamLine reads one line (with its newline, if any) from r. A line
 // longer than limit is consumed and reported as oversized with no content.
@@ -74,8 +80,15 @@ type queryStream struct {
 	// started tools (id, name) in order, for closing the open ones.
 	toolsOpen map[string]bool
 	toolOrder []ai.ToolEvent
-	// skipped counts the lines over maxStreamLine.
-	skipped int
+	// anonymous numbers the ids given to items codex sent without one;
+	// anonOpen lists the id-less tools started and not yet completed,
+	// anonMsg the id-less agent message started and not yet completed.
+	anonymous int
+	anonOpen  []string
+	anonMsg   string
+	// skipped counts the lines over maxStreamLine, undecodable the lines
+	// that are not a JSON event.
+	skipped, undecodable int
 	// completed: codex reported turn.completed — the only successful end.
 	completed bool
 
@@ -100,6 +113,7 @@ func (s *queryStream) send(c ai.StreamChunk) bool {
 func (s *queryStream) handle(line []byte) bool {
 	var event CodexEvent
 	if err := json.Unmarshal(line, &event); err != nil {
+		s.undecodable++
 		return true
 	}
 	switch event.Type {
@@ -126,11 +140,58 @@ func (s *queryStream) handle(line []byte) bool {
 	case item == nil:
 		return true
 	case item.Type == "mcp_tool_call" || item.Type == "command_execution":
+		if item.ID == "" {
+			item.ID = s.anonTool(event.Type)
+		}
 		return s.tool(event.Type, item)
 	case item.Type == "agent_message" && item.MessageText() != "":
+		if item.ID == "" {
+			item.ID = s.anonMessage(event.Type)
+		}
 		return s.message(item)
 	}
 	return true
+}
+
+// newAnon is a fresh per-run id for an item codex sent without one, so
+// id-less tools stay separate steps and id-less messages stay separated.
+func (s *queryStream) newAnon() string {
+	s.anonymous++
+	return "anon-" + strconv.Itoa(s.anonymous)
+}
+
+// anonMessage is the id of an id-less agent message's event: its stages up
+// to item.completed share one id (no separator inside one message), and
+// the next message gets a new one.
+func (s *queryStream) anonMessage(eventType string) string {
+	if s.anonMsg == "" {
+		s.anonMsg = s.newAnon()
+	}
+	id := s.anonMsg
+	if eventType == "item.completed" {
+		s.anonMsg = ""
+	}
+	return id
+}
+
+// anonTool is the id of an id-less tool item's event: item.started opens a
+// new one; item.updated and item.completed belong to the oldest open one,
+// which item.completed closes (codex runs and reports tools in order). An
+// update or completion with none open is a tool seen first there.
+func (s *queryStream) anonTool(eventType string) string {
+	switch {
+	case eventType == "item.updated" && len(s.anonOpen) > 0:
+		return s.anonOpen[0]
+	case eventType == "item.completed" && len(s.anonOpen) > 0:
+		id := s.anonOpen[0]
+		s.anonOpen = s.anonOpen[1:]
+		return id
+	}
+	id := s.newAnon()
+	if eventType != "item.completed" {
+		s.anonOpen = append(s.anonOpen, id)
+	}
+	return id
 }
 
 // tool streams a tool item. A tool call interrupts the turn: a boundary
@@ -156,6 +217,7 @@ func (s *queryStream) tool(eventType string, item *CodexItem) bool {
 		start := s.toolStart(item)
 		s.toolOrder = append(s.toolOrder, ai.ToolEvent{ID: start.ID, Name: start.Name})
 		if !s.send(ai.StreamChunk{Tool: start}) {
+			s.toolsOpen[item.ID] = false // never shown: no end for it either
 			return false
 		}
 	}
@@ -171,35 +233,50 @@ func (s *queryStream) tool(eventType string, item *CodexItem) bool {
 // boundary came between them (it reset its text there).
 func (s *queryStream) message(item *CodexItem) bool {
 	text := item.MessageText()
-	distinct := s.lastMessage != "" && item.ID != "" && item.ID != s.lastMessage
+	distinct := s.lastMessage != "" && item.ID != s.lastMessage
 	if distinct && s.answer.Len() > 0 && (s.v2 || !s.boundary) {
 		text = messageSeparator + text
 	}
-	if item.ID != "" {
-		s.lastMessage = item.ID
-	}
+	s.lastMessage = item.ID
 	s.boundary = false
 	s.answer.WriteString(text)
 	return s.send(ai.StreamChunk{Text: text})
 }
 
-// finish ends the stream once codex's output is read: a skipped line is
-// logged (a count, never content); for a v2 consumer every tool still open
-// gets a failed end — its result was in a skipped line, or codex stopped
-// before reporting it — so no step stays running; then the turn's usage
-// (the chat message's tokens; codex's input_tokens already count the cached
-// ones). A send cut by ctx needs no handling: the caller's Wait and
-// outcome follow either way.
+// flushGrace bounds the end of a stopped run's stream (queryStream.finish).
+const flushGrace = time.Second
+
+// finish ends the stream on every way a run's read ends — EOF, a read
+// error, a stop: skipped and undecodable lines are logged (counts, never
+// content); for a v2 consumer every tool still open gets a failed end — the
+// owner stopped the turn, its result may have been in a line that could not
+// be read, or codex stopped before reporting it — so no step stays running;
+// then the turn's usage (the chat message's tokens; codex's input_tokens
+// already count the cached ones). After a stop (the consumer's ctx ended)
+// these sends get flushGrace in all instead of failing at once — a select on
+// a closed ctx would drop them at random — so a consumer still draining the
+// channel, as the chat does, gets them, and one that stopped reading holds
+// the run at most that long.
 func (s *queryStream) finish() {
+	stopped := s.ctx.Err() != nil
+	if stopped {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), flushGrace)
+		defer cancel()
+		s.ctx = ctx
+	}
 	if s.skipped > 0 {
 		log.Printf("codex: skipped %d JSONL line(s) over %d bytes", s.skipped, maxStreamLine)
 	}
+	logUndecodable(s.undecodable)
 	if !s.v2 {
 		return
 	}
 	reason := "codex stopped before reporting this tool's result"
-	if s.skipped > 0 {
-		reason = "this tool's result was too large to show"
+	switch {
+	case stopped:
+		reason = "stopped before the tool finished"
+	case s.skipped > 0 || s.undecodable > 0:
+		reason = "codex's report of this tool's result could not be read"
 	}
 	for _, t := range s.toolOrder {
 		if s.toolsOpen[t.ID] {
@@ -213,21 +290,62 @@ func (s *queryStream) finish() {
 	}
 }
 
+// answerErr is the error of a completed turn that is no success, nil for
+// one that is. A turn needs answer text — the rule QuerySync and the batch
+// generator apply too — except, for a v2 consumer (the chat), a turn that
+// ran tool steps: they are then the whole visible reply (an agent that only
+// acted, as a Claude turn may end with an empty result). A v1 consumer shows
+// text only, so for it an empty answer is never a blank "complete" one. With
+// a line skipped as oversized or undecodable the empty answer fails even
+// then: that line may have been the answer.
+func (s *queryStream) answerErr() error {
+	switch {
+	case s.answer.Len() > 0:
+		return nil
+	case s.skipped > 0 || s.undecodable > 0:
+		return providers.WithFailure("codex", providers.InvalidOutput,
+			fmt.Errorf("%w (%d line(s) over %d bytes skipped, %d undecodable)", errNoAgentMessage, s.skipped, maxStreamLine, s.undecodable))
+	case s.v2 && len(s.toolOrder) > 0:
+		return nil
+	}
+	return providers.WithFailure("codex", providers.InvalidOutput, errNoAgentMessage)
+}
+
+// logUndecodable logs how many lines of codex's JSONL output were not a JSON
+// event (a count, never content: FILES-01); nothing for none. A garbled
+// turn.completed then explains an "exited without completing the turn".
+func logUndecodable(n int) {
+	if n > 0 {
+		log.Printf("codex: %d undecodable JSONL line(s) ignored", n)
+	}
+}
+
 // incompleteRunError is the error of a codex run that exited cleanly
 // without turn.completed — the streaming Query, QuerySync and the batch
 // generator alike — with what the run said about it: a failed turn in its
-// JSONL events (classified as runError does); else codex's stderr, left
-// unclassified so the transport rules (digest.aiTransportFailure) still read
-// a "stream disconnected" or a 503 in it; else, with nothing said, an
-// invalid-output failure.
+// JSONL events (classified as runError does); else codex's stderr, typed a
+// transport failure when its last line reports codex's lost model stream
+// (streamDisconnected; an earlier one was a retry codex recovered from) and
+// otherwise left unclassified for the transport
+// rules (digest.aiTransportFailure: a 5xx, 429 or login phrasing); else, with
+// nothing said, an invalid-output failure.
 func incompleteRunError(model string, jsonl []byte, stderr string) error {
 	if turnErr := failedTurn(model, jsonl); turnErr != nil {
 		return digest.WithCause(turnErr, errNoTurnCompleted)
 	}
 	if st := strings.TrimSpace(stderr); st != "" {
-		return logredact.Errorf("%w (stderr: %s)", errNoTurnCompleted, logredact.Text(st))
+		err := logredact.Errorf("%w (stderr: %s)", errNoTurnCompleted, logredact.Text(st))
+		if strings.Contains(strings.ToLower(lastLine(st)), streamDisconnected) {
+			return providers.WithFailure("codex", providers.Transport, err)
+		}
+		return err
 	}
 	return providers.WithFailure("codex", providers.InvalidOutput, errNoTurnCompleted)
+}
+
+// lastLine is s's last line (s is trimmed, so the line is not empty).
+func lastLine(s string) string {
+	return s[strings.LastIndexByte(s, '\n')+1:]
 }
 
 // toolName is the item's tool name in the claude CLI's form, so the chat
@@ -287,6 +405,10 @@ func (s *queryStream) toolEnd(item *CodexItem) *ai.ToolEvent {
 			}
 		}
 		ev.Result = strings.Join(parts, "\n")
+	}
+	if !ev.OK && strings.TrimSpace(ev.Result) == "" {
+		// A failed call codex reported with no error and no result text.
+		ev.Result = "the tool failed"
 	}
 	return ev
 }

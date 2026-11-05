@@ -335,6 +335,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				s.skipped++
 			} else if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && !s.handle(trimmed) {
 				_ = cmd.Wait()
+				s.finish()
 				errCh <- ctx.Err()
 				return
 			}
@@ -344,6 +345,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			if readErr != nil {
 				cancelRun()
 				_ = cmd.Wait()
+				s.finish()
 				errCh <- providers.ContextFailure("codex", ctx, fmt.Errorf("reading codex output: %w", readErr))
 				return
 			}
@@ -366,7 +368,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			// is never a blank or partial "complete" answer.
 			errCh <- providers.ContextFailure("codex", ctx, incompleteRunError(c.model, s.errLines, stderrBuf.String()))
 		default:
-			ok = true
+			if err := s.answerErr(); err != nil {
+				errCh <- providers.ContextFailure("codex", ctx, err)
+			} else {
+				ok = true
+			}
 		}
 
 		// Codex doesn't support session resumption — emit empty session ID.

@@ -124,8 +124,9 @@ func TestQuery_StreamsAgentMessages(t *testing.T) {
 	if sid != "" {
 		t.Errorf("expected empty session ID for codex (--ephemeral), got %q", sid)
 	}
-	if !strings.Contains(got.String(), "Hello") || !strings.Contains(got.String(), "world") {
-		t.Errorf("missing streamed text, got %q", got.String())
+	// One id-less message's stages are one message: no separator inside it.
+	if got.String() != "Hello world!" {
+		t.Errorf("streamed text = %q, want %q", got.String(), "Hello world!")
 	}
 }
 

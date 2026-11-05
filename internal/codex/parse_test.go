@@ -2,13 +2,16 @@ package codex
 
 import (
 	"context"
-	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 )
@@ -197,12 +200,35 @@ func TestBatchIncompleteRunKeepsStderr(t *testing.T) {
 	const why = "stream disconnected before completion: 503 Service Unavailable"
 	_, _, qerr := NewClient("gpt-x", "", fakeCodexScript(t, stdout, why, 0)).QuerySync(context.Background(), "sys", "hi", "")
 	_, _, _, gerr := NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, why, 0)).Generate(context.Background(), "sys", "hi", "")
-	for _, err := range []error{qerr, gerr} {
+	_, _, _, werr := digest.WithCallTimeout(NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, why, 0)), time.Minute).
+		Generate(context.Background(), "sys", "hi", "")
+	for _, err := range []error{qerr, gerr, werr} {
 		require.ErrorIs(t, err, errNoTurnCompleted)
 		assert.Contains(t, logredact.Full(err), why)
 		var failure *providers.Failure
-		if errors.As(err, &failure) {
-			assert.NotEqual(t, providers.InvalidOutput, failure.Category)
-		}
+		require.ErrorAs(t, err, &failure)
+		assert.Equal(t, providers.Transport, failure.Category)
+	}
+	// The batch wrapper the daemon and the router see marks it an AI call
+	// failure (retried, never a strike against the request).
+	assert.ErrorIs(t, werr, digest.ErrAICall)
+}
+
+// Stderr that says nothing about the transport keeps an incomplete run
+// unclassified: neither transport nor invalid output — also when an earlier
+// line reports a lost stream codex recovered from (its retry notice).
+func TestBatchIncompleteRunOtherStderrStaysUnknown(t *testing.T) {
+	stdout := `{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"preamble"}}`
+	for _, stderr := range []string{
+		"something odd happened",
+		"stream disconnected before completion: reset; retrying 1/5\nthread panicked at config.rs",
+	} {
+		bin := filepath.Join(t.TempDir(), "codex")
+		require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat > /dev/null\necho '"+stdout+"'\ncat >&2 <<'EOF'\n"+stderr+"\nEOF\n"), 0o755))
+		_, _, _, err := NewCodexGenerator("gpt-x", "gpt-x", bin).Generate(context.Background(), "sys", "hi", "")
+		require.ErrorIs(t, err, errNoTurnCompleted)
+		var failure *providers.Failure
+		require.ErrorAs(t, err, &failure)
+		assert.Equal(t, providers.Unknown, failure.Category, stderr)
 	}
 }

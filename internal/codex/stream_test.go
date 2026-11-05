@@ -1,10 +1,13 @@
 package codex
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -15,7 +18,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/logcanary"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // queryAll runs c.Query to its end and returns every chunk and the error.
@@ -225,7 +230,7 @@ func TestQuery_LineOverLimitIsSkippedAndTheRunEnds(t *testing.T) {
 		}
 	}
 	require.Len(t, tools, 2)
-	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "shell", Done: true, Result: "this tool's result was too large to show"}, tools[1])
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "shell", Done: true, Result: "codex's report of this tool's result could not be read"}, tools[1])
 }
 
 // A tool codex never reports the end of is closed as failed when the
@@ -262,6 +267,16 @@ func TestToolEnd_FailureAlwaysHasAReason(t *testing.T) {
 		end := s.toolEnd(item)
 		assert.False(t, end.OK, want)
 		assert.Equal(t, want, end.Result)
+	}
+	// A failed MCP call with neither an error nor a result (codex prints
+	// "error":null,"result":null) still says why.
+	for name, item := range map[string]*CodexItem{
+		"no error, no result":  {Type: "mcp_tool_call", Status: "failed"},
+		"blank result content": {Type: "mcp_tool_call", Status: "failed", Result: &CodexToolResult{}},
+	} {
+		end := s.toolEnd(item)
+		assert.False(t, end.OK, name)
+		assert.Equal(t, "the tool failed", end.Result, name)
 	}
 }
 
@@ -301,4 +316,349 @@ func TestQuery_IncompleteRunKeepsItsReason(t *testing.T) {
 	_, err = queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, "", "stream closed early", 0)))
 	require.ErrorIs(t, err, errNoTurnCompleted)
 	assert.Contains(t, logredact.Full(err), "stream closed early")
+}
+
+// A top-level error event that the turn recovers from (codex's
+// "Reconnecting…" retry notice) does not fail a turn that then completes.
+func TestQuery_TransientErrorThenCompletedSucceeds(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"turn.started"}`,
+		`{"type":"error","message":"Reconnecting... 1/5"}`,
+		`{"type":"error","message":"Reconnecting... 2/5","error":{"message":"stream disconnected"}}`,
+		`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"All good."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	chunks, err := queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0)))
+	require.NoError(t, err)
+	assert.Equal(t, "All good.", textOf(chunks))
+}
+
+// A tool item codex reports only once, at item.completed, is still one
+// start and one end.
+func TestQuery_ToolSeenOnlyAtCompletion(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"error":null,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Nothing open."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var tools []ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			tools = append(tools, *ch.Tool)
+		}
+	}
+	assert.Equal(t, []ai.ToolEvent{
+		{ID: "item_1", Name: "mcp__watchtower__list_targets", Args: json.RawMessage(`{}`)},
+		{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, OK: true, Result: "[]"},
+	}, tools)
+	assert.Equal(t, "Nothing open.", textOf(chunks))
+}
+
+// rawCodexScript writes a codex stub whose stdout is exactly stdout (printf,
+// no trailing newline added). stdout is single-quoted: it must hold no '.
+func rawCodexScript(t *testing.T, stdout string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI test skipped on windows")
+	}
+	require.NotContains(t, stdout, "'")
+	path := filepath.Join(t.TempDir(), "codex")
+	body := "#!/bin/sh\ncat > /dev/null\nprintf '%s' '" + stdout + "'\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
+	return path
+}
+
+// codex's last line without a trailing newline (turn.completed here) is
+// still read: the run completes.
+func TestQuery_LastLineWithoutNewline(t *testing.T) {
+	stdout := `{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Done."}}` + "\n" +
+		`{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}`
+	c := NewClient("gpt-x", "", rawCodexScript(t, stdout))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	assert.Equal(t, "Done.", textOf(chunks))
+	var usage []ai.TurnUsage
+	for _, ch := range chunks {
+		if ch.Usage != nil {
+			usage = append(usage, *ch.Usage)
+		}
+	}
+	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 10, OutputTokens: 2}}, usage)
+}
+
+// readStreamLine at its limit: a line of exactly limit bytes (newline
+// included) is returned, one byte more is oversized, and the reader goes on
+// with the next line either way — also when the line spans several fills of
+// the bufio buffer.
+func TestReadStreamLine_AtTheLimit(t *testing.T) {
+	const limit = 40
+	exact := strings.Repeat("a", limit-1) + "\n"
+	over := strings.Repeat("b", limit) + "\n"
+	tail := "last"
+	r := bufio.NewReaderSize(strings.NewReader(exact+over+tail), 16)
+
+	line, oversized, err := readStreamLine(r, limit)
+	require.NoError(t, err)
+	assert.False(t, oversized)
+	assert.Equal(t, exact, string(line))
+
+	line, oversized, err = readStreamLine(r, limit)
+	require.NoError(t, err)
+	assert.True(t, oversized)
+	assert.Nil(t, line)
+
+	line, oversized, err = readStreamLine(r, limit)
+	require.ErrorIs(t, err, io.EOF)
+	assert.False(t, oversized)
+	assert.Equal(t, tail, string(line), "a last line without a newline is returned")
+}
+
+// A completed turn with no answer text fails like QuerySync and the batch
+// generator do — except a chat turn (v2) whose steps are its whole reply:
+// the chat shows those, as on Claude.
+func TestQuery_CompletedTurnWithoutAnswer(t *testing.T) {
+	toolOnly := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"update_target","arguments":{},"result":{"content":[{"type":"text","text":"ok"}]},"error":null,"status":"completed"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	t.Run("nothing at all", func(t *testing.T) {
+		for _, v2 := range []bool{false, true} {
+			c := NewClient("gpt-x", "", fakeCodexScript(t, `{"type":"turn.completed"}`, "", 0))
+			if v2 {
+				c.EmitToolEvents()
+			}
+			_, err := queryAll(t, c)
+			require.ErrorIs(t, err, errNoAgentMessage, "v2=%v", v2)
+			var failure *providers.Failure
+			require.ErrorAs(t, err, &failure)
+			assert.Equal(t, providers.InvalidOutput, failure.Category)
+		}
+	})
+	t.Run("tools only, v1", func(t *testing.T) {
+		_, err := queryAll(t, NewClient("gpt-x", "", fakeCodexScript(t, toolOnly, "", 0)))
+		require.ErrorIs(t, err, errNoAgentMessage)
+	})
+	t.Run("tools only, v2", func(t *testing.T) {
+		c := NewClient("gpt-x", "", fakeCodexScript(t, toolOnly, "", 0))
+		c.EmitToolEvents()
+		chunks, err := queryAll(t, c)
+		require.NoError(t, err)
+		assert.Empty(t, textOf(chunks))
+	})
+}
+
+// An answer lost to a skipped (oversized) line never ends as a blank
+// "complete" turn — not even a v2 one with tool steps, since the skipped
+// line may have been the answer.
+func TestQuery_SkippedAnswerFails(t *testing.T) {
+	old := maxStreamLine
+	maxStreamLine = 512
+	t.Cleanup(func() { maxStreamLine = old })
+
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"error":null,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"` + strings.Repeat("a", 2048) + `"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	_, err := queryAll(t, c)
+	require.ErrorIs(t, err, errNoAgentMessage)
+	assert.Contains(t, err.Error(), "1 line(s) over 512 bytes skipped")
+}
+
+// Undecodable JSONL lines are counted and logged as a count, never their
+// content (FILES-01), in the stream and in the batch parse alike; a tool
+// left open after unreadable lines is closed with a neutral reason.
+func TestQuery_UndecodableLinesAreCounted(t *testing.T) {
+	canary := logcanary.Text("jsonl")
+	sink := logcanary.Capture(t)
+	stdout := strings.Join([]string{
+		`{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"id":"item_1" ` + canary,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Partial."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var last *ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			last = ch.Tool
+		}
+	}
+	require.NotNil(t, last)
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, Result: "codex's report of this tool's result could not be read"}, *last)
+	assert.Contains(t, sink.String(), "codex: 1 undecodable JSONL line(s)")
+
+	_, _, err = NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0)).QuerySync(context.Background(), "sys", "hi", "")
+	require.NoError(t, err)
+	assert.Equal(t, 2, strings.Count(sink.String(), "codex: 1 undecodable JSONL line(s)"), "the batch parse logs its count too")
+	sink.AssertClean(t)
+}
+
+// A stopped v2 turn still closes its open steps and streams the usage codex
+// reported so far: the consumer, still draining, gets them after the stop.
+func TestQuery_StoppedTurnStreamsItsEnd(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := filepath.Join(dir, "codex")
+	body := `#!/bin/sh
+echo $$ > '` + pidFile + `'
+cat > /dev/null
+echo '{"type":"turn.started"}'
+echo '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}'
+echo '{"type":"usage","usage":{"input_tokens":50,"output_tokens":5}}'
+exec sleep 30
+`
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
+	t.Cleanup(func() {
+		b, _ := os.ReadFile(pidFile)
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		if pid <= 0 {
+			return
+		}
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		deadline := time.Now().Add(10 * time.Second)
+		for syscall.Kill(pid, 0) != syscall.ESRCH {
+			if time.Now().After(deadline) {
+				t.Errorf("stub %d still alive", pid)
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+
+	c := NewClient("gpt-x", "", script)
+	c.SetProcessGroup(true)
+	c.EmitToolEvents()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	textCh, errCh, sidCh := c.Query(ctx, "sys", "user", "")
+	var tools []ai.ToolEvent
+	var usage []ai.TurnUsage
+	timeout := time.After(20 * time.Second)
+	for done := false; !done; {
+		select {
+		case ch, ok := <-textCh:
+			if !ok {
+				done = true
+				break
+			}
+			if ch.Tool != nil {
+				tools = append(tools, *ch.Tool)
+				if !ch.Tool.Done {
+					cancel() // the owner presses Stop once the step shows
+				}
+			}
+			if ch.Usage != nil {
+				usage = append(usage, *ch.Usage)
+			}
+		case <-timeout:
+			t.Fatal("the stopped run did not end")
+		}
+	}
+	for range sidCh {
+	}
+	var err error
+	for e := range errCh {
+		if err == nil {
+			err = e
+		}
+	}
+	require.ErrorIs(t, err, context.Canceled)
+	require.Len(t, tools, 2)
+	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, Result: "stopped before the tool finished"}, tools[1])
+	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 50, OutputTokens: 5}}, usage)
+}
+
+// Items without an id get a per-run one: two id-less tool calls stay two
+// steps, each start paired with its end, and two id-less agent messages
+// are still separated.
+func TestQuery_ItemsWithoutID(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"First."}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"ls","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"ls","aggregated_output":"a","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"pwd","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"pwd","aggregated_output":"/w","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Second."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var tools []ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			tools = append(tools, *ch.Tool)
+		}
+	}
+	require.Len(t, tools, 4)
+	assert.NotEmpty(t, tools[0].ID)
+	assert.NotEqual(t, tools[0].ID, tools[2].ID)
+	assert.Equal(t, []ai.ToolEvent{
+		{ID: tools[0].ID, Name: "shell", Args: json.RawMessage(`{"command":"ls"}`)},
+		{ID: tools[0].ID, Name: "shell", Done: true, OK: true, Result: "a"},
+		{ID: tools[2].ID, Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`)},
+		{ID: tools[2].ID, Name: "shell", Done: true, OK: true, Result: "/w"},
+	}, tools)
+	assert.Equal(t, "First.\n\nSecond.", textOf(chunks))
+}
+
+// An empty answer after an undecodable line fails a v2 turn with tool
+// steps too: the garbled line may have been the answer.
+func TestQuery_UndecodableAnswerFails(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"error":null,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"cut`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	_, err := queryAll(t, c)
+	require.ErrorIs(t, err, errNoAgentMessage)
+	assert.Contains(t, err.Error(), "1 undecodable")
+}
+
+// Two id-less tools open at once: each update and completion goes to the
+// oldest open one, so starts and ends pair in codex's order.
+func TestQuery_OverlappingToolsWithoutID(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.started","item":{"type":"command_execution","command":"ls","status":"in_progress"}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"pwd","status":"in_progress"}}`,
+		`{"type":"item.updated","item":{"type":"command_execution","command":"ls","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"ls","aggregated_output":"a","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"pwd","aggregated_output":"/w","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"Done."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	c := NewClient("gpt-x", "", fakeCodexScript(t, stdout, "", 0))
+	c.EmitToolEvents()
+	chunks, err := queryAll(t, c)
+	require.NoError(t, err)
+	var tools []ai.ToolEvent
+	for _, ch := range chunks {
+		if ch.Tool != nil {
+			tools = append(tools, *ch.Tool)
+		}
+	}
+	require.Len(t, tools, 4)
+	ls, pwd := tools[0].ID, tools[1].ID
+	assert.NotEqual(t, ls, pwd)
+	assert.Equal(t, []ai.ToolEvent{
+		{ID: ls, Name: "shell", Args: json.RawMessage(`{"command":"ls"}`)},
+		{ID: pwd, Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`)},
+		{ID: ls, Name: "shell", Done: true, OK: true, Result: "a"},
+		{ID: pwd, Name: "shell", Done: true, OK: true, Result: "/w"},
+	}, tools)
 }

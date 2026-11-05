@@ -120,6 +120,7 @@ func TestDisabledFeatures_EveryRunTurnsThemOff(t *testing.T) {
 			}
 			if f == "shell_tool" && readsFolder {
 				assert.True(t, hasConfig(args, "features.shell_tool=true"), "%s: shell on", name)
+				assert.False(t, hasConfig(args, "features.shell_tool=false"), "%s: no shell_tool=false beside it", name)
 				continue
 			}
 			assert.True(t, hasConfig(args, "features."+f+"=false"), "%s: features.%s=false missing", name, f)
