@@ -60,7 +60,7 @@
 | W1-c | G6 | `internal/sessionfeed/{codex,live,feed,parse}.go`, `internal/terminal/codex_rollout.go`, new `internal/rollout` (zstd-aware opener), `go.mod` | — | — |
 | W1-d | A1 | new `internal/transporttest`, `scripts/record-transport-fixtures.sh`, `internal/chat/testdata/scrub_fixtures.py` | — (temp DBs) | — |
 | W1-e | A6 | new `internal/transporttest/guard_test.go` (or `internal/providers`), `WatchtowerDesktop/Tests/Core/LLMTransportGuardTests.swift`, `docs/inventory/llm-transport.md`, `docs/inventory/README.md` | — | light (one Core test) |
-| W1-f | G7 | `internal/hub/actions/handlers/{session_input,permission,deps}.go`, Swift `SessionInputHandlers.swift`, `PermissionAnswerHandlers.swift`, `WorkchatModel.swift`, `WorkchatComposer.swift`, Kit `ActionReason.swift`, phone `SessionInputSender.swift` | `permission_requests` (only if the spike enables codex) | **heavy** |
+| W1-f | G7 | `internal/hub/actions/handlers/{session_input,permission,deps}.go`, Swift `SessionInputHandlers.swift`, `PermissionAnswerHandlers.swift`, `WorkchatModel.swift`, `WorkchatComposer.swift`, `Views/Settings/NotificationSettings.swift` (U7, no-signal branch only), Kit `ActionReason.swift`, phone `SessionInputSender.swift` | `permission_requests` (only if the spike enables codex) | **heavy** |
 
 Swift build order in wave 1: G7 (the Swift-heavy lane) builds first. W1-b's one-file copy edit runs only its own `make test-swift FILTER=QuickConnectionsProviderNoticeTests`, after G7's Swift build, never alongside it. A6's single Core test does the same.
 
