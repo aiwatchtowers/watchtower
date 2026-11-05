@@ -96,6 +96,7 @@ let package = Package(
             dependencies: [
                 "WatchtowerHostedRelay",
                 "WatchtowerHostedRelayTesting",
+                "WatchtowerE2ETesting",
                 "WatchtowerRelayProto",
                 "WatchtowerSync",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),

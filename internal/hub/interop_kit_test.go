@@ -11,8 +11,10 @@
 //	hub → phone  confirmed      the owner confirmed (only on equal codes)
 //	phone → hub  actions.done   kitReport (JSON): links, Try Again, actions done
 //	hub → phone  go.ok          every check passed, or go.fail with the check's name
-//	phone → hub  farewell.sent  the unlinked device record is flushed to the mailbox
-//	hub → phone  farewell.ok    it opens with the hub's keys and says unlinked
+//	phone → hub  device.sent    a rewritten device record is flushed to the mailbox
+//	hub → phone  device.ok      the hub applied it: the name, the permission request, the switch
+//	phone → hub  farewell.sent  the unlinked device record is about to be flushed
+//	hub → phone  farewell.ok    the hub read it with the slot still held and removed the row
 //	phone → hub  unlinked       the slot is removed
 //	hub → phone  unlink.ok      the hub's account state no longer lists the phone
 //	phone → hub  readded        add_slot of the same Mac succeeded
@@ -256,7 +258,8 @@ func within(d time.Duration, cond func() bool) bool {
 // remove_slot) and adds the Mac's slot back. This side checks what only the
 // hub sees: no hello or keybox in the Try Again slot, the phone a reader
 // under the relay id of its hello, the actions applied once each in order,
-// the acknowledged epoch, no canary on the wire, the farewell intact, and
+// the acknowledged epoch, no canary on the wire, a device record applied over
+// the relay, the farewell read within the phone's pause, and
 // the relay's phones before and after the slot came back.
 func TestInterop_KitPhone(t *testing.T) {
 	if *kitDir == "" {
@@ -271,8 +274,8 @@ func TestInterop_KitPhone(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	marks := &kitMarks{}
-	h := startHub(t, interopOpts{passEvery: time.Second, linkEvery: time.Second, register: marks.register})
-	status, err := ReadStatus(h.dir)
+	h := startHub(t, interopOpts{passEvery: time.Minute, linkEvery: time.Second, register: marks.register})
+	_, err := ReadStatus(h.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,12 +377,36 @@ func TestInterop_KitPhone(t *testing.T) {
 	}
 	k.write("go.ok", "")
 
-	// 6: the unlink. The Go hub does not act on device records yet
-	// (protocol §5.5): the check is that the farewell arrived intact. It is
-	// read before remove_slot: a hub no slot holds is unvouched again, and
-	// the relay answers its mailbox reads HUB_NOT_VOUCHED.
+	// 6: the phone's device record over the relay (G1): a request is stored,
+	// never granted.
+	k.wait("device.sent", kitStepWait)
+	if !within(time.Minute, func() bool {
+		d, ok, err := st.Device(dev.ID)
+		return err == nil && ok && d.Name == "Renamed on the relay" && d.PermissionsRequested && d.WorkAlertsOff
+	}) {
+		k.fail("device_record", "the device record over the relay did not apply")
+	}
+	if d, _, err := st.Device(dev.ID); err != nil || d.PermissionsAllowed {
+		k.fail("device_record", "a request became a grant (%v)", err)
+	}
+	k.write("device.ok", "")
+
+	// 7: the unlink. The hub must read the farewell before remove_slot: a hub
+	// no slot holds is unvouched again, and the relay answers its mailbox reads
+	// HUB_NOT_VOUCHED. The phone waits 3 s for that (LinkingViewModel
+	// farewellReadPause); this measures it against the real Worker.
 	k.wait("farewell.sent", kitStepWait)
-	farewell(t, k, h, st, status.RelayDeviceID, dev)
+	sent, err := os.Stat(filepath.Join(k.dir, "farewell.sent")) // its write is the clock's start: k.wait polls
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !within(farewellReadPause-time.Since(sent.ModTime()), func() bool {
+		_, ok, err := st.Device(dev.ID)
+		return err == nil && !ok
+	}) {
+		k.fail("farewell", "the hub did not apply the farewell within the phone's pause")
+	}
+	t.Logf("the farewell applied at most %v after the phone began to send it", time.Since(sent.ModTime()))
 	k.write("farewell.ok", "")
 	k.wait("unlinked", kitStepWait)
 	if !within(time.Minute, func() bool { return !hubHolds(t, h, rep.RelayDeviceID) }) {
@@ -387,13 +414,16 @@ func TestInterop_KitPhone(t *testing.T) {
 	}
 	k.write("unlink.ok", "")
 
-	// 7: the slot is back.
+	// 8: the slot is back.
 	k.wait("readded", kitStepWait)
 	if !within(time.Minute, func() bool { return hubHolds(t, h, rep.RelayDeviceID) }) {
 		k.fail("readd_phones", "the hub's account state does not list the phone again")
 	}
 	k.write("go.done", "")
 }
+
+// farewellReadPause is the phone's pause between its farewell and remove_slot.
+const farewellReadPause = 3 * time.Second
 
 // hubHolds reports whether the hub's get_account_state lists phone.
 func hubHolds(t *testing.T, h *interopHub, phone string) bool {
@@ -411,53 +441,6 @@ func hubHolds(t *testing.T, h *interopHub, phone string) bool {
 		}
 	}
 	return false
-}
-
-// farewell reads the phone's device-<DEVICE_ID> record from its mailbox on
-// the stand and opens it with the hub's keys: it must say unlinked.
-func farewell(t *testing.T, k kitRun, h *interopHub, st *state.Store, hubRelayID string, dev state.Device) {
-	t.Helper()
-	fs := identity.FileStore{Path: filepath.Join(h.dir, identity.FileName)}
-	id, err := fs.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer id.Zero()
-	kr, err := identity.NewKeyring(id, st, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer kr.Wipe()
-	wireName, err := secure.NewSealer(kr).WireName(secure.ZoneRelay, "device-"+strings.ToUpper(dev.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	zone := transport.MailboxZone(hubRelayID, dev.RelayDeviceID)
-	var env []byte
-	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
-	defer cancel()
-	_, err = readZoneAll(ctx, h.transport(), zone, func(r transport.Stored) {
-		if r.Name == wireName {
-			env = r.Envelope
-		}
-	})
-	if err != nil {
-		k.fail("farewell", "reading the phone's mailbox: %v", err)
-	}
-	if env == nil {
-		k.fail("farewell", "no device record in the phone's mailbox")
-	}
-	opened, err := secure.NewOpener(kr, kr).FromPhone(zone, wireName, env)
-	if err != nil {
-		k.fail("farewell", "the device record does not open: %v", err)
-	}
-	var p wire.DevicePayload
-	if opened.Frame.Kind != "device" || json.Unmarshal(opened.Frame.Payload, &p) != nil {
-		k.fail("farewell", "the device record is a %q frame", opened.Frame.Kind)
-	}
-	if p.Unlinked == nil || !*p.Unlinked || !strings.EqualFold(p.DeviceID, dev.ID) {
-		k.fail("farewell", "the device record does not say unlinked")
-	}
 }
 
 // readZoneAll reads every page of zone from 0.

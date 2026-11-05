@@ -53,6 +53,14 @@ extension HostedRelayTransport {
         }
         var resync = try store.relayResyncPending(zone)
         var since = try store.relayCursor(zone: zone)
+        var isLoad = try store.relayResyncIsLoad(zone)
+        var restarted = false
+        if !resync, since == 0 {
+            // A zone's first pull is a load like a resync: persisted, so a failure midway or a restart shows it
+            // as unfinished (`dataLoadComplete`) and the next pull resumes it from the stored cursor.
+            try store.beginRelayResync(zone, load: true)
+            (resync, isLoad) = (true, true)
+        }
         var fromZero = resync || since == 0
         var buffered = false
         while true {
@@ -66,6 +74,14 @@ extension HostedRelayTransport {
             do {
                 page = try await call(zone) { try await self.client.changes(request) }
             } catch HostedRelayError.server(code: .tokenExpired, _) where since > 0 {
+                if resync, isLoad, !restarted {
+                    // A load, not a resync after TOKEN_EXPIRED: the first pull restarts from 0 at once, as it
+                    // always did (once per pull; a second refusal stalls like a resync).
+                    restarted = true
+                    try store.beginRelayResync(zone, load: true)
+                    (fromZero, since) = (true, 0)
+                    continue
+                }
                 if resync {
                     // The relay refused a flagged middle page of the resync (README: a `since_seq`
                     // above the zone's seq still expires, e.g. a zone rebuilt mid-resync): starting
@@ -107,6 +123,15 @@ extension HostedRelayTransport {
         }
         await resubscribeIfRefused(zone)
         return buffered
+    }
+
+    /// The replica has a sweep pending and wants the whole data zone again (a route return onto a store whose
+    /// cursor is above 0): starts a load from 0 unless one is running (it is resumed at its cursor, so a restart
+    /// midway does not begin again). Nothing to do while the cursor is 0: the first pull is the load.
+    nonisolated public func restartDataLoadIfIdle() throws {
+        if try store.relayResyncPending(.data) { return }
+        guard try store.relayCursor(zone: .data) > 0 else { return }
+        try store.beginRelayResync(.data, load: true)
     }
 
     /// The next pull reads `zone` from 0 again, as a `TOKEN_EXPIRED` resync does (what the server no longer holds

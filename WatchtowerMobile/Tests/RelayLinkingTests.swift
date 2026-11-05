@@ -1166,6 +1166,151 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(host.slotRemovals.isEmpty)
     }
 
+    // MARK: - The pause before remove_slot (G1)
+
+    /// The relay refuses the hub's mailbox read once the slot is gone, so the farewell gets 3 s to be read.
+    func testAnUnlinkOverTheRelayPausesBeforeFreeingTheSlot() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        let model = makeModel()
+
+        await model.unlink(otherHub)
+
+        XCTAssertEqual(clock.slept, 3)
+        XCTAssertEqual(relay.ops, ["removeSlot \(otherMac.deviceID)"])
+        XCTAssertTrue(host.slotRemovals.isEmpty, "freed: nothing kept")
+    }
+
+    /// The app dying in the pause: the removal is already kept, and the next launch frees the slot.
+    func testAKilledPauseLeavesTheSlotRemovalForTheNextLaunch() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        clock.parked = true
+        let model = makeModel()
+        let unlink = Task { await model.unlink(otherHub) }
+        await waitUntil { self.host.slotRemovals == [self.otherMac.deviceID] }
+        XCTAssertEqual(relay.count("removeSlot"), 0, "still in the pause")
+
+        clock.parked = false
+        let relaunched = makeModel()
+        await relaunched.retrySlotRemovals()
+
+        XCTAssertEqual(relay.count("removeSlot"), 1)
+        XCTAssertTrue(relay.slots.isEmpty)
+        XCTAssertTrue(host.slotRemovals.isEmpty)
+        unlink.cancel()
+        await unlink.value
+    }
+
+    func testACancelledPauseStillFreesTheSlot() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        clock.parked = true
+        let model = makeModel()
+        let unlink = Task { await model.unlink(otherHub) }
+        await waitUntil { !self.host.slotRemovals.isEmpty }
+
+        unlink.cancel()
+        await unlink.value
+
+        XCTAssertTrue(relay.slots.isEmpty)
+        XCTAssertTrue(host.slotRemovals.isEmpty)
+    }
+
+    /// A farewell that did not go out has nothing to wait for: the slot goes at once.
+    func testAFarewellThatDidNotGoOutFreesTheSlotWithNoPause() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        host.keepsFarewell = true
+        let model = makeModel()
+
+        await model.unlink(otherHub)
+
+        XCTAssertEqual(clock.slept, 0)
+        XCTAssertTrue(relay.slots.isEmpty)
+    }
+
+    func testACancelledLinkPausesOnlyWhenItsFarewellWentOut() async throws {
+        try seedPromoted(relayCode(), state: .promoted)
+        host.resendSucceeds = false
+        relay.slots = [mac.deviceID]
+        await makeModel().cancelPromoted(hub)
+        XCTAssertEqual(clock.slept, 0, "not sent: no pause")
+        XCTAssertTrue(relay.slots.isEmpty)
+
+        try seedPromoted(relayCode(), state: .promoted)
+        host.resendSucceeds = true
+        relay.slots = [mac.deviceID]
+        await makeModel().cancelPromoted(hub)
+        XCTAssertEqual(clock.slept, 3)
+        XCTAssertTrue(relay.slots.isEmpty)
+    }
+
+    /// A link made to the same Mac during the pause keeps its slot.
+    func testALinkMadeDuringThePauseKeepsItsSlot() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        clock.parked = true
+        let model = makeModel()
+        let unlink = Task { await model.unlink(otherHub) }
+        await waitUntil { !self.host.slotRemovals.isEmpty }
+
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        unlink.cancel()
+        await unlink.value
+
+        XCTAssertEqual(relay.count("removeSlot"), 0)
+        XCTAssertTrue(host.slotRemovals.isEmpty)
+    }
+
+    /// A kept relay farewell sent at launch gets its 3 s too, once, before the kept removals.
+    func testAFarewellResentAtLaunchPausesOnceBeforeTheKeptRemovals() async throws {
+        try seedPromoted(relayCode(), state: .promoted)
+        host.resendSucceeds = false
+        relay.slots = [mac.deviceID]
+        relay.fail("removeSlot", with: HostedRelayPairing.Refusal.unreachable)
+        await makeModel().cancelPromoted(hub)
+        XCTAssertEqual(host.slotRemovals, [mac.deviceID])
+        XCTAssertEqual(clock.slept, 0)
+
+        host.resendSucceeds = true
+        let relaunched = makeModel()
+        await relaunched.retryFarewells()
+        await relaunched.retrySlotRemovals()
+
+        XCTAssertEqual(clock.slept, 3)
+        XCTAssertTrue(relay.slots.isEmpty)
+        await relaunched.retrySlotRemovals()
+        XCTAssertEqual(clock.slept, 3, "once")
+    }
+
+    /// Resent with no removal waiting: a removal kept later owes nothing to that farewell.
+    func testAResentFarewellWithNoRemovalLeavesNoPauseOwed() async throws {
+        host.keptFarewells = [PendingFarewell(
+            hubID: otherHub, route: .hostedRelay(macDeviceID: otherMac.deviceID), userRecordName: "",
+            record: CloudRecord(recordName: "wire", zone: .relay, kind: "wt", modifiedAt: Date(), payload: Data([1])), since: clock.now()
+        )]
+        host.resendSucceeds = true
+        let model = makeModel()
+        await model.retryFarewells()
+        XCTAssertTrue(host.keptFarewells.isEmpty)
+        await model.retrySlotRemovals()
+
+        host.slotRemovals = [mac.deviceID]
+        relay.slots = [mac.deviceID]
+        await model.retrySlotRemovals()
+
+        XCTAssertEqual(clock.slept, 0)
+        XCTAssertTrue(relay.slots.isEmpty)
+    }
+
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        for _ in 0..<2000 where !condition() {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(condition(), "timed out")
+    }
+
     func testCancelBothFailKeepsTheSlotRemovalForLaunch() async throws {
         try seedPromoted(relayCode(), state: .promoted)
         host.resendSucceeds = false

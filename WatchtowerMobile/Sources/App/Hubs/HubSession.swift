@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import os
 import UIKit
+import WatchtowerHostedRelay
 @_spi(DemoTransport) import WatchtowerSync
 
 /// What a `HubSession` runs on: a live transport (CloudKit or the hosted
@@ -500,6 +501,7 @@ final class HubSession {
         let keyboxSignal = KeyboxSignal()
         self.keyboxSignal = keyboxSignal
         // Labelled: a trailing closure would bind to `pull`, the first closure parameter.
+        try Self.restartPendingLoad(transport, store)
         let hydrator = Self.makeHydrator(transport, store, keyboxSignal, transportSignals)
         self.hydrator = hydrator
         // The route decides a queued control's outer bound (the hosted relay's mailbox TTL; none on CloudKit); the
@@ -730,6 +732,9 @@ final class HubSession {
     /// adoption, the launch fetch, the outbox sweep, launch recovery): held
     /// from here, before a push can end its own work, until it is done.
     private func startBoot(_ startWork: BackgroundWork.Starter?, notifications: NotificationCenter) {
+        if case .hostedRelay? = route {
+            deviceSettings.sendAfterWrite = { [weak self] in await self?.sendNow() }
+        }
         endBootWork = startWork?("app-boot")
         adoption = Task { await adoptHeld() }
         unlockObserver = NotificationToken(
@@ -1622,6 +1627,13 @@ final class HubSession {
         let keys = try PhoneKeyProvider(store: phoneKeys.store, hubID: phoneKeys.hubID, seq: seq)
         let secure = SecureTransport(inner: transport, keys: keys, rollback: store)
         return (store, secure, keys, wired != nil)
+    }
+
+    /// A route return onto a transport store whose cursor is above 0 reports no load by itself (board #1497): a
+    /// pending sweep asks the relay transport for the whole data zone again, unless a load is already running.
+    private static func restartPendingLoad(_ transport: any CloudSyncTransport, _ store: ReplicaStore) throws {
+        guard let relay = transport as? HostedRelayTransport, try store.sweepsAfterFullPull() else { return }
+        try relay.restartDataLoadIfIdle()
     }
 
     /// Final review (Phone I-2, Desktop I-1): the floor a wipe carried over is stored in the new replica at

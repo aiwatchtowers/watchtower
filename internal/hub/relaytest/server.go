@@ -89,28 +89,30 @@ type Server struct {
 	srv  *httptest.Server
 	hits atomic.Int64 // every HTTP request, the WebSocket and blobs included
 
-	mu           sync.Mutex
-	ops          []string
-	reqs         []*relayv1.Request
-	frames       [][]byte                     // every op body, WebSocket frame and blob received
-	fail         map[string][]*relayv1.Error  // op → scripted errors, one per call
-	failSave     map[string]relayv1.ErrorCode // zone → code for the next save into it
-	zones        map[string]*zone
-	blobs        map[string][]byte
-	blobHeaders  []http.Header
-	uploads      []*relayv1.CreateUpload
-	attZone      map[string]string
-	account      *relayv1.AccountState // answered verbatim to every get_account_state when set
-	readers      [][]string
-	hubReaders   map[string][]string // hub → its last set_hub_readers
-	pushTokens   map[string]string   // phone → its register_push token
-	pushOff      bool                // send_alert answers "not implemented"
-	alerts       []Alert             // accepted send_alert requests, in order
-	subscribed   []string
-	pageLimit    int
-	hideLength   bool                // blob GETs stream with no Content-Length
-	downloadBase string              // get_download URL base ("" = this server)
-	saveOverride *relayv1.SaveResult // answered to the next save instead
+	mu          sync.Mutex
+	ops         []string
+	reqs        []*relayv1.Request
+	frames      [][]byte                     // every op body, WebSocket frame and blob received
+	fail        map[string][]*relayv1.Error  // op → scripted errors, one per call
+	failSave    map[string]relayv1.ErrorCode // zone → code for the next save into it
+	zones       map[string]*zone
+	blobs       map[string][]byte
+	blobHeaders []http.Header
+	uploads     []*relayv1.CreateUpload
+	attZone     map[string]string
+	account     *relayv1.AccountState // answered verbatim to every get_account_state when set
+	readers     [][]string
+	hubReaders  map[string][]string // hub → its last set_hub_readers
+	pushTokens  map[string]string   // phone → its register_push token
+	pushOff     bool                // send_alert answers "not implemented"
+	// enforceMailboxRead: see EnforceMailboxRead.
+	enforceMailboxRead bool
+	alerts             []Alert // accepted send_alert requests, in order
+	subscribed         []string
+	pageLimit          int
+	hideLength         bool                // blob GETs stream with no Content-Length
+	downloadBase       string              // get_download URL base ("" = this server)
+	saveOverride       *relayv1.SaveResult // answered to the next save instead
 
 	kinds    map[string]relayv1.DeviceKind // registered devices
 	pairings map[string]pairing            // open pairing slots by id
@@ -321,6 +323,16 @@ func (s *Server) SetAccountState(st *relayv1.AccountState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.account = st
+}
+
+// EnforceMailboxRead makes a mailbox read follow the Worker's rule for a Mac
+// (worker/src/do/zone/acl.ts): a hub whose phone's account no longer holds it
+// in a slot gets FORBIDDEN. Off by default, as every other test reads freely.
+// The Worker itself is what proves this: see relay-interop-kit-hub.
+func (s *Server) EnforceMailboxRead() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enforceMailboxRead = true
 }
 
 // SetPageLimit caps the records of one changes page.
@@ -555,6 +567,9 @@ func (s *Server) handle(caller string, req *relayv1.Request) *relayv1.Response {
 	case *relayv1.Request_Delete:
 		return s.del(caller, op.Delete)
 	case *relayv1.Request_Changes:
+		if s.enforceMailboxRead && !s.mailboxReadable(caller, op.Changes.GetZone()) {
+			return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+		}
 		return s.changes(op.Changes)
 	case *relayv1.Request_SetHubReaders:
 		s.readers = append(s.readers, slices.Clone(op.SetHubReaders.GetPhoneDeviceIds()))
@@ -872,6 +887,16 @@ func (s *Server) del(caller string, d *relayv1.Delete) *relayv1.Response {
 		}
 	}
 	return &relayv1.Response{Result: &relayv1.Response_Delete{Delete: res}}
+}
+
+// mailboxReadable is the Worker's read rule for the mailbox relay/<hub>/<phone>;
+// any other zone, and the phone's own read, stay as they are here.
+func (s *Server) mailboxReadable(caller, zone string) bool {
+	parts := strings.Split(zone, "/")
+	if len(parts) != 3 || parts[0] != "relay" || caller != parts[1] {
+		return true
+	}
+	return slices.Contains(s.slots[parts[2]], parts[1])
 }
 
 func (s *Server) changes(c *relayv1.Changes) *relayv1.Response {

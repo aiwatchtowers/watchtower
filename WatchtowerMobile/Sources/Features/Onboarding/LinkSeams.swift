@@ -193,4 +193,6 @@ struct LocalWipe: Equatable {
     /// sent again later (`LinkHost.resendFarewell`), so a `shared` link
     /// keeps its shares until then.
     var farewellKept = false
+    /// The unlink's farewell left the send queue: the hub can read it now.
+    var farewellOut = false
 }
