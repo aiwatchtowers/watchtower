@@ -3,6 +3,7 @@ package sessionfeed
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"watchtower/internal/rollout"
 )
 
 // activityWindow is how much of a transcript's tail ActivityOf reads.
@@ -70,14 +73,26 @@ func ActivityOf(path string, codex, sidechain bool) (*Activity, error) {
 
 // readTail returns the last limit bytes of path, dropping a first partial line.
 func readTail(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
+	tail, _, err := readTailCut(path, limit)
+	return tail, err
+}
+
+// readTailCut is readTail that also reports whether the file held more than
+// limit bytes. A zstd-compressed rollout is decompressed in memory (capped by
+// rollout.MaxDecompressed) and its tail taken from the decompressed text.
+func readTailCut(path string, limit int64) ([]byte, bool, error) {
+	rc, compressed, err := rollout.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	defer f.Close()
+	defer rc.Close()
+	f, plain := rc.(*os.File)
+	if compressed || !plain {
+		return streamTail(rc, limit)
+	}
 	st, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	start := int64(0)
 	if st.Size() > limit {
@@ -85,16 +100,47 @@ func readTail(path string, limit int64) ([]byte, error) {
 	}
 	buf := make([]byte, st.Size()-start)
 	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
-		return nil, err
+		return nil, false, err
 	}
-	if start > 0 {
-		i := bytes.IndexByte(buf, '\n')
-		if i < 0 {
-			return nil, nil
+	return dropPartialHead(buf, start > 0), start > 0, nil
+}
+
+// streamTail keeps the last limit bytes of r while reading it through.
+func streamTail(r io.Reader, limit int64) ([]byte, bool, error) {
+	var buf []byte
+	chunk := make([]byte, 64<<10)
+	cut := false
+	for {
+		n, err := r.Read(chunk)
+		buf = append(buf, chunk[:n]...)
+		if over := int64(len(buf)) - limit; over > 0 && int64(len(buf)) >= 2*limit {
+			buf = append(buf[:0], buf[over:]...)
+			cut = true
 		}
-		buf = buf[i+1:]
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, false, err
+		}
 	}
-	return buf, nil
+	if over := int64(len(buf)) - limit; over > 0 {
+		buf = buf[over:]
+		cut = true
+	}
+	return dropPartialHead(buf, cut), cut, nil
+}
+
+// dropPartialHead drops the first, partial line of a tail cut mid-file.
+func dropPartialHead(buf []byte, cut bool) []byte {
+	if !cut {
+		return buf
+	}
+	i := bytes.IndexByte(buf, '\n')
+	if i < 0 {
+		return nil
+	}
+	return buf[i+1:]
 }
 
 func claudeOpenCalls(tail []byte, sidechain bool) []openCall {

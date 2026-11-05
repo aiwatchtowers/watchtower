@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
+	"watchtower/internal/rollout"
 )
 
 // maxSubagentDepth bounds FindSubagent's descent into nested subagents.
@@ -157,7 +157,7 @@ func findCodexSubagent(c Conversation, selector string, depth int) (*Result, str
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
 		}
-		f, err := os.Open(path)
+		f, _, err := rollout.Open(path)
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
 		}
@@ -166,10 +166,7 @@ func findCodexSubagent(c Conversation, selector string, depth int) (*Result, str
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
 		}
-		for _, n := range nested.Agents {
-			ref := n.Ref
-			res.Entries = append(res.Entries, Entry{ID: ref.ToolUseID, Kind: KindSubagent, Subagent: &ref, At: n.StartedAt, Conversation: child.AgentSessionID})
-		}
+		res.Entries = append(res.Entries, liveMarkers(nested, child.AgentSessionID)...)
 		return res, path, nil
 	}
 	for _, a := range live.Agents {

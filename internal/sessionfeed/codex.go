@@ -15,11 +15,12 @@ import (
 	"time"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/rollout"
 )
 
-// zstdMagic opens a zstd frame: Codex can compress rollouts, and this reader
-// does not decompress them.
-var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
+// zstdMagic opens a zstd frame. Files are decompressed by rollout.Open before
+// they reach ParseCodex; a reader still holding a frame is not parsed.
+var zstdMagic = rollout.Magic
 
 var codexIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
@@ -47,8 +48,9 @@ type codexEvent struct {
 // a Claude Code transcript. Two dialects are read per line: paginated
 // `event_msg` `item_completed` (UserMessage / AgentMessage items) and legacy
 // `event_msg` `user_message` / `agent_message`. `response_item` and
-// `compacted` lines repeat that text and are skipped; a zstd-compressed
-// rollout yields nothing (counted under Unknown "<zstd>").
+// `compacted` lines repeat that text and are skipped. r carries rollout text:
+// a compressed file is decompressed by the caller (rollout.Open, as Build
+// does); raw zstd bytes yield nothing (counted under Unknown "<zstd>").
 func ParseCodex(r io.Reader, startOffset int64, conv string) (*Result, error) {
 	res := &Result{Offset: startOffset, Unknown: map[string]int{}}
 	br := bufio.NewReaderSize(r, 64<<10)
