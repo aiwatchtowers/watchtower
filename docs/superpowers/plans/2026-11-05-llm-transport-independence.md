@@ -8,7 +8,9 @@
 
 **Tech Stack:** Go (`internal/ai`, `internal/codex`, `internal/agentloop`, `internal/ollama`, `internal/providers`, `internal/chat`, `internal/sessionfeed`, `internal/sessionhost`, `internal/agentlog`, `internal/automations`, goose SQL migration, cobra `cmd`), SwiftUI Desktop (WatchtowerCore + Views, DesignKit), WatchtowerKit and the iPhone app.
 
-**Spec:** `docs/superpowers/specs/2026-11-05-llm-transport-independence-design.md`, approved by the owner in ask #514. Read it first. It carries the gap list (§2.2), the capability table (§3.3), the turn rule (§3.4), the rollout failure table (§3.5), the mockups (§3.7), the suite (§4) and the contracts (§5). Decisions: A–D (ask #507), #499, #488, and N1–N5 signed off in ask #514. **N6 is open:** Task G5's `session()` step implements the recommended default and is not merged until the owner closes N6.
+**Spec:** `docs/superpowers/specs/2026-11-05-llm-transport-independence-design.md`, approved by the owner in ask #514. Read it first. It carries the gap list (§2.2), the capability table (§3.3), the turn rule (§3.4), the rollout failure table (§3.5), the mockups (§3.7), the suite (§4) and the contracts (§5). Decisions: A–D (ask #507), #499, #488, N1–N5 signed off in ask #514, and N6 decided in ask #516 (`session({wait})` ends at once with `not_watched` and its reason by default; recipes must handle it).
+
+**Four waves, not the spec's three:** G2, G4 and A3 share `internal/codex`, and A2 and G5 are both Swift-heavy, so keeping lanes file-disjoint with one Swift-heavy lane at a time needs a fourth wave.
 
 ## Global Constraints
 
@@ -21,7 +23,7 @@
   - Kit: `make kit-test FILTER=…`.
   - Phone: `make mobile-test MOBILE_FILTER=…`.
   - Lint: `make lint-diff`.
-  - The controller runs the full gate once per wave (`make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`; plus `make mobile-test` in waves that touch the phone).
+  - The controller runs the full gate once per wave: `make test`, `make test-swift` (which includes the Kit), `make lint-all`, `go test ./cmd/...`, plus `make kit-test` and `make mobile-test` in every wave whose merged diff touches `WatchtowerKit/` or `WatchtowerMobile/`. By the lane tables that is wave 1 (G7), wave 2 (G5) and wave 4 (A5); wave 3 runs them too if A2 or A3 end up touching either tree.
 - **Guards.** New or extended guards keep the house prefix: `TestAuto08_…`, `TestProj11_…`, `TestFeed01_…`, `TestAgentlog04_…`, `TestLLMTRANSPORT01_…`, and `testLLMTRANSPORT01…` in Swift. No existing guard is relaxed. A contract's amendment lands in `docs/inventory/<file>.md` in the same task, with a changelog line citing the ask.
 - **Migration.** Only G5 adds one: the next free number (`00173_terminal_session_watch_issue.sql` at writing time), with Up/Down. It is mirrored in `schema.sql`, and the golden and Swift test schema are regenerated with `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
 - **Fixtures.** Recorded fixtures are scrubbed by `scrub_fixtures.py`: zero UUIDs, `/work`, `example.com`, no account or path. A hand-made line carries `"synthetic": true`, and leak-check must pass. Nothing is ever copied from the owner's `~/.codex` or `~/.claude`; they may be read for structure only.
@@ -35,7 +37,7 @@
 1. A failed tool on any transport has a non-empty reason (CHAT-02); pinned in A1's matrix.
 2. Parallel tool calls of one response count as one turn on every transport (N4); pinned in G2 and A1.
 3. No row stays silently `working` after the give-up time of §3.5; pinned in G5.
-4. An existing recipe's `session()` wait keeps today's meaning by default (N6); pinned in G5.
+4. `session({wait})` ends at once with `not_watched` and its reason (N6, ask #516), and every shipped template that waits on a session reads it as "outcome unknown", never as success; pinned in G5.
 5. Swift decides no capability the Go table does not report (A2's dual-path test, A6's Swift guard).
 6. An older phone shows the hub's message for `not_supported`; pinned in G7.
 
@@ -54,7 +56,7 @@
 | Lane | Tasks | Main files | DB tables | Swift |
 |---|---|---|---|---|
 | W1-a | G1 | `internal/ai/client.go`, new `internal/streamline` (reader extracted from `internal/codex/stream.go`) | — | — |
-| W1-b | G3 | `internal/agentloop`, `internal/ollama`, `internal/providers` (new `ollama_failure.go`, `CodeForFailure` home), `internal/chat/turn_backend.go`, `cmd/ai.go` | — | — |
+| W1-b | G3 | `internal/agentloop`, `internal/ollama`, `internal/providers` (new `ollama_failure.go`, `CodeForFailure` home), `internal/chat/turn_backend.go`, `cmd/ai.go`, `cmd/ai_session.go` (runtime B wiring only, :219-224), `cmd/generator.go` (runtime B branch only, :204-221) | — | — |
 | W1-c | G6 | `internal/sessionfeed/{codex,live,feed,parse}.go`, `internal/terminal/codex_rollout.go`, new `internal/rollout` (zstd-aware opener), `go.mod` | — | — |
 | W1-d | A1 | new `internal/transporttest`, `scripts/record-transport-fixtures.sh`, `internal/chat/testdata/scrub_fixtures.py` | — (temp DBs) | — |
 | W1-e | A6 | new `internal/transporttest/guard_test.go` (or `internal/providers`), `WatchtowerDesktop/Tests/Core/LLMTransportGuardTests.swift`, `docs/inventory/llm-transport.md`, `docs/inventory/README.md` | — | light (one Core test) |
@@ -68,7 +70,7 @@ Conflict notes:
 
 | Lane | Tasks | Main files | DB tables | Swift |
 |---|---|---|---|---|
-| W2-a | G2 → G4 (one lane, both edit `internal/codex/client.go`/`stream.go`) | `internal/codex`, `cmd/automations_backends.go`, `cmd/workbench_spec_review.go`, then `internal/chat/attachments.go`, `cmd/ai_session.go`, `internal/chat/prompt*.go` | — | — |
+| W2-a | G2 → G4 (one lane, both edit `internal/codex/client.go`/`stream.go`; G4 does not wait on G2's N5 outcome) | `internal/codex`, `cmd/automations_backends.go`, `cmd/workbench_spec_review.go`, then `internal/chat/attachments.go`, `cmd/ai_session.go`, `internal/chat/prompt*.go` | — | — |
 | W2-b | G5 (after #959 is merged) | `internal/sessionfeed/codex_turn.go`, `cmd/workbench_session_{state,probe}.go`, `internal/sessionhost`, `internal/db` (migration), `internal/automations/sdk_session.go`, hub slice; Swift status, slice, Kit `TerminalSessionState` | `terminal_sessions` (migration) | **heavy** |
 | W2-c | G8 Go part | `internal/agentlog/{codex,discover,scan}.go`, `internal/db/workbench_agent_analytics.go` | `agent_log_*` in `agentlog.db` | — |
 
@@ -89,7 +91,7 @@ Conflict notes:
 | Lane | Tasks | Main files | DB tables | Swift |
 |---|---|---|---|---|
 | W4-a | A4 | `internal/ai/client.go` (group-only), `cmd/generator.go`, `cmd/ai.go`, `cmd/ai_session.go`, `cmd/workbench_spec_review.go`, `internal/daemon/coach.go`, `cmd/coach.go`, `cmd/automations_backends.go`, new `cmd/transport_wiring.go` | — | — |
-| W4-b | A5 | new `internal/sessionagent`, `cmd/workbench_{session_state,hook_input,hook_row,check,brief,askguard*,permission_wait}.go`, `internal/devpack`, `internal/agentkind`, Swift `AgentKind`, Kit capabilities fixture | — | **heavy** |
+| W4-b | A5 (also moves G8's importer onto `Adapter.Transcript`) | new `internal/sessionagent`, `internal/agentlog/{discover,scan}.go` (wiring only), `cmd/workbench_{session_state,hook_input,hook_row,check,brief,askguard*,permission_wait}.go`, `internal/devpack`, `internal/agentkind`, Swift `AgentKind`, Kit capabilities fixture | — | **heavy** |
 
 After each wave, A6's baseline shrinks by the hits that wave removed, as part of the task that removed them.
 
@@ -140,7 +142,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - a `budget` `*providers.Failure` whose message is "stopped after N model turns", the same category as Claude's `error_max_turns` (`internal/providers/failure.go:91`).
 - Consumes: the `streamline` reader from G1.
 
-- [ ] **Step 0 (spike, first):** Record live `codex exec --json` runs with tools on: a prompt that makes the model call two tools in parallel, a prompt that makes it call tools in three consecutive responses, and a text-only answer. Look for one response's calls executed one after another, i.e. item A started and completed before item B of the same response started, cross-checked against the same run's rollout `token_count` count in a throwaway `CODEX_HOME`. Write the scrubbed recordings to `internal/codex/testdata/`. **If serial execution is seen, stop and report to the controller for the owner (N5); do not build the rollout counter.**
+- [ ] **Step 0 (spike, first):** Record live `codex exec --json` runs with tools on: a prompt that makes the model call two tools in parallel, a prompt that makes it call tools in three consecutive responses, and a text-only answer. Look for one response's calls executed one after another, i.e. item A started and completed before item B of the same response started, cross-checked against the same run's rollout `token_count` count in a throwaway `CODEX_HOME`. Write the scrubbed recordings to `internal/codex/testdata/`. **If serial execution is seen, stop G2 and report to the controller for the owner (N5); do not build the rollout counter. The lane then continues with G4, which shares files with G2 but not this decision; G2 resumes after the owner's answer, rebased on G4.**
 - [ ] **Step 1:** Failing tests:
   - `TestTurnCounter_ParallelCallsAreOneTurn`;
   - `TestTurnCounter_ConsecutiveResponsesCount` (three responses, one tool each, gives 3);
@@ -155,21 +157,22 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - [ ] **Step 4:** The same commands PASS; `make lint-diff`.
 - [ ] **Step 5:** Amend AUTO-08 and add the SPECREVIEW-01 note in the inventory. Flip A1's `turn cap` cells for codex. Commit `feat(codex): stop agent() and the reviewer at the same model-turn cap as claude (L3, L4)`.
 
-### Task G3: runtime B and ollama stream parity (L7, L9, L10)
+### Task G3: runtime B and ollama stream parity (L7, L8, L9, L10)
 
 **Depends on:** none
-**Contracts:** none amended. CHAT-02 is strengthened by A1's rows.
-**Risk:** low.
+**Contracts:** none amended. CHAT-02 is strengthened by A1's rows. QC-01..04 are kept: runtime B mounts Quick Connections only through `externalmcp` with the QC-02 allowed read list, the `AllowedQuickConnections` policy applies, and secrets stay off argv (QC-03).
+**Risk:** low (L7, L9, L10); medium (L8, a new tool source in runtime B).
 
 **Files:**
-- Create: `internal/providers/ollama_failure.go`, `internal/chat/failure_code.go`.
-- Modify: `internal/agentloop/client.go` (emit `StreamChunk{Usage}` at the end of `Query`; the final answer stays one chunk, as declared by `text_stream=final`), `internal/ollama/client.go` (emit `Usage` from `stream_options.include_usage`; return typed failures), `internal/chat/turn_backend.go:100` (`CodeForFailure` first, then `ClassifyClaudeError` only for an untyped error), `cmd/ai.go` (`--read-folder` on a client without folder reading returns a capability error instead of silently answering; the v2 error path uses `CodeForFailure`).
+- Create: `internal/providers/ollama_failure.go`, `internal/chat/failure_code.go`, `internal/agentloop/external.go` and its test (Quick Connection read tools as agentloop tools).
+- Modify: `internal/agentloop/client.go` (emit `StreamChunk{Usage}` at the end of `Query`; the final answer stays one chunk, as declared by `text_stream=final`), `internal/ollama/client.go` (emit `Usage` from `stream_options.include_usage`; return typed failures), `internal/chat/turn_backend.go:100` (`CodeForFailure` first, then `ClassifyClaudeError` only for an untyped error), `cmd/ai.go` (`--read-folder` on a client without folder reading returns a capability error instead of silently answering; the v2 error path uses `CodeForFailure`), `cmd/ai_session.go:219-224` and `cmd/generator.go:204-221` (runtime B gets the owner's Quick Connections from `loadExternalMCPServersWith`, as claude and codex do; the automation editor surface stays without them, as today for claude and codex), `docs/features/quick-connections.md`, `docs/guide/` Quick Connections page ("works with Claude, Codex and Ollama"), Swift `WatchtowerCore/Services/QuickConnectionsProviderNotice.swift` copy (until A2 replaces the name check).
 
 **Interfaces:**
 - Produces:
   - `providers.OllamaFailure(status int, body string, cause error) error`, which maps 401/403 to `auth`, 404 model to `model`, 429 to `rate_limit`, 5xx to `overload`/`transport`, context length to `context`;
-  - `chat.CodeForFailure(category providers.Category) (code string, retryable bool)`.
-- Consumes: `providers.Failure` categories.
+  - `chat.CodeForFailure(category providers.Category) (code string, retryable bool)`;
+  - `agentloop.WithExternalMCP(servers []externalmcp.Server) Option`, exposing each allowed read tool as an agentloop tool whose call goes through `externalmcp.CallTool` and is a visible step (`tool_start`/`tool_end`).
+- Consumes: `providers.Failure` categories; `externalmcp` and the QC-02 allowed list.
 
 - [ ] **Step 1:** Failing tests:
   - `TestAgentloopQuery_EmitsUsage`;
@@ -177,15 +180,19 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - `TestOllamaFailure_StatusTable` (table over 401, 403, 404, 429, 500, 503 and a context-length body);
   - `TestCodeForFailure_EveryCategory` (every `providers` category maps to one chat code, and a new category without a row fails the test);
   - `TestTurnBackend_TypedFailureWinsOverText` (a codex quota `Failure` whose text says "authentication" still gives `quota_exhausted`'s code);
-  - `TestAIQuery_ReadFolderWithoutFileToolsIsRefused` (`cmd`, ollama config, exit non-zero, v2 `error` with reason `required_capability_missing`).
-- [ ] **Step 2:** `go test ./internal/agentloop ./internal/ollama ./internal/providers ./internal/chat -run 'EmitsUsage|OllamaFailure|CodeForFailure|TypedFailureWins'` and `go test ./cmd -run ReadFolderWithoutFileTools` FAIL.
+  - `TestAIQuery_ReadFolderWithoutFileToolsIsRefused` (`cmd`, ollama config, exit non-zero, v2 `error` with reason `required_capability_missing`);
+  - `TestAgentloop_QuickConnectionToolIsCalledAndShownAsStep` (fake MCP server over `httptest`; the model's call reaches it; `tool_start`/`tool_end` emitted);
+  - `TestAgentloop_QuickConnectionWriteToolNeverMounted` (QC-02: a tool outside the allowed read list is not offered);
+  - `TestAgentloop_PolicyDisallowedConnectionNotMounted` (`AllowedQuickConnections`);
+  - `TestAISession_RuntimeBMountsQuickConnections` and `TestAIQuery_RuntimeBMountsQuickConnectionsExceptEditor` (`cmd`).
+- [ ] **Step 2:** `go test ./internal/agentloop ./internal/ollama ./internal/providers ./internal/chat -run 'EmitsUsage|OllamaFailure|CodeForFailure|TypedFailureWins|QuickConnection|PolicyDisallowed'` and `go test ./cmd -run 'ReadFolderWithoutFileTools|RuntimeBMountsQuickConnections'` FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** PASS; `make lint-diff`.
-- [ ] **Step 5:** Flip A1's cells for runtime B and ollama (usage, failed turn). Commit `fix(ollama): usage events, typed failures and an honest read-folder refusal (L7, L9, L10)`.
+- [ ] **Step 5:** Flip A1's cells for runtime B and ollama (usage, failed turn, and the new `quick connection tool` scenario from `gap:L8` to `pass`); A1's scenario table gains that row if it is not there yet. Commits `fix(ollama): usage events, typed failures and an honest read-folder refusal (L7, L9, L10)` and `feat(agentloop): Quick Connections in runtime B chat (L8)`.
 
 ### Task G4: codex chat images and explicit web search (L5, L6 Go half)
 
-**Depends on:** G2 (same lane: `internal/codex/client.go`).
+**Depends on:** G1 only. It runs after G2 in the same lane because both edit `internal/codex/client.go`, not because of G2's outcome: if G2 stops for N5, G4 goes ahead.
 **Contracts:** CHAT-04 is kept: the image travels by path in a temp file under the existing 0600 rules, never as prompt text on argv.
 **Risk:** medium. A live check is needed.
 
@@ -214,7 +221,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - PROJ-11: the Codex table gains the pull events and the `unwatched` rule; the Codex v1 limits lose "no Error state" and the blind probe.
 - AUTO-11: kept.
 - `docs/features/automations.md` and `internal/skills/shipped/create-automation.md`: the N6 lines.
-**Risk:** medium. It brings a migration and a three-way wire (Go hub, Desktop hub, Kit), and the `session()` part is held until N6 is closed.
+**Risk:** medium. It brings a migration, a three-way wire (Go hub, Desktop hub, Kit) and a recipe API change (N6).
 
 **Files:**
 - Create:
@@ -226,14 +233,15 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - Desktop: `Services/SessionBackgroundProber.swift` (runs only for local-PTY-fallback rows), `WatchtowerCore/Models/SessionAgentStatus.swift`, `WatchtowerCore/Models/TerminalSession.swift`, `WatchtowerCore/Database/Queries/TerminalSessionQueries.swift`, `Services/MobileHub/Slices/TerminalSessionSlice.swift`, the session row and strip views (U6);
   - Kit: `WatchtowerKit/Sources/WatchtowerKit/Models/TerminalSessionState.swift` (`watchIssue`), `WatchtowerKit/Tests/Fixtures/workbench/terminal_session.json`;
   - phone: the session row;
-  - docs: `docs/inventory/workbench.md`, `docs/features/workbench.md`, `docs/features/automations.md`, `internal/skills/shipped/create-automation.md`, the `docs/guide/` workbench sessions page.
+  - docs: `docs/inventory/workbench.md`, `docs/features/workbench.md`, `docs/features/automations.md` (the `session()` paragraph lists `not_watched` and says recipes must handle it), `internal/skills/shipped/create-automation.md` (the same rule for authors), the `docs/guide/` workbench sessions page;
+  - templates that wait on `session()`: `internal/automations/templates/deploy-test.md`, `deploy-stage.md`, `release.md` (report `check.reason` beside `check.status`, so a `not_watched` report says why) and `pr-review-rounds.md` (treat `not_watched` like `error`: the PR is left for the next round, never marked reviewed).
 
 **Interfaces:**
 - Produces:
   - `sessionfeed.CodexLastTurn(path) (LastTurn, error)`, whose error is a typed `WatchIssue` (`missing`/`permission`/`compressed`/`unreadable`) or a rotation signal;
   - `(*DB) SetAgentWatchIssue(rowID int64, issue string, at time.Time) (bool, error)`, which writes only over a `working` codex row, and `ClearAgentWatchIssue(rowID)`;
   - the `sessionhost` watch: one per hosted codex row while `working`, polling `stat` every 2 s and following the spec's §3.5 table;
-  - `session()` option `notWatched` (added to `sessionOptionKeys`); the status constant `sessionNotWatched = "not_watched"`, returned only with the option;
+  - the `session()` end `{session_id, status: "not_watched", summary: "", reason}`, returned by default (N6, ask #516), with the constant `sessionNotWatched`; no new option key; one run-log line with the reason;
   - the slice keys `stateCaption` ("Working · not watched") and optional `watchIssue`.
 - Consumes: G6's `internal/rollout` opener.
 
@@ -253,12 +261,14 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
     - `TestProj11_FailureWinsOverWatchIssue`;
     - `TestProj11_WatchIssueLogLineCarriesNoPath` (FILES-01 canary);
     - `TestCodexWatch_HostAdoptionRearms` (PROJ-20 adoption);
+    - `TestProj11_HostAndBridgeReportSameFailureOnce` (the session host's watch and the Desktop bridge's probe both report the same rollout failure; exactly one write, through `recordAgentState(…, onlyFrom: working)` with the same `agent_state_at` stamp taken from the rollout line; the second report writes nothing);
     - `TestMigration00173_AddsNullableColumns`.
   - Automations:
-    - `TestAuto08_SessionWaitKeepsWaitingWhenNotWatchedByDefault` (the run log gets one reason line, no status change, the deadline still applies);
-    - `TestSessionWait_NotWatchedOptInEndsWithReason` (`{status:"not_watched", reason}`, journalled);
-    - `TestSessionWait_NotWatchedOptionAccepted` (`sessionOptionKeys`);
-    - `TestSessionWait_FailureBeforeWatchIssueEndsWithError`.
+    - `TestSessionWait_NotWatchedEndsAtOnceWithReason` (default, no option: `{status:"not_watched", reason}` at the issue's write, journalled, one run-log line with the reason);
+    - `TestSessionWait_FailureBeforeWatchIssueEndsWithError`;
+    - `TestSessionWait_NoNotWatchedOptionKey` (an unknown `notWatched` key is still refused like any unknown option);
+    - `TestTemplates_SessionWaitersHandleNotWatched` (`internal/automations`: each of the four templates, run in a dry run against a fake `session()` returning `not_watched`, reports the reason and, for `pr-review-rounds`, leaves the PR for the next round);
+    - `TestTemplates_StillInstallAndValidate` (the existing template install and validate tests stay green with the new bytes).
   - Hub:
     - `TestTerminalSessionMatchesKitFixtureKeys` and `TestEveryStateKindPublishesTheMacsPresentation`, each gaining a not-watched row.
   - Swift:
@@ -268,17 +278,17 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - Kit:
     - `WorkbenchMirrorFixtureTests` decodes `watchIssue`, and an older-shape fixture without the key still decodes.
 - [ ] **Step 2:**
-  - `go test ./internal/sessionhost ./internal/sessionfeed ./internal/db ./internal/automations ./internal/hub/slices/sources -run 'CodexWatch|Proj11|Migration00173|SessionWait|TerminalSession|EveryStateKind'`
+  - `go test ./internal/sessionhost ./internal/sessionfeed ./internal/db ./internal/automations ./internal/hub/slices/sources -run 'CodexWatch|Proj11|Migration00173|SessionWait|Templates_|TerminalSession|EveryStateKind'`
   - `go test ./cmd -run 'TestProj11_|SessionProbe'`
   - `make test-swift FILTER='TerminalSessionSliceTests|SessionAgentStatusTests|SessionBackgroundProberTests'`
   - `make kit-test FILTER=WorkbenchMirrorFixtureTests`
 
   All of these FAIL.
-- [ ] **Step 3:** Implement: migration, watch, setters, slice, Swift, Kit. Build the `session()` opt-in last, in its own commit, so it can be held for N6.
+- [ ] **Step 3:** Implement: migration, watch, setters, slice, Swift, Kit, then the `session()` end, the four templates, the automations doc and the skill line.
 - [ ] **Step 4:** The same commands PASS; `make lint-diff`; `make mobile-test MOBILE_FILTER=<session row test>`; `make desktop-shots` for U6.
 - [ ] **Step 5:** Amend PROJ-11; add the automations and skill lines. Flip A1's session cells. Commits:
   - `feat(sessionhost): watch codex rollouts for failures and interrupts (S1, S2, S6)`;
-  - `feat(automations): session() notWatched opt-in (N6)`, which is not merged until N6 is closed.
+  - `feat(automations): session() ends with not_watched; templates handle it (N6)`.
 
 ### Task G6: zstd rollouts and codex feed parity (S7, S8; N1)
 
@@ -306,7 +316,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - [ ] **Step 2:** `go test ./internal/rollout ./internal/sessionfeed ./internal/terminal -run 'Compressed|CodexSubagents|SizeCap|QueuedOwner'` FAILS.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** PASS; `make lint-diff`.
-- [ ] **Step 5:** Commit `feat(sessionfeed): read compressed codex rollouts and list codex subagents (S7, S8)`.
+- [ ] **Step 5:** Amend FEED-01 (decompression in memory only, the new guard `TestFeed01_CompressedRolloutReadLeavesFileUntouched`) and FEED-02 (codex dialog-only on a compressed rollout; the queued-owner-line finding) in `docs/inventory/session-feed.md`, with a changelog line citing asks #507 and #514 (N1). Flip A1's matrix cells for compressed transcripts (feed, live line, title) and codex subagents from `gap:S7`/`gap:S8` to `pass`. Commit `feat(sessionfeed): read compressed codex rollouts and list codex subagents (S7, S8)`.
 
 ### Task G7: honest phone and Workchat for codex (S3, S4, S5, S10)
 
@@ -334,7 +344,9 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - (a) Can a line typed into the codex TUI while it works be queued and taken mid-turn, the way Claude Code queues one?
   - (b) Can codex's `PermissionRequest` hook hold the prompt and return allow or deny from the hook's output?
 
-  Record the hook payloads and outputs into `cmd/testdata/codex_hooks/`. Only what a spike proves is enabled. Anything unproven stays refused with `not_supported`.
+  - (c) S10: does codex report an idle prompt (waiting for the owner, e.g. through its `notify` program or a hook event) and an MCP elicitation request in a form a hook or the rollout can read?
+
+  Record the hook payloads and outputs into `cmd/testdata/codex_hooks/`. Only what a spike proves is enabled. Anything unproven stays refused with `not_supported` (a, b) or becomes a disclosed limit (c).
 - [ ] **Step 1:** Failing tests.
   - Go:
     - `TestProj16_CodexSessionRefusedAsNotSupported` (reason and message, never "no longer exists");
@@ -357,16 +369,20 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - `make mobile-test MOBILE_FILTER=SessionInputSenderTests`
 
   All of these FAIL.
-- [ ] **Step 3:** Implement: the refusals first, then whatever the spikes proved.
+- [ ] **Step 2b (S10, its own step, failing first):** the outcome of spike (c) decides which of two test sets is written; S10 never closes silently.
+  - If codex can signal it: `TestProj11_CodexIdlePromptIsWaiting` (the idle signal stores `waiting` like Claude's `idle_prompt`), `TestProj11_CodexElicitationIsApproval` (an elicitation stores `approval`), `SessionAgentStateCenterTests.testCodexIdleNoticeFires` (the Desktop idle notice fires for a codex row).
+  - If it cannot: the session capability row records `idle_signal: false` and `elicitation: false` for codex (in `AgentSessionCaps`, later A5's fixture), and the UI says so: `SessionNoticePresentationTests.testIdleNoticeDisclosedAsUnavailableForCodex` (the place that offers the idle notice shows "Not available for Codex sessions" from the capability, not from the kind) and `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent` (the capability row and the inventory's Codex v1 limits line agree). The PROJ-11 Codex v1 limits keep "no idle notice" with that pointer.
+  - Run with Step 2's commands plus `go test ./cmd -run 'TestProj11_Codex(Idle|Elicitation|NoIdle)'` and `make test-swift FILTER='SessionAgentStateCenterTests|SessionNoticePresentationTests'`.
+- [ ] **Step 3:** Implement: the refusals first, then whatever the spikes proved, then Step 2b's branch.
 - [ ] **Step 4:** PASS; `make lint-diff`; `make desktop-shots` for U2.
-- [ ] **Step 5:** Amend PROJ-16 and PROJ-21. Commit `fix(hub): codex sessions get an honest not_supported on the phone and in Workchat (S3, S4, S5)`.
+- [ ] **Step 5:** Amend PROJ-16 and PROJ-21, and PROJ-11's Codex v1 limits for S10's outcome. Flip A1's session cells for S3, S4, S5 and S10 to `pass` or `unsupported` (the honest-UI assertion). Commit `fix(hub): codex sessions get an honest not_supported on the phone and in Workchat (S3, S4, S5, S10)`.
 
 ### Task G8: codex rollout importer for analytics and the coach (S9; decision D)
 
 **Depends on:**
 - G6 (`internal/rollout`).
 - The Swift part (U4) runs in wave 3, after G5's Swift lane.
-- A5 only for the final wiring through `Adapter.Transcript`; the parser does not wait for it.
+- A5 only for the final wiring through `Adapter.Transcript`; the parser does not wait for it. Until A5, G8 finds and opens rollouts through its own interim wiring in `internal/agentlog/discover.go` (marked as interim in a comment); A5 removes it.
 
 **Contracts:**
 - AGENTLOG-04, amended as in the spec's §5 (ask #507).
@@ -554,7 +570,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 
 ### Task A5: `internal/sessionagent`, the Workbench session adapter
 
-**Depends on:** G5 (the watch and events), G7 (its temporary `AgentSessionCaps`, replaced here) and A1.
+**Depends on:** G5 (the watch and events), G7 (its temporary `AgentSessionCaps`, replaced here), G8 (its interim rollout wiring, replaced here) and A1.
 **Contracts:**
 - PROJ-11, PROJ-12, PROJ-13 and PROJ-16/21: all their guards stay green with no assertion changed. PROJ-11 gains the single entry point note.
 - Session capabilities get a dual-path fixture.
@@ -587,8 +603,9 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - `TestLLMTRANSPORT01_NoTransportNamesOutsideAdapters` with the `cmd/workbench_*` baseline entries removed;
   - the Swift guard with the `WorkchatModel`/handler entries removed;
   - A1's session rows rerun with no change.
-- [ ] **Step 2:** `go test ./internal/sessionagent ./internal/transporttest` and `go test ./cmd -run 'TestProj1[1-6]_|TestProj21_|SessionAgent'`, `make kit-test FILTER=AgentSessionCapabilitiesTests` and `make test-swift FILTER='LLMTransportGuardTests|WorkchatModelTests'` FAIL.
-- [ ] **Step 3:** Implement, moving code without changing behaviour.
+- [ ] **Step 2:** `go test ./internal/sessionagent ./internal/transporttest ./internal/agentlog` and `go test ./cmd -run 'TestProj1[1-6]_|TestProj21_|SessionAgent'`, `make kit-test FILTER=AgentSessionCapabilitiesTests` and `make test-swift FILTER='LLMTransportGuardTests|WorkchatModelTests'` FAIL.
+- [ ] **Step 2b (G8 onto the adapter, failing first):** `TestAgentlog_CodexImportGoesThroughAdapterTranscript` (the importer finds and opens codex rollouts only through `sessionagent.For(codex).Transcript(row)`; a fake adapter that returns a fixture path is the only source read) and `TestAgentlog_NoInterimRolloutDiscovery` (an AST check: `internal/agentlog` no longer calls the interim discovery function or `rollout.Open` directly). Run `go test ./internal/agentlog -run 'AdapterTranscript|NoInterimRollout'`: FAIL.
+- [ ] **Step 3:** Implement, moving code without changing behaviour. Move G8's importer onto `Adapter.Transcript` and delete the interim wiring in `internal/agentlog/discover.go`; G8's `TestAgentlog0*_Codex…` guards stay green unchanged.
 - [ ] **Step 4:** PASS; `make lint-diff`.
 - [ ] **Step 5:** Shrink the baselines. Commit `refactor(workbench): one session adapter per agent kind`.
 
@@ -629,6 +646,9 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - a codex session that fails with the app closed (it shows Error on reopening);
   - a compressed rollout showing "Working · not watched";
   - phone typing into a codex session;
-  - a codex session in Analytics;
-  - an automation `agent()` on codex stopping at 12 turns.
+  - codex Esc in a session: the row leaves Working (waiting) at once;
+  - codex sessions in Analytics show real numbers (time, tokens, hints) after the importer; "Not measured for Codex sessions" appears only in a block the rollout cannot fill, and for a compressed rollout only if G6's reader is not in yet;
+  - an automation `agent()` on codex stopping at 12 turns;
+  - the spec reviewer on codex stopping at its turn cap (`specreview.MaxTurns`);
+  - a shipped template waiting on a session that turns unwatched reports `not_watched` with the reason.
 - [ ] Merge `feature/transport-neutral` into `feature/codex-parity` for PR #686, with the owner's approval.
