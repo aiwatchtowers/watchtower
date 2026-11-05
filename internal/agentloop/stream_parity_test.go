@@ -40,7 +40,7 @@ func withUsage(r oaResponse, in, out int) oaResponse {
 
 // TestAgentloopQuery_EmitsUsage: with the chat events on, a turn ends with one
 // Usage chunk carrying the summed usage of every model call, after the final
-// answer (which stays one chunk: text_stream=final).
+// answer (here one chunk: the first response has no text).
 func TestAgentloopQuery_EmitsUsage(t *testing.T) {
 	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
 	srv, _ := scriptedServer(t,
@@ -60,7 +60,7 @@ func TestAgentloopQuery_EmitsUsage(t *testing.T) {
 			texts = append(texts, ch.Text)
 		}
 	}
-	assert.Equal(t, []string{"all clear"}, texts, "the final answer is one chunk")
+	assert.Equal(t, []string{"all clear"}, texts, "a JSON answer is sent whole")
 }
 
 // Without the chat events (a v1 consumer) no Usage chunk is sent, and a

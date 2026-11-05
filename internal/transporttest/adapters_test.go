@@ -261,7 +261,7 @@ var adapters = []*Adapter{
 	},
 	{
 		Name: "runtime-b",
-		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "final", Usage: "totals",
+		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "totals",
 			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn"},
 		Stream: func(r *run) chat.Querier { return readFolderRefusal(r, runtimeB(r)) },
 		Chat: func(r *run) chat.Backend {

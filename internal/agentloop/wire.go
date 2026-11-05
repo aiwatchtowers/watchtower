@@ -10,6 +10,8 @@ type oaRequest struct {
 	Messages []oaMessage `json:"messages"`
 	Tools    []oaTool    `json:"tools,omitempty"`
 	Stream   bool        `json:"stream"`
+	// StreamOptions asks a streamed answer for its usage chunk.
+	StreamOptions *oaStreamOptions `json:"stream_options,omitempty"`
 }
 
 type oaMessage struct {

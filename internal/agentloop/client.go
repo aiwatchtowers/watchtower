@@ -11,6 +11,7 @@
 package agentloop
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -125,14 +126,16 @@ func NewClientWithOptions(model, baseURL string, reg *tools.Registry, b tools.Bi
 	return c
 }
 
-// Query runs the loop and streams the assistant turn. Each round that makes a
-// tool call emits an ai.StreamChunk{ToolBoundary: true} before the tools run —
-// so a consumer that showed any pre-tool text discards it and starts the visible
-// answer fresh from the text after the last boundary, matching claude/codex
-// (ai.StreamChunk's contract). The final answer is streamed as one Text chunk
-// (text_stream=final); with the chat events on, the turn's summed usage
-// follows it. Write proposals still surface through the Desktop's
-// AgentActionFeed.
+// Query runs the loop and streams the assistant turn. Each model message's
+// text is sent as it arrives (text_stream=token: the request streams, and a
+// server that answers with one JSON body has the message sent whole), before
+// that message's tool steps. Each round that makes a tool call then emits an
+// ai.StreamChunk{ToolBoundary: true} before the tools run, so a v1 consumer
+// drops the pre-tool text and starts the visible answer fresh from what
+// follows (ai.StreamChunk's contract). With the chat events on, nothing is
+// dropped: a later message starts after a blank line, as on claude and
+// codex, and the turn's summed usage follows the answer. Write proposals
+// still surface through the Desktop's AgentActionFeed.
 func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	textCh := make(chan ai.StreamChunk, 8)
 	errCh := make(chan error, 1)
@@ -167,19 +170,11 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 // run is the tool loop. It calls the model, dispatches any tool calls against
 // the registry, feeds the results back, and returns the first assistant turn
 // that makes no tool call. It always terminates: the iteration cap returns the
-// last textual content the model produced. emit (nil for the sync path)
-// receives a ToolBoundary chunk before each tool round and the final Text chunk.
+// last textual content the model produced. emit (nil for the sync path, which
+// sends unstreamed requests) receives each message's text as it arrives, a
+// ToolBoundary chunk before each tool round, and the tool events.
 func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit func(ai.StreamChunk)) (string, *ai.Usage, error) {
-	emitText := func(s string) {
-		if emit != nil && s != "" {
-			emit(ai.StreamChunk{Text: s})
-		}
-	}
-	emitBoundary := func() {
-		if emit != nil {
-			emit(ai.StreamChunk{ToolBoundary: true})
-		}
-	}
+	out := &textOut{emit: emit, keep: c.toolEvents}
 	ext := c.mountExternal(ctx)
 	systemPrompt = ai.WithExternalDataRule(systemPrompt, ext.servers)
 	msgs := make([]oaMessage, 0, 4)
@@ -193,7 +188,8 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 	var lastContent string
 
 	for i := 0; i < c.maxIter; i++ {
-		resp, err := c.meteredChat(ctx, msgs, oaTools)
+		out.startMessage()
+		resp, err := c.meteredChat(ctx, msgs, oaTools, out.onText())
 		if err != nil {
 			return "", usage, err
 		}
@@ -203,13 +199,17 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 			lastContent = strings.TrimSpace(m.Content)
 		}
 		if len(m.ToolCalls) == 0 {
-			emitText(lastContent)
+			if !out.shown {
+				// Nothing on the consumer's screen: a message with no text
+				// after a v1 boundary still answers with the last text.
+				out.send(lastContent)
+			}
 			return lastContent, usage, nil
 		}
-		// This turn makes a tool call, so any text it carried was pre-tool
-		// reasoning — signal the boundary so the consumer starts the visible
-		// answer fresh from what follows (ai.StreamChunk contract).
-		emitBoundary()
+		// This turn makes a tool call: signal the boundary so a v1 consumer
+		// starts the visible answer fresh from what follows (ai.StreamChunk
+		// contract); a v2 consumer keeps the text.
+		out.boundary()
 		msgs = append(msgs, m)
 		for _, call := range m.ToolCalls {
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments)})
@@ -227,27 +227,34 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 
 	// The cap is reached only while the model is still emitting tool calls, so
 	// whatever text it last produced is mid-work — flag it as truncated rather
-	// than present it as a finished answer.
+	// than present it as a finished answer. A consumer that still shows that
+	// text gets only the note after it.
+	out.startMessage()
 	if lastContent != "" {
-		capped := lastContent + "\n\n(Note: I reached the tool-call limit before finishing.)"
-		emitText(capped)
-		return capped, usage, nil
+		const note = "(Note: I reached the tool-call limit before finishing.)"
+		if out.shown {
+			out.send(note)
+		} else {
+			out.send(lastContent + messageSeparator + note)
+		}
+		return lastContent + messageSeparator + note, usage, nil
 	}
 	const note = "I couldn't complete that within the tool-call limit."
-	emitText(note)
+	out.send(note)
 	return note, usage, nil
 }
 
 // meteredChat is one model call between the BeforeModelCall and
 // AfterModelCall hooks; a response with no choices is an error. The call's
-// ledger row is written by chat, which sends it.
-func (c *Client) meteredChat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (*oaResponse, error) {
+// ledger row is written by chat, which sends it. A non-nil onText streams the
+// request and receives the message's text as it arrives.
+func (c *Client) meteredChat(ctx context.Context, msgs []oaMessage, oaTools []oaTool, onText func(string)) (*oaResponse, error) {
 	if c.opts.BeforeModelCall != nil {
 		if err := c.opts.BeforeModelCall(); err != nil {
 			return nil, err
 		}
 	}
-	resp, err := c.chat(ctx, msgs, oaTools)
+	resp, err := c.chat(ctx, msgs, oaTools, onText)
 	if err != nil {
 		return nil, err
 	}
@@ -360,11 +367,18 @@ func (c *Client) buildTools() []oaTool {
 	return out
 }
 
-// chat makes one non-streaming chat-completions request and records it in
-// the LLM ledger on every return (recordModelCall); a response with no
-// choices is recorded as failed.
-func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (*oaResponse, error) {
-	body, err := json.Marshal(oaRequest{Model: c.model, Messages: msgs, Tools: oaTools, Stream: false})
+// chat makes one chat-completions request and records it in the LLM ledger
+// on every return (recordModelCall); a response with no choices is recorded
+// as failed. With onText nil the request is unstreamed. Otherwise it asks
+// for a stream (with the usage chunk) and onText receives the message's text
+// deltas; a server that answers with one JSON body anyway has its message's
+// text passed whole.
+func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool, onText func(string)) (*oaResponse, error) {
+	r := oaRequest{Model: c.model, Messages: msgs, Tools: oaTools}
+	if onText != nil {
+		r.Stream, r.StreamOptions = true, &oaStreamOptions{IncludeUsage: true}
+	}
+	body, err := json.Marshal(r)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
@@ -390,8 +404,18 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (
 		return nil, providers.OllamaFailure(resp.StatusCode, string(b),
 			logredact.Errorf("model returned HTTP %d: %s", resp.StatusCode, logredact.Text(b)))
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, providers.OllamaRequestFailure(fmt.Errorf("decoding model response: %w", err))
+	br := bufio.NewReader(resp.Body)
+	if onText != nil && !jsonBody(br) {
+		if err := readStream(ctx, br, &out, onText); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := json.NewDecoder(br).Decode(&out); err != nil {
+			return nil, providers.OllamaRequestFailure(fmt.Errorf("decoding model response: %w", err))
+		}
+		if onText != nil && len(out.Choices) > 0 {
+			onText(strings.TrimSpace(out.Choices[0].Message.Content))
+		}
 	}
 	ok = len(out.Choices) > 0
 	return &out, nil

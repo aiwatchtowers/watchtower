@@ -162,8 +162,8 @@ runtime-b/chat fail-overload pass
 runtime-b/chat fail-quota unsupported
 runtime-b/chat fail-rate-limit pass
 runtime-b/chat image unsupported
-runtime-b/chat interrupt-text gap:L7
-runtime-b/chat interrupt-tool gap:L7
+runtime-b/chat interrupt-text pass
+runtime-b/chat interrupt-tool pass
 runtime-b/chat multi-turn-replay pass
 runtime-b/chat no-completion pass
 runtime-b/chat oversized-line unsupported
@@ -172,8 +172,8 @@ runtime-b/chat plain-answer pass
 runtime-b/chat quick-connection-tool pass
 runtime-b/chat timeout-kill pass
 runtime-b/chat tool-failed pass
-runtime-b/chat tool-ok gap:L7
-runtime-b/chat two-messages gap:L7
+runtime-b/chat tool-ok pass
+runtime-b/chat two-messages pass
 runtime-b/chat usage-cache unsupported
 runtime-b/chat web-search unsupported
 runtime-b/stream fail-auth pass
@@ -188,9 +188,9 @@ runtime-b/stream quick-connection-tool pass
 runtime-b/stream read-folder unsupported
 runtime-b/stream timeout-kill pass
 runtime-b/stream tool-failed pass
-runtime-b/stream tool-ok gap:L7
+runtime-b/stream tool-ok pass
 runtime-b/stream turn-cap-parallel pass
 runtime-b/stream turn-cap-sequential gap:L13
 runtime-b/stream turn-cap-text pass
-runtime-b/stream two-messages gap:L7
+runtime-b/stream two-messages pass
 runtime-b/stream usage-cache unsupported
