@@ -574,13 +574,13 @@ func v2TurnID() string {
 	return "query"
 }
 
-// enableChatEvents switches a provider that offers them (codex, the
+// enableChatEvents switches a provider that offers them (claude, codex, the
 // runtime B loop, the tool router) onto the protocol-v2 chat events — tool
 // starts/ends, the turn's usage, separated messages — as the chat session's
 // turn backend does; `ai query --events v2` renders them like the session.
-// A provider without them (claude, whose v2 stream is text and its own
-// translator is the session's, plain ollama) is left as is: a wrapper in
-// front of codex must forward EmitToolEvents, as toolRouteProvider does.
+// A provider without them (plain ollama, which has no tools) is left as is:
+// a wrapper in front of a leaf must forward EmitToolEvents, as
+// toolRouteProvider does.
 func enableChatEvents(p ai.Provider) {
 	if e, ok := p.(interface{ EmitToolEvents() }); ok {
 		e.EmitToolEvents()

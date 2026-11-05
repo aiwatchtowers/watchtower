@@ -136,6 +136,42 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNil(sessionID, "no session is resumed, so its id is not kept (#604 G11)")
     }
 
+    /// `ai query --events v2` (claude and codex): a tool call is a step on the
+    /// live row and in `chat_turn_steps` as it happens, the text streamed
+    /// before it stays (no reset, CHAT-02), the usage lands on the reply,
+    /// and the finished row still shows its steps.
+    func testToolStepsAndUsageReachTheLiveRowAndTheDatabase() async throws {
+        let engine = makeEngine()
+        XCTAssertTrue(engine.send("Which targets are open?"))
+        await engine.finished()
+        let turnID = try XCTUnwrap(engine.liveTurn?.turnID)
+        let messageID = try XCTUnwrap(engine.liveTurn?.messageID)
+
+        ai.emit(.text("Let me check."),
+                .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")))
+        expectTrue(await waitForCondition { engine.liveTurn?.steps.map(\.id) == ["t1"] })
+        expectTrue(await waitForCondition {
+            (try? self.pool.read { db in try ChatStepQueries.fetch(db, messageIDs: [messageID])[messageID]?.count }) == 1
+        }, "the step is written as it starts, not at the turn's end")
+
+        ai.emit(.toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: false, summary: "no access", sources: [])),
+                .text("\n\nTwo are open."),
+                .usage(ChatUsage(turnID: "query", tokensIn: 50, tokensOut: 7, model: "gpt-x")), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+
+        let reply = try XCTUnwrap(try rows().last)
+        XCTAssertEqual(reply.turnID, turnID)
+        XCTAssertEqual(reply.text, "Let me check.\n\nTwo are open.", "the pre-tool text is never wiped")
+        XCTAssertEqual(reply.tokensIn, 50)
+        XCTAssertEqual(reply.tokensOut, 7)
+        XCTAssertEqual(reply.model, "gpt-x")
+        let stored = try await pool.read { db in try ChatStepQueries.fetch(db, messageIDs: [messageID])[messageID] ?? [] }
+        XCTAssertEqual(stored.map(\.toolID), ["t1"])
+        XCTAssertEqual(stored.first?.okFlag, 0, "a failed tool is a red step, not a turn error")
+        XCTAssertEqual(engine.messages.last?.steps.map(\.toolID), ["t1"], "the finished row keeps its steps")
+    }
+
     /// A stored session id is never resumed (#604 G11): a Claude turn of a
     /// chat with history sends the system prompt and replays the history.
     func testAStoredSessionIsNeverResumedAndTheHistoryIsReplayed() async throws {

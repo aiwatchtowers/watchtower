@@ -183,7 +183,16 @@ type Client struct {
 	processGroup bool
 	// maxTurns, when > 0, is passed as --max-turns (SetMaxTurns).
 	maxTurns int
+	// toolEvents streams tool calls and the turn's usage as chunks
+	// (EmitToolEvents) instead of a boundary per tool call.
+	toolEvents bool
 }
+
+// EmitToolEvents switches Query onto the chat events `ai query --events v2`
+// renders (cmd enableChatEvents): each tool call a start and an end chunk,
+// the turn's usage last, and no ToolBoundary — text streamed before a call is
+// kept, and the text of a later message starts after a blank line.
+func (c *Client) EmitToolEvents() { c.toolEvents = true }
 
 // SetWatchtowerTools narrows --allowedTools from the whole `mcp__watchtower`
 // server to one mcp__watchtower__<name> token per name (an automation's
@@ -767,6 +776,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// errorEnvelopeMessage for the same pattern on the batch path).
 
 		var limits providers.ClaudeLimitTracker
+		chatEvents := newChatEventState()
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -786,6 +796,20 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				if event.SessionID != "" {
 					sidCh <- event.SessionID
 				}
+			}
+
+			if c.toolEvents {
+				for _, chunk := range chatEvents.chunks(&event) {
+					streamed.WriteString(chunk.Text)
+					select {
+					case textCh <- chunk:
+					case <-ctx.Done():
+						_ = cmd.Wait()
+						fail(ctx.Err())
+						return
+					}
+				}
+				continue
 			}
 
 			// A tool call interrupts the turn: signal a boundary so the consumer
@@ -926,17 +950,149 @@ type streamEvent struct {
 	Message   *streamMessage `json:"message"`
 	Result    string         `json:"result"`
 	IsError   bool           `json:"is_error"`
+	// ParentToolUseID is set on a subagent's events.
+	ParentToolUseID string `json:"parent_tool_use_id"`
 	// resultUsage is filled on a "result" event only.
 	resultUsage
 }
 
 type streamMessage struct {
+	Model   string          `json:"model"`
 	Content []streamContent `json:"content"`
 }
 
+// streamContent is one content block: text, a tool_use (ID, Name, Input) on
+// an assistant event, a tool_result (ToolUseID, Content, IsError) on a user
+// event.
 type streamContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// claudeInternalTools are Claude Code's own plumbing tools (ToolSearch loads
+// deferred MCP tool schemas). They are not steps the owner asked for, so they
+// never surface as tool steps. They stay allowed: hiding ToolSearch would
+// leave the deferred watchtower tools unloadable.
+var claudeInternalTools = map[string]bool{"ToolSearch": true}
+
+// IsClaudeInternalTool reports whether a raw Claude tool name is one of
+// Claude Code's plumbing tools, never shown as a step.
+func IsClaudeInternalTool(name string) bool { return claudeInternalTools[name] }
+
+// ToolResultText flattens a tool_result's content: a string, or the text
+// parts of a content array; "" for any other shape.
+func ToolResultText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Type == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+// chatEventState maps one run's stream-json events onto the chat-event
+// chunks (EmitToolEvents). A subagent's events are dropped, as the chat
+// session's translator drops them.
+type chatEventState struct {
+	model  string
+	names  map[string]string // tool_use id → raw name, until its result
+	hidden map[string]bool   // tool_use ids of Claude-internal tools
+	// wroteText and afterTool put a blank line between the text before a
+	// tool call and the text after it, instead of gluing them together.
+	wroteText, afterTool bool
+}
+
+func newChatEventState() *chatEventState {
+	return &chatEventState{names: map[string]string{}, hidden: map[string]bool{}}
+}
+
+func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
+	if e.ParentToolUseID != "" {
+		return nil
+	}
+	switch e.Type {
+	case "assistant":
+		if e.Message == nil {
+			return nil
+		}
+		if e.Message.Model != "" {
+			s.model = e.Message.Model
+		}
+		var out []StreamChunk
+		for _, b := range e.Message.Content {
+			switch b.Type {
+			case "text":
+				if b.Text == "" {
+					continue
+				}
+				text := b.Text
+				if s.wroteText && s.afterTool {
+					text = "\n\n" + text
+				}
+				s.wroteText, s.afterTool = true, false
+				out = append(out, StreamChunk{Text: text})
+			case "tool_use":
+				s.afterTool = true
+				if claudeInternalTools[b.Name] {
+					s.hidden[b.ID] = true
+					continue
+				}
+				s.names[b.ID] = b.Name
+				args := b.Input
+				if len(args) == 0 {
+					args = json.RawMessage("{}")
+				}
+				out = append(out, StreamChunk{Tool: &ToolEvent{ID: b.ID, Name: b.Name, Args: args}})
+			}
+		}
+		return out
+	case "user":
+		if e.Message == nil {
+			return nil
+		}
+		var out []StreamChunk
+		for _, b := range e.Message.Content {
+			if b.Type != "tool_result" {
+				continue
+			}
+			if s.hidden[b.ToolUseID] {
+				delete(s.hidden, b.ToolUseID)
+				continue
+			}
+			name := s.names[b.ToolUseID]
+			delete(s.names, b.ToolUseID)
+			out = append(out, StreamChunk{Tool: &ToolEvent{ID: b.ToolUseID, Name: name, Done: true,
+				OK: !b.IsError, Result: ToolResultText(b.Content)}})
+		}
+		return out
+	case "result":
+		u := e.Usage
+		return []StreamChunk{{Usage: &TurnUsage{Model: s.model,
+			InputTokens:  u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+			OutputTokens: u.OutputTokens}}}
+	}
+	return nil
 }
 
 // extractText returns the text content from a stream event, if any.

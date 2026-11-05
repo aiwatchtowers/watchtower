@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
@@ -391,7 +392,7 @@ func (t *ClaudeTranslator) toolStart(b *pendingBlock) []Event {
 	if b == nil || b.kind != "tool_use" {
 		return nil
 	}
-	if claudeInternalTools[b.name] {
+	if ai.IsClaudeInternalTool(b.name) {
 		t.hidden[b.id] = true
 		return nil
 	}
@@ -413,7 +414,7 @@ func (t *ClaudeTranslator) toolResults(m *claudeMessage) ([]Event, []toolResult)
 			delete(t.hidden, c.ToolUseID)
 			continue
 		}
-		text := toolResultText(c.Content)
+		text := ai.ToolResultText(c.Content)
 		call := t.calls[c.ToolUseID]
 		delete(t.calls, c.ToolUseID)
 		ok := !c.IsError
@@ -603,12 +604,6 @@ func artifactID(s string) string {
 	return seg
 }
 
-// claudeInternalTools are Claude Code's own plumbing tools (ToolSearch loads
-// deferred MCP tool schemas). They are not steps the owner asked for, so they
-// never surface as tool_start/tool_end. They stay allowed: hiding ToolSearch
-// would leave the deferred watchtower tools unloadable.
-var claudeInternalTools = map[string]bool{"ToolSearch": true}
-
 // displayToolName strips the built-in server prefix and renders an external
 // MCP tool as server:tool (spec §1.1).
 func displayToolName(raw string) string {
@@ -636,32 +631,6 @@ func toolArgs(s string) json.RawMessage {
 	}
 	b, _ := json.Marshal(map[string]string{"_raw": s})
 	return b
-}
-
-// toolResultText flattens a tool_result's content: a string, or the text
-// parts of a content-block array.
-func toolResultText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &parts); err != nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Type == "text" {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
 }
 
 var httpStatusRe = regexp.MustCompile(`\b(401|403|429|529)\b`)

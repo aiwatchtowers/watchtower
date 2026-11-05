@@ -498,6 +498,7 @@ package final class EmbeddedChatEngine {
                     }
                     continue
                 }
+                if recordStepOrUsage(event, turn: turn) { continue }
                 switch reducer.apply(event) {
                 case .text(let text):
                     turn.replaceText(text, now: clock())
@@ -515,6 +516,37 @@ package final class EmbeddedChatEngine {
         }
         guard isCurrent(turn) else { return }
         endRunningTurn()
+    }
+
+    /// A tool step or the turn's usage: shown on the live row and written in
+    /// order with the turn's other writes, a step as it starts and as it
+    /// ends (CHAT-02). False for any other event.
+    private func recordStepOrUsage(_ event: StreamEvent, turn: LiveTurn) -> Bool {
+        let now = clock()
+        let store = store
+        let messageID = turn.messageID
+        let write: () async throws -> Void
+        switch event {
+        case .toolStart(let start):
+            let seq = turn.startStep(start, at: now)
+            write = { try await store.stepStarted(messageID: messageID, seq: seq, start: start, at: now) }
+        case .toolEnd(let end):
+            turn.finishStep(end, at: now)
+            write = { try await store.stepFinished(messageID: messageID, end: end, at: now) }
+        case .usage(let usage):
+            turn.setUsage(usage)
+            write = { try await store.saveUsage(messageID: messageID, usage: usage) }
+        default:
+            return false
+        }
+        writes.start { [self] in
+            do {
+                try await write()
+            } catch {
+                if isCurrent(turn) { failForStore(error, prefix: "Couldn't save the reply's steps") }
+            }
+        }
+        return true
     }
 
     /// Records the turn's failure; the first one wins.
@@ -828,8 +860,10 @@ package final class EmbeddedChatEngine {
     }
 
     private func reload() throws {
-        messages = try store.loadMessages().map {
-            ChatThreadItem(message: $0, steps: [], siblingIndex: 1, siblingCount: 1)
+        let rows = try store.loadMessages()
+        let steps = try store.steps(messageIDs: rows.filter { !$0.isUser }.map(\.id))
+        messages = rows.map {
+            ChatThreadItem(message: $0, steps: steps[$0.id] ?? [], siblingIndex: 1, siblingCount: 1)
         }
     }
 
