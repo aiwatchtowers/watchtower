@@ -21,7 +21,7 @@ struct RelaySubscriptionView: View {
         guard let center else { return nil }
         return RelaySubscriptionModel(
             purchase: center.purchase, unconfirmed: center.unconfirmed, phase: center.phase,
-            config: .from(bundle: .main), product: center.product
+            config: .from(bundle: .main), product: center.product, updateRequired: center.updateRequired
         )
     }
 
@@ -105,7 +105,7 @@ struct RelaySubscriptionView: View {
         guard modelOverride == nil else { return }
         switch action {
         case .subscribe: Task { await center?.buy() }
-        case .reloadProduct: Task { await center?.loadProduct() }
+        case .reloadProduct: Task { await center?.reloadProduct() }
         case .retryAccount: Task { await center?.retryAccount() }
         case .retryConfirm: Task { await center?.retryConfirm() }
         case .manageSubscription: if let url = model.manageSubscriptionURL { openURL(url) }

@@ -1042,13 +1042,10 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(center.purchase, .noSubscriptionFound)
     }
 
-    /// A cancel must not land on S21 with no load running. `.idle` is the contract: the open screen loads on it.
-    /// **Try Again** on S46 repeats the press that stopped at the account: a failed Restore never becomes a purchase.
-    func testTryAgainAfterAFailedAccountRepeatsThePress() async throws {
-        let bed = AccountBed()
+    /// A center whose account fails while the gate says so, as a phone with no way to reach the relay.
+    private func gatedCenter(_ bed: AccountBed) -> (RelayAccountCenter, AccountGate) {
         let live = RelayAccountLink.live(bed.relay)
-        final class Gate: @unchecked Sendable { var fails = true }
-        let gate = Gate()
+        let gate = AccountGate()
         let link = RelayAccountLink(
             hasIdentity: live.hasIdentity,
             account: {
@@ -1057,7 +1054,13 @@ final class RelayAccountCenterTests: XCTestCase {
             },
             events: { nil }
         )
-        let center = RelayAccountCenter(link: link, store: bed.store, defaults: bed.defaults) { [] }
+        return (RelayAccountCenter(link: link, store: bed.store, defaults: bed.defaults) { [] }, gate)
+    }
+
+    /// **Try Again** on S46 repeats the press that stopped at the account: a failed Restore never becomes a purchase.
+    func testTryAgainAfterAFailedAccountRepeatsThePress() async throws {
+        let bed = AccountBed()
+        let (center, gate) = gatedCenter(bed)
 
         await center.restore()
         XCTAssertEqual(center.purchase, .accountFailed)
@@ -1086,29 +1089,61 @@ final class RelayAccountCenterTests: XCTestCase {
 
     /// The account answered this time, so S46's "Couldn't reach Relay" must not come back on a cancel.
     func testACancelledRestoreFromTheAccountFrameDoesNotReturnToIt() async throws {
+        // No price known: `.idle`, and the open screen loads.
         let bed = AccountBed()
-        let live = RelayAccountLink.live(bed.relay)
-        final class Gate: @unchecked Sendable { var fails = true }
-        let gate = Gate()
-        let link = RelayAccountLink(
-            hasIdentity: live.hasIdentity,
-            account: {
-                if gate.fails { throw HostedRelayPairing.Refusal.unreachable }
-                return try live.account()
-            },
-            events: { nil }
-        )
-        let center = RelayAccountCenter(link: link, store: bed.store, defaults: bed.defaults) { [] }
+        let (center, gate) = gatedCenter(bed)
         await center.restore()
         XCTAssertEqual(center.purchase, .accountFailed)
         gate.fails = false
         bed.store.restoreError = RelayStoreError.cancelled
-
         await center.retryAccount()
-
         XCTAssertEqual(center.purchase, .idle)
+
+        // A price known: back to it.
+        let priced = AccountBed()
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        priced.store.productResult = product
+        let (known, knownGate) = gatedCenter(priced)
+        await known.loadProduct()
+        await known.restore()
+        XCTAssertEqual(known.purchase, .accountFailed)
+        knownGate.fails = false
+        priced.store.restoreError = RelayStoreError.cancelled
+        await known.retryAccount()
+        XCTAssertEqual(known.purchase, .ready(product))
     }
 
+    /// **Retry** on S45 and S57 with no price: the result goes, the load runs, and a failure there is S22.
+    func testReloadProductLeavesAResultWithNoPrice() async throws {
+        let (bed, _) = try await registeredBed()
+        let center = await started(bed)
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+
+        await center.restore()
+        XCTAssertEqual(center.purchase, .noSubscriptionFound)
+        await center.reloadProduct()
+        XCTAssertEqual(center.purchase, .productFailed, "S22 from the store's empty answer")
+        XCTAssertEqual(bed.store.productCalls, 1)
+
+        center.screenClosed()
+        bed.store.restoreError = RelayStoreError.productUnavailable
+        await center.restore()
+        XCTAssertEqual(center.purchase, .storeFailed)
+        bed.store.productResult = product
+        await center.reloadProduct()
+        XCTAssertEqual(center.purchase, .ready(product))
+
+        // S22's own Retry.
+        center.screenClosed()
+        bed.store.productResult = nil
+        await center.loadProduct()
+        XCTAssertEqual(center.purchase, .productFailed)
+        bed.store.productResult = product
+        await center.reloadProduct()
+        XCTAssertEqual(center.purchase, .ready(product))
+    }
+
+    /// A cancel must not land on S21 with no load running. `.idle` is the contract: the open screen loads on it.
     func testACancelledRestoreLeavesNoStateNothingAdvances() async throws {
         let product = RelayProduct(id: "relay", displayPrice: "$4.99")
 
@@ -1605,4 +1640,8 @@ private final class Captured<Value>: @unchecked Sendable {
     func set(_ value: Value) {
         lock.withLock { stored = value }
     }
+}
+
+private final class AccountGate: @unchecked Sendable {
+    var fails = true
 }

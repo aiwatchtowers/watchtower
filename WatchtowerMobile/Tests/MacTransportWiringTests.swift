@@ -317,6 +317,11 @@ final class MacTransportWiringTests: XCTestCase {
         let center = bed.makeCenter()
         center.start()
         await center.foreground()?.value
+        bed.emit(.control(kind: .subscriptionMoved, detail: ""))
+        while center.phase != .moved { await Task.yield() }
+        let origin = RelayAvailability.available(try RelayOrigin("https://relay.example.com"))
+        let card = try XCTUnwrap(RelayCardModel(availability: origin, phase: center.phase, unconfirmedPurchase: false))
+        XCTAssertEqual(card.action, .restore, "S41")
         let product = RelayProduct(id: "relay", displayPrice: "$4.99")
         bed.store.productResult = product
         func shown() -> RelaySubscriptionModel {
@@ -328,7 +333,7 @@ final class MacTransportWiringTests: XCTestCase {
 
         bed.store.parkRestore()
         var opened = 0
-        let first = try XCTUnwrap(RelaySubscriptionPress.card(.restore, center: center) { opened += 1 })
+        let first = try XCTUnwrap(RelaySubscriptionPress.card(try XCTUnwrap(card.action), center: center) { opened += 1 })
         XCTAssertEqual(opened, 1, "the screen opens with the press, not after it")
         while !bed.store.restoreIsParked { await Task.yield() }
         XCTAssertEqual(shown().primary?.title, "Restoring…", "S44")

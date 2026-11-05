@@ -28,9 +28,13 @@ final class RelaySubscriptionModelTests: XCTestCase {
         unconfirmed: RelayAccountCenter.UnconfirmedPurchase? = nil,
         phase: RelayAccountCenter.Phase? = nil,
         config: RelayConfig = RelayConfig(origin: nil),
-        product: RelayProduct? = nil
+        product: RelayProduct? = nil,
+        updateRequired: Bool = false
     ) -> Model {
-        Model(purchase: purchase, unconfirmed: unconfirmed, phase: phase ?? free, config: config, product: product)
+        Model(
+            purchase: purchase, unconfirmed: unconfirmed, phase: phase ?? free, config: config, product: product,
+            updateRequired: updateRequired
+        )
     }
 
     func testEveryPurchaseStateHasItsCopy() {
@@ -129,10 +133,8 @@ final class RelaySubscriptionModelTests: XCTestCase {
         XCTAssertEqual(model(.buying, unconfirmed: .refused).primary?.title, "Waiting for the App Store…")
         XCTAssertEqual(model(.restoring, unconfirmed: .notReached).primary?.title, "Restoring…")
         XCTAssertEqual(model(.confirming, unconfirmed: .refused).primary?.title, "Confirming with Relay…")
-        XCTAssertEqual(model(.noSubscriptionFound, unconfirmed: .refused).line, "No subscription found on this Apple ID.")
-        XCTAssertEqual(model(.accountFailed, unconfirmed: .notReached).line, "Couldn't reach Relay. You weren't charged.")
-        XCTAssertEqual(model(.pending, unconfirmed: .refused).line, "Waiting for approval. Relay turns on when it's approved.")
-        XCTAssertEqual(model(.transferLimit, unconfirmed: .refused).line, limit)
+        XCTAssertEqual(model(.transferLimit, unconfirmed: .refused).line, limit, "a definite answer about the same thing")
+        XCTAssertEqual(model(.boughtNotConfirmed, unconfirmed: .refused).line, notReached)
         let paying = RelayAccountCenter.Phase.paying(grace: false, macs: [])
         XCTAssertEqual(model(.buying, phase: paying).primary?.title, "Waiting for the App Store…", "a running press beats paying too")
         XCTAssertEqual(model(.restoring, phase: paying).primary?.title, "Restoring…")
@@ -147,6 +149,47 @@ final class RelaySubscriptionModelTests: XCTestCase {
             XCTAssertEqual(shown.line, line, "\(unconfirmed)")
             XCTAssertTrue(shown.showsRestore, "\(unconfirmed)")
         }
+    }
+
+    /// Each of these says something false, or sells, over a period Apple already sold: "Waiting for approval" after the
+    /// approval, **Subscribe** on "No subscription found", "You weren't charged" to a charged owner.
+    func testAnUnconfirmedPurchaseWinsOverAResultThatWouldBeFalse() {
+        for purchase: RelayAccountCenter.PurchaseState in [.pending, .noSubscriptionFound, .accountFailed] {
+            for (unconfirmed, primary, line) in frames() {
+                let shown = model(purchase, unconfirmed: unconfirmed, product: price)
+                let name = "\(unconfirmed) over \(purchase)"
+                XCTAssertEqual(shown.primary?.title, primary, name)
+                XCTAssertEqual(shown.line, line, name)
+                XCTAssertNotEqual(shown.primary?.action, .subscribe, name)
+                XCTAssertNotEqual(shown.primary?.action, .retryAccount, name)
+                XCTAssertTrue(shown.showsRestore, name)
+            }
+        }
+    }
+
+    /// The App Store charges before the submit could say the app is too old: S43 first, not after the money.
+    func testAnAppTooOldSellsNothing() {
+        let selling: [RelayAccountCenter.PurchaseState] = [.idle, .loadingProduct, .ready(price), .productFailed, .storeFailed, .noSubscriptionFound]
+        for purchase in selling {
+            let shown = model(purchase, product: price, updateRequired: true)
+            XCTAssertEqual(shown.line, tooOld, "\(purchase)")
+            XCTAssertNil(shown.primary, "\(purchase)")
+            XCTAssertNil(shown.lead, "\(purchase)")
+            XCTAssertNil(shown.manageSubscriptionURL, "\(purchase)")
+            XCTAssertTrue(shown.showsRestore, "\(purchase)")
+        }
+        // A press in progress keeps its frame.
+        XCTAssertEqual(model(.buying, updateRequired: true).primary?.title, "Waiting for the App Store…")
+        XCTAssertEqual(model(.restoring, updateRequired: true).primary?.title, "Restoring…")
+        XCTAssertEqual(model(.confirming, updateRequired: true).primary?.title, "Confirming with Relay…")
+        // A purchase already made says what happened to it.
+        XCTAssertEqual(model(.ready(price), unconfirmed: .notReached, updateRequired: true).line, notReached)
+        XCTAssertEqual(model(.ready(price), unconfirmed: .refused, updateRequired: true).line, refused)
+        // A paying phone has nothing to sell either way.
+        let paying = RelayAccountCenter.Phase.paying(grace: false, macs: [])
+        XCTAssertEqual(model(.ready(price), phase: paying, updateRequired: true).line, relayIsOn)
+        // Without the latch it sells again.
+        XCTAssertEqual(model(.ready(price)).primary?.title, subscribe)
     }
 
     func testAPayingPhoneIgnoresUnconfirmed() {
@@ -198,10 +241,22 @@ final class RelaySubscriptionModelTests: XCTestCase {
         XCTAssertEqual(model(.ready(other)).primary?.title, "Subscribe — €1,23 / month")
         XCTAssertEqual(model(.storeFailed, product: other).primary?.title, "Subscribe — €1,23 / month")
         XCTAssertEqual(model(.noSubscriptionFound, product: other).primary?.title, "Subscribe — €1,23 / month")
-        // A Restore pressed on the card before any load: no price yet, so no **Subscribe**; Restore repeats what failed.
-        for purchase: RelayAccountCenter.PurchaseState in [.storeFailed, .noSubscriptionFound] {
-            XCTAssertNil(model(purchase).primary, "\(purchase)")
-            XCTAssertTrue(model(purchase).showsRestore, "\(purchase)")
+    }
+
+    /// A Restore pressed before any load found a price: no **Subscribe** to write, so **Retry** as on S22, and S22's shape.
+    func testAResultWithNoPriceOffersRetry() {
+        let lines: [(RelayAccountCenter.PurchaseState, String, Bool)] = [
+            (.noSubscriptionFound, "No subscription found on this Apple ID.", false),
+            (.storeFailed, "The App Store didn't finish. Nothing changed; you can try again.", true)
+        ]
+        for (purchase, line, isError) in lines {
+            let shown = model(purchase)
+            XCTAssertEqual(shown.primary, Model.Button(title: "Retry", action: .reloadProduct), "\(purchase)")
+            XCTAssertEqual(shown.line, line, "\(purchase)")
+            XCTAssertEqual(shown.lineIsError, isError, "\(purchase)")
+            XCTAssertNil(shown.lead, "\(purchase)")
+            XCTAssertEqual(shown.bullets, [], "\(purchase)")
+            XCTAssertTrue(shown.showsRestore, "\(purchase)")
         }
     }
 

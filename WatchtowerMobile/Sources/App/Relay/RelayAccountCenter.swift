@@ -287,6 +287,13 @@ final class RelayAccountCenter {
         purchase = found.map(PurchaseState.ready) ?? .productFailed
     }
 
+    /// **Retry**: S22, and S45 and S57 with no price, where `loadProduct()` alone would leave the result standing. The press
+    /// replaces the result. A running press stays: `screenClosed()` and `loadProduct()` both leave it.
+    func reloadProduct() async {
+        screenClosed()
+        await loadProduct()
+    }
+
     /// `accountID` (the press is the first use) → the App Store → `submit` → `finish` on an entitlement → the read.
     func buy() async {
         guard !pressRunning else { return }

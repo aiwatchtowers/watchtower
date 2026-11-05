@@ -4,14 +4,16 @@ import WatchtowerHostedRelay
 /// The Relay subscription screen (relay client Phase 4 Task 9, mockup S20–S29, S42–S46, S57): which frame shows for a press
 /// and the account's state, in the mockup's words. Every text lives here and is asserted in `RelaySubscriptionModelTests`.
 ///
-/// **What shows.** A running press wins. Then a paying phone is done (S29): the screen has nothing to sell. Then a press's
-/// result, and over no result or a failed App Store call, a purchase the relay has not confirmed: **Subscribe** is not offered
-/// during a period someone already paid for, and an owner already charged is not told "Nothing changed".
+/// **What shows.** A running press wins. Then a paying phone is done (S29): the screen has nothing to sell. Then a purchase
+/// the relay has not confirmed, over any state that would sell or say something false about it: **Subscribe** is not offered
+/// during a period someone already paid for, and an owner already charged is not told "Nothing changed", "You weren't
+/// charged" or "Waiting for approval". A press's own answer about the same thing (S26, S27, S28, S42, S43) and S29 keep
+/// their frame. Then an app too old for the relay (S43), before Apple can charge. Then the press's result.
 struct RelaySubscriptionModel: Equatable {
     struct Button: Equatable {
         enum Action: Equatable {
             case subscribe
-            /// `loadProduct()`, S22.
+            /// `reloadProduct()`: S22, and S45 and S57 with no price.
             case reloadProduct
             /// `retryAccount()`, S46: the press that stopped at the account.
             case retryAccount
@@ -55,15 +57,17 @@ struct RelaySubscriptionModel: Equatable {
     let toneUses: [ToneUse]
 
     /// `product`: the center's last loaded one, for the frames with **Subscribe** that carry none of their own (S45, S57).
-    /// Without it they offer no **Subscribe**: no price is written in code.
+    /// Without it they offer **Retry** in S22's shape: no price is written in code. `updateRequired`: the center's latch.
     init(
         purchase: RelayAccountCenter.PurchaseState,
         unconfirmed: RelayAccountCenter.UnconfirmedPurchase?,
         phase: RelayAccountCenter.Phase,
         config: RelayConfig,
-        product: RelayProduct? = nil
+        product: RelayProduct? = nil,
+        updateRequired: Bool = false
     ) {
-        let frame = Self.frame(of: Self.shown(purchase, unconfirmed, phase), product: product)
+        let shown = Self.shown(purchase, unconfirmed, phase, updateRequired: updateRequired)
+        let frame = Self.frame(of: shown, product: product)
         lead = frame.sells ? Self.leadLine : nil
         bullets = frame.sells ? Self.pitchBullets : []
         primary = frame.primary
@@ -101,16 +105,17 @@ struct RelaySubscriptionModel: Equatable {
     private static func shown(
         _ purchase: RelayAccountCenter.PurchaseState,
         _ unconfirmed: RelayAccountCenter.UnconfirmedPurchase?,
-        _ phase: RelayAccountCenter.Phase
+        _ phase: RelayAccountCenter.Phase,
+        updateRequired: Bool
     ) -> RelayAccountCenter.PurchaseState {
         switch purchase {
         case .buying, .confirming, .restoring: return purchase
         default: break
         }
         if isPaying(phase) { return .done }
-        guard let unconfirmed else { return purchase }
+        guard let unconfirmed else { return updateRequired ? .updateRequired : purchase }
         switch purchase {
-        case .idle, .loadingProduct, .productFailed, .ready, .storeFailed:
+        case .idle, .loadingProduct, .productFailed, .ready, .storeFailed, .pending, .noSubscriptionFound, .accountFailed:
             switch unconfirmed {
             case .confirming: return .confirming
             case .notReached: return .boughtNotConfirmed
@@ -131,6 +136,8 @@ struct RelaySubscriptionModel: Equatable {
         var isError = false
     }
 
+    private static let retry = Button(title: "Retry", action: .reloadProduct)
+
     private static func frame(of state: RelayAccountCenter.PurchaseState, product: RelayProduct?) -> Frame {
         func subscribe(_ product: RelayProduct?) -> Button? {
             product.map { Button(title: "Subscribe — \($0.displayPrice) / month", action: .subscribe) }
@@ -150,10 +157,12 @@ struct RelaySubscriptionModel: Equatable {
         case .restoring:
             return busy("Restoring…")
         case .noSubscriptionFound:
-            return Frame(sells: true, primary: subscribe(product), line: "No subscription found on this Apple ID.")
+            return Frame(
+                sells: product != nil, primary: subscribe(product) ?? retry, line: "No subscription found on this Apple ID."
+            )
         case .storeFailed:
             return Frame(
-                sells: true, primary: subscribe(product),
+                sells: product != nil, primary: subscribe(product) ?? retry,
                 line: "The App Store didn't finish. Nothing changed; you can try again.", isError: true
             )
         case .productFailed, .accountFailed, .pending, .boughtNotConfirmed, .refused, .transferLimit, .notImplemented,
@@ -170,7 +179,7 @@ struct RelaySubscriptionModel: Equatable {
         switch state {
         case .productFailed:
             return Frame(
-                primary: Button(title: "Retry", action: .reloadProduct),
+                primary: retry,
                 line: "Couldn't load the subscription. Check your connection.", isError: true
             )
         case .accountFailed:

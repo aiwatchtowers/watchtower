@@ -398,10 +398,15 @@ final class ScreenshotTourTests: XCTestCase {
             ("S29", "subscription-done", .done),
             ("S57", "subscription-store-failed", .storeFailed)
         ]
+        // A Restore pressed before any load found a price.
+        let noPrice: [(String, String, RelayAccountCenter.PurchaseState)] = [
+            ("S45b", "subscription-none-found-no-price", .noSubscriptionFound),
+            ("S57b", "subscription-store-failed-no-price", .storeFailed)
+        ]
         var rows: [ScreenshotHost.IndexRow] = []
-        for (number, slug, purchase) in frames {
+        for (number, slug, purchase, price) in frames.map({ ($0.0, $0.1, $0.2, Optional(product)) }) + noPrice.map({ ($0.0, $0.1, $0.2, nil) }) {
             let model = RelaySubscriptionModel(
-                purchase: purchase, unconfirmed: nil, phase: .free(ended: false), config: config, product: product
+                purchase: purchase, unconfirmed: nil, phase: .free(ended: false), config: config, product: price
             )
             try await host.captureThree(
                 "\(number)-\(slug)", NavigationStack { RelaySubscriptionView(model: model) }, narrowScroll: Self.toTheEnd
