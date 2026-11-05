@@ -280,7 +280,9 @@ def claude_ai(raw_path, out_dir):
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 ROLLOUT_RE = re.compile(r"/[^\s\"']*/rollout-[^\s\"']*\.jsonl(?:\.zst)?")
-ABS_PATH_RE = re.compile(r"(?:/Users|/private|/var|/tmp|/home|/Volumes|/opt|/usr/local)/[^\s\"']*")
+ABS_PATH_RE = re.compile(r"(?:/Users|/private|/var|/tmp|/home|/Volumes|/opt|/usr/local|/srv|/mnt|/etc|/root)/[^\s\"']*")
+# Any other absolute path a JSON string holds whole; /work is the scrubbed one.
+OTHER_PATH_RE = re.compile(r"^/(?!work(?:/|$))[A-Za-z0-9._-]+/")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 MSG_ID_RE = re.compile(r"\bmsg_[A-Za-z0-9]{8,}")
 
@@ -306,7 +308,8 @@ def transport_value(v, work, ids):
     if isinstance(v, dict) and "credential_expires_at" in v:
         v = dict(v, credential_expires_at="2099-01-01T00:00:00.000Z")
     if isinstance(v, str):
-        return transport_text(v, work, ids)
+        v = transport_text(v, work, ids)
+        return "/work" if OTHER_PATH_RE.match(v) else v
     if isinstance(v, list):
         return [transport_value(x, work, ids) for x in v]
     if isinstance(v, dict):

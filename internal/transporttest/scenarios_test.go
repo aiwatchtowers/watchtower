@@ -563,8 +563,8 @@ func assertTurnCapStops(c *Cell) error {
 		if f.Category != providers.Budget {
 			return fmt.Errorf("stopped with %q, want %q", f.Category, providers.Budget)
 		}
-	} else if c.A.Caps.ChildProcess {
-		return errors.New("the run passed its cap without a budget failure")
+	} else {
+		return errors.New("the run reached its cap without a budget failure")
 	}
 	return nil
 }

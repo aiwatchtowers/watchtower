@@ -21,7 +21,7 @@ claude/chat image pass
 claude/chat interrupt-text pass
 claude/chat interrupt-tool pass
 claude/chat multi-turn-replay pass
-claude/chat no-completion gap:?
+claude/chat no-completion gap:L12
 claude/chat oversized-line pass
 claude/chat pdf pass
 claude/chat plain-answer pass
@@ -50,7 +50,7 @@ claude/stream fail-model pass
 claude/stream fail-overload pass
 claude/stream fail-quota pass
 claude/stream fail-rate-limit pass
-claude/stream no-completion gap:?
+claude/stream no-completion gap:L12
 claude/stream oversized-line gap:L1
 claude/stream plain-answer pass
 claude/stream read-folder pass
@@ -181,7 +181,7 @@ runtime-b/stream timeout-kill pass
 runtime-b/stream tool-failed pass
 runtime-b/stream tool-ok gap:L7
 runtime-b/stream turn-cap-parallel pass
-runtime-b/stream turn-cap-sequential pass
+runtime-b/stream turn-cap-sequential gap:L13
 runtime-b/stream turn-cap-text pass
 runtime-b/stream two-messages gap:L7
 runtime-b/stream usage-cache unsupported

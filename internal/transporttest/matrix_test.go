@@ -27,11 +27,12 @@ var update = flag.Bool("update", false, "rewrite testdata/matrix.golden from tod
 
 const goldenPath = "testdata/matrix.golden"
 
-// openGaps are the open parity gaps of the spec's §2.2 (L2 is fixed). A
-// gap:<id> cell must name one of them.
+// openGaps are the open parity gaps of the spec's §2.2 (L2 is fixed; L12
+// and L13 were found by this suite). A gap:<id> cell must name one of
+// them.
 var openGaps = map[string]bool{
 	"L1": true, "L3": true, "L4": true, "L5": true, "L6": true, "L7": true, "L8": true,
-	"L9": true, "L10": true, "L11": true,
+	"L9": true, "L10": true, "L11": true, "L12": true, "L13": true,
 	"S1": true, "S2": true, "S3": true, "S4": true, "S5": true, "S6": true, "S7": true,
 	"S8": true, "S9": true, "S10": true,
 }
@@ -155,6 +156,8 @@ var gapSignatures = map[string]*regexp.Regexp{
 	"L7":  regexp.MustCompile(`no usage event|the first message was wiped|the partial text was not delivered|the text before the tool was not kept`),
 	"L9":  regexp.MustCompile(`not a capability refusal`),
 	"L10": regexp.MustCompile(`not a providers\.Failure`),
+	"L12": regexp.MustCompile(`the run succeeded|has no typed cause`),
+	"L13": regexp.MustCompile(`without a budget failure`),
 	"S1":  regexp.MustCompile(`no pull signal`),
 	"S2":  regexp.MustCompile(`no pull signal`),
 	"S3":  regexp.MustCompile(`pending permission requests`),
@@ -180,14 +183,13 @@ func runMatrixCell(t *testing.T, ref cellRef, golden map[string]string, mu *sync
 		cell := &Cell{A: ref.a, S: ref.s, Level: ref.level, Supported: sup, O: o, fixture: readFixture(t, path)}
 		err := ref.s.Assert(cell)
 		if len(o.FakeErrors) > 0 {
-			// The fake rejected its input (argv, stdin, a directive): part of
-			// a failure's text, and never part of a pass.
-			if err == nil {
-				err = fmt.Errorf("the cell holds but the fake rejected its input: %s", strings.Join(o.FakeErrors, "; "))
-				t.Errorf("%s: %v", key, err)
-			} else {
-				err = fmt.Errorf("%w (fake: %s)", err, strings.Join(o.FakeErrors, "; "))
-			}
+			// The fake rejected its input (argv, stdin, a directive): a
+			// harness or adapter fault, never a pass and never a gap.
+			t.Errorf("%s: the fake rejected its input: %s (assertion: %v)", key, strings.Join(o.FakeErrors, "; "), err)
+			mu.Lock()
+			results[key] = "gap:?"
+			mu.Unlock()
+			return
 		}
 		want := golden[key]
 		got := "pass"

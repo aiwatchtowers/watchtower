@@ -18,7 +18,7 @@ You asked for "our data flows and all our functionality to be independent of the
 - Ollama and other OpenAI-compatible servers (HTTP);
 - the coding agents in Workbench terminals (Claude Code and Codex).
 
-Each of these grew its own code for the same jobs: reading the answer, showing tool steps, counting tokens, stopping the process, telling an error apart, and knowing whether a session is working, waiting or failed. When the codex path was written, it copied some of those jobs and missed others. The last branch found and fixed nine such misses, such as invisible tool steps and glued text in codex chats. This design found 21 more (§2.2); one of them (L2) has since been fixed on `feature/codex-parity` (#957), which leaves 20 open. Most are small, but they share one root cause: the code asks "is this Claude?" when it should ask "can this transport do X?"
+Each of these grew its own code for the same jobs: reading the answer, showing tool steps, counting tokens, stopping the process, telling an error apart, and knowing whether a session is working, waiting or failed. When the codex path was written, it copied some of those jobs and missed others. The last branch found and fixed nine such misses, such as invisible tool steps and glued text in codex chats. This design found 21 more (§2.2), and its contract suite (Task A1) two more (L12, L13); one of them (L2) has since been fixed on `feature/codex-parity` (#957), which leaves 22 open. Most are small, but they share one root cause: the code asks "is this Claude?" when it should ask "can this transport do X?"
 
 ## What changes for you
 
@@ -68,7 +68,7 @@ These were decided by the design, not by the owner. N1–N5 were signed off by t
 
 - One contract test suite runs every scenario against every transport: claude, codex, Ollama/HTTP, and the two workbench agents. It uses fake CLIs that replay recorded real output. Each pair of transport and scenario either passes or is asserted to be "not supported, and the user is told". Nothing is skipped.
 - The guard test finds no provider-name check outside the adapters. Its allow list is empty, or each remaining entry carries a reason you approved.
-- The 20 open gaps in §2.2 are each fixed or turned into a disclosed limit.
+- The 22 open gaps in §2.2 are each fixed or turned into a disclosed limit.
 
 ---
 
@@ -118,7 +118,7 @@ Line numbers are as of that commit.
 
 ### 2.2 The (c) gaps
 
-**LLM calls (11 found, 10 open)**
+**LLM calls (13 found, 12 open)**
 
 | # | Who loses | What | Where |
 |---|---|---|---|
@@ -133,6 +133,8 @@ Line numbers are as of that commit.
 | L9 | ollama `ai query --read-folder` | The folder is silently ignored and the answer comes from the prompt alone. The caller gets no error or flag. Swift avoids it only by checking the name. | `cmd/ai.go:288-292` |
 | L10 | ollama/http (and codex for chat codes) | Errors are never typed as `providers.Failure`. The chat error code comes from Claude-oriented text matching even when a typed failure exists. | no `Failure` in `internal/ollama`, `internal/agentloop`; `internal/chat/turn_backend.go:100`; `cmd/ai.go:640-660` |
 | L11 | ollama main chat (Swift) | No "Current provider · model" line and no routing card, because the presentation knows only Claude and Codex. | `ViewModels/ChatViewModel.swift:93-103`; `WatchtowerCore/Services/ProviderFallbackPreview.swift:4-7` |
+| L12 | claude one-shot, warm chat | claude exits 0 with no `result` line: the one-shot `ai.Client.Query` returns a blank or partial success, and the warm backend ends the turn with an untyped `internal` error instead of a typed `invalid_output` `providers.Failure`. Codex and the claude batch path refuse it. Found by the contract suite (A1, ask #519 follow-up); fixed by G1b. | `internal/ai/client.go:851-863` (no error when `lastResult` is nil); `internal/chat/claude_backend.go:757-765` (`exitedTerminal`, no `Cause`) |
+| L13 | runtime B `agent()` / chat | At `MaxIterations` the loop returns a success text ("I couldn't complete that within the tool-call limit") instead of a `providers.Budget` failure, while claude's `error_max_turns` is `budget`. Found by the contract suite (A1); fixed with the turn cap in G2. | `internal/agentloop/client.go:206-216` |
 
 **Workbench sessions (10)**
 

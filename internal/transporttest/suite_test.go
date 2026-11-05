@@ -73,6 +73,9 @@ func runMain(m *testing.M) int {
 		return 1
 	}
 	realHome, realCodexHome = os.Getenv("HOME"), os.Getenv("CODEX_HOME")
+	for _, env := range []string{"WATCHTOWER_LIVE_CLAUDE", "WATCHTOWER_LIVE_CODEX", "WATCHTOWER_LIVE_OLLAMA"} {
+		liveOptIns[env] = strings.TrimSpace(os.Getenv(env)) != ""
+	}
 	// A WATCHTOWER_* variable of the developer's shell (a config path, an
 	// agent marker) must not reach the adapters or their children.
 	for _, kv := range os.Environ() {
@@ -89,6 +92,10 @@ func runMain(m *testing.M) int {
 // realHome and realCodexHome are the environment's before TestMain
 // isolates it; only the live job uses them.
 var realHome, realCodexHome string
+
+// liveOptIns are the live job's switches, read before TestMain strips the
+// WATCHTOWER_* variables.
+var liveOptIns = map[string]bool{}
 
 // ledger captures the llm_calls rows the adapters record (LLMUSAGE-01).
 var ledger = &captureSink{}
@@ -204,7 +211,7 @@ func writeFile(t *testing.T, path, content string) {
 // its environment variable set.
 func skipLive(t *testing.T, env string) {
 	t.Helper()
-	if strings.TrimSpace(os.Getenv(env)) == "" {
+	if !liveOptIns[env] {
 		t.Skip("live: set " + env + "=1") // the live gate
 	}
 }
