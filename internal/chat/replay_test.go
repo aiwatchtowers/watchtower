@@ -2,6 +2,7 @@ package chat
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -188,4 +189,59 @@ func TestReplayFailedEmptyAssistantIncludesOnlyPriorPathReceipts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, out, "current_tool")
 	require.NotContains(t, out, "current question")
+}
+
+// Earlier turns' text files are replayed newest first within the byte
+// budget; what does not fit, an image and a file gone from disk are named
+// with the reason instead, and the running turn's files are never replayed.
+func TestReplayFiles_NewestFirstWithinBudget(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, data []byte) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, data, 0o600))
+		return p
+	}
+	hist := []db.ChatMessage{
+		msg(1, "user", "old", "t1"), msg(2, "assistant", "ok", "t1"),
+		msg(3, "user", "new", "t2"), msg(4, "assistant", "ok", "t2"),
+	}
+	files := map[int64][]db.ChatProjectFile{
+		1: {{Name: "old.csv", Mime: "text/csv", Path: write("old.csv", []byte(strings.Repeat("o", 60)))}},
+		3: {
+			{Name: "new.csv", Mime: "text/csv", Path: write("new.csv", []byte(strings.Repeat("n", 60)))},
+			{Name: "shot.png", Mime: "image/png", Path: write("shot.png", fixturePNG)},
+			{Name: "gone.txt", Mime: "text/plain", Path: filepath.Join(dir, "gone.txt")},
+		},
+		4: {{Name: "never.txt", Mime: "text/plain", Path: write("never.txt", []byte("assistant rows carry no owner files"))}},
+	}
+	out := replayFiles(hist, files, 100)
+	assert.True(t, strings.HasPrefix(out, replayFilesHeader+"\n"), out)
+	assert.True(t, strings.HasSuffix(out, replayFilesFooter+"\n\n"), out)
+	assert.Contains(t, out, "<file name=\"new.csv\">\n"+strings.Repeat("n", 60)+"\n</file>")
+	assert.NotContains(t, out, strings.Repeat("o", 60), "the older file is over the budget")
+	assert.Contains(t, out, `[file "old.csv" not replayed: over the replay's 100-byte budget for earlier files]`)
+	assert.Contains(t, out, `[file "shot.png" not replayed: images and PDFs are not replayed]`)
+	assert.Contains(t, out, `[file "gone.txt" not replayed: file not found or unreadable]`)
+	assert.NotContains(t, out, "never.txt")
+	assert.Less(t, strings.Index(out, "new.csv"), strings.Index(out, "old.csv"), "newest first")
+
+	assert.Empty(t, replayFiles(hist, nil, 100), "no files → no block")
+}
+
+func TestReplayFromDB_ReplaysEarlierTextFiles(t *testing.T) {
+	d, conv := seedConversation(t)
+	ids := map[string]int64{}
+	for _, turn := range []string{"t1", "t2"} {
+		var id int64
+		require.NoError(t, d.QueryRow(`SELECT id FROM chat_messages WHERE role = 'user' AND turn_id = ?`, turn).Scan(&id))
+		ids[turn] = id
+	}
+	linkAttachment(t, d, conv, ids["t1"], "a.csv", "text/csv", writeAttachmentFixture(t, "a.csv", []byte("a,b\n1,2")))
+	linkAttachment(t, d, conv, ids["t2"], "now.csv", "text/csv", writeAttachmentFixture(t, "now.csv", []byte("sent with the running turn")))
+
+	out, err := ReplayFromDB(d, conv, "t2")
+	require.NoError(t, err)
+	assert.Contains(t, out, "<file name=\"a.csv\">\na,b\n1,2\n</file>")
+	assert.NotContains(t, out, "now.csv", "the running turn's files travel with the turn, not the replay")
+	assert.Less(t, strings.Index(out, replayFilesFooter), strings.Index(out, replayHeader), "files first, the transcript ends the block")
 }
