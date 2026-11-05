@@ -213,26 +213,21 @@ func (s *queryStream) finish() {
 	}
 }
 
-// incompleteError is the error of a clean exit without turn.completed
-// (incompleteRunError over the run's top-level error events).
-func (s *queryStream) incompleteError(stderr string) error {
-	return incompleteRunError(s.model, s.errLines, stderr)
-}
-
 // incompleteRunError is the error of a codex run that exited cleanly
 // without turn.completed — the streaming Query, QuerySync and the batch
 // generator alike — with what the run said about it: a failed turn in its
-// JSONL output (classified as runError does), else an invalid-output
-// failure carrying codex's stderr, if any.
-func incompleteRunError(model string, output []byte, stderr string) error {
-	if turnErr := failedTurn(model, output); turnErr != nil {
+// JSONL events (classified as runError does); else codex's stderr, left
+// unclassified so the transport rules (digest.aiTransportFailure) still read
+// a "stream disconnected" or a 503 in it; else, with nothing said, an
+// invalid-output failure.
+func incompleteRunError(model string, jsonl []byte, stderr string) error {
+	if turnErr := failedTurn(model, jsonl); turnErr != nil {
 		return digest.WithCause(turnErr, errNoTurnCompleted)
 	}
-	err := errNoTurnCompleted
 	if st := strings.TrimSpace(stderr); st != "" {
-		err = logredact.Errorf("%w (stderr: %s)", errNoTurnCompleted, logredact.Text(st))
+		return logredact.Errorf("%w (stderr: %s)", errNoTurnCompleted, logredact.Text(st))
 	}
-	return providers.WithFailure("codex", providers.InvalidOutput, err)
+	return providers.WithFailure("codex", providers.InvalidOutput, errNoTurnCompleted)
 }
 
 // toolName is the item's tool name in the claude CLI's form, so the chat

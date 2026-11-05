@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -187,4 +188,21 @@ func TestBatchCallsRequireTurnCompleted(t *testing.T) {
 	require.ErrorIs(t, err, errNoTurnCompleted)
 	_, _, _, err = NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, "", 0)).Generate(context.Background(), "sys", "hi", "")
 	require.ErrorIs(t, err, errNoTurnCompleted)
+}
+
+// A batch run cut off with only stderr to say why keeps that stderr, and is
+// not called invalid output: the transport rules still read it.
+func TestBatchIncompleteRunKeepsStderr(t *testing.T) {
+	stdout := `{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"preamble"}}`
+	const why = "stream disconnected before completion: 503 Service Unavailable"
+	_, _, qerr := NewClient("gpt-x", "", fakeCodexScript(t, stdout, why, 0)).QuerySync(context.Background(), "sys", "hi", "")
+	_, _, _, gerr := NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, why, 0)).Generate(context.Background(), "sys", "hi", "")
+	for _, err := range []error{qerr, gerr} {
+		require.ErrorIs(t, err, errNoTurnCompleted)
+		assert.Contains(t, logredact.Full(err), why)
+		var failure *providers.Failure
+		if errors.As(err, &failure) {
+			assert.NotEqual(t, providers.InvalidOutput, failure.Category)
+		}
+	}
 }
