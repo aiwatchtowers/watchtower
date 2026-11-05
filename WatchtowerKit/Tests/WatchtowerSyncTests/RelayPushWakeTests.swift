@@ -31,6 +31,26 @@ final class RelayPushWakeTests: XCTestCase {
         try alertBody(e: envelope.base64EncodedString())
     }
 
+    /// The alert envelope's header with its body length patched so the whole envelope is `total` bytes and parses
+    /// (signed: header + body + 64-byte signature); only the push cap can refuse it.
+    private func sized(_ good: Data, total: Int) throws -> Data {
+        let bodyLength = UInt32(total - EnvelopeHeader.length - Envelope.signatureLength)
+        var header = Data(good.prefix(EnvelopeHeader.length))
+        for index in 0 ..< 4 { header[64 + index] = UInt8((bodyLength >> UInt32(8 * (3 - index))) & 0xFF) }
+        let out = header + Data(repeating: 0, count: total - EnvelopeHeader.length)
+        XCTAssertEqual(out.count, total)
+        _ = try Envelope.parse(out)
+        return out
+    }
+
+    func testTheCapIsExactlyTheGoHubs() throws {
+        let good = try sealed("alertPush")
+        XCTAssertEqual(RelayPushWake.maxEnvelopeBytes, 3021)
+        let atCap = try sized(good, total: 3021)
+        XCTAssertEqual(wake.alertSource(for: try alertBody(atCap)), .inline(hubID: E2EFixtureKeys.hubIDString, envelope: atCap))
+        XCTAssertNil(wake.alertSource(for: try alertBody(try sized(good, total: 3022))))
+    }
+
     func testASilentBodyIsARelayOrigin() throws {
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(#"{"aps":{"content-available":1}}"#.utf8)) as? [AnyHashable: Any])
         XCTAssertEqual(wake.origin(ofRemoteNotification: body), .hostedRelay)
@@ -71,7 +91,7 @@ final class RelayPushWakeTests: XCTestCase {
             ("e a number", try alertBody(e: 42)),
             ("unpadded", try alertBody(e: unpadded)),
             ("url-safe alphabet", try alertBody(e: urlSafe)),
-            ("3022 bytes", try alertBody(Data(good + Data(repeating: 0, count: 3022 - good.count)))),
+            ("3022 bytes", try alertBody(try sized(good, total: 3022))),
             ("truncated", try alertBody(good.prefix(good.count - 5))),
             ("class data", try alertBody(try sealed("data"))),
             ("another sender", try alertBody(otherSender))
