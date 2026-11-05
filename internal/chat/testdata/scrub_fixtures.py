@@ -6,6 +6,16 @@ MCP server and its tools (plus Claude's own ToolSearch) — dropping connectors,
 slash commands, skills, agents, plugins, memory paths and socket paths.
 Usage: scrub_fixtures.py FILE...  (rewrites each file in place)
        scrub_fixtures.py --claude-ai RAW OUTDIR
+       scrub_fixtures.py --transport WORKDIR FILE...
+The --transport form scrubs the transport suite's live recordings
+(scripts/record-transport-fixtures.sh), Claude, codex and Ollama alike, in
+place: every UUID (codex thread ids, session ids) becomes the zero UUID, the
+recording's work dir, the home dir and any other absolute path become /work,
+a codex rollout path becomes /work/rollout.jsonl, an email becomes one at
+example.com, the login's credential_expires_at a fixed date, Claude init lines are reduced as above, and API request and
+message ids become fixture ids. A non-JSON line (an SSE "data: " line) is
+scrubbed as text. It exits non-zero, naming only the class, when a path or
+an email outside example.com is left.
 The --claude-ai form splits the live claude.ai probe's raw transcript
 (claude_ai_live_test.go) into the claude_ai_* fixtures: connector display
 names become "Connector A/B…" (Claude Docs, a first-party connector the gate
@@ -13,6 +23,7 @@ has rules for, keeps its name), connector ids become fixture ids, connector
 URLs are dropped, and init lines lose the recording machine's details.
 """
 import json
+import os
 import re
 import sys
 
@@ -266,8 +277,86 @@ def claude_ai(raw_path, out_dir):
     write_fixtures(sc, files, names, out_dir)
 
 
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+ZERO_UUID = "00000000-0000-0000-0000-000000000000"
+ROLLOUT_RE = re.compile(r"/[^\s\"']*/rollout-[^\s\"']*\.jsonl(?:\.zst)?")
+ABS_PATH_RE = re.compile(r"(?:/Users|/private/var|/var/folders|/home)/[^\s\"']*")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+MSG_ID_RE = re.compile(r"\bmsg_[A-Za-z0-9]{8,}")
+
+
+def transport_text(s, work, ids):
+    """Scrubs one string of a transport recording (see the module doc)."""
+    s = ROLLOUT_RE.sub("/work/rollout.jsonl", s)
+    for prefix in sorted({work, "/private" + work, os.path.expanduser("~")}, key=len, reverse=True):
+        if prefix and prefix != "/":
+            s = s.replace(prefix, "/work")
+    s = ABS_PATH_RE.sub("/work", s)
+    s = UUID_RE.sub(ZERO_UUID, s)
+    s = EMAIL_RE.sub(lambda m: m.group(0) if m.group(1) == "example.com" else "user@example.com", s)
+
+    def msg_id(m):
+        ids.setdefault(m.group(0), "msg_fixture_%d" % (len(ids) + 1))
+        return ids[m.group(0)]
+
+    return MSG_ID_RE.sub(msg_id, s)
+
+
+def transport_value(v, work, ids):
+    if isinstance(v, dict) and "credential_expires_at" in v:
+        v = dict(v, credential_expires_at="2099-01-01T00:00:00.000Z")
+    if isinstance(v, str):
+        return transport_text(v, work, ids)
+    if isinstance(v, list):
+        return [transport_value(x, work, ids) for x in v]
+    if isinstance(v, dict):
+        return {transport_text(k, work, ids): transport_value(x, work, ids) for k, x in v.items()}
+    return v
+
+
+def transport_json(raw, work, ids):
+    d = json.loads(raw)
+
+    def init(x):
+        if isinstance(x, dict) and x.get("type") == "system" and x.get("subtype") == "init":
+            return scrub_init(x)
+        return x
+
+    # `claude --output-format json` prints a list of every line.
+    d = [init(x) for x in d] if isinstance(d, list) else init(d)
+    d = scrub_values(d, [0])
+    return json.dumps(transport_value(d, work, ids), separators=(",", ":"), ensure_ascii=False)
+
+
+def transport(work, paths):
+    left = []
+    for path in paths:
+        ids, out = {}, []
+        with open(path) as f:
+            for line in f:
+                body = line.rstrip("\n")
+                prefix = "data: " if body.startswith("data: ") else ""
+                payload = body[len(prefix):]
+                try:
+                    payload = transport_json(payload, work, ids)
+                except ValueError:
+                    payload = transport_text(payload, work, ids)
+                out.append(prefix + payload + "\n")
+        text = "".join(out)
+        if ABS_PATH_RE.search(text):
+            left.append("%s: path" % path)
+        if any(m.group(1) != "example.com" for m in EMAIL_RE.finditer(text)):
+            left.append("%s: email" % path)
+        with open(path, "w") as f:
+            f.write(text)
+    if left:
+        sys.exit("scrub: still carries account-specific values: " + "; ".join(left))
+
+
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--claude-ai"]:
         claude_ai(sys.argv[2], sys.argv[3])
+    elif sys.argv[1:2] == ["--transport"]:
+        transport(sys.argv[2], sys.argv[3:])
     else:
         main(sys.argv[1:])
