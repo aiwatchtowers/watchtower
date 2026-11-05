@@ -167,4 +167,16 @@ final class AlertSubscriptionTests: XCTestCase {
         let deleted = await saver.deleted
         XCTAssertEqual(deleted, [AskAlertSubscription.subscriptionID(hubID: hubID)], "even before this launch saved it")
     }
+
+    /// The extension makes no relay call and links no relay target (Phase 4 global constraint).
+    func testTheExtensionLinksNoRelayTarget() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("project.yml")
+        guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("project.yml is out of reach") }
+        let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+        let start = try XCTUnwrap(lines.firstIndex(of: "  NotifyService:"))
+        let block = lines[(start + 1)...].prefix { $0.isEmpty || $0.hasPrefix("   ") }.joined(separator: "\n")
+        XCTAssertTrue(block.contains("product: WatchtowerSync"))
+        XCTAssertFalse(block.contains("WatchtowerHostedRelay"))
+    }
 }

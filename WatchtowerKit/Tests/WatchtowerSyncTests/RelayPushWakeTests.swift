@@ -117,6 +117,72 @@ final class RelayPushWakeTests: XCTestCase {
         }
     }
 
+    // MARK: the notification extension's inline path (Task 12)
+
+    private struct Fixture {
+        var envelope: Data
+        var epoch: UInt32
+        var expected: WorkAlertPayload
+    }
+
+    private func fixture() throws -> Fixture {
+        struct Item: Decodable { var envelope: String; var payload: String }
+        struct Doc: Decodable { var epoch: UInt32; var cases: [String: Item] }
+        let doc = try JSONDecoder().decode(Doc.self, from: Data(contentsOf: Self.sealedURL))
+        let item = try XCTUnwrap(doc.cases["alertPush"])
+        return Fixture(
+            envelope: Data(hex: item.envelope), epoch: doc.epoch,
+            expected: try JSONDecoder().decode(WorkAlertPayload.self, from: Data(hex: item.payload)))
+    }
+
+    private func material(epochs: [UInt32]) throws -> AlertMaterial {
+        let k = try E2EFixtureKeys()
+        return AlertMaterial(
+            epochs: epochs.map {
+                EpochKeys(epoch: $0, dataKey: HPKEEnvelopeVectors.dataKeyBytes, alertKey: E2EFixtureKeys.sequence(0xD0, 0xEF))
+            },
+            hubSigningKey: k.hubSig.publicKey.rawRepresentation)
+    }
+
+    func testAnInlineAlertOpensWithNoNetwork() async throws {
+        let item = try fixture()
+        NoNetworkProtocol.reset()
+        URLProtocol.registerClass(NoNetworkProtocol.self)
+        defer { URLProtocol.unregisterClass(NoNetworkProtocol.self) }
+
+        let cloud = StubPushWake(origin: nil, source: nil)
+        let source = try XCTUnwrap(PushRouting.alertSource(for: alertBody(item.envelope), cloudKit: cloud))
+        let envelope = try await PushRouting.envelope(for: source, timeout: 1, cloudKit: cloud)
+        let payload = AlertOpener(material: try material(epochs: [item.epoch]))
+            .open(wireName: source.wireName, envelope: try XCTUnwrap(envelope))
+        XCTAssertEqual(payload, item.expected)
+        let content = WorkAlertContent(payload: try XCTUnwrap(payload), hubID: source.hubID)
+        XCTAssertEqual(content.title, item.expected.title)
+        XCTAssertEqual(content.body, item.expected.body)
+        XCTAssertEqual(NoNetworkProtocol.calls, 0, "the inline path makes no network call")
+    }
+
+    func testAnInlineAlertCarriesTheTapAndSweepFields() throws {
+        let item = try fixture()
+        let source = try XCTUnwrap(wake.alertSource(for: alertBody(item.envelope)))
+        let content = WorkAlertContent(payload: item.expected, hubID: source.hubID)
+        XCTAssertEqual(content.userInfo[WorkAlertContent.Key.hub], E2EFixtureKeys.hubIDString)
+        XCTAssertEqual(content.userInfo[WorkAlertContent.Key.event], item.expected.event.rawValue)
+        XCTAssertEqual(content.userInfo[WorkAlertContent.Key.key], "ask-42")
+        XCTAssertEqual(content.userInfo[WorkAlertContent.Key.ask], item.expected.askID.map(String.init))
+        XCTAssertEqual(
+            content.threadID,
+            item.expected.sessionID.map { "session-\($0)" } ?? "workbench-\(item.expected.workbenchID)")
+    }
+
+    func testAnOldEpochOpensWithARetainedKeyAndFailsWithout() throws {
+        let item = try fixture()
+        let held = AlertOpener(material: try material(epochs: [item.epoch, item.epoch + 1]))
+        XCTAssertEqual(held.open(wireName: AlertSource.inlineWireName, envelope: item.envelope), item.expected)
+        let dropped = AlertOpener(material: try material(epochs: [item.epoch + 1]))
+        XCTAssertNil(dropped.open(wireName: AlertSource.inlineWireName, envelope: item.envelope))
+    }
+
     func testAnEmptyPayloadHasNoOrigin() {
         XCTAssertNil(wake.origin(ofRemoteNotification: [:]))
         XCTAssertNil(wake.alertSource(for: [:]))
@@ -152,4 +218,16 @@ private struct StubPushWake: PushWake {
     func origin(ofRemoteNotification userInfo: [AnyHashable: Any]) -> PushOrigin? { origin }
     func alertSource(for userInfo: [AnyHashable: Any]) -> AlertSource? { source }
     func envelope(for source: AlertSource, timeout: TimeInterval) async throws -> Data? { nil }
+}
+
+/// Counts every request that reaches the URL loading system; fails each one.
+private final class NoNetworkProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var count = 0
+    static var calls: Int { lock.withLock { count } }
+    static func reset() { lock.withLock { count = 0 } }
+    override static func canInit(with request: URLRequest) -> Bool { lock.withLock { count += 1 }; return true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() { client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)) }
+    override func stopLoading() {}
 }

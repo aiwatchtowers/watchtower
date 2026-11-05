@@ -204,7 +204,7 @@ It does not model:
 
 - rate limits;
 - phone traffic;
-- App Store transactions;
+- the App Store itself: `submit_transaction` follows the README's rules over `FakeHostedRelay.fakeJWS` payloads (unsigned, no certificate check, a fixed 30-day period; `billingConfigured = false` answers "not implemented"), and the real relay refuses those payloads;
 - APNs (`send_alert` answers `Ok` after its rule checks);
 - the Hello and session-expiry timers;
 - the attachment settle and orphan timers;
