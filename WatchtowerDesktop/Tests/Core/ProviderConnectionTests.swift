@@ -96,6 +96,28 @@ final class ProviderConnectionTests: XCTestCase {
         XCTAssertEqual(model.result, ProviderConnection.modelRequired)
         XCTAssertFalse(model.testing)
     }
+    /// A CLI message that names its own next step (codex ignoring the probe's
+    /// system prompt: update the CLI or its config, then test again) is never
+    /// prefixed with "retry the test", which would contradict it; a bare
+    /// classification keeps the retry advice.
+    func testAFailureThatNamesItsOwnNextStepIsNotToldToRetry() async {
+        let ownStep = "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, "
+            + "and test again."
+        for (code, error, expected) in [
+            ("invalid_output", ownStep, "Connection test failed. " + ownStep),
+            ("unknown", "Provider request failed (unknown).",
+             ProviderConnection.testFailure + " Provider request failed (unknown)."),
+            ("invalid_output", nil, ProviderConnection.testFailure)
+        ] as [(String, String?, String)] {
+            let model = ProviderConnection(metadata: { _ in .notVerified }, test: { selection in
+                .init(ok: false, provider: selection.provider, model: selection.model, error: error, errorCode: code)
+            })
+            model.startTest(selected("codex"), policy: .none)
+            await settle(model)
+            XCTAssertEqual(model.result, expected, code)
+            XCTAssertEqual(model.state, .notVerified)
+        }
+    }
     func testTypedAuthPolicyAndTransportFailureStatesBothDirections() async {
         for provider in ["claude", "codex"] {
             for (code, state) in [("auth", ProviderFallbackPreview.State.connectionError),

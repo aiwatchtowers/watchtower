@@ -9,7 +9,7 @@ Chat replies fail, digests and briefings report "Didn't work yet", or Setup keep
 - In a Workbench: "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart." or "Codex was not found."
 - A status line "Didn't work yet — retries automatically" whose reason names the tool.
 - A reason or a **Test Connection** line that names a Codex model: "**Codex needs an update to use** gpt-6-astra" or "gpt-6-astra **isn't available on your Codex account**".
-- After **Test Connection**: "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
+- After **Test Connection**: "Connection test failed. Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
 
 ## Why
 

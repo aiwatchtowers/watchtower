@@ -171,7 +171,7 @@ package final class ProviderConnection {
                 default: state = response.ok ? .ready : .notVerified
                 }
                 result = response.ok ? "\(Self.name(selected.provider)) answered using \(response.model)."
-                    : Self.testFailure + (response.error.map { " " + $0 } ?? "")
+                    : Self.testFailureMessage(code: response.errorCode, error: response.error)
             } catch {
                 guard operation == current, !Task.isCancelled else { return }
                 testing = false; state = .connectionNetworkError; result = Self.testFailure
@@ -189,6 +189,18 @@ package final class ProviderConnection {
     package static let modelRequired = "Enter a strong model or wait for the model catalog before testing."
     package static let metadataFailure = "Couldn't read connection metadata. Retry the connection check."
     package static let testFailure = "Connection test failed. Retry the explicit test to send another request."
+    /// `ai test` error codes whose message names its own next step (codex
+    /// ignoring the probe's system prompt: update the CLI or its config, then
+    /// test again), where "retry the test" would contradict it.
+    private static let codesWithTheirOwnNextStep: Set<String> = ["invalid_output"]
+    /// The failed test's line: the CLI's message after `testFailure`, or
+    /// after a bare "Connection test failed." when that message carries its
+    /// own next step.
+    package static func testFailureMessage(code: String?, error: String?) -> String {
+        guard let error, !error.isEmpty else { return testFailure }
+        if let code, codesWithTheirOwnNextStep.contains(code) { return "Connection test failed. " + error }
+        return testFailure + " " + error
+    }
     package static let mismatchedResult = "The response didn't match the selected provider and model. Connection is not verified."
     package static func name(_ id: String) -> String { id == "ollama" ? "Ollama / Local" : id == "codex" ? "Codex" : "Claude" }
     package func label(for provider: String) -> String {
