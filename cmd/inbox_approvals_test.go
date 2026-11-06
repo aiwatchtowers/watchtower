@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/automations/builtin"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -125,4 +127,24 @@ func TestApprovalHook_WakeErrorLogged(t *testing.T) {
 	require.Len(t, lines, 1)
 	assert.Contains(t, lines[0], "approval hook: waking the daemon: ")
 	assert.NotContains(t, lines[0], "ping acme")
+}
+
+// A running daemon that cannot be woken is not an error (wakeNote's rule);
+// another wake error is logged.
+func TestApprovalHook_DaemonThatCannotWakeIsNotLogged(t *testing.T) {
+	writeActionsConfig(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	var lines []string
+	origLog, origWake := approvalHookLogf, approvalWakeAutomations
+	approvalHookLogf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	t.Cleanup(func() { approvalHookLogf, approvalWakeAutomations = origLog, origWake })
+
+	approvalWakeAutomations = func(*config.Config) (bool, error) { return false, errDaemonCannotWake }
+	approvalWake(cfg)()
+	assert.Empty(t, lines)
+
+	approvalWakeAutomations = func(*config.Config) (bool, error) { return false, errors.New("boom") }
+	approvalWake(cfg)()
+	assert.Equal(t, []string{"approval hook: waking the daemon: boom"}, lines)
 }

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log"
 
@@ -64,15 +65,21 @@ func runInboxApprovalsChanged(_ *cobra.Command, _ []string) error {
 // test swaps it).
 var approvalHookLogf = log.Printf
 
+// approvalWakeAutomations is wakeAutomations (a test swaps it).
+var approvalWakeAutomations = wakeAutomations
+
 // approvalWake is a cmd process's approval hook wake: wakeAutomations
 // (SIGUSR2 to the daemon), its error logged with no content (FILES-01). No
-// daemon running is not an error: the run starts when one does.
+// daemon running, or one that cannot be woken, is not an error: the run
+// starts when one does, or at its next poll.
 func approvalWake(cfg *config.Config) func() {
 	return func() {
 		if cfg == nil {
 			return
 		}
-		if _, err := wakeAutomations(cfg); err != nil {
+		// A daemon that cannot be woken (older, or automations not wired)
+		// is fine, as for wakeNote: the run starts at its next poll.
+		if _, err := approvalWakeAutomations(cfg); err != nil && !errors.Is(err, errDaemonCannotWake) {
 			approvalHookLogf("approval hook: waking the daemon: %v", err)
 		}
 	}
