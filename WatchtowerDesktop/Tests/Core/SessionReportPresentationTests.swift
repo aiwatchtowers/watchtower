@@ -37,6 +37,19 @@ final class SessionReportPresentationTests: XCTestCase {
         XCTAssertEqual(Presentation.miniBarValue(done: 0, merged: 1.5), "0% done, 100% merged", "clamped")
     }
 
+    /// Review (envelope symmetry): a merged share the refresh could not
+    /// check says so on the row, next to the snapshot's own "stale".
+    func testMergedStaleCaption() {
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, targetID: 942, done: 3, total: 32, merged: 25,
+                                                     mergedStale: true, prLine: "PR #147 open")),
+                       "#942 · 3/32 · 25 merged (stale) · PR #147 open")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, done: 0, total: 4, mergedStale: true)),
+                       "0/4 · merged not checked")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, done: 1, total: 4, mergedStale: true), stale: true),
+                       "1/4 · merged not checked · stale")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, mergedStale: true)), "", "nothing in scope")
+    }
+
     func testRanFor() throws {
         XCTAssertEqual(Presentation.ranFor(try SessionReportTests.golden("session_report_314").session), "4d 8h",
                        "not finished: created to last activity")

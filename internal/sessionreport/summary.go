@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"watchtower/internal/agentkind"
@@ -13,13 +14,20 @@ import (
 // Summary is one agent session's row line (`session-report --summary`).
 // FinishedAt is "" when the session is not finished.
 type Summary struct {
-	SessionID  int64  `json:"session_id"`
-	TargetID   *int64 `json:"target_id"`
-	Done       int    `json:"done"`
-	Total      int    `json:"total"`
-	Merged     int    `json:"merged"` // not done, branch merged into its base (Progress.Merged)
-	PRLine     string `json:"pr_line"`
-	FinishedAt string `json:"finished_at"`
+	SessionID int64  `json:"session_id"`
+	TargetID  *int64 `json:"target_id"`
+	Done      int    `json:"done"`
+	Total     int    `json:"total"`
+	Merged    int    `json:"merged"` // not done, branch merged into its base (Progress.Merged)
+	// MergedStale: the merge refresh before these lines could not check a
+	// verdict Merged reads — a git call failed, the base did not resolve,
+	// the budget ran out or the cache could not be read — so Merged counts
+	// the last verdicts known (board #986, ask #525). Always false from
+	// Summaries, which refreshes nothing, and in a folder outside a git
+	// repository, where git has no verdict to give.
+	MergedStale bool   `json:"merged_stale"`
+	PRLine      string `json:"pr_line"`
+	FinishedAt  string `json:"finished_at"`
 }
 
 // Summaries is the row line of every agent session (Claude Code or Codex;
@@ -34,7 +42,7 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 	if err != nil {
 		return nil, err
 	}
-	return summarize(sessions, states), nil
+	return summarize(sessions, states, nil), nil
 }
 
 // RefreshedSummaries is Summaries after a refresh of the merge verdicts
@@ -57,22 +65,31 @@ func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts R
 	if opts.Budget <= 0 {
 		opts.Budget = SummaryRefreshBudget
 	}
-	res, states := refresh(ctx, d, workbenchID, refs, opts)
+	res, states, unchecked := refresh(ctx, d, workbenchID, refs, opts)
 	if states == nil {
 		if states, err = d.PRStates(workbenchID); err != nil {
 			return nil, res, err
 		}
+		// Nothing was checked.
+		unchecked = map[string]bool{}
+		for _, ref := range refs {
+			unchecked[ref] = true
+		}
 	}
-	return summarize(sessions, states), res, nil
+	return summarize(sessions, states, unchecked), res, nil
 }
 
-// summarize is each session's row line from the PR cache states.
-func summarize(sessions []agentSession, states map[string]db.PRState) []Summary {
+// summarize is each session's row line from the PR cache states; a
+// session with a merge ref in unchecked has MergedStale.
+func summarize(sessions []agentSession, states map[string]db.PRState, unchecked map[string]bool) []Summary {
 	out := []Summary{}
 	for _, as := range sessions {
 		s := as.row
 		p := as.sc.counts(states)
 		s.Done, s.Total, s.Merged = p.Done, p.Total, p.Merged
+		if len(unchecked) > 0 {
+			s.MergedStale = slices.ContainsFunc(as.sc.mergeRefs(), func(ref string) bool { return unchecked[ref] })
+		}
 		s.PRLine = as.sc.prLine(as.sc.prs(states))
 		out = append(out, s)
 	}

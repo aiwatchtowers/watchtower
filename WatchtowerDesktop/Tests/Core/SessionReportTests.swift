@@ -126,6 +126,11 @@ final class SessionReportTests: XCTestCase {
             #"[{"session_id": 1, "done": 3, "total": 32, "merged": 25}, {"session_id": 2, "done": 1, "total": 2}]"#.utf8
         ))
         XCTAssertEqual(rows.map(\.merged), [25, 0])
+        XCTAssertEqual(rows.map(\.mergedStale), [false, false], "absent: false")
+        let stale = try JSONDecoder().decode([SessionReportSummary].self, from: Data(
+            #"[{"session_id": 1, "merged": 2, "merged_stale": true}, {"session_id": 2, "merged_stale": null}]"#.utf8
+        ))
+        XCTAssertEqual(stale.map(\.mergedStale), [true, false])
     }
 
     func testSummaryRowsDecode() throws {

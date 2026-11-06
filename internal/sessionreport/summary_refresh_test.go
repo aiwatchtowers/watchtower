@@ -2,6 +2,7 @@ package sessionreport
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -69,4 +70,51 @@ func TestRefreshedSummaries_CacheWritesWaitBriefly(t *testing.T) {
 	assert.Contains(t, res.Note, "was read but could not be saved")
 	require.Len(t, rows, 1)
 	assert.Equal(t, 1, rows[0].Merged)
+}
+
+// Review major (envelope symmetry): merged_stale says the row's merged
+// share holds verdicts this run could not check.
+func TestRefreshedSummaries_MergedStale(t *testing.T) {
+	t.Run("all checked", func(t *testing.T) {
+		d, id, _, _ := repoBoard(t)
+		rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{})
+		require.NoError(t, err)
+		assert.Empty(t, res.Note)
+		require.Len(t, rows, 1)
+		assert.Equal(t, 1, rows[0].Merged)
+		assert.False(t, rows[0].MergedStale)
+	})
+	t.Run("unresolvable base, and no blinking off while it lasts", func(t *testing.T) {
+		d, id, _, _ := repoBoard(t)
+		runSQL(t, d, `UPDATE targets SET branch = 'gone/base' WHERE id = 100`)
+		for i, at := range []time.Time{refreshNow, refreshNow.Add(15 * time.Second)} {
+			rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: func() time.Time { return at }})
+			require.NoError(t, err)
+			assert.Contains(t, res.Note, "base branch gone/base could not be resolved", "run %d", i)
+			require.Len(t, rows, 1)
+			assert.True(t, rows[0].MergedStale, "run %d: the failed read is due again, not fresh", i)
+		}
+	})
+	t.Run("a folder outside git has no verdict to miss", func(t *testing.T) {
+		d := mergedFixture(t)
+		rows, res, err := RefreshedSummaries(context.Background(), d, 1, RefreshOptions{Now: fixedNow})
+		require.NoError(t, err)
+		assert.Contains(t, res.Note, "not a git work tree")
+		require.Len(t, rows, 1)
+		assert.False(t, rows[0].MergedStale)
+	})
+	t.Run("Summaries refreshes nothing", func(t *testing.T) {
+		d, id, _, _ := repoBoard(t)
+		rows, err := Summaries(context.Background(), d, id)
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.False(t, rows[0].MergedStale)
+	})
+}
+
+// The wire shape: merged_stale is always present (false by default).
+func TestSummary_MergedStaleKey(t *testing.T) {
+	b, err := json.Marshal(Summary{SessionID: 1})
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"merged_stale":false`)
 }
