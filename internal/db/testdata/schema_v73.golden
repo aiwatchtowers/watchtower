@@ -191,6 +191,12 @@ CREATE INDEX idx_imap_messages_account_date ON imap_messages(account_id, interna
 index	idx_imap_messages_synced
 CREATE INDEX idx_imap_messages_synced ON imap_messages(synced_at)
 
+index	idx_inbox_folders_one_root
+CREATE UNIQUE INDEX idx_inbox_folders_one_root ON inbox_folders(kind) WHERE kind IN ('root','approvals')
+
+index	idx_inbox_folders_parent
+CREATE INDEX idx_inbox_folders_parent ON inbox_folders(parent_id, position)
+
 index	idx_inbox_items_archived
 CREATE INDEX idx_inbox_items_archived ON inbox_items(archived_at)
 
@@ -755,7 +761,7 @@ priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('high','medium','low
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 read_at TEXT, -- Desktop-written
 dismissed_at TEXT -- Desktop-written
-, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT, blocks_json TEXT NOT NULL DEFAULT '', output_key TEXT, content_hash TEXT NOT NULL DEFAULT '', written_at TEXT, changed_at TEXT)
+, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT, blocks_json TEXT NOT NULL DEFAULT '', output_key TEXT, content_hash TEXT NOT NULL DEFAULT '', written_at TEXT, changed_at TEXT, folder_id INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL)
 
 table	automation_run_replay
 CREATE TABLE automation_run_replay (
@@ -1613,6 +1619,33 @@ permalink TEXT NOT NULL DEFAULT '',
 synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 PRIMARY KEY (account_id, uidvalidity, uid)
+)
+
+table	inbox_folder_routes
+CREATE TABLE inbox_folder_routes (
+automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
+folder_id INTEGER NOT NULL REFERENCES inbox_folders(id)
+)
+
+table	inbox_folder_state
+CREATE TABLE inbox_folder_state (
+id INTEGER PRIMARY KEY CHECK (id = 1),
+revision INTEGER NOT NULL
+)
+
+table	inbox_folders
+CREATE TABLE inbox_folders (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+kind TEXT NOT NULL CHECK (kind IN ('root','approvals','owner')),
+parent_id INTEGER REFERENCES inbox_folders(id),
+slug TEXT NOT NULL UNIQUE,
+title TEXT NOT NULL,
+icon TEXT NOT NULL DEFAULT '',
+position INTEGER NOT NULL DEFAULT 0,
+hidden INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+CHECK ((kind = 'root') = (parent_id IS NULL))
 )
 
 table	inbox_items
@@ -3967,6 +4000,13 @@ SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
 SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
 FROM agent_log_events GROUP BY session_uuid
 
+view	inbox_artifact_folders
+CREATE VIEW inbox_artifact_folders AS
+SELECT o.id AS output_id,
+COALESCE(o.folder_id, r.folder_id, (SELECT id FROM inbox_folders WHERE kind = 'root')) AS folder_id
+FROM automation_outputs o LEFT JOIN inbox_folder_routes r ON r.automation_id = o.automation_id
+WHERE o.kind = 'inbox'
+
 view	tracker_accounts
 CREATE VIEW tracker_accounts AS
 SELECT 'jira' AS tracker, id, CASE WHEN label != '' THEN label ELSE site_name END AS label, site_url AS url, status, enabled
@@ -4218,6 +4258,7 @@ GROUP BY up.ancestor
 18	content_hash	TEXT	notnull=1	dflt=''	pk=0
 19	written_at	TEXT	notnull=0	dflt=NULL	pk=0
 20	changed_at	TEXT	notnull=0	dflt=NULL	pk=0
+21	folder_id	INTEGER	notnull=0	dflt=NULL	pk=0
 
 ## automation_run_replay
 0	run_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -4963,6 +5004,26 @@ GROUP BY up.ancestor
 12	permalink	TEXT	notnull=1	dflt=''	pk=0
 13	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 14	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## inbox_folder_routes
+0	automation_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	folder_id	INTEGER	notnull=1	dflt=NULL	pk=0
+
+## inbox_folder_state
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	revision	INTEGER	notnull=1	dflt=NULL	pk=0
+
+## inbox_folders
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	kind	TEXT	notnull=1	dflt=NULL	pk=0
+2	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	slug	TEXT	notnull=1	dflt=NULL	pk=0
+4	title	TEXT	notnull=1	dflt=NULL	pk=0
+5	icon	TEXT	notnull=1	dflt=''	pk=0
+6	position	INTEGER	notnull=1	dflt=0	pk=0
+7	hidden	INTEGER	notnull=1	dflt=0	pk=0
+8	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+9	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## inbox_items
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

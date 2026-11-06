@@ -875,7 +875,8 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 			return fmt.Errorf("committing output %d of automation run %d: encoding actions: %w", i, runID, err)
 		}
 		if _, err := tx.Exec(insertAutomationOutputSQL, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp,
-			o.Link, string(actionsJSON), o.BlocksJSON, nullRunText(o.OutputKey), o.ContentHash, stamp, stamp); err != nil {
+			o.Link, string(actionsJSON), o.BlocksJSON, nullRunText(o.OutputKey), o.ContentHash, stamp, stamp,
+			o.FolderID); err != nil {
 			return fmt.Errorf("committing output %d of automation run %d: %w", i, runID, err)
 		}
 	}
@@ -891,8 +892,8 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 // read the row before the update).
 const insertAutomationOutputSQL = `INSERT INTO automation_outputs
 	(automation_id, run_id, kind, title, body, priority, created_at, link, actions_json,
-	 blocks_json, output_key, content_hash, written_at, changed_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	 blocks_json, output_key, content_hash, written_at, changed_at, folder_id)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(automation_id, output_key) WHERE output_key IS NOT NULL DO UPDATE SET
 	run_id = excluded.run_id, title = excluded.title, body = excluded.body, priority = excluded.priority,
 	link = excluded.link, actions_json = excluded.actions_json, blocks_json = excluded.blocks_json,
@@ -1309,6 +1310,10 @@ type AutomationOutput struct {
 	// commit the run's finish time is used for both, whatever they hold.
 	BlocksJSON, OutputKey, ContentHash string
 	WrittenAt, ChangedAt               time.Time
+	// FolderID is the recipe's explicit Inbox folder (00175); nil = the card
+	// follows its automation's route, else the root (inbox_artifact_folders).
+	// A commit writes it on insert only.
+	FolderID *int64
 }
 
 // Inbox card action kinds (automation_outputs.actions_json).
@@ -1448,7 +1453,7 @@ func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, ma
 	rows, err := db.Query(`SELECT o.id, o.automation_id, o.run_id, o.kind, o.title, substr(o.body, 1, ?), o.priority,
 			o.created_at, o.read_at, o.dismissed_at, o.link, o.actions_json, o.done_at, o.pressed_action,
 			o.pressed_run_id, o.pressed_at, o.blocks_json, o.output_key, o.content_hash,
-			COALESCE(o.written_at, o.created_at), COALESCE(o.changed_at, o.created_at),
+			COALESCE(o.written_at, o.created_at), COALESCE(o.changed_at, o.created_at), o.folder_id,
 			COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
 		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
@@ -1474,7 +1479,7 @@ func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, ma
 
 const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at,
 	link, actions_json, done_at, pressed_action, pressed_run_id, pressed_at, blocks_json, output_key, content_hash,
-	COALESCE(written_at, created_at), COALESCE(changed_at, created_at)`
+	COALESCE(written_at, created_at), COALESCE(changed_at, created_at), folder_id`
 
 // scanAutomationOutput scans one automationOutputCols row; extra receives any
 // columns the query selects after them.
@@ -1484,15 +1489,19 @@ func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error
 		created, actions, written, chged string
 		read, dismissed, done, prAt      sql.NullString
 		key                              sql.NullString
-		prAction, prRun                  sql.NullInt64
+		prAction, prRun, folder          sql.NullInt64
 	)
 	dest := append([]any{&o.ID, &o.AutomationID, &o.RunID, &o.Kind, &o.Title, &o.Body, &o.Priority, &created,
 		&read, &dismissed, &o.Link, &actions, &done, &prAction, &prRun, &prAt, &o.BlocksJSON, &key, &o.ContentHash,
-		&written, &chged}, extra...)
+		&written, &chged, &folder}, extra...)
 	if err := rows.Scan(dest...); err != nil {
 		return o, fmt.Errorf("scanning automation output: %w", err)
 	}
 	o.OutputKey = key.String
+	if folder.Valid {
+		f := folder.Int64
+		o.FolderID = &f
+	}
 	var err error
 	if o.CreatedAt, err = time.Parse(automationTimeLayout, created); err != nil {
 		return o, fmt.Errorf("automation output %d created_at %q: %w", o.ID, created, err)
