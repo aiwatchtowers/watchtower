@@ -263,16 +263,26 @@ func intoRef(base, branch string) string { return intoPrefix + base + ":" + bran
 
 const intoPrefix = "into:"
 
-// mergeRefs is the into: keys of the progress leaves that are not done and
-// have a base, in board order of first appearance.
+// mergeRefs is the into: keys the merged counts read, in board order of
+// first appearance: one per not-done leaf with a base among the progress
+// leaves and the leaves under each in-scope leaf's parent (the phases count
+// those, progress or not).
 func (s scope) mergeRefs() []string {
 	var out []string
-	for _, e := range s.leaves() {
-		if !s.progress[e.id()] || e.target.Status == "done" {
-			continue
+	add := func(e *boardEntry) {
+		if e.target.Status == "done" {
+			return
 		}
 		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
 			out = append(out, intoRef(base, branch))
+		}
+	}
+	for _, e := range s.leaves() {
+		if s.progress[e.id()] {
+			add(e)
+		}
+		for _, l := range s.b.leavesUnder(e.parent) {
+			add(l)
 		}
 	}
 	return out

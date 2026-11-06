@@ -271,3 +271,20 @@ func TestRefresh_UnresolvableRefsBackOffAndGoLast(t *testing.T) {
 	assert.Equal(t, "merged", got[ok].State, "read first")
 	assert.Equal(t, refreshNow.Format(time.RFC3339), got[gone].CheckedAt, "not reached")
 }
+
+// Review F3: a phase counts merged over every leaf under its parent, so the
+// refresh names those leaves' refs too, not only the progress leaves'.
+func TestMergeRefs_CoverThePhaseLeaves(t *testing.T) {
+	d := mergedFixture(t)
+	runSQL(t, d, `UPDATE terminal_sessions SET target_id = NULL WHERE id = 1;
+		INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at) VALUES
+		(1, 112, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z')`)
+	r := build(t, d, 1)
+	assert.Equal(t, Progress{Total: 1, Merged: 1}, r.Progress, "rule 2: 112 only")
+	g := phaseByID(t, r.Phases, 110)
+	assert.Equal(t, []int{1, 6, 2}, []int{g.Done, g.Total, g.Merged}, "the phase counts its whole group")
+	refs, err := SessionMergeRefs(context.Background(), d, 1, 1)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f"}, refs,
+		"every not-done leaf the phase counts is refreshed")
+}
