@@ -97,7 +97,7 @@ codex/chat tool-failed pass
 codex/chat tool-ok pass
 codex/chat two-messages pass
 codex/chat usage-cache pass
-codex/chat web-search gap:L5
+codex/chat web-search pass
 codex/session session-compressed-transcript pass
 codex/session session-failure pass
 codex/session session-foreign-id pass

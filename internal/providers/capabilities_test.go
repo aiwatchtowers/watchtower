@@ -11,14 +11,14 @@ import (
 )
 
 // Every row of the spec's §3.3 table (2026-11-05), field by field; codex's
-// web_search stays off while L5 waits for the owner (ask #533).
+// web_search is on since the owner's L5 decision (ask #533).
 func TestCapabilities_TableMatchesSpec(t *testing.T) {
 	want := map[string]Capabilities{
 		"claude": {Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "split",
 			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
 			Interrupt: "in_turn", WarmSession: true, ClaudeAITools: true, ReservePeer: "codex", Quota: true},
 		"codex": {Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "message", Usage: "split",
-			Images: true, ReadFolder: "shell_sandbox", TurnCap: "counted", Interrupt: "kill_turn",
+			Images: true, WebSearch: true, ReadFolder: "shell_sandbox", TurnCap: "counted", Interrupt: "kill_turn",
 			ReservePeer: "claude", Quota: true},
 		"ollama": {Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "totals",
 			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn"},

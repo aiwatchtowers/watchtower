@@ -248,7 +248,9 @@ var adapters = []*Adapter{
 		},
 		Stream: func(r *run) chat.Querier { return codexClient(r) },
 		Chat: func(r *run) chat.Backend {
-			return chat.NewTurnBackend(codexClient(r), r.chatDB(), r.conv, chat.WithSystemPrompt(sysPrompt))
+			c := codexClient(r)
+			c.SetWebSearch() // the session alone (codexSessionClient)
+			return chat.NewTurnBackend(c, r.chatDB(), r.conv, chat.WithSystemPrompt(sysPrompt))
 		},
 		Session: codexSession,
 	},

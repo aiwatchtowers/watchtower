@@ -53,6 +53,8 @@ type Client struct {
 	// runHome is the run's private CODEX_HOME (SetRunHome); "" = the
 	// inherited one and an --ephemeral run.
 	runHome string
+	// webSearch: the run searches the web (SetWebSearch); off otherwise.
+	webSearch bool
 	// images are the next run's --image paths (SetImages), taken by it.
 	imagesMu sync.Mutex
 	images   []string
@@ -81,6 +83,22 @@ func (c *Client) takeImages() []string {
 	imgs := c.images
 	c.images = nil
 	return imgs
+}
+
+// SetWebSearch lets every run of this client search the web: codex's
+// web_search on its cached index (the main chat session only, ask #533).
+// Never "live": live opens any URL the model names, query string included,
+// from OpenAI's side, which is a page fetch — the exfiltration channel
+// WebFetch stays hidden for (chat-redesign.md). Without it a run turns web
+// search off, whatever the owner's codex config says.
+func (c *Client) SetWebSearch() { c.webSearch = true }
+
+// webSearchArg is the run's explicit web_search setting (SetWebSearch).
+func (c *Client) webSearchArg() string {
+	if c.webSearch {
+		return `web_search="cached"`
+	}
+	return `web_search="disabled"`
 }
 
 // SetNoMCPServers makes the run tool-less on MCP: every server of the
@@ -227,8 +245,9 @@ func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount, 
 
 // execArgs is the `codex exec` prefix: the batch prefix (every
 // disabledFeatures flag off) less toolRunFeatures, which the run's tools
-// need; for a read-folder run also the read-only sandbox with the shell on
-// and web search off (SetReadFolder). The MCP servers come from mount.
+// need, and web search set explicitly (webSearchArg); for a read-folder run
+// also the read-only sandbox with the shell on (SetReadFolder). The MCP
+// servers come from mount.
 func (c *Client) execArgs() []string {
 	prefix := execPrefix(c.model)
 	if c.runHome != "" {
@@ -237,10 +256,10 @@ func (c *Client) execArgs() []string {
 		prefix = slices.DeleteFunc(prefix, func(a string) bool { return a == "--ephemeral" })
 	}
 	if c.readFolder == "" {
-		return append(prefix, featuresOff(toolRunFeatures)...)
+		return append(append(prefix, featuresOff(toolRunFeatures)...), "-c", c.webSearchArg())
 	}
 	args := append(prefix, featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
-	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", `web_search="disabled"`)
+	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", c.webSearchArg())
 }
 
 // runMount is one launch's MCP mount: the -c flags, the environment the

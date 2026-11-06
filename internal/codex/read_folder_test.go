@@ -58,6 +58,7 @@ func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"-c", "features.plugin_sharing=false",
 		"-c", "features.recommended_plugins=false",
 		"-c", "features.daemon_auto_start=false",
+		"-c", `web_search="disabled"`,
 		"--cd", "/tmp/wd",
 		"-c", "model_instructions_file=" + strconv.Quote(instructionsFileOf(t, args)),
 		"-",

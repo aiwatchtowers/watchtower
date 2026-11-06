@@ -335,7 +335,9 @@ func overrideIn(argv string) string {
 	return ""
 }
 
-// assertChatRunArgv: no secret on argv, web search untouched.
+// assertChatRunArgv: no secret on argv; web search set off explicitly, never
+// left to the owner's codex config (ask #533 replaced ask #323's "untouched":
+// only the chat session's client turns it on, SetWebSearch).
 func assertChatRunArgv(t *testing.T, argv string) {
 	t.Helper()
 	for _, secret := range []string{"s3cret-env", "s3cret-hdr"} {
@@ -343,8 +345,8 @@ func assertChatRunArgv(t *testing.T, argv string) {
 			t.Errorf("argv carries a connection secret: %s", argv)
 		}
 	}
-	if strings.Contains(argv, "web_search") {
-		t.Errorf("the chat changes the owner's web search: %s", argv)
+	if strings.Count(argv, "web_search") != 1 || !strings.Contains(argv, "web_search=\"disabled\"") {
+		t.Errorf("web search is not set off explicitly: %s", argv)
 	}
 }
 

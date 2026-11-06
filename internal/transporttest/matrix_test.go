@@ -27,11 +27,11 @@ var update = flag.Bool("update", false, "rewrite testdata/matrix.golden from tod
 
 const goldenPath = "testdata/matrix.golden"
 
-// openGaps are the open parity gaps of the spec's §2.2 (L2, L3, L4, L12
-// and L13 are fixed; L12 and L13 were found by this suite). A gap:<id>
+// openGaps are the open parity gaps of the spec's §2.2 (L2, L3, L4, L5,
+// L12 and L13 are fixed; L12 and L13 were found by this suite). A gap:<id>
 // cell must name one of them.
 var openGaps = map[string]bool{
-	"L1": true, "L5": true, "L6": true, "L7": true, "L8": true,
+	"L1": true, "L6": true, "L7": true, "L8": true,
 	"L9": true, "L10": true, "L11": true,
 	"S1": true, "S2": true, "S3": true, "S4": true, "S5": true, "S6": true, "S7": true,
 	"S8": true, "S9": true, "S10": true,
@@ -150,7 +150,6 @@ func TestTransportSuite(t *testing.T) {
 // signature.
 var gapSignatures = map[string]*regexp.Regexp{
 	"L1":  regexp.MustCompile(`token too long`),
-	"L5":  regexp.MustCompile(`web search`),
 	"L6":  regexp.MustCompile(`need a provider that reads them`),
 	"L7":  regexp.MustCompile(`no usage event|the first message was wiped|the partial text was not delivered|the text before the tool was not kept`),
 	"L9":  regexp.MustCompile(`not a capability refusal`),
