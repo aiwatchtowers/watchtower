@@ -88,6 +88,27 @@ final class InboxFolderContentTests: XCTestCase {
                        "Delete “Release”? It is empty.")
     }
 
+    func testIdeaRowButtonsFollowTodaysIdeaPane() {
+        let buttons = InboxRowActionsContent.ideaButtons
+        XCTAssertEqual(buttons(.idea, .proposed, true), [.approve, .makeTask, .notNow, .reject])
+        XCTAssertEqual(buttons(.note, .proposed, true), [.approve, .reject])
+        XCTAssertEqual(buttons(.decision, .proposed, true), [.approve, .notNow, .reject])
+        XCTAssertEqual(buttons(.idea, .active, false), [.makeTask, .notNow, .drop])
+        XCTAssertEqual(buttons(.idea, .notNow, false), [.activate, .makeTask, .drop])
+        XCTAssertEqual(buttons(.note, .active, false), [.drop])
+        XCTAssertEqual(buttons(.idea, .rejected, false), [.activate], "rejected: Activate only")
+        XCTAssertEqual(buttons(.idea, .dropped, false), [.activate], "dropped: Activate only")
+        XCTAssertEqual(buttons(.decision, .active, false), [], "Supersede / Reverse stay in the pane")
+        XCTAssertEqual(buttons(.decision, .notNow, false), [.activate])
+        XCTAssertEqual(buttons(.idea, .converted, false), [])
+    }
+
+    func testApprovalsMenuFollowsTheBuiltinSwitch() {
+        XCTAssertTrue(InboxFolderMenuContent(rows: tree).approvalsEnabled)
+        XCTAssertEqual(InboxArtifactMenuContent.approvalsEntries(isEnabled: false).map(\.title),
+                       ["Edit the Look…", "Turn On", "Run History"])
+    }
+
     // MARK: - Helpers
 
     private let tree = [

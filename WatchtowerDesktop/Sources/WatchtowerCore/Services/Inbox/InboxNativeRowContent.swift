@@ -42,18 +42,20 @@ package struct NeedsApprovalNoteContent: Equatable, Sendable {
 /// The native actions of one artifact row with a `ref` (spec "Native row
 /// actions for a `ref`"): exactly that kind's Inbox card buttons today, plus
 /// **Reply…** on an `inbox_item` with a write path (asks #445, #451).
-package struct InboxRowActionsContent: Equatable, Sendable {
-    package enum Kind: Equatable, Sendable {
-        /// A ping: Open (with a permalink, under its source's label),
-        /// Reply… (Slack, Jira, Linear), Done, Hide, Snooze ▾, ⋯ (Discuss in
-        /// Chat, Hand to Agent…).
-        case inboxItem(openLabel: String?, canReply: Bool)
-        /// A track: Done, ⋯ (Stop watching, Make a Task — or, for a custom
-        /// track, Go to Target and Delete…).
-        case track(custom: Bool)
-        /// An idea: the verdict buttons while it awaits one (Approve,
-        /// Reject, Not now ▾), else Activate and Drop.
-        case idea(awaitsVerdict: Bool)
+package struct InboxRowActionsContent: Equatable {
+    package enum Kind: Equatable {
+        /// A ping (`InboxMessagePane`): Open under its source's label while
+        /// it has a permalink, disabled when `InboxCardLinkPolicy` refuses
+        /// it; Reply… (Slack, Jira, Linear); Done, Hide, Snooze ▾; ⋯ with
+        /// Discuss in Chat and, when the card offers it, Hand to Agent….
+        case inboxItem(openLabel: String?, openEnabled: Bool, canReply: Bool, showsHandToAgent: Bool)
+        /// A track (`InboxTrackPane`): Done, ⋯ Stop watching and Make a Task
+        /// (extracted) or Delete… (custom), Go to Target only with a linked
+        /// target.
+        case track(custom: Bool, linkedTargetID: Int64?)
+        /// An idea: `IdeaDetailPane`'s verdict buttons for its kind and
+        /// status (`ideaButtons`).
+        case idea(kind: Idea.Kind, status: Idea.Status, awaitsVerdict: Bool)
         /// A due reminder: Done, Snooze 1h.
         case reminder
         /// A proposal: Approve, Reject, Edit…; after a failed apply Retry
@@ -76,6 +78,11 @@ package struct InboxRowActionsContent: Equatable, Sendable {
         case waiting
     }
 
+    /// One of an idea row's buttons.
+    package enum IdeaButton: Equatable, Sendable {
+        case approve, makeTask, notNow, reject, activate, drop
+    }
+
     package let kind: Kind
     package var state: State
     package var reply: Reply?
@@ -90,4 +97,26 @@ package struct InboxRowActionsContent: Equatable, Sendable {
     }
 
     package var isBusy: Bool { state == .busy }
+
+    /// `IdeaActionBar`'s verdict buttons, without its Merge, delete and a
+    /// decision's Supersede / Reverse (the full pane opens on a press of
+    /// the row): awaiting a verdict → Approve, Make a Task (ideas), Not now
+    /// (not notes), Reject; an active idea → Make a Task, Not now, Drop; a
+    /// not-now idea → Activate, Make a Task, Drop; an active note → Drop; a
+    /// rejected or dropped one (and a decision not now) → Activate.
+    package static func ideaButtons(kind: Idea.Kind, status: Idea.Status, awaitsVerdict: Bool) -> [IdeaButton] {
+        if awaitsVerdict {
+            return [.approve] + (kind == .idea ? [.makeTask] : []) + (kind == .note ? [] : [.notNow]) + [.reject]
+        }
+        if kind == .decision {
+            return [.rejected, .dropped, .notNow].contains(status) ? [.activate] : []
+        }
+        switch (kind, status) {
+        case (.idea, .active): return [.makeTask, .notNow, .drop]
+        case (.idea, .notNow): return [.activate, .makeTask, .drop]
+        case (.note, .active): return [.drop]
+        case (_, .rejected), (_, .dropped): return [.activate]
+        default: return []
+        }
+    }
 }

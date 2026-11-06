@@ -34,8 +34,11 @@ struct InboxRowActionsView: View {
     @ViewBuilder
     private var buttons: some View {
         switch content.kind {
-        case let .inboxItem(openLabel, canReply):
-            if let openLabel { Button(openLabel) { onPress(.open) } }
+        case let .inboxItem(openLabel, openEnabled, canReply, showsHandToAgent):
+            if let openLabel {
+                Button(openLabel) { onPress(.open) }
+                    .disabled(!openEnabled)
+            }
             if canReply {
                 Button("Reply…") { onPress(.reply) }
                     .disabled(content.reply != nil)
@@ -52,36 +55,31 @@ struct InboxRowActionsView: View {
             if !content.isBusy {
                 more {
                     Button("Discuss in Chat") { onPress(.discussInChat) }
-                    Button("Hand to Agent…") { onPress(.handToAgent) }
+                    if showsHandToAgent {
+                        Button("Hand to Agent…") { onPress(.handToAgent) }
+                    }
                 }
             }
-        case let .track(custom):
+        case let .track(custom, linkedTargetID):
             Button("Done") { onPress(.done) }
             if !content.isBusy {
                 more {
                     Button("Stop watching") { onPress(.stopWatching) }
-                    if custom {
-                        Button("Go to Target") { onPress(.goToTarget) }
-                        Button("Delete…") { onPress(.deleteTrack) }
-                    } else {
+                    if !custom {
                         Button("Make a Task") { onPress(.makeTask) }
+                    }
+                    if custom, linkedTargetID != nil {
+                        Button("Go to Target") { onPress(.goToTarget) }
+                    }
+                    if custom {
+                        Button("Delete…") { onPress(.deleteTrack) }
                     }
                 }
             }
-        case let .idea(awaitsVerdict):
-            if awaitsVerdict {
-                Button("Approve") { onPress(.approve) }
-                Button("Reject", role: .destructive) { onPress(.reject) }
-                Menu("Not now") {
-                    ForEach(IdeaNotNow.allCases, id: \.label) { choice in
-                        Button(choice.label) { onPress(.notNow(until: choice.until())) }
-                    }
-                }
-                .menuStyle(.button)
-                .fixedSize()
-            } else {
-                Button("Activate") { onPress(.activate) }
-                Button("Drop", role: .destructive) { onPress(.drop) }
+        case let .idea(kind, status, awaitsVerdict):
+            ForEach(InboxRowActionsContent.ideaButtons(kind: kind, status: status, awaitsVerdict: awaitsVerdict),
+                    id: \.self) { button in
+                ideaButton(button)
             }
         case .reminder:
             Button("Done") { onPress(.done) }
@@ -95,6 +93,25 @@ struct InboxRowActionsView: View {
                 Button("Reject") { onPress(.reject) }
                 Button("Edit…") { onPress(.edit) }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func ideaButton(_ button: InboxRowActionsContent.IdeaButton) -> some View {
+        switch button {
+        case .approve: Button("Approve") { onPress(.approve) }
+        case .makeTask: Button("Make a Task") { onPress(.makeTask) }
+        case .notNow:
+            Menu("Not now") {
+                ForEach(IdeaNotNow.allCases, id: \.label) { choice in
+                    Button(choice.label) { onPress(.notNow(until: choice.until())) }
+                }
+            }
+            .menuStyle(.button)
+            .fixedSize()
+        case .reject: Button("Reject", role: .destructive) { onPress(.reject) }
+        case .activate: Button("Activate") { onPress(.activate) }
+        case .drop: Button("Drop", role: .destructive) { onPress(.drop) }
         }
     }
 

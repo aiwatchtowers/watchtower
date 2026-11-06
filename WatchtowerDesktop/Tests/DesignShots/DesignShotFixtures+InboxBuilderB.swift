@@ -350,7 +350,8 @@ enum InboxBuilderBShotFixtures {
     private static func pingActions(
         _ state: InboxRowActionsContent.State = .idle, reply: InboxRowActionsContent.Reply? = nil
     ) -> InboxRowActionsContent {
-        InboxRowActionsContent(kind: .inboxItem(openLabel: "Open in Slack", canReply: true), state: state, reply: reply)
+        InboxRowActionsContent(kind: .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true,
+                                                showsHandToAgent: true), state: state, reply: reply)
     }
 
     private static var rowShots: [DesignShot] {
@@ -359,7 +360,8 @@ enum InboxBuilderBShotFixtures {
                 ping("Colleague A", "#acme-release", "Can you check the checklist?", age: "2 days", late: true,
                      pingActions()),
                 ping("Colleague G", "a DM", "Mail me the invoice when you can", age: "1 h", late: false,
-                     InboxRowActionsContent(kind: .inboxItem(openLabel: "Open in Mail", canReply: false)))
+                     InboxRowActionsContent(kind: .inboxItem(openLabel: "Open in Mail", openEnabled: true,
+                                                            canReply: false, showsHandToAgent: true)))
             ]),
             ("inbox-b-row-busy", [ping("Colleague B", "a DM", "Will you approve the budget?", age: "26 h", late: true,
                                        pingActions(.busy))]),
@@ -378,15 +380,20 @@ enum InboxBuilderBShotFixtures {
         let other: [(String, String, [StandInRow])] = [
             ("inbox-b-rows-track", "Release watch", [
                 StandInRow(title: "Release acme 2.0 checklist", subtitle: "2 new replies", tone: .accentColor,
-                           actions: InboxRowActionsContent(kind: .track(custom: false))),
+                           actions: InboxRowActionsContent(kind: .track(custom: false, linkedTargetID: nil))),
                 StandInRow(title: "Tell me when finance decides on the acme refund", subtitle: "1 new reply",
-                           tone: .accentColor, actions: InboxRowActionsContent(kind: .track(custom: true)))
+                           tone: .accentColor, actions: InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: 12)))
             ]),
             ("inbox-b-rows-idea", "Release ideas", [
                 StandInRow(title: "Move the release checklist into the repo", subtitle: "Idea · proposed",
-                           tone: .accentColor, actions: InboxRowActionsContent(kind: .idea(awaitsVerdict: true))),
-                StandInRow(title: "Ship release notes as a page", subtitle: "Idea · not now",
-                           actions: InboxRowActionsContent(kind: .idea(awaitsVerdict: false)))
+                           tone: .accentColor, actions: InboxRowActionsContent(kind: .idea(
+                               kind: .idea, status: .proposed, awaitsVerdict: true))),
+                StandInRow(title: "Ship release notes as a page", subtitle: "Idea · active",
+                           actions: InboxRowActionsContent(kind: .idea(kind: .idea, status: .active,
+                                                                       awaitsVerdict: false))),
+                StandInRow(title: "Keep the old changelog format", subtitle: "Idea · rejected",
+                           actions: InboxRowActionsContent(kind: .idea(kind: .idea, status: .rejected,
+                                                                       awaitsVerdict: false)))
             ]),
             ("inbox-b-rows-reminder", "Needs approval", [reminderRow()]),
             ("inbox-b-rows-action", "Needs approval", [jiraRow(), linearFailedRow()])

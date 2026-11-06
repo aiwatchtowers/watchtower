@@ -133,12 +133,14 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     package var showsHidden: Bool
     /// Icon ▸'s allowlist (`InboxFolderIcons`).
     package var icons: [String]
+    /// Needs approval's built-in is on: its ⋯ offers Turn Off, else Turn On.
+    package var approvalsEnabled: Bool
 
     package init(
         rows: [InboxFolderRow], selection: Int64? = nil, note: InboxFolderMenuNote? = nil,
         dropIndicator: InboxFolderDrop? = nil, deleteConfirmation: InboxFolderDeleteSummary? = nil,
         newFolderDraft: InboxFolderDraft? = nil, pendingMoveID: Int64? = nil, showsHidden: Bool = false,
-        icons: [String] = []
+        icons: [String] = [], approvalsEnabled: Bool = true
     ) {
         self.rows = rows
         self.selection = selection
@@ -149,6 +151,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         self.pendingMoveID = pendingMoveID
         self.showsHidden = showsHidden
         self.icons = icons
+        self.approvalsEnabled = approvalsEnabled
     }
 
     /// No edit, drag or menu write: the CLI is missing or a move runs.

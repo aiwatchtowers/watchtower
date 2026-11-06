@@ -136,7 +136,7 @@ struct InboxFolderMenu: View {
     private func menuEntries(_ row: InboxFolderRow) -> [InboxMenuEntry] {
         switch row.kind {
         case .root: InboxArtifactMenuContent.rootEntries(showingHidden: content.showsHidden)
-        case .approvals: InboxArtifactMenuContent.approvalsEntries(isEnabled: true)
+        case .approvals: InboxArtifactMenuContent.approvalsEntries(isEnabled: content.approvalsEnabled)
         case .owner: InboxArtifactMenuContent.folderEntries(row, icons: content.icons)
         }
     }
