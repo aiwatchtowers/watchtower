@@ -32,6 +32,7 @@ var (
 	actionsProposeFlagSurface     string
 	actionsProposeFlagContextType string
 	actionsProposeFlagContextID   string
+	actionsProposeFlagContext     string
 	actionsProposeFlagArgs        string
 	actionsProposeFlagApprove     bool
 )
@@ -80,10 +81,16 @@ var actionsProposeCmd = &cobra.Command{
 	Use:   "propose",
 	Short: "Propose an owner tool's action from the Inbox (and, with --approve, approve and apply it)",
 	Long: `The owner's own press in the Desktop's Inbox: only a tool on the inbox
-surface (apply_track_action, create_target) is accepted, and only with
---surface inbox. The call goes through the registry like any proposal (one
+surface (apply_track_action, create_target, send_slack_message,
+add_jira_comment, add_linear_comment) is accepted, and only with --surface
+inbox. The call goes through the registry like any proposal (one
 agent_actions row); with --approve the same press approves and applies it,
 exactly as 'actions approve' does, and prints the same envelope.
+
+A row's Reply proposes send_slack_message, add_jira_comment or
+add_linear_comment with --context inbox_item:<id>: one pending row the owner
+approves in Needs approval. --approve is refused for these three tools ("a
+reply is approved in Needs approval").
 
 An Inbox card's target button proposes create_target without --approve
 (--approve is refused for that context: the owner approves the row in its
@@ -131,6 +138,8 @@ func init() {
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextType, "context-type", "",
 		"what the press acts on (e.g. track_event), stored on the row; args naming an event_id override a mismatch")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextID, "context-id", "", "its id, stored on the row")
+	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContext, "context", "",
+		"a row's Reply: inbox_item:<id>, stored on the row as its context (instead of --context-type/--context-id)")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagArgs, "args", "", "the tool's arguments as a JSON object")
 	actionsProposeCmd.Flags().BoolVar(&actionsProposeFlagApprove, "approve", false,
 		"approve and apply the proposal in the same press")

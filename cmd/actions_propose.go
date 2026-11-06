@@ -71,8 +71,17 @@ func proposeInboxAction() (int64, error) {
 	if actionsProposeFlagSurface != tools.InboxSurface {
 		return 0, fmt.Errorf("actions propose runs only on the %s surface, not %q", tools.InboxSurface, actionsProposeFlagSurface)
 	}
+	if actionsProposeFlagApprove && slices.Contains(tools.InboxReplyTools, t.Name) {
+		// A Reply from a row (ask #451): proposed here, approved only by the
+		// owner's Approve in Needs approval, never in the same press.
+		return 0, fmt.Errorf("a reply is approved in Needs approval: actions propose takes no --approve for %s", t.Name)
+	}
+	ctxType, ctxID, err := proposeContextFlags()
+	if err != nil {
+		return 0, err
+	}
 	args := json.RawMessage(strings.TrimSpace(actionsProposeFlagArgs))
-	ctxType, ctxID := proposeContext(args)
+	ctxType, ctxID = proposeContext(args, ctxType, ctxID)
 	if actionsProposeFlagApprove && ctxType == db.InboxButtonContextType {
 		// An Inbox card's button only proposes; the owner approves the row in
 		// its approval card (AGENT-05), like any other proposal.
@@ -96,20 +105,42 @@ func proposeInboxAction() (int64, error) {
 	return rc.ActionID, nil
 }
 
+// inboxItemContextType is the context of a Reply from an Inbox row: the
+// inbox_items row the reply answers (`--context inbox_item:<id>`).
+const inboxItemContextType = "inbox_item"
+
+// proposeContextFlags is the context the flags name: --context
+// inbox_item:<positive id> (a row's Reply), or --context-type/--context-id;
+// --context together with either of the other two is refused.
+func proposeContextFlags() (string, string, error) {
+	if actionsProposeFlagContext == "" {
+		return actionsProposeFlagContextType, actionsProposeFlagContextID, nil
+	}
+	if actionsProposeFlagContextType != "" || actionsProposeFlagContextID != "" {
+		return "", "", fmt.Errorf("--context replaces --context-type and --context-id; pass one or the other")
+	}
+	typ, rawID, _ := strings.Cut(actionsProposeFlagContext, ":")
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if typ != inboxItemContextType || err != nil || id <= 0 || strconv.FormatInt(id, 10) != rawID {
+		return "", "", fmt.Errorf("--context %q: want %s:<positive id>", actionsProposeFlagContext, inboxItemContextType)
+	}
+	return typ, rawID, nil
+}
+
 // proposeContext is the context stored on the row. When the args name an
-// event_id, the row's context is that track event: --context-type/--context-id
-// are kept only when they name the same event, otherwise they are replaced by
-// the args, so the audit row never names an event the press did not act on.
-func proposeContext(args json.RawMessage) (string, string) {
+// event_id, the row's context is that track event: the flags' context is kept
+// only when it names the same event, otherwise it is replaced by the args, so
+// the audit row never names an event the press did not act on.
+func proposeContext(args json.RawMessage, ctxType, ctxID string) (string, string) {
 	var a struct {
 		EventID *int64 `json:"event_id"`
 	}
 	if json.Unmarshal(args, &a) != nil || a.EventID == nil {
-		return actionsProposeFlagContextType, actionsProposeFlagContextID
+		return ctxType, ctxID
 	}
 	id := strconv.FormatInt(*a.EventID, 10)
-	if actionsProposeFlagContextType == "track_event" && actionsProposeFlagContextID == id {
-		return actionsProposeFlagContextType, actionsProposeFlagContextID
+	if ctxType == "track_event" && ctxID == id {
+		return ctxType, ctxID
 	}
 	return "track_event", id
 }

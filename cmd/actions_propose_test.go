@@ -21,6 +21,7 @@ func runPropose(t *testing.T, args ...string) (string, error) {
 	actionsProposeFlagSurface = ""
 	actionsProposeFlagContextType = ""
 	actionsProposeFlagContextID = ""
+	actionsProposeFlagContext = ""
 	actionsProposeFlagArgs = ""
 	actionsProposeFlagApprove = false
 	return out, err

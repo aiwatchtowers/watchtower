@@ -58,10 +58,17 @@ const AutomationEditorSurface = "automation_editor"
 
 // InboxSurface is the owner's own press in the Desktop's Inbox (spec
 // 2026-10-22-inbox-built-in-automations-design §6.2, gap 17): no MCP server,
-// chat or tool loop mounts it, and like the workbench it is no trust place —
-// its one tool is AlwaysAsk, proposed and approved by the same press
-// (`actions propose --approve`).
+// chat or tool loop mounts it, and like the workbench it is no trust place.
+// apply_track_action (AlwaysAsk) is proposed and approved by the same press
+// (`actions propose --approve`); create_target answers a card's target
+// button and the InboxReplyTools a row's Reply, both proposed only.
 const InboxSurface = "inbox"
+
+// InboxReplyTools are the tools a Reply from an Inbox row proposes (Inbox
+// builder B, asks #445 and #451): on the inbox surface, External, and never
+// approved in the same press — `actions propose --approve` refuses them, so
+// a reply waits for the owner's Approve in Needs approval.
+var InboxReplyTools = []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}
 
 // Binding is where a proposal came from: the chat surface, conversation and
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
