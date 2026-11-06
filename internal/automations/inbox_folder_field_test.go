@@ -237,7 +237,11 @@ output.inbox({title: "u", body: "b", folder: "nope"}); throw new Error("boom")`,
 }
 
 func TestInboxFolderField_RefusesANonName(t *testing.T) {
-	for name, v := range map[string]string{"empty": `""`, "number": `3`, "null": `null`, "object": `{}`} {
+	for name, v := range map[string]string{
+		"empty": `""`, "number": `3`, "null": `null`, "object": `{}`,
+		"81 bytes": `"` + strings.Repeat("a", automations.MaxFolderSlugBytes+1) + `"`,
+		"newline":  `"rel\nease"`, "tab": `"rel\tease"`, "nul": `"rel\u0000ease"`,
+	} {
 		t.Run(name, func(t *testing.T) {
 			wantRefusal(t, `output.inbox({title: "t", body: "b", folder: `+v+`})`, feedCase(),
 				"ValidationError", "output.inbox(): folder must be a folder name")
@@ -257,5 +261,23 @@ func TestInboxFolderField_DryRunBuffersTheSlug(t *testing.T) {
 	outs := r.env.Buffer.Outputs()
 	if len(outs) != 1 || outs[0].FolderSlug != "release" || outs[0].FolderID != nil {
 		t.Fatalf("buffered %+v; want the slug only", outs)
+	}
+}
+
+// A slug at the cap is a name (it may name no folder; that is the commit's
+// business).
+func TestInboxFolderField_SlugAtTheCap(t *testing.T) {
+	slug := strings.Repeat("a", automations.MaxFolderSlugBytes)
+	r := mustReturn(t, try(`output.inbox({title: "t", body: "b", folder: "`+slug+`"})`), feedCase(), "ok")
+	if got := r.env.Buffer.Outputs()[0].FolderSlug; got != slug {
+		t.Fatalf("FolderSlug = %q", got)
+	}
+}
+
+// The journal clips the steps it writes and the db clips the miss line to
+// the same size: one constant.
+func TestInboxFolderField_ClipSizeIsTheJournals(t *testing.T) {
+	if automations.StepClipBytes != db.StepClipBytes {
+		t.Fatalf("automations.StepClipBytes %d != db.StepClipBytes %d", automations.StepClipBytes, db.StepClipBytes)
 	}
 }

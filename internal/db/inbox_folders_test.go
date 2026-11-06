@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -509,4 +511,22 @@ func TestInboxFolderForOutput(t *testing.T) {
 			assert.Equal(t, tc.title, title)
 		})
 	}
+}
+
+// The miss line is clipped like any journal step (a slug the SDK would refuse
+// as too long reaches the db only from a direct commit).
+func TestInboxFolders_MissLineClipped(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunnableAutomation(t, d, "acme-digest")
+	run := runOnce(t, d, a, runTestNow, &RunCommit{Outputs: []AutomationOutput{
+		{Kind: "inbox", Title: "t", Body: "b", FolderSlug: strings.Repeat("é", StepClipBytes)},
+	}})
+	steps, err := d.ListAutomationRunSteps(run)
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	line := steps[0].ArgsJSON
+	assert.LessOrEqual(t, len(line), StepClipBytes)
+	assert.Greater(t, len(line), StepClipBytes-2, "cut on the last rune boundary")
+	assert.True(t, utf8.ValidString(line))
+	assert.True(t, strings.HasPrefix(line, `folder "éé`))
 }

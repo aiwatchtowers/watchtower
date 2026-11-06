@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 )
 
 // InboxFolder is one row of inbox_folders (00175): the root (kind 'root',
@@ -226,11 +227,28 @@ func resolveOutputFolderTx(tx *sql.Tx, automationID, runID int64, stamp string, 
 	if err := tx.QueryRow(routeTitleSQL, automationID).Scan(&route); err != nil {
 		return nil, fmt.Errorf("reading the inbox folder of automation %d: %w", automationID, err)
 	}
-	line := fmt.Sprintf("folder %q not found — shown in %s", o.FolderSlug, route)
+	line := clipStepText(fmt.Sprintf("folder %q not found — shown in %s", o.FolderSlug, route))
 	if _, err := tx.Exec(`INSERT INTO automation_run_steps (run_id, seq, kind, name, args_json, status, started_at, finished_at)
 		VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM automation_run_steps WHERE run_id = ?), 'log', 'log', ?, 'ok', ?, ?)`,
 		runID, runID, line, stamp, stamp); err != nil {
 		return nil, fmt.Errorf("journaling the missing folder %q: %w", o.FolderSlug, err)
 	}
 	return nil, nil
+}
+
+// StepClipBytes is the most a journal step's args_json or result_summary
+// holds (automations.StepClipBytes is this constant).
+const StepClipBytes = 4 * 1024
+
+// clipStepText cuts s to StepClipBytes on a rune boundary, as the journal
+// clips the steps it writes.
+func clipStepText(s string) string {
+	if len(s) <= StepClipBytes {
+		return s
+	}
+	cut := StepClipBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
