@@ -188,24 +188,48 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     /// leaves out a collapsed folder's descendants and — unless Show Hidden
     /// Folders is on — a hidden folder with everything below it.
     package var visibleRows: [InboxFolderRow] {
+        collapsing(shownRows)
+    }
+
+    /// Whether `row` has a child on screen once expanded: a folder whose
+    /// children are all hidden (Show Hidden Folders off) has none, so it
+    /// draws no chevron. Collapsing does not count — a collapsed folder
+    /// keeps its chevron.
+    package func hasChildren(_ row: InboxFolderRow) -> Bool {
+        let shown = shownRows
+        guard let index = shown.firstIndex(of: row), shown.indices.contains(index + 1) else { return false }
+        return shown[index + 1].depth > row.depth
+    }
+
+    /// The tree without the hidden folders and their subtrees, unless
+    /// Show Hidden Folders is on.
+    private var shownRows: [InboxFolderRow] {
+        guard !showsHidden else { return rows }
         var skipBelow: Int?
         return rows.filter { row in
             if let depth = skipBelow {
                 if row.depth > depth { return false }
                 skipBelow = nil
             }
-            if row.hidden, !showsHidden {
+            if row.hidden {
                 skipBelow = row.depth
                 return false
             }
-            if !row.isExpanded { skipBelow = row.depth }
             return true
         }
     }
 
-    package func hasChildren(_ row: InboxFolderRow) -> Bool {
-        guard let index = rows.firstIndex(of: row), rows.indices.contains(index + 1) else { return false }
-        return rows[index + 1].depth > row.depth
+    /// `rows` without the descendants of a collapsed folder.
+    private func collapsing(_ rows: [InboxFolderRow]) -> [InboxFolderRow] {
+        var collapsedDepth: Int?
+        return rows.filter { row in
+            if let depth = collapsedDepth {
+                if row.depth > depth { return false }
+                collapsedDepth = nil
+            }
+            if !row.isExpanded { collapsedDepth = row.depth }
+            return true
+        }
     }
 }
 

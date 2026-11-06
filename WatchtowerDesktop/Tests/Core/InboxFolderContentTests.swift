@@ -81,6 +81,18 @@ final class InboxFolderContentTests: XCTestCase {
                        ["Inbox", "Needs approval", "Release", "Blockers", "Team"])
     }
 
+    func testChevronOnlyWhenAChildIsShown() {
+        var rows = tree
+        rows[3].hidden = true // Blockers, Release's only child
+        XCTAssertFalse(InboxFolderMenuContent(rows: rows).hasChildren(rows[2]),
+                       "every child hidden and Show Hidden off: no chevron")
+        XCTAssertTrue(InboxFolderMenuContent(rows: rows, showsHidden: true).hasChildren(rows[2]))
+        var collapsed = tree
+        collapsed[2].isExpanded = false
+        XCTAssertTrue(InboxFolderMenuContent(rows: collapsed).hasChildren(collapsed[2]),
+                      "a collapsed folder keeps its chevron")
+    }
+
     func testReadOnlyWhileCLIIsMissingOrAMoveRuns() {
         XCTAssertFalse(InboxFolderMenuContent(rows: tree).isReadOnly)
         XCTAssertTrue(InboxFolderMenuContent(rows: tree, note: .cliUnavailable).isReadOnly)
