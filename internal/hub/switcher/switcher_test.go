@@ -67,6 +67,7 @@ type world struct {
 	payHang   bool
 	notFresh  bool   // the reader answers from an earlier read
 	onRead    func() // runs inside an account read (a phone linking meanwhile)
+	reads     int    // account reads made through AccountPhones
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -146,38 +147,39 @@ func newWorld(t *testing.T, flavour string) *world {
 			}
 			return maps.Clone(w.paying), nil
 		},
-		OthersPay: func(ctx context.Context, lapsedRelayID string) (bool, error) {
+		AccountPhones: func(ctx context.Context) ([]switcher.AccountPhone, error) {
 			w.mu.Lock()
+			w.reads++
 			hang, err, unmatched := w.payHang, w.payErr, w.unmatched
 			paying := maps.Clone(w.paying)
 			notFresh := w.notFresh
 			w.mu.Unlock()
 			if hang {
 				<-ctx.Done()
-				return false, ctx.Err()
+				return nil, ctx.Err()
 			}
 			if notFresh {
-				return false, switcher.ErrNotFresh
+				return nil, switcher.ErrNotFresh
 			}
 			if err != nil {
-				return false, err
+				return nil, err
 			}
-			lapsed := ""
+			// The relay's raw list: every linked phone with a relay id and
+			// whether it pays, and a paying phone no linked device names.
 			devices, derr := w.st.Devices()
 			if derr != nil {
-				return false, derr
+				return nil, derr
 			}
+			var out []switcher.AccountPhone
 			for _, d := range devices {
-				if d.RelayDeviceID != "" && d.RelayDeviceID == lapsedRelayID {
-					lapsed = strings.ToLower(d.ID)
+				if d.RelayDeviceID != "" {
+					out = append(out, switcher.AccountPhone{RelayDeviceID: d.RelayDeviceID, Paying: paying[strings.ToLower(d.ID)] || paying[d.ID]})
 				}
 			}
-			for id, p := range paying {
-				if p && strings.ToLower(id) != lapsed {
-					return true, nil
-				}
+			if unmatched {
+				out = append(out, switcher.AccountPhone{RelayDeviceID: "unlinked-phone", Paying: true})
 			}
-			return unmatched, nil
+			return out, nil
 		},
 		AnyPaying: func(ctx context.Context) (bool, error) {
 			w.mu.Lock()

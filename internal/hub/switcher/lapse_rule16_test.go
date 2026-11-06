@@ -113,13 +113,15 @@ func TestAnAskedLapseWithAnUnreadableAccountMovesTheHubAtOnce(t *testing.T) {
 				w.moveTo(a, wire.TransportRelay, b)
 				w.unreadable(how)
 				w.askLapse(a)
-				start := time.Now()
 				w.settle(a, b)
 				if err := w.sw.Step(w.ctx); err != nil {
 					t.Fatal(err)
 				}
-				if d := time.Since(start); d > 4*testOldSide {
-					t.Fatalf("took %s: more than the one bounded read", d)
+				w.mu.Lock()
+				reads := w.reads
+				w.mu.Unlock()
+				if reads != 1 {
+					t.Fatalf("%d account reads, want the one bounded read", reads)
 				}
 				w.wantActive(transport.KindCloudKit)
 				if _, by, ok, err := w.sw.SwitchedAt(); err != nil || !ok || by != wire.SwitchedByEntitlement {
@@ -281,17 +283,21 @@ func TestAPressBehindALapseIsActedOnWhileTheAccountReadHangs(t *testing.T) {
 		if _, err := b.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil { // b presses Switch to iCloud
 			t.Fatal(err)
 		}
-		start := time.Now()
 		w.sw.PollOther(w.ctx)
-		if d := time.Since(start); d > testOldSide/2 {
-			t.Fatalf("the pass waited %s on the account read", d)
+		w.mu.Lock()
+		inPass := w.reads
+		w.mu.Unlock()
+		if inPass != 0 {
+			t.Fatalf("%d account reads in the pass", inPass)
 		}
-		start = time.Now()
 		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}
-		if d := time.Since(start); d > testOldSide/2 {
-			t.Fatalf("the press waited %s behind the lapse's account read", d)
+		w.mu.Lock()
+		inStep := w.reads
+		w.mu.Unlock()
+		if inStep != 0 {
+			t.Fatalf("the press waited behind %d account reads", inStep)
 		}
 		w.wantActive(transport.KindCloudKit)
 		if _, by, ok, err := w.sw.SwitchedAt(); err != nil || !ok || by != b.ID().String() {
@@ -343,5 +349,82 @@ func TestALapseOnAHostWithNoCloudKitStillMarksThePhoneLapsed(t *testing.T) {
 		if w.lapsedNow(b) {
 			t.Fatal("the paying phone is marked lapsed")
 		}
+	})
+}
+
+// A lapse recorded long ago is not a lapse any more once a fresh read lists
+// the phone as paying: it renewed, and the Mac stays (ask #1075). The same
+// holds across a restart (the time of the lapse is kept), and for a request
+// copy read after the renewal. A fresh lapse still ignores a stale snapshot
+// that lists the phone as paying.
+func TestAWaitingLapseEndsWhenTheRenewedPhoneIsListedPaying(t *testing.T) {
+	for _, how := range []string{"relay signal after a failed read", "the same across a restart"} {
+		t.Run(how, func(t *testing.T) {
+			eachFlavour(t, func(t *testing.T, w *world) {
+				a := w.addPhone(true)
+				w.moveTo(a, wire.TransportRelay)
+				w.unreadable("failed")
+				w.expire(a)
+				if err := w.sw.Step(w.ctx); err != nil {
+					t.Fatal(err)
+				}
+				w.wantActive(transport.KindRelay)
+				w.advance(switcher.LapseFresh + time.Minute) // days, in effect
+				if how != "relay signal after a failed read" {
+					w.rebuild(nil)
+				}
+				w.unreadable("")
+				w.mu.Lock()
+				w.paying[a.ID().String()] = true // the phone renewed
+				w.mu.Unlock()
+				if err := w.sw.Step(w.ctx); err != nil {
+					t.Fatal(err)
+				}
+				w.settle(a)
+				w.wantActive(transport.KindRelay)
+				if w.lapsedNow(a) {
+					t.Fatal("a renewed phone is marked lapsed")
+				}
+				if err := w.sw.Step(w.ctx); err != nil { // nothing is left waiting
+					t.Fatal(err)
+				}
+				w.wantActive(transport.KindRelay)
+			})
+		})
+	}
+}
+
+func TestARequestCopyReadAfterTheRenewalLeavesTheHubOnTheRelay(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay)
+		w.askLapse(a)
+		w.mu.Lock()
+		w.paying[a.ID().String()] = true // renewed since the copy was written
+		w.mu.Unlock()
+		w.settle(a)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindRelay)
+	})
+}
+
+func TestAStaleSnapshotOnAFreshRelaySignalLapseStillMovesTheHub(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay)
+		w.lapse(a)
+		w.mu.Lock()
+		w.paying[a.ID().String()] = true // the account's snapshot lags the lapse
+		w.mu.Unlock()
+		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.settle(a)
+		w.wantActive(transport.KindCloudKit)
 	})
 }

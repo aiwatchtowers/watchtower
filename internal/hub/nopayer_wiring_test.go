@@ -196,7 +196,7 @@ func TestG2IsNotStarvedByTheLapseRecheck(t *testing.T) {
 	eventually(t, 10*time.Second, "the host on CloudKit", func() bool { return g.h.sw.IsActive(transport.KindCloudKit) })
 }
 
-// Rule 16 through the real reader and the desktop wiring (Config.OthersPay):
+// Rule 16 through the real reader and the desktop wiring (Config.AccountPhones):
 // a phone of the account that is not linked here and pays keeps the Mac on
 // the relay; with nobody paying the lapse moves it.
 func TestALapseReadsTheAccountThroughTheDesktopWiring(t *testing.T) {

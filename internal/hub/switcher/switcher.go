@@ -112,10 +112,10 @@ type Config struct {
 	// AnyPaying (optional) is whether any phone in the relay account pays,
 	// matched to a linked phone or not; an error is unknown (nopayer.go).
 	AnyPaying func(ctx context.Context) (bool, error)
-	// OthersPay (optional) is whether any phone in the relay account other
-	// than the one with relay device id lapsed pays, linked to this Mac or
-	// not, from a fresh read; an error is undecided (rule 16, ask #1075).
-	OthersPay      func(ctx context.Context, lapsedRelayID string) (bool, error)
+	// AccountPhones (optional) is a fresh read of the relay account's phones
+	// that hold this Mac in a slot, linked here or not; an error is
+	// undecided (rule 16, asks #1075, #1079; othersPay decides over it).
+	AccountPhones  func(ctx context.Context) ([]AccountPhone, error)
 	OldSideTimeout time.Duration
 	Clock          func() time.Time
 	// OnSwitched (nil = none) sees each switch once its commit moved the
@@ -123,6 +123,13 @@ type Config struct {
 	// runtime drops the queued alert pushes on a switch to CloudKit and
 	// signals those alerts there, before the publisher resumes).
 	OnSwitched func(target transport.Kind)
+}
+
+// AccountPhone is one phone of the relay account's list: its relay device id
+// and whether it pays.
+type AccountPhone struct {
+	RelayDeviceID string
+	Paying        bool
 }
 
 // Switcher is the hub's dual transport. Request and Stale are called from
