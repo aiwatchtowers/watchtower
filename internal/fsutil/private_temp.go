@@ -118,7 +118,86 @@ var (
 // leftovers of a killed process. It returns how many
 // it removed; a file that vanished meanwhile is not an error.
 func SweepStaleTemp(olderThan time.Duration, now time.Time) (int, error) {
-	return sweepDir(os.TempDir(), isStaleTempName, true, olderThan, now)
+	n, err := sweepDir(os.TempDir(), isStaleTempName, true, olderThan, now)
+	homes, homesErr := sweepStaleTempHomes(os.TempDir(), olderThan, now)
+	return n + homes, errors.Join(err, homesErr)
+}
+
+// StaleTempHomePatterns are the private temp CODEX_HOMEs of one codex run
+// (the automation agent()'s and the spec reviewer's): each holds the run's
+// rollout — prompts, tool results, answers — and its owner removes it after
+// the run. A live run holds the home (HoldTempHome), so SweepStaleTemp
+// removes only a killed process's leftovers.
+var StaleTempHomePatterns = []string{"wt-agent-codex-home-*", "wt-review-codex-home-*"}
+
+// tempHomeHold is the file inside a temp home its live run holds.
+const tempHomeHold = ".wt-hold"
+
+// HoldTempHome shields dir, a temp home of StaleTempHomePatterns, from the
+// stale-temp sweep while the run lives: it creates a hold file in dir and
+// holds it (HoldTempFile). release drops the hold; the caller still removes
+// dir. On an error (never naming the path) dir is not shielded, for the
+// caller to log.
+func HoldTempHome(dir string) (release func(), err error) {
+	path := filepath.Join(dir, tempHomeHold)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		return func() {}, fmt.Errorf("creating a temp home's hold file: %w", unwrapPath(err))
+	}
+	return HoldTempFile(path)
+}
+
+// sweepStaleTempHomes removes the directories in dir that match
+// StaleTempHomePatterns, were last changed olderThan before now and whose
+// hold file no live process holds (a home with no hold file is unheld).
+func sweepStaleTempHomes(dir string, olderThan time.Duration, now time.Time) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("listing the temp directory: %w", unwrapPath(err))
+	}
+	removed := 0
+	var errs []error
+	for _, e := range entries {
+		if !e.IsDir() || !matchesAny(StaleTempHomePatterns, e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, unwrapPath(err))
+			continue
+		}
+		if now.Sub(info.ModTime()) < olderThan {
+			continue
+		}
+		home := filepath.Join(dir, e.Name())
+		held, err := mayBeHeld(filepath.Join(home, tempHomeHold))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("probing a stale temp home, kept: %w", err))
+		}
+		if held {
+			continue
+		}
+		if err := os.RemoveAll(home); err != nil {
+			errs = append(errs, fmt.Errorf("removing a stale temp home: %w", unwrapPath(err)))
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(errs...)
+}
+
+func matchesAny(patterns []string, name string) bool {
+	for _, pattern := range patterns {
+		if ok, _ := filepath.Match(pattern, name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // SweepStaleDir removes every regular file in dir older than olderThan (a
@@ -180,12 +259,7 @@ func isStaleTempName(name string) bool {
 			return false
 		}
 	}
-	for _, pattern := range StaleTempPatterns {
-		if ok, _ := filepath.Match(pattern, name); ok {
-			return true
-		}
-	}
-	return false
+	return matchesAny(StaleTempPatterns, name)
 }
 
 // WritePrivateTemp writes content to a fresh 0600 file in the system temp

@@ -171,9 +171,10 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 // the registry, feeds the results back, and returns the first assistant turn
 // that makes no tool call. It always terminates: past the iteration cap it
 // fails with a budget failure (claude's error_max_turns: AUTO-08's turn
-// cap, L13), the text already streamed staying shown. emit (nil for the sync path, which
-// sends unstreamed requests) receives each message's text as it arrives, a
-// ToolBoundary chunk before each tool round, and the tool events.
+// cap, L13), the text already streamed staying shown. emit (nil for the
+// sync path, which sends unstreamed requests) receives each message's text
+// as it arrives, a ToolBoundary chunk before each tool round, and the tool
+// events.
 func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit func(ai.StreamChunk)) (string, *ai.Usage, error) {
 	out := &textOut{emit: emit, keep: c.toolEvents}
 	ext := c.mountExternal(ctx)

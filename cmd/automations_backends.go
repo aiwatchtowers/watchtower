@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -244,11 +245,11 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	env := automationAgentEnv(req.RunID)
 	var client ai.Provider
 	if r.provider == "codex" {
-		home, err := codexAgentHome(r.dbPath, mcpArgs)
+		home, removeHome, err := codexAgentHome(r.dbPath, mcpArgs)
 		if err != nil {
 			return automations.AgentResult{}, err
 		}
-		defer func() { _ = os.RemoveAll(home) }()
+		defer removeHome()
 		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
 		c.SetMCPArgs(mcpArgs)
 		c.SetMCPEnvVars(codexAgentServerEnv)
@@ -363,44 +364,74 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 var codexAgentServerEnv = []string{automations.RunEnvMarker}
 
 // codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
-// temp folder the caller removes after the run, with the run's rollout
-// (the run is not --ephemeral: its turn cap counts the rollout, N5). Its config.toml turns web
-// search off and declares only the watchtower automation-run server, so
+// temp folder the caller removes after the run (the returned remove), with
+// the run's rollout: the run is not --ephemeral, its turn cap counts the
+// rollout (N5). Its config.toml turns web search off and declares only the
+// watchtower automation-run server, so
 // neither the owner's ~/.codex/config.toml MCP servers nor web search —
 // both outside the effective tool set and GateAgentCall, and an
 // exfiltration channel for injected text — reach the child. The owner's
 // auth.json is linked, never copied, so codex can sign in; removing the
 // folder removes only the link.
-func codexAgentHome(dbPath string, mcpArgs []string) (string, error) {
-	dir, err := os.MkdirTemp("", "wt-agent-codex-home-*")
+func codexAgentHome(dbPath string, mcpArgs []string) (dir string, remove func(), err error) {
+	dir, remove, err = newCodexHome("wt-agent-codex-home-*", "auth.json")
 	if err != nil {
-		return "", fmt.Errorf("creating the agent's codex home: %w", err)
+		return "", nil, err
 	}
 	config := "web_search = \"disabled\"\n\n" + codex.WatchtowerServerTOML(dbPath, mcpArgs, codexAgentServerEnv)
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", fmt.Errorf("writing the agent's codex config: %w", err)
+		remove()
+		return "", nil, fmt.Errorf("writing the agent's codex config: %w", err)
 	}
-	if err := linkOwnerCodexFiles(dir, "auth.json"); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", err
-	}
-	return dir, nil
+	return dir, remove, nil
 }
 
-// linkOwnerCodexFiles links each named file of the owner's codex home that
-// exists into dir, never copying it: removing dir removes only the links.
-func linkOwnerCodexFiles(dir string, names ...string) error {
-	for _, name := range names {
+// newCodexHome is a fresh 0700 temp CODEX_HOME named after pattern (one of
+// fsutil.StaleTempHomePatterns), with each named file of the owner's codex
+// home that exists linked into it, never copied: removing it removes only
+// the links. The home is held while it lives (fsutil.HoldTempHome), so the
+// stale-temp sweep removes it only after a killed run; remove drops the
+// hold and deletes the home, rollout included.
+func newCodexHome(pattern string, links ...string) (dir string, remove func(), err error) {
+	dir, err = os.MkdirTemp("", pattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("creating a codex run home: %w", err)
+	}
+	release, holdErr := fsutil.HoldTempHome(dir)
+	if holdErr != nil {
+		log.Printf("codex run home: not shielded from the stale-temp sweep: %v", holdErr)
+	}
+	remove = func() {
+		release()
+		removeCodexHome(dir)
+	}
+	for _, name := range links {
 		src := filepath.Join(ownerCodexHome(), name)
-		if _, err := os.Stat(src); err != nil {
+		_, err := os.Stat(src)
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		if err := os.Symlink(src, filepath.Join(dir, name)); err != nil {
-			return fmt.Errorf("linking the owner's codex %s: %w", name, err)
+		if err == nil {
+			err = os.Symlink(src, filepath.Join(dir, name))
+		}
+		if err != nil {
+			remove()
+			return "", nil, fmt.Errorf("linking the owner's codex %s: %w", name, err)
 		}
 	}
-	return nil
+	return dir, remove, nil
+}
+
+// removeCodexHome removes a codex run home, rollout included; a failure is
+// logged as a class, never the path (FILES-01).
+func removeCodexHome(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		class := "i/o"
+		if errors.Is(err, fs.ErrPermission) {
+			class = "permission"
+		}
+		log.Printf("codex run home: removal failed (%s)", class)
+	}
 }
 
 // ownerCodexHome is the owner's codex home: CODEX_HOME, else ~/.codex.

@@ -299,3 +299,81 @@ func TestSweepStaleTemp_KeepsAFileItCannotProbe(t *testing.T) {
 		t.Fatalf("file swept: %v", err)
 	}
 }
+
+// A codex run's private temp home holds its rollout: the sweep removes a
+// killed run's stale home (its hold dropped), keeps a live run's held one
+// and a fresh one, and never follows the auth link out of the home.
+func TestSweepStaleTemp_RemovesUnheldCodexHomes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	owner := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(owner, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-time.Hour)
+	home := func(name string, hold bool) (string, func()) {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Join(p, "sessions"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "sessions", "rollout.jsonl"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(owner, filepath.Join(p, "auth.json")); err != nil {
+			t.Fatal(err)
+		}
+		release, err := HoldTempHome(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hold {
+			release = func() {}
+			mustDropHold(t, filepath.Join(p, tempHomeHold))
+		}
+		if err := os.Chtimes(p, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+		return p, release
+	}
+	killed, _ := home("wt-agent-codex-home-1", false)
+	reviewer, _ := home("wt-review-codex-home-1", false)
+	live, release := home("wt-agent-codex-home-2", true)
+	defer release()
+	fresh := filepath.Join(dir, "wt-review-codex-home-2")
+	if err := os.Mkdir(fresh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other-codex-home-1")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(other, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := SweepStaleTemp(10*time.Minute, time.Now()); err != nil || n != 2 {
+		t.Fatalf("SweepStaleTemp = %d, %v; want the two unheld stale homes", n, err)
+	}
+	for _, p := range []string{killed, reviewer} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s still there: %v", filepath.Base(p), err)
+		}
+	}
+	for _, p := range []string{live, fresh, other, owner} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s must stay: %v", filepath.Base(p), err)
+		}
+	}
+}
+
+// mustDropHold stands in for a dead holder: the hold file stays, unlocked.
+// Replacing it leaves this process's lock on the old, unlinked inode.
+func mustDropHold(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

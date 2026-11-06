@@ -58,27 +58,24 @@ func errTurnCap(n int) error {
 type turnCounter struct {
 	turns, open int
 	returned    bool
-	// seen marks the item ids whose first event was counted.
-	seen map[string]bool
+	// seen marks the item ids whose first event was counted; anonOpen
+	// counts the id-less tools started and not yet completed (codex runs
+	// and reports tools in order: queryStream.anonTool).
+	seen     map[string]bool
+	anonOpen int
 }
 
-// event updates the count with one stream event and returns it.
-func (t *turnCounter) event(ev *CodexEvent) int {
+// event updates the count with one stream event.
+func (t *turnCounter) event(ev *CodexEvent) {
 	if ev.Type == "turn.started" {
 		*t = turnCounter{turns: 1}
-		return t.turns
+		return
 	}
 	item := ev.Item
 	if item == nil || !strings.HasPrefix(ev.Type, "item.") {
-		return t.turns
+		return
 	}
-	first := item.ID == "" || !t.seen[item.ID]
-	if item.ID != "" {
-		if t.seen == nil {
-			t.seen = map[string]bool{}
-		}
-		t.seen[item.ID] = true
-	}
+	first := t.firstEvent(ev.Type, item)
 	switch {
 	case isToolItem(item.Type):
 		if first {
@@ -94,7 +91,34 @@ func (t *turnCounter) event(ev *CodexEvent) int {
 			t.boundary()
 		}
 	}
-	return t.turns
+}
+
+// firstEvent says whether ev is the item's first event. An id-less tool's
+// update or completion belongs to the oldest open id-less tool, if any.
+func (t *turnCounter) firstEvent(eventType string, item *CodexItem) bool {
+	if item.ID != "" {
+		if t.seen[item.ID] {
+			return false
+		}
+		if t.seen == nil {
+			t.seen = map[string]bool{}
+		}
+		t.seen[item.ID] = true
+		return true
+	}
+	if !isToolItem(item.Type) {
+		return true
+	}
+	switch {
+	case eventType == "item.started":
+		t.anonOpen++
+		return true
+	case t.anonOpen == 0:
+		return true // seen first at its update or completion
+	case eventType == "item.completed":
+		t.anonOpen--
+	}
+	return false
 }
 
 // boundary opens a new turn when the previous response's tools all came back.
@@ -108,7 +132,9 @@ func (t *turnCounter) boundary() {
 	}
 }
 
-// isToolItem: the item types that are a model's tool call.
+// isToolItem: the item types that are a model's tool call. Wider than the
+// ones queryStream shows as tool steps (mcp_tool_call, command_execution):
+// a web search or a file change is a call of the model's turn all the same.
 func isToolItem(typ string) bool {
 	switch typ {
 	case "mcp_tool_call", "command_execution", "web_search", "file_change":
@@ -177,6 +203,7 @@ func (r *rolloutTurns) read() (n int, ok bool) {
 	return max(r.tokenCount, r.record), true
 }
 
+// count adds line's response marker, if it is one.
 func (r *rolloutTurns) count(line []byte) {
 	if !bytes.Contains(line, []byte("token_count")) && !bytes.Contains(line, []byte("token_usage_record")) {
 		return
@@ -201,6 +228,11 @@ func (r *rolloutTurns) count(line []byte) {
 		}
 	}
 }
+
+// errNoResponses makes a rollout that records no model response while the
+// stream shows a finished one unusable: its markers changed shape, and
+// counting it would leave the run with no cap at all.
+var errNoResponses = errors.New("the rollout records no model response")
 
 // findRollout is the rollout file under home/sessions, "" while there is
 // none. The home is the run's own, so it holds this run's rollout only; the
@@ -232,8 +264,8 @@ func findRollout(home string) (string, error) {
 // turnCap enforces SetMaxTurns on one run. Its methods are safe on a nil
 // receiver (no cap) and from the read loop and the poller at once.
 type turnCap struct {
-	max  int
-	stop context.CancelFunc
+	limit int
+	stop  context.CancelFunc
 
 	mu      sync.Mutex
 	stream  turnCounter
@@ -247,7 +279,7 @@ func newTurnCap(n int, runHome string, stop context.CancelFunc) *turnCap {
 	if n <= 0 {
 		return nil
 	}
-	g := &turnCap{max: n, stop: stop}
+	g := &turnCap{limit: n, stop: stop}
 	if runHome != "" {
 		g.rollout = &rolloutTurns{home: runHome}
 	}
@@ -269,7 +301,7 @@ func (g *turnCap) line(b []byte) bool {
 	if json.Unmarshal(b, &ev) == nil {
 		g.stream.event(&ev)
 	}
-	g.checkLocked(false)
+	g.checkLocked()
 	return !g.stopped
 }
 
@@ -287,7 +319,7 @@ func (g *turnCap) watch(ctx context.Context) {
 		case <-tick.C:
 			g.mu.Lock()
 			if !g.stopped {
-				g.checkLocked(false)
+				g.checkLocked()
 			}
 			g.mu.Unlock()
 		}
@@ -295,41 +327,54 @@ func (g *turnCap) watch(ctx context.Context) {
 }
 
 // done is the run's last check, once codex exited: the budget failure of a
-// run the cap stopped or whose finished rollout records more responses than
-// the cap (a last, text-only response is recorded as codex ends), nil
-// otherwise.
-func (g *turnCap) done() error {
+// run the cap stopped, or of a run that succeeded otherwise (failed is
+// false) whose finished rollout records more responses than the cap (a
+// last, text-only response is recorded as codex ends); nil otherwise, so a
+// run's own failure is never relabelled a budget one.
+func (g *turnCap) done(failed bool) error {
 	if g == nil {
 		return nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !g.stopped {
-		g.checkLocked(true)
-	}
 	if g.stopped {
-		return errTurnCap(g.max)
+		return errTurnCap(g.limit)
+	}
+	if !failed && g.overLocked(true) {
+		return errTurnCap(g.limit)
 	}
 	return nil
 }
 
-// checkLocked stops the run once its turns pass the cap: the rollout's
-// count when it can be read, else the stream rule's — which during the run
-// decides only the past-the-cap case, so a rollout that is merely not
-// written yet costs nothing.
-func (g *turnCap) checkLocked(final bool) {
-	n := g.stream.turns
-	if g.rollout != nil {
-		if r, ok := g.rollout.read(); ok {
-			n = r
-		} else if n > g.max || final {
-			g.logFallbackLocked()
-		}
-	}
-	if n > g.max {
+// checkLocked stops the run once its turns pass the cap.
+func (g *turnCap) checkLocked() {
+	if g.overLocked(false) {
 		g.stopped = true
 		g.stop()
 	}
+}
+
+// overLocked says whether the run's turns pass the cap: the rollout's count
+// when it can be read, else the stream rule's — which during the run
+// decides only the past-the-cap case, so a rollout that is merely not
+// written yet costs nothing. A rollout that counts no response while the
+// stream has seen one finish (a tool round during the run, any turn at the
+// end) is not trusted.
+func (g *turnCap) overLocked(final bool) bool {
+	n := g.stream.turns
+	if g.rollout != nil {
+		r, ok := g.rollout.read()
+		if ok && r == 0 && (n >= 2 || final && n >= 1) {
+			g.rollout.err, ok = errNoResponses, false
+		}
+		switch {
+		case ok:
+			n = r
+		case n > g.limit || final && n > 0:
+			g.logFallbackLocked()
+		}
+	}
+	return n > g.limit
 }
 
 // logFallbackLocked logs once that the stream rule counted in place of the
@@ -340,10 +385,15 @@ func (g *turnCap) logFallbackLocked() {
 	}
 	g.logged = true
 	reason := "missing"
-	if g.rollout.err != nil {
-		reason = "unreadable"
+	switch err := g.rollout.err; {
+	case errors.Is(err, errNoResponses):
+		reason = "without response records"
+	case errors.Is(err, fs.ErrPermission):
+		reason = "unreadable (permission)"
+	case err != nil:
+		reason = "unreadable (i/o)"
 	}
-	log.Printf("codex: the run's rollout is %s; its turn cap counts the stream instead", reason)
+	log.Printf("codex: the run's rollout is %s; its turn cap counts the stream instead (%d turns so far)", reason, g.stream.turns)
 }
 
 // lineSink is QuerySync's stdout: it keeps everything (the parse after
@@ -351,12 +401,12 @@ func (g *turnCap) logFallbackLocked() {
 type lineSink struct {
 	buf     bytes.Buffer
 	pending []byte
-	cap     *turnCap
+	turns   *turnCap
 }
 
 func (w *lineSink) Write(p []byte) (int, error) {
 	w.buf.Write(p)
-	if w.cap == nil {
+	if w.turns == nil {
 		return len(p), nil
 	}
 	w.pending = append(w.pending, p...)
@@ -365,10 +415,20 @@ func (w *lineSink) Write(p []byte) (int, error) {
 		if i < 0 {
 			break
 		}
-		if line := bytes.TrimSpace(w.pending[:i]); len(line) > 0 {
-			w.cap.line(line)
-		}
+		w.hand(w.pending[:i])
 		w.pending = w.pending[i+1:]
 	}
 	return len(p), nil
+}
+
+// flush hands the last, unterminated line over once the output ended.
+func (w *lineSink) flush() {
+	w.hand(w.pending)
+	w.pending = nil
+}
+
+func (w *lineSink) hand(line []byte) {
+	if line = bytes.TrimSpace(line); len(line) > 0 && w.turns != nil {
+		w.turns.line(line)
+	}
 }

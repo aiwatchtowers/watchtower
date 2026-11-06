@@ -193,9 +193,9 @@ func TestSpecReviewCodexClient_NoMCPServers(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[mcp_servers.mine]\ncommand = \"npx\"\n"), 0o600))
 	t.Setenv("CODEX_HOME", home)
 	folder := t.TempDir()
-	runHome, err := specReviewCodexHome()
+	runHome, removeHome, err := specReviewCodexHome()
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(runHome) })
+	t.Cleanup(removeHome)
 	// /usr/bin/false: the version probe never runs a real codex.
 	args := specReviewCodexClient(&config.Config{CodexPath: "/usr/bin/false"}, "strong", folder, runHome).ArgsForTest("sys", "user")
 	require.NotNil(t, args)
@@ -315,6 +315,18 @@ func TestCodexSpecReview_StopsAtMaxTurnsFromRollout(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "the home, rollout included, is removed")
 	assert.FileExists(t, filepath.Join(owner, "auth.json"), "the owner's sign-in is untouched")
 	assert.FileExists(t, filepath.Join(owner, "config.toml"))
+}
+
+// An owner signed in without an auth.json (the keyring store, tied to the
+// codex home) keeps the reviewer in their own home, --ephemeral as before,
+// its cap counted from the stream.
+func TestCodexSpecReview_KeyringSignInKeepsTheOwnersHome(t *testing.T) {
+	stub, agent, owner := codexReviewer(t, codexResponses(specreview.MaxTurns+1), "")
+	require.NoError(t, os.Remove(filepath.Join(owner, "auth.json")))
+	_, _, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.ErrorContains(t, err, fmt.Sprintf("stopped after %d model turns", specreview.MaxTurns))
+	assert.Equal(t, owner, strings.TrimSpace(string(readFile(t, filepath.Join(stub.dir, "codex-home")))))
+	assert.Contains(t, stub.argv(t), "--ephemeral")
 }
 
 func readFile(t *testing.T, path string) []byte {

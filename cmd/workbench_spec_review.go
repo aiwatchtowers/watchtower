@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -114,11 +116,11 @@ func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user st
 	var out string
 	var err error
 	if a.cfg.AI.Provider == "codex" {
-		home, err := specReviewCodexHome()
-		if err != nil {
-			return "", false, wrapSpecReviewErr("codex reviewer", err)
+		home, removeHome, homeErr := specReviewCodexHome()
+		if homeErr != nil {
+			return "", false, wrapSpecReviewErr("codex reviewer", homeErr)
 		}
-		defer func() { _ = os.RemoveAll(home) }()
+		defer removeHome()
 		out, _, err = specReviewCodexClient(a.cfg, a.model, folder, home).QuerySync(ctx, system, user, "")
 		return out, true, wrapSpecReviewErr("codex reviewer", err)
 	}
@@ -138,14 +140,17 @@ func specReviewClaudeClient(cfg *config.Config, model, folder string) *ai.Client
 
 // specReviewCodexClient: SetNoMCPServers disables the owner's codex servers
 // and mounts none (an empty database path alone would leave them on). The
-// run is capped at specreview.MaxTurns model turns, counted from its
-// rollout in home (specReviewCodexHome), as claude's --max-turns caps the
-// claude reviewer (SPECREVIEW-01, AUTO-08's turn unit).
+// run is capped at specreview.MaxTurns model turns, as claude's --max-turns
+// caps the claude reviewer (SPECREVIEW-01, AUTO-08's turn unit): counted
+// from its rollout in home (specReviewCodexHome), or by the stream rule in
+// the owner's home, --ephemeral, when home is "".
 func specReviewCodexClient(cfg *config.Config, model, folder, home string) *codex.Client {
 	c := codex.NewClient(model, "", cfg.CodexPath)
 	c.SetReadFolder(folder)
 	c.SetNoMCPServers()
-	c.SetRunHome(home)
+	if home != "" {
+		c.SetRunHome(home)
+	}
 	c.SetMaxTurns(specreview.MaxTurns)
 	c.SetProcessGroup(true)
 	return c
@@ -156,16 +161,16 @@ func specReviewCodexClient(cfg *config.Config, model, folder, home string) *code
 // rollout, so the review never reaches the owner's codex history. The
 // owner's sign-in and config.toml (model provider, profiles; its MCP
 // servers are switched off by SetNoMCPServers) are linked, never copied.
-func specReviewCodexHome() (string, error) {
-	dir, err := os.MkdirTemp("", "wt-review-codex-home-*")
-	if err != nil {
-		return "", fmt.Errorf("creating the reviewer's codex home: %w", err)
+// An owner signed in without an auth.json (codex's keyring store, which is
+// tied to the home) gets "": the reviewer keeps the owner's home, as before,
+// and its cap counts the stream (remove is then a no-op).
+func specReviewCodexHome() (dir string, remove func(), err error) {
+	_, err = os.Stat(filepath.Join(ownerCodexHome(), "auth.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		log.Printf("codex reviewer: no auth.json in the codex home; it runs there and its turn cap counts the stream")
+		return "", func() {}, nil
 	}
-	if err := linkOwnerCodexFiles(dir, "auth.json", "config.toml"); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", err
-	}
-	return dir, nil
+	return newCodexHome("wt-review-codex-home-*", "auth.json", "config.toml")
 }
 
 // wrapSpecReviewErr names the reviewer a failure came from; nil stays nil.

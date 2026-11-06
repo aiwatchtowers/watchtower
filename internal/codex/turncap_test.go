@@ -25,16 +25,15 @@ import (
 func streamTurns(t *testing.T, lines []string) int {
 	t.Helper()
 	var tc turnCounter
-	n := 0
 	for _, l := range lines {
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
 		var ev CodexEvent
 		require.NoError(t, json.Unmarshal([]byte(l), &ev), l)
-		n = tc.event(&ev)
+		tc.event(&ev)
 	}
-	return n
+	return tc.turns
 }
 
 func fixtureLines(t *testing.T, name string) []string {
@@ -92,6 +91,45 @@ func TestTurnCounter_ItemCompletedWithoutStart(t *testing.T) {
 	assert.Equal(t, 3, streamTurns(t, lines))
 	lines = []string{turnStarted, toolStart("a"), toolDone("b"), toolDone("a"), message("m", "done")}
 	assert.Equal(t, 2, streamTurns(t, lines), "b came back while a was open: one response")
+}
+
+// Id-less tool items pair up in order, as queryStream.anonTool pairs them.
+func TestTurnCounter_IdLessToolsPairInOrder(t *testing.T) {
+	lines := []string{turnStarted, toolStart(""), toolDone(""), toolStart(""), toolDone(""), toolStart(""), toolDone("")}
+	assert.Equal(t, 3, streamTurns(t, lines), "three responses of one id-less call each")
+	lines = []string{turnStarted, toolStart(""), toolStart(""), toolDone(""), toolDone(""), message("", "done")}
+	assert.Equal(t, 2, streamTurns(t, lines))
+	lines = []string{turnStarted, toolDone(""), toolDone(""), message("", "done")}
+	assert.Equal(t, 3, streamTurns(t, lines), "a tool seen only at its completion")
+}
+
+// A rollout that records no response while the stream shows tool rounds
+// (its markers changed shape) is not trusted: the stream rule keeps the cap.
+func TestTurnCounter_RolloutWithoutRecordsFallsBackToStream(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	steps := []string{"R:" + `{"type":"session_meta","payload":{},"synthetic":true}`, turnStarted,
+		toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"), "HOLD"}
+	c, pid := cappedClient(t, steps, 2, t.TempDir())
+	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
+	assertBudget(t, err, 2)
+	assertGroupGone(t, pid())
+	assert.Equal(t, 1, strings.Count(logs.String(), "without response records"), logs.String())
+}
+
+// A run that failed on its own keeps its failure; only a stop by the cap,
+// or a clean run over the cap, is a budget failure.
+func TestCodexClient_OwnFailureIsNotRelabelledBudget(t *testing.T) {
+	steps := []string{turnStarted, message("m", "done"),
+		`{"type":"turn.failed","error":{"message":"usage limit reached"}}`,
+		"R:" + rolloutRecord, "R:" + rolloutTokenCount, "R:" + rolloutRecord, "R:" + rolloutTokenCount}
+	c, _ := cappedClient(t, steps, 1, t.TempDir())
+	_, err := runQuery(t, c)
+	require.Error(t, err)
+	var f *providers.Failure
+	require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+	assert.NotEqual(t, providers.Budget, f.Category, err.Error())
 }
 
 func TestTurnCounter_ReasoningOpensTheNextTurn(t *testing.T) {
