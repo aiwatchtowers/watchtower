@@ -147,6 +147,8 @@ func TestProj14_MergedSurvivesBranchCleanup(t *testing.T) {
 		"into:nope:wt/m"}
 	res := Refresh(context.Background(), d, id, refs, RefreshOptions{Network: true, Now: fixedNow})
 	assert.Contains(t, res.Note, "base branch nope could not be resolved")
+	assert.Contains(t, res.Note, "the state of 1 ref(s) could not be read (into:nope:wt/m: git could not read its merge state)",
+		"a failed read is counted; the missing wt/gone stays quiet")
 	assert.Empty(t, calls(), "a merge verdict never runs gh")
 	got := states(t, d, id)
 	assert.Equal(t, "merged", got["into:feature/x:wt/m"].State)
@@ -314,3 +316,4 @@ func TestRefreshedSummaries_StopAtTheSummaryBudget(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, []int{1, 8, 3}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
 }
+

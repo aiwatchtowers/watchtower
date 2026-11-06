@@ -320,9 +320,11 @@ func (r *refresher) readBranch(ctx context.Context, ref, branch string) (db.PRSt
 // when every base ref says it is not. Anything else keeps the cached verdict
 // (none yet = unknown) and only stamps its check time, so it backs off like
 // any checked ref: a branch git cannot find (session cleanup deletes a merged
-// worktree branch), a read that failed, and a cached merged branch left only
-// on origin with a tip the base contains — there git cannot tell a
-// fast-forward merge from a branch with no work of its own.
+// worktree branch — expected, so quiet), a read that failed (a git call, an
+// unresolvable base, a refused squash read: counted in the note), and a
+// cached merged branch left only on origin with a tip the base contains —
+// there git cannot tell a fast-forward merge from a branch with no work of
+// its own.
 func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.PRState, bool) {
 	repo, ok := r.bases[base]
 	if !ok {
@@ -348,7 +350,9 @@ func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.
 		if cached.State != "merged" || !repo.OriginOnlyContained(ctx, branch) {
 			return db.PRState{State: "open"}, true
 		}
-	case workbenchcheck.BranchMissing, workbenchcheck.BranchUnknown:
+	case workbenchcheck.BranchUnknown:
+		r.skip(ref, "git could not read its merge state")
+	case workbenchcheck.BranchMissing:
 	}
 	if !hasRow {
 		return db.PRState{State: "unknown"}, true
