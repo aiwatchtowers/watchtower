@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -500,5 +501,20 @@ func TestNeedsApproval_CopyMustKeepTheApprovalTrigger(t *testing.T) {
 	f.sync(t)
 	if a := f.rowOf(t, NeedsApprovalID); a.ParseError != "" || !a.Overridden {
 		t.Errorf("row = parse %q overridden %v", a.ParseError, a.Overridden)
+	}
+}
+
+// The runner executes inline at a slot; Run Now of a built-in with none is
+// refused before anything is queued (its runs are the executor poll's).
+func TestRunner_RunNowRefusesASlotlessBuiltin(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	_, err := f.runner.RunNow(context.Background(), NeedsApprovalID, automations.BuiltinInput{})
+	if !errors.Is(err, ErrNoSlot) {
+		t.Fatalf("RunNow(needs-approval) = %v; want ErrNoSlot", err)
+	}
+	runs, err := f.d.ListAutomationRuns(f.rowOf(t, NeedsApprovalID).ID, 0)
+	if err != nil || len(runs) != 0 {
+		t.Errorf("runs = %d, %v; want none queued", len(runs), err)
 	}
 }
