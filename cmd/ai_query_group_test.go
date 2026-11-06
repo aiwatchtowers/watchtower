@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/providers/transport"
 )
 
 // cliTreeStub is a fake provider CLI named name (codex or claude) that
@@ -169,17 +170,16 @@ func queryClientTreeCases(t *testing.T, provider, version string) {
 			bin, grandchild := cliTreeStub(t, provider, version)
 			cfg, _, dbPath := groupTestConfig(t, provider, bin, tc.routed)
 			aiFlagTools, aiFlagModel = tc.tools, tc.model
-			client, cleanup, err := newQueryClient(cfg, dbPath)
+			var opts transport.Options
+			if tc.tools == "" {
+				opts.ReadFolder = t.TempDir()
+			}
+			client, cleanup, err := newQueryClient(cfg, dbPath, opts)
 			require.NoError(t, err)
 			t.Cleanup(cleanup)
 			if tc.routed {
 				_, ok := client.(*toolRouteProvider)
 				require.True(t, ok, "%T", client)
-			}
-			if tc.tools == "" {
-				c, ok := client.(readFolderConfigurable)
-				require.True(t, ok, "%T", client)
-				c.SetReadFolder(t.TempDir())
 			}
 			assertTreeDiesOnCancel(t, client, grandchild)
 		})

@@ -35,11 +35,9 @@ type Client struct {
 	// a run in os.TempDir() with no --cd.
 	readFolder string
 	// childEnv replaces the os.Environ() base of the child's environment
-	// when childEnvSet (SetChildEnv); processGroup runs the child in its own
-	// process group killed as a group (SetProcessGroup).
-	childEnv     []string
-	childEnvSet  bool
-	processGroup bool
+	// when childEnvSet (SetChildEnv).
+	childEnv    []string
+	childEnvSet bool
 	// loadExternal yields the owner's enabled Quick Connections, called once
 	// per launch (SetExternalMCPServers / SetExternalMCPLoader).
 	loadExternal func() []ai.ExternalMCPServer
@@ -112,12 +110,6 @@ func (c *Client) SetExternalMCPLoader(load func() []ai.ExternalMCPServer) { c.lo
 // SetChildEnv replaces the inherited environment of the child with env (the
 // rich PATH is still appended last). Unset = os.Environ() as today.
 func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, true }
-
-// SetProcessGroup runs the child in its own process group and kills the
-// whole group on cancel or deadline (see ai.ConfigureChild). codex has no
-// per-tool MCP allowlist flag; the server-side tool filter is the
-// enforcement, as for claude.
-func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
 
 // childEnviron is the child's environment: the base (os.Environ() unless
 // replaced) without PATH, then extra (the run's Quick Connection secrets,
@@ -360,7 +352,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		go turns.watch(runCtx)
 		cmd := exec.CommandContext(runCtx, c.codexCmd, args...)
 		cmd.Stdin = strings.NewReader(promptStdin)
-		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		reap := ai.ConfigureChild(cmd)
 		defer reap()
 		cmd.Dir = c.processDir()
 		cmd.Env = c.childEnviron(m.env)
@@ -478,7 +470,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	go turns.watch(runCtx)
 	cmd := exec.CommandContext(runCtx, c.codexCmd, args...)
 	cmd.Stdin = strings.NewReader(promptStdin)
-	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	reap := ai.ConfigureChild(cmd)
 	defer reap()
 	cmd.Dir = c.processDir()
 	cmd.Env = c.childEnviron(m.env)

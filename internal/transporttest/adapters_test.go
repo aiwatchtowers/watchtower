@@ -204,8 +204,7 @@ var adapters = []*Adapter{
 		},
 		Stream: func(r *run) chat.Querier {
 			c := ai.NewClient(fakeModel, r.mcpDB(), bins.claude)
-			c.SetProcessGroup(true) // cmd/generator.go newQueryClient (#957)
-			c.EmitToolEvents()      // `ai query --events v2`
+			c.EmitToolEvents() // `ai query --events v2`
 			c.SetExternalMCPServers(r.external)
 			if r.readFolder != "" {
 				c.SetReadFolder(r.readFolder)
@@ -274,11 +273,10 @@ var adapters = []*Adapter{
 	},
 }
 
-// codexClient is the codex chat/query client as cmd builds it: its own
-// process group (codexSessionClient, newQueryClient), the v2 tool events.
+// codexClient is the codex chat/query client as cmd builds it
+// (codexSessionClient, newQueryClient): the v2 tool events.
 func codexClient(r *run) *codex.Client {
 	c := codex.NewClient(fakeModel, r.mcpDB(), bins.codex)
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	c.SetExternalMCPServers(r.external)
 	if r.readFolder != "" {

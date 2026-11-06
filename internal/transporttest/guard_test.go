@@ -51,11 +51,10 @@ var capabilityFiles = []string{
 }
 
 // plannedAdapters are adapter paths the transport independence plan creates
-// later (A4, A5). Only these may be missing; once one exists the test asks
+// later (A5). Only these may be missing; once one exists the test asks
 // for its removal from this set, so a typo in the lists above cannot hide.
 var plannedAdapters = map[string]bool{
-	"cmd/transport_wiring.go": true,
-	"internal/sessionagent":   true,
+	"internal/sessionagent": true,
 }
 
 // transportNames are the string literals that name a transport.

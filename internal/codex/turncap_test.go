@@ -364,7 +364,6 @@ func cappedClient(t *testing.T, steps []string, maxTurns int, runHome string) (*
 	})
 	c := NewClient("m", "", "")
 	c.codexCmd = writeStubCodex(t, b.String())
-	c.SetProcessGroup(true)
 	c.SetMaxTurns(maxTurns)
 	if runHome != "" {
 		c.SetRunHome(runHome)

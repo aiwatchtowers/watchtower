@@ -4,16 +4,6 @@
 # "permanent:" entries stay (decoders, display names, URL/MCP schemes, path
 # conventions); every other entry names the task that removes it.
 
-cmd/ai.go | runAITest | "claude" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runAITest | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runAITest | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runConnectionProbe | "codex" | 1 | A4: the codex probe's system-prompt nonce is the codex adapter's; moves with runAITest into cmd/transport_wiring.go
-cmd/ai_session.go | newSessionBackend | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai_session.go | newSessionBackend | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai_session_routing.go | reserveConnectionsCapable | "codex" | 1 | A4: the codex launch's Quick Connection env skips become the ChildEnv option (spec §3.4)
-cmd/automations_backends.go | (*cliAgentRunner).Run | "codex" | 1 | A4: the codex agent() client and its run home are built by the factory (spec §3.4)
-cmd/automations_backends.go | newAutomationAgentRunner | "claude" | 1 | A4: automation agent runner factory, moves into cmd/transport_wiring.go
-cmd/automations_backends.go | newAutomationAgentRunner | "codex" | 1 | A4: automation agent runner factory, moves into cmd/transport_wiring.go
 cmd/connections.go | requireSecretTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | runConnectionsList | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | runConnectionsOAuth | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
@@ -22,14 +12,8 @@ cmd/connections.go | validateHTTPURL | "http" | 1 | permanent: a Quick Connectio
 cmd/connections_import.go | importCandidateLine | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | importConnection | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | runConnectionsImport | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
-cmd/generator.go | buildAIClient | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildAIClient | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildGenerator | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildGenerator | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/generator.go | codexEnvSkips | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/generator.go | connectionServer | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
-cmd/generator.go | newQueryClient | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | newQueryClient | assert *codex.Client | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/integrate_workbench.go | execCommandRunner | "claude" | 1 | permanent: resolves the claude binary for `claude mcp add` (install plumbing, no model call)
 cmd/terminal.go | terminalAgentHome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_askguard.go | var workbenchAskGuardCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
@@ -49,8 +33,6 @@ cmd/workbench_session_probe.go | probeSession | agentkind.Codex | 1 | G5: codex 
 cmd/workbench_session_probe.go | sessionOutcome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_state.go | recordAgentTurn | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_state.go | var workbenchSessionStateCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_spec_review.go | (*specReviewCLIAgent).Review | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/workbench_spec_review.go | (*specReviewCLIAgent).Review | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/workbench_worktree.go | installWorktreeIntegration | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
@@ -62,9 +44,6 @@ internal/config/ai_routing.go | KnownAIProvider | "claude" | 1 | permanent: vali
 internal/config/ai_routing.go | KnownAIProvider | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/config/ai_routing.go | KnownAIProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/confluenceedit/xhtml.go | safeHref | "http" | 1 | permanent: URL scheme check, not an LLM transport
-internal/daemon/coach.go | var coachGeneratorFactory | "claude" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-internal/daemon/coach.go | var coachGeneratorFactory | "codex" | 2 | A4: client factory switch, moves into cmd/transport_wiring.go
-internal/daemon/coach.go | var coachGeneratorFactory | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 internal/db/chat_routing.go | (*DB).SetChatRouting | "claude" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)

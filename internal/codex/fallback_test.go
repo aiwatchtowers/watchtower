@@ -60,7 +60,6 @@ func TestGeneratorQuotaTypedAcrossExitCodes(t *testing.T) {
 				t.Fatal("lost CLI exit cause")
 			}
 			client := NewClient("m", "", bin)
-			client.SetProcessGroup(true)
 			_, _, err = client.QuerySync(context.Background(), "", "prompt", "")
 			if !errors.As(err, &failure) || failure.Category != providers.Quota {
 				t.Fatalf("client failure=%+v err=%v", failure, err)

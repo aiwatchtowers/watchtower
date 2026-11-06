@@ -175,17 +175,19 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	return policyCheckedBackend{Backend: backend, provider: p, mounted: mounted, claudeAIOn: claudeAI.mode.On, end: cancel}, nil
 }
 
-// A connection omitted by Codex's existing env-isolation rules cannot be
-// silently dropped by a reserve selection. This performs no model/tool probe.
+// A connection the reserve's launch environment cannot carry
+// (quickConnectionEnv, codexEnvSkips) cannot be silently dropped by a
+// reserve selection. This performs no model/tool probe.
 func reserveConnectionsCapable(cfg *config.Config, database *db.DB, provider string) (bool, error) {
-	if provider != "codex" {
+	env := quickConnectionEnv(provider)
+	if env == nil {
 		return true, nil
 	}
 	conns, err := database.ListEnabledExternalConnections()
 	if err != nil {
 		return false, fmt.Errorf("listing reserve Quick Connections: %w", err)
 	}
-	return len(codexEnvSkips(cfg, conns, os.Environ())) == 0, nil
+	return len(codexEnvSkips(cfg, conns, env)) == 0, nil
 }
 
 // sessionAttachmentCapability reports whether a transport with caps takes
