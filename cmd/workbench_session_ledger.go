@@ -23,7 +23,10 @@ import (
 // event's state write, in its own transaction, so it never changes that
 // write: a failure is one stderr line, and nothing reaches stdout (PROJ-11).
 // The "session full" line is printed at most once per run (one hook process).
-func recordSessionLedger(database *db.DB, stderr io.Writer, rowID, workbenchID int64, sessionID, cwd string, at time.Time) {
+// Its write waits for the lock as the event's state write did (lock: the
+// async hook's budget, board #988).
+func recordSessionLedger(database *db.DB, stderr io.Writer, rowID, workbenchID int64, sessionID, cwd string, at time.Time,
+	lock hookLockWait) {
 	if !terminal.IsSessionID(sessionID) {
 		return // the state write already reported it
 	}
@@ -35,7 +38,7 @@ func recordSessionLedger(database *db.DB, stderr io.Writer, rowID, workbenchID i
 	if !ok {
 		return
 	}
-	err := writeSessionLedger(database, rowID, workbenchID, sessionID, root, branch, at)
+	err := writeSessionLedger(database, rowID, workbenchID, sessionID, root, branch, at, lock)
 	if errors.Is(err, errSessionLedgerFull) && sessionLedgerFullReported.Swap(true) {
 		return
 	}
@@ -55,7 +58,8 @@ var sessionLedgerFullReported atomic.Bool
 // first, so the common cases — a pair already recorded, or a full session —
 // never take the write lock; then the row's guards (the hook's conversation,
 // workbench and kind); then the insert.
-func writeSessionLedger(database *db.DB, rowID, workbenchID int64, sessionID, root, branch string, at time.Time) error {
+func writeSessionLedger(database *db.DB, rowID, workbenchID int64, sessionID, root, branch string, at time.Time,
+	lock hookLockWait) error {
 	ctx := context.Background()
 	has, full, err := database.HasSessionWorktree(ctx, rowID, root, branch)
 	if err != nil || has {
@@ -68,10 +72,12 @@ func writeSessionLedger(database *db.DB, rowID, workbenchID int64, sessionID, ro
 	if row == nil || err != nil {
 		return err
 	}
-	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+	var recorded bool
+	err = lock.write(database, func() error {
+		var err error
+		recorded, err = database.RecordSessionWorktree(ctx, nil, rowID, root, branch, db.AgentStateStamp(at))
 		return err
-	}
-	recorded, err := database.RecordSessionWorktree(ctx, nil, rowID, root, branch, db.AgentStateStamp(at))
+	})
 	if err != nil || recorded {
 		return err
 	}

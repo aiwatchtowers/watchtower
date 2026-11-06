@@ -95,7 +95,9 @@ func TestSessionState_AgentStateFor(t *testing.T) {
 		{"Notification", "agent_completed", "", false},
 		{"Notification", "", "", false},
 		{"SessionStart", "", "", false},
-		{"PreToolUse", "", "", false},
+		{"PreToolUse", "", "working", true},
+		{"PostToolUseFailure", "", "working", true},
+		{"SessionEnd", "", "", false},
 		{"", "", "", false},
 	} {
 		state, ok := agentStateFor(tc.event, tc.notification)
