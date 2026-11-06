@@ -91,8 +91,15 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
     package let code: Int?
     /// The launch's scope; "" from a host older than the field.
     package let scope: String
+    /// The host watches this run's transcript (Go `SessionInfo.Watched`,
+    /// spec 2026-11-05 §3.5), so the app's bridge probe leaves it alone;
+    /// false from an older host and for every run it does not watch.
+    package let watched: Bool
 
-    package init(row: Int64, run: String, pid: Int, startedAtMs: Int64, exited: Bool, code: Int?, scope: String = "") {
+    package init(
+        row: Int64, run: String, pid: Int, startedAtMs: Int64, exited: Bool, code: Int?,
+        scope: String = "", watched: Bool = false
+    ) {
         self.row = row
         self.run = run
         self.pid = pid
@@ -100,6 +107,7 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
         self.exited = exited
         self.code = code
         self.scope = scope
+        self.watched = watched
     }
 
     package init(from decoder: any Decoder) throws {
@@ -111,10 +119,11 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
         exited = try container.decode(Bool.self, forKey: .exited)
         code = try container.decodeIfPresent(Int.self, forKey: .code)
         scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? ""
+        watched = try container.decodeIfPresent(Bool.self, forKey: .watched) ?? false
     }
 
     enum CodingKeys: String, CodingKey {
-        case row, run, pid, exited, code, scope
+        case row, run, pid, exited, code, scope, watched
         case startedAtMs = "started_at_ms"
     }
 }

@@ -49,7 +49,7 @@ struct SessionRowModel: Equatable, Identifiable {
         self.isWaiting = isWaiting
         glyph = session.stateGlyph.isEmpty ? nil : session.stateGlyph
         watchHint = session.watchIssue.map {
-            "Watchtower can't read this session's log (\($0)). Watching starts again with the next prompt."
+            "Watchtower can't read this Codex session's log (\($0)). Watching starts again with the next prompt."
         }
         isRing = session.isRing
         openAsks = session.openAsks

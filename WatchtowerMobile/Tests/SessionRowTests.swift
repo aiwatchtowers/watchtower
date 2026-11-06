@@ -120,7 +120,7 @@ final class SessionRowTests: XCTestCase {
         ]), now: Date())
         XCTAssertTrue(row.caption.hasPrefix("Working · not watched"))
         XCTAssertEqual(row.watchHint,
-                       "Watchtower can't read this session's log (compressed). Watching starts again with the next prompt.")
+                       "Watchtower can't read this Codex session's log (compressed). Watching starts again with the next prompt.")
         let watched = SessionRowModel(try session(["state_kind": "working", "state_caption": "Working"]), now: Date())
         XCTAssertNil(watched.watchHint)
     }

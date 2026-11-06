@@ -30,14 +30,6 @@ struct SessionHostHello: Codable, Equatable {
 
     let version: Int
     var pid: Int?
-    /// The host watches the rollout of each codex launch that asks for it
-    /// (Go `HelloMsg.CodexWatch`); nil from an older host.
-    var codexWatch: Bool? // swiftlint:disable:this discouraged_optional_boolean
-
-    enum CodingKeys: String, CodingKey {
-        case version, pid
-        case codexWatch = "codex_watch"
-    }
 }
 
 struct SessionHostErrorMessage: Codable, Equatable {
@@ -84,11 +76,6 @@ final class SessionHostClient {
     var sleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Signals a hosted session's process group (`killpg`). A seam for tests.
     var signalGroup: (pid_t, Int32) -> Void = { _ = killpg($0, $1) }
-
-    /// The host on the socket said it watches codex rollouts (its hello's
-    /// `codex_watch`); false until it answered, and for an older host. The
-    /// app's bridge probe leaves that host's sessions alone.
-    private(set) var watchesCodexRollouts = false
 
     private var control: (any SessionHostTransport)?
     private var waiters: [Waiter] = []
@@ -212,10 +199,7 @@ final class SessionHostClient {
         }
         control = transport
         do {
-            let reply = try await request(
-                .json(.hello, SessionHostHello(version: SessionHostHello.protocolVersion)), expecting: .helloOK
-            )
-            watchesCodexRollouts = (try? reply.decoded(SessionHostHello.self))?.codexWatch ?? false
+            _ = try await request(.json(.hello, SessionHostHello(version: SessionHostHello.protocolVersion)), expecting: .helloOK)
             return true
         } catch {
             Self.logger.error("session host hello failed: \(String(describing: error), privacy: .public)")

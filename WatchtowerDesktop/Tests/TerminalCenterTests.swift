@@ -16,6 +16,7 @@ final class FakeTerminalSession: TerminalSessionProcess {
     private(set) var detached = false
     private(set) var inputs: [[UInt8]] = []
     var bracketedPasteMode = true
+    var isHostWatched = false
 
     /// `view`: a test that needs the terminal to take the keyboard passes
     /// one that accepts first responder.
@@ -153,6 +154,19 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(launch.args.last,
                        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
         XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt)")
+    }
+
+    /// G5: the bridge leaves alone only the live runs whose host reply said
+    /// it watches them; a hosted run the host does not watch stays the bridge's.
+    func testHostWatchedIDsAreTheRunsTheHostWatches() throws {
+        let center = makeCenter()
+        let watched = try row()
+        let unwatched = try row()
+        center.start(watched, fresh: true, prompt: nil)
+        center.start(unwatched, fresh: true, prompt: nil)
+        XCTAssertEqual(center.hostWatchedIDs, [])
+        sessions.first?.isHostWatched = true
+        XCTAssertEqual(center.hostWatchedIDs, [watched.id])
     }
 
     private static let inertSignaller = ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })

@@ -40,6 +40,9 @@ protocol TerminalSessionProcess: AnyObject {
     /// Whether the session host runs the process, so it outlives the app
     /// (board #496). Every real session is hosted; test fakes are not.
     var isHosted: Bool { get }
+    /// The session host watches this run's transcript itself (spec
+    /// 2026-11-05 §3.5), so the app's bridge probe leaves it alone.
+    var isHostWatched: Bool { get }
     /// The current run never reached a process (the session host could
     /// not be reached or started): its exit is not the session's own.
     var neverStarted: Bool { get }
@@ -47,6 +50,7 @@ protocol TerminalSessionProcess: AnyObject {
 
 extension TerminalSessionProcess {
     var isHosted: Bool { false }
+    var isHostWatched: Bool { false }
     var neverStarted: Bool { false }
 
     var onOwnerFocus: (() -> Void)? {
@@ -280,11 +284,13 @@ final class TerminalCenter {
         return SessionHostWatchSpec(agent: agent.rawValue, database: sessionHostDatabase)
     }
 
-    /// The live sessions the session host watches itself (it said so in its
-    /// hello): the app's bridge probe leaves them alone (spec §3.5, G5).
+    /// The live sessions the session host watches itself (each run's
+    /// Launched or Attached reply said so): the app's bridge probe leaves
+    /// them alone (spec §3.5, G5). A run the host could not watch (its
+    /// store did not open, no database yet, an older host) stays the
+    /// bridge's.
     var hostWatchedIDs: Set<Int64> {
-        guard sessionHost?.watchesCodexRollouts == true else { return [] }
-        return liveIDs.filter { processes[$0]?.isHosted == true }
+        liveIDs.filter { processes[$0]?.isHostWatched == true }
     }
 
     /// Connects to the session host once per app run: a second call (the

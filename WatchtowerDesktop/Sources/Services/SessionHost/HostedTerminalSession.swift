@@ -68,6 +68,9 @@ final class HostedTerminalSession: TerminalSessionProcess {
         set { terminal.onOwnerFocus = newValue }
     }
     var isHosted: Bool { true }
+    /// The host watches the current run's transcript (its Launched or
+    /// Attached reply said so); false until it answered.
+    private(set) var isHostWatched = false
     /// The current run has not reached the host yet: no Launched or
     /// Attached since the last `start` or `attach`. An exit while it holds
     /// (the host could not be reached or started) means the run never ran.
@@ -215,6 +218,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         case .launched, .attached:
             guard let info = try? frame.decoded(SessionHostSessionInfo.self) else { return }
             pid = info.exited ? 0 : pid_t(info.pid)
+            isHostWatched = info.watched
             bound = true
             neverStarted = false
             if hangUpOnBind, pid > 0 {
