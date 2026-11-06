@@ -22,6 +22,15 @@ const (
 	approvalLineRunes   = 300
 	approvalDetailRunes = 500
 	approvalTextRunes   = 4000
+	// approvalsBudgetBytes bounds the JSON size of every approval's
+	// strings together, well under the SDK result cap
+	// (automations.MaxSDKResultBytes): each approval gets an even share,
+	// its short strings a fixed part of it and its text what they leave.
+	// Every approval is kept, only its words are cut.
+	approvalsBudgetBytes = 100 << 10
+	// approvalRowOverhead is an approval's JSON besides its strings: the
+	// keys, key, kind, id, tone, status and the stamps.
+	approvalRowOverhead = 400
 )
 
 // approvalSummaryArgs are the argument keys an action's one-line summary is
@@ -58,8 +67,9 @@ func ApprovalsPrimitives(d *db.DB, now func() time.Time) map[string]automations.
 				return automations.PrimitiveResult{}, err
 			}
 			items := make([]any, 0, len(view.Open))
+			share := approvalsBudgetBytes / max(len(view.Open), 1)
 			for _, o := range view.Open {
-				items = append(items, approvalItem(o))
+				items = append(items, approvalItem(o, share))
 			}
 			remove := make([]any, 0, len(view.Closed))
 			for _, k := range view.Closed {
@@ -73,48 +83,58 @@ func ApprovalsPrimitives(d *db.DB, now func() time.Time) map[string]automations.
 	}
 }
 
-// approvalItem is the script's view of one open approval.
-func approvalItem(o db.OpenApproval) map[string]any {
+// approvalItem is the script's view of one open approval, its strings
+// within share bytes of JSON (approvalsBudgetBytes): the title, line, detail,
+// error, reason and run label an eighth of it each at most, the link only
+// when it fits its eighth, the text what is left.
+func approvalItem(o db.OpenApproval, share int) map[string]any {
+	part := share / 8
+	clip := func(s string, runes int) string { return clipJSON(clipApproval(s, runes), part) }
 	item := map[string]any{
 		"key": o.Ref(), "kind": o.Kind, "id": o.ID,
 		"created_at": o.CreatedAt, "changed_at": o.ChangedAt,
 		"tool": "", "status": o.Status, "error": "", "reason": "", "run_label": "",
 		"remind_at": "", "link": "", "tone": "",
 	}
+	var text string
 	if o.Kind == db.ApprovalKindReminder {
-		text := clipApproval(strings.TrimSpace(o.Note), approvalTextRunes)
+		text = strings.TrimSpace(o.Note)
 		item["title"] = "Reminder"
-		item["text"] = text
-		item["line"] = clipApproval(oneLine(o.Note), approvalLineRunes)
+		item["line"] = clip(oneLine(o.Note), approvalLineRunes)
 		if item["line"] == "" {
 			item["line"] = "Reminder"
 		}
 		item["detail"] = "Due " + o.RemindAt
 		item["remind_at"] = o.RemindAt
-		item["link"] = reminderLink(o.MessageRef)
-		return item
+		if link := reminderLink(o.MessageRef); jsonLen(link) <= part {
+			item["link"] = link
+		}
+	} else {
+		title := clip(toolTitle(o.Tool), approvalTitleRunes)
+		text = actionSummary(o.ArgsJSON)
+		item["title"] = title
+		item["tool"] = clip(o.Tool, approvalTitleRunes)
+		item["error"] = clip(o.Error, approvalDetailRunes)
+		item["reason"] = clip(o.Reason, approvalDetailRunes)
+		if o.ContextType == tools.AutomationContextType {
+			item["run_label"] = item["reason"] // an automation's proposal: "⚙ <name> · run #<id>"
+		}
+		item["line"] = clip(oneLine(text), approvalLineRunes)
+		if item["line"] == "" {
+			item["line"] = title
+		}
+		if o.Status == "failed" {
+			item["detail"] = clip(oneLine("Failed: "+o.Error), approvalDetailRunes)
+			item["tone"] = "danger"
+		} else {
+			item["detail"] = clip(oneLine(o.Reason), approvalDetailRunes)
+		}
 	}
-	title := clipApproval(toolTitle(o.Tool), approvalTitleRunes)
-	summary := actionSummary(o.ArgsJSON)
-	item["title"] = title
-	item["tool"] = o.Tool
-	item["error"] = o.Error
-	item["reason"] = o.Reason
-	if o.ContextType == tools.AutomationContextType {
-		item["run_label"] = o.Reason // an automation's proposal: "⚙ <name> · run #<id>"
+	left := share - approvalRowOverhead
+	for _, k := range []string{"title", "line", "detail", "tool", "error", "reason", "run_label", "link", "remind_at", "created_at", "changed_at"} {
+		left -= jsonLen(item[k].(string))
 	}
-	item["text"] = clipApproval(summary, approvalTextRunes)
-	item["line"] = clipApproval(oneLine(summary), approvalLineRunes)
-	if item["line"] == "" {
-		item["line"] = title
-	}
-	switch {
-	case o.Status == "failed":
-		item["detail"] = clipApproval(oneLine("Failed: "+o.Error), approvalDetailRunes)
-		item["tone"] = "danger"
-	default:
-		item["detail"] = clipApproval(oneLine(o.Reason), approvalDetailRunes)
-	}
+	item["text"] = clipJSON(clipApproval(text, approvalTextRunes), left)
 	return item
 }
 

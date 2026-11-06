@@ -518,3 +518,43 @@ func TestRunner_RunNowRefusesASlotlessBuiltin(t *testing.T) {
 		t.Errorf("runs = %d, %v; want none queued", len(runs), err)
 	}
 }
+
+// 50 approvals with the longest words a row can carry — Cyrillic text,
+// error, reason and run label — stay under the SDK result cap: the shipped
+// recipe's run succeeds and every approval still gets its card.
+func TestNeedsApproval_LongApprovalsStayUnderTheResultCap(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	long := strings.Repeat("Длинный текст предложения для acme. ", 200) // ~7000 runes, ~13 KB
+	base := testStart.Add(-2 * time.Hour)
+	for i := range automations.MaxOutputsPerRun {
+		status, errText := "pending", ""
+		if i%2 == 1 {
+			status, errText = "failed", long
+		}
+		args, err := json.Marshal(map[string]string{"text": long})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.d.Exec(`INSERT INTO agent_actions (tool, args_json, status, error, reason, context_type, context_id, created_at)
+			VALUES ('create_target', ?, ?, ?, ?, 'automation_run', '7', ?)`,
+			string(args), status, errText, long, base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fields := listApprovals(t, f.d, f.clock.Now())
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > automations.MaxSDKResultBytes/2 {
+		t.Errorf("approvals.list is %d bytes; want well under the %d-byte cap", len(raw), automations.MaxSDKResultBytes)
+	}
+	f.runNeedsApproval(t)
+	arts := f.artifacts(t)
+	for i := 1; i <= automations.MaxOutputsPerRun; i++ {
+		if _, ok := arts[db.ActionRef(int64(i))]; !ok {
+			t.Errorf("approval %d has no card", i)
+		}
+	}
+}
