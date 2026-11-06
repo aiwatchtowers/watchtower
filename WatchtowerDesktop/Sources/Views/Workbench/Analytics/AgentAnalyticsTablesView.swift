@@ -61,29 +61,38 @@ struct AgentAnalyticsTasksTable: View {
 
 /// The period's sessions as list rows: the id (it opens the session's
 /// detail) with its agent's tag, then the figures. An older session has no
-/// time figures; a session whose model has no price says "no price" (U4).
+/// time figures; a session whose calls had no price says "no price" (U4).
+/// A pane too narrow for every column drops Started, Subagents and Branch.
 struct AgentAnalyticsSessionsTable: View {
     let sessions: [AgentSessionRow]
     let actions: AgentAnalyticsActions
 
-    /// Column widths shared by the header and the rows; Branch takes the rest.
-    private enum Column {
-        static let session: CGFloat = 180
-        static let started: CGFloat = 120
-        static let active: CGFloat = 64
-        static let cost: CGFloat = 72
-        static let parallel: CGFloat = 96
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            AgentAnalyticsSessionRows(sessions: sessions, actions: actions, compact: false)
+            AgentAnalyticsSessionRows(sessions: sessions, actions: actions, compact: true)
+        }
     }
+}
+
+/// The sessions table in one width: every column, or (`compact`) the id,
+/// Active and Cost only.
+struct AgentAnalyticsSessionRows: View {
+    let sessions: [AgentSessionRow]
+    let actions: AgentAnalyticsActions
+    let compact: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Spacing.wide) {
-                header("Session", width: Column.session)
-                header("Started", width: Column.started)
-                header("Active", width: Column.active, alignment: .trailing)
-                header("Cost", width: Column.cost, alignment: .trailing)
-                header("Subagents ∥", width: Column.parallel, alignment: .trailing)
-                header("Branch", width: nil)
+                header("Session", width: ListLayout.textColumn)
+                if !compact { header("Started", width: ListLayout.dateColumn) }
+                header("Active", width: ListLayout.numberColumn, alignment: .trailing)
+                header("Cost", width: ListLayout.numberColumn, alignment: .trailing)
+                if !compact {
+                    header("Subagents ∥", width: ListLayout.numberColumn, alignment: .trailing)
+                    header("Branch", width: nil)
+                }
             }
             .padding(.horizontal, Spacing.regular)
             .padding(.bottom, Spacing.tight)
@@ -102,29 +111,26 @@ struct AgentAnalyticsSessionsTable: View {
                     .help("Show this session's analytics")
                 OutlineTag(text: AgentAnalyticsFormat.agentName(session))
             }
-            .frame(width: Column.session, alignment: .leading)
-            Text(AgentAnalyticsFormat.moment(session.startedAt))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: Column.started, alignment: .leading)
-            cell(session.oldFormat ? "—" : AgentAnalyticsFormat.duration(session.activeMS), width: Column.active)
-            Group {
-                if AgentAnalyticsFormat.hasNoPrice(session) {
-                    Text(AgentAnalyticsFormat.noPrice).foregroundStyle(.secondary)
-                        .help("Watchtower has no price for this model; its tokens still count")
-                } else {
-                    Text(AgentAnalyticsFormat.cost(session.costUSD)).monospacedDigit()
-                }
+            .frame(width: ListLayout.textColumn, alignment: .leading)
+            if !compact {
+                Text(AgentAnalyticsFormat.moment(session.startedAt))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: ListLayout.dateColumn, alignment: .leading)
             }
-            .lineLimit(1)
-            .frame(width: Column.cost, alignment: .trailing)
-            cell(session.oldFormat || session.avgParallel == 0 ? "—" : String(format: "%.1f", session.avgParallel),
-                 width: Column.parallel)
-            Text(session.oldFormat ? "older — time not analysed" : session.branch)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            cell(session.oldFormat ? "—" : AgentAnalyticsFormat.duration(session.activeMS))
+            AgentSessionCostText(session: session)
+                .frame(width: ListLayout.numberColumn, alignment: .trailing)
+            if !compact {
+                cell(session.oldFormat || session.avgParallel == 0 ? "—" : String(format: "%.1f", session.avgParallel))
+                Text(session.oldFormat ? "older — time not analysed" : session.branch)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    // A long branch truncates rather than pushing the pane to the compact rows.
+                    .frame(minWidth: ListLayout.numberColumn, idealWidth: ListLayout.numberColumn,
+                           maxWidth: .infinity, alignment: .leading)
+            }
         }
         .font(.callout)
     }
@@ -134,11 +140,29 @@ struct AgentAnalyticsSessionsTable: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .frame(minWidth: width ?? 0, maxWidth: width ?? .infinity, alignment: alignment)
+            .frame(minWidth: width ?? ListLayout.numberColumn, idealWidth: width ?? ListLayout.numberColumn,
+                   maxWidth: width ?? .infinity, alignment: alignment)
     }
 
-    private func cell(_ text: String, width: CGFloat) -> some View {
-        Text(text).monospacedDigit().lineLimit(1).frame(width: width, alignment: .trailing)
+    private func cell(_ text: String) -> some View {
+        Text(text).monospacedDigit().lineLimit(1).frame(width: ListLayout.numberColumn, alignment: .trailing)
+    }
+}
+
+/// A session's cost: "$1.80", or "no price" in `.secondary` when its calls
+/// had no price (U4).
+struct AgentSessionCostText: View {
+    let session: AgentSessionRow
+
+    var body: some View {
+        if AgentAnalyticsFormat.hasNoPrice(session) {
+            Text(AgentAnalyticsFormat.noPrice)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help("Watchtower has no price for these calls; their tokens still count")
+        } else {
+            Text(AgentAnalyticsFormat.cost(session.costUSD)).monospacedDigit().lineLimit(1)
+        }
     }
 }
 

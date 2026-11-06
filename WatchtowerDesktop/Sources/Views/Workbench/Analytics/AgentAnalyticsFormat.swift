@@ -22,6 +22,11 @@ enum AgentAnalyticsFormat {
         session.costUSD == 0 && session.costEstimatedCalls > 0
     }
 
+    /// A session's cost in a line of text: "$1.80" or "no price".
+    static func sessionCost(_ session: AgentSessionRow) -> String {
+        hasNoPrice(session) ? noPrice : cost(session.costUSD)
+    }
+
     /// The session's agent as its tag reads: "Claude Code", "Codex", or the
     /// raw value for an agent this app does not know.
     static func agentName(_ session: AgentSessionRow) -> String {

@@ -21,11 +21,12 @@ final class AgentAnalyticsPaneTests: XCTestCase {
         try view.inspect().findAll(ViewType.Text.self).map { try $0.string() }
     }
 
-    private func sessionsTable(_ sessions: [AgentSessionRow]) -> AgentAnalyticsSessionsTable {
-        AgentAnalyticsSessionsTable(
+    private func sessionRows(_ sessions: [AgentSessionRow], compact: Bool = false) -> AgentAnalyticsSessionRows {
+        AgentAnalyticsSessionRows(
             sessions: sessions,
             actions: AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in }, openFile: { _ in },
-                                           openAsks: {}, discuss: { _ in }, asksWaiting: false)
+                                           openAsks: {}, discuss: { _ in }, asksWaiting: false),
+            compact: compact
         )
     }
 
@@ -33,7 +34,7 @@ final class AgentAnalyticsPaneTests: XCTestCase {
         let overview = try CodexAnalyticsShotFixtures.overview()
         let codex = overview.sessions.filter { $0.agent == "codex" }
         XCTAssertEqual(codex.count, 2)
-        let all = try texts(sessionsTable(overview.sessions))
+        let all = try texts(sessionRows(overview.sessions))
 
         // Each row's tag names its agent by AgentKind's display name.
         XCTAssertEqual(all.filter { $0 == "Codex" }.count, 2, "\(all)")
@@ -46,18 +47,27 @@ final class AgentAnalyticsPaneTests: XCTestCase {
 
         for session in codex {
             XCTAssertTrue(AgentAnalyticsFormat.hasNoPrice(session))
+            XCTAssertEqual(AgentAnalyticsFormat.sessionCost(session), "no price", "the detail and report lines")
             XCTAssertEqual(AgentAnalyticsFormat.agentName(session), "Codex")
         }
+        // The narrow rows keep the tag and the cost, and drop the branch.
+        let narrow = try texts(sessionRows(overview.sessions, compact: true))
+        XCTAssertEqual(narrow.filter { $0 == "Codex" }.count, 2, "\(narrow)")
+        XCTAssertEqual(narrow.filter { $0 == "no price" }.count, 2, "\(narrow)")
+        XCTAssertFalse(narrow.contains("feature/cache-keys"), "\(narrow)")
+        XCTAssertTrue(all.contains("feature/cache-keys"), "\(all)")
         let claude = try XCTUnwrap(overview.sessions.first { $0.uuid.hasPrefix("11111111") })
         XCTAssertFalse(AgentAnalyticsFormat.hasNoPrice(claude), "cost 15 with one unpriced call")
+        XCTAssertEqual(AgentAnalyticsFormat.sessionCost(claude), "$15.00")
         XCTAssertEqual(AgentAnalyticsFormat.agentName(claude), "Claude Code")
 
         // The id still opens the session's detail.
         var opened: [String] = []
-        let table = AgentAnalyticsSessionsTable(
+        let table = AgentAnalyticsSessionRows(
             sessions: codex,
             actions: AgentAnalyticsActions(turnOn: {}, openSession: { opened.append($0) }, openTarget: { _ in },
-                                           openFile: { _ in }, openAsks: {}, discuss: { _ in }, asksWaiting: false)
+                                           openFile: { _ in }, openAsks: {}, discuss: { _ in }, asksWaiting: false),
+            compact: false
         )
         try table.inspect().find(button: "33333333").tap()
         XCTAssertEqual(opened, ["33333333-aaaa-bbbb-cccc-000000000003"])

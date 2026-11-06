@@ -19,7 +19,8 @@ enum CodexAnalyticsShotFixtures {
         }
     }
 
-    /// The Sessions table (folded under Time on the pane) on its own.
+    /// The Sessions table (folded under Time on the pane) on its own; a
+    /// narrow shot shows the compact rows.
     static func sessions() -> AnyView {
         do {
             let sessions = try overview().sessions

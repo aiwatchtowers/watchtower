@@ -405,6 +405,9 @@ enum DesignShotCatalog {
             DesignShot(name: "analytics-codex-sessions", size: NSSize(width: 900, height: 260)) {
                 CodexAnalyticsShotFixtures.sessions()
             },
+            DesignShot(name: "analytics-codex-sessions-narrow", size: NSSize(width: 480, height: 260)) {
+                CodexAnalyticsShotFixtures.sessions()
+            },
             DesignShot(name: "analytics-coach-edit-sheet", size: NSSize(width: 520, height: 320)) {
                 CoachShotFixtures.screen(.editSheet)
             },

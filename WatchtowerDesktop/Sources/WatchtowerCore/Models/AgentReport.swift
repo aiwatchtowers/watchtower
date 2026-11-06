@@ -173,7 +173,8 @@ package struct AgentTaskRow: Decodable, Equatable, Sendable {
 package struct AgentSessionRow: Decodable, Equatable, Sendable {
     package let uuid: String
     /// The agent that ran the session: an `AgentKind` raw value ("claude",
-    /// "codex"); kept a string so a newer CLI never fails the decode.
+    /// "codex"); kept a string so a new agent value never fails the decode.
+    /// Required: the bundled CLI writes it since the codex importer (G8).
     package let agent: String
     /// API calls of a model with no price: tokens only, cost 0 ("no price").
     package let costEstimatedCalls: Int
