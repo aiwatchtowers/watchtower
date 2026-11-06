@@ -47,6 +47,8 @@ final class LLMTransportGuardTests: XCTestCase {
         /* provider == "codex" in a block comment
            is not a check either */
         func pick(provider: String, kind: AgentKind) {
+            let glob = "\\(flag ? "/*" : "")"
+            let raw = #"{"glob":"/*"}"#
             if provider == "codex" { useTools() }
             guard "ollama" != name else { return }
             if kind == .claude || kind != AgentKind.codex { }
@@ -54,6 +56,7 @@ final class LLMTransportGuardTests: XCTestCase {
             case .ollama, .codex: break
             case "claude": break
             case AgentKind.claude,
+
                  .codex:
                 break
             case .other: return provider == "ollama"
@@ -63,7 +66,8 @@ final class LLMTransportGuardTests: XCTestCase {
             let url = "https://example.com" // == "claude" after a URL is a comment
             let label = "claude"
             let other = provider == "openai"
-            let known = ["claude", "openai"].contains(provider)
+            let known = ["claude", "openai"].contains (provider)
+            let one = { switch kind { case .ollama: 1; default: 0 } }
         }
         enum Provider: String {
             case claude = "claude"
@@ -79,7 +83,7 @@ final class LLMTransportGuardTests: XCTestCase {
             #"X.swift | pick | "claude""#: 2,
             "X.swift | pick | .claude": 2,
             "X.swift | pick | .codex": 4,
-            "X.swift | pick | .ollama": 1,
+            "X.swift | pick | .ollama": 2,
             "X.swift | var isCodex | .codexCLI": 1
         ]
         XCTAssertEqual(got, want)
@@ -103,7 +107,10 @@ final class LLMTransportGuardTests: XCTestCase {
     )
     // An array literal tested with `.contains(`.
     // swiftlint:disable:next force_try
-    private static let membership = try! NSRegularExpression(pattern: #"\[[^\[\]]*\]\s*\.contains\("#)
+    private static let membership = try! NSRegularExpression(pattern: #"\[[^\[\]]*\]\s*\.contains\s*\("#)
+    // A case head after `{` or `;` on one line.
+    // swiftlint:disable:next force_try
+    private static let inlineCase = try! NSRegularExpression(pattern: #"[{;]\s*case\s+([^:]+):"#)
     // The declaration a hit belongs to: a function, an init or a computed var.
     // swiftlint:disable:next force_try
     private static let declaration = try! NSRegularExpression(
@@ -143,6 +150,7 @@ final class LLMTransportGuardTests: XCTestCase {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         // `case claude = "claude"` declares a raw value; it compares nothing.
         if trimmed.range(of: #"^case \w+\s*="#, options: .regularExpression) != nil { return [] }
+        if inCaseHead && trimmed.isEmpty { return [] }
         if trimmed.hasPrefix("case ") || inCaseHead {
             // A case head runs to its `:`, possibly over several lines; the
             // rest of the line is the case body.
@@ -157,7 +165,13 @@ final class LLMTransportGuardTests: XCTestCase {
         if trimmed.range(of: #"\b(if|guard|while|for) case "#, options: .regularExpression) != nil {
             return tokens(caseItem, in: line, literalGroups: [1])
         }
-        return comparisons(in: line)
+        // A one-line `switch x { case .a: … }`: its heads after `{` or `;`.
+        var found: [String] = []
+        for match in inlineCase.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+            guard let head = Range(match.range(at: 1), in: line) else { continue }
+            found += tokens(caseItem, in: String(line[head]), literalGroups: [1])
+        }
+        return found + comparisons(in: line)
     }
 
     private static func comparisons(in line: String) -> [String] {
@@ -181,55 +195,95 @@ final class LLMTransportGuardTests: XCTestCase {
     }
 
     /// Strips comments (line and block, across lines) and tracks the brace
-    /// depth outside string literals.
+    /// depth outside string literals. Strings (plain, raw `#"…"#`, with
+    /// `\(…)` interpolations) are kept as text, so a `/*` or a brace inside
+    /// one never counts.
     private struct Lexer {
+        private enum Context {
+            case string(hashes: Int)
+            case interpolation(parens: Int)
+        }
+
         var inBlock = false
         var inMultilineString = false
         var depth = 0
+        private var stack: [Context] = []
+        private var chars: [Character] = []
+        private var index = 0
+        private var out = ""
 
         /// Returns the line without comments and its brace depth change.
         mutating func code(_ line: String) -> (String, Int) {
             // A `"""` line opens or closes a multi-line string; its body is
             // text, never a comment start or a brace.
-            if !inBlock, line.components(separatedBy: "\"\"\"").count % 2 == 0 {
+            if !inBlock, line.components(separatedBy: "\"\"\"").count.isMultiple(of: 2) {
                 inMultilineString.toggle()
                 return (line, 0)
             }
             if inMultilineString { return (line, 0) }
-            var out = ""
-            var inString = false
-            var escaped = false
             let start = depth
-            let chars = Array(line)
-            var index = 0
+            (stack, chars, index, out) = ([], Array(line), 0, "")
             while index < chars.count {
-                let char = chars[index]
-                let next: Character? = index + 1 < chars.count ? chars[index + 1] : nil
                 if inBlock {
-                    if char == "*" && next == "/" { inBlock = false; index += 1 }
-                } else if inString {
-                    out.append(char)
-                    if escaped {
-                        escaped = false
-                    } else if char == "\\" {
-                        escaped = true
-                    } else if char == "\"" {
-                        inString = false
-                    }
-                } else if char == "/" && next == "/" {
+                    if at("*/") { inBlock = false; index += 1 }
+                } else if case let .string(hashes)? = stack.last {
+                    stringStep(hashes: hashes)
+                } else if !codeStep() {
                     break
-                } else if char == "/" && next == "*" {
-                    inBlock = true
-                    index += 1
-                } else {
-                    out.append(char)
-                    if char == "\"" { inString = true }
-                    if char == "{" { depth += 1 }
-                    if char == "}" { depth -= 1 }
                 }
                 index += 1
             }
             return (out, depth - start)
+        }
+
+        private func at(_ text: String) -> Bool {
+            let pattern = Array(text)
+            return index + pattern.count <= chars.count && Array(chars[index..<index + pattern.count]) == pattern
+        }
+
+        private mutating func stringStep(hashes: Int) {
+            let char = chars[index]
+            out.append(char)
+            let closer = "\"" + String(repeating: "#", count: hashes)
+            if hashes == 0 && char == "\\" {
+                index += 1
+                guard index < chars.count else { return }
+                out.append(chars[index])
+                if chars[index] == "(" { stack.append(.interpolation(parens: 0)) }
+            } else if at(closer) {
+                out += String(repeating: "#", count: hashes)
+                index += hashes
+                stack.removeLast()
+            }
+        }
+
+        /// One character of code (or of an interpolation); false at a `//`.
+        private mutating func codeStep() -> Bool {
+            let char = chars[index]
+            if at("//") { return false }
+            if at("/*") { inBlock = true; index += 1; return true }
+            out.append(char)
+            if char == "#" || char == "\"" {
+                var hashes = 0
+                while index + hashes < chars.count && chars[index + hashes] == "#" { hashes += 1 }
+                if index + hashes < chars.count && chars[index + hashes] == "\"" {
+                    // `char` is already out; add the rest of the opener.
+                    if hashes > 0 { out += String(repeating: "#", count: hashes - 1) + "\"" }
+                    index += hashes
+                    stack.append(.string(hashes: hashes))
+                }
+                return true
+            }
+            if case let .interpolation(parens)? = stack.last {
+                if char == "(" { stack[stack.count - 1] = .interpolation(parens: parens + 1) }
+                if char == ")" {
+                    if parens == 0 { stack.removeLast() } else { stack[stack.count - 1] = .interpolation(parens: parens - 1) }
+                }
+                return true
+            }
+            if char == "{" { depth += 1 }
+            if char == "}" { depth -= 1 }
+            return true
         }
     }
 
