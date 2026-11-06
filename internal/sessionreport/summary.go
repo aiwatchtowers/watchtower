@@ -39,9 +39,11 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 
 // RefreshedSummaries is Summaries after a refresh of the merge verdicts
 // every agent session's counts read (board #986): git only — opts.Network
-// is ignored, gh never runs — within opts.Budget (0 = SummaryRefreshBudget).
-// The board and the cache are each read once. The result's note says what
-// could not be refreshed.
+// is ignored, gh never runs — within opts.Budget (0 = SummaryRefreshBudget),
+// each cache write waiting at most summaryWriteWait for the write lock (it
+// sets d's busy_timeout: d is the caller's own handle). A verdict read but
+// not saved still counts in the rows. The board and the cache are each read
+// once. The result's note says what could not be refreshed.
 func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts RefreshOptions) ([]Summary, RefreshResult, error) {
 	sessions, err := agentSessions(ctx, d, workbenchID)
 	if err != nil {
@@ -51,7 +53,7 @@ func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts R
 	for _, as := range sessions {
 		refs = append(refs, as.sc.mergeRefs()...)
 	}
-	opts.Network = false
+	opts.Network, opts.writeWait = false, summaryWriteWait
 	if opts.Budget <= 0 {
 		opts.Budget = SummaryRefreshBudget
 	}

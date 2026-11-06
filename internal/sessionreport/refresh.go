@@ -3,6 +3,7 @@ package sessionreport
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -21,6 +22,12 @@ const DefaultRefreshBudget = 10 * time.Second
 // SummaryRefreshBudget bounds the git-only refresh of the merge verdicts
 // that `session-report --summary` runs before its row lines (board #986).
 const SummaryRefreshBudget = 3 * time.Second
+
+// summaryWriteWait is how long one cache write of the --summary refresh
+// waits for another process's write lock (cut to the budget left): the
+// write is best effort — its verdict still reaches this run's rows — so it
+// never holds the row lines up behind the daemon for the handle's 5 s.
+const summaryWriteWait = 250 * time.Millisecond
 
 // A cached ref is re-checked once it is older than freshFor, or older than
 // settledFor when its pull request is merged or closed (rarely changes).
@@ -42,6 +49,11 @@ type RefreshOptions struct {
 	Network bool
 	Budget  time.Duration    // 0 = DefaultRefreshBudget
 	Now     func() time.Time // nil = time.Now
+	// writeWait > 0 bounds each cache write's lock wait (the handle's
+	// busy_timeout, set before each write and left at the last one's), cut
+	// to the budget left; a write with under 1 ms left is not tried.
+	// RefreshedSummaries sets it, on the CLI's own handle.
+	writeWait time.Duration
 }
 
 // RefreshResult is the outcome of one Refresh.
@@ -112,9 +124,9 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 	slices.SortStableFunc(stale, func(a, b string) int { return strings.Compare(cache[a].CheckedAt, cache[b].CheckedAt) })
 	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
 	defer cancel()
-	r := refresher{d: d, workbenchID: workbenchID, folder: wb.FolderPath, cache: cache, opts: opts}
-	r.open(ctx, stale)
 	deadline := start.Add(opts.Budget)
+	r := refresher{d: d, workbenchID: workbenchID, folder: wb.FolderPath, cache: cache, opts: opts, deadline: deadline}
+	r.open(ctx, stale)
 	for i, ref := range stale {
 		// A ref whose read the budget cut short counts as not checked.
 		if ctx.Err() != nil || opts.Now().After(deadline) || !r.check(ctx, ref) {
@@ -124,6 +136,7 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 	}
 	r.noteGuards()
 	r.noteSkipped()
+	r.noteUnsaved()
 	return RefreshResult{Note: strings.Join(r.notes, "; ")}, cache
 }
 
@@ -147,6 +160,7 @@ type refresher struct {
 	folder      string
 	cache       map[string]db.PRState
 	opts        RefreshOptions
+	deadline    time.Time                             // the budget's end
 	inRepo      bool                                  // the folder is inside a git repository
 	repo        *workbenchcheck.Repository            // against the default branch; nil outside a repository or with into: refs only
 	bases       map[string]*workbenchcheck.Repository // against each into: base, opened on first use
@@ -154,6 +168,8 @@ type refresher struct {
 	notes       []string
 	skipped     int    // refs whose state could not be read
 	firstErr    string // why the first of them could not
+	unsaved     int    // refs read, but their cache write failed
+	firstUnsave string // why the first of them failed
 }
 
 // open probes the repository and gh once. A plain folder runs no git — and
@@ -218,9 +234,34 @@ func (r *refresher) noteSkipped() {
 	}
 }
 
+func (r *refresher) noteUnsaved() {
+	if r.unsaved > 0 {
+		r.note(fmt.Sprintf("the state of %d ref(s) was read but could not be saved (%s)", r.unsaved, r.firstUnsave))
+	}
+}
+
+// errNoTimeToSave is a cache write the budget left no time for.
+var errNoTimeToSave = errors.New("no time left in the refresh budget")
+
+// save stores row in the cache table, its lock wait bounded by
+// opts.writeWait when set.
+func (r *refresher) save(row db.PRState) error {
+	if r.opts.writeWait > 0 {
+		wait := min(r.opts.writeWait, r.deadline.Sub(r.opts.Now()))
+		if wait < time.Millisecond {
+			return errNoTimeToSave
+		}
+		if err := r.d.SetBusyTimeout(wait); err != nil {
+			return err
+		}
+	}
+	return r.d.UpsertPRState(row)
+}
+
 // check reads one ref and stores it; false when the budget cut the read
 // short. Such a read is neither stored (it would read as "not found") nor
-// counted as a failure.
+// counted as a failure. A read whose write fails still serves this run's
+// rows (r.cache) and is counted apart: it was read, not saved.
 func (r *refresher) check(ctx context.Context, ref string) bool {
 	if !r.inRepo {
 		return true
@@ -236,9 +277,11 @@ func (r *refresher) check(ctx context.Context, ref string) bool {
 	}
 	row.WorkbenchID, row.Ref = r.workbenchID, ref
 	row.CheckedAt = r.opts.Now().UTC().Format(time.RFC3339)
-	if err := r.d.UpsertPRState(row); err != nil {
-		r.skip(ref, err.Error())
-		return true
+	if err := r.save(row); err != nil {
+		if r.unsaved == 0 {
+			r.firstUnsave = workbenchcheck.ClipNote(ref + ": " + err.Error())
+		}
+		r.unsaved++
 	}
 	r.cache[ref] = row
 	return true
