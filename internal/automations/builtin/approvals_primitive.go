@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 	"watchtower/internal/slack"
 	"watchtower/internal/tools"
@@ -177,7 +178,8 @@ func actionSummary(argsJSON string) string {
 }
 
 // reminderLink is the Slack web link of a reminder's message
-// (<channel>@<ts>, split on the last @), "" when it names none.
+// (<channel>@<ts>, split on the last @), "" when it names none or the link
+// is longer than a card link may be (blocks.MaxLinkBytes).
 func reminderLink(ref string) string {
 	at := strings.LastIndex(ref, "@")
 	if at <= 0 || at == len(ref)-1 {
@@ -187,7 +189,11 @@ func reminderLink(ref string) string {
 	if channel == "" || strings.ContainsAny(channel+ts, "/?#% ") {
 		return ""
 	}
-	return "https://slack.com/archives/" + channel + "/p" + strings.ReplaceAll(ts, ".", "")
+	link := "https://slack.com/archives/" + channel + "/p" + strings.ReplaceAll(ts, ".", "")
+	if len(link) > blocks.MaxLinkBytes {
+		return "" // the blocks would refuse it, and with it the whole run
+	}
+	return link
 }
 
 // oneLine is s with every run of whitespace (newlines included) as one

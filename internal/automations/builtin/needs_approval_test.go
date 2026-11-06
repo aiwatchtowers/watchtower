@@ -558,3 +558,25 @@ func TestNeedsApproval_LongApprovalsStayUnderTheResultCap(t *testing.T) {
 		}
 	}
 }
+
+// A reminder whose message ref makes a link longer than a card link may be
+// gets no link; the run still succeeds and draws its card.
+func TestNeedsApproval_OverlongReminderLinkIsDropped(t *testing.T) {
+	if got := reminderLink("C0ACME01@" + strings.Repeat("1", blocks.MaxLinkBytes)); got != "" {
+		t.Errorf("reminderLink = %d bytes, want none", len(got))
+	}
+	if got := reminderLink("C0ACME01@1740000000.000100"); got != "https://slack.com/archives/C0ACME01/p1740000000000100" {
+		t.Errorf("reminderLink = %q", got)
+	}
+	f := newFixture(t)
+	f.sync(t)
+	if _, err := f.d.InsertReminder(db.Reminder{Note: "Call colleague A", MessageRef: "C0ACME01@" + strings.Repeat("1", blocks.MaxLinkBytes),
+		RemindAt: f.clock.Now().Add(-time.Hour).Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	f.runNeedsApproval(t)
+	r, ok := f.artifacts(t)["reminder:1"]
+	if !ok || strings.Contains(r.BlocksJSON, "slack.com") {
+		t.Errorf("reminder card = %v %s; want one without a link", ok, r.BlocksJSON)
+	}
+}
