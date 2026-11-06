@@ -197,7 +197,7 @@ func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logO
 			now.Sub(row.AgentStateAt) < sessionhost.CodexMissingGiveUp {
 			return "", "", nil
 		}
-		return markCodexNotWatched(database, row.ID, db.WatchIssueMissing, now)
+		return markCodexNotWatched(database, row, db.WatchIssueMissing, now)
 	}
 	path, ok := sessionfeed.LocateCodex(terminalCodexHome(), sessionID, row.TranscriptPath.String)
 	if !ok {
@@ -208,7 +208,7 @@ func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logO
 	if errors.As(err, &wi) {
 		switch wi.Issue {
 		case db.WatchIssuePermission, db.WatchIssueCompressed:
-			return markCodexNotWatched(database, row.ID, wi.Issue, now)
+			return markCodexNotWatched(database, row, wi.Issue, now)
 		case db.WatchIssueMissing:
 			return missing()
 		}
@@ -219,7 +219,7 @@ func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logO
 	}
 	if turn.TailUndecodable {
 		if st, statErr := os.Stat(path); statErr == nil && now.Sub(st.ModTime()) >= sessionhost.CodexUnreadableGiveUp {
-			return markCodexNotWatched(database, row.ID, db.WatchIssueUnreadable, now)
+			return markCodexNotWatched(database, row, db.WatchIssueUnreadable, now)
 		}
 	}
 	if !turn.Failed {
@@ -247,10 +247,13 @@ func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logO
 	return "", "", nil
 }
 
-// markCodexNotWatched marks row not watched with issue; outcome is
-// probeNotWatched only when this probe wrote it.
-func markCodexNotWatched(database *db.DB, rowID int64, issue string, now time.Time) (detail, outcome string, err error) {
-	written, err := database.SetAgentWatchIssue(rowID, issue, now)
+// markCodexNotWatched marks row not watched with issue, only while the
+// stored row is still the one this probe read (db.SetAgentWatchIssue);
+// outcome is probeNotWatched only when this probe wrote it.
+func markCodexNotWatched(database *db.DB, row *db.TerminalSession, issue string, now time.Time) (detail, outcome string, err error) {
+	seen := db.CodexWatchRow{ID: row.ID, SessionID: row.ClaudeSessionID.String,
+		TranscriptPath: row.TranscriptPath.String, StateAt: row.AgentStateAt}
+	written, err := database.SetAgentWatchIssue(seen, issue, now)
 	if err != nil || !written {
 		return "", "", err
 	}

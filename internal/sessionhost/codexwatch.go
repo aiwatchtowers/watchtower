@@ -42,13 +42,14 @@ const CodexUnreadableGiveUp = codexUnreadableTicks * CodexWatchEvery
 // CodexWatchStore is the database side of a watch: the row it reads each
 // tick and the two writes. RecordTurn writes a failed or aborted turn the
 // way the hooks do (recordAgentState, only over `working`, stamped with the
-// rollout line's time); SetIssue is db.SetAgentWatchIssue (false on a
-// repeat or when a guard held it back). Close releases the store when the
+// rollout line's time); SetIssue is db.SetAgentWatchIssue over the row as
+// the tick read it (false on a repeat, when a guard held it back or when the
+// row moved since). Close releases the store when the
 // session ends.
 type CodexWatchStore interface {
 	Row(id int64) (db.CodexWatchRow, error)
 	RecordTurn(row db.CodexWatchRow, turn sessionfeed.CodexTurn) error
-	SetIssue(id int64, issue string, at time.Time) (bool, error)
+	SetIssue(seen db.CodexWatchRow, issue string, at time.Time) (bool, error)
 	Close() error
 }
 
@@ -61,6 +62,8 @@ type CodexWatch struct {
 	locate    func(codexHome, sessionID, storedPath string) (string, bool)
 	read      func(path string) (sessionfeed.CodexTurn, error)
 
+	// seen is the row as this tick read it: a give-up's verdict is about it.
+	seen db.CodexWatchRow
 	// arm is reset whenever the row stops reading `working`, its issue
 	// clears or its transcript path changes.
 	arm codexArm
@@ -135,6 +138,7 @@ func (w *CodexWatch) Tick(now time.Time) (done bool) {
 	if !agentkind.SessionCapsOf(r.Kind).RolloutWatch {
 		return true
 	}
+	w.seen = r
 	if r.State != "working" || r.Finished || r.Failed || r.WatchIssue != "" || r.TranscriptPath == "" || r.SessionID == "" {
 		w.disarm() // not armed: hooks alone drive the row; armed again when it works
 		return false
@@ -243,7 +247,7 @@ func (w *CodexWatch) unreadableTick(now time.Time) {
 // a hook may clear the issue before the next tick, and the next prompt then
 // starts a fresh arm, never this one's expired grace.
 func (w *CodexWatch) giveUp(issue string, now time.Time) {
-	ok, err := w.store.SetIssue(w.row, issue, now)
+	ok, err := w.store.SetIssue(w.seen, issue, now)
 	if err != nil {
 		w.logOnce("marking the row not watched", err)
 		return
@@ -308,8 +312,8 @@ func (s *DBWatchStore) RecordTurn(row db.CodexWatchRow, turn sessionfeed.CodexTu
 }
 
 // SetIssue marks the row not watched (db.SetAgentWatchIssue).
-func (s *DBWatchStore) SetIssue(id int64, issue string, at time.Time) (bool, error) {
-	return s.DB.SetAgentWatchIssue(id, issue, at)
+func (s *DBWatchStore) SetIssue(seen db.CodexWatchRow, issue string, at time.Time) (bool, error) {
+	return s.DB.SetAgentWatchIssue(seen, issue, at)
 }
 
 // Close closes the database.

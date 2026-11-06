@@ -67,10 +67,11 @@ func (s *fakeWatchStore) RecordTurn(_ db.CodexWatchRow, turn sessionfeed.CodexTu
 	return nil
 }
 
-func (s *fakeWatchStore) SetIssue(_ int64, issue string, _ time.Time) (bool, error) {
+func (s *fakeWatchStore) SetIssue(seen db.CodexWatchRow, issue string, _ time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.row.State != "working" || s.row.Failed || s.row.Finished || s.row.WatchIssue == issue {
+	moved := seen.SessionID != s.row.SessionID || seen.TranscriptPath != s.row.TranscriptPath || !seen.StateAt.Equal(s.row.StateAt)
+	if s.row.State != "working" || s.row.Failed || s.row.Finished || s.row.WatchIssue == issue || moved {
 		return false, nil
 	}
 	s.row.WatchIssue = issue

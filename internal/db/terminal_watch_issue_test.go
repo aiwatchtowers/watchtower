@@ -29,6 +29,16 @@ func seedCodexWatchRow(t *testing.T, d *DB, kind, state string) (row, wb int64) 
 	return row, wb
 }
 
+// seenRow is row as the watch reads it before a give-up.
+func seenRow(t *testing.T, d *DB, row int64) CodexWatchRow {
+	t.Helper()
+	r, err := d.GetCodexWatchRow(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func watchIssueOf(t *testing.T, d *DB, row int64) (issue, at sql.NullString) {
 	t.Helper()
 	if err := d.QueryRow(`SELECT agent_watch_issue, agent_watch_issue_at FROM terminal_sessions WHERE id = ?`, row).
@@ -75,7 +85,7 @@ func TestProj11_WatchIssueOnlyOverWorkingCodexRow(t *testing.T) {
 		{"claude", "working", false},
 	} {
 		row, _ := seedCodexWatchRow(t, d, c.kind, c.state)
-		ok, err := d.SetAgentWatchIssue(row, "missing", at)
+		ok, err := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", at)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,18 +105,18 @@ func TestProj11_WatchIssueOnlyOverWorkingCodexRow(t *testing.T) {
 	if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-05T10:00:01.000Z' WHERE id = ?`, row); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := d.SetAgentWatchIssue(row, "missing", at); ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", at); ok {
 		t.Error("a finished row took a watch issue")
 	}
 
 	row, _ = seedCodexWatchRow(t, d, "codex", "working")
-	if ok, _ := d.SetAgentWatchIssue(row, "permission", at); !ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "permission", at); !ok {
 		t.Fatal("first issue not written")
 	}
-	if ok, _ := d.SetAgentWatchIssue(row, "permission", at.Add(time.Second)); ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "permission", at.Add(time.Second)); ok {
 		t.Error("the same issue again wrote: one log line per row and issue needs a false repeat")
 	}
-	if _, err := d.SetAgentWatchIssue(row, "bogus", at); err == nil {
+	if _, err := d.SetAgentWatchIssue(seenRow(t, d, row), "bogus", at); err == nil {
 		t.Error("an unknown issue class was accepted")
 	}
 }
@@ -117,7 +127,7 @@ func TestProj11_FailureWinsOverWatchIssue(t *testing.T) {
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_failed_at = agent_state_at, agent_error = 'overloaded' WHERE id = ?`, row); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := d.SetAgentWatchIssue(row, "unreadable", time.Now()); ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "unreadable", time.Now()); ok {
 		t.Fatal("a row carrying a failure took a watch issue")
 	}
 }
@@ -125,7 +135,7 @@ func TestProj11_FailureWinsOverWatchIssue(t *testing.T) {
 func TestClearAgentWatchIssue(t *testing.T) {
 	d := openTestDB(t)
 	row, _ := seedCodexWatchRow(t, d, "codex", "working")
-	if ok, _ := d.SetAgentWatchIssue(row, "compressed", time.Now()); !ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "compressed", time.Now()); !ok {
 		t.Fatal("not set")
 	}
 	ok, err := d.ClearAgentWatchIssue(row)
@@ -137,5 +147,29 @@ func TestClearAgentWatchIssue(t *testing.T) {
 	}
 	if ok, _ := d.ClearAgentWatchIssue(row); ok {
 		t.Fatal("clearing nothing reported a change")
+	}
+}
+
+// A verdict read off one snapshot never lands on another (spec §3.5's
+// re-arm): a new session id, a new transcript path or a new state stamp
+// between the watch's read and its write holds the write back.
+func TestProj11_WatchIssueRefusedOnAChangedSnapshot(t *testing.T) {
+	d := openTestDB(t)
+	for _, change := range []string{
+		`claude_session_id = 'sid-2'`,
+		`agent_transcript_path = '/work/rollout-2.jsonl'`,
+		`agent_state_at = '2026-11-05T10:00:05.000Z'`,
+	} {
+		row, _ := seedCodexWatchRow(t, d, "codex", "working")
+		seen := seenRow(t, d, row)
+		if _, err := d.Exec(`UPDATE terminal_sessions SET `+change+` WHERE id = ?`, row); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := d.SetAgentWatchIssue(seen, "missing", time.Now()); err != nil || ok {
+			t.Errorf("after %s: SetAgentWatchIssue = %v, %v; want false", change, ok, err)
+		}
+		if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", time.Now()); !ok {
+			t.Errorf("after %s: the fresh snapshot's verdict was refused", change)
+		}
 	}
 }

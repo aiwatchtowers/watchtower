@@ -1290,7 +1290,9 @@ When the watch cannot read a working codex row's rollout it marks the row not
 watched instead: `terminal_sessions.agent_watch_issue` (migration 00173:
 `missing`/`permission`/`compressed`/`unreadable`) and `agent_watch_issue_at`,
 written by `db.SetAgentWatchIssue` only over a `working` codex row that is not
-finished and carries no failure (a failure wins). Missing: after 30 s, with one
+finished and carries no failure (a failure wins), and only while the row still
+holds the session id, transcript path and state stamp the verdict was read
+off (a hook in between re-arms instead; a give-up ends the arm). Missing: after 30 s, with one
 `LocateCodex` lookup by session id; permission (EACCES/EPERM) and compressed
 (a zstd rollout that does not decode) at once; unreadable after three ticks
 in a row with an undecodable committed last line (an unterminated last line
