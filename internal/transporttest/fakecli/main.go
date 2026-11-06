@@ -28,6 +28,8 @@
 //	argv-has <text>      exit 97 unless the space-joined argv contains <text>
 //	argv-lacks <text>    exit 97 if the space-joined argv contains <text>
 //	stdin-has <text>     read stdin lines until one contains <text>; exit 98 at EOF
+//	rollout <line>       append <line> to the run's codex rollout under
+//	                     $CODEX_HOME/sessions (a codex run in its own home)
 //
 // Reaching the end of the section exits 0.
 package main
@@ -39,6 +41,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -197,6 +200,8 @@ func run(lines []string, argv []string) {
 			if strings.Contains(joined, arg) {
 				fail(exitArgv, "fakecli: argv has %q", arg)
 			}
+		case "rollout":
+			appendRollout(arg)
 		case "stdin-has":
 			if stdin == nil {
 				stdin = bufio.NewReaderSize(os.Stdin, 1<<20)
@@ -214,6 +219,29 @@ func emit(line string) {
 		return strings.Repeat("x", n)
 	})
 	_, _ = os.Stdout.WriteString(line + "\n")
+}
+
+// appendRollout appends line to the one rollout file of the run's
+// CODEX_HOME, as codex writes it while a non-ephemeral run goes on.
+func appendRollout(line string) {
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		fail(exitFixture, "fakecli: rollout: CODEX_HOME is not set")
+	}
+	dir := filepath.Join(home, "sessions", "2026", "01", "01")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fail(exitFixture, "fakecli: rollout: %v", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "rollout-2026-01-01T00-00-00-fake.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		fail(exitFixture, "fakecli: rollout: %v", err)
+	}
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		fail(exitFixture, "fakecli: rollout: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		fail(exitFixture, "fakecli: rollout: %v", err)
+	}
 }
 
 func waitStdin(r *bufio.Reader, want string) {

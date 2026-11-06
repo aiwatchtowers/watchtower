@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,6 +49,11 @@ type Client struct {
 	noServers bool
 	// toolEvents: Query streams the protocol-v2 chat events (EmitToolEvents).
 	toolEvents bool
+	// maxTurns caps the run's model turns (SetMaxTurns, turncap.go); 0 = none.
+	maxTurns int
+	// runHome is the run's private CODEX_HOME (SetRunHome); "" = the
+	// inherited one and an --ephemeral run.
+	runHome string
 }
 
 // SetNoMCPServers makes the run tool-less on MCP: every server of the
@@ -100,10 +106,20 @@ func (c *Client) childEnviron(extra []string) []string {
 }
 
 func (c *Client) baseEnv() []string {
+	base := os.Environ()
 	if c.childEnvSet {
-		return c.childEnv
+		base = c.childEnv
 	}
-	return os.Environ()
+	if c.runHome == "" {
+		return base
+	}
+	env := make([]string, 0, len(base)+1)
+	for _, e := range base {
+		if !strings.HasPrefix(e, "CODEX_HOME=") {
+			env = append(env, e)
+		}
+	}
+	return append(env, "CODEX_HOME="+c.runHome)
 }
 
 // SetReadFolder makes the run a read-only look at dir (`ai query
@@ -186,10 +202,16 @@ func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount [
 // need; for a read-folder run also the read-only sandbox with the shell on
 // and web search off (SetReadFolder). The MCP servers come from mount.
 func (c *Client) execArgs() []string {
-	if c.readFolder == "" {
-		return append(execPrefix(c.model), featuresOff(toolRunFeatures)...)
+	prefix := execPrefix(c.model)
+	if c.runHome != "" {
+		// The rollout the turn cap counts lives in the run's own home,
+		// which the caller removes after the run.
+		prefix = slices.DeleteFunc(prefix, func(a string) bool { return a == "--ephemeral" })
 	}
-	args := append(execPrefix(c.model), featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
+	if c.readFolder == "" {
+		return append(prefix, featuresOff(toolRunFeatures)...)
+	}
+	args := append(prefix, featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
 	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", `web_search="disabled"`)
 }
 
@@ -297,6 +319,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// waits on a codex blocked writing into a pipe nobody reads.
 		runCtx, cancelRun := context.WithCancel(ctx)
 		defer cancelRun()
+		turns := newTurnCap(c.maxTurns, c.runHome, cancelRun)
+		go turns.watch(runCtx)
 		cmd := exec.CommandContext(runCtx, c.codexCmd, args...)
 		cmd.Stdin = strings.NewReader(promptStdin)
 		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
@@ -332,7 +356,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		for {
 			line, readErr := lines.Next()
 			s.skipped = lines.Skipped()
-			if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && !s.handle(trimmed) {
+			// A line past the turn cap is not handled: that turn never shows.
+			if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && turns.line(trimmed) && !s.handle(trimmed) {
 				_ = cmd.Wait()
 				s.finish()
 				errCh <- ctx.Err()
@@ -345,6 +370,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				cancelRun()
 				_ = cmd.Wait()
 				s.finish()
+				// The cap's kill may close the pipe under the read.
+				if capErr := turns.done(); capErr != nil {
+					errCh <- capErr
+					return
+				}
 				errCh <- providers.ContextFailure("codex", ctx, fmt.Errorf("reading codex output: %w", readErr))
 				return
 			}
@@ -352,7 +382,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		s.finish()
 
 		err = cmd.Wait()
+		capErr := turns.done()
 		switch {
+		case capErr != nil:
+			errCh <- capErr
 		case s.terminal != nil:
 			terminal := s.terminal
 			if err != nil {
@@ -395,7 +428,11 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 	defer holdPromptFile(promptFile)() // see Query
 
-	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	turns := newTurnCap(c.maxTurns, c.runHome, cancelRun)
+	go turns.watch(runCtx)
+	cmd := exec.CommandContext(runCtx, c.codexCmd, args...)
 	cmd.Stdin = strings.NewReader(promptStdin)
 	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 	defer reap()
@@ -406,9 +443,16 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	start := time.Now()
-	output, err := cmd.Output()
+	stdout := &lineSink{cap: turns}
+	cmd.Stdout = stdout
+	err = cmd.Run()
+	output := stdout.buf.Bytes()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
+	if capErr := turns.done(); capErr != nil {
+		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
+		return "", nil, capErr
+	}
 	if err != nil {
 		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)

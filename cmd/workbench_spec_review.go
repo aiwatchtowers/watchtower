@@ -114,7 +114,12 @@ func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user st
 	var out string
 	var err error
 	if a.cfg.AI.Provider == "codex" {
-		out, _, err = specReviewCodexClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
+		home, err := specReviewCodexHome()
+		if err != nil {
+			return "", false, wrapSpecReviewErr("codex reviewer", err)
+		}
+		defer func() { _ = os.RemoveAll(home) }()
+		out, _, err = specReviewCodexClient(a.cfg, a.model, folder, home).QuerySync(ctx, system, user, "")
 		return out, true, wrapSpecReviewErr("codex reviewer", err)
 	}
 	out, _, err = specReviewClaudeClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
@@ -132,13 +137,35 @@ func specReviewClaudeClient(cfg *config.Config, model, folder string) *ai.Client
 }
 
 // specReviewCodexClient: SetNoMCPServers disables the owner's codex servers
-// and mounts none (an empty database path alone would leave them on).
-func specReviewCodexClient(cfg *config.Config, model, folder string) *codex.Client {
+// and mounts none (an empty database path alone would leave them on). The
+// run is capped at specreview.MaxTurns model turns, counted from its
+// rollout in home (specReviewCodexHome), as claude's --max-turns caps the
+// claude reviewer (SPECREVIEW-01, AUTO-08's turn unit).
+func specReviewCodexClient(cfg *config.Config, model, folder, home string) *codex.Client {
 	c := codex.NewClient(model, "", cfg.CodexPath)
 	c.SetReadFolder(folder)
 	c.SetNoMCPServers()
+	c.SetRunHome(home)
+	c.SetMaxTurns(specreview.MaxTurns)
 	c.SetProcessGroup(true)
 	return c
+}
+
+// specReviewCodexHome is the codex reviewer's private CODEX_HOME, a fresh
+// 0700 temp folder the caller removes after the run: it holds the run's
+// rollout, so the review never reaches the owner's codex history. The
+// owner's sign-in and config.toml (model provider, profiles; its MCP
+// servers are switched off by SetNoMCPServers) are linked, never copied.
+func specReviewCodexHome() (string, error) {
+	dir, err := os.MkdirTemp("", "wt-review-codex-home-*")
+	if err != nil {
+		return "", fmt.Errorf("creating the reviewer's codex home: %w", err)
+	}
+	if err := linkOwnerCodexFiles(dir, "auth.json", "config.toml"); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
 }
 
 // wrapSpecReviewErr names the reviewer a failure came from; nil stays nil.

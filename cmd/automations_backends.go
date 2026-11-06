@@ -253,9 +253,13 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		c.SetMCPArgs(mcpArgs)
 		c.SetMCPEnvVars(codexAgentServerEnv)
 		// codex only: CODEX_HOME joins the env allowlist, pointing at the
-		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
-		c.SetChildEnv(append(env, "CODEX_HOME="+home))
+		// scrubbed per-run home (codexAgentHome) instead of ~/.codex; the
+		// run's rollout is written there and counted for the turn cap
+		// (AUTO-08), and goes with the home.
+		c.SetChildEnv(env)
+		c.SetRunHome(home)
 		c.SetServersFromHome()
+		c.SetMaxTurns(automationAgentMaxTurns)
 		c.SetProcessGroup(true)
 		client = c
 	} else {
@@ -359,7 +363,8 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 var codexAgentServerEnv = []string{automations.RunEnvMarker}
 
 // codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
-// temp folder the caller removes after the run. Its config.toml turns web
+// temp folder the caller removes after the run, with the run's rollout
+// (the run is not --ephemeral: its turn cap counts the rollout, N5). Its config.toml turns web
 // search off and declares only the watchtower automation-run server, so
 // neither the owner's ~/.codex/config.toml MCP servers nor web search —
 // both outside the effective tool set and GateAgentCall, and an
@@ -376,14 +381,26 @@ func codexAgentHome(dbPath string, mcpArgs []string) (string, error) {
 		_ = os.RemoveAll(dir)
 		return "", fmt.Errorf("writing the agent's codex config: %w", err)
 	}
-	auth := filepath.Join(ownerCodexHome(), "auth.json")
-	if _, err := os.Stat(auth); err == nil {
-		if err := os.Symlink(auth, filepath.Join(dir, "auth.json")); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", fmt.Errorf("linking the codex sign-in: %w", err)
-		}
+	if err := linkOwnerCodexFiles(dir, "auth.json"); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
 	}
 	return dir, nil
+}
+
+// linkOwnerCodexFiles links each named file of the owner's codex home that
+// exists into dir, never copying it: removing dir removes only the links.
+func linkOwnerCodexFiles(dir string, names ...string) error {
+	for _, name := range names {
+		src := filepath.Join(ownerCodexHome(), name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		if err := os.Symlink(src, filepath.Join(dir, name)); err != nil {
+			return fmt.Errorf("linking the owner's codex %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // ownerCodexHome is the owner's codex home: CODEX_HOME, else ~/.codex.

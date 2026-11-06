@@ -284,6 +284,17 @@ func codexClient(r *run) *codex.Client {
 	if r.readFolder != "" {
 		c.SetReadFolder(r.readFolder)
 	}
+	if r.maxTurns > 0 {
+		// As agent() and the spec reviewer run it: a private home whose
+		// rollout the cap counts (N5, ask #522).
+		home := filepath.Join(r.dir, "codex-home")
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			r.t.Fatal(err)
+		}
+		c.SetRunHome(home)
+		c.SetMaxTurns(r.maxTurns)
+		r.capApplied = true
+	}
 	return c
 }
 
@@ -340,8 +351,7 @@ type run struct {
 	// external are the Quick Connections a quick-connection cell mounts
 	// (a fake MCP server); nil = none.
 	external []ai.ExternalMCPServer
-	// capApplied is set by an adapter that put maxTurns in force (a codex
-	// client has no turn cap yet: L3).
+	// capApplied is set by an adapter that put maxTurns in force.
 	capApplied bool
 
 	srvOnce sync.Once

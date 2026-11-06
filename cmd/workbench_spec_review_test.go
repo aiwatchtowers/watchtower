@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/providers"
 	"watchtower/internal/specreview"
 )
 
@@ -191,8 +193,11 @@ func TestSpecReviewCodexClient_NoMCPServers(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[mcp_servers.mine]\ncommand = \"npx\"\n"), 0o600))
 	t.Setenv("CODEX_HOME", home)
 	folder := t.TempDir()
+	runHome, err := specReviewCodexHome()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(runHome) })
 	// /usr/bin/false: the version probe never runs a real codex.
-	args := specReviewCodexClient(&config.Config{CodexPath: "/usr/bin/false"}, "strong", folder).ArgsForTest("sys", "user")
+	args := specReviewCodexClient(&config.Config{CodexPath: "/usr/bin/false"}, "strong", folder, runHome).ArgsForTest("sys", "user")
 	require.NotNil(t, args)
 	joined := strings.Join(args, "\x00")
 	assert.Contains(t, joined, `"mine"={enabled=false}`, "the owner's server is switched off")
@@ -254,4 +259,67 @@ func TestSpecReviewReveal_CLI(t *testing.T) {
 	row, err = database2.GetSpecReview(id2)
 	require.NoError(t, err)
 	assert.Equal(t, "owner", row.LoopEnd)
+}
+
+// codexReviewer is the codex spec reviewer over a codex stub playing
+// stream, with rollout ("" = none) written to the run's home first; the
+// owner's codex home holds a sign-in and a config.
+func codexReviewer(t *testing.T, stream, rollout string) (*claudeStub, *specReviewCLIAgent, string) {
+	t.Helper()
+	stub := newClaudeStub(t, stream)
+	if rollout != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "rollout"), []byte(rollout), 0o600))
+	}
+	owner := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "auth.json"), []byte(`{"fake":true}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "config.toml"), []byte("model = \"acme\"\n"), 0o600))
+	t.Setenv("CODEX_HOME", owner)
+	cfg := &config.Config{CodexPath: stub.path, AI: config.AIConfig{Provider: "codex"}}
+	return stub, &specReviewCLIAgent{cfg: cfg, model: "strong"}, owner
+}
+
+// SPECREVIEW-01 note / AUTO-08's unit: the codex reviewer is capped at
+// specreview.MaxTurns model turns, as claude's --max-turns caps the claude
+// reviewer; a stream past the cap fails with a budget failure.
+func TestSpecReview_CodexReviewerHasTheTurnCap(t *testing.T) {
+	stub, agent, _ := codexReviewer(t, codexResponses(specreview.MaxTurns+1), "")
+	_, _, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.Error(t, err)
+	var f *providers.Failure
+	require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+	assert.Equal(t, providers.Budget, f.Category)
+	assert.Contains(t, err.Error(), fmt.Sprintf("stopped after %d model turns", specreview.MaxTurns))
+	assert.NotContains(t, stub.argv(t), "--ephemeral", "the run counts its rollout")
+
+	_, agent, _ = codexReviewer(t, codexResponses(specreview.MaxTurns), "")
+	out, codeRead, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.NoError(t, err)
+	assert.True(t, codeRead)
+	assert.Equal(t, "done", out)
+}
+
+// N5 (ask #522): the reviewer counts its rollout, which lives in a private
+// home with the owner's sign-in and config linked, and is removed with it.
+func TestCodexSpecReview_StopsAtMaxTurnsFromRollout(t *testing.T) {
+	stub, agent, owner := codexReviewer(t, codexResponses(1), codexRollout(specreview.MaxTurns+1))
+	_, _, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("stopped after %d model turns", specreview.MaxTurns))
+
+	home := strings.TrimSpace(string(readFile(t, filepath.Join(stub.dir, "codex-home"))))
+	assert.NotEqual(t, owner, home, "never the owner's codex home")
+	assert.Equal(t, filepath.Join(owner, "auth.json"), strings.TrimSpace(string(readFile(t, filepath.Join(stub.dir, "codex-auth-link")))))
+	assert.Equal(t, "model = \"acme\"\n", string(readFile(t, filepath.Join(stub.dir, "codex-home.toml"))), "the owner's config is linked")
+	assert.Contains(t, string(readFile(t, filepath.Join(stub.dir, "home-ls"))), "rollout-")
+	_, err = os.Stat(home)
+	assert.True(t, os.IsNotExist(err), "the home, rollout included, is removed")
+	assert.FileExists(t, filepath.Join(owner, "auth.json"), "the owner's sign-in is untouched")
+	assert.FileExists(t, filepath.Join(owner, "config.toml"))
+}
+
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
 }

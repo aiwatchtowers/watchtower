@@ -1,4 +1,6 @@
 {"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
 {"type":"turn.started"}
+#! rollout {"type":"token_usage_record","payload":{},"synthetic":true}
+#! rollout {"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1}}},"synthetic":true}
 {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Second message."},"synthetic":true}
 {"type":"turn.completed","usage":{"input_tokens":1007,"cached_input_tokens":1000,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0},"synthetic":true}

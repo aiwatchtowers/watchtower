@@ -31,6 +31,17 @@ folder; a write outside its row would let a spec steer the owner's data.
 **Test guards:**
 - `internal/specreview/run_test.go::TestSpecReview01_RunWritesOnlyItsRow` (every table but `spec_reviews` diffed before and after a done run and a failed run; the folder's mtimes and sizes)
 
+**Note (2026-11-06, asks #507, #514, #522):** the codex reviewer is capped at
+`specreview.MaxTurns` (40) model turns like the claude one (`--max-turns`): it
+counts the model responses of its run's rollout, so the run is not
+`--ephemeral` but runs in a private temp `CODEX_HOME` (`specReviewCodexHome`:
+the owner's `auth.json` and `config.toml` linked, never copied) that is
+removed after the run, rollout included — nothing reaches the owner's codex
+history. The response past the cap ends the review with a `budget` failure.
+Guards: `cmd/workbench_spec_review_test.go` —
+`TestSpecReview_CodexReviewerHasTheTurnCap`,
+`TestCodexSpecReview_StopsAtMaxTurnsFromRollout`.
+
 **Locked since:** 2026-10-25
 
 ---
@@ -128,6 +139,7 @@ all of them unreliable.
 ## Changelog
 
 - 2026-10-25 (spec review Plan 1): file created with SPECREVIEW-01, 02, 03.
+- 2026-11-06 (LLM transport independence, Task G2, **owner approved in asks #507, #514 and #522**): SPECREVIEW-01 gains a note — the codex reviewer is capped at `specreview.MaxTurns` model turns counted from its own rollout, in a private `CODEX_HOME` removed after the run. Additive, no guard changed. Guards added: `TestSpecReview_CodexReviewerHasTheTurnCap`, `TestCodexSpecReview_StopsAtMaxTurnsFromRollout`.
 - 2026-10-25 (Plan 1 final review fixes): SPECREVIEW-02 covers a failed queue write (queued after the ask's commit); SPECREVIEW-03 checks the speaker of the owner's words and stores `speaker` on every source.
 - 2026-10-25 (PR #473 review fixes): wording only, no guard changed — SPECREVIEW-03's Observable names the chosen option labels among the owner's answer texts (as `ownerAnswerWords` always did). A plan's review header carries no `decisions_section`; a spec's Decisions section is a `## ` heading starting with "Decisions" (`isDecisionsHeading`, Swift `SpecReviewDecisions`); an empty idea is left out of the result (`idea` omitted).
 - 2026-10-26 (spec review author loop, board #1121, **owner approved in asks #653 and #658**): **SPECREVIEW-04** and **-05** added; SPECREVIEW-01..03 unchanged (delivery of findings is the Desktop's, not the reviewer's). Migration 00160 (`spec_reviews` `loop`, `round`, `replies`, `open_items`, `ledger`, `loop_end`), `get_spec_review` (DEV-06 nineteen tools), `review_replies` on `ask_owner`, prompt `review.spec` v2, pack v18. The old "the owner is the filter" rule of the 2026-10-25 spec is replaced for spec and plan asks in a loop (owner decision D2, ask #649).

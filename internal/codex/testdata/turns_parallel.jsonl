@@ -1,0 +1,11 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run all three commands in parallel and collect their outputs.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/work","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/work","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"/work","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/work","aggregated_output":"a\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/work","aggregated_output":"b\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"/work","aggregated_output":"c\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"```text\na\nb\nc\n```"}}
+{"type":"turn.completed","usage":{"input_tokens":23708,"cached_input_tokens":11648,"cache_write_input_tokens":0,"output_tokens":106,"reasoning_output_tokens":0}}
