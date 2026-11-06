@@ -340,3 +340,49 @@ func TestInstallWorkbenchInstallsThePermissionWaitHook(t *testing.T) {
 		t.Fatalf("PermissionRequest must be gone after remove: %#v", hooks)
 	}
 }
+
+// Review (test gap 4): the Repair every existing folder runs. A folder
+// installed before board #988 — the six state hooks of 2026-10-11 beside the
+// ask tool block's AskUserQuestion group — gains PostToolUseFailure and a
+// separate "*" PreToolUse group after the ask block's, which stays as it
+// was; state_hooks then reads true.
+func TestInstallStateHooksRepairsASixHookFolder(t *testing.T) {
+	folder := fakeRepo(t)
+	o := workbenchOpts(folder, newFakeClaude())
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	for _, spec := range stateHookSpecs {
+		if spec.event == "PreToolUse" || spec.event == "PostToolUseFailure" {
+			if changed, err := removeHook(folder, spec, 7); err != nil || !changed {
+				t.Fatalf("remove %s: changed=%v err=%v", spec.event, changed, err)
+			}
+		}
+	}
+	if full, err := HasStateHooks(folder, 7); err != nil || full {
+		t.Fatalf("the six-hook folder reads complete: %v err=%v", full, err)
+	}
+	beforePre := eventGroups(t, decodeSettings(t, folder), "PreToolUse")
+	if len(beforePre) != 1 || beforePre[0].(map[string]any)["matcher"] != "AskUserQuestion" {
+		t.Fatalf("expected the ask block's group alone: %#v", beforePre)
+	}
+
+	changed, err := InstallStateHooks(folder, o.Bin, 7)
+	if err != nil || !changed {
+		t.Fatalf("repair: changed=%v err=%v", changed, err)
+	}
+	cmd := WorkbenchSessionStateHookCommand(o.Bin, 7)
+	m := decodeSettings(t, folder)
+	assertOneAsyncStateEntry(t, "PostToolUseFailure", eventGroups(t, m, "PostToolUseFailure"), cmd)
+	pre := eventGroups(t, m, "PreToolUse")
+	if len(pre) != 2 || !reflect.DeepEqual(pre[0], beforePre[0]) {
+		t.Fatalf("the ask block's group must stay first and as it was: %#v", pre)
+	}
+	assertToolStartEntry(t, pre, cmd)
+	if countCommand(pre[:1], cmd) != 0 {
+		t.Fatalf("the state command joined the AskUserQuestion group: %#v", pre[0])
+	}
+	if full, err := HasStateHooks(folder, 7); err != nil || !full {
+		t.Fatalf("after the repair: HasStateHooks = %v err=%v", full, err)
+	}
+}

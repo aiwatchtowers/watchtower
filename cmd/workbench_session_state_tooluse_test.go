@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"strconv"
 	"strings"
@@ -70,28 +71,28 @@ func TestProj11_PreToolUseOutOfWaitingIsWorking(t *testing.T) {
 // PROJ-11, board #988 (ask #525): a tool start never hides a permission
 // dialog. PreToolUse fires before the prompt; its async hook may start after
 // the prompt's notification and still writes nothing over `approval`.
+// (PostToolUse and PostToolUseFailure do end `approval`: the tool ran, or
+// failed, after the owner's answer — ask #527.)
 func TestProj11_PreToolUseNeverOverwritesApproval(t *testing.T) {
-	for _, event := range []string{"PreToolUse"} {
-		database, pid, row := briefSessionFixture(t)
-		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-		_, at := hookClock(t)
-		recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
-		recordToolEvent(t, pid, at, 2, statePayload("Notification", briefLaunchID, "permission_prompt"))
-		before := rowSnapshot(t, database, row)
-		require.Equal(t, "approval", before["agent_state"])
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	recordToolEvent(t, pid, at, 2, statePayload("Notification", briefLaunchID, "permission_prompt"))
+	before := rowSnapshot(t, database, row)
+	require.Equal(t, "approval", before["agent_state"])
 
-		recordToolEvent(t, pid, at, 3, toolEventPayload(event, "toolu_A", "", ""))
-		assert.Equal(t, before, rowSnapshot(t, database, row), "%s over approval wrote", event)
+	recordToolEvent(t, pid, at, 3, toolEventPayload("PreToolUse", "toolu_A", "", ""))
+	assert.Equal(t, before, rowSnapshot(t, database, row), "PreToolUse over approval wrote")
 
-		// The guard is in the write itself too: a racing approval between
-		// the hook's read and its write keeps the dialog.
-		s, err := database.GetTerminalSession(row)
-		require.NoError(t, err)
-		written, err := database.SetTerminalAgentState(row, pid, briefLaunchID, agentStateWorking, time.Now().Add(time.Hour),
-			"", nil, false, db.AgentOrder{ToolRun: true, NotOverApproval: true, SeenTurnEnd: s.TurnEnd})
-		require.NoError(t, err)
-		assert.False(t, written, "%s: the guarded UPDATE wrote over approval", event)
-	}
+	// The guard is in the write itself too: a racing approval between the
+	// hook's read and its write keeps the dialog.
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	written, err := database.SetTerminalAgentState(row, pid, briefLaunchID, agentStateWorking, time.Now().Add(time.Hour),
+		"", nil, false, db.AgentOrder{ToolRun: true, NotOverApproval: true, SeenTurnEnd: s.TurnEnd})
+	require.NoError(t, err)
+	assert.False(t, written, "the guarded UPDATE wrote over approval")
 }
 
 // PROJ-11, board #988 (ask #525): a tool start and a failed tool keep the
@@ -392,6 +393,8 @@ func TestHookLockWaitStopsAtTheBudget(t *testing.T) {
 	wait, ok := stateHookLockWait.until(base.Add(300 * time.Millisecond)).attemptWait()
 	assert.True(t, ok)
 	assert.Equal(t, 300*time.Millisecond, wait, "a try's wait is cut to the budget left")
+	_, ok = stateHookLockWait.until(base.Add(time.Millisecond - time.Nanosecond)).attemptWait()
+	assert.False(t, ok, "under 1 ms left: busy_timeout would be 0, so no try")
 	wait, ok = hookLockWait{}.attemptWait()
 	assert.True(t, ok)
 	assert.Equal(t, sessionRecordBusyTimeout, wait, "the zero value is the sync hooks' one short wait")
@@ -500,4 +503,35 @@ func TestSessionState_FailedQuestionClearHasItsOwnLine(t *testing.T) {
 	assert.Equal(t, "working", storedAgentState(t, database, row))
 	assert.Contains(t, errOut, "watchtower: chat question not cleared: no time left")
 	assert.NotContains(t, errOut, "session state not recorded")
+}
+
+// Review M3/M4: every failure a state hook joins — at any depth — is one
+// stderr line, a failed cwd write under its own prefix.
+func TestReportStateHookError_OneLinePerFailure(t *testing.T) {
+	stateErr, cwdErr, clearErr := errors.New("state busy"), errors.New("cwd busy"), errors.New("clear busy")
+	var out bytes.Buffer
+	reportStateHookError(&out, errors.Join(
+		errors.Join(stateErr, agentCwdNotRecorded{cwdErr}),
+		chatQuestionNotCleared{clearErr},
+	))
+	assert.Equal(t, "watchtower: session state not recorded: state busy\n"+
+		"watchtower: agent cwd not recorded: cwd busy\n"+
+		"watchtower: chat question not cleared: clear busy\n", out.String())
+
+	out.Reset()
+	reportStateHookError(&out, nil)
+	assert.Empty(t, out.String())
+}
+
+// Review M3: a failed cwd write (or read) alone is an agentCwdNotRecorded.
+func TestRecordCwdAlone_FailureHasItsOwnLabel(t *testing.T) {
+	d := db.OpenTestDB(t)
+	require.NoError(t, d.Close())
+	err := recordCwdAlone(d, 1, 1, briefLaunchID, "/tmp/acme/sub", time.Now(), hookLockWait{})
+	var cwdErr agentCwdNotRecorded
+	require.ErrorAs(t, err, &cwdErr)
+	var out bytes.Buffer
+	reportStateHookError(&out, err)
+	assert.Contains(t, out.String(), "watchtower: agent cwd not recorded: ")
+	assert.NotContains(t, out.String(), "session state not recorded")
 }

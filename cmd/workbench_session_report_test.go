@@ -312,11 +312,33 @@ INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_pa
 	assert.EqualValues(t, 1, rows[0]["done"])
 	assert.EqualValues(t, 3, rows[0]["total"])
 	assert.EqualValues(t, 1, rows[0]["merged"], "wt/m only: a fresh branch has no work of its own")
+	assert.Equal(t, false, rows[0]["merged_stale"], "every verdict checked")
 	assert.Empty(t, calls(), "--summary never runs gh")
 
 	out, err = runSessionReport(t, "--workbench", "1", "--summary")
 	require.NoError(t, err)
 	assert.Contains(t, out, "1/3 · 1 merged")
+
+	// Review (test gap 2): --session carries the share end to end too, in
+	// the progress and the phase, as JSON and as text.
+	out, err = runSessionReport(t, "--workbench", "1", "--session", "1", "--no-network", "--json")
+	require.NoError(t, err, out)
+	var rep struct {
+		Progress struct{ Done, Total, Merged int } `json:"progress"`
+		Phases   []struct {
+			TargetID int64 `json:"target_id"`
+			Merged   int   `json:"merged"`
+		} `json:"phases"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &rep), out)
+	assert.Equal(t, 1, rep.Progress.Merged)
+	require.NotEmpty(t, rep.Phases)
+	assert.Equal(t, 1, rep.Phases[0].Merged)
+
+	out, err = runSessionReport(t, "--workbench", "1", "--session", "1", "--no-network")
+	require.NoError(t, err)
+	assert.Contains(t, out, "progress: 1 / 3 tasks · 1 merged")
+	assert.Contains(t, out, "#500 Feature  1/3 · 1 merged")
 }
 
 // Review F5: what the --summary merge refresh could not check is one stderr
@@ -337,5 +359,12 @@ INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_pa
 	require.NoError(t, err)
 	var rows []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &rows), out)
-	assert.Equal(t, "session-report: merge states: base branch feature/gone could not be resolved locally or on origin; merge checks into it skipped\n", errOut)
+	require.Len(t, rows, 1)
+	assert.Equal(t, true, rows[0]["merged_stale"], "the row says its merged share was not checked")
+	assert.Equal(t, "session-report: merge states: base branch feature/gone could not be resolved locally or on origin; merge checks into it skipped"+
+		"; the state of 1 ref(s) could not be read (into:feature/gone:wt/x: git could not read its merge state)\n", errOut)
+
+	out, _, err = runWorkbench(t, "session-report", "--workbench", "1", "--summary")
+	require.NoError(t, err)
+	assert.Contains(t, out, "0/1 · merged not checked")
 }

@@ -66,7 +66,8 @@ package enum SessionTargetBranch: Equatable, Sendable {
 /// The lane worktrees of a workbench session (board #987): the worktree
 /// roots its agents — subagents and teammates included — worked in this
 /// run, as the state hooks recorded them in `terminal_session_worktrees`
-/// (migration 00111). Pure; the existence check is the caller's stat.
+/// (migration 00111). Pure: the existence check and the workbench folder's
+/// symlink-resolved spelling are the caller's, read off the main actor.
 package enum SessionLanes {
     /// One ledger row: a symlink-resolved worktree root and when the hooks
     /// first saw it (`agent_state_at` layout).
@@ -88,19 +89,26 @@ package enum SessionLanes {
     /// place's `folder_root` may be a subfolder of its top level, or the
     /// removed cwd) is the agent's own worktree. An unknown place could be
     /// any of them: no lanes until it is known (fail closed).
+    ///
+    /// The ledger holds symlink-resolved roots, so the workbench folder is
+    /// also matched in `resolvedWorkbenchFolder` (`resolvedFolder`, which
+    /// the caller reads off the main actor). A worktree place's root is Go's
+    /// `folder_root`, already resolved; a removed place's path is the
+    /// agent's own cwd, which no longer exists to resolve.
     package static func roots(
         _ records: [Record],
         runStart: String?,
         workbenchFolder: String,
+        resolvedWorkbenchFolder: String? = nil,
         place: SessionPlace,
         exists: (String) -> Bool
     ) -> [String] {
-        var held = [workbenchFolder, resolved(workbenchFolder)]
+        var held = [workbenchFolder] + (resolvedWorkbenchFolder.map { [$0] } ?? [])
         switch place {
         case .unknown: return []
         case .main: break
-        case let .worktree(_, root, _): held += [root.path, resolved(root.path)]
-        case let .removed(_, path): held += [path, resolved(path)]
+        case let .worktree(_, root, _): held.append(root.path)
+        case let .removed(_, path): held.append(path)
         }
         guard let start = runStart.flatMap(SessionAgentStatus.parseStamp) else { return [] }
         var roots: Set<String> = []
@@ -119,7 +127,9 @@ package enum SessionLanes {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
-    private static func resolved(_ path: String) -> String {
+    /// `path` with its symlinks resolved (file system calls: keep it off
+    /// the main actor).
+    package static func resolvedFolder(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 

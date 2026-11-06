@@ -156,7 +156,8 @@ package enum TerminalSessionQueries {
         }
         let worktrees = try Row.fetchAll(db, sql: """
             SELECT w.session_id, w.root, w.first_at,
-                   CASE WHEN json_valid(s.agent_turns) THEN json_extract(s.agent_turns, '$.since') END AS run_start
+                   CASE WHEN json_valid(s.agent_turns) AND json_type(s.agent_turns, '$.since') = 'text'
+                        THEN json_extract(s.agent_turns, '$.since') END AS run_start
             FROM terminal_session_worktrees w
             JOIN terminal_sessions s ON s.id = w.session_id
             WHERE s.project_id = ? ORDER BY w.session_id, w.first_at, w.root
@@ -233,7 +234,8 @@ package enum TerminalSessionQueries {
             db,
             sql: """
                 SELECT id, agent_cwd, agent_cwd_at,
-                       CASE WHEN json_valid(agent_turns) THEN json_extract(agent_turns, '$.since') END AS run_start
+                       CASE WHEN json_valid(agent_turns) AND json_type(agent_turns, '$.since') = 'text'
+                            THEN json_extract(agent_turns, '$.since') END AS run_start
                 FROM terminal_sessions
                 WHERE project_id = ? AND agent_cwd IS NOT NULL
                 """,

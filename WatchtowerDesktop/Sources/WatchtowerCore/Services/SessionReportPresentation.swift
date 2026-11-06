@@ -200,7 +200,9 @@ package enum SessionReportPresentation {
     /// The panel row's report line, "#314 · 14/15 · PR #147 open": the
     /// ticket, X/Y when anything is in scope (then "N merged" when tasks not
     /// done have their branch merged into their parent's, board #986), Go's
-    /// PR line. A summary kept
+    /// PR line. A merged share the refresh could not check (`mergedStale`)
+    /// reads "N merged (unchecked)", or "merged not checked" with none counted.
+    /// A summary kept
     /// from an earlier run after a failed refresh ends in "· stale", so a
     /// failure never reads as a blank line; "" when there is nothing to say.
     package static func rowCaption(_ summary: SessionReportSummary, stale: Bool = false) -> String {
@@ -208,7 +210,12 @@ package enum SessionReportPresentation {
         if let target = summary.targetID { parts.append("#\(target)") }
         if summary.total > 0 {
             parts.append("\(summary.done)/\(summary.total)")
-            if summary.merged > 0 { parts.append("\(summary.merged) merged") }
+            switch (summary.merged > 0, summary.mergedStale) {
+            case (true, false): parts.append("\(summary.merged) merged")
+            case (true, true): parts.append("\(summary.merged) merged (unchecked)")
+            case (false, true): parts.append("merged not checked")
+            case (false, false): break
+            }
         }
         if !summary.prLine.isEmpty { parts.append(summary.prLine) }
         if stale { parts.append("stale") }

@@ -24,8 +24,10 @@ var workbenchSessionReportCmd = &cobra.Command{
 		"agent session (Claude Code or Codex) of the workbench from the cache, after a\n" +
 		"git-only refresh (within 3 s) of whether each task's branch is merged into its\n" +
 		"parent's branch; it never runs gh.\n" +
-		"Exits non-zero only when the workbench or the session does not resolve; a git or gh\n" +
-		"failure is reported in pr_note.",
+		"Exits non-zero only when the workbench or the session does not resolve. --session\n" +
+		"reports a git or gh failure in pr_note; --summary marks a row whose merged share\n" +
+		"holds verdicts the refresh could not check (merged_stale) and names the failure\n" +
+		"in one stderr line.",
 	Args: cobra.NoArgs,
 	RunE: runWorkbenchSessionReport,
 }
@@ -75,8 +77,9 @@ func runWorkbenchSessionReport(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
-		// stdout stays the row lines; what the merge refresh could not
-		// check (a git failure, a cache write that failed) is one stderr line.
+		// stdout stays the row lines, each row's merged_stale marking a
+		// merged share the refresh could not check; why (a git failure, a
+		// cache write that failed) is one stderr line.
 		if res.Note != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), "session-report: merge states: "+res.Note)
 		}
@@ -297,7 +300,7 @@ func printSessionSummaries(w io.Writer, rows []sessionreport.Summary) {
 		if s.TargetID != nil {
 			line += fmt.Sprintf("  target #%d", *s.TargetID)
 		}
-		line += fmt.Sprintf("  %d/%d%s", s.Done, s.Total, mergedPart(s.Merged))
+		line += fmt.Sprintf("  %d/%d%s", s.Done, s.Total, summaryMergedPart(s))
 		if s.PRLine != "" {
 			line += "  " + s.PRLine
 		}
@@ -306,6 +309,19 @@ func printSessionSummaries(w io.Writer, rows []sessionreport.Summary) {
 		}
 		fmt.Fprintln(w, line)
 	}
+}
+
+// summaryMergedPart is a row line's merged share: mergedPart, and when the
+// refresh could not check it " · N merged (unchecked)", or " · merged not
+// checked" with none counted.
+func summaryMergedPart(s sessionreport.Summary) string {
+	switch {
+	case s.Total == 0 || !s.MergedStale:
+		return mergedPart(s.Merged)
+	case s.Merged > 0:
+		return mergedPart(s.Merged) + " (unchecked)"
+	}
+	return " · merged not checked"
 }
 
 // mergedPart is " · N merged" for a merged share, "" without one, so a count

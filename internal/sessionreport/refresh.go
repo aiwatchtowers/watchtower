@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,12 @@ const DefaultRefreshBudget = 10 * time.Second
 // SummaryRefreshBudget bounds the git-only refresh of the merge verdicts
 // that `session-report --summary` runs before its row lines (board #986).
 const SummaryRefreshBudget = 3 * time.Second
+
+// summaryWriteWait is how long one cache write of the --summary refresh
+// waits for another process's write lock (cut to the budget left): the
+// write is best effort — its verdict still reaches this run's rows — so it
+// never holds the row lines up behind the daemon for the handle's 5 s.
+const summaryWriteWait = 250 * time.Millisecond
 
 // A cached ref is re-checked once it is older than freshFor, or older than
 // settledFor when its pull request is merged or closed (rarely changes).
@@ -41,6 +48,11 @@ type RefreshOptions struct {
 	Network bool
 	Budget  time.Duration    // 0 = DefaultRefreshBudget
 	Now     func() time.Time // nil = time.Now
+	// writeWait > 0 bounds each cache write's lock wait (the handle's
+	// busy_timeout, set before each write and left at the last one's), cut
+	// to the budget left (at least 1 ms).
+	// RefreshedSummaries sets it, on the CLI's own handle.
+	writeWait time.Duration
 }
 
 // RefreshResult is the outcome of one Refresh.
@@ -68,14 +80,18 @@ type prJSON struct {
 // the cache only — never the board, so PROJ-07's drift check stays the only
 // place that flags merged_but_open.
 func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, opts RefreshOptions) RefreshResult {
-	res, _ := refresh(ctx, d, workbenchID, refs, opts)
+	res, _, _ := refresh(ctx, d, workbenchID, refs, opts)
 	return res
 }
 
 // refresh is Refresh, also returning the cache as it stands afterwards (the
-// rows read before, with every row it stored); nil when the cache could not
-// be read.
-func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, opts RefreshOptions) (RefreshResult, map[string]db.PRState) {
+// rows read before, with every row it read; nil when the cache could not be
+// read) and the stale refs it could not check (unchecked): a read that
+// failed — a git call, an unresolvable base, gh — or one the budget left
+// out. A folder outside a repository leaves none unchecked: git has nothing
+// to say there, now or later.
+func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string,
+	opts RefreshOptions) (res RefreshResult, cache map[string]db.PRState, unchecked map[string]bool) {
 	if opts.Budget <= 0 {
 		opts.Budget = DefaultRefreshBudget
 	}
@@ -84,11 +100,11 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 	}
 	wb, err := d.GetWorkbench(workbenchID)
 	if err != nil {
-		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil
+		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
 	}
-	cache, err := d.PRStates(workbenchID)
+	cache, err = d.PRStates(workbenchID)
 	if err != nil {
-		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil
+		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
 	}
 	start := opts.Now()
 	var stale []string
@@ -103,26 +119,35 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 		}
 	}
 	if len(stale) == 0 {
-		return RefreshResult{}, cache
+		return RefreshResult{}, cache, nil
 	}
-	// Least recently checked first (never checked before all): a ref that
-	// keeps reading no verdict is stamped too, so it waits its turn and
-	// does not spend the budget ahead of the others.
-	slices.SortStableFunc(stale, func(a, b string) int { return strings.Compare(cache[a].CheckedAt, cache[b].CheckedAt) })
+	// Longest due first (never checked before all): a ref that keeps
+	// reading no verdict is stamped too — a failed read due again at once
+	// (dueAgain), so it is the most recently due and waits behind every
+	// other ref instead of spending the budget ahead of them.
+	slices.SortStableFunc(stale, func(a, b string) int { return dueSince(cache[a]).Compare(dueSince(cache[b])) })
 	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
 	defer cancel()
-	r := refresher{d: d, workbenchID: workbenchID, folder: wb.FolderPath, cache: cache, opts: opts}
-	r.open(ctx, stale)
 	deadline := start.Add(opts.Budget)
+	r := refresher{d: d, workbenchID: workbenchID, folder: wb.FolderPath, cache: cache, opts: opts, deadline: deadline,
+		unchecked: map[string]bool{}}
+	r.open(ctx, stale)
 	for i, ref := range stale {
 		// A ref whose read the budget cut short counts as not checked.
 		if ctx.Err() != nil || opts.Now().After(deadline) || !r.check(ctx, ref) {
 			r.note(fmt.Sprintf("the %s time budget ran out; %d ref(s) keep their cached state", opts.Budget, len(stale)-i))
+			if r.inRepo {
+				for _, left := range stale[i:] {
+					r.unchecked[left] = true
+				}
+			}
 			break
 		}
 	}
+	r.noteGuards()
 	r.noteSkipped()
-	return RefreshResult{Note: strings.Join(r.notes, "; ")}, cache
+	r.noteUnsaved()
+	return RefreshResult{Note: strings.Join(r.notes, "; ")}, cache, r.unchecked
 }
 
 // isStale: the row is old enough to check again (or its time unreadable).
@@ -131,11 +156,25 @@ func isStale(row db.PRState, now time.Time) bool {
 	if err != nil {
 		return true
 	}
-	limit := freshFor
-	if row.State == "merged" || row.State == "closed" {
-		limit = settledFor
+	return now.Sub(at) > staleAfter(row.State)
+}
+
+// dueSince is when row became due for a check: its check time plus its
+// fresh window; the zero time for a row never checked or unreadable.
+func dueSince(row db.PRState) time.Time {
+	at, err := time.Parse(time.RFC3339, row.CheckedAt)
+	if err != nil {
+		return time.Time{}
 	}
-	return now.Sub(at) > limit
+	return at.Add(staleAfter(row.State))
+}
+
+// staleAfter is how long a row in state stays fresh.
+func staleAfter(state string) time.Duration {
+	if state == "merged" || state == "closed" {
+		return settledFor
+	}
+	return freshFor
 }
 
 // refresher holds what every ref's check shares.
@@ -145,13 +184,17 @@ type refresher struct {
 	folder      string
 	cache       map[string]db.PRState
 	opts        RefreshOptions
+	deadline    time.Time                             // the budget's end
 	inRepo      bool                                  // the folder is inside a git repository
 	repo        *workbenchcheck.Repository            // against the default branch; nil outside a repository or with into: refs only
 	bases       map[string]*workbenchcheck.Repository // against each into: base, opened on first use
 	gh          bool                                  // gh is installed, signed in and allowed
 	notes       []string
-	skipped     int    // refs whose state could not be read
-	firstErr    string // why the first of them could not
+	skipped     int             // refs whose state could not be read
+	firstErr    string          // why the first of them could not
+	unchecked   map[string]bool // stale refs this run could not check
+	unsaved     int             // refs read, but their cache write failed
+	firstUnsave string          // why the first of them failed
 }
 
 // open probes the repository and gh once. A plain folder runs no git — and
@@ -187,10 +230,28 @@ func (r *refresher) note(s string) { r.notes = append(r.notes, s) }
 
 // skip counts a ref whose state could not be read.
 func (r *refresher) skip(ref, why string) {
+	r.unchecked[ref] = true
 	if r.skipped == 0 {
 		r.firstErr = workbenchcheck.ClipNote(ref + ": " + why)
 	}
 	r.skipped++
+}
+
+// noteGuards names a squash read the filter guard refused, once per
+// distinct note: it is set during the merge checks, so read after them.
+func (r *refresher) noteGuards() {
+	repos := []*workbenchcheck.Repository{r.repo}
+	for _, base := range slices.Sorted(maps.Keys(r.bases)) {
+		repos = append(repos, r.bases[base])
+	}
+	for _, repo := range repos {
+		if repo == nil {
+			continue
+		}
+		if n := repo.GuardNote(); n != "" && !slices.Contains(r.notes, n) {
+			r.note(n)
+		}
+	}
 }
 
 func (r *refresher) noteSkipped() {
@@ -199,9 +260,30 @@ func (r *refresher) noteSkipped() {
 	}
 }
 
+func (r *refresher) noteUnsaved() {
+	if r.unsaved > 0 {
+		r.note(fmt.Sprintf("the state of %d ref(s) was read but could not be saved (%s)", r.unsaved, r.firstUnsave))
+	}
+}
+
+// save stores row in the cache table, its lock wait bounded by
+// opts.writeWait when set: cut to the budget left, but never under 1 ms — a
+// write with no other writer about needs no wait, and a verdict read at the
+// budget's end is still worth keeping.
+func (r *refresher) save(row db.PRState) error {
+	if r.opts.writeWait > 0 {
+		wait := max(min(r.opts.writeWait, r.deadline.Sub(r.opts.Now())), time.Millisecond)
+		if err := r.d.SetBusyTimeout(wait); err != nil {
+			return err
+		}
+	}
+	return r.d.UpsertPRState(row)
+}
+
 // check reads one ref and stores it; false when the budget cut the read
 // short. Such a read is neither stored (it would read as "not found") nor
-// counted as a failure.
+// counted as a failure. A read whose write fails still serves this run's
+// rows (r.cache) and is counted apart: it was read, not saved.
 func (r *refresher) check(ctx context.Context, ref string) bool {
 	if !r.inRepo {
 		return true
@@ -209,7 +291,7 @@ func (r *refresher) check(ctx context.Context, ref string) bool {
 	skipped, firstErr := r.skipped, r.firstErr
 	row, ok := r.read(ctx, ref)
 	if ctx.Err() != nil {
-		r.skipped, r.firstErr = skipped, firstErr
+		r.skipped, r.firstErr = skipped, firstErr // the caller counts it unchecked
 		return false
 	}
 	if !ok {
@@ -217,9 +299,15 @@ func (r *refresher) check(ctx context.Context, ref string) bool {
 	}
 	row.WorkbenchID, row.Ref = r.workbenchID, ref
 	row.CheckedAt = r.opts.Now().UTC().Format(time.RFC3339)
-	if err := r.d.UpsertPRState(row); err != nil {
-		r.skip(ref, err.Error())
-		return true
+	if r.unchecked[ref] {
+		// A failed read that keeps its row (readInto): stamped, but due again.
+		row.CheckedAt = dueAgain(row.State, r.opts.Now())
+	}
+	if err := r.save(row); err != nil {
+		if r.unsaved == 0 {
+			r.firstUnsave = workbenchcheck.ClipNote(ref + ": " + err.Error())
+		}
+		r.unsaved++
 	}
 	r.cache[ref] = row
 	return true
@@ -320,9 +408,15 @@ func (r *refresher) readBranch(ctx context.Context, ref, branch string) (db.PRSt
 // when every base ref says it is not. Anything else keeps the cached verdict
 // (none yet = unknown) and only stamps its check time, so it backs off like
 // any checked ref: a branch git cannot find (session cleanup deletes a merged
-// worktree branch), a read that failed, and a cached merged branch left only
+// worktree branch — expected, so quiet) and a cached merged branch left only
 // on origin with a tip the base contains — there git cannot tell a
-// fast-forward merge from a branch with no work of its own.
+// fast-forward merge from a branch with no work of its own; so does a
+// branch git cannot tell about (a base too far ahead for the squash check,
+// for one), quietly. A read that failed (Repository.MergeFailed: a git
+// call, an unresolvable base, a refused squash read) is counted in the note
+// and stamped due again (check, dueAgain): every run tries it, last in line
+// (refresh's order), so a row's merged_stale holds while the failure lasts
+// instead of blinking off for the fresh window.
 func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.PRState, bool) {
 	repo, ok := r.bases[base]
 	if !ok {
@@ -348,12 +442,23 @@ func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.
 		if cached.State != "merged" || !repo.OriginOnlyContained(ctx, branch) {
 			return db.PRState{State: "open"}, true
 		}
-	case workbenchcheck.BranchMissing, workbenchcheck.BranchUnknown:
+	case workbenchcheck.BranchUnknown:
+		if repo.MergeFailed(ctx, branch) {
+			r.skip(ref, "git could not read its merge state")
+		}
+	case workbenchcheck.BranchMissing:
 	}
 	if !hasRow {
 		return db.PRState{State: "unknown"}, true
 	}
 	return cached, true
+}
+
+// dueAgain is a check time that is already stale for a row in state (its
+// fresh window and a second ago): the row is checked again on the next run,
+// and dueSince puts it behind every ref that became due before now.
+func dueAgain(state string, now time.Time) string {
+	return now.Add(-staleAfter(state) - time.Second).UTC().Format(time.RFC3339)
 }
 
 // branchPR finds the branch's pull request through gh: the cached number,

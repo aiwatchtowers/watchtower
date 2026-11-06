@@ -292,6 +292,21 @@ func (s scope) mergeRefs() []string {
 	return out
 }
 
+// countedMergeRefs is the into: keys counts' Merged reads: one per not-done
+// progress leaf with a base (the phase-only leaves of mergeRefs left out).
+func (s scope) countedMergeRefs() []string {
+	var out []string
+	for _, e := range s.leaves() {
+		if !s.progress[e.id()] || e.target.Status == "done" {
+			continue
+		}
+		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
+			out = append(out, intoRef(base, branch))
+		}
+	}
+	return out
+}
+
 // refs is the PR-cache keys of the in-scope targets' PRs and branches, in
 // board order of first appearance.
 func (s scope) refs() []string {
