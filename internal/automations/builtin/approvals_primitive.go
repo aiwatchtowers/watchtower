@@ -1,9 +1,12 @@
 package builtin
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -67,10 +70,14 @@ func ApprovalsPrimitives(d *db.DB, now func() time.Time) map[string]automations.
 			if err != nil {
 				return automations.PrimitiveResult{}, err
 			}
+			labels, err := runLabels(ctx, d, view.Open)
+			if err != nil {
+				return automations.PrimitiveResult{}, err
+			}
 			items := make([]any, 0, len(view.Open))
 			share := approvalsBudgetBytes / max(len(view.Open), 1)
 			for _, o := range view.Open {
-				items = append(items, approvalItem(o, share))
+				items = append(items, approvalItem(o, labels[o.ID], share))
 			}
 			remove := make([]any, 0, len(view.Closed))
 			for _, k := range view.Closed {
@@ -88,7 +95,7 @@ func ApprovalsPrimitives(d *db.DB, now func() time.Time) map[string]automations.
 // within share bytes of JSON (approvalsBudgetBytes): the title, line, detail,
 // error, reason and run label an eighth of it each at most, the link only
 // when it fits its eighth, the text what is left.
-func approvalItem(o db.OpenApproval, share int) map[string]any {
+func approvalItem(o db.OpenApproval, runLabel string, share int) map[string]any {
 	part := share / 8
 	clip := func(s string, runes int) string { return clipJSON(clipApproval(s, runes), part) }
 	item := map[string]any{
@@ -117,9 +124,7 @@ func approvalItem(o db.OpenApproval, share int) map[string]any {
 		item["tool"] = clip(o.Tool, approvalTitleRunes)
 		item["error"] = clip(o.Error, approvalDetailRunes)
 		item["reason"] = clip(o.Reason, approvalDetailRunes)
-		if o.ContextType == tools.AutomationContextType {
-			item["run_label"] = item["reason"] // an automation's proposal: "⚙ <name> · run #<id>"
-		}
+		item["run_label"] = clip(runLabel, approvalDetailRunes)
 		item["line"] = clip(oneLine(text), approvalLineRunes)
 		if item["line"] == "" {
 			item["line"] = title
@@ -137,6 +142,35 @@ func approvalItem(o db.OpenApproval, share int) map[string]any {
 	}
 	item["text"] = clipJSON(clipApproval(text, approvalTextRunes), left)
 	return item
+}
+
+// runLabels maps each automation proposal among open (context
+// automation_run) to its run's label, "⚙ <name> · run #<id>", or "⚙
+// automation · run #<id>" when the run is gone — as the Desktop labels the
+// card (ActionStripViewModel.labels). Other actions get none.
+func runLabels(ctx context.Context, d *db.DB, open []db.OpenApproval) (map[int64]string, error) {
+	runOf := map[int64]int64{}
+	var ids []int64
+	for _, o := range open {
+		if o.Kind != db.ApprovalKindAction || o.ContextType != tools.AutomationContextType {
+			continue
+		}
+		run, err := strconv.ParseInt(o.ContextID, 10, 64)
+		if err != nil || run <= 0 {
+			continue
+		}
+		runOf[o.ID] = run
+		ids = append(ids, run)
+	}
+	named, err := d.AutomationRunLabels(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]string{}
+	for action, run := range runOf {
+		out[action] = cmp.Or(named[run], fmt.Sprintf("⚙ automation · run #%d", run))
+	}
+	return out, nil
 }
 
 // toolTitle is a tool's name in words: "create_jira_issue" → "Create jira

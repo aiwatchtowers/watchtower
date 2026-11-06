@@ -580,3 +580,37 @@ func TestNeedsApproval_OverlongReminderLinkIsDropped(t *testing.T) {
 		t.Errorf("reminder card = %v %s; want one without a link", ok, r.BlocksJSON)
 	}
 }
+
+// run_label is built from the proposing run and its automation's name,
+// whatever reason the recipe gave; a gone run reads "⚙ automation · run
+// #N"; an action from no run has none.
+func TestApprovalsList_RunLabelFromTheRun(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	run := f.runNeedsApproval(t)
+	for _, row := range []struct{ ctxType, ctxID, reason string }{
+		{"automation_run", fmt.Sprint(run.ID), "My own reason"},
+		{"automation_run", "9999", "Another reason"},
+		{"", "", "⚙ Looks like a label · run #1"},
+	} {
+		if _, err := f.d.Exec(`INSERT INTO agent_actions (tool, args_json, reason, context_type, context_id) VALUES ('create_target', '{}', ?, ?, ?)`,
+			row.reason, row.ctxType, row.ctxID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	labels := map[string]any{}
+	for _, it := range listApprovals(t, f.d, f.clock.Now())["approvals"].([]any) {
+		m := it.(map[string]any)
+		labels[m["key"].(string)] = m["run_label"]
+	}
+	want := map[string]any{
+		"action:1": fmt.Sprintf("⚙ Needs approval · run #%d", run.ID),
+		"action:2": "⚙ automation · run #9999",
+		"action:3": "",
+	}
+	for k, w := range want {
+		if labels[k] != w {
+			t.Errorf("%s run_label = %q, want %q", k, labels[k], w)
+		}
+	}
+}

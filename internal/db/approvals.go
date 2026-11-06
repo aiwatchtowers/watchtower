@@ -310,3 +310,36 @@ func approvalArtifacts(ctx context.Context, tx *sql.Tx, automationID int64) (map
 	}
 	return out, nil
 }
+
+// AutomationRunLabels maps each of runIDs to its card label, "⚙ <name> · run
+// #<id>" (the automation's name, else its slug) — the Go twin of the
+// Desktop's AutomationQueries.runLabels; a run that is gone is absent.
+func (db *DB) AutomationRunLabels(ctx context.Context, runIDs []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(runIDs) == 0 {
+		return out, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, len(runIDs))
+	for i, id := range runIDs {
+		args[i] = id
+	}
+	rows, err := db.QueryContext(ctx, `SELECT r.id, COALESCE(NULLIF(a.name, ''), a.slug)
+		FROM automation_runs r JOIN automations a ON a.id = r.automation_id WHERE r.id IN (`+marks+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading run labels: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("reading run labels: %w", err)
+		}
+		out[id] = fmt.Sprintf("⚙ %s · run #%d", name, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading run labels: %w", err)
+	}
+	return out, nil
+}
