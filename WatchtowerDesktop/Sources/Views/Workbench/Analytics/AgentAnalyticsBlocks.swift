@@ -19,6 +19,23 @@ enum AgentAnalyticsBlockState: Equatable {
     }
 }
 
+/// How much of the period is Codex sessions. A rollout records no baseline
+/// parts or skill listing, so the Context and Skills blocks skip them and
+/// say so in one caption (U4).
+enum AgentAnalyticsCodexShare: Equatable {
+    case none
+    case some
+    case all
+
+    static let notMeasuredLine = "Not measured for Codex sessions."
+
+    static func of(_ sessions: [AgentSessionRow]) -> Self {
+        let codex = sessions.filter { $0.agentKind == .codex }.count
+        if codex == 0 { return .none }
+        return codex == sessions.count ? .all : .some
+    }
+}
+
 /// A titled v2 block as a soft card: its one-sentence lead and content once
 /// measured, else one line saying why there is none; `footer` shows in every
 /// state (facts that need no new sessions).
@@ -26,6 +43,9 @@ struct AgentAnalyticsBlock<Content: View, Footer: View>: View {
     let title: String
     let lead: String?
     let state: AgentAnalyticsBlockState
+    /// Codex sessions in the period: with only them the caption replaces
+    /// the state; beside Claude Code ones it follows the content.
+    let codex: AgentAnalyticsCodexShare
     let content: Content
     let footer: Footer
 
@@ -33,12 +53,14 @@ struct AgentAnalyticsBlock<Content: View, Footer: View>: View {
         title: String,
         lead: String? = nil,
         state: AgentAnalyticsBlockState,
+        codex: AgentAnalyticsCodexShare = .none,
         @ViewBuilder content: () -> Content,
         @ViewBuilder footer: () -> Footer
     ) {
         self.title = title
         self.lead = lead
         self.state = state
+        self.codex = codex
         self.content = content()
         self.footer = footer()
     }
@@ -48,16 +70,9 @@ struct AgentAnalyticsBlock<Content: View, Footer: View>: View {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
-            switch state {
-            case .notMeasured:
-                Text(AgentAnalyticsBlockState.notMeasuredLine).font(.callout).foregroundStyle(.secondary)
-            case .nothingFound:
-                Text("Nothing to fix here").font(.callout).foregroundStyle(.secondary)
-            case .measured:
-                if let lead, !lead.isEmpty {
-                    Text(lead).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                content
+            if codex != .all { stateContent }
+            if codex != .none {
+                Text(AgentAnalyticsCodexShare.notMeasuredLine).font(.caption).foregroundStyle(.secondary)
             }
             footer
         }
@@ -65,11 +80,31 @@ struct AgentAnalyticsBlock<Content: View, Footer: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
     }
+
+    @ViewBuilder private var stateContent: some View {
+        switch state {
+        case .notMeasured:
+            Text(AgentAnalyticsBlockState.notMeasuredLine).font(.callout).foregroundStyle(.secondary)
+        case .nothingFound:
+            Text("Nothing to fix here").font(.callout).foregroundStyle(.secondary)
+        case .measured:
+            if let lead, !lead.isEmpty {
+                Text(lead).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            content
+        }
+    }
 }
 
 extension AgentAnalyticsBlock where Footer == EmptyView {
-    init(title: String, lead: String? = nil, state: AgentAnalyticsBlockState, @ViewBuilder content: () -> Content) {
-        self.init(title: title, lead: lead, state: state, content: content) { EmptyView() }
+    init(
+        title: String,
+        lead: String? = nil,
+        state: AgentAnalyticsBlockState,
+        codex: AgentAnalyticsCodexShare = .none,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.init(title: title, lead: lead, state: state, codex: codex, content: content) { EmptyView() }
     }
 }
 
