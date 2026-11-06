@@ -20,6 +20,8 @@ approve in your answers, and only after you answered, from its own terminal
 with `gh pr review` / `gh pr comment`. It then finishes with a summary.
 
 The report lists the pull requests of the round and how each session ended.
+A session the Mac cannot watch ("not watched") counts as unknown: its pull
+request is reviewed again next round.
 Needs the GitHub CLI (`gh`) signed in for this repository.
 
 ```js
@@ -72,7 +74,10 @@ for (const pr of changed) {
   } catch (e) {
     s = { status: "not started", summary: e.message };
   }
-  if (s.status === "not started" || s.status === "error") {
+  // not_watched: the Mac cannot read the session's log, so the review's
+  // outcome is unknown; like an error, the pull request is left for the
+  // next round and never marked reviewed.
+  if (s.status === "not started" || s.status === "error" || s.status === "not_watched") {
     left++; // tried again next round
   } else {
     reviewed[pr.number] = new Date().toISOString();
@@ -80,6 +85,7 @@ for (const pr of changed) {
   let line = "- #" + pr.number + " " + pr.title + " (" + pr.url + "): " + s.status;
   if (s.summary) line += " — " + s.summary;
   if (s.error) line += " — " + s.error;
+  if (s.reason) line += " — not watched (" + s.reason + "), left for the next round";
   lines.push(line);
 }
 if (left > 0) {
