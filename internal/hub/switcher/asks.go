@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"slices"
 
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/state"
@@ -26,9 +27,18 @@ import (
 // loses none and the last accepted request still wins: while any ask waits, a
 // request toward CloudKit (which needs no read) waits behind it instead of
 // being overtaken. The Step decides them all first thing over one account read
-// bounded by the old-side timeout, so a press behind a hung read waits at most
-// that long. As before, a read that failed or timed out counts as paying. A
-// host closing during the read decides nothing: the asks stay for the next run.
+// bounded by the old-side timeout, so a press behind a hung read waits that long
+// (plus the same again per lapsed, paying phone ahead of it, whose relay mailbox
+// endLapse reads). As before, a read that failed or timed out counts as paying.
+// A host closing during the read decides nothing: the asks stay for the next run.
+//
+// Nothing waits on an ask that cannot be finished. One the record cannot take
+// (an unreadable switched_at, say) is answered unavailable, as it was in the
+// pass. An answer that does not seal keeps its decision and is retried at the
+// next Steps, maxAnswerTries in all, while the asks behind it go on. Past that
+// the phone gets no answer: its request may not be repeated (an upgrade waits at
+// .requested). A store that fails stops the run and everything waits for the
+// next Step, the run loop's tick at the latest: no switch can be recorded then.
 //
 // Writers of the switch record meanwhile, all through acceptTx under s.mu: the
 // Step's decisions here, a request toward CloudKit with no ask waiting (in a
@@ -39,21 +49,33 @@ import (
 // metaAsks is the waiting asks (a JSON list, oldest first).
 const metaAsks = "switch_asks"
 
+// maxAnswerTries bounds the Steps that try to seal one answer.
+const maxAnswerTries = 3
+
+// errAnswerLater: the ask at askAt keeps its decided answer for a later Step;
+// the run goes on behind it.
+var errAnswerLater = errors.New("switcher: the answer waits for a later step")
+
 // waitingAsk is one thing the Step owes a phone: a request (Target) or, with
 // Stale, the answer to a write on the standby transport. Read is the transport
 // it was read on, where a rejection or a stale answer goes. Link is the phone's
 // link nonce then: a phone re-linked since never hears it, and the hub never
-// acts on it.
+// acts on it. Answer is a decided answer that has not sealed yet, sealed in Epoch
+// (0 = the current one), after Tries tries.
 type waitingAsk struct {
 	Read   transport.Kind `json:"read"`
 	Device string         `json:"device"`
 	Link   string         `json:"link,omitempty"`
 	Target transport.Kind `json:"target,omitempty"`
 	Stale  bool           `json:"stale,omitempty"`
+	Answer *wire.Control  `json:"answer,omitempty"`
+	Epoch  uint32         `json:"epoch,omitempty"`
+	Tries  int            `json:"tries,omitempty"`
 }
 
-// loadAsks reads the waiting asks. A list that does not decode is dropped and
-// logged: the phones repeat their requests, and a switch is never stopped on it.
+// loadAsks reads the waiting asks. A list that does not decode reads as empty and
+// is logged, so a switch is never stopped on it; the next Step clears it (or a
+// pass's append replaces it).
 func loadAsks(q func(string) (string, bool, error)) ([]waitingAsk, error) {
 	raw, ok, err := q(metaAsks)
 	if err != nil || !ok || raw == "" {
@@ -86,21 +108,38 @@ func saveAsksTx(tx *sql.Tx, asks []waitingAsk) error {
 	return state.SetMetaTx(tx, metaAsks, string(raw))
 }
 
-// dropHeadTx removes the oldest ask (only the Step removes, so it is the one
-// the Step read; the passes append behind it).
-func dropHeadTx(tx *sql.Tx) error {
+// dropAskTx removes the ask being decided (only the Step removes, so it is where
+// the Step read it; the passes append behind it).
+func (s *Switcher) dropAskTx(tx *sql.Tx) error {
 	asks, err := asksTx(tx)
-	if err != nil || len(asks) == 0 {
+	if err != nil || s.askAt >= len(asks) {
 		return err
 	}
-	return saveAsksTx(tx, asks[1:])
+	return saveAsksTx(tx, slices.Delete(asks, s.askAt, s.askAt+1))
 }
 
-// dropHead removes the oldest ask on its own (decided with nothing to commit).
-func (s *Switcher) dropHead() error {
+// dropAsk removes it on its own (decided with nothing to commit).
+func (s *Switcher) dropAsk() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.c.Store.WithTx(context.Background(), dropHeadTx)
+	return s.c.Store.WithTx(context.Background(), s.dropAskTx)
+}
+
+// clearUnreadableAsks empties a list that reads as empty but is not (one that
+// does not decode); one a pass replaced meanwhile stays.
+func (s *Switcher) clearUnreadableAsks() error {
+	if !s.asksWaiting() {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.c.Store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		asks, err := asksTx(tx)
+		if err != nil || len(asks) > 0 {
+			return err
+		}
+		return saveAsksTx(tx, nil)
+	})
 }
 
 // recordAsk adds a to the waiting asks and kicks the Step. It runs in a pass:
@@ -199,17 +238,29 @@ func (s *Switcher) follows(ctx context.Context, read *accountRead, device string
 }
 
 // decideAsks decides the waiting asks, oldest first, until none is left, the
-// host closes or the store fails (what is left waits for the next Step). Called
-// from a Step only.
+// host closes or the store fails (what is left waits for the next Step). An
+// answer kept for a later Step (answerAsk) stays where it is and the run goes on
+// behind it. Called from a Step only (which starts askAt at 0, so a kept answer
+// gets one try per Step).
 func (s *Switcher) decideAsks(ctx context.Context) {
 	var read accountRead
 	for {
 		asks, err := loadAsks(s.c.Store.Meta)
-		if err == nil && len(asks) == 0 {
-			return
+		if err == nil && s.askAt >= len(asks) {
+			if s.askAt > 0 {
+				return
+			}
+			err = s.clearUnreadableAsks()
+			if err == nil {
+				return
+			}
 		}
 		if err == nil {
-			err = s.decideAsk(ctx, asks[0], &read)
+			err = s.decideAsk(ctx, asks[s.askAt], &read)
+		}
+		if errors.Is(err, errAnswerLater) {
+			s.askAt++
+			continue
 		}
 		if err != nil {
 			if ctx.Err() == nil {
@@ -226,7 +277,10 @@ func (s *Switcher) decideAsk(ctx context.Context, a waitingAsk, read *accountRea
 		return err
 	}
 	if !linked || dev.LinkNonce != a.Link {
-		return s.dropHead()
+		return s.dropAsk()
+	}
+	if a.Answer != nil {
+		return s.answerAsk(a, *a.Answer, a.Epoch)
 	}
 	if a.Stale {
 		return s.decideStale(ctx, a, dev, read)
@@ -251,7 +305,8 @@ func (s *Switcher) decideAsk(ctx context.Context, a waitingAsk, read *accountRea
 // acceptAsk is what Request did after its check: an accepted request is
 // recorded with the ask's removal in one transaction; one for where the hub
 // heads is told where it runs (a crash before the removal tells it twice, which
-// the phone takes as the same answer).
+// the phone takes as the same answer). One the record cannot take is answered
+// unavailable, the answer the pass gave it, and leaves the list.
 func (s *Switcher) acceptAsk(a waitingAsk) error {
 	now := s.now()
 	accepted := false
@@ -261,20 +316,21 @@ func (s *Switcher) acceptAsk(a waitingAsk) error {
 		if accepted, err = s.acceptTx(tx, a.Device, a.Target, now); err != nil || !accepted {
 			return err
 		}
-		return dropHeadTx(tx)
+		return s.dropAskTx(tx)
 	})
 	s.mu.Unlock()
-	var rej *actions.SwitchRejected
-	if errors.As(err, &rej) {
-		return s.answerAsk(a, rej.Control(), 0)
-	}
 	if err != nil {
-		return err
+		var rej *actions.SwitchRejected
+		if !errors.As(err, &rej) {
+			log.Printf("hub: device %s asked for a transport switch: not recorded (%s)", canonical(a.Device), errClass(err))
+			rej = &actions.SwitchRejected{Reason: wire.SwitchUnavailable, RetryAfter: actions.SwitchRetryAfter}
+		}
+		return s.answerAsk(a, rej.Control(), 0)
 	}
 	if !accepted {
 		s.answerWhereItRuns(a.Device)
 		s.answersQueued = true
-		return s.dropHead()
+		return s.dropAsk()
 	}
 	log.Printf("hub: transport switch to %s accepted", a.Target)
 	s.resetBackoff()
@@ -286,7 +342,7 @@ func (s *Switcher) acceptAsk(a waitingAsk) error {
 func (s *Switcher) decideStale(ctx context.Context, a waitingAsk, dev state.Device, read *accountRead) error {
 	active := s.activeKind()
 	if active == a.Read {
-		return s.dropHead()
+		return s.dropAsk()
 	}
 	follows := true
 	if active == transport.KindRelay {
@@ -298,25 +354,29 @@ func (s *Switcher) decideStale(ctx context.Context, a waitingAsk, dev state.Devi
 	c, epoch, ok, err := s.staleAnswer(dev, follows)
 	if err != nil {
 		log.Printf("hub: device %s wrote on the standby transport: no answer (%s)", canonical(dev.ID), errClass(err))
-		return s.dropHead()
+		return s.dropAsk()
 	}
 	if !ok {
-		return s.dropHead()
+		return s.dropAsk()
 	}
 	return s.answerAsk(a, c, epoch)
 }
 
 // answerAsk queues c for the phone on the transport the ask was read on,
-// removing the ask in the same transaction. A control that cannot be sealed is
-// logged and the ask dropped, as an answer that cannot be made always was: the
-// phone asks again, and no phone behind it waits on this one.
+// removing the ask in the same transaction. A control that does not seal keeps
+// the ask with c decided (errAnswerLater: the asks behind it go on), for
+// maxAnswerTries Steps in all; then it is logged and dropped, and the phone gets
+// no answer.
 func (s *Switcher) answerAsk(a waitingAsk, c wire.Control, epoch uint32) error {
 	var row *state.Control
+	keep := false
 	if p := s.procs[a.Read]; p != nil {
 		sealed, ok, err := p.SealControlFor(a.Device, c, epoch)
 		switch {
 		case err != nil:
-			log.Printf("hub: switch: a %s does not seal (%s): skipped for that phone", c.Kind, errClass(err))
+			a.Tries++
+			keep = a.Tries < maxAnswerTries
+			log.Printf("hub: switch: a %s does not seal (%s), try %d of %d", c.Kind, errClass(err), a.Tries, maxAnswerTries)
 		case ok:
 			row = &sealed
 		}
@@ -324,15 +384,27 @@ func (s *Switcher) answerAsk(a waitingAsk, c wire.Control, epoch uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err := s.c.Store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		if keep {
+			asks, err := asksTx(tx)
+			if err != nil || s.askAt >= len(asks) {
+				return err
+			}
+			a.Answer, a.Epoch = &c, epoch
+			asks[s.askAt] = a
+			return saveAsksTx(tx, asks)
+		}
 		if row != nil {
 			if err := state.Enqueue(tx, *row); err != nil {
 				return err
 			}
 		}
-		return dropHeadTx(tx)
+		return s.dropAskTx(tx)
 	})
 	if err != nil {
 		return err
+	}
+	if keep {
+		return errAnswerLater
 	}
 	if row != nil {
 		s.answersQueued = true

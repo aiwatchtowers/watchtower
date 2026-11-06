@@ -69,6 +69,7 @@ type world struct {
 	onRead    func() // runs inside an account read (a phone linking meanwhile)
 	reads     int    // account reads made through AccountPhones
 	payReads  int    // account reads made through Paying
+	noSeal    string // the phone whose hub-to-phone key is out of reach (sealFailing)
 	onPayRead func() // runs inside a Paying read (the host closing meanwhile)
 }
 

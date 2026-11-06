@@ -147,6 +147,8 @@ type Switcher struct {
 	stepMu sync.Mutex // one Step at a time
 	// answersQueued: this Step queued answers its end writes out (asks.go).
 	answersQueued bool
+	// askAt is the index of the ask this Step is deciding (asks.go).
+	askAt int
 
 	mu     sync.Mutex // guards active, pending, paying and every read-modify-write of the switch record
 	active transport.Kind
@@ -467,7 +469,7 @@ func (s *Switcher) PollOther(ctx context.Context) {
 	// (a lapse recheck first would make every G2 read land in the window).
 	s.checkNoPayer(ctx)  // G2: nobody pays any more
 	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
-	if (s.Pending() || s.asksWaiting()) && s.stepDue() {
+	if s.Pending() && s.stepDue() {
 		s.Kick()
 	}
 }

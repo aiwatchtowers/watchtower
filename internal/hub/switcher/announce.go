@@ -28,6 +28,7 @@ func (s *Switcher) Step(ctx context.Context) error {
 	// like any request toward CloudKit. A lapse that accepts a switch itself
 	// is carried out below. What a pass recorded for a Step to decide (asks.go)
 	// comes first: those were read before anything a lapse decides now.
+	s.askAt = 0
 	s.decideAsks(ctx)
 	s.lapses(ctx)
 	err := s.carryOut(ctx)

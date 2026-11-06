@@ -3,11 +3,16 @@ package switcher_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"watchtower/internal/hub/hubtest"
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
@@ -527,5 +532,253 @@ func TestARelayRequestEndsALapseFromTheStep(t *testing.T) {
 		if d, _, _ := w.st.Device(a.ID().String()); d.RelayLapsedAt != nil {
 			t.Fatal("the lapse did not end")
 		}
+	})
+}
+
+// A list that does not decode is cleared, not just read past: left in place it
+// would hold G2's guard for good.
+func TestAnUnreadableWaitingListIsClearedAndG2MovesOn(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		if err := w.st.SetMeta("switch_asks", "not json"); err != nil {
+			t.Fatal(err)
+		}
+		w.pollAfterInterval()
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v != "" {
+			t.Fatalf("the list is %q %v", v, err)
+		}
+		w.pollAfterInterval()
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+func wantUnavailable(t *testing.T, ph *hubtest.Phone) {
+	t.Helper()
+	for _, c := range ph.Controls {
+		if c.Kind == wire.ControlSwitchRejected && *c.Reason == wire.SwitchUnavailable && c.RetryAfterS != nil && *c.RetryAfterS == 60 {
+			return
+		}
+	}
+	t.Fatalf("no unavailable with its wait: %+v", ph.Controls)
+}
+
+// A request the record cannot take (switched_at unreadable) is answered
+// unavailable, as it was in the pass, and leaves the list: a press toward iCloud
+// behind it is told where the hub runs at once.
+func TestARequestTheRecordCannotTakeIsAnsweredAndThePressBehindGoesOn(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		if err := w.st.SetMeta(switcher.MetaSwitchedAt, "unreadable"); err != nil {
+			t.Fatal(err)
+		}
+		w.ask(a, wire.TransportRelay)
+		w.ask(b, wire.TransportCloudKit)
+		if _, err := w.sw.Processor(transport.KindCloudKit).Pass(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v != "" {
+			t.Fatalf("the list is %q %v", v, err)
+		}
+		for _, ph := range []*hubtest.Phone{a, b} {
+			if _, err := ph.Sync(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wantUnavailable(t, a)
+		if c, ok := b.LastSwitch(); !ok || *c.Target != wire.TransportCloudKit {
+			t.Fatalf("the press behind it was not answered: %+v", b.Controls)
+		}
+	})
+}
+
+// The same head on a hub moving to iCloud: a's press stands, c's press behind
+// the refused request is answered, and the hub moves.
+func TestARequestTheRecordCannotTakeNeverHoldsTheMoveToICloud(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b, c := w.addPhone(true), w.addPhone(true), w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay, b, c)
+		if err := w.st.SetMeta(switcher.MetaSwitchedAt, "unreadable"); err != nil {
+			t.Fatal(err)
+		}
+		for _, ph := range []*hubtest.Phone{a, b, c} {
+			w.onCloudKit(ph)
+		}
+		w.ask(a, wire.TransportCloudKit)
+		w.ask(b, wire.TransportRelay)
+		w.ask(c, wire.TransportCloudKit)
+		w.sw.PollOther(w.ctx)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindCloudKit)
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v != "" {
+			t.Fatalf("the list is %q %v", v, err)
+		}
+		if _, err := b.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		wantUnavailable(t, b)
+	})
+}
+
+// sealFailing is the hub's keys with one phone's relay key out of reach.
+type sealFailing struct {
+	secure.KeySource
+	w *world
+}
+
+func (k sealFailing) RelayKey(dir secure.Direction, device secure.ID, epoch uint32) ([]byte, error) {
+	k.w.mu.Lock()
+	failed := dir == secure.HubToPhone && device.String() == k.w.noSeal
+	k.w.mu.Unlock()
+	if failed {
+		return nil, errors.New("the key store is out of reach")
+	}
+	return k.KeySource.RelayKey(dir, device, epoch)
+}
+
+func (w *world) failSealsFor(ph *hubtest.Phone) {
+	w.mu.Lock()
+	w.noSeal = ""
+	if ph != nil {
+		w.noSeal = ph.ID().String()
+	}
+	w.mu.Unlock()
+}
+
+// sealingCanFail restarts the hub on keys failSealsFor can break.
+func (w *world) sealingCanFail() {
+	w.t.Helper()
+	w.rebuild(func(c *switcher.Config) { c.Actions.Sealer = secure.NewSealer(sealFailing{w.keys, w}) })
+}
+
+// An answer that cannot be sealed is kept and retried, its decision kept with
+// it (a phone paying by then still hears not_paying), and nobody behind it
+// waits.
+func TestAnAnswerThatDoesNotSealIsRetriedAndHoldsNobody(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		free, b := w.addPhone(false), w.addPhone(true)
+		w.moveTo(b, wire.TransportRelay)
+		w.sealingCanFail()
+		w.failSealsFor(free)
+		w.onCloudKit(b)
+		w.ask(free, wire.TransportRelay)
+		w.ask(b, wire.TransportCloudKit)
+		w.sw.PollOther(w.ctx)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantPressActedOn(b)
+		// One try per Step, though the Step decided asks twice (around the drain).
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || !strings.Contains(v, `"tries":1`) {
+			t.Fatalf("the answer was not kept: %q %v", v, err)
+		}
+		w.failSealsFor(nil)
+		w.mu.Lock()
+		w.paying[free.ID().String()] = true
+		w.mu.Unlock()
+		w.rebuild(nil) // a restart keeps it too
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := free.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if got := rejections(free); !slices.Equal(got, []string{wire.SwitchNotPaying}) {
+			t.Fatalf("rejections %v", got)
+		}
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v != "" {
+			t.Fatalf("the list is %q %v", v, err)
+		}
+	})
+}
+
+// The retries are bounded: a key that never returns ends the ask, the phone
+// gets no answer, and nothing waits on it any more.
+func TestAnAnswerThatNeverSealsIsDroppedAfterItsTries(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		free := w.addPhone(false)
+		w.sealingCanFail()
+		w.failSealsFor(free)
+		w.ask(free, wire.TransportRelay)
+		if _, err := w.sw.Processor(transport.KindCloudKit).Pass(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		for i := range 3 {
+			if v, _, err := w.st.Meta("switch_asks"); err != nil || v == "" {
+				t.Fatalf("dropped before try %d: %q %v", i+1, v, err)
+			}
+			if err := w.sw.Step(w.ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v != "" {
+			t.Fatalf("the list after its tries is %q %v", v, err)
+		}
+	})
+}
+
+// countedPolls counts the reads of the standby relay: one Run loop, one poll.
+type countedPolls struct {
+	transport.Transport
+	n *atomic.Int64
+}
+
+func (c countedPolls) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
+	c.n.Add(1)
+	return c.Transport.Changes(ctx, zone, since)
+}
+
+// An ask that cannot be finished does not spin Run: it is retried at the run
+// loop's tick, not by a kick of its own, so its tries last. The one kick is the
+// ask's own, from the pass.
+func TestAWaitingAskDoesNotSpinTheRunLoop(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		free := w.addPhone(false)
+		var polls atomic.Int64
+		w.rebuild(func(c *switcher.Config) {
+			c.Actions.Sealer = secure.NewSealer(sealFailing{w.keys, w})
+			c.Relay = countedPolls{w.relay, &polls}
+		})
+		w.failSealsFor(free)
+		w.ask(free, wire.TransportRelay)
+		if _, err := w.sw.Processor(transport.KindCloudKit).Pass(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		ctx, stop := context.WithCancel(w.ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); _ = w.sw.Run(ctx) }()
+		t.Cleanup(func() { stop(); <-done })
+		time.Sleep(2 * testOldSide)     // far longer than a loop
+		if n := polls.Load(); n > 2*2 { // two mailboxes at most, two loops
+			t.Fatalf("%d relay reads: the run loop spins", n)
+		}
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v == "" {
+			t.Fatalf("the ask's tries were burned by spinning: %q %v", v, err)
+		}
+	})
+}
+
+// A switch still pending (here the last request undid the first and the Step
+// has not settled it) is not replaced by G2's move: only a lost Step leaves one
+// behind now that requests are decided in the Step.
+func TestG2APendingRecordIsNotOverridden(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := g2World(t, w)
+		w.pollAfterInterval() // the first of G2's two reads
+		rec := fmt.Sprintf(`{"id":"pending-switch","from":"relay","target":"relay","by":%q,"at":"2026-11-01T12:00:00Z"}`, a.ID().String())
+		if err := w.st.SetMeta("transport_switch", rec); err != nil {
+			t.Fatal(err)
+		}
+		w.advance(switcher.NoPayerPoll)
+		w.sw.PollOther(w.ctx) // G2's second read would move here
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindRelay)
 	})
 }
