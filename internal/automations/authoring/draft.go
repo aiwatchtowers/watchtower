@@ -101,7 +101,11 @@ type DraftStep struct {
 // artifact's key ("" for a feed output); ContentHash the card's content hash
 // (blocks.ContentHash; "" for an output other than inbox); Actions the
 // card's own buttons as automation_outputs.actions stores them (`[]` when
-// none), so the Look preview draws the card as the Inbox will.
+// none), so the Look preview draws the card as the Inbox will. Folder is the
+// slug output.inbox({folder}) named ("" = none: the card follows its
+// automation's route) and FolderTitle that folder's title, read at the dry
+// run for the preview only ("" when no folder takes the slug: the run would
+// show the card on its route and journal a line).
 type DraftOutput struct {
 	Kind        string          `json:"kind"`
 	Title       string          `json:"title"`
@@ -111,6 +115,8 @@ type DraftOutput struct {
 	Key         string          `json:"key"`
 	ContentHash string          `json:"content_hash"`
 	Actions     json.RawMessage `json:"actions"`
+	Folder      string          `json:"folder"`
+	FolderTitle string          `json:"folder_title"`
 }
 
 // noBlocks is DraftOutput.Blocks of an output without a block document.
@@ -252,7 +258,7 @@ func evaluate(ctx context.Context, d Deps, a draftArgs, opts evalOptions) (*Draf
 	if err != nil {
 		return nil, fmt.Errorf("draft_automation: %w", err)
 	}
-	if res.DryRun, err = dryRunOf(rep); err != nil {
+	if res.DryRun, err = dryRunOf(ctx, d.DB, rep); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -372,7 +378,7 @@ func isUnconfirmedRecipe(d *db.DB, scope automations.Scope, hash string) (bool, 
 	return false, nil
 }
 
-func dryRunOf(rep *automations.DryRunReport) (*DraftDryRun, error) {
+func dryRunOf(ctx context.Context, d *db.DB, rep *automations.DryRunReport) (*DraftDryRun, error) {
 	out := &DraftDryRun{
 		Steps: make([]DraftStep, 0, len(rep.Steps)), Outputs: make([]DraftOutput, 0, len(rep.Outputs)),
 		Tokens: rep.InputTokens + rep.OutputTokens, Status: rep.Status, Error: rep.Error,
@@ -396,9 +402,17 @@ func dryRunOf(rep *automations.DryRunReport) (*DraftDryRun, error) {
 		if err != nil {
 			return nil, fmt.Errorf("draft_automation: encoding output %d's actions: %w", len(out.Outputs), err)
 		}
+		var folderTitle string
+		if o.FolderSlug != "" {
+			// A draft has no automation id: Needs approval never takes the slug here.
+			if _, folderTitle, _, err = d.InboxFolderForOutput(ctx, 0, o.FolderSlug); err != nil {
+				return nil, fmt.Errorf("draft_automation: %w", err)
+			}
+		}
 		out.Outputs = append(out.Outputs, DraftOutput{
 			Kind: o.Kind, Title: o.Title, Body: o.Body, Priority: o.Priority,
 			Blocks: doc, Key: o.OutputKey, ContentHash: o.ContentHash, Actions: actionsJSON,
+			Folder: o.FolderSlug, FolderTitle: folderTitle,
 		})
 	}
 	return out, nil

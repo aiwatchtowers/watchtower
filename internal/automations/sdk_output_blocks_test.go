@@ -149,9 +149,13 @@ func TestOutput_InboxKey(t *testing.T) {
 	mustReturn(t, try(`output.inbox({title: "t", body: "b", key: "`+strings.Repeat("é", 200)+`"})`), livingCase(), "ok")
 }
 
-func TestOutput_InboxFolderReserved(t *testing.T) {
-	wantRefusal(t, `output.inbox({title: "t", body: "b", folder: "work"})`, feedCase(),
-		"ValidationError", "output.inbox(): folder is not available yet")
+// folder is output.inbox's field (Inbox builder B's hook, inbox_folder_field.go):
+// output.report still refuses it, and other unknown fields stay unknown.
+func TestOutput_InboxFolderFieldRegistered(t *testing.T) {
+	r := mustReturn(t, try(`output.inbox({title: "t", body: "b", folder: "work"})`), feedCase(), "ok")
+	if got := r.env.Buffer.Outputs()[0].FolderSlug; got != "work" {
+		t.Fatalf("FolderSlug = %q; want the buffered slug", got)
+	}
 	wantRefusal(t, `output.inbox({title: "t", body: "b", colour: "red"})`, feedCase(),
 		"ValidationError", `output.inbox(): unknown field "colour"`)
 	got := mustReturnAny(t, try(`output.report({title: "t", body: "b", folder: "work"})`), sdkCase{outputs: []string{"report"}})

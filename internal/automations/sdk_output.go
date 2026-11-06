@@ -46,9 +46,9 @@ func OutputModule() *OutputMod {
 }
 
 // RegisterInboxField hands output.inbox's field name to fn (sub-project B's
-// folder). A field output.inbox owns cannot be registered (a programming
-// error: it panics). A field no hook takes stays an unknown field, except
-// folder, which is reserved for its hook.
+// folder, registered by DefaultModules). A field output.inbox owns cannot be
+// registered (a programming error: it panics). A field no hook takes stays an
+// unknown field.
 func (m *OutputMod) RegisterInboxField(name string, fn InboxFieldFunc) {
 	if slices.Contains(inboxOwnFields, name) {
 		panic(fmt.Sprintf("automations: output.inbox owns the field %q", name))
@@ -74,10 +74,6 @@ var outputPriorities = []string{"high", "medium", "low"}
 
 // inboxOwnFields are the fields output.inbox validates itself.
 var inboxOwnFields = []string{"title", "body", "priority", "link", "actions", "blocks", "key"}
-
-// inboxFolderField is reserved for sub-project B's hook: refused with its
-// own message until the hook is registered.
-const inboxFolderField = "folder"
 
 // outputOpts are the optional fields an output kind takes: priority, the
 // Inbox card's link and actions (card), its block document (blocks), a
@@ -207,8 +203,7 @@ func outputRow(env *Env, fn, kind string, arg any, opts outputOpts) (db.Automati
 	return o, nil
 }
 
-// checkOutputFields refuses a field output.<kind> does not take. folder is
-// reserved for its hook (sub-project B) on a kind that takes hook fields.
+// checkOutputFields refuses a field output.<kind> does not take.
 func checkOutputFields(fn string, fields map[string]any, opts outputOpts) error {
 	allowed := []string{"title", "body"}
 	if opts.priority {
@@ -229,9 +224,6 @@ func checkOutputFields(fn string, fields map[string]any, opts outputOpts) error 
 		}
 		if _, hooked := opts.hooks[k]; hooked {
 			continue
-		}
-		if k == inboxFolderField && opts.hooks != nil {
-			return validationf("%s(): folder is not available yet", fn)
 		}
 		return validationf("%s(): unknown field %q", fn, k)
 	}

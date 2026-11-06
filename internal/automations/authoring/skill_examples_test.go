@@ -251,7 +251,7 @@ func TestCreateAutomationSkill_TeachesBlocksAndTheLook(t *testing.T) {
 		"neutral, info, success, warning, danger, accent",
 		"pass `body` or `blocks`, not both",
 		"artifacts: living", "concurrency: 1", "output.remove({key})",
-		"folder is not available yet",
+		"a folder that does not exist never fails the run",
 		"target: {title, intent?, parent?}", "outputs: [target]",
 		"## Designing the look",
 		"Never name blocks to the owner",

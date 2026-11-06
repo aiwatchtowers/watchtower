@@ -874,9 +874,13 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 		if err != nil {
 			return fmt.Errorf("committing output %d of automation run %d: encoding actions: %w", i, runID, err)
 		}
+		folderID, err := resolveOutputFolderTx(tx, automationID, runID, stamp, o)
+		if err != nil {
+			return fmt.Errorf("committing output %d of automation run %d: %w", i, runID, err)
+		}
 		if _, err := tx.Exec(insertAutomationOutputSQL, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp,
 			o.Link, string(actionsJSON), o.BlocksJSON, nullRunText(o.OutputKey), o.ContentHash, stamp, stamp,
-			o.FolderID); err != nil {
+			folderID); err != nil {
 			return fmt.Errorf("committing output %d of automation run %d: %w", i, runID, err)
 		}
 	}
@@ -889,7 +893,8 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 // run, the content and written_at. Only a changed content_hash also moves
 // changed_at and clears the read, done, dismissed and press state: a changed
 // artifact is new to the owner, a same-hash rewrite is not (SET expressions
-// read the row before the update).
+// read the row before the update). folder_id is always the new run's: the
+// last run's choice wins, and NULL puts the artifact back on its route.
 const insertAutomationOutputSQL = `INSERT INTO automation_outputs
 	(automation_id, run_id, kind, title, body, priority, created_at, link, actions_json,
 	 blocks_json, output_key, content_hash, written_at, changed_at, folder_id)
@@ -897,7 +902,7 @@ const insertAutomationOutputSQL = `INSERT INTO automation_outputs
 	ON CONFLICT(automation_id, output_key) WHERE output_key IS NOT NULL DO UPDATE SET
 	run_id = excluded.run_id, title = excluded.title, body = excluded.body, priority = excluded.priority,
 	link = excluded.link, actions_json = excluded.actions_json, blocks_json = excluded.blocks_json,
-	written_at = excluded.written_at,
+	written_at = excluded.written_at, folder_id = excluded.folder_id,
 	changed_at     = CASE WHEN content_hash = excluded.content_hash THEN changed_at ELSE excluded.changed_at END,
 	read_at        = CASE WHEN content_hash = excluded.content_hash THEN read_at ELSE NULL END,
 	done_at        = CASE WHEN content_hash = excluded.content_hash THEN done_at ELSE NULL END,
@@ -1312,8 +1317,13 @@ type AutomationOutput struct {
 	WrittenAt, ChangedAt               time.Time
 	// FolderID is the recipe's explicit Inbox folder (00175); nil = the card
 	// follows its automation's route, else the root (inbox_artifact_folders).
-	// A commit writes it on insert only.
+	// A commit writes it on insert and on a living upsert (the last run's
+	// choice wins).
 	FolderID *int64
+	// FolderSlug is the folder output.inbox({folder}) named, buffered by the
+	// run and resolved to FolderID inside the commit transaction (a slug no
+	// folder takes leaves FolderID nil and journals a line). Never read back.
+	FolderSlug string
 }
 
 // Inbox card action kinds (automation_outputs.actions_json).
