@@ -3137,7 +3137,7 @@ CREATE TABLE IF NOT EXISTS inbox_folders (
     parent_id  INTEGER REFERENCES inbox_folders(id),                       -- NULL only for the root
     slug       TEXT NOT NULL UNIQUE,                                       -- derived once from the title; recipes name a folder by slug
     title      TEXT NOT NULL,
-    icon       TEXT NOT NULL DEFAULT '',                                   -- an SF Symbol from the allowlist; '' = folder
+    icon       TEXT NOT NULL DEFAULT '',                                   -- an SF Symbol from the allowlist; '' = the kind's default (folder; Needs approval draws its fixed symbol by kind)
     position   INTEGER NOT NULL DEFAULT 0,                                 -- dense 0..n-1 per sibling list
     hidden     INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
