@@ -23,12 +23,17 @@ import (
 // transport_switch(cloudkit, reason = entitlement_expired) (Request), or a
 // hub write into the phone's relay mailbox refused ENTITLEMENT_INACTIVE
 // (EntitlementInactive). Each only records the lapse and kicks (queueLapse:
-// nothing in a processor's pass or flush reads the relay), and the Step runs
-// lapse, which decides over a fresh account read (ask #1075): another phone pays when
-// any phone of the relay account other than the lapsed one does, linked to
-// this Mac or not; a read that failed or was not made afresh decides
-// nothing, and the lapse waits (kept in hub_meta across a restart) and is
-// retried at each Step, every OtherPoll at the latest, without limit:
+// the lapse path reads nothing in a processor's pass or flush), and the Step
+// runs lapse, which decides over a fresh account read (ask #1075): another
+// phone pays when any phone of the relay account other than the lapsed one
+// does, linked to this Mac or not (a phone listed paying past LapseFresh, or
+// on its own request, renewed: the lapse ends and the hub stays, the asking
+// phone told where it runs). A read that failed or was not made afresh
+// decides nothing, and the lapse waits (kept in hub_meta across a restart) and
+// is retried at each Step, every OtherPoll at the latest, without limit. The
+// exception is the phone's own request (ask #1079, the relay's rule 10): on
+// an unreadable account it moves the hub at once, so a relay outage can move
+// the Mac with no signal from the relay (moveOnUnreadable):
 //
 //   - the echoes queued for the phone's relay mailbox are owed and moved to
 //     its CloudKit mailbox, written there before anything queued after them
@@ -159,7 +164,7 @@ func (s *Switcher) queueLapse(device string, asked bool) error {
 	}
 	req := s.pending[id]
 	if req == nil {
-		req = &lapseRequest{at: s.now()}
+		req = &lapseRequest{at: s.now().Round(0)} // wall clock: the age counts sleep
 		s.pending[id] = req
 	}
 	req.asked = req.asked || asked
@@ -261,6 +266,12 @@ func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) 
 			unreadable = true
 		} else if renewed {
 			log.Printf("hub: the relay entitlement of device %s is paying again: the lapse ends", id)
+			s.mu.Lock()
+			asked := req.asked
+			s.mu.Unlock()
+			if asked {
+				s.answerWhereItRuns(dev.ID) // its Switch to iCloud does not wait for an answer that never comes
+			}
 			return nil
 		}
 	}
@@ -371,7 +382,7 @@ func (s *Switcher) othersPay(ctx context.Context, dev state.Device, req *lapseRe
 				continue
 			}
 			if dev.RelayDeviceID != "" && p.RelayDeviceID == dev.RelayDeviceID {
-				if asked || age >= LapseFresh {
+				if asked || age >= LapseFresh || age < 0 { // a clock set back errs to staying
 					return false, true, nil
 				}
 				continue

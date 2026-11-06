@@ -402,7 +402,34 @@ func TestARequestCopyReadAfterTheRenewalLeavesTheHubOnTheRelay(t *testing.T) {
 		w.mu.Lock()
 		w.paying[a.ID().String()] = true // renewed since the copy was written
 		w.mu.Unlock()
+		w.relay.RefuseWrites(relayZone(a), nil) // and the relay takes its mailbox's writes again
+		before := len(switched(a))
 		w.settle(a)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.settle(a)
+		w.wantActive(transport.KindRelay)
+		if len(switched(a)) != before+1 {
+			t.Fatalf("the phone's request was not answered with where the hub runs: %d notices after %d", len(switched(a)), before)
+		}
+	})
+}
+
+// A clock set back makes the lapse's age negative: not fresh, so a listing as
+// paying reads as a renewal and the hub stays (the safe side).
+func TestAClockSetBackReadsAStaleSnapshotAsARenewalAndStays(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay)
+		w.lapse(a)
+		w.mu.Lock()
+		w.paying[a.ID().String()] = true
+		w.mu.Unlock()
+		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
+			t.Fatal(err)
+		}
+		w.advance(-time.Hour)
 		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}
