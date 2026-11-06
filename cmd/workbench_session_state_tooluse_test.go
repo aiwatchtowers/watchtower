@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"strconv"
 	"strings"
@@ -500,4 +501,35 @@ func TestSessionState_FailedQuestionClearHasItsOwnLine(t *testing.T) {
 	assert.Equal(t, "working", storedAgentState(t, database, row))
 	assert.Contains(t, errOut, "watchtower: chat question not cleared: no time left")
 	assert.NotContains(t, errOut, "session state not recorded")
+}
+
+// Review M3/M4: every failure a state hook joins — at any depth — is one
+// stderr line, a failed cwd write under its own prefix.
+func TestReportStateHookError_OneLinePerFailure(t *testing.T) {
+	stateErr, cwdErr, clearErr := errors.New("state busy"), errors.New("cwd busy"), errors.New("clear busy")
+	var out bytes.Buffer
+	reportStateHookError(&out, errors.Join(
+		errors.Join(stateErr, agentCwdNotRecorded{cwdErr}),
+		chatQuestionNotCleared{clearErr},
+	))
+	assert.Equal(t, "watchtower: session state not recorded: state busy\n"+
+		"watchtower: agent cwd not recorded: cwd busy\n"+
+		"watchtower: chat question not cleared: clear busy\n", out.String())
+
+	out.Reset()
+	reportStateHookError(&out, nil)
+	assert.Empty(t, out.String())
+}
+
+// Review M3: a failed cwd write (or read) alone is an agentCwdNotRecorded.
+func TestRecordCwdAlone_FailureHasItsOwnLabel(t *testing.T) {
+	d := db.OpenTestDB(t)
+	require.NoError(t, d.Close())
+	err := recordCwdAlone(d, 1, 1, briefLaunchID, "/tmp/acme/sub", time.Now(), hookLockWait{})
+	var cwdErr agentCwdNotRecorded
+	require.ErrorAs(t, err, &cwdErr)
+	var out bytes.Buffer
+	reportStateHookError(&out, err)
+	assert.Contains(t, out.String(), "watchtower: agent cwd not recorded: ")
+	assert.NotContains(t, out.String(), "session state not recorded")
 }

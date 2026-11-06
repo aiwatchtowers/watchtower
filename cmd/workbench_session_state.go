@@ -194,25 +194,48 @@ type chatQuestionNotCleared struct{ err error }
 func (e chatQuestionNotCleared) Error() string { return "chat question not cleared: " + e.err.Error() }
 func (e chatQuestionNotCleared) Unwrap() error { return e.err }
 
+// agentCwdNotRecorded is a failed write (or read) of the agent's cwd alone
+// (recordCwdAlone): the state itself was a repeat or held back, so it is
+// reported apart.
+type agentCwdNotRecorded struct{ err error }
+
+func (e agentCwdNotRecorded) Error() string { return "agent cwd not recorded: " + e.err.Error() }
+func (e agentCwdNotRecorded) Unwrap() error { return e.err }
+
 // reportStateHookError prints a state hook's failure, one line per failure
-// it joins: a failed clear of the chat question under its own prefix, every
-// other one as "session state not recorded".
+// it joins at any depth: a failed clear of the chat question and a failed
+// cwd write under their own prefixes, every other one as "session state not
+// recorded".
 func reportStateHookError(stderr io.Writer, err error) {
-	if err == nil {
-		return
-	}
-	errs := []error{err}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		errs = joined.Unwrap()
-	}
-	for _, e := range errs {
-		var clear chatQuestionNotCleared
-		if errors.As(e, &clear) {
-			fmt.Fprintf(stderr, "watchtower: %v\n", clear)
-			continue
+	for _, e := range joinedErrors(err) {
+		var notCleared chatQuestionNotCleared
+		var cwd agentCwdNotRecorded
+		switch {
+		case errors.As(e, &notCleared):
+			fmt.Fprintf(stderr, "watchtower: %v\n", notCleared)
+		case errors.As(e, &cwd):
+			fmt.Fprintf(stderr, "watchtower: %v\n", cwd)
+		default:
+			fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", e)
 		}
-		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", e)
 	}
+}
+
+// joinedErrors is err's errors.Join leaves, nested joins flattened; none
+// for nil.
+func joinedErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []error{err}
+	}
+	var out []error
+	for _, e := range joined.Unwrap() {
+		out = append(out, joinedErrors(e)...)
+	}
+	return out
 }
 
 // recordHookAgentState records the event's state, then — whatever the state
@@ -660,19 +683,23 @@ var setTerminalAgentState = (*db.DB).SetTerminalAgentState
 // (board #566): only when it differs from the row's, is reported after the
 // row's and not before the run mark (AgentCwd.WouldRecord; read first, so
 // the common case — the same folder — never waits for the write lock);
-// SetTerminalAgentCwd repeats the guards. "" writes nothing.
+// SetTerminalAgentCwd repeats the guards. "" writes nothing. A failure is an
+// agentCwdNotRecorded.
 func recordCwdAlone(database *db.DB, rowID, workbenchID int64, sessionID, cwd string, at time.Time, lock hookLockWait) error {
 	if cwd == "" {
 		return nil
 	}
 	stored, err := database.TerminalAgentCwd(rowID)
-	if err != nil || !stored.WouldRecord(cwd, at) {
-		return err
+	if err == nil && stored.WouldRecord(cwd, at) {
+		err = lock.write(database, func() error {
+			_, err := setTerminalAgentCwd(database, rowID, workbenchID, sessionID, cwd, at)
+			return err
+		})
 	}
-	return lock.write(database, func() error {
-		_, err := setTerminalAgentCwd(database, rowID, workbenchID, sessionID, cwd, at)
-		return err
-	})
+	if err != nil {
+		return agentCwdNotRecorded{err}
+	}
+	return nil
 }
 
 // setTerminalAgentCwd is the cwd's write alone; a seam for tests.
