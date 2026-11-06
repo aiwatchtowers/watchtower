@@ -2691,6 +2691,15 @@ Entry format:
 - rule-gap (candidate, dim 8): *when a change overturns a contract that a CLAUDE.md index entry summarises, update that summary line in the same change. The inventory and feature note alone leave the agent-facing index wrong.*
 - outcome: TBD
 
+## 2026-11-05 — feature/chat-artifacts-export (prompt default flip to in-app artifacts unless claude.ai is asked + Print… / Save as PDF via the print panel + Export as Word; panel: prosecutor (8) + all three pr-review-toolkit specialists, codex timed out; judge verified by reading, `go test ./internal/learn ./internal/chat -run 'TestGuideCardsValid|TestPrompt_ClaudeAI'` green) — verdict: changes-needed
+
+- contested: does the print panel's PDF menu (Mail, Messages, iCloud) breach CHAT-05's "nothing hands content to a networked app"? Held major as a documentation and inventory gap, not a security blocker. It is an OS panel the owner opens and picks from, like Copy then paste, and the owner asked for exactly this panel. But the Observable lists the export formats one by one, and every earlier scan-list extension carried a changelog line, so a new export path updates both in the same change. [8/9]
+- false-positive: an empty .docx (silent-failure lane). `canExportWord` already refuses blank content, so only a document of nothing but rules could produce one. [9]
+- miss: only the test lane ran a probe and found that AppKit's `.officeOpenXML` writer flattens tables into one paragraph per cell, while the guide promises "headings, lists and tables". The added test checked only the zip magic and two strings, so it could not catch this. **A user-facing promise about an export format needs a test that opens the output and checks that promise.** [6/7]
+- weak-dimension: 7. The new Coordinator callbacks (`onLoaded`/`onFailed`) and the printer's lifecycle (load that never finishes, content-process crash) have no tests. The only printer coverage is a source scan.
+- rule-gap (candidate, dim 6): *an offscreen web-view job kept alive in a static set needs a terminal path for every way a load can end: finish, fail, content-process termination and a timeout. Otherwise the button silently does nothing and the job leaks.*
+- outcome: TBD
+
 ## 2026-11-06 — feature/985-session-row (group #985: #986 merged share in session progress, #987 session row target branch + lanes, #988 Working from the first tool start + per-hook lock budget; 54 files; panel: prosecutor (6) + 3 toolkit specialists, codex timed out; judge verified 0391d1026 by reading, no runs) — verdict: changes-needed
 
 - contested (held major, 2 lanes): when `--summary` gained a git-only merge refresh, the command picked up a new best-effort payload, but its failures go to stderr only. The JSON is a bare row array, so the Desktop has nothing to decode and nothing to show, and the Long help still promised `pr_note`, which only `--session` has. Every leaf had been reviewed on its own and passed; the gap showed only where the leaves meet: a read-only command turning into a refresh that writes. **When a cache-only CLI mode starts refreshing, check the envelope-symmetry rule again for that mode's JSON shape.** [8/9]
