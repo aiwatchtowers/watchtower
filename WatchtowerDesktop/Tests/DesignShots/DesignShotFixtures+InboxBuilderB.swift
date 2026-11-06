@@ -561,8 +561,11 @@ enum InboxBuilderBShotFixtures {
         ]
     }
 
-    private static let icons = ["folder", "tray", "flag", "bolt", "person.2", "doc.text", "calendar", "shippingbox",
-                                "lightbulb", "bell"]
+    private static let icons = [
+        ("folder", "Folder"), ("tray", "Tray"), ("flag", "Flag"), ("bolt", "Bolt"), ("person.2", "People"),
+        ("doc.text", "Document"), ("calendar", "Calendar"), ("shippingbox", "Box"), ("lightbulb", "Idea"),
+        ("bell", "Bell")
+    ].map { InboxFolderIcon(symbol: $0.0, label: $0.1) }
 
     /// A ⋯ menu drawn open: a native `Menu` never renders in a snapshot, so
     /// its entries are laid out as the open menu shows them.

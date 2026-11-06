@@ -43,6 +43,18 @@ package struct InboxFolderRow: Identifiable, Equatable, Sendable {
     }
 }
 
+/// One icon of the folder allowlist: its SF Symbol and the name Icon ▸
+/// shows ("Flag", "People", "Box").
+package struct InboxFolderIcon: Equatable, Sendable {
+    package let symbol: String
+    package let label: String
+
+    package init(symbol: String, label: String) {
+        self.symbol = symbol
+        self.label = label
+    }
+}
+
 /// The one line under the menu: a lost revision race reloaded the tree, or
 /// the CLI is missing and every edit is off.
 package enum InboxFolderMenuNote: Equatable, Sendable {
@@ -135,7 +147,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     /// The root's ⋯ Show Hidden Folders is on.
     package var showsHidden: Bool
     /// Icon ▸'s allowlist (`InboxFolderIcons`).
-    package var icons: [String]
+    package var icons: [InboxFolderIcon]
     /// Needs approval's built-in is on: its ⋯ offers Turn Off, else Turn On.
     package var approvalsEnabled: Bool
 
@@ -143,7 +155,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         rows: [InboxFolderRow], selection: Int64? = nil, note: InboxFolderMenuNote? = nil,
         dropIndicator: InboxFolderDrop? = nil, deleteConfirmation: InboxFolderDeleteSummary? = nil,
         folderDraft: InboxFolderDraft? = nil, pendingMoveID: Int64? = nil, showsHidden: Bool = false,
-        icons: [String] = [], approvalsEnabled: Bool = true
+        icons: [InboxFolderIcon] = [], approvalsEnabled: Bool = true
     ) {
         self.rows = rows
         self.selection = selection
@@ -290,11 +302,12 @@ package struct InboxArtifactMenuContent: Equatable, Sendable {
 
     /// An owner folder's ⋯: Rename…, Icon ▸ (the allowlist), New Folder
     /// Inside, Hide or Show, Delete….
-    package static func folderEntries(_ folder: InboxFolderRow, icons: [String]) -> [InboxMenuEntry] {
+    package static func folderEntries(_ folder: InboxFolderRow, icons: [InboxFolderIcon]) -> [InboxMenuEntry] {
         [
             InboxMenuEntry(title: "Rename…", command: .rename),
             InboxMenuEntry(title: "Icon", children: icons.map { icon in
-                InboxMenuEntry(title: icon, command: .icon(icon), checked: icon == folder.icon, systemImage: icon)
+                InboxMenuEntry(title: icon.label, command: .icon(icon.symbol), checked: icon.symbol == folder.icon,
+                               systemImage: icon.symbol)
             }),
             InboxMenuEntry(title: "New Folder Inside", command: .newFolderInside),
             folder.hidden ? InboxMenuEntry(title: "Show", command: .show) : InboxMenuEntry(title: "Hide", command: .hide),

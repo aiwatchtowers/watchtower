@@ -47,9 +47,12 @@ final class InboxFolderContentTests: XCTestCase {
     }
 
     func testFolderRootAndApprovalsMenus() {
-        let folder = InboxArtifactMenuContent.folderEntries(tree[2], icons: ["folder", "flag"])
+        let folder = InboxArtifactMenuContent.folderEntries(tree[2], icons: [
+            InboxFolderIcon(symbol: "folder", label: "Folder"), InboxFolderIcon(symbol: "flag", label: "Flag")
+        ])
         XCTAssertEqual(folder.map(\.title), ["Rename…", "Icon", "New Folder Inside", "Hide", "Delete…"])
-        XCTAssertEqual(folder[1].children.filter(\.checked).map(\.title), ["flag"])
+        XCTAssertEqual(folder[1].children.filter(\.checked).map(\.title), ["Flag"], "a human name, not the symbol")
+        XCTAssertEqual(folder[1].children.map(\.command), [.icon("folder"), .icon("flag")])
         var hidden = tree[2]
         hidden.hidden = true
         XCTAssertEqual(InboxArtifactMenuContent.folderEntries(hidden, icons: [])[3].title, "Show")
