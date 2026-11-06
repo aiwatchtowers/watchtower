@@ -623,3 +623,27 @@ func TestAgentlog02_CodexRestampedForkCountsOnceAndKeepsTiming(t *testing.T) {
 		assert.Equal(t, int64(4000), ms, "the parent's own call-to-output time, order %v", order)
 	}
 }
+
+// The parent's rollout ends with a call still open; the fork replays the call
+// and carries its result. Either scan order fills the row.
+func TestAgentlog02_CodexResultOnlyInForkFillsPendingRow(t *testing.T) {
+	for _, order := range [][]string{{cxParent, cxFork}, {cxFork, cxParent}} {
+		f := newFixture(t)
+		parent := cxMeta(t, "00.000", cxParent, f.folder) + cxExec(t, "05.000", "call-open", "go test ./...")
+		fork := cxMeta(t, "30.000", cxFork, f.folder) + parent + cxOut(t, "40.000", "call-open", "Process exited with code 2")
+		content := map[string]string{cxParent: parent, cxFork: fork}
+		f.codexRow(f.wb, cxParent, f.folder, "")
+		f.codexRow(f.wb, cxFork, f.folder, "")
+		for _, id := range order {
+			f.writeRollout(id, content[id])
+			r := f.scan()
+			require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+		}
+		var owner, outcome, class string
+		require.NoError(t, f.al.QueryRow(`SELECT session_uuid, outcome, error_class FROM agent_log_events WHERE key = 'tool:codex:call-open'`).
+			Scan(&owner, &outcome, &class))
+		assert.Equal(t, cxParent, owner, "order %v", order)
+		assert.Equal(t, "error", outcome, "order %v", order)
+		assert.Equal(t, "exit_code", class, "order %v", order)
+	}
+}

@@ -233,6 +233,14 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				"tool:" + r.ToolUseID}, ownerArgs...)...); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
 			}
+			// A result only a replayed copy carries (the owner's transcript
+			// ends before it) still fills a pending row, but never times it.
+			if _, err := tx.Exec(`UPDATE agent_log_events SET outcome = ?, error_class = ?,
+				lines_added = ?, lines_removed = ?, result_bytes = ?
+				WHERE key = ? AND outcome IN ('', 'pending')`, r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes,
+				"tool:"+r.ToolUseID); err != nil {
+				return fmt.Errorf("filling a replayed tool result: %w", err)
+			}
 			if r.SpawnedAgentID != "" {
 				if _, err := tx.Exec(`UPDATE agent_log_events SET spawned_agent_id = ?, background = ? WHERE key = ?`,
 					r.SpawnedAgentID, r.Background, "tool:"+r.ToolUseID); err != nil {
@@ -278,9 +286,10 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 var errCASLost = errors.New("agent log offset moved by another writer")
 
 // batchOwners is the condition (and its arguments) that limits a tool
-// result's pairing to a row one of the batch's sessions owns: a fork's replay
-// of a call another session owns must not recompute that row's duration from
-// the copy's times. No sessions: no limit.
+// result's full pairing to a row one of the batch's sessions owns: a fork's
+// replay of a call another session owns must not recompute that row's
+// duration from the copy's times (it may only fill a row still pending). No
+// sessions: no limit.
 func batchOwners(sessions []AgentLogSession) (string, []any) {
 	if len(sessions) == 0 {
 		return "", nil
