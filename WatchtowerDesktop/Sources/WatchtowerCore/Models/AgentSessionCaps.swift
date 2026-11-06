@@ -2,10 +2,11 @@ import Foundation
 
 /// What a Workbench session's agent offers beyond its state hooks (spec
 /// 2026-11-05-llm-transport-independence §3.5 "Session capabilities").
-/// Consumers ask it instead of the kind. The rows mirror Go's
-/// `sessionagent.Caps` (WatchtowerCore stays Kit-free, so it does not read
-/// the Kit's `AgentSessionCapabilities`); `AgentSessionCapsTests` pins them
-/// to the shared `internal/sessionagent/agent_capabilities.json`.
+/// Consumers ask it instead of the kind. The rows are the session adapters'
+/// (`SessionAgent.caps`) and mirror Go's `sessionagent.Caps` (WatchtowerCore
+/// stays Kit-free, so it does not read the Kit's `AgentSessionCapabilities`);
+/// `AgentSessionCapsTests` pins them to the shared
+/// `internal/sessionagent/agent_capabilities.json`.
 package struct AgentSessionCaps: Equatable, Sendable {
     /// A line pasted with its Return while the agent works is taken at the
     /// agent's next step instead of waiting for the turn's end.
@@ -23,6 +24,15 @@ package struct AgentSessionCaps: Equatable, Sendable {
     /// a hook: the session host's rollout watch, or the app's bridge probe
     /// for a session the host does not watch (spec §3.5, G5).
     package let rolloutWatch: Bool
+    /// The hook set and the MCP server arrive with the agent's launch flags,
+    /// which `watchtower workbench launch-args` resolves before each start;
+    /// otherwise they are installed into the folder.
+    package let launchHooks: Bool
+    /// The app chooses the agent's session id when it starts a new session
+    /// (Claude Code's `--session-id`), so the row holds one from its creation
+    /// and a relaunch resumes it; otherwise the agent mints its own and its
+    /// first SessionStart reports it.
+    package let appSessionID: Bool
 
     package init(
         midturnInput: Bool,
@@ -30,7 +40,9 @@ package struct AgentSessionCaps: Equatable, Sendable {
         permissionWait: Bool,
         idleSignal: Bool,
         elicitation: Bool,
-        rolloutWatch: Bool = false
+        rolloutWatch: Bool = false,
+        launchHooks: Bool = false,
+        appSessionID: Bool = false
     ) {
         self.midturnInput = midturnInput
         self.phoneInput = phoneInput
@@ -38,6 +50,8 @@ package struct AgentSessionCaps: Equatable, Sendable {
         self.idleSignal = idleSignal
         self.elicitation = elicitation
         self.rolloutWatch = rolloutWatch
+        self.launchHooks = launchHooks
+        self.appSessionID = appSessionID
     }
 
     /// A kind that is not an agent (a shell) offers nothing.
@@ -57,20 +71,8 @@ package struct AgentSessionCaps: Equatable, Sendable {
     /// `sessionagent.Caps.TakesInterrupt`.
     package var takesInterrupt: Bool { permissionWait && elicitation }
 
-    /// `agent`'s row. Codex's comes from plan Task G7's spikes on codex
-    /// 0.159.2: a line pasted mid-turn goes into the running turn, but an MCP
-    /// form it opens mid-turn raises no hook state, so nothing is sent while
-    /// it works; its PermissionRequest hook hides the terminal prompt while it
-    /// holds, so it does not wait for the phone; it has no idle event.
-    package static func of(_ agent: AgentKind) -> Self {
-        switch agent {
-        case .claude:
-            Self(midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true)
-        case .codex:
-            Self(midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false,
-                 rolloutWatch: true)
-        }
-    }
+    /// `agent`'s row, from its session adapter.
+    package static func of(_ agent: AgentKind) -> Self { agent.session.caps }
 
     /// Settings → Notifications' line under Workbench notifications (U7):
     /// the agents whose sessions never give an idle notice, from the

@@ -26,17 +26,20 @@ final class AgentSessionCapsTests: XCTestCase {
             XCTAssertEqual(row["idle_signal"] as? Bool, caps.idleSignal, kind.rawValue)
             XCTAssertEqual(row["elicitation"] as? Bool, caps.elicitation, kind.rawValue)
             XCTAssertEqual((row["failure_signal"] as? String) == "pull", caps.rolloutWatch, kind.rawValue)
+            XCTAssertEqual(row["launch_hooks"] as? Bool, caps.launchHooks, kind.rawValue)
+            XCTAssertEqual(row["app_session_id"] as? Bool, caps.appSessionID, kind.rawValue)
         }
     }
 
     /// The rows G7's spikes on codex 0.159.2 support, and Go's.
     func testRowsMatchGo() {
         XCTAssertEqual(AgentSessionCaps.of(AgentKind.claude), AgentSessionCaps(
-            midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true
+            midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true,
+            appSessionID: true
         ))
         XCTAssertEqual(AgentSessionCaps.of(AgentKind.codex), AgentSessionCaps(
             midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false,
-            rolloutWatch: true
+            rolloutWatch: true, launchHooks: true
         ))
         XCTAssertFalse(AgentSessionCaps.of(AgentKind.claude).rolloutWatch, "Claude's StopFailure hook reports a failed turn")
     }

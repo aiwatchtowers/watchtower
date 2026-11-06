@@ -74,7 +74,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
                                       terminalCenter: center)
         vm.titleService = { _ in .init(title: "", written: false) }
-        vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/.codex") } // no login shell in tests
+        vm.resolveAgentHome = { _ in URL(fileURLWithPath: "/Users/example/.codex") } // no login shell in tests
         vm.now = { [weak self] in self?.clock ?? Date() }
         stubLaunchArgs()
         return vm
@@ -224,7 +224,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
             return false
         }
         let vm = makeVM()
-        vm.resolveCodexHome = { nil }
+        vm.resolveAgentHome = { _ in nil }
 
         await vm.open(row)
 
@@ -245,7 +245,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         storedFiles = [path]
         let vm = makeVM()
         var asked = 0
-        vm.resolveCodexHome = { asked += 1; return nil }
+        vm.resolveAgentHome = { _ in asked += 1; return nil }
 
         await vm.open(row)
 
@@ -263,7 +263,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         rollouts = [storedID]
         let vm = makeVM()
         var answers: [URL?] = [nil, URL(fileURLWithPath: "/Users/example/codex-work")]
-        vm.resolveCodexHome = { answers.removeFirst() }
+        vm.resolveAgentHome = { _ in answers.removeFirst() }
 
         await vm.open(row)
         XCTAssertTrue(processes.isEmpty, "the first relaunch waits for the shell")
@@ -285,7 +285,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
             return true
         }
         let vm = makeVM()
-        vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/codex-work") }
+        vm.resolveAgentHome = { _ in URL(fileURLWithPath: "/Users/example/codex-work") }
 
         await vm.open(row)
 

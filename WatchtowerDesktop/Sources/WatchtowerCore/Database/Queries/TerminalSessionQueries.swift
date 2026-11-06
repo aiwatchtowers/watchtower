@@ -27,8 +27,9 @@ package enum TerminalSessionQueries {
         package var title: String
         package var targetID: Int64?
         package var folderPath: String
-        /// The agent's own session id. Required (non-empty) for `.claude`;
-        /// nil for a shell, and for a new codex row (Codex mints its id).
+        /// The agent's own session id. Required (non-empty) when the app
+        /// chooses it (`AgentSessionCaps.appSessionID`); nil for a shell, and
+        /// for a new row of an agent that mints its own (Codex).
         package var claudeSessionID: String?
         /// Set when Watchtower created the session's worktree (00114).
         package var worktreeBranch: String?
@@ -59,10 +60,11 @@ package enum TerminalSessionQueries {
         }
     }
 
-    /// Throws `missingSessionID` for a `.claude` row without a session id
+    /// Throws `missingSessionID` for a row of an agent whose id the app
+    /// chooses (`AgentSessionCaps.appSessionID`: Claude Code) without one
     /// (the schema's CHECK would reject a NULL one; an empty one too, here).
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
-        if new.kind == .claude, new.claudeSessionID?.isEmpty ?? true {
+        if new.kind.agent?.session.caps.appSessionID == true, new.claudeSessionID?.isEmpty ?? true {
             throw TerminalSessionQueryError.missingSessionID
         }
         try db.execute(

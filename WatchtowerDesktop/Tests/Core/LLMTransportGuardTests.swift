@@ -318,10 +318,14 @@ final class LLMTransportGuardTests: XCTestCase {
             .deletingLastPathComponent() // repository root
     }
 
-    /// The file that declares which capabilities each agent kind has: the
-    /// only place outside the decoders where a kind maps to its caps.
+    /// The session adapters (`SessionAgent`, the twin of Go's
+    /// `internal/sessionagent` in the Go guard's `adapterDirs`): the only
+    /// place outside the decoders where an agent kind maps to its start
+    /// command, transcript lookup and capability row.
     private static let capabilityFiles: Set<String> = [
-        "WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentSessionCaps.swift"
+        "WatchtowerDesktop/Sources/WatchtowerCore/SessionAgent/SessionAgent.swift",
+        "WatchtowerDesktop/Sources/WatchtowerCore/SessionAgent/ClaudeSessionAgent.swift",
+        "WatchtowerDesktop/Sources/WatchtowerCore/SessionAgent/CodexSessionAgent.swift"
     ]
 
     nonisolated(unsafe) private static var cachedHits: [String: Int]?
