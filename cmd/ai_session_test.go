@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -85,10 +86,12 @@ func TestAISession_PromptOptionsMemoryChatGate(t *testing.T) {
 	}
 }
 
-// Web search is promised in the prompt only where the backend exposes it:
-// the Claude session (SessionDisallowedTools); codex/ollama have no WebSearch.
-func TestAISession_PromptOptionsWebSearchOnlyForClaude(t *testing.T) {
-	for p, want := range map[string]bool{"": true, "claude": true, "codex": false, "ollama": false} {
+// Web search is promised in the prompt only where the session's backend
+// exposes it (the capability row): the Claude session (WebSearch in
+// SessionBuiltinTools) and the codex session (web_search, ask #533);
+// ollama has none.
+func TestAISession_PromptOptionsWebSearchFollowsCapability(t *testing.T) {
+	for p, want := range map[string]bool{"": true, "claude": true, "codex": true, "ollama": false} {
 		cfg := &config.Config{ActiveWorkspace: "ws"}
 		cfg.AI.Provider = p
 		assert.Equal(t, want, sessionPromptOptions(cfg, "main", 0, time.Now(), chat.ClaudeAIPrompt{}).WebSearch, "provider %q", p)
@@ -258,4 +261,100 @@ func TestClaudeSessionOptions_FencesExternalServersInPrompt(t *testing.T) {
 	assert.Equal(t, "sys", claudeSessionOptions(w, nil).SystemPrompt)
 	ext := []ai.ExternalMCPServer{{Name: "acme", Kind: "http", URL: "https://example.com/mcp", AllowTools: []string{"getIssue"}}}
 	assert.Equal(t, "sys\n\n"+ai.ExternalDataRule(ext), claudeSessionOptions(w, ext).SystemPrompt)
+}
+
+// webSearchValues is every web_search value a codex argv sets with -c.
+func webSearchValues(args []string) []string {
+	var out []string
+	for i, a := range args {
+		if a == "-c" && i+1 < len(args) && strings.HasPrefix(args[i+1], "web_search=") {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
+// The codex chat session's prompt promises web search if and only if its
+// argv turns it on (ask #533, gap L5) — on both session surfaces, and
+// with the cached index, never live (no page fetch, chat-redesign).
+func TestCodexTurn_WebSearchFlagMatchesPrompt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
+	dbPath := cfg.DBPath()
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	for _, surface := range []string{"main", "target"} {
+		conv := &db.ChatConversation{ID: 7}
+		c := codexSessionClient(sessionWiring{cfg: cfg, database: database, dbPath: dbPath, model: "m",
+			mcpArgs: sessionMCPArgs(surface, conv, filepath.Join(t.TempDir(), "turn"), 0)})
+		require.True(t, sessionPromptOptions(cfg, surface, 0, time.Now(), chat.ClaudeAIPrompt{}).WebSearch, surface)
+		assert.Equal(t, []string{`web_search="cached"`}, webSearchValues(c.ArgsForTest("sys", "msg")), surface)
+	}
+}
+
+// Every other codex run Watchtower starts turns web search off explicitly,
+// whatever the owner's codex config says: `ai query` (the embedded chats,
+// Discuss, the automation editor, read-folder questions) and the spec
+// reviewer. Claude's scope is the same: only the session unhides WebSearch.
+// (The automation agent() child's own CODEX_HOME disables it too:
+// TestCodexAgentClient_WebSearchOff.)
+func TestCodexQueryClients_WebSearchOff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
+	dbPath := cfg.DBPath()
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	oldTools, oldModel, oldSurface := aiFlagTools, aiFlagModel, aiFlagSurface
+	defer func() { aiFlagTools, aiFlagModel, aiFlagSurface = oldTools, oldModel, oldSurface }()
+	aiFlagModel = "m"
+	for _, tc := range []struct{ tools, surface string }{
+		{"chat", "main"}, {"chat", "target"}, {"chat", tools.AutomationEditorSurface}, {"", ""},
+	} {
+		aiFlagTools, aiFlagSurface = tc.tools, tc.surface
+		for _, opts := range []transport.Options{{}, {ReadFolder: t.TempDir()}} {
+			client, cleanup, err := newQueryClient(cfg, dbPath, opts)
+			require.NoError(t, err)
+			c, ok := client.(*codex.Client)
+			require.True(t, ok, "%T", client)
+			assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(c.ArgsForTest("sys", "msg")),
+				"ai query --tools %q --surface %q read-folder=%v", tc.tools, tc.surface, opts.ReadFolder != "")
+			cleanup()
+		}
+	}
+
+	reviewer := specReviewCodexClient(cfg, "m", t.TempDir(), "")
+	assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(reviewer.ArgsForTest("sys", "msg")), "spec reviewer")
+}
+
+// An automation's agent() child on codex never searches the web: its argv
+// turns web search off (its own CODEX_HOME's config.toml does too,
+// codexAgentHome).
+func TestCodexAgentClient_WebSearchOff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
+	client, cleanup, err := newCodexAgentClient(agentClientWiring{cfg: cfg, dbPath: cfg.DBPath(), model: "m",
+		mcpArgs: []string{"--chat", "--surface", "automation"}})
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(client.(*codex.Client).ArgsForTest("sys", "msg")))
+}
+
+// The codex session's system prompt carries Claude's web-search rules in
+// place of the "no internet" rule (ask #533): public knowledge only, no
+// private data in a query, web text is data, cite the URL, no page fetch.
+func TestCodexSessionPrompt_HasTheWebSearchRules(t *testing.T) {
+	cfg := &config.Config{ActiveWorkspace: "ws", AI: config.AIConfig{Provider: "codex"}}
+	got, err := chat.BuildSystemPrompt(context.Background(), db.OpenTestDB(t), cfg,
+		sessionPromptOptions(cfg, "main", 0, time.Now(), chat.ClaudeAIPrompt{}))
+	require.NoError(t, err)
+	assert.Contains(t, got, "=== WEB SEARCH ===")
+	assert.Contains(t, got, "Never put private data from the owner's sources into a search query")
+	assert.Contains(t, got, "You cannot open web pages")
+	assert.NotContains(t, got, "NO internet access")
 }

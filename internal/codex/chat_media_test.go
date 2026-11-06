@@ -146,3 +146,32 @@ func TestQuery_RecordedWebSearchIsAStep(t *testing.T) {
 	assert.JSONEq(t, `{"query":"example query"}`, string(starts[0].Args))
 	assert.Contains(t, ends[0].Result, `"url":"https://example.com/page-1"`)
 }
+
+// webSearchValues is every web_search value the argv sets with -c.
+func webSearchValues(args []string) []string {
+	var out []string
+	for i, a := range args {
+		if a == "-c" && i+1 < len(args) && strings.HasPrefix(args[i+1], "web_search=") {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
+// Web search is set on every run, never left to the owner's codex config:
+// off unless the caller turns it on (the chat session only, ask #533), and
+// then the cached index, never "live" — live opens any URL the model names,
+// query string included, which is a page fetch (no WebFetch, chat-redesign).
+func TestClient_WebSearchOffUnlessSet(t *testing.T) {
+	c := NewClient("gpt-x", "", fakeCodexScript(t, plainRun, "", 0))
+	assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(c.ArgsForTest("sys", "msg")))
+
+	c.SetReadFolder(t.TempDir())
+	assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(c.ArgsForTest("sys", "msg")), "read-folder run")
+
+	on := NewClient("gpt-x", "", fakeCodexScript(t, plainRun, "", 0))
+	on.SetWebSearch()
+	args := on.ArgsForTest("sys", "msg")
+	assert.Equal(t, []string{`web_search="cached"`}, webSearchValues(args))
+	assert.NotContains(t, strings.Join(args, " "), `"live"`)
+}

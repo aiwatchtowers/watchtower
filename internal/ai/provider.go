@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"encoding/json"
+
+	"watchtower/internal/llmusage"
 )
 
 // RoutingMetadata describes a preflight decision; it never changes text already shown.
@@ -27,13 +29,20 @@ type StreamChunk struct {
 	Usage        *TurnUsage
 }
 
-// TurnUsage is one streamed turn's token totals, as a chat message records
-// them: InputTokens counts every input token, cached ones included.
+// TurnUsage is one streamed turn's usage block, with the split (fresh input,
+// cache reads and writes, output, reported cost) every transport fills the
+// same way.
 type TurnUsage struct {
-	Model        string
-	InputTokens  int
-	OutputTokens int
+	Model string
+	llmusage.Tokens
 }
+
+// InputTokens is what a chat message records as its input (CHAT-01): every
+// input token, cached ones included.
+func (u TurnUsage) InputTokens() int { return int(u.AllInput()) }
+
+// OutputTokens is the turn's output tokens.
+func (u TurnUsage) OutputTokens() int { return int(u.Output) }
 
 // ToolEvent is one tool call observed by an in-process tool loop: a start
 // (Done=false, Args set) or an end (Done=true, OK and Result set).

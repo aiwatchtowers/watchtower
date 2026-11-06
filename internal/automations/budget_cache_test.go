@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -98,18 +99,54 @@ func TestModelAttemptUsageDebitsFreshInput(t *testing.T) {
 		wantOut       int64
 		wantEstimated bool
 	}{
-		{"claude leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Input: 100, CacheRead: 900, CacheWrite5m: 200, Output: 50}}}, 100, 50, false},
-		{"codex leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Input: 100, CacheRead: 900, Output: 50}}}, 100, 50, false},
-		{"cache only leaf", providerrouting.Outcome{Calls: []llmusage.Call{{CacheRead: 900}}}, 0, 0, false},
-		{"estimated cache only leaf", providerrouting.Outcome{Calls: []llmusage.Call{{CacheRead: 900, Estimated: true}}}, 0, 0, true},
-		{"estimated empty leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Estimated: true}}}, 100, 0, true},
-		{"aggregate none", providerrouting.Outcome{Result: providerrouting.Result{Usage: &digest.Usage{TotalAPITokens: 900}}}, 100, 0, true},
+		{"claude leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Tokens: llmusage.Tokens{Input: 100, CacheRead: 900, CacheWrite5m: 200, Output: 50}}}}, 100, 50, false},
+		{"codex leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Tokens: llmusage.Tokens{Input: 100, CacheRead: 900, Output: 50}}}}, 100, 50, false},
+		{"cache only leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Tokens: llmusage.Tokens{CacheRead: 900}}}}, 0, 0, false},
+		{"estimated cache only leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Tokens: llmusage.Tokens{CacheRead: 900, Estimated: true}}}}, 0, 0, true},
+		{"estimated empty leaf", providerrouting.Outcome{Calls: []llmusage.Call{{Tokens: llmusage.Tokens{Estimated: true}}}}, 100, 0, true},
+		{"aggregate none", providerrouting.Outcome{Result: providerrouting.Result{Usage: &digest.Usage{Tokens: llmusage.Tokens{CacheRead: 900}}}}, 100, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := automations.ModelAttemptUsage(a, tc.o)
 			require.Equal(t, tc.wantIn, u.InputTokens)
 			require.Equal(t, tc.wantOut, u.OutputTokens)
 			require.Equal(t, tc.wantEstimated, u.Estimated)
+		})
+	}
+}
+
+// AUTO-08 (ask #488): a run's budget debits fresh input plus output on every
+// provider, on the direct path (the generator's usage block) and the routed
+// one (the leaf ledger's calls); cache reads and writes are never debited.
+// The shapes are each leaf's: claude splits its cache reads and writes off
+// the fresh input, codex its cache reads, runtime B (Ollama) has no cache
+// split and fills Input whole.
+func TestAuto08_DebitIsFreshPlusOutputOnEveryProvider(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		tokens   llmusage.Tokens
+	}{
+		{"claude", llmusage.Tokens{Input: 100, CacheRead: 900, CacheWrite5m: 150, CacheWrite1h: 50, Output: 50}},
+		{"codex", llmusage.Tokens{Input: 100, CacheRead: 900, Output: 50}},
+		{"ollama", llmusage.Tokens{Input: 100, Output: 50}},
+	} {
+		t.Run(tc.provider+"/routed", func(t *testing.T) {
+			call := llmusage.Call{Provider: tc.provider, Tokens: tc.tokens}
+			u := automations.ModelAttemptUsage(providerrouting.Attempt{InputBytes: 4000}, providerrouting.Outcome{Calls: []llmusage.Call{call}})
+			require.Equal(t, int64(100), u.InputTokens, "fresh input only")
+			require.Equal(t, int64(50), u.OutputTokens)
+			require.False(t, u.Estimated)
+		})
+		t.Run(tc.provider+"/direct", func(t *testing.T) {
+			gen := &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{Model: "m", Tokens: tc.tokens}}}
+			f := newExFixture(t, exOpts{gen: gen})
+			a := f.seedText(t, "debit-"+tc.provider, exRecipeText(`return llm("task")`, ""), false)
+			id := f.enqueue(t, a, db.TriggerManual)
+			f.step(t, 1)
+			run := f.wantRun(t, id, db.RunSucceeded, "")
+			require.Equal(t, int64(100), run.InputTokens, "fresh input only")
+			require.Equal(t, int64(50), run.OutputTokens)
+			require.False(t, run.TokensEstimated)
 		})
 	}
 }

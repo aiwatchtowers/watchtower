@@ -197,9 +197,7 @@ func addBackfillUsage(sum, u *Usage) {
 	if u == nil {
 		return
 	}
-	sum.InputTokens += u.InputTokens
-	sum.OutputTokens += u.OutputTokens
-	sum.TotalAPITokens += u.TotalAPITokens
+	sum.Add(u.Tokens)
 }
 
 // backfillWindows resolves the chunk-scoped window of every digestable channel

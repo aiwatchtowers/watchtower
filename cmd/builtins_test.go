@@ -27,6 +27,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/prompts"
 )
 
@@ -125,7 +126,7 @@ func newBuiltinCLI(t *testing.T, featuresOn bool, replies ...string) *builtinCLI
 	_, err = d.CreateTarget(db.Target{Text: "Write tests", Level: "day", PeriodStart: "2026-04-23", PeriodEnd: "2026-04-23",
 		Priority: "medium", Status: "todo", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
-	gen := &automationstest.FakeGenerator{Replies: replies, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+	gen := &automationstest.FakeGenerator{Replies: replies, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}}
 	useBuiltinGenerator(t, gen)
 	// The Morning brief has moved to Automations (the daemon's one-time step).
 	require.NoError(t, d.RecordBuiltinMigration(morningBriefID, db.BuiltinMigrationDone, "", time.Now()))
@@ -689,7 +690,7 @@ func newC3CLI(t *testing.T, replies ...string) *c3CLI {
 	require.NoError(t, d.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, d.UpsertUser(db.User{ID: "U002", Name: "bob", DisplayName: "Bob"}))
 	require.NoError(t, d.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
-	gen := &automationstest.FakeGenerator{Replies: replies, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+	gen := &automationstest.FakeGenerator{Replies: replies, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}}
 	useBuiltinGenerator(t, gen)
 	return &c3CLI{d: d, cfg: cfg, gen: gen, ws: cfg.WorkspaceDir(), personal: personal}
 }

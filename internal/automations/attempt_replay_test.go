@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 func TestRoutingUnknownUsageSurvivesPersistedReplay(t *testing.T) {
@@ -22,7 +23,7 @@ func TestRoutingUnknownUsageSurvivesPersistedReplay(t *testing.T) {
 				p.fail = false
 			case "schema_invalid_known":
 				p.fail = false
-				p.usage = &digest.Usage{InputTokens: 10, OutputTokens: 5}
+				p.usage = &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}
 				p.replies = []string{"invalid", "invalid", "done"}
 				script = `try{llm("first",{schema:{type:"object"}})}catch(e){};`
 			}

@@ -83,9 +83,9 @@ func (p *Pipeline) addUsage(u *digest.Usage) {
 	defer p.mu.Unlock()
 	p.usage.calls++
 	if u != nil {
-		p.usage.in += u.InputTokens
-		p.usage.out += u.OutputTokens
-		p.usage.cost += u.CostUSD
+		p.usage.in += u.InputTokens()
+		p.usage.out += u.OutputTokens()
+		p.usage.cost += u.CostUSD()
 	}
 }
 

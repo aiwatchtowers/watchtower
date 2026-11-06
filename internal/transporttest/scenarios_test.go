@@ -53,7 +53,7 @@ type Drive int
 const (
 	drivePlain        Drive = iota
 	driveTimeout            // the context times out while the fake hangs
-	driveCancelAtText       // Cancel at the first text_delta
+	driveCancelAtText       // Cancel once the first message's text has arrived
 	driveCancelAtTool       // Cancel at the first tool_start
 	driveTwoTurns           // a warm transport runs t1 then t2
 )
@@ -512,7 +512,7 @@ func assertUsageCache(c *Cell) error {
 	all := want["fresh"] + want["read"] + want["write"]
 	switch c.Level {
 	case LevelBatch:
-		if c.O.Usage == nil || int64(c.O.Usage.TotalAPITokens) != all {
+		if c.O.Usage == nil || int64(c.O.Usage.TotalAPITokens()) != all {
 			return fmt.Errorf("batch usage %+v, want %d API tokens", c.O.Usage, all)
 		}
 	default:
@@ -619,8 +619,8 @@ func assertWebSearch(c *Cell) error {
 		return errors.New("the web search was not shown as a step")
 	}
 	// The child is told to search: Claude's WebSearch tool, or codex's
-	// web_search set to anything but disabled (L5: today codex is neither
-	// offered nor denied it).
+	// web_search set to anything but disabled (L5, ask #533: the codex
+	// session sets "cached").
 	for _, l := range c.O.Launches {
 		if !webSearchOn.MatchString(strings.Join(l.Argv, " ")) {
 			return errors.New("the command line does not switch web search on")

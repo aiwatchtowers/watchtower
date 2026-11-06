@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // TestCLI_DayPlanShow verifies that show prints the plan header and items.
@@ -280,7 +281,7 @@ func TestFormatDayPlanShow_Conflicts(t *testing.T) {
 type dayPlanMockGen struct{ response string }
 
 func (m *dayPlanMockGen) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
-	return m.response, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "s1", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "s1", nil
 }
 
 // TestCLI_DayPlanGenerate_JSON verifies that generate --json produces valid JSON

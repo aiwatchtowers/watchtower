@@ -181,7 +181,7 @@ func TestAgentloop_CapIsBudgetFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "stopped after 2 model turns")
 	assert.Empty(t, text, "no success text at the cap")
 	require.NotNil(t, usage, "the usage of the calls made is kept")
-	assert.Equal(t, 200, usage.InputTokens)
+	assert.Equal(t, 200, usage.InputTokens())
 	assert.Equal(t, 2, *calls, "the cap's model calls ran, no more")
 }
 

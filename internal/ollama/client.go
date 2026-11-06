@@ -74,7 +74,7 @@ type streamOptions struct {
 func recordOllamaCall(ctx context.Context, model string, start time.Time, u *chatUsage, prompt, output string, ok bool) {
 	c := llmusage.Call{Provider: "ollama", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
 	if u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
-		c.Input, c.Output = int64(u.PromptTokens), int64(u.CompletionTokens)
+		c.Tokens = u.tokens()
 	} else {
 		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
 	}
@@ -127,6 +127,12 @@ type chatUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+// tokens is the usage as a block. prompt_tokens has no cache split, so it
+// is all fresh input.
+func (u *chatUsage) tokens() llmusage.Tokens {
+	return llmusage.Tokens{Input: int64(u.PromptTokens), Output: int64(u.CompletionTokens)}
 }
 
 // chatError is the OpenAI-compatible inline error object. Deliberately no
@@ -206,8 +212,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		if ok && c.chatEvents && usage != nil {
 			// The answer is complete: a stop now drops the usage, nothing else.
 			select {
-			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
-				InputTokens: usage.PromptTokens, OutputTokens: usage.CompletionTokens}}:
+			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model, Tokens: usage.tokens()}}:
 			case <-ctx.Done():
 			}
 		}
@@ -352,11 +357,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	var usage *ai.Usage
 	if result.Usage != nil {
-		usage = &ai.Usage{
-			InputTokens:    result.Usage.PromptTokens,
-			OutputTokens:   result.Usage.CompletionTokens,
-			TotalAPITokens: result.Usage.TotalTokens,
-		}
+		usage = &ai.Usage{Tokens: result.Usage.tokens()}
 	}
 
 	return text, usage, nil

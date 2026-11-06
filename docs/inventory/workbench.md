@@ -1316,8 +1316,9 @@ path-free) or a launch with no database leaves the run to the bridge. The
 bridge follows the same table without ticks: permission and compressed at
 once, a rollout missing while the row has worked 30 s (`missing`, only once
 the row stores a transcript path), and an undecodable tail on a file
-unchanged for three watch ticks (`unreadable`). A rollout
-whose last 256 KB hold no turn event reads as not failed. A turn that fails
+unchanged for three watch ticks (`unreadable`). A zstd-compressed rollout is
+read through `internal/rollout` like a plain one, and a rollout whose last
+256 KB hold no turn event reads as not failed. A turn that fails
 while the row reads Needs approval, or after a later state write on the row,
 is not shown as Error. While the session host is down nothing watches (its
 sessions are gone with it). Codex sessions get no idle notice and no elicitation approval
@@ -2302,7 +2303,7 @@ from the phone yet. Answer it on the Mac." (interrupt: "<Agent> sessions
 can't be interrupted from the phone yet. Stop it on the Mac."), never "no
 longer exists" (a deleted session keeps `not_found`). Codex stays refused:
 G7's spike on codex 0.159.2 showed its `PermissionRequest` hook can hold and
-answer (`cmd/testdata/codex_hooks/permission_request_output_*.json`, the same
+answer (`cmd/testdata/codex_hooks/spikes/permission_request_output_*.json`, the same
 JSON Claude Code takes), but while it holds codex shows only "Running hook"
 and no prompt in the terminal, so a permission-wait hook would take the
 Mac's own answer away for the whole hold (`SPIKES.md` (b)); enabling it is an

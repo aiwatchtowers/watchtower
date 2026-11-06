@@ -182,7 +182,7 @@ func TestAgentloopQuery_StreamsDeltas(t *testing.T) {
 	assert.JSONEq(t, `{"status":"open"}`, string(start.Args))
 	last := chunks[len(chunks)-1]
 	require.NotNil(t, last.Usage)
-	assert.Equal(t, ai.TurnUsage{Model: "m", InputTokens: 250, OutputTokens: 30}, *last.Usage)
+	assert.Equal(t, ai.TurnUsage{Model: "m", Tokens: llmusage.Tokens{Input: 250, Output: 30}}, *last.Usage)
 
 	reqs := srv.requests()
 	require.Len(t, reqs, 2)
@@ -309,7 +309,7 @@ func TestAgentloopQuery_CapKeepsShownTextAndFails(t *testing.T) {
 		}
 	}
 	require.NotNil(t, usage, "the calls made at the cap keep their usage")
-	assert.Equal(t, 40, usage.InputTokens)
+	assert.Equal(t, 40, usage.InputTokens())
 }
 
 // A tool name split across deltas is joined; a server that repeats the

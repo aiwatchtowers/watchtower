@@ -178,7 +178,9 @@ func codexHookFixture(t *testing.T, name string) []byte {
 	return raw
 }
 
-// codexFixtureWants is every Task 0 fixture's normalized event.
+// codexFixtureWants is every recorded codex hook payload's normalized event
+// (Task 0 and later captures). Spike records that are not hook input live in
+// testdata/codex_hooks/spikes/.
 var codexFixtureWants = map[string]hookEvent{
 	"session_start_startup": {Cwd: codexCwd, Event: "SessionStart", SessionID: codexTUISession, Source: "startup", TranscriptPath: codexTUIRollout},
 	"session_start_resume":  {Cwd: codexCwd, Event: "SessionStart", SessionID: codexTUISession, Source: "resume", TranscriptPath: codexTUIRollout},
@@ -212,6 +214,11 @@ var codexFixtureWants = map[string]hookEvent{
 	// Captured 2026-11-05 (codex 0.159.2, board #959): Esc during a turn.
 	"interrupt": {Cwd: codexCwd, Event: "Interrupt", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
 		TranscriptPath: codexTUIRollout},
+	// Captured 2026-11-05 (plan Task G7 spike (a)): a line pasted while a
+	// turn runs fires UserPromptSubmit inside that turn.
+	"user_prompt_submit_midturn": {Cwd: codexCwd, Event: "UserPromptSubmit", SessionID: codexTUISession,
+		TurnID:         "01a10000-0000-7000-8000-000000000003",
+		TranscriptPath: "/Users/example/.codex/sessions/2026/11/05/rollout-2026-11-05T15-00-11-01a10000-0000-7000-8000-000000000001.jsonl"},
 }
 
 func TestParseHookEvent_CodexFixtures(t *testing.T) {

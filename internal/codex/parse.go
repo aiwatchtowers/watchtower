@@ -1,6 +1,10 @@
 package codex
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"watchtower/internal/llmusage"
+)
 
 // CodexEvent represents a single JSONL event from the Codex CLI --json output.
 type CodexEvent struct {
@@ -84,6 +88,13 @@ type CodexUsage struct {
 // ledger records it as fresh input (docs/features/automations.md#budgets).
 func (t *CodexUsage) freshInput() int {
 	return t.InputTokens - min(t.CachedInputTokens, t.InputTokens)
+}
+
+// tokens is the usage as a block: fresh input, the cached part as cache
+// reads, output; codex reports no cache writes and no cost.
+func (t *CodexUsage) tokens() llmusage.Tokens {
+	fresh := t.freshInput()
+	return llmusage.Tokens{Input: int64(fresh), CacheRead: int64(t.InputTokens - fresh), Output: int64(t.OutputTokens)}
 }
 
 // add sums u into the receiver.

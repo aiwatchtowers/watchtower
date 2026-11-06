@@ -228,3 +228,31 @@ func TestCodexTurn_FailedTurnRemovesItsImage(t *testing.T) {
 		}
 	}
 }
+
+// A codex chat turn's web searches — codex's own recorded (scrubbed) JSONL
+// — end as tool_end events whose sources are `web` chips, one per page,
+// as Claude's WebSearch results are (ask #533, gap L5).
+func TestTurnBackend_CodexWebSearchBecomesWebSourceChips(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "codex", "testdata", "web_search_live.jsonl"))
+	require.NoError(t, err)
+	d, conv := seedConversation(t)
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", codexStub(t, strings.TrimSpace(string(raw)))), d, conv), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "look it up"})
+
+	var urls []string
+	for _, e := range h.turnEvents() {
+		if e.Type != EventToolEnd || len(e.Sources) == 0 {
+			continue
+		}
+		for _, s := range e.Sources {
+			assert.Equal(t, "web", s.Kind)
+			assert.Equal(t, "Web", s.Group)
+			urls = append(urls, s.URL)
+		}
+		assert.Contains(t, e.Summary, "2 web results")
+	}
+	assert.Equal(t, []string{"https://example.com/page-1", "https://example.com/page-2",
+		"https://example.com/page-3", "https://example.com/page-4"}, urls)
+	require.NoError(t, h.finish())
+}

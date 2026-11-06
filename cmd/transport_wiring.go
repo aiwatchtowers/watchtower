@@ -105,9 +105,12 @@ func newRuntimeBChatBackend(w sessionWiring) (chat.Backend, error) {
 // launch cannot mount says so on its row (markCodexSkipped). The session's
 // surfaces are main and target only, never automation_editor (D11). Stop
 // and close cancel the turn: the whole process group goes (ai.ConfigureChild).
+// The session alone searches the web, as only the Claude session unhides
+// WebSearch (ask #533; the prompt reads the capability row).
 func codexSessionClient(w sessionWiring) *codex.Client {
 	c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
 	c.SetMCPArgs(w.mcpArgs)
+	c.SetWebSearch()
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
 	})

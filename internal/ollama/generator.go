@@ -106,12 +106,7 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 
 	var usage *digest.Usage
 	if result.Usage != nil {
-		usage = &digest.Usage{
-			Model:          model,
-			InputTokens:    result.Usage.PromptTokens,
-			OutputTokens:   result.Usage.CompletionTokens,
-			TotalAPITokens: result.Usage.TotalTokens,
-		}
+		usage = &digest.Usage{Model: model, Tokens: result.Usage.tokens()}
 	}
 
 	return text, usage, "", nil
