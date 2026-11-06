@@ -3127,9 +3127,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outpu
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 
 -- The Inbox menu's folders (00175). The folder tables hold the menu's
--- arrangement only, never an item (STRIP-02). Only the CLI writes them, each
--- write one BEGIN IMMEDIATE transaction that compares and bumps
--- inbox_folder_state.revision; the Desktop writes none of them.
+-- arrangement only, never an item (STRIP-02). Only Go writes them: the CLI
+-- (each write one BEGIN IMMEDIATE transaction that compares and bumps
+-- inbox_folder_state.revision), the built-in indexer's route seed and a
+-- run's commit (folder_id); the Desktop never.
 CREATE TABLE IF NOT EXISTS inbox_folders (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT NOT NULL CHECK (kind IN ('root','approvals','owner')), -- one root ('inbox'), one approvals ('needs-approval'), owner folders

@@ -1,7 +1,8 @@
 -- +goose Up
 -- Inbox builder B: the Inbox menu's folders. The folder tables hold the
--- menu's arrangement only, never an item (STRIP-02); only the CLI writes
--- them, under a compare-and-set on inbox_folder_state.revision. No CHECK
+-- menu's arrangement only, never an item (STRIP-02). Only Go writes them
+-- (the CLI under a compare-and-set on inbox_folder_state.revision, the
+-- built-in indexer's route seed, a run's commit); the Desktop never. No CHECK
 -- changes on an existing table, so no table rebuild.
 CREATE TABLE IF NOT EXISTS inbox_folders (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
