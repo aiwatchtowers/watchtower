@@ -100,18 +100,21 @@ package struct InboxFolderDeleteSummary: Equatable, Sendable {
     }
 }
 
-/// The inline title field of New Folder (under `parentID`) or Rename (of
-/// `renamingID`), with a refused write's message under it.
+/// The inline title field of New Folder (under a parent; nil = the root)
+/// or Rename (of a folder), with a refused write's message under it.
 package struct InboxFolderDraft: Equatable, Sendable {
-    package var parentID: Int64?
-    package var renamingID: Int64?
+    package enum Target: Equatable, Sendable {
+        case create(parent: Int64?)
+        case rename(Int64)
+    }
+
+    package var target: Target
     package var title: String
     /// The CLI's message without "Error: "; the field stays open.
     package var error: String?
 
-    package init(parentID: Int64? = nil, renamingID: Int64? = nil, title: String, error: String? = nil) {
-        self.parentID = parentID
-        self.renamingID = renamingID
+    package init(_ target: Target, title: String, error: String? = nil) {
+        self.target = target
         self.title = title
         self.error = error
     }
@@ -125,7 +128,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     package var note: InboxFolderMenuNote?
     package var dropIndicator: InboxFolderDrop?
     package var deleteConfirmation: InboxFolderDeleteSummary?
-    package var newFolderDraft: InboxFolderDraft?
+    package var folderDraft: InboxFolderDraft?
     /// A dropped folder sits dimmed in its new place while the move runs;
     /// the menu is read-only meanwhile.
     package var pendingMoveID: Int64?
@@ -139,7 +142,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     package init(
         rows: [InboxFolderRow], selection: Int64? = nil, note: InboxFolderMenuNote? = nil,
         dropIndicator: InboxFolderDrop? = nil, deleteConfirmation: InboxFolderDeleteSummary? = nil,
-        newFolderDraft: InboxFolderDraft? = nil, pendingMoveID: Int64? = nil, showsHidden: Bool = false,
+        folderDraft: InboxFolderDraft? = nil, pendingMoveID: Int64? = nil, showsHidden: Bool = false,
         icons: [String] = [], approvalsEnabled: Bool = true
     ) {
         self.rows = rows
@@ -147,7 +150,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         self.note = note
         self.dropIndicator = dropIndicator
         self.deleteConfirmation = deleteConfirmation
-        self.newFolderDraft = newFolderDraft
+        self.folderDraft = folderDraft
         self.pendingMoveID = pendingMoveID
         self.showsHidden = showsHidden
         self.icons = icons

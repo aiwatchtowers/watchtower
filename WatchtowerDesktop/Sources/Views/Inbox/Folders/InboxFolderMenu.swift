@@ -35,8 +35,8 @@ struct InboxFolderMenu: View {
                             dropLine(depth: row.depth)
                         }
                         folderRow(row)
-                        if let draft = content.newFolderDraft, draft.renamingID == nil,
-                           let parent = draftParent(draft), lastVisibleDescendant(of: parent) == row.id {
+                        if let draft = content.folderDraft, case let .create(parentID) = draft.target,
+                           let parent = draftParent(parentID), lastVisibleDescendant(of: parent) == row.id {
                             draftField(draft, depth: parent.depth + 1)
                         }
                         if let summary = content.deleteConfirmation, summary.folderID == row.id {
@@ -58,7 +58,7 @@ struct InboxFolderMenu: View {
 
     @ViewBuilder
     private func folderRow(_ row: InboxFolderRow) -> some View {
-        if let draft = content.newFolderDraft, draft.renamingID == row.id {
+        if let draft = content.folderDraft, draft.target == .rename(row.id) {
             draftField(draft, depth: row.depth)
         } else {
             let pending = content.pendingMoveID == row.id
@@ -142,9 +142,9 @@ struct InboxFolderMenu: View {
     }
 
     /// The folder a New Folder field goes into: its parent, or the root.
-    private func draftParent(_ draft: InboxFolderDraft) -> InboxFolderRow? {
+    private func draftParent(_ parentID: Int64?) -> InboxFolderRow? {
         let rows = content.visibleRows
-        return rows.first { $0.id == draft.parentID } ?? rows.first { $0.kind == .root }
+        return rows.first { $0.id == parentID } ?? rows.first { $0.kind == .root }
     }
 
     /// The last visible row under `row` (itself when it has none): where a

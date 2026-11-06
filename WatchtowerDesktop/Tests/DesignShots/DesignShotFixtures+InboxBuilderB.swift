@@ -26,7 +26,7 @@ enum InboxBuilderBShotFixtures {
             ("inbox-b-menu-hidden-shown", hiddenShown),
             ("inbox-b-menu-new-folder", InboxFolderMenuContent(
                 rows: [root, approvals], selection: 1,
-                newFolderDraft: InboxFolderDraft(parentID: 1, title: "Release acme 2.0"))),
+                folderDraft: InboxFolderDraft(.create(parent: 1), title: "Release acme 2.0"))),
             ("inbox-b-menu-drag", InboxFolderMenuContent(
                 rows: [root, approvals, team, release(depth: 1, count: 2)], selection: 1,
                 dropIndicator: InboxFolderDrop(targetID: 3, placement: .before))),
@@ -36,7 +36,7 @@ enum InboxBuilderBShotFixtures {
                 rows: [root, approvals, release(depth: 1, count: 2)], selection: 1, note: .cliUnavailable)),
             ("inbox-b-menu-write-refused", InboxFolderMenuContent(
                 rows: [root, approvals, shortRelease], selection: 1,
-                newFolderDraft: InboxFolderDraft(parentID: 1, title: "Release",
+                folderDraft: InboxFolderDraft(.create(parent: 1), title: "Release",
                                                  error: #"a folder named "Release" already exists here"#))),
             ("inbox-b-menu-move-pending", InboxFolderMenuContent(
                 rows: [root, approvals, release(depth: 1, count: 2), team], selection: 1, pendingMoveID: 3)),
