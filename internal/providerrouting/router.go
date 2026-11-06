@@ -290,10 +290,12 @@ func (r *Router) capability(req Request, p string) error {
 	return nil
 }
 
-// Select chooses before a tool child starts. It does not claim recovery probes,
-// invoke a model, or enable replay. Callers must check policy again at dispatch.
+// validPair reports whether the request's providers are each other's
+// reserve peers (the capability table).
 func validPair(req Request) bool { return providers.Pairs(req.Preferred, req.Reserve) }
 
+// Select chooses before a tool child starts. It does not claim recovery probes,
+// invoke a model, or enable replay. Callers must check policy again at dispatch.
 func (r *Router) Select(ctx context.Context, req Request) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -349,7 +351,7 @@ func (r *Router) Run(ctx context.Context, req Request, call func(context.Context
 	if req.OperationID == "" {
 		req.OperationID = operationID()
 	}
-	safe := req.Mode == PreferredReserve && req.Retry == Isolated && req.Profile.ReplaySafe() && validPair(req)
+	safe := req.Mode == PreferredReserve && req.Retry == Isolated && req.Profile.ReplaySafe() // the pair was checked above
 	candidates := []string{req.Preferred}
 	if safe {
 		candidates = append(candidates, req.Reserve)

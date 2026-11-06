@@ -65,7 +65,7 @@ func resolveClaudeAI(cfg *config.Config, surface string, convID int64, env []str
 	provider := providers.ByID(cfg.AI.Provider).ID
 	on, reason := chat.ClaudeAIAvailability(env, provider, surface)
 	switch {
-	case !providers.ByID(provider).Caps.ClaudeAITools:
+	case !providers.CapsOf(provider).ClaudeAITools:
 		// The provider is the conversation's own (the Desktop passes
 		// --provider per chat): Settings keeps what the Claude chats wrote.
 		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptOtherProvider}}

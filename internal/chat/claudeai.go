@@ -54,7 +54,7 @@ func ClaudeAIAvailability(env []string, provider, surface string) (on bool, reas
 	if !policy.ClaudeAIToolsAllowed() { // AllowClaudeAITools (#608), checked first
 		return false, claudeAIPolicyOff
 	}
-	if c, _ := providers.CapsFor(provider); !c.ClaudeAITools {
+	if !providers.CapsOf(provider).ClaudeAITools {
 		return false, "claude.ai tools need the Claude provider."
 	}
 	if surface != "main" {

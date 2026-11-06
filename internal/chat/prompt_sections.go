@@ -434,7 +434,7 @@ func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, pro
 	if len(files) == 0 {
 		return
 	}
-	if !attachesProjectFiles(providers.ByID(provider).Caps) {
+	if !AttachesProjectFiles(providers.CapsOf(provider)) {
 		names := make([]string, len(files))
 		for i, f := range files {
 			names[i] = f.Name
@@ -463,12 +463,8 @@ func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, pro
 	}
 }
 
-// attachesProjectFiles reports whether a transport gets a project's images
-// and PDFs: one that reads both (the Claude backend attaches them to a
-// session's first turn); the routed session's capability check reads it too.
-func attachesProjectFiles(c providers.Capabilities) bool { return c.Images && c.PDFs }
-
-// AttachesProjectFiles is attachesProjectFiles for provider id.
-func AttachesProjectFiles(provider string) bool {
-	return attachesProjectFiles(providers.ByID(provider).Caps)
-}
+// AttachesProjectFiles reports whether a transport with caps c gets a
+// project's images and PDFs: one that reads both (the Claude backend
+// attaches them to a session's first turn); the routed session's check
+// reads it too.
+func AttachesProjectFiles(c providers.Capabilities) bool { return c.Images && c.PDFs }

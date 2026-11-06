@@ -110,10 +110,10 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				caps, known := providers.CapsFor(p)
 				switch {
 				case !known:
-					return false, nil
+					return false, fmt.Errorf("no capability row for provider %q", p)
 				case requiredClaudeAI.mode.On && !caps.ClaudeAITools:
 					return false, nil
-				case len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0 && !chat.AttachesProjectFiles(p):
+				case !chat.AttachesProjectFiles(caps) && len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0:
 					return false, nil
 				}
 				if supported, err := sessionAttachmentCapability(caps, c.Attachments); err != nil || !supported {
@@ -193,7 +193,7 @@ func reserveConnectionsCapable(cfg *config.Config, database *db.DB, provider str
 // own size checks run at the turn); a replay transport takes them as
 // chat.TurnAttachments does (a PDF never).
 func sessionAttachmentCapability(caps providers.Capabilities, attachments []chat.Attachment) (bool, error) {
-	if caps.Images && caps.PDFs {
+	if chat.AttachesProjectFiles(caps) {
 		return true, nil
 	}
 	_, _, err := chat.TurnAttachments("", attachments, chat.AttachmentCapsOf(caps))

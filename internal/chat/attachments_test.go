@@ -378,7 +378,7 @@ func TestAttachments_RefusedByCapability(t *testing.T) {
 		ae := requireAttachmentError(t, err, tc.atts[0].Name)
 		assert.True(t, ae.CapabilityMissing, "%s %s", tc.provider, tc.atts[0].Name)
 	}
-	assert.True(t, AttachesProjectFiles("claude"))
-	assert.False(t, AttachesProjectFiles("codex"))
-	assert.False(t, AttachesProjectFiles("ollama"))
+	assert.True(t, AttachesProjectFiles(providers.CapsOf("claude")))
+	assert.False(t, AttachesProjectFiles(providers.CapsOf("codex")))
+	assert.False(t, AttachesProjectFiles(providers.CapsOf("ollama")))
 }

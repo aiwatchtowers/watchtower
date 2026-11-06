@@ -8,8 +8,7 @@ package caps
 
 // Values of the string fields.
 const (
-	ToolsNone       = "none"
-	ToolsWatchtower = "watchtower"
+	ToolsNone = "none"
 	// ToolsWithConnections is the watchtower tools plus the owner's Quick
 	// Connections.
 	ToolsWithConnections = "watchtower+quick_connections"

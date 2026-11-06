@@ -9,6 +9,7 @@ import (
 	"regexp"
 
 	"watchtower/internal/config"
+	"watchtower/internal/providers/caps"
 )
 
 // Provider describes one AI backend.
@@ -42,7 +43,6 @@ var registry = []Provider{
 		DefaultLight:  "haiku",
 		DefaultStrong: "opus",
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
-		Caps:          mustCaps("claude"),
 	},
 	{
 		ID:          "codex",
@@ -54,7 +54,6 @@ var registry = []Provider{
 		// one pin away in Settings.
 		DefaultLight:  "gpt-5.6-luna",
 		DefaultStrong: "gpt-5.6-sol",
-		Caps:          mustCaps("codex"),
 	},
 	{
 		ID:          "ollama",
@@ -64,17 +63,19 @@ var registry = []Provider{
 		// literal to be likely installed. Unconfigured resolves to "" and the
 		// UI/CLI surfaces prompt the user to pick from the live list.
 		LiveModels: true,
-		Caps:       mustCaps("ollama"),
 	},
 }
 
-// mustCaps is id's capability row; a registry id without one is a bug.
-func mustCaps(id string) Capabilities {
-	c, ok := CapsFor(id)
-	if !ok {
-		panic("providers: no capability row for " + id)
+// init fills each row's Caps from the capability table by its id; a
+// registry id without a row is a bug, caught at start.
+func init() {
+	for i := range registry {
+		c, ok := caps.For(registry[i].ID)
+		if !ok {
+			panic("providers: no capability row for " + registry[i].ID)
+		}
+		registry[i].Caps = c
 	}
-	return c
 }
 
 // All returns the registry in display order.

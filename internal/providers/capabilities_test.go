@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/config"
 )
 
 // Every row of the spec's §3.3 table (2026-11-05), field by field; codex's
@@ -30,6 +32,27 @@ func TestCapabilities_TableMatchesSpec(t *testing.T) {
 	assert.Len(t, All(), len(want))
 	_, ok := CapsFor("gemini")
 	assert.False(t, ok, "an unknown provider has no row")
+}
+
+// The registry, the capability table and config's known ids are one set:
+// an id missing from one would be skipped or refused without a word.
+func TestCapabilities_OneProviderSet(t *testing.T) {
+	for _, p := range All() {
+		_, ok := CapsFor(p.ID)
+		assert.True(t, ok, "%s: no capability row", p.ID)
+		assert.True(t, config.KnownAIProvider(p.ID), "%s: not a known config provider", p.ID)
+	}
+	for _, id := range []string{"claude", "codex", "ollama", "gemini", ""} {
+		_, inTable := CapsFor(id)
+		assert.Equal(t, config.KnownAIProvider(id), inTable, id)
+	}
+	assert.Equal(t, CapsOf("claude"), CapsOf(""), `"" is the default provider`)
+	assert.Equal(t, Capabilities{}, CapsOf("gemini"), "an unknown id takes nothing")
+	assert.True(t, RunsChild("claude"))
+	assert.True(t, RunsChild("codex"))
+	assert.False(t, RunsChild("ollama"))
+	assert.False(t, RunsChild("gemini"))
+	assert.True(t, Pairs("", "codex"), `"" pairs as the default provider`)
 }
 
 // The JSON keys the Desktop decodes (ProviderCapabilities.swift).

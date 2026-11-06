@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"maps"
 	"sync"
@@ -92,8 +93,13 @@ func (p *toolRouteProvider) request(sessionID string) providerrouting.Request {
 					return supported, err
 				}
 			}
+			// The routed leaves are CLI children (buildAIClient); the
+			// capability row decides the rest.
 			caps, known := providers.CapsFor(id)
-			return known && providers.Satisfies(caps, profile), nil
+			if !known {
+				return false, fmt.Errorf("no capability row for provider %q", id)
+			}
+			return providers.RunsChild(id) && providers.Satisfies(caps, profile), nil
 		}}
 }
 func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(context.Context, ai.Provider, providerrouting.Attempt) (providerrouting.Result, error)) (providerrouting.Result, error) {

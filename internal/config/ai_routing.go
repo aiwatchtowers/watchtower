@@ -33,7 +33,7 @@ func (a AIConfig) Validate() error {
 			return fmt.Errorf("fallback provider must be claude or codex")
 		}
 	}
-	if a.Fallback.Enabled && (reserve == "" || !inAnyPair(preferred)) {
+	if a.Fallback.Enabled && (reserve == "" || !caps.Pairs(preferred, reserve)) {
 		return fmt.Errorf("enabled fallback requires a Claude/Codex pair")
 	}
 	return nil

@@ -150,21 +150,27 @@ func TestToolRoutingReturnedNativeIDStaysWithActualProviderAndModel(t *testing.T
 	}
 }
 
-// The tool router's capability check is the table's: a profile is met by
-// what the provider's row offers, an unknown provider by nothing — no name
-// branch (LLMTRANSPORT-01).
+// The tool router's capability check is the table's, for the CLI
+// children it builds: a tool preflight is met by claude and codex, refused
+// for ollama (an HTTP transport the routed leaves cannot build) and an
+// error for a provider with no row — no name branch (LLMTRANSPORT-01).
 func TestRouting_CheckCapabilityReadsCaps(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AI.Provider = "claude"
 	req := newToolRouteProvider(cfg, nil).request("")
-	for _, id := range []string{"claude", "codex", "ollama", "gemini"} {
-		for _, profile := range []providers.InvocationProfile{providers.ToolPreflight, providers.ReviewReadonly, providers.Image} {
-			caps, known := providers.CapsFor(id)
-			got, err := req.CheckCapability(id, profile)
-			require.NoError(t, err)
-			assert.Equal(t, known && providers.Satisfies(caps, profile), got, "%s %s", id, profile)
-		}
+	require.Equal(t, providers.ToolPreflight, req.Profile)
+	for id, want := range map[string]bool{"claude": true, "codex": true, "ollama": false} {
+		got, err := req.CheckCapability(id, req.Profile)
+		require.NoError(t, err, id)
+		assert.Equal(t, want, got, id)
 	}
-	got, _ := req.CheckCapability("ollama", providers.ReviewReadonly)
-	assert.False(t, got, "ollama reads no folder")
+	_, err := req.CheckCapability("gemini", req.Profile)
+	require.Error(t, err, "a provider with no capability row")
+
+	// The router's own refusal comes first.
+	p := newToolRouteProvider(cfg, nil)
+	p.capable = func(string) (bool, error) { return false, nil }
+	got, err := p.request("").CheckCapability("codex", providers.ToolPreflight)
+	require.NoError(t, err)
+	assert.False(t, got)
 }
