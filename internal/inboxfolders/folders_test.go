@@ -369,7 +369,8 @@ func TestCreate_Titles(t *testing.T) {
 		strings.Repeat("a", MaxTitleRunes),
 		strings.Repeat("я", MaxTitleRunes),
 		strings.Repeat("a", MaxTitleRunes-1) + "🚀",
-		"Release\n", // trimmed
+		"Release\n",              // trimmed
+		"Family 👨\u200D👩\u200D👧", // the zero-width joiner is allowed
 	}
 	for _, title := range ok {
 		_, _, err := f.s.Create(f.ctx, CreateRequest{Title: title, ExpectRevision: f.rev()})
@@ -387,6 +388,8 @@ func TestCreate_Titles(t *testing.T) {
 		"Rel\u2029ease",
 		"Rel\u202Eease",
 		"Rel\u200Bease",
+		"Rel\u2060ease", // word joiner: Cf, refused unlike U+200D
+		"Rel\uFEFFease",
 		"bad\xffutf8",
 	}
 	before := f.tree()

@@ -37,9 +37,14 @@ func checkIcon(icon string) error {
 	return refuse(ErrUnknownIcon, "unknown icon %q", icon)
 }
 
+// zeroWidthJoiner (U+200D, Cf) joins emoji such as a family into one
+// picture, so a title may hold it.
+const zeroWidthJoiner = '\u200D'
+
 // notOnOneLine is a rune a title may not hold: a control (Cc, a newline
 // included), a format character (Cf, such as U+202E, which reorders what
-// the menu shows) or a line/paragraph separator (Zl, Zp).
+// the menu shows; the zero-width joiner excepted) or a line/paragraph
+// separator (Zl, Zp).
 func notOnOneLine(r rune) bool {
-	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
+	return r != zeroWidthJoiner && unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
 }
