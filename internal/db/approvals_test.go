@@ -331,3 +331,28 @@ func TestActionCanBeApproval(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "a missing row")
 }
+
+// A change in the second the artifact was written is drift (whole-second
+// stamps); the redraw a second later converges.
+func TestApprovalDriftOf_SameSecondIsDriftAndConverges(t *testing.T) {
+	d := openTestDB(t)
+	a := seedBuiltinRow(t, d, "needs-approval", "needs-approval", "c", "h")
+	act, err := d.InsertAgentAction(AgentAction{Tool: "create_target", ArgsJSON: `{}`})
+	require.NoError(t, err)
+	var created string
+	require.NoError(t, d.QueryRow(`SELECT created_at FROM agent_actions WHERE id = ?`, act).Scan(&created))
+	seedApprovalArtifact(t, d, a, ActionRef(act), created)
+	now := time.Now().UTC().Add(time.Minute)
+	drift, err := d.ApprovalDriftOf(context.Background(), a, now, 50)
+	require.NoError(t, err)
+	assert.Equal(t, ApprovalDrift{Missing: 1}, drift, "same second")
+
+	at, err := time.Parse(automationTimeLayout, created)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE automation_outputs SET written_at = ? WHERE output_key = ?`,
+		formatAutomationTime(at.Add(time.Second)), ActionRef(act))
+	require.NoError(t, err)
+	drift, err = d.ApprovalDriftOf(context.Background(), a, now, 50)
+	require.NoError(t, err)
+	assert.False(t, drift.Any(), "the redraw a second later converges")
+}

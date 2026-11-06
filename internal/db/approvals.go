@@ -107,7 +107,8 @@ type ApprovalDrift struct {
 func (d ApprovalDrift) Any() bool { return d.Missing > 0 || d.Closed > 0 }
 
 // ApprovalDriftOf compares the open approvals at now with automation
-// automationID's living inbox artifacts keyed action:<id> / reminder:<id>,
+// automationID's living inbox artifacts keyed action:<id> / reminder:<id>
+// (an artifact counts only when written strictly after the last change),
 // in one read-only transaction (it never blocks a writer and writes
 // nothing). An approval's last change is the latest of an action's
 // created_at, decided_at and applied_at, or of a reminder's created_at and
@@ -134,7 +135,10 @@ func (db *DB) ApprovalDriftOf(ctx context.Context, automationID int64, now time.
 	for i, a := range open {
 		at, ok := written[a.ref]
 		delete(written, a.ref)
-		if (limit <= 0 || i < limit) && (!ok || at < a.changedAt) {
+		// A tie is drift: both stamps have whole seconds, so an artifact
+		// written in the second of the change may predate it. The redraw
+		// writes a later written_at, so the sweep converges.
+		if (limit <= 0 || i < limit) && (!ok || at <= a.changedAt) {
 			drift.Missing++
 		}
 	}
