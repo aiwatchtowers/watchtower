@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/features"
@@ -535,4 +536,43 @@ func TestFeaturesEnable_UnknownIDListsValidIDs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secretary-inbox", "error should list valid toggleable ids")
 	assert.NotContains(t, err.Error(), "targets", "core ids are not valid toggle targets")
+}
+
+// TestFeaturesDisable_ApprovalCardsTurnsTheBuiltinOffAtOnce: disabling
+// approval-cards turns the needs-approval built-in's row off in the same
+// command, so the approval trigger queues nothing before the daemon's next
+// built-in sync (FEAT-01: off writes nothing).
+func TestFeaturesDisable_ApprovalCardsTurnsTheBuiltinOffAtOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "")
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	_, err = builtin.Sync(context.Background(), database, cfg.WorkspaceDir(), cfg, time.Now())
+	require.NoError(t, err)
+	a, err := database.GetBuiltinAutomation(builtin.NeedsApprovalID)
+	require.NoError(t, err)
+	require.True(t, a.Runnable(), "needs-approval starts on")
+
+	featuresDisableCmd.SetOut(new(bytes.Buffer))
+	featuresDisableCmd.SetErr(new(bytes.Buffer))
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+
+	after, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.False(t, after.ApprovalCards.Enabled)
+	a, err = database.GetBuiltinAutomation(builtin.NeedsApprovalID)
+	require.NoError(t, err)
+	assert.False(t, a.Enabled, "the row is off at once")
+	morning, err := database.GetBuiltinAutomation("morning-brief")
+	require.NoError(t, err)
+	assert.True(t, morning.Enabled, "a built-in of another feature stays on")
+
+	require.NoError(t, builtin.Fire(database, "reminder:1", nil))
+	runs, err := database.ListAutomationRuns(a.ID, 0)
+	require.NoError(t, err)
+	assert.Empty(t, runs, "Fire queues nothing while approval-cards is off")
 }

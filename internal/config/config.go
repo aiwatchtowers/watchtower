@@ -158,6 +158,13 @@ type ReactionCommandsConfig struct {
 	IntervalHours int  `mapstructure:"interval_hours"` // throttle between reactions.list polls; <= 0 = every daemon cycle (default: 0)
 }
 
+// ApprovalCardsConfig controls Needs approval's cards: the needs-approval
+// built-in draws one card per open approval (Inbox builder B). No AI, no
+// cost; off, the Inbox shows the standard approval cards.
+type ApprovalCardsConfig struct {
+	Enabled bool `mapstructure:"enabled"` // run the needs-approval built-in (default: true)
+}
+
 // PlanUsageConfig controls Claude plan limits — the daemon polls the owner's
 // 5-hour and weekly Claude limits (spec 2026-10-15). No AI, no cost.
 type PlanUsageConfig struct {
@@ -418,6 +425,7 @@ type Config struct {
 	Streams          StreamsConfig               `mapstructure:"streams"`
 	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
 	PlanUsage        PlanUsageConfig             `mapstructure:"plan_usage"`
+	ApprovalCards    ApprovalCardsConfig         `mapstructure:"approval_cards"`
 	Tracks           TracksConfig                `mapstructure:"tracks"`
 	People           PeopleConfig                `mapstructure:"people"`
 	Calendar         CalendarConfig              `mapstructure:"calendar"`
@@ -511,6 +519,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
 	v.SetDefault("plan_usage.enabled", DefaultPlanUsageEnabled)
+	v.SetDefault("approval_cards.enabled", DefaultApprovalCardsEnabled)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
 	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)

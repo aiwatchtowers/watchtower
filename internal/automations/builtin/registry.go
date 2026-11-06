@@ -21,7 +21,8 @@ import (
 var recipeFS embed.FS
 
 // Slot is the place in the daemon's sync cycle where a built-in runs (its
-// recipe's trigger.sync).
+// recipe's trigger.sync); "" for a built-in that runs at no slot (Needs
+// approval).
 type Slot string
 
 // The sync slots (automations.SyncSlots). SlotCustomTracks holds the watch
@@ -200,6 +201,25 @@ var registry = []Entry{
 		RunNow:        false,
 		NoRunNowNote:  "Reactions run for each reaction you place",
 	},
+	{
+		ID:         NeedsApprovalID,
+		Name:       "Needs approval",
+		Slot:       "", // no slot: the approval trigger queues its runs (Entry.Trigger)
+		Recipe:     mustRecipe(NeedsApprovalID),
+		FeatureIDs: []string{"approval-cards"},
+		Primitives: []string{automations.PrimitiveApprovalsList},
+		Reads:      []string{"The actions that wait for your approval", "Your reminders that came due"},
+		Does: []string{
+			"Shows every action that waits for your approval and every reminder that came due, one card each",
+			"Updates the cards as soon as one changes, and takes a card away once you approve, reject, finish or snooze it",
+			"Uses no AI",
+		},
+		Sends:         []string{"One card per approval in your Inbox, in Needs approval"},
+		ResultFilter:  "automations",
+		DefaultFolder: NeedsApprovalID,
+		When:          func(*config.Config) string { return "When an action or a reminder needs you" },
+		RunNow:        true,
+	},
 }
 
 func mustRecipe(id string) []byte {
@@ -285,6 +305,16 @@ func (e Entry) Enabled(cfg *config.Config) bool {
 		}
 	}
 	return false
+}
+
+// Trigger is the trigger e's recipe must keep (automations.IndexBuiltinRow):
+// `sync: <slot>` for a slot built-in, `event: approval` for one with no slot
+// (Needs approval, whose runs only the approval trigger queues).
+func (e Entry) Trigger() automations.Trigger {
+	if e.Slot == "" {
+		return automations.Trigger{Kind: automations.TriggerEvent, Event: &automations.EventTrigger{Type: automations.ApprovalEvent}}
+	}
+	return automations.Trigger{Kind: automations.TriggerSync, Sync: string(e.Slot)}
 }
 
 // ShippedContentHash is the content hash of e's shipped recipe bytes.

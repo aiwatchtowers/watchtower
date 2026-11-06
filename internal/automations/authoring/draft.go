@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -251,8 +253,11 @@ func evaluate(ctx context.Context, d Deps, a draftArgs, opts evalOptions) (*Draf
 		}
 	}
 	b := d.backends()
-	if scope.BuiltinID != "" && b.DefaultPrompt == nil {
-		b.DefaultPrompt = builtin.DefaultPromptFunc // builtin.defaultPrompt(name) in the dry run
+	if scope.BuiltinID != "" {
+		if b.DefaultPrompt == nil {
+			b.DefaultPrompt = builtin.DefaultPromptFunc // builtin.defaultPrompt(name) in the dry run
+		}
+		b.Primitives = withReadPrimitives(b.Primitives, d.DB) // a dry run calls the read primitives
 	}
 	rep, err := automations.DryRunInMemory(ctx, b, r, automations.DryRunOptions{Budget: draftBudget(r.Budget), ConversationID: opts.conversation})
 	if err != nil {
@@ -423,4 +428,19 @@ func nonNil(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// withReadPrimitives is prims plus every read primitive it lacks
+// (builtin.ReadPrimitives over database), in a new map.
+func withReadPrimitives(prims map[string]automations.PrimitiveFunc, database *db.DB) map[string]automations.PrimitiveFunc {
+	out := maps.Clone(prims)
+	if out == nil {
+		out = map[string]automations.PrimitiveFunc{}
+	}
+	for name, fn := range builtin.ReadPrimitives(database, time.Now) {
+		if out[name] == nil {
+			out[name] = fn
+		}
+	}
+	return out
 }

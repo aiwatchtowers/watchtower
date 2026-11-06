@@ -298,6 +298,21 @@ var registry = []Feature{
 		Cost:      CostNone,
 		Enabled:   func(cfg *config.Config) bool { return cfg.PlanUsage.Enabled },
 	},
+	{
+		ID:          "approval-cards",
+		Title:       "Needs approval cards",
+		Description: "Draws every action that waits for your approval and every reminder that came due as its own card in the Inbox's Needs approval folder, updated as soon as one changes. No AI. Turned off, Needs approval shows the standard approval cards instead — nothing that waits for you is ever hidden.",
+		Tagline:     "Everything that waits for your OK, one card each",
+		Benefits: []string{
+			"One card per action or reminder that needs you",
+			"Cards leave as soon as you settle them",
+			"No AI and no cost",
+		},
+		Icon:      "checkmark.seal",
+		ConfigKey: "approval_cards.enabled",
+		Cost:      CostNone,
+		Enabled:   func(cfg *config.Config) bool { return cfg.ApprovalCards.Enabled },
+	},
 }
 
 // memorySubToggles surfaces memory's existing semantic/sources/surfaces

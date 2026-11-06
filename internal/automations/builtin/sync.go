@@ -170,7 +170,7 @@ func syncEntry(ctx context.Context, d *db.DB, workspaceDir string, cfg *config.C
 		return res, err
 	}
 	res.note = src.note
-	cand, err := automations.IndexBuiltinRow(e.ID, "builtin:"+e.ID, src.data, src.contentHash, scopeOf(e), string(e.Slot))
+	cand, err := automations.IndexBuiltinRow(e.ID, "builtin:"+e.ID, src.data, src.contentHash, scopeOf(e), e.Trigger())
 	if err != nil {
 		return res, fmt.Errorf("built-in %s: %w", e.ID, err)
 	}

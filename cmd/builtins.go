@@ -194,6 +194,7 @@ func cliBuiltinBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 	if p.reactions != nil && p.reactionSlot != nil {
 		add(builtin.ReactionPrimitives(p.reactions, p.reactionSlot))
 	}
+	add(builtin.ApprovalsPrimitives(database, time.Now))
 	b.DefaultPrompt = builtin.DefaultPromptFunc
 	return b
 }
