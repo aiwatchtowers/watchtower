@@ -974,7 +974,7 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 
 ## Open decisions for the owner
 
-New in review round 1 of ask #1076, not yet answered. No code starts before them. Each is the agent's proposal. Decisions 27 and 29 are with the owner in ask #1081.
+New in review round 1 of ask #1076, not yet answered. No code starts before them. Each is the agent's proposal. All five are with the owner in ask #1081.
 
 - **25. The relay's own expiry signal with a failed account read: that phone's keys.** Ask #1079 settled the Mac's move, and that a phone's own request clears its keys either way. Open only for the relay's signal, which waits and retries. **A, clear at the signal, before the read (recommended):** it is the relay's own word, and that phone cannot write anyway; a wrong signal costs it one static week. **B, clear only once a read decides:** nothing changes on a wrong signal, but during an outage the hub keeps deriving keys for a phone that has lapsed.
 - **26. A relay-only phone refused by the relay: its actions.** **A, sent and queued rows go to Not delivered, with today's text (recommended):** they can never be applied, and it is honest. The person has to send again after re-linking or paying. **B, they stay where they are:** the screen looks as if they may still finish, and they never do.
