@@ -137,6 +137,38 @@ package enum TerminalSessionQueries {
         ) ?? false
     }
 
+    /// What workbench `projectID`'s sessions work on (board #987), by
+    /// session id: the targets their agents linked (`terminal_session_targets`,
+    /// PROJ-14), the worktrees their agents worked in (`terminal_session_worktrees`,
+    /// migration 00111) and the run start they are judged against
+    /// (`agent_turns`' `since`, as `fetchAgentCwds` reads it). A session
+    /// with neither a link nor a worktree is left out. Read-only: Go writes
+    /// all three.
+    package static func fetchWorkLinks(_ db: Database, projectID: Int64) throws -> [Int64: SessionWorkLinks] {
+        var links: [Int64: SessionWorkLinks] = [:]
+        let targets = try Row.fetchAll(db, sql: """
+            SELECT l.session_id, l.target_id FROM terminal_session_targets l
+            JOIN terminal_sessions s ON s.id = l.session_id
+            WHERE s.project_id = ? ORDER BY l.session_id, l.target_id
+            """, arguments: [projectID])
+        for row in targets {
+            links[row["session_id"], default: SessionWorkLinks()].linkedTargetIDs.append(row["target_id"])
+        }
+        let worktrees = try Row.fetchAll(db, sql: """
+            SELECT w.session_id, w.root, w.first_at,
+                   CASE WHEN json_valid(s.agent_turns) THEN json_extract(s.agent_turns, '$.since') END AS run_start
+            FROM terminal_session_worktrees w
+            JOIN terminal_sessions s ON s.id = w.session_id
+            WHERE s.project_id = ? ORDER BY w.session_id, w.first_at, w.root
+            """, arguments: [projectID])
+        for row in worktrees {
+            let id: Int64 = row["session_id"]
+            links[id, default: SessionWorkLinks()].worktrees.append(SessionLanes.Record(root: row["root"], firstAt: row["first_at"]))
+            links[id]?.runStart = row["run_start"]
+        }
+        return links
+    }
+
     package static func fetchForTarget(_ db: Database, targetID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,

@@ -421,6 +421,11 @@ final class WorkbenchesViewModel {
     /// Each workbench's board tree for the row menu's **Session Target ▸**,
     /// read when its session rows come on screen.
     var sessionTargetRoots: [Int64: [WorkbenchBoardNode]] = [:]
+    /// Each workbench's session work links and lane worktrees on disk
+    /// (board #987), read with its session list; the row's place line.
+    var sessionWork: [Int64: SessionWorkSnapshot] = [:]
+    /// `loadSessionWork`'s reads started per workbench: only the latest applies.
+    @ObservationIgnored var sessionWorkReads: [Int64: Int] = [:]
     /// The worktrees the last delete kept because work was in them
     /// (`keptWorktreesNotice`): a neutral line under the list, not an error,
     /// until the owner dismisses it or the next delete replaces it.
@@ -632,6 +637,8 @@ final class WorkbenchesViewModel {
             // A session started, stopped or began a run: whether its stored
             // cwd is trusted may have moved (board #565).
             sessionPlaces?.cwdsMayHaveChanged()
+            // A new run or a new lane worktree moves the row's lanes (#987).
+            self?.reloadSessionWork()
         }
         agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces, weak agentStates] in
             lineDelivery?.statesRead()

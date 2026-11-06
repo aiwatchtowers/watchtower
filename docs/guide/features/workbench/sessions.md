@@ -50,6 +50,12 @@ When no helper has reported for 30 minutes, Watchtower asks Claude Code whether 
 
 A line under the caption shows the agent's place: **main folder · main**, or **⑂ name · branch** when it moved into a git worktree, or **worktree removed** when that worktree is gone. Until Watchtower knows the place, it shows the main folder.
 
+When the session works on a task that has a branch, the line shows the branch the work is merged into, such as **⎇ feature/login**. A task without a branch of its own uses the branch of the group above it. Hover over the line to see the folder the agent's terminal is in.
+
+If the session works on tasks with different branches, the line shows how many, such as **⎇ 2 target branches**. Hover over it to see their names.
+
+An agent can hand parts of the work to helpers, each in its own git worktree. The line then ends with the number of those worktrees, such as **⎇ feature/login · 3 lanes**. Only worktrees from the current run that still exist are counted. Hover over the line to see their folders.
+
 ### Sessions an automation opens
 
 A workbench automation can start an agent session, such as for a review round. It shows in SESSIONS titled "⚙ <name> · run #N" and starts in the background, without taking the page from you. You can watch it, type into it, stop it or resume it.

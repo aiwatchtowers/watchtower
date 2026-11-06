@@ -285,4 +285,38 @@ final class SessionPlaceViewModelTests: XCTestCase {
         for _ in 0..<20 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(50))
     }
+
+    /// Board #987: the row leads with the bound target's branch (its group's)
+    /// and counts the session's lane worktrees of this run still on disk.
+    func testTheRowLeadsWithTheTargetBranchAndCountsLanes() async throws {
+        let lane = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lane-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: lane, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: lane) }
+        let gone = lane.path + "-gone"
+        let (id, projectID) = (sessionID, project.id)
+        try await pool.write { db in
+            for (target, parent, branch) in [(1, nil, "feature/codex-parity"), (2, 1, "")] as [(Int, Int?, String)] {
+                try db.execute(sql: """
+                    INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type,
+                        project_id, parent_id, branch)
+                    VALUES (?, 't', 'custom', 'project', '2026-11-01', '2026-11-01', 'chat', ?, ?, ?)
+                    """, arguments: [target, projectID, parent, branch])
+            }
+            try db.execute(sql: "UPDATE terminal_sessions SET target_id = 2, agent_turns = ? WHERE id = ?",
+                           arguments: [#"{"since":"2026-11-06T10:00:00.000Z"}"#, id])
+            for root in [lane.path, gone] {
+                try db.execute(
+                    sql: "INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at) VALUES (?, ?, 'x', ?)",
+                    arguments: [id, root, "2026-11-06T10:01:00.000Z"])
+            }
+        }
+        let (vm, _, _) = makeVM(RoutingRunner(workbenchID: projectID))
+        await vm.loadSessions(projectID: projectID)
+        let session = try XCTUnwrap(vm.terminalSessions[projectID]?.first)
+        let label = try XCTUnwrap(vm.sessionPlaceLabels([session])[session.id])
+        XCTAssertEqual(label.text, "⎇ feature/codex-parity · 1 lane")
+        XCTAssertTrue(label.help.contains(SessionLanes.normalized(lane.path)))
+        XCTAssertFalse(label.help.contains(gone))
+    }
 }
