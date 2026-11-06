@@ -328,6 +328,7 @@ func (r *refresher) readInto(ctx context.Context, base, branch string) (db.PRSta
 		return db.PRState{State: "merged"}, true
 	case workbenchcheck.BranchNotMerged:
 		return db.PRState{State: "open"}, true
+	case workbenchcheck.BranchMissing, workbenchcheck.BranchUnknown:
 	}
 	return db.PRState{}, false
 }

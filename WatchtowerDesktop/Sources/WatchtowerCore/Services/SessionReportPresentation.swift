@@ -17,16 +17,34 @@ package enum SessionReportPresentation {
 
     // MARK: State and size
 
-    /// "14 / 15 tasks"; "No tasks yet" when nothing is in scope.
+    /// "14 / 15 tasks", "3 / 32 tasks · 25 merged" with a merged share
+    /// (board #986); "No tasks yet" when nothing is in scope.
     package static func heroLine(_ progress: Report.Progress) -> String {
         guard progress.total > 0 else { return "No tasks yet" }
         return "\(progress.done) / \(progress.total) " + (progress.total == 1 ? "task" : "tasks")
+            + mergedSuffix(progress.merged)
     }
 
-    /// The progress bar's fill, 0...1.
+    /// The progress bar's fill, 0...1: the done share.
     package static func progressFraction(_ progress: Report.Progress) -> Double {
-        guard progress.total > 0 else { return 0 }
-        return min(1, max(0, Double(progress.done) / Double(progress.total)))
+        fraction(progress.done, of: progress.total)
+    }
+
+    /// The merged share, 0...1: tasks not done whose branch is merged into
+    /// their parent's (board #986), drawn after the done share.
+    package static func mergedFraction(merged: Int, total: Int) -> Double {
+        fraction(merged, of: total)
+    }
+
+    /// " · 25 merged", or "" when nothing is merged — a count without a
+    /// merged share reads exactly as before.
+    package static func mergedSuffix(_ merged: Int) -> String {
+        merged > 0 ? " · \(merged) merged" : ""
+    }
+
+    private static func fraction(_ part: Int, of total: Int) -> Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, Double(part) / Double(total)))
     }
 
     /// How long the session ran — created to finished, or to its last
@@ -45,7 +63,7 @@ package enum SessionReportPresentation {
 
     package struct PhaseLine: Equatable, Sendable {
         package let title: String
-        /// "7/7".
+        /// "7/7", "3/8 · 5 merged".
         package let count: String
         /// "Sep 29, 09:01 – 11:07"; nil before any of its leaves started.
         package let span: String?
@@ -62,7 +80,7 @@ package enum SessionReportPresentation {
     package static func phaseLine(_ phase: Report.Phase, timeZone: TimeZone = .current) -> PhaseLine {
         PhaseLine(
             title: phase.text,
-            count: "\(phase.done)/\(phase.total)",
+            count: "\(phase.done)/\(phase.total)" + mergedSuffix(phase.merged),
             span: timeSpan(from: phase.startedAt, to: phase.finishedAt, timeZone: timeZone),
             isComplete: !phase.finishedAt.isEmpty
         )
@@ -173,13 +191,18 @@ package enum SessionReportPresentation {
     // MARK: Session rows
 
     /// The panel row's report line, "#314 · 14/15 · PR #147 open": the
-    /// ticket, X/Y when anything is in scope, Go's PR line. A summary kept
+    /// ticket, X/Y when anything is in scope (then "N merged" when tasks not
+    /// done have their branch merged into their parent's, board #986), Go's
+    /// PR line. A summary kept
     /// from an earlier run after a failed refresh ends in "· stale", so a
     /// failure never reads as a blank line; "" when there is nothing to say.
     package static func rowCaption(_ summary: SessionReportSummary, stale: Bool = false) -> String {
         var parts: [String] = []
         if let target = summary.targetID { parts.append("#\(target)") }
-        if summary.total > 0 { parts.append("\(summary.done)/\(summary.total)") }
+        if summary.total > 0 {
+            parts.append("\(summary.done)/\(summary.total)")
+            if summary.merged > 0 { parts.append("\(summary.merged) merged") }
+        }
         if !summary.prLine.isEmpty { parts.append(summary.prLine) }
         if stale { parts.append("stale") }
         return parts.joined(separator: " · ")
