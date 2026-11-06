@@ -53,7 +53,7 @@ type Drive int
 const (
 	drivePlain        Drive = iota
 	driveTimeout            // the context times out while the fake hangs
-	driveCancelAtText       // Cancel at the first text_delta
+	driveCancelAtText       // Cancel once the first message's text has arrived
 	driveCancelAtTool       // Cancel at the first tool_start
 	driveTwoTurns           // a warm transport runs t1 then t2
 )

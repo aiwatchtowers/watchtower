@@ -1291,7 +1291,7 @@ rollout is read through `internal/rollout` like a plain one, and a rollout
 whose last 256 KB hold no turn event reads as not failed. Each
 check is one CLI child (a check that cannot run retries after 60 s). A turn
 that fails while the row reads Needs approval, or after a later state write
-on the row, is not shown as Error. No idle notice and no elicitation approval
+on the row, is not shown as Error. There is no idle notice and no elicitation approval
 (`waiting` comes only from Stop and Interrupt; codex 0.159.2 has no `Notification` hook event and an MCP
 elicitation fires no hook, plan Task G7 spike (c): `agentkind` `IdleSignal`/`Elicitation` are
 false and Settings → Notifications says "Idle notices are not available for Codex sessions.",
@@ -2271,7 +2271,7 @@ from the phone yet. Answer it on the Mac." (interrupt: "<Agent> sessions
 can't be interrupted from the phone yet. Stop it on the Mac."), never "no
 longer exists" (a deleted session keeps `not_found`). Codex stays refused:
 G7's spike on codex 0.159.2 showed its `PermissionRequest` hook can hold and
-answer (`cmd/testdata/codex_hooks/permission_request_output_*.json`, the same
+answer (`cmd/testdata/codex_hooks/spikes/permission_request_output_*.json`, the same
 JSON Claude Code takes), but while it holds codex shows only "Running hook"
 and no prompt in the terminal, so a permission-wait hook would take the
 Mac's own answer away for the whole hold (`SPIKES.md` (b)); enabling it is an

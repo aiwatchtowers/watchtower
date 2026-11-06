@@ -807,7 +807,7 @@ func TestProj11_CodexNoIdleSignalIsDisclosedNotSilent(t *testing.T) {
 	assert.False(t, caps.IdleSignal, "codex has no idle signal")
 	assert.False(t, caps.Elicitation, "codex reports no elicitation")
 
-	raw, err := os.ReadFile(filepath.Join("testdata", "codex_hooks", "hook_events.json"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "codex_hooks", "spikes", "hook_events.json"))
 	require.NoError(t, err)
 	var recorded struct {
 		Events []string `json:"events"`
