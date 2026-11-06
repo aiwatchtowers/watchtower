@@ -555,8 +555,8 @@ func TestG2APayerAppearingResetsTheCount(t *testing.T) {
 func TestG2APhoneLinkingMovesNothing(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		g2World(t, w)
-		w.pollAfterInterval() // count 1
-		w.addPhone(false)     // linked just now, not in the account yet
+		w.pollAfterInterval()            // count 1
+		w.route(w.addPhone(false), true) // linked just now, not in the account yet
 		w.sw.PollOther(w.ctx)
 		w.pollAfterInterval() // the list changed: the count restarts at 1
 		w.wantActive(transport.KindRelay)
@@ -619,7 +619,7 @@ func TestG2APhoneLinkingDuringTheReadResetsTheCount(t *testing.T) {
 			w.mu.Lock()
 			w.onRead = nil
 			w.mu.Unlock()
-			w.addPhone(false)
+			w.route(w.addPhone(false), true)
 		}
 		w.mu.Unlock()
 		w.pollAfterInterval() // the list changed during this read
@@ -691,7 +691,9 @@ func TestG2AnUnreadableRouteMovesNothing(t *testing.T) {
 		_ = w.st.Close()
 		w.advance(switcher.NoPayerPoll)
 		w.sw.PollOther(w.ctx)
-		w.wantActive(transport.KindRelay)
+		if !w.sw.IsActive(transport.KindRelay) {
+			t.Fatal("the hub moved on a route it could not read")
+		}
 	})
 }
 
@@ -762,23 +764,6 @@ func TestG2ANotFreshReadKeepsTheCountAndRetriesAtOnce(t *testing.T) {
 		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}
-		w.wantActive(transport.KindCloudKit)
-	})
-}
-
-// The number of phones with an iCloud route is part of what the two reads
-// must agree on, by itself: the phones and their ids stay the same here.
-func TestG2ARouteLostBetweenTheReadsRestartsTheCountAlone(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
-		g2World(t, w)
-		b := w.addPhone(false)
-		w.route(b, true)
-		w.advance(switcher.NoPayerPoll) // b is no longer new
-		w.pollAfterInterval()           // count 1, two routes
-		w.route(b, false)               // one route left, the same phones
-		w.pollAfterInterval()           // the routes changed: count 1 again
-		w.wantActive(transport.KindRelay)
-		w.pollAfterInterval()
 		w.wantActive(transport.KindCloudKit)
 	})
 }

@@ -3,7 +3,6 @@ package switcher
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -34,31 +33,36 @@ type noPayer struct {
 
 func (n *noPayer) reset(now time.Time) { *n = noPayer{last: now} }
 
-// fingerprint is the linked phones with their relay ids and the number of
-// them that have an iCloud route (CloudKitLinks): a phone linking, its relay
-// id being learned, or a route gained or lost changes it. It is "" when the
-// phones cannot be read (unknown), when none is linked or when none has an
-// iCloud route: a hub nobody can follow to iCloud is not moved.
+// fingerprint is the linked phones with their relay ids and whether each has
+// an iCloud route: a phone linking, its relay id being learned, or a route
+// gained or lost changes it. It is "" when the phones or their routes cannot
+// be read (unknown), when none is linked, or when any linked phone has no
+// iCloud route: the Mac moves to iCloud only if every phone can follow it
+// there (ask #1072). A route is a CloudKit link's iCloud user
+// (state.ICloudRoutes); an empty one is no route, never a guess.
 func (s *Switcher) fingerprint() (string, bool) {
 	devices, err := s.c.Store.Devices()
 	if err != nil || len(devices) == 0 {
 		return "", false
 	}
-	routes, err := s.c.Store.CloudKitLinks()
-	if err != nil || routes == 0 {
+	routes, err := s.c.Store.ICloudRoutes()
+	if err != nil {
 		return "", false
 	}
 	ids := make([]string, 0, len(devices))
 	recent := false
 	now := s.now()
 	for _, d := range devices {
+		if !routes[strings.ToLower(d.ID)] {
+			return "", false
+		}
 		ids = append(ids, canonical(d.ID)+"="+d.RelayDeviceID)
 		if now.Sub(d.LinkedAt) < NoPayerPoll {
 			recent = true
 		}
 	}
 	sort.Strings(ids)
-	return fmt.Sprintf("%d|%s", routes, strings.Join(ids, ",")), !recent
+	return strings.Join(ids, ","), !recent
 }
 
 // checkNoPayer is G2, a backstop for what a subscription move leaves when
@@ -68,8 +72,8 @@ func (s *Switcher) fingerprint() (string, bool) {
 // whose account lists no paying phone moves to CloudKit by itself, as on
 // rule 16 with no other payer (by = entitlement_expired). It moves only on
 // two reads that answered, at least NoPayerPoll apart, with the same linked
-// phones and iCloud routes, none linked within the interval and at least one
-// phone with an iCloud route. A read that failed or timed out, a paying
+// phones, none linked within the interval and every linked phone with an
+// iCloud route. A read that failed or timed out, a paying
 // phone, a pending switch or a phone linking resets the count and moves
 // nothing; a read that was not made afresh (ErrNotFresh) leaves the count
 // and is tried again at the next poll. An answer with no phones at all

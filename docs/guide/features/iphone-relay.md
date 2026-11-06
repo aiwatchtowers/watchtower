@@ -14,7 +14,7 @@ You answer an ask on the phone and watch the session go on. Over iCloud, that ro
 
 Relay carries the same sealed records iCloud does, so our server can't read anything. A subscription belongs to one iPhone and holds up to 3 Macs. You choose iCloud or Relay for each Mac, and the choice applies to every phone of that Mac.
 
-A phone with no subscription gets no updates from a Mac on Relay. Relay never switches a Mac by itself during an outage: your changes wait on the phone until it is back or you switch.
+A phone with no subscription gets no updates from a Mac on Relay. A short Relay outage never switches a Mac: your changes wait on the phone until it is back or you switch. A Mac does move back to iCloud on its own when Relay has listed no subscribed phone for it on two checks five minutes apart and every phone linked to it also works over iCloud; a phone that works over Relay only keeps the Mac on Relay.
 
 On the Mac, Settings → **Mobile** lists each phone as **iCloud**, **Relay** or **Waiting for Relay**, and who switched it last. Its **Relay** row says whether the Mac is connected.
 

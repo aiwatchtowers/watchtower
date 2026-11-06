@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -317,4 +318,30 @@ func (s *Store) CloudKitLinks() (int, error) {
 		return 0, fmt.Errorf("counting CloudKit links: %w", err)
 	}
 	return n, nil
+}
+
+// ICloudRoutes says, per linked phone (ids in the form the sidecar stores),
+// whether its row carries an iCloud user: the phone was linked over CloudKit,
+// so it had an iCloud route when it linked. A relay-only link has none (it
+// needs no iCloud account), and a CloudKit link whose owner could not be read
+// at link time carries none either: an empty name never proves a route. A
+// name does not prove the route is alive today (a wiped phone's row keeps
+// it); the caller treats the answer as "had a route", the unsafe direction
+// being only a phone that has lost it since.
+func (s *Store) ICloudRoutes() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT device_id, user_record_name <> '' FROM devices`)
+	if err != nil {
+		return nil, fmt.Errorf("reading the iCloud routes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var has bool
+		if err := rows.Scan(&id, &has); err != nil {
+			return nil, fmt.Errorf("reading the iCloud routes: %w", err)
+		}
+		out[strings.ToLower(id)] = has
+	}
+	return out, rows.Err()
 }
