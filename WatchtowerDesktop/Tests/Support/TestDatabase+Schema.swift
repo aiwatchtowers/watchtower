@@ -1480,7 +1480,7 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     read_at       TEXT,                                      -- Desktop-written
     dismissed_at  TEXT                                       -- Desktop-written
-, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT, blocks_json TEXT NOT NULL DEFAULT '', output_key TEXT, content_hash TEXT NOT NULL DEFAULT '', written_at TEXT, changed_at TEXT);
+, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT, blocks_json TEXT NOT NULL DEFAULT '', output_key TEXT, content_hash TEXT NOT NULL DEFAULT '', written_at TEXT, changed_at TEXT, folder_id INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL);
 CREATE TABLE IF NOT EXISTS plan_usage_samples (
     taken_at   TEXT NOT NULL,
     limit_key  TEXT NOT NULL,
@@ -2374,6 +2374,27 @@ CREATE TABLE IF NOT EXISTS history_backfill_daily (
  digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
  PRIMARY KEY(account_id,chunk_from,chunk_to,day_from)
 );
+CREATE TABLE IF NOT EXISTS inbox_folders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL CHECK (kind IN ('root','approvals','owner')),
+    parent_id  INTEGER REFERENCES inbox_folders(id),
+    slug       TEXT NOT NULL UNIQUE,
+    title      TEXT NOT NULL,
+    icon       TEXT NOT NULL DEFAULT '',
+    position   INTEGER NOT NULL DEFAULT 0,
+    hidden     INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    CHECK ((kind = 'root') = (parent_id IS NULL))
+);
+CREATE TABLE IF NOT EXISTS inbox_folder_state (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    revision INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inbox_folder_routes (
+    automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
+    folder_id     INTEGER NOT NULL REFERENCES inbox_folders(id)
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2506,6 +2527,11 @@ SELECT up.ancestor AS target_id,
 FROM up
 JOIN projects p ON p.id = up.project_id
 GROUP BY up.ancestor;
+CREATE VIEW IF NOT EXISTS inbox_artifact_folders AS
+SELECT o.id AS output_id,
+       COALESCE(o.folder_id, r.folder_id, (SELECT id FROM inbox_folders WHERE kind = 'root')) AS folder_id
+FROM automation_outputs o LEFT JOIN inbox_folder_routes r ON r.automation_id = o.automation_id
+WHERE o.kind = 'inbox';
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
 CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
@@ -2723,6 +2749,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outpu
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_action_source ON targets(source_id) WHERE source_type = 'chat' AND source_id LIKE 'action:%' AND source_id != 'action:0';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_actions_open_context ON agent_actions(context_type, context_id) WHERE context_type = 'automation_output' AND status IN ('pending','approved','executing');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_folders_one_root ON inbox_folders(kind) WHERE kind IN ('root','approvals');
+CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, position);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

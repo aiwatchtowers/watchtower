@@ -3117,13 +3117,54 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     output_key    TEXT,                                      -- a living artifact's key, upserted per (automation_id, output_key); NULL = feed (00173)
     content_hash  TEXT NOT NULL DEFAULT '',                  -- SHA-256 over {title, body, blocks, priority, link, actions}; '' on rows from before 00173
     written_at    TEXT,                                      -- the last run that wrote this row (backfilled to created_at)
-    changed_at    TEXT                                       -- the last write that changed content_hash (backfilled to created_at); the Inbox order
+    changed_at    TEXT,                                      -- the last write that changed content_hash (backfilled to created_at); the Inbox order
+    folder_id     INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL -- CLI/daemon-written: the recipe's explicit Inbox folder; NULL = follow the route (00175)
 );
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
+
+-- The Inbox menu's folders (00175). The folder tables hold the menu's
+-- arrangement only, never an item (STRIP-02). Only Go writes them: the CLI
+-- (each write one BEGIN IMMEDIATE transaction that compares and bumps
+-- inbox_folder_state.revision), the built-in indexer's route seed and a
+-- run's commit (folder_id); the Desktop never.
+CREATE TABLE IF NOT EXISTS inbox_folders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL CHECK (kind IN ('root','approvals','owner')), -- one root ('inbox'), one approvals ('needs-approval'), owner folders
+    parent_id  INTEGER REFERENCES inbox_folders(id),                       -- NULL only for the root
+    slug       TEXT NOT NULL UNIQUE,                                       -- derived once from the title; recipes name a folder by slug
+    title      TEXT NOT NULL,
+    icon       TEXT NOT NULL DEFAULT '',                                   -- an SF Symbol from the allowlist; '' = the kind's default (folder; Needs approval draws its fixed symbol by kind)
+    position   INTEGER NOT NULL DEFAULT 0,                                 -- dense 0..n-1 per sibling list
+    hidden     INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    CHECK ((kind = 'root') = (parent_id IS NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_folders_one_root ON inbox_folders(kind) WHERE kind IN ('root','approvals');
+CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, position);
+
+-- The folder tree's revision (one row, starts at 1): every folder or route write compares and bumps it.
+CREATE TABLE IF NOT EXISTS inbox_folder_state (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    revision INTEGER NOT NULL
+);
+
+-- The folder an automation's artifacts go to; no row = the root. Placement, not part of the recipe.
+CREATE TABLE IF NOT EXISTS inbox_folder_routes (
+    automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
+    folder_id     INTEGER NOT NULL REFERENCES inbox_folders(id)
+);
+
+-- An Inbox artifact's effective folder: explicit folder ?? route ?? root.
+CREATE VIEW IF NOT EXISTS inbox_artifact_folders AS
+SELECT o.id AS output_id,
+       COALESCE(o.folder_id, r.folder_id, (SELECT id FROM inbox_folders WHERE kind = 'root')) AS folder_id
+FROM automation_outputs o LEFT JOIN inbox_folder_routes r ON r.automation_id = o.automation_id
+WHERE o.kind = 'inbox';
 
 -- Claude plan usage: one row per poll per limit (percent of the 5h/7d windows), pruned after 8 days.
 CREATE TABLE IF NOT EXISTS plan_usage_samples (
