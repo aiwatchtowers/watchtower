@@ -4,9 +4,10 @@ import (
 	"errors"
 	"time"
 
-	"watchtower/internal/asks"
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/logredact"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/sessionhost"
 )
@@ -48,13 +49,18 @@ func openCodexWatchStore(dbPath string) (sessionhost.CodexWatchStore, error) {
 // session host's watch and the app's bridge reporting the same turn write
 // once, and a prompt that started a newer turn wins.
 func recordCodexPull(database *db.DB, row db.CodexWatchRow, turn sessionfeed.CodexTurn) error {
-	if turn.At.IsZero() || (!turn.Failed && !turn.Aborted) {
+	if turn.At.IsZero() {
 		return nil
 	}
-	var failure *db.AgentFailure
-	if turn.Failed {
-		failure = &db.AgentFailure{Error: briefClip(asks.OneLine(turn.Error), agentErrorRunes)}
+	codex, _ := sessionagent.For(agentkind.Codex)
+	puller, ok := codex.Watch()
+	if !ok {
+		return nil
 	}
-	return recordAgentState(database, row.ID, row.WorkbenchID, row.SessionID, agentStateWaiting,
-		agentStateWorking, failure, false, turn.At, hookTurn{})
+	ev, ok := puller.Event(row.SessionID, turn)
+	if !ok {
+		return nil
+	}
+	return recordAgentEvent(database, row.ID, row.WorkbenchID, ev,
+		agentStateWrite{state: agentStateWaiting, onlyFrom: agentStateWorking, at: turn.At})
 }

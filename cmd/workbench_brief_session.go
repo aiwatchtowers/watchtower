@@ -109,7 +109,7 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID, cwd
 	if err != nil {
 		return err
 	}
-	if row.Kind != string(agentkind.Claude) {
+	if !rowOfAgent(row.Kind, agentkind.Claude) {
 		// A nested claude run from another agent's row (a codex shell)
 		// inherits the env var: it never takes that row, not even a NULL id.
 		return nil

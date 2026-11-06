@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 )
 
 // Caps of the workbench slice (WorkbenchSlice).
@@ -211,10 +212,12 @@ func displayPath(path, home string) string {
 	return path
 }
 
-// wireAgent is TerminalSessionSlice.wireAgent: the Kit's agent raw value.
+// wireAgent is TerminalSessionSlice.wireAgent: the Kit's agent raw value
+// (sessionagent.Adapter.WireAgent); a value that is no agent kind reads as
+// Claude Code's, the Kit's default.
 func wireAgent(k agentkind.Kind) string {
-	if k == agentkind.Codex {
-		return "codex_cli"
+	if a, ok := sessionagent.For(k); ok {
+		return a.WireAgent()
 	}
 	return "claude_code"
 }

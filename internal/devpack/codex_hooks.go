@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
+	"watchtower/internal/sessionagent"
 )
 
 // ErrCodexNotFound means no codex binary could be resolved: neither
@@ -41,41 +43,30 @@ type CodexHook struct {
 	TimeoutSec, Group       int
 }
 
-// codexHookRows is spec §4.3's hook table, in its fixed order: the command
-// suffix after the quoted watchtower binary. No suffix names a workbench:
-// one trusted hash per event and group then covers every folder, and the
-// hook finds its row through WATCHTOWER_TERMINAL_SESSION_ID.
-var codexHookRows = []struct {
-	event, matcher, suffix string
-	timeoutSec, group      int
-}{
-	{"SessionStart", "", "workbench brief --agent codex", 10, 0},
-	{"UserPromptSubmit", "", "workbench session-state --agent codex", 5, 0},
-	{"PermissionRequest", "", "workbench session-state --agent codex", 5, 0},
-	{"PostToolUse", "", "workbench session-state --agent codex", 5, 0},
-	{"SubagentStart", "", "workbench session-state --agent codex", 5, 0},
-	{"SubagentStop", "", "workbench session-state --agent codex", 5, 0},
-	// Interrupt (the owner's Esc) ends the turn with no Stop: board #959.
-	{"Interrupt", "", "workbench session-state --agent codex", 5, 0},
-	{"PreToolUse", "request_user_input", "workbench ask-guard --agent codex --pre-tool-use", 5, 0},
-	{"Stop", "", "workbench check --agent codex --stop-hook", 15, 0},
-	{"Stop", "", "workbench ask-guard --agent codex --stop", 30, 1},
-}
-
-// CodexHookSet is the codex workbench hook set for the watchtower binary bin,
-// in spec §4.3's order. The launch flags and the installer's trust step both
-// build from it, so the strings codex hashes are the strings it runs (spec
-// I5). Codex runs a command through a shell, so bin is single-quoted when it
-// needs to be (the CLI store sits under "Application Support").
+// CodexHookSet is the codex workbench hook set for the watchtower binary bin:
+// the codex session adapter's install rows (sessionagent.Adapter.HookSpecs,
+// spec 2026-10-12 §4.3's table in its fixed order), each command the quoted
+// binary and the row's subcommand. No command names a workbench: one trusted
+// hash per event and group then covers every folder, and the hook finds its
+// row through WATCHTOWER_TERMINAL_SESSION_ID. The launch flags and the
+// installer's trust step both build from it, so the strings codex hashes are
+// the strings it runs (spec I5). Codex runs a command through a shell, so bin
+// is single-quoted when it needs to be (the CLI store sits under
+// "Application Support").
 func CodexHookSet(bin string) []CodexHook {
-	hooks := make([]CodexHook, 0, len(codexHookRows))
-	for _, r := range codexHookRows {
+	codex, ok := sessionagent.For(agentkind.Codex)
+	if !ok {
+		return nil
+	}
+	rows := codex.HookSpecs()
+	hooks := make([]CodexHook, 0, len(rows))
+	for _, r := range rows {
 		hooks = append(hooks, CodexHook{
-			Event:      r.event,
-			Matcher:    r.matcher,
-			Command:    shellQuote(bin) + " " + r.suffix,
-			TimeoutSec: r.timeoutSec,
-			Group:      r.group,
+			Event:      r.Event,
+			Matcher:    r.Matcher,
+			Command:    shellQuote(bin) + " " + r.Subcommand,
+			TimeoutSec: r.TimeoutSec,
+			Group:      r.Group,
 		})
 	}
 	return hooks

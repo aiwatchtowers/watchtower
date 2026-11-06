@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -212,7 +213,7 @@ func installWorktreeIntegration(ctx context.Context, id int64, folder string, ag
 	if cfgErr != nil {
 		cfg = &config.Config{}
 	}
-	if agent != agentkind.Claude && devpack.CodexFound(cfg, codexFindBinary) {
+	if a, ok := sessionagent.For(agent); (!ok || a.Caps().LaunchHooks) && devpack.CodexFound(cfg, codexFindBinary) {
 		ctx, cancel := codexShutdownContext(ctx)
 		defer cancel()
 		_, codexErr := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, cfg, o))

@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
 	"watchtower/internal/claudesession"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/sessionhost"
 )
@@ -24,14 +24,14 @@ const probeStaleAfter = 30 * time.Minute
 // Probe outcomes. busy and waiting leave the row alone; idle, shell,
 // unknown and gone end the count.
 const (
-	probeNotStale = "not_stale" // no counted `waiting`, or its last report is under probeStaleAfter old
-	probeBusy     = "busy"      // the registry reads busy: the agents still work
-	probeWaiting  = "waiting"   // the registry reads waiting: a prompt or a held message
-	probeIdle     = "idle"
-	probeShell    = "shell"   // only background shells run, which the count does not track
-	probeUnknown  = "unknown" // no status, or one this version does not know
-	probeGone     = "gone"    // no registry entry, or its process is dead or its pid reused
-	probeFailed   = "failed"  // a working codex row's last turn failed and this probe stored it (board #959)
+	probeNotStale = "not_stale"               // no counted `waiting`, or its last report is under probeStaleAfter old
+	probeBusy     = sessionagent.ProbeBusy    // the registry reads busy: the agents still work
+	probeWaiting  = sessionagent.ProbeWaiting // the registry reads waiting: a prompt or a held message
+	probeIdle     = sessionagent.ProbeIdle
+	probeShell    = sessionagent.ProbeShell   // only background shells run, which the count does not track
+	probeUnknown  = sessionagent.ProbeUnknown // no status, or one this version does not know
+	probeGone     = sessionagent.ProbeGone    // no registry entry, or its process is dead or its pid reused
+	probeFailed   = "failed"                  // a working codex row's last turn failed and this probe stored it (board #959)
 	// probeNotWatched: a working codex row's rollout cannot be read
 	// (permission, or a compressed one that does not decode) and this probe
 	// marked it not watched (spec 2026-11-05 §3.5).
@@ -126,8 +126,8 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return sessionProbeResult{}, fmt.Errorf("terminal session %d is not in workbench %d", sessionID, workbenchID)
 	}
 	res := sessionProbeResult{OK: true, Outcome: probeNotStale}
-	if agentkind.SessionCapsOf(row.Kind).RolloutWatch && row.AgentState.String == agentStateWorking {
-		detail, outcome, err := pullCodexTurn(database, row, now, logOut)
+	if puller, pulls := sessionPuller(row.Kind); pulls && row.AgentState.String == agentStateWorking {
+		detail, outcome, err := pullCodexTurn(database, puller, row, now, logOut)
 		if err != nil {
 			return sessionProbeResult{}, err
 		}
@@ -186,7 +186,7 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 // it too. detail is the clipped error of a failure or the class of a
 // not-watched mark; outcome is probeFailed or probeNotWatched when this
 // probe wrote, "" otherwise.
-func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logOut io.Writer) (detail, outcome string, err error) {
+func pullCodexTurn(database *db.DB, puller sessionagent.Puller, row *db.TerminalSession, now time.Time, logOut io.Writer) (detail, outcome string, err error) {
 	sessionID := row.ClaudeSessionID.String
 	if sessionID == "" {
 		return "", "", nil
@@ -199,11 +199,11 @@ func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logO
 		}
 		return markCodexNotWatched(database, row, db.WatchIssueMissing, now)
 	}
-	path, ok := sessionfeed.LocateCodex(terminalCodexHome(), sessionID, row.TranscriptPath.String)
+	path, ok := puller.Locate(terminalCodexHome(), sessionID, row.TranscriptPath.String)
 	if !ok {
 		return missing()
 	}
-	turn, err := sessionfeed.CodexLastTurn(path)
+	turn, err := puller.LastTurn(path)
 	var wi *sessionfeed.WatchIssueError
 	if errors.As(err, &wi) {
 		switch wi.Issue {
@@ -247,6 +247,17 @@ func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logO
 	return "", "", nil
 }
 
+// sessionPuller is the pull signal reader of a stored kind's adapter
+// (sessionagent.Adapter.Watch); false for an agent whose hooks report every
+// turn end, or no agent.
+func sessionPuller(kind string) (sessionagent.Puller, bool) {
+	a, ok := sessionagent.Of(kind)
+	if !ok || !a.Caps().RolloutWatch() {
+		return nil, false
+	}
+	return a.Watch()
+}
+
 // markCodexNotWatched marks row not watched with issue, only while the
 // stored row is still the one this probe read (db.SetAgentWatchIssue);
 // outcome is probeNotWatched only when this probe wrote it.
@@ -268,73 +279,15 @@ func backgroundCountStale(row *db.TerminalSession, now time.Time) bool {
 		now.Sub(row.BackgroundAt) >= probeStaleAfter
 }
 
-// sessionOutcome is the verdict on row's session: Claude Code's registry
-// for a claude row, the rollout for a codex row (codexRolloutOutcome; it
-// never reads ~/.claude).
+// sessionOutcome is the verdict on row's session from its agent's adapter
+// (sessionagent.Adapter.Probe): Claude Code's registry for a claude row, the
+// rollout for a codex row (it never reads ~/.claude).
 func sessionOutcome(row *db.TerminalSession, now time.Time) (outcome, rawStatus string, err error) {
-	if row.Kind == string(agentkind.Codex) {
-		return codexRolloutOutcome(row, now), "", nil
-	}
-	return registryOutcome(row.ClaudeSessionID.String)
-}
-
-// codexRolloutOutcome is a codex row's verdict from its rollout's subagent
-// lifecycle (S6; Codex keeps no session registry): busy while a subagent
-// still runs, idle when every one the rollout knows has finished, and
-// unknown — which ends the count, as before this read existed (spec
-// 2026-10-12 §6.3) — when there is no rollout, it cannot be read, or a
-// subagent's status is unknown.
-func codexRolloutOutcome(row *db.TerminalSession, now time.Time) string {
-	sessionID := row.ClaudeSessionID.String
-	path, ok := sessionfeed.LocateCodex(terminalCodexHome(), sessionID, row.TranscriptPath.String)
+	a, ok := sessionagent.Of(row.Kind)
 	if !ok {
-		return probeUnknown
+		return probeUnknown, "", nil
 	}
-	live, err := sessionfeed.LiveOf(sessionfeed.Conversation{Path: path, AgentSessionID: sessionID, Codex: true}, false, now)
-	if err != nil || live.AgentsState != "known" {
-		return probeUnknown
-	}
-	outcome := probeIdle
-	for _, a := range live.Agents {
-		switch a.Ref.Status {
-		case sessionfeed.StatusRunning:
-			return probeBusy
-		case sessionfeed.StatusFinished:
-		default:
-			outcome = probeUnknown
-		}
-	}
-	return outcome
-}
-
-// registryOutcome is the registry's verdict on conversation sessionID, with
-// the entry's raw status ("" when there is no live entry).
-func registryOutcome(sessionID string) (outcome, rawStatus string, err error) {
-	// ~/.claude only, never $CLAUDE_CONFIG_DIR: the transcript readers' dual
-	// path rule (terminalClaudeDir, ClaudeTranscript.defaultConfigDir).
-	configDir := terminalClaudeDir()
-	if configDir == "" {
-		return "", "", errors.New("claude config dir unknown: no home dir")
-	}
-	entry, found, err := claudesession.FindSessionWith(configDir, sessionID, probeProcs)
-	if err != nil {
-		return "", "", fmt.Errorf("reading the claude session registry: %w", err)
-	}
-	if !found {
-		return probeGone, "", nil
-	}
-	// A process table that cannot answer (a ps timeout or failed fork) is
-	// ok: false, never gone: ending a live count cannot be undone.
-	alive, err := claudesession.AliveWith(entry, probeProcs)
-	if err != nil {
-		return "", "", fmt.Errorf("checking claude process %d: %w", entry.PID, err)
-	}
-	if !alive {
-		return probeGone, "", nil
-	}
-	switch entry.Status {
-	case probeBusy, probeWaiting, probeIdle, probeShell:
-		return entry.Status, entry.Status, nil
-	}
-	return probeUnknown, entry.Status, nil
+	r := sessionagent.Row{SessionID: row.ClaudeSessionID.String, TranscriptPath: row.TranscriptPath.String,
+		Home: a.Home(terminalAgentHomes())}
+	return a.Probe(r, probeProcs, now)
 }

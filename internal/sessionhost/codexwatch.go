@@ -5,13 +5,12 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -95,8 +94,9 @@ type fileStamp struct {
 // NewCodexWatch is the watch of terminal session row over store, reading
 // rollouts under codexHome and logging through logf.
 func NewCodexWatch(row int64, store CodexWatchStore, codexHome string, logf func(string, ...any)) *CodexWatch {
+	p := codexPuller()
 	return &CodexWatch{row: row, store: store, codexHome: codexHome, logf: logf,
-		locate: sessionfeed.LocateCodex, read: sessionfeed.CodexLastTurn, logged: map[string]bool{}}
+		locate: p.Locate, read: p.LastTurn, logged: map[string]bool{}}
 }
 
 // run ticks every interval until ctx ends or the row is gone, then closes
@@ -135,7 +135,7 @@ func (w *CodexWatch) Tick(now time.Time) (done bool) {
 		w.logOnce("reading the row", err)
 		return false
 	}
-	if !agentkind.SessionCapsOf(r.Kind).RolloutWatch {
+	if !sessionagent.CapsOf(r.Kind).RolloutWatch() {
 		return true
 	}
 	w.seen = r
@@ -279,22 +279,12 @@ func stampOf(st os.FileInfo) fileStamp {
 	return s
 }
 
-// codexHomeOf is the launch's Codex home: CODEX_HOME from its environment
-// when absolute (Codex's own rule), else ~/.codex.
-func codexHomeOf(env []string) string {
-	for i := len(env) - 1; i >= 0; i-- {
-		if v, ok := strings.CutPrefix(env[i], "CODEX_HOME="); ok {
-			if filepath.IsAbs(v) {
-				return v
-			}
-			break
-		}
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".codex")
+// codexPuller is the codex session adapter's pull signal reader
+// (sessionagent.Adapter.Watch): the rollout's last turn and its home.
+func codexPuller() sessionagent.Puller {
+	codex, _ := sessionagent.For(agentkind.Codex)
+	p, _ := codex.Watch()
+	return p
 }
 
 // DBWatchStore is the CodexWatchStore over a workspace database: the row

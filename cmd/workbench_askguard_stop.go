@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/digest"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/workbenchmethod"
 )
 
@@ -766,7 +767,7 @@ func (g *askGuardSession) resolve(now time.Time) (askGuardResolution, error) {
 // hooks: read from the folder for Claude Code; true by construction for
 // Codex, whose whole hook set arrives in one launch (spec 2026-10-12 §6.3).
 func (g *askGuardSession) hasStateHooks() (bool, error) {
-	if g.kind == agentkind.Codex {
+	if sessionagent.CapsOf(string(g.kind)).LaunchHooks {
 		return true, nil
 	}
 	return workbenchHasStateHooks(g.database, g.workbenchID)

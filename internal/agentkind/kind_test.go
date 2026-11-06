@@ -64,25 +64,3 @@ func TestAgentKind_SQLKindsMatchesParse(t *testing.T) {
 		}
 	}
 }
-
-// The rows G7's spikes on codex 0.159.2 support (the Swift twin
-// AgentSessionCapsTests pins the same rows).
-func TestAgentKind_SessionCaps(t *testing.T) {
-	if got := Claude.SessionCaps(); got != (SessionCaps{MidturnInput: true, PhoneInput: true, PermissionWait: true, IdleSignal: true, Elicitation: true}) {
-		t.Fatalf("claude = %+v", got)
-	}
-	if got := Codex.SessionCaps(); got != (SessionCaps{MidturnInput: true, PhoneInput: true, RolloutWatch: true}) {
-		t.Fatalf("codex = %+v", got)
-	}
-	if got := SessionCapsOf("shell"); got != (SessionCaps{}) {
-		t.Fatalf("shell = %+v", got)
-	}
-	// Claude reports every mid-turn dialog; Codex's MCP forms raise no state,
-	// so nothing goes to it while it works and the phone sends it no Esc.
-	if !Claude.SessionCaps().TakesLineWhileWorking() || !Claude.SessionCaps().TakesInterrupt() {
-		t.Fatal("claude must take a line while working and an interrupt")
-	}
-	if Codex.SessionCaps().TakesLineWhileWorking() || Codex.SessionCaps().TakesInterrupt() {
-		t.Fatal("codex must take neither a line while working nor an interrupt")
-	}
-}

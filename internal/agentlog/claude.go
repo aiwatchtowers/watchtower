@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"watchtower/internal/agentfiles"
 	"watchtower/internal/agentlogdb"
 )
 
@@ -192,33 +193,9 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	return p.res, nil
 }
 
-// NextLine returns one '\n'-terminated line without the newline, the bytes
-// consumed, and complete=false when the input ended before a newline. A line
-// longer than limit comes back as nil (consumed and complete).
+// NextLine returns one '\n'-terminated line (agentfiles.NextLine).
 func NextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
-	var buf []byte
-	var n int64
-	tooLong := false
-	for {
-		chunk, err := br.ReadSlice('\n')
-		n += int64(len(chunk))
-		if !tooLong {
-			buf = append(buf, chunk...)
-			if len(buf) > limit {
-				tooLong, buf = true, nil
-			}
-		}
-		if err == nil {
-			if tooLong {
-				return nil, n, true, nil
-			}
-			return buf[:len(buf)-1], n, true, nil
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return nil, n, false, err // EOF without newline: not consumed
-	}
+	return agentfiles.NextLine(br, limit)
 }
 
 type claudeParser struct {

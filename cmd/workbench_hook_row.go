@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 )
 
 // hookAgentFlag selects the agent a workbench hook runs for. `--agent codex`
@@ -41,14 +42,28 @@ func hookAgentFor(cmd *cobra.Command, raw string) (agentkind.Kind, error) {
 	if !fs.Changed(hookAgentFlag) {
 		return agentkind.Claude, nil
 	}
-	if k, _ := agentkind.Parse(raw); k != agentkind.Codex {
+	k, ok := agentkind.Parse(raw)
+	if !ok || !launchHooks(k) {
 		return "", fmt.Errorf("unsupported --%s %q (only codex)", hookAgentFlag, briefClip(raw, 40))
 	}
 	if fs.Changed(workbenchFlag) {
 		return "", errAgentWithWorkbench
 	}
-	return agentkind.Codex, nil
+	return k, nil
 }
+
+// launchHooks says agent's hook set arrives with its launch flags and a
+// hook finds its row through the terminal env var
+// (sessionagent.Caps.LaunchHooks): the hooks that take `--agent <kind>`
+// instead of `--workbench N`.
+func launchHooks(agent agentkind.Kind) bool {
+	return sessionagent.CapsOf(string(agent)).LaunchHooks
+}
+
+// rowOfAgent says a terminal row's stored kind is agent's: a hook acts on
+// its own agent's row only (a nested run of another agent inherits the
+// terminal env var).
+func rowOfAgent(rowKind string, agent agentkind.Kind) bool { return rowKind == string(agent) }
 
 // resolveCodexHookRow is the codex terminal_sessions row a Codex hook runs
 // in, named by the terminal env var (read through env); the row gives its
@@ -71,7 +86,7 @@ func resolveCodexHookRow(d *db.DB, env func(string) string) (db.TerminalSession,
 	if err != nil {
 		return db.TerminalSession{}, false, err
 	}
-	if row.Kind != string(agentkind.Codex) || !row.WorkbenchID.Valid || row.WorkbenchID.Int64 <= 0 {
+	if !rowOfAgent(row.Kind, agentkind.Codex) || !row.WorkbenchID.Valid || row.WorkbenchID.Int64 <= 0 {
 		return db.TerminalSession{}, false, nil
 	}
 	return *row, true, nil

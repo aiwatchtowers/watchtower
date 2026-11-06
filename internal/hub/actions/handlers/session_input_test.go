@@ -24,6 +24,7 @@ import (
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 )
 
 // Go twins of SessionInputHandlersTests (PROJ-16). Swift's SessionLineDelivery
@@ -505,7 +506,7 @@ func TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle(t *testing.T) {
 // dialog (TakesLineWhileWorking) takes the line while it works, sent while
 // busy, as Claude's does; Needs approval still holds the next one.
 func TestProj16_ACodexRowThatTakesLinesWhileWorkingGetsTheLine(t *testing.T) {
-	withSessionCaps(t, agentkind.Codex, agentkind.Claude.SessionCaps())
+	withSessionCaps(t, agentkind.Codex, sessionagent.CapsOf(string(agentkind.Claude)))
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")
 	le.lp.start(sid)
@@ -523,7 +524,7 @@ func TestProj16_ACodexRowThatTakesLinesWhileWorkingGetsTheLine(t *testing.T) {
 // with the owner-readable message, never "no longer exists" (S4, PROJ-16
 // amended): nothing types, nothing is held.
 func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
-	withSessionCaps(t, agentkind.Codex, agentkind.SessionCaps{})
+	withSessionCaps(t, agentkind.Codex, sessionagent.Caps{})
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")
 	le.lp.start(sid)

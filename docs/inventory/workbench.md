@@ -1323,7 +1323,7 @@ while the row reads Needs approval, or after a later state write on the row,
 is not shown as Error. While the session host is down nothing watches (its
 sessions are gone with it). Codex sessions get no idle notice and no elicitation approval
 (`waiting` comes only from Stop and Interrupt; codex 0.159.2 has no `Notification` hook event and an MCP
-elicitation fires no hook, plan Task G7 spike (c): `agentkind` `IdleSignal`/`Elicitation` are
+elicitation fires no hook, plan Task G7 spike (c): `sessionagent.Caps` `IdleSignal`/`Elicitation` are
 false and Settings → Notifications says "Idle notices are not available for Codex sessions.",
 guard `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent`), and background agents only
 through `SubagentStart`/`SubagentStop`. A stale background count is judged
@@ -1333,6 +1333,18 @@ all finished reads `idle`, and no rollout or an unknown status reads
 `unknown`, which ends the count as before; it never reads `~/.claude`. A Claude SessionStart never
 writes into a codex row (a nested `claude` in a codex session's shell), and a
 nested `codex exec` gets no launch flags, so it fires no hooks.
+
+**One entry point (A5, spec 2026-11-05 §3.5).** Every state write of a
+session event goes through `recordAgentEvent` (cmd), the only caller of
+`recordAgentState`: a hook's payload, decoded by its agent's session adapter
+(`sessionagent.Adapter.Normalize`, the moved `hookEvent`), and a pulled turn
+(`sessionagent.Puller.Event`: a failed codex turn reads as a StopFailure
+carrying its `codex_error_info`, an aborted one as an Interrupt) reach the row
+the same way, under the same guards (time order; a payload of another session
+writes nothing). The event decides the failure and whether it is the owner's
+prompt. Consumers decide by the adapter's `Caps` (`internal/sessionagent`,
+shared with Swift and the phone through `agent_capabilities.json`), never by
+the kind. Guard: `TestSessionAgent_OneStateEntryPoint` (an AST check).
 
 **Why locked:** Owner decisions of board #312 (2026-10-03), and the states
 brainstorm of the session report (1a, 2a, 3a, 4: all). A status hook that
@@ -1939,8 +1951,8 @@ line); `SessionControlTests.testPhoneLineCheckStillHoldsWhileWorking` is kept.
 **Amended 2026-11-05 (LLM transport independence, plan Task G7, S4/S5; owner
 approved the contract change in ask #514, the plan in ask #519):** condition
 (2) reads "a live board agent session whose capability row has `phoneInput`"
-(Go `agentkind.SessionCaps`, Swift `AgentSessionCaps`, by hand until plan
-Task A5's shared fixture) instead of "a live board `claude` session", and
+(Go `sessionagent.Caps` since plan Task A5, Swift `AgentSessionCaps`, both
+pinned to `internal/sessionagent/agent_capabilities.json`) instead of "a live board `claude` session", and
 "working" counts only for an agent whose row `takesLineWhileWorking`
 (`midturnInput` and `elicitation`: every dialog it can open mid-turn raises
 a hook state). G7's spike on codex 0.159.2 showed Codex takes a line pasted
@@ -2295,7 +2307,7 @@ the restart (PROJ-20) is never expired for it.
 **Amended 2026-11-05 (LLM transport independence, plan Task G7, S3/S4;
 owner approved the contract change in ask #514, the plan in ask #519):**
 `permission_answer` goes only to a board agent session whose capability row
-has `permissionWait` (Go `agentkind.SessionCaps`, Swift `AgentSessionCaps`),
+has `permissionWait` (Go `sessionagent.Caps`, Swift `AgentSessionCaps`),
 `session_interrupt` only to one whose row `takesInterrupt` (`permissionWait`
 and `elicitation`: an Esc must not cancel a form the hooks never reported — G7 spike (c): a codex 0.159.2 MCP elicitation form shows "esc to cancel" in the terminal, fires no hook and leaves the row Working, so the phone's Esc would cancel it instead of interrupting the turn; kept refused for Codex by the owner's answer relayed for G7);
 any other agent is refused `not_supported` with "<Agent> sessions can't answer this permission
@@ -2674,6 +2686,8 @@ owner never saw.
   "~" figure; the sweep never signals processes; the one-time sweep hint plans in the background only after the Workbench page stayed on screen 30 s, one hint plan app-wide at a time, stopped after 5 minutes or when the page is left; when the worktrees take 1 GB or less it is snoozed for 7 days (`projects.cleanupHintCheckedAt.<id>`), and only when every worktree was measured — otherwise it checks again at the next launch; a future stamp counts as due, a failed or timed-out plan waits for the next launch, and once the banner went up or the sweep sheet was opened (`projects.cleanupHintShown.<id>`) it never runs for that workbench again.
 
 ## Changelog
+
+- 2026-11-06 (LLM transport independence, plan Task A5, board #980; **plan approved in ask #519, spec in ask #514**): **PROJ-11 amended** with the single entry point note — `internal/sessionagent` is the Workbench session adapter (`Adapter`: `HookSpecs`, `Normalize`, `Transcript`, `Conversations`, `Probe`, `Watch`, `Caps`; `For(kind)`), `hookEvent` is its `Event`, and every state write goes through `recordAgentEvent` (guard `TestSessionAgent_OneStateEntryPoint`). G7's interim `agentkind.SessionCaps` moves into `sessionagent.Caps`; Swift `AgentSessionCaps` and the Kit's `AgentSessionCapabilities` are pinned to the shared `agent_capabilities.json` (Go `TestSessionAgent_CapsFixtureMatchesAdapters`, Swift `AgentSessionCapsTests.testRowsMatchTheGoFixture`, Kit `AgentSessionCapabilitiesTests.testDecodesGoFixture`). The install rows (`devpack`), the session-probe verdicts, the rollout watch's reader and the AI title's transcript come from the adapters. No PROJ-11/12/13/16/21 assertion changed.
 
 - 2026-11-06 (LLM transport independence, plan Task G5, S1/S2/S6; **decision C in ask #507, option A in ask #499, N6 in ask #516; plan approved in ask #519**): **PROJ-11 amended** — the Codex pull moves into the session host. `watchtower session-host` watches each hosted codex session launched with a `watch` request (`LaunchReq.Watch{agent, database}`; the run's `SessionInfo.watched` says whether its watch started) while its row reads `working`: a failed turn is the StopFailure write and a `turn_aborted` the Interrupt's `waiting`, both through `recordAgentState(…, onlyFrom: working)` stamped with the rollout line (`cmd/session_host_watch.go`, `recordCodexPull`), so the host and the app's bridge write a turn once. The "never show a stale state" rule gains the not-watched mark (migration 00173 `agent_watch_issue`/`agent_watch_issue_at`, the §3.5 table above): a rollout the watch cannot read never leaves a silent `working`; any hook event clears it. The Desktop's #959 poll is now the bridge for a run the host does not watch, with the watch's give-ups (round-1 review: a per-run `watched` flag replaced a host-wide hello flag, so an unopened store never leaves a run unwatched by both). `session-probe` judges a codex row's stale background count from the rollout (S6) instead of reading `unknown` blind. The capability `agentkind.SessionCaps.RolloutWatch` (Swift `AgentSessionCaps.rolloutWatch`) replaces the kind check. Codex v1 limits lose "Error up to 5 s plus a poll" and the blind probe. New guards: `TestProj11_HostAndBridgeReportSameFailureOnce`, `TestProj11_HostPullEndsAnAbortedTurnAsWaiting`, `TestProj11_NextHookEventClearsWatchIssue` (cmd), `TestProj11_WatchIssueOnlyOverWorkingCodexRow`, `TestProj11_FailureWinsOverWatchIssue` (`internal/db`), `TestProj11_WatchIssueLogLineCarriesNoPath` and the `TestCodexWatch_*` table (`internal/sessionhost`), `testProj11_BridgeChecksOnlyCodexRowsTheHostDoesNotWatch` (Swift). Every existing PROJ-11 guard runs unchanged; the v1 limits wording now reads "no idle notice and no elicitation approval", which `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent` pins.
 

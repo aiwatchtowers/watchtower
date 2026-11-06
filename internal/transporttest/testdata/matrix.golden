@@ -32,6 +32,7 @@ claude/chat tool-ok pass
 claude/chat two-messages pass
 claude/chat usage-cache pass
 claude/chat web-search pass
+claude/session session-analytics pass
 claude/session session-compressed-transcript unsupported
 claude/session session-failure pass
 claude/session session-foreign-id pass
@@ -98,6 +99,7 @@ codex/chat tool-ok pass
 codex/chat two-messages pass
 codex/chat usage-cache pass
 codex/chat web-search pass
+codex/session session-analytics pass
 codex/session session-compressed-transcript pass
 codex/session session-failure pass
 codex/session session-foreign-id pass

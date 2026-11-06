@@ -3,6 +3,8 @@ package sessionhost
 import (
 	"bytes"
 	"time"
+
+	"watchtower/internal/sessionagent"
 )
 
 // Profile is how lines are typed into one agent's terminal prompt — the Go
@@ -23,17 +25,16 @@ type Profile struct {
 	SubmitSettle time.Duration
 }
 
-// ProfileFor returns the agent's profile: Codex's for "codex", Claude
-// Code's otherwise (a shell or an unknown agent is typed into as Claude
-// Code's, as TerminalCenter.inputProfile does).
+// ProfileFor returns the agent's profile: Return submits, the pauses are
+// the same for every agent, and the newline key is the agent's own
+// (sessionagent.Adapter.ComposerNewline). A shell or an unknown agent is
+// typed into as Claude Code's, as TerminalCenter.inputProfile does.
 func ProfileFor(agent string) Profile {
-	if agent == "codex" {
-		// CR submits a bracketed paste, multi-line too, as one prompt; Ctrl+J
-		// (LF) inserts a line break. The pauses are Claude Code's.
-		return Profile{Submit: []byte{0x0D}, Newline: []byte{0x0A},
-			PasteSettle: 150 * time.Millisecond, SubmitSettle: 500 * time.Millisecond}
+	p := Profile{Submit: []byte{0x0D}, PasteSettle: 150 * time.Millisecond, SubmitSettle: 500 * time.Millisecond}
+	if a, ok := sessionagent.Of(agent); ok {
+		p.Newline = a.ComposerNewline()
 	}
-	return Profile{Submit: []byte{0x0D}, PasteSettle: 150 * time.Millisecond, SubmitSettle: 500 * time.Millisecond}
+	return p
 }
 
 // IsSubmit reports whether the owner's input submits the agent's prompt: it

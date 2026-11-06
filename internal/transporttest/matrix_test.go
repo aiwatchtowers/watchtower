@@ -29,11 +29,12 @@ const goldenPath = "testdata/matrix.golden"
 
 // openGaps are the open parity gaps of the spec's §2.2. Closed: L2 (#957),
 // L12 (G1b), L1 (G1), L3-L4 and L13 (G2), L5 (G4 follow-up, ask #533),
-// L7-L10 (G3), S7-S8 (G6), S3-S5 and S10 (G7). L12 and L13 were found by
-// this suite. A gap:<id> cell must name one of them.
+// L7-L10 (G3), S7-S8 (G6), S3-S5 and S10 (G7), S9 (G8's importer on the
+// session adapter, A5). L12 and L13 were found by this suite. A gap:<id>
+// cell must name one of them.
 var openGaps = map[string]bool{
 	"L6": true, "L11": true,
-	"S1": true, "S2": true, "S6": true, "S9": true,
+	"S1": true, "S2": true, "S6": true,
 }
 
 // cellKey names a cell in the golden: "<adapter>/<level> <scenario>".

@@ -63,6 +63,7 @@ const (
 	CapCompressedTranscript Cap = "compressed_transcript"
 	CapSubagentFeed         Cap = "subagent_feed"
 	CapTranscriptWatch      Cap = "transcript_watch" // FailureSignal "pull": the §3.5 rollout watch
+	CapAnalytics            Cap = "analytics"
 	CapQuickConnections     Cap = "quick_connections"
 	// CapQuota: the transport can report a subscription quota with its reset
 	// (a local OpenAI-compatible server has no subscription).
@@ -100,6 +101,8 @@ type Caps struct {
 	RegistryProbe        bool
 	CompressedTranscript bool
 	SubagentFeed         bool
+	// Analytics: the session's transcript reaches agent analytics (S9).
+	Analytics bool
 }
 
 // Has reports whether the row offers c.
@@ -145,6 +148,8 @@ func (c Caps) Has(want Cap) bool {
 		return c.Tools == "watchtower+quick_connections"
 	case CapTranscriptWatch:
 		return c.FailureSignal == "pull"
+	case CapAnalytics:
+		return c.Analytics
 	}
 	panic("unknown capability " + string(want))
 }
@@ -196,7 +201,7 @@ var adapters = []*Adapter{
 			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
 			Interrupt: "in_turn", WarmSession: true, ChildProcess: true, Quota: true,
 			FailureSignal: "hook", InterruptSignal: "hook", IdleSignal: true, PermissionWait: true,
-			MidturnInput: true, RegistryProbe: true, SubagentFeed: true},
+			MidturnInput: true, RegistryProbe: true, SubagentFeed: true, Analytics: true},
 		Batch: func(r *run) digest.Generator {
 			g := digest.NewClaudeGenerator(fakeModel, fakeModel, bins.claude)
 			g.SetIsolatedChild() // cmd/generator.go routedGenerator
@@ -236,11 +241,11 @@ var adapters = []*Adapter{
 			Interrupt: "kill_turn", ChildProcess: true, Quota: true,
 			// The session row's targets (§3.5): pulled failure and interrupt
 			// (S1, S2), the probe (S6), compressed rollouts (S7, N1). G7's
-			// spikes on codex 0.159.2 settled the rest (agentkind.SessionCaps):
+			// spikes on codex 0.159.2 settled the rest (sessionagent.Caps):
 			// no permission wait (S3, owner ask #521), no line while it works
 			// (S5: its MCP forms raise no state), no idle signal (S10).
 			FailureSignal: "pull", InterruptSignal: "pull",
-			RegistryProbe: true, CompressedTranscript: true, SubagentFeed: true},
+			RegistryProbe: true, CompressedTranscript: true, SubagentFeed: true, Analytics: true},
 		Batch: func(r *run) digest.Generator {
 			g := codex.NewCodexGenerator(fakeModel, fakeModel, bins.codex)
 			g.SetIsolatedChild() // cmd/generator.go routedGenerator

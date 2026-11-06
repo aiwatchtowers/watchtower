@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"watchtower/internal/agentlog"
+	"watchtower/internal/agentfiles"
 	"watchtower/internal/rollout"
 )
 
@@ -246,11 +246,11 @@ func liveMarkers(live *Live, conv string) []Entry {
 // without a transcript are absent from the result.
 func LocateAll(projectsDir string, folderRoots []string, agentSessionIDs []string) map[string]string {
 	found := map[string]string{}
-	dirs, err := agentlog.CandidateDirs(projectsDir, folderRoots)
+	dirs, err := agentfiles.CandidateDirs(projectsDir, folderRoots)
 	if err != nil {
 		return found
 	}
-	files, err := agentlog.ListTranscripts(dirs)
+	files, err := agentfiles.ListTranscripts(dirs)
 	if err != nil {
 		return found
 	}

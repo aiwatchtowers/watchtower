@@ -15,24 +15,6 @@ cmd/connections_import.go | runConnectionsImport | "codex" | 1 | permanent: the 
 cmd/generator.go | codexEnvSkips | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/generator.go | connectionServer | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/integrate_workbench.go | execCommandRunner | "claude" | 1 | permanent: resolves the claude binary for `claude mcp add` (install plumbing, no model call)
-cmd/terminal.go | terminalAgentHome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_askguard.go | var workbenchAskGuardCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_askguard_stop.go | (*askGuardSession).hasStateHooks | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_brief.go | runWorkbenchBrief | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_brief_session.go | applySessionStart | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_check.go | runWorkbenchCheck | agentkind.Codex | 2 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_hook_input.go | parseHookEvent | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_hook_row.go | hookAgentFor | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_hook_row.go | resolveCodexHookRow | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_launch_args.go | checkLaunchArgsFlags | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_permission_wait.go | waitPermissionDecision | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_feed.go | requireAgentSession | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_feed.go | requireAgentSession | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_feed.go | sessionFeedConversations | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_probe.go | sessionOutcome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_state.go | recordAgentTurn | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_state.go | var workbenchSessionStateCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_worktree.go | installWorktreeIntegration | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.Label | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
@@ -46,13 +28,11 @@ internal/confluenceedit/xhtml.go | safeHref | "http" | 1 | permanent: URL scheme
 internal/db/chat_routing.go | (*DB).SetChatRouting | "claude" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
-internal/db/terminal_sessions.go | (*DB).GetTerminalSession | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
+internal/db/terminal_sessions.go | (*DB).GetTerminalSession | agentkind.Codex | 1 | A5 follow-up: schema-compat read of agent_transcript_path (00109); internal/db sits below internal/sessionagent, so it needs a caller-side decision
 internal/externalmcp/discover.go | discoveryTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/externalmcp/importsrc.go | claudeCandidate | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/hub/actions/handlers/session_start.go | (*Handlers).launch | "codex" | 1 | G7: phone session action decided by agent kind; becomes a capability (not_supported)
 internal/hub/hub.go | FromEnv | "http" | 1 | permanent: URL scheme check, not an LLM transport
-internal/hub/slices/sources/workbench.go | wireAgent | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/instructions/suggest.go | NewFeedReader | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 internal/mcpoauth/discovery.go | requireSecure | "http" | 1 | permanent: URL scheme check, not an LLM transport
 internal/media/linkrule/linkrule.go | NormalizeURL | "http" | 2 | permanent: URL scheme check, not an LLM transport
 internal/media/webfetch/fetch.go | webScheme | "http" | 1 | permanent: URL scheme check, not an LLM transport
@@ -62,13 +42,6 @@ internal/providerrouting/router.go | configProvider | "codex" | 1 | permanent: v
 internal/providerrouting/router.go | configProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config decoder)
 internal/sessioncleanup/deps.go | protectedExe | "claude" | 1 | permanent: process names protected from cleanup (executable path convention)
 internal/sessioncleanup/deps.go | protectedExe | "codex" | 1 | permanent: process names protected from cleanup (executable path convention)
-internal/sessionfeed/read.go | ReadSession | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionfeed/read.go | ReadSession | agentkind.Codex | 2 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionhost/profile.go | ProfileFor | "codex" | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionstart/launch.go | Launch | agentkind.Claude | 5 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionstart/launch.go | Launch | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionstart/launch.go | Mode.validate | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/terminal/transcript.go | OpenTranscript | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/terminal/transcript.go | OpenTranscript | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/tools/workbench_session_target.go | checkSessionTarget | "claude" | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/tools/workbench_session_target.go | checkSessionTarget | "codex" | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
+internal/sessionstart/launch.go | Launch | agentkind.Claude | 5 | A5 follow-up: launch argv by agent kind (Go twin of TerminalLaunch.make); moves behind the session adapter with the Swift twin
+internal/sessionstart/launch.go | Launch | agentkind.Codex | 1 | A5 follow-up: launch argv by agent kind (Go twin of TerminalLaunch.make); moves behind the session adapter with the Swift twin
+internal/sessionstart/launch.go | Mode.validate | agentkind.Claude | 1 | A5 follow-up: launch argv by agent kind (Go twin of TerminalLaunch.make); moves behind the session adapter with the Swift twin

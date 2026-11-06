@@ -45,6 +45,9 @@ type Fixture struct {
 	// ReadFeed reads the session's feed and title after the script;
 	// OlderWrite then tries a write stamped before the stored state.
 	ReadFeed, OlderWrite bool
+	// Analytics writes a transcript run in the workbench folder and imports
+	// it into agent analytics (agentlog.Scan) after the script (S9).
+	Analytics bool
 }
 
 // Drive is how a cell's run is driven.

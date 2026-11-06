@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 )
 
 // The Codex hook mapping (spec 2026-10-12-codex-workbench-agent §5, §6.3,
@@ -803,7 +804,7 @@ func TestHookCwd_CodexHooksRecordTheMainAgentCwd(t *testing.T) {
 // (Settings → Notifications) and PROJ-11's Codex v1 limits name it with that
 // pointer; nothing pretends a codex row can get Claude's idle_prompt.
 func TestProj11_CodexNoIdleSignalIsDisclosedNotSilent(t *testing.T) {
-	caps := agentkind.Codex.SessionCaps()
+	caps := sessionagent.CapsOf(string(agentkind.Codex))
 	assert.False(t, caps.IdleSignal, "codex has no idle signal")
 	assert.False(t, caps.Elicitation, "codex reports no elicitation")
 

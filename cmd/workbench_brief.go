@@ -16,7 +16,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -106,7 +105,7 @@ func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: workbench brief: %v\n", err)
 		return nil // a hook never fails: the reason is one stderr line
 	}
-	if agent == agentkind.Codex {
+	if launchHooks(agent) {
 		runCodexBrief(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		return nil
 	}

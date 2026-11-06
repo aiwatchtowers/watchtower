@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"watchtower/internal/sessionagent"
 
-	"watchtower/internal/agentkind"
+	"golang.org/x/sys/unix"
 )
 
 // DiscardHangup catches SIGHUP and drops it, so the host survives the hangup
@@ -441,7 +441,7 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 	if store != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		sess.stopWatch = cancel
-		watch := NewCodexWatch(req.Row, store, codexHomeOf(req.Env), s.opts.Logf)
+		watch := NewCodexWatch(req.Row, store, codexPuller().HomeOf(req.Env), s.opts.Logf)
 		go watch.run(ctx, s.opts.codexWatchEvery, s.opts.Now)
 	}
 	go s.watch(sess)
@@ -458,7 +458,7 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 // path-free, FILES-01).
 func (s *Server) openCodexWatch(req LaunchReq) CodexWatchStore {
 	w := req.Watch
-	if s.opts.CodexWatch == nil || w == nil || !agentkind.SessionCapsOf(w.Agent).RolloutWatch || w.Database == "" {
+	if s.opts.CodexWatch == nil || w == nil || !sessionagent.CapsOf(w.Agent).RolloutWatch() || w.Database == "" {
 		return nil
 	}
 	store, err := s.opts.CodexWatch(w.Database)

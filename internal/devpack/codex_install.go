@@ -16,8 +16,10 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
+	"watchtower/internal/sessionagent"
 )
 
 // codexExcludeLines are the folder-relative paths the codex install makes
@@ -354,8 +356,10 @@ func ourHookSuffixes(workbenchID int64) []string {
 			out = append(out, l)
 		}
 	}
-	for _, r := range codexHookRows {
-		out = append(out, " "+r.suffix)
+	if codex, ok := sessionagent.For(agentkind.Codex); ok {
+		for _, r := range codex.HookSpecs() {
+			out = append(out, " "+r.Subcommand)
+		}
 	}
 	return out
 }
