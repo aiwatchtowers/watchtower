@@ -52,14 +52,10 @@ var (
 )
 
 // coachGeneratorFactory is the seam tests override. The prompt carries the
-// owner's own text, so the CLI generator is switched to stdin-only mode
-// (CHAT-04), like the daemon's instruction miner.
+// owner's own text, which every CLI generator sends on stdin, never argv
+// (CHAT-04).
 var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
-	gen := cliGenerator(cfg)
-	if s, ok := gen.(interface{ SetStdinOnly(bool) }); ok {
-		s.SetStdinOnly(true)
-	}
-	return digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
+	return digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
 }
 
 // coachJudge is the verdict step of `coach run` (a seam for tests).

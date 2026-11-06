@@ -21,6 +21,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 	"watchtower/internal/streamline"
@@ -28,13 +29,21 @@ import (
 
 // Usage holds token metrics from an AI call.
 type Usage struct {
-	InputTokens    int
-	OutputTokens   int
-	TotalAPITokens int
-	// CostUSD is the CLI's total_cost_usd when it reports one (QuerySync);
-	// 0 = not reported.
-	CostUSD float64
+	llmusage.Tokens
 }
+
+// InputTokens is the fresh (uncached) input.
+func (u Usage) InputTokens() int { return int(u.Input) }
+
+// OutputTokens is the output tokens.
+func (u Usage) OutputTokens() int { return int(u.Output) }
+
+// TotalAPITokens is every input token, cache reads and writes included.
+func (u Usage) TotalAPITokens() int { return int(u.AllInput()) }
+
+// CostUSD is the provider's reported cost (claude's total_cost_usd); 0 = not
+// reported.
+func (u Usage) CostUSD() float64 { return u.ReportedCost() }
 
 // cliUsage is the nested usage object in the Claude CLI JSON response.
 type cliUsage struct {
@@ -49,6 +58,12 @@ type cliUsage struct {
 	} `json:"cache_creation"`
 }
 
+// tokens is the envelope's usage as a block, the cache writes split by TTL.
+func (u cliUsage) tokens() llmusage.Tokens {
+	return llmusage.ClaudeTokens(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens,
+		u.CacheCreation.FiveMin, u.CacheCreation.OneHour, u.OutputTokens)
+}
+
 // resultUsage is the usage a result envelope or result stream event
 // reports: the LLM usage ledger's numbers (recordClaude).
 type resultUsage struct {
@@ -56,6 +71,17 @@ type resultUsage struct {
 	Usage   cliUsage `json:"usage"`
 	// ModelUsage is the per-model usage keyed by the model's full name.
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
+}
+
+// tokens is the result's usage block with its reported cost (one claude
+// child per call, so total_cost_usd is this call's own).
+func (r resultUsage) tokens() llmusage.Tokens {
+	t := r.Usage.tokens()
+	if r.CostUSD > 0 {
+		cost := r.CostUSD
+		t.ReportedCostUSD = &cost
+	}
+	return t
 }
 
 // cliResponse is the JSON structure returned by `claude --output-format json`.
@@ -179,9 +205,6 @@ type Client struct {
 	// when childEnvSet (SetChildEnv).
 	childEnv    []string
 	childEnvSet bool
-	// processGroup runs the child in its own process group, killed as a
-	// group on cancel (SetProcessGroup).
-	processGroup bool
 	// maxTurns, when > 0, is passed as --max-turns (SetMaxTurns).
 	maxTurns int
 	// toolEvents streams tool calls and the turn's usage as chunks
@@ -190,7 +213,7 @@ type Client struct {
 }
 
 // EmitToolEvents switches Query onto the chat events `ai query --events v2`
-// renders (cmd enableChatEvents): each tool call a start and an end chunk,
+// renders (transport.Options.ToolEvents): each tool call a start and an end chunk,
 // the turn's usage last, and no ToolBoundary — text streamed before a call is
 // kept, and the text of a later message starts after a blank line.
 func (c *Client) EmitToolEvents() { c.toolEvents = true }
@@ -206,11 +229,6 @@ func (c *Client) SetWatchtowerTools(names []string) {
 // SetChildEnv replaces the inherited environment of the child with env (the
 // rich PATH is still appended last). Unset = os.Environ() as today.
 func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, true }
-
-// SetProcessGroup runs the child in its own process group and kills the
-// whole group on cancel or deadline: SIGINT, then SIGKILL after the grace
-// period. Off = today's behaviour (only the child is signalled).
-func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
 
 // SetMaxTurns passes --max-turns n to the CLI; 0 = no limit flag.
 func (c *Client) SetMaxTurns(n int) { c.maxTurns = n }
@@ -231,7 +249,7 @@ func (c *Client) childEnviron() []string {
 	return append(env, "PATH="+claude.RichPATH())
 }
 
-// GroupKillGrace is how long a process-group child (SetProcessGroup, an
+// GroupKillGrace is how long a CLI child (ConfigureChild, e.g. an
 // automation's agent() child) has between SIGINT and the group's SIGKILL. It
 // stays under the automation sandbox's 2 s AbandonGrace, so a cancelled or
 // stopped run's call returns — the whole group dead — before the run would
@@ -239,21 +257,16 @@ func (c *Client) childEnviron() []string {
 // leave a SIGINT-ignoring child behind.
 const GroupKillGrace = time.Second
 
-// ConfigureChild applies the cancel policy to cmd: SIGINT then SIGKILL after
-// grace via WaitDelay, or, with group, a process group of its own that is
-// interrupted and then killed as a whole (the leader's grandchildren
-// included) after GroupKillGrace — group mode ignores grace. Shared with the
-// codex client. The caller runs the returned reap once cmd.Wait has
-// returned (or the child never started): a cancelled group's pending
-// SIGKILL is then sent at once and its timer stopped, so the group is dead
-// when the call returns — even when WaitDelay ended the wait first — and no
-// timer outlives the call to signal a reused process group id later.
-func ConfigureChild(cmd *exec.Cmd, group bool, grace time.Duration) (reap func()) {
-	if !group {
-		cmd.WaitDelay = grace
-		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-		return func() {}
-	}
+// ConfigureChild applies the one cancel policy of every CLI child (spec
+// 2026-11-05 §3.4: group-only, so no caller can forget it): a process group
+// of its own that is interrupted and then killed as a whole (the leader's
+// grandchildren included) after GroupKillGrace. Shared with the codex
+// client. The caller runs the returned reap once cmd.Wait has returned (or
+// the child never started): a cancelled group's pending SIGKILL is then
+// sent at once and its timer stopped, so the group is dead when the call
+// returns — even when WaitDelay ended the wait first — and no timer
+// outlives the call to signal a reused process group id later.
+func ConfigureChild(cmd *exec.Cmd) (reap func()) {
 	cmd.WaitDelay = GroupKillGrace
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var mu sync.Mutex
@@ -746,8 +759,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
-		// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
-		reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		// The group gets SIGINT, then SIGKILL after GroupKillGrace.
+		reap := ConfigureChild(cmd)
 		defer reap()
 		cmd.Dir = c.workDir()
 		cmd.Env = c.childEnviron()
@@ -953,7 +966,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}
-	reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	reap := ConfigureChild(cmd)
 	defer reap()
 	cmd.Dir = c.workDir()
 	cmd.Env = c.childEnviron()
@@ -1005,13 +1018,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result)))
 	}
 
-	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
-	usage := &Usage{
-		InputTokens:    resp.Usage.InputTokens,
-		OutputTokens:   resp.Usage.OutputTokens,
-		TotalAPITokens: totalAPI,
-		CostUSD:        resp.CostUSD,
-	}
+	usage := &Usage{Tokens: resp.tokens()}
 
 	return strings.TrimRight(resp.Result, "\n"), usage, nil
 }
@@ -1172,10 +1179,7 @@ func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
 		}
 		return out
 	case "result":
-		u := e.Usage
-		return []StreamChunk{{Usage: &TurnUsage{Model: s.model,
-			InputTokens:  u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
-			OutputTokens: u.OutputTokens}}}
+		return []StreamChunk{{Usage: &TurnUsage{Model: s.model, Tokens: e.tokens()}}}
 	}
 	return nil
 }

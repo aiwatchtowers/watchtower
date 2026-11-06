@@ -62,6 +62,11 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// a row built without it. A working codex row's failed turn is read
     /// from its rollout by the session probe (board #959).
     package var kind: String?
+    /// Why the session host's rollout watch cannot read this working codex
+    /// row's rollout (migration 00173, Go writes): `missing`, `permission`,
+    /// `compressed` or `unreadable`; nil = watched, or a database without
+    /// the column.
+    package var agentWatchIssue: String?
 
     package init(
         id: Int64,
@@ -83,7 +88,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         chatQuestion: String? = nil,
         chatQuestionAt: String? = nil,
         agentCwdAt: String? = nil,
-        kind: String? = nil
+        kind: String? = nil,
+        agentWatchIssue: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -107,6 +113,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.chatQuestionAt = chatQuestionAt
         self.agentCwdAt = agentCwdAt
         self.kind = kind
+        self.agentWatchIssue = agentWatchIssue
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
@@ -134,6 +141,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case chatQuestionAt = "chat_question_at"
         case agentCwdAt = "agent_cwd_at"
         case kind
+        case agentWatchIssue = "agent_watch_issue"
     }
 }
 
@@ -221,7 +229,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
         return SessionSwitcherPresentation.State(
             kind: kind, live: live, openAsks: row.openAsks, error: failed ? row.agentError : "",
             oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil, backgroundAgents: agents ?? 0,
-            openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks
+            openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks,
+            watchIssue: row.agentWatchIssue
         )
     }
 

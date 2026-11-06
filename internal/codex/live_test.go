@@ -53,7 +53,6 @@ func TestCodexLive_SystemPromptAndMCPTool(t *testing.T) {
 
 	c := NewClient(model, filepath.Join(t.TempDir(), "live.db"), bin)
 	c.SetMCPEnvVars([]string{liveMCPNonceEnv})
-	c.SetProcessGroup(true)
 	sys := "You are a connectivity probe. First call the get_nonce tool of the watchtower MCP server. " +
 		"Then reply with exactly two words: " + promptNonce + " and then the text the tool returned. Nothing else."
 	text := liveQuery(t, c, sys, "Run the probe.")
@@ -74,7 +73,6 @@ func TestCodexLive_ChatToolStepAndUsage(t *testing.T) {
 
 	c := NewClient(model, filepath.Join(t.TempDir(), "live.db"), bin)
 	c.SetMCPEnvVars([]string{liveMCPNonceEnv})
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	sys := "You are a connectivity probe. Call the get_nonce tool of the watchtower MCP server exactly once, " +
 		`with the argument label set to "probe". Then reply with only the text the tool returned.`
@@ -114,8 +112,8 @@ func TestCodexLive_ChatToolStepAndUsage(t *testing.T) {
 	assert.Contains(t, text.String(), toolNonce)
 	require.Len(t, usage, 1)
 	assert.Equal(t, model, usage[0].Model)
-	assert.Positive(t, usage[0].InputTokens)
-	assert.Positive(t, usage[0].OutputTokens)
+	assert.Positive(t, usage[0].InputTokens())
+	assert.Positive(t, usage[0].OutputTokens())
 }
 
 // TestCodexLive_ReadFolder: a read-folder run (code questions, the spec
@@ -130,7 +128,6 @@ func TestCodexLive_ReadFolder(t *testing.T) {
 	c := NewClient(model, "", bin)
 	c.SetReadFolder(dir)
 	c.SetNoMCPServers()
-	c.SetProcessGroup(true)
 	text := liveQuery(t, c, "Answer only with what is asked, no other words.",
 		"Read the file nonce.txt in the current folder and reply with its content only.")
 	assert.Contains(t, text, fileNonce)

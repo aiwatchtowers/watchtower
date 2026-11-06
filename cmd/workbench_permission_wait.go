@@ -19,6 +19,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 )
 
 // permissionPollEvery is how often permission-wait reads its request back
@@ -131,7 +132,7 @@ func waitPermissionDecision(ctx context.Context, stdin io.Reader, stderr io.Writ
 	}
 	defer database.Close()
 	row, err := hookSessionRow(database, rowID, workbenchID, in.SessionID)
-	if row == nil || err != nil || row.Kind != string(agentkind.Claude) || row.Finished {
+	if row == nil || err != nil || !sessionagent.CapsOf(row.Kind).PermissionWait || row.Finished {
 		return "", err
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {

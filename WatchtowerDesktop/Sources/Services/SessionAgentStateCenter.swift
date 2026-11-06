@@ -194,7 +194,7 @@ final class SessionAgentStateCenter {
         displayOver = ShownOverCount.of(over, rows: rows, startedAt: startedAt)
         let next = SessionAgentStatus.resolve(rows, liveIDs: live, startedAt: startedAt, now: now, displayOver: over)
         publish(next)
-        prober?.probeDue(rows, statuses: next, startedAt: startedAt, now: now)
+        prober?.probeDue(rows, statuses: next, startedAt: startedAt, now: now, hostWatched: terminalCenter.hostWatchedIDs)
         onResolved?()
     }
 

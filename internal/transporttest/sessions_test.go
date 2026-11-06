@@ -20,11 +20,15 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
+	"watchtower/internal/automations"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/sessionagent"
+	"watchtower/internal/sessionfeed"
+	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstate"
-	"watchtower/internal/terminal"
 )
 
 // The Workbench session rows (spec §4.1, second table): each drives the
@@ -72,14 +76,15 @@ type sessionAgent struct {
 	// to set.
 	events map[sessionStep][]hookCall
 	// pull reads the agent's transcript for an intent the hooks do not
-	// report (§3.5 Watch) and writes what it finds; nil = no pull signal.
-	pull func(t *testing.T, e *sessionEnv, step sessionStep) error
+	// report (§3.5 Watch) and writes what it finds, or reads what it
+	// observes into res; nil = no pull signal.
+	pull func(t *testing.T, e *sessionEnv, step sessionStep, res *sessionResult) error
 	// transcriptPath is where the agent keeps the session's transcript.
 	transcriptPath func(e *sessionEnv) string
 	// transcript writes the session's transcript (or rollout) from the
 	// fixture of kind at path ("zstd": compressed; "missing": not at all).
 	transcript func(t *testing.T, path, kind string)
-	// agentHome is the agent's home for terminal.OpenTranscript.
+	// agentHome is the agent's home for its adapter's Transcript.
 	agentHome func(e *sessionEnv) string
 }
 
@@ -139,7 +144,7 @@ type sessionResult struct {
 	WaitStatus, WaitReason string
 	// FeedEntries, FeedLiveOK and FeedErr are `workbench session-feed
 	// --json`'s; Title and TitleErr the AI title's owner text
-	// (terminal.OpenTranscript).
+	// (the session adapter's Transcript).
 	FeedEntries   int
 	FeedSubagents int
 	FeedLiveOK    bool
@@ -153,7 +158,11 @@ type sessionResult struct {
 	LineBusy  []bool
 	// OlderWrote says a write stamped before the stored state landed.
 	OlderWrote bool
-	Stderr     []string
+	// Imported is the analytics session the import stored for the row's
+	// conversation ("" = none) and ImportErr why it did not (S9).
+	Imported  string
+	ImportErr error
+	Stderr    []string
 }
 
 var claudeSession = &sessionAgent{
@@ -264,7 +273,14 @@ func claudeSettingsHooks(t *testing.T, path string) map[string][]string {
 // "test" under a fresh HOME, a workbench on a temp folder with the agent's
 // hooks installed, and the agent's terminal_sessions row.
 func newSessionEnv(t *testing.T, ag *sessionAgent) *sessionEnv {
-	e := &sessionEnv{t: t, home: t.TempDir(), folder: t.TempDir(), sessionID: sessionID,
+	// The folder as a real path (t.TempDir sits under a symlink on macOS),
+	// as a workbench folder is: the analytics import matches a session's cwd
+	// against it resolved.
+	folder, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &sessionEnv{t: t, home: t.TempDir(), folder: folder, sessionID: sessionID,
 		runStarted: time.Now().Add(-time.Minute)}
 	writeFile(t, filepath.Join(e.home, ".config", "watchtower", "config.yaml"), "active_workspace: test\n")
 	path := filepath.Join(e.home, ".local", "share", "watchtower", "test", "watchtower.db")
@@ -494,6 +510,9 @@ func (ag *sessionAgent) run(t *testing.T, s *Scenario) *sessionResult {
 		res.FeedEntries, res.FeedSubagents, res.FeedLiveOK, res.FeedErr = e.feed()
 		res.Title, res.TitleErr = e.title(ag)
 	}
+	if s.Fixture.Analytics {
+		res.Imported, res.ImportErr = e.importAnalytics(ag)
+	}
 	e.stopBackground()
 	res.Row = e.rowNow()
 	res.WatchIssue, res.WatchColumn = e.watchIssue()
@@ -521,7 +540,7 @@ func (ag *sessionAgent) play(e *sessionEnv, step sessionStep, res *sessionResult
 			res.PullErr = fmt.Errorf("%s: no hook reports %q and no pull signal reads it", ag.kind, step)
 			return
 		}
-		if err := ag.pull(e.t, e, step); err != nil {
+		if err := ag.pull(e.t, e, step, res); err != nil {
 			res.PullErr = err
 		}
 		return
@@ -562,13 +581,83 @@ func (e *sessionEnv) feed() (entries, subagents int, liveOK bool, err error) {
 	return len(out.Entries), len(out.Subagents), out.LiveOK, nil
 }
 
-// title is the owner text the AI title is made from.
-func (e *sessionEnv) title(ag *sessionAgent) (string, error) {
-	tr, err := terminal.OpenTranscript(agentkind.Kind(ag.kind), e.sessionID, e.transcript, ag.agentHome(e))
+// importAnalytics writes a one-turn transcript run in the workbench folder
+// (synthetic lines) and imports the workbench into agent analytics through
+// the production importer and its default session adapters. It returns the
+// agent of the analytics session stored for the row's conversation, "" when
+// none was.
+func (e *sessionEnv) importAnalytics(ag *sessionAgent) (string, error) {
+	t := e.t
+	switch ag.kind {
+	case "claude":
+		lines := []map[string]any{
+			{"type": "user", "sessionId": e.sessionID, "cwd": e.folder, "timestamp": "2026-11-05T12:00:00.000Z",
+				"uuid": "00000000-0000-0000-0000-0000000000e1", "message": map[string]any{"role": "user", "content": "please add a flag"}},
+			{"type": "assistant", "sessionId": e.sessionID, "cwd": e.folder, "timestamp": "2026-11-05T12:00:01.000Z",
+				"uuid": "00000000-0000-0000-0000-0000000000e2", "requestId": "req_fixture_1",
+				"message": map[string]any{"id": "msg_fixture_1", "role": "assistant", "model": fakeModel,
+					"content": []any{map[string]any{"type": "text", "text": "done, flag added"}},
+					"usage":   map[string]any{"input_tokens": 10, "output_tokens": 5}}},
+		}
+		var b strings.Builder
+		for _, l := range lines {
+			l["synthetic"] = true
+			raw, err := json.Marshal(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.Write(append(raw, '\n'))
+		}
+		writeFile(t, e.transcript, b.String())
+	default:
+		raw, err := os.ReadFile(filepath.Join("testdata", "codex", "session_rollout_ok.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = bytes.ReplaceAll(raw, []byte("SESSION"), []byte(e.sessionID))
+		raw = bytes.ReplaceAll(raw, []byte(`"cwd":"/work"`), []byte(`"cwd":`+strconv.Quote(e.folder)))
+		writeFile(t, e.transcript, string(raw))
+	}
+	dir := filepath.Join(e.home, ".local", "share", "watchtower", "test")
+	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
 	if err != nil {
 		return "", err
 	}
-	return tr.OwnerText(400)
+	defer al.Close()
+	if _, err := agentlogdb.MoveFromMain(context.Background(), e.db, al, filepath.Join(dir, "agentlog.db.move.lock")); err != nil {
+		return "", err
+	}
+	res, err := agentlog.Scan(context.Background(), e.db, al, e.workbench,
+		agentlog.Options{ClaudeDir: filepath.Join(e.home, ".claude"), CodexHome: filepath.Join(e.home, ".codex")})
+	if err != nil {
+		return "", err
+	}
+	if res.FirstFailure != nil {
+		return "", res.FirstFailure
+	}
+	var agent string
+	var row sql.NullInt64
+	err = al.QueryRow(`SELECT agent, terminal_session_id FROM agent_log_sessions WHERE session_uuid = ?`, e.sessionID).Scan(&agent, &row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("nothing imported (missing %d, outside the workbench %d)", res.CodexRolloutsMissing, res.CodexOutsideWorkbench)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !row.Valid || row.Int64 != e.row {
+		return "", fmt.Errorf("the analytics session is not attached to row %d (%v)", e.row, row)
+	}
+	return agent, nil
+}
+
+// title is the owner text the AI title is made from.
+func (e *sessionEnv) title(ag *sessionAgent) (string, error) {
+	a, ok := sessionagent.Of(ag.kind)
+	if !ok {
+		return "", fmt.Errorf("no session adapter for %s", ag.kind)
+	}
+	row := sessionagent.Row{SessionID: e.sessionID, TranscriptPath: e.transcript, Home: ag.agentHome(e)}
+	return a.Transcript(row).OwnerText(400)
 }
 
 // writeClaudeTranscript writes a two-line Claude Code transcript (owner
@@ -765,6 +854,18 @@ var sessionScenarios = []*Scenario{
 			}
 			return nil
 		}), func(f *Fixture) { f.ReadFeed = true }),
+	// S9: the session's transcript reaches agent analytics, attached to its
+	// row, through the session adapter's Transcript.
+	withFixture(sessionScenario("session-analytics", []Cap{CapAnalytics}, "", nil,
+		func(c *Cell, r *sessionResult) error {
+			if r.ImportErr != nil {
+				return r.ImportErr
+			}
+			if r.Imported != c.A.Name {
+				return fmt.Errorf("imported as %q, want %q", r.Imported, c.A.Name)
+			}
+			return nil
+		}), func(f *Fixture) { f.Analytics = true }),
 	// The session's subagents reach the feed's Subagents list (S8).
 	withFixture(sessionScenario("session-subagent-feed", []Cap{CapSubagentFeed}, "subagents", nil,
 		func(_ *Cell, r *sessionResult) error {
@@ -840,7 +941,7 @@ var sessionScenarios = []*Scenario{
 			if len(r.States) != 2 || r.States[1] != "working" {
 				return fmt.Errorf("the row went %v, want it to stay working", r.States)
 			}
-			if agent, ok := agentkind.Parse(c.A.Name); !ok || agent.SessionCaps().IdleSignal {
+			if a, ok := sessionagent.Of(c.A.Name); !ok || a.Caps().IdleSignal {
 				return fmt.Errorf("%s: the capability row claims an idle signal", c.A.Name)
 			}
 			return nil
@@ -923,16 +1024,36 @@ func migratedDB(t *testing.T) string {
 	return migrated.path
 }
 
-// codexPull is codex's pull signal today: the rollout's last turn, read by
-// `workbench session-probe` (the Desktop's poll runs it every 5 s for a
-// working codex row, #959; G5 moves the watch into the session host). The
-// rollout is rewritten first with its turn ending now, as codex appends it
-// after the prompt. The watch-give-up and automation-wait intents have no
-// signal yet (S1).
-func codexPull(t *testing.T, e *sessionEnv, step sessionStep) error {
-	if step != stepFailure {
+// codexPull is codex's pull signal (§3.5): a failed turn is read by
+// `workbench session-probe`, the app's bridge for a session the session
+// host does not watch (the rollout is rewritten first with its turn ending
+// now, as codex appends it after the prompt); the give-up is the session
+// host's own watch (sessionhost.CodexWatch over the workspace database, on a
+// clock moved past the 30 s missing give-up); the automation wait reads the
+// row the way session() does (automations.SessionWaitEnd).
+func codexPull(t *testing.T, e *sessionEnv, step sessionStep, res *sessionResult) error {
+	switch step {
+	case stepFailure:
+		return codexProbe(t, e)
+	case stepWatchGiveUp:
+		return codexWatchGiveUp(e)
+	case stepAutomationWait:
+		st, err := e.db.SessionEnds(e.row)
+		if err != nil {
+			return err
+		}
+		status, reason, ended := automations.SessionWaitEnd(st)
+		if !ended {
+			return fmt.Errorf("codex: session() is still waiting on a row %+v", st)
+		}
+		res.WaitStatus, res.WaitReason = status, reason
+		return nil
+	default:
 		return fmt.Errorf("codex: no hook reports %q and no pull signal reads it", step)
 	}
+}
+
+func codexProbe(t *testing.T, e *sessionEnv) error {
 	writeCodexRollout(t, e.transcript, "rollout_failed")
 	restampRollout(t, e.transcript, time.Now())
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -946,6 +1067,26 @@ func codexPull(t *testing.T, e *sessionEnv, step sessionStep) error {
 		return fmt.Errorf("session-probe: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// codexWatchGiveUp runs the session host's watch on the row for 32 s of its
+// clock, ticking every CodexWatchEvery: a rollout missing that long marks
+// the row not watched. The store never sees a turn (there is no rollout).
+func codexWatchGiveUp(e *sessionEnv) error {
+	var turnErr error
+	store := &sessionhost.DBWatchStore{DB: e.db, Record: func(*db.DB, db.CodexWatchRow, sessionfeed.CodexTurn) error {
+		turnErr = errors.New("codex: the watch recorded a turn from a missing rollout")
+		return turnErr
+	}}
+	w := sessionhost.NewCodexWatch(e.row, store, filepath.Join(e.home, ".codex"), func(string, ...any) {})
+	now := time.Now()
+	for range 16 {
+		now = now.Add(sessionhost.CodexWatchEvery)
+		if w.Tick(now) {
+			return errors.New("codex: the watch ended on a live row")
+		}
+	}
+	return turnErr
 }
 
 var rolloutStamp = regexp.MustCompile(`"timestamp":"[^"]*"`)
@@ -968,21 +1109,25 @@ func restampRollout(t *testing.T, path string, end time.Time) {
 }
 
 // TestTransportSuite_SessionCapsMatchAgentKind: the suite's session
-// capability rows are the ones the consumers decide by (agentkind; A5's
-// fixture replaces both).
+// capability rows are the ones the consumers decide by: the session
+// adapters' Caps (internal/sessionagent, shared with Swift and the phone
+// through agent_capabilities.json).
 func TestTransportSuite_SessionCapsMatchAgentKind(t *testing.T) {
 	for _, a := range adapters {
 		if a.Session == nil {
 			continue
 		}
-		agent, ok := agentkind.Parse(a.Name)
+		sa, ok := sessionagent.Of(a.Name)
 		if !ok {
-			t.Fatalf("%s has a session row but is not an agent kind", a.Name)
+			t.Fatalf("%s has a session row but no session adapter", a.Name)
 		}
-		ak := agent.SessionCaps()
+		ak := sa.Caps()
 		if a.Caps.PermissionWait != ak.PermissionWait || a.Caps.IdleSignal != ak.IdleSignal ||
-			a.Caps.MidturnInput != ak.TakesLineWhileWorking() {
-			t.Errorf("%s: suite caps %+v disagree with agentkind %+v", a.Name, a.Caps, ak)
+			a.Caps.MidturnInput != ak.TakesLineWhileWorking() || a.Caps.FailureSignal != ak.FailureSignal ||
+			a.Caps.InterruptSignal != ak.InterruptSignal || a.Caps.RegistryProbe != ak.RegistryProbe ||
+			a.Caps.CompressedTranscript != ak.CompressedTranscript || a.Caps.SubagentFeed != ak.SubagentFeed ||
+			a.Caps.Analytics != ak.Analytics {
+			t.Errorf("%s: suite caps %+v disagree with the session adapter %+v", a.Name, a.Caps, ak)
 		}
 	}
 }

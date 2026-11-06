@@ -12,6 +12,10 @@ package struct SessionProbeResult: Decodable, Equatable, Sendable {
     package enum Outcome: String, Decodable, Sendable {
         case notStale = "not_stale"
         case busy, waiting, idle, shell, unknown, gone, failed
+        /// A working codex row's rollout cannot be read (permission, a
+        /// compressed one that does not decode) and the probe marked it not
+        /// watched (spec 2026-11-05 §3.5).
+        case notWatched = "not_watched"
 
         /// An outcome this build does not know reads as `unknown`: the probe
         /// ran, the Desktop has nothing to do with its answer.

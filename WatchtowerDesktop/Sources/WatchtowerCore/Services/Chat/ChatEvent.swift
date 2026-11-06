@@ -69,17 +69,33 @@ package struct ChatToolWait: Equatable, Sendable {
     }
 }
 
+/// A turn's usage. `tokensIn` is every input token (CHAT-01); the split
+/// beside it (fresh input, cache reads, cache writes, the provider's own cost,
+/// an estimate flag) is additive: a line without it decodes to zeros, no
+/// cost and not estimated.
 package struct ChatUsage: Equatable, Sendable {
     package let turnID: String
     package let tokensIn: Int
     package let tokensOut: Int
     package let model: String
+    package let freshIn: Int
+    package let cacheRead: Int
+    package let cacheWrite: Int
+    package let costUSD: Double?
+    package let estimated: Bool
 
-    package init(turnID: String, tokensIn: Int, tokensOut: Int, model: String) {
+    package init(turnID: String, tokensIn: Int, tokensOut: Int, model: String,
+                 freshIn: Int = 0, cacheRead: Int = 0, cacheWrite: Int = 0, costUSD: Double? = nil,
+                 estimated: Bool = false) {
         self.turnID = turnID
         self.tokensIn = tokensIn
         self.tokensOut = tokensOut
         self.model = model
+        self.freshIn = freshIn
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+        self.costUSD = costUSD
+        self.estimated = estimated
     }
 }
 
@@ -185,7 +201,10 @@ package enum ChatEvent: Equatable, Sendable {
             return .toolWait(ChatToolWait(turnID: turnID, id: id, actionID: actionID, message: message))
         case "usage":
             return .usage(ChatUsage(turnID: fields.string("turn_id"), tokensIn: fields.int("tokens_in"),
-                                    tokensOut: fields.int("tokens_out"), model: fields.string("model")))
+                                    tokensOut: fields.int("tokens_out"), model: fields.string("model"),
+                                    freshIn: fields.int("fresh_in"), cacheRead: fields.int("cache_read"),
+                                    cacheWrite: fields.int("cache_write"), costUSD: fields.double("cost_usd"),
+                                    estimated: fields.bool("estimated")))
         case "turn_done":
             // An unknown status keeps the text as partial (Continue offered) rather than claiming completion.
             let status = ChatTurnStatus(rawValue: fields.string("status")) ?? .interrupted
@@ -213,6 +232,12 @@ private struct Fields {
     }
 
     func int(_ key: String) -> Int { (json[key] as? NSNumber)?.intValue ?? 0 }
+
+    /// A JSON number; nil when absent, a bool or anything else.
+    func double(_ key: String) -> Double? {
+        guard let number = json[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return number.doubleValue
+    }
 
     /// A JSON integer > 0 that fits Int64; nil for a bool, a fraction, a
     /// string or anything out of range.

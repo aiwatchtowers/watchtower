@@ -34,6 +34,22 @@ func Open(path string) (rc io.ReadCloser, compressed bool, err error) {
 	return open(path, MaxDecompressed)
 }
 
+// Compressed says the file at path starts with a zstd frame: a reader that
+// failed on it names the failure "compressed", not "unreadable" (G5's watch).
+func Compressed(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	head := make([]byte, len(magic))
+	n, err := f.ReadAt(head, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	return bytes.Equal(head[:n], magic), nil
+}
+
 func open(path string, limit int64) (io.ReadCloser, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {

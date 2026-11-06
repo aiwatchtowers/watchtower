@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 )
 
 // Wire reasons the handlers answer with (the Kit's ActionReason).
@@ -41,7 +42,7 @@ const (
 
 // sessionCaps is the capability row of a session's agent; the handlers
 // decide by it, never by the kind (tests swap it).
-var sessionCaps = agentkind.Kind.SessionCaps
+var sessionCaps = func(k agentkind.Kind) sessionagent.Caps { return sessionagent.CapsOf(string(k)) }
 
 // The not_supported messages, by what the phone asked; %s is the agent's
 // display name. An older phone without the reason shows the message.

@@ -149,8 +149,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			// The calls made count on a failed turn too (a budget stop at the
 			// cap); a stop now drops the usage, nothing else.
 			select {
-			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
-				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}}:
+			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model, Tokens: usage.Tokens}}:
 			case <-ctx.Done():
 			}
 		}
@@ -410,13 +409,14 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool, o
 }
 
 // recordModelCall records one runtime-B model call in the LLM ledger
-// (provider http, the request's model): the response's usage, or — when the
+// (provider ollama — runtime B's only base URL is ai.ollama_url, N3 — and
+// the request's model): the response's usage, or — when the
 // server sent none — length/4 estimates of the request's messages and the
 // response's first message.
 func recordModelCall(ctx context.Context, model string, start time.Time, msgs []oaMessage, resp *oaResponse, ok bool) {
-	c := llmusage.Call{Provider: "http", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
+	c := llmusage.Call{Provider: "ollama", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
 	if u := resp.Usage; u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
-		c.Input, c.Output = int64(u.PromptTokens), int64(u.CompletionTokens)
+		c.Tokens = u.tokens()
 	} else {
 		var output string
 		if len(resp.Choices) > 0 {
@@ -470,8 +470,6 @@ func addUsage(acc *ai.Usage, u *oaUsage) *ai.Usage {
 	if acc == nil {
 		acc = &ai.Usage{}
 	}
-	acc.InputTokens += u.PromptTokens
-	acc.OutputTokens += u.CompletionTokens
-	acc.TotalAPITokens += u.TotalTokens
+	acc.Add(u.tokens())
 	return acc
 }

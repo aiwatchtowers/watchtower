@@ -223,8 +223,8 @@ func TestSetTerminalAgentSessionID_OnlyFromNull(t *testing.T) {
 		t.Fatalf("the first SessionStart: written=%v err=%v", written, err)
 	}
 	s := storedSession(t, d, codex)
-	if s.ClaudeSessionID.String != codexTestUUID || s.TranscriptPath.String != path {
-		t.Fatalf("stored id %q path %q", s.ClaudeSessionID.String, s.TranscriptPath.String)
+	if got := storedTranscriptPath(t, d, codex); s.ClaudeSessionID.String != codexTestUUID || got.String != path {
+		t.Fatalf("stored id %q path %q", s.ClaudeSessionID.String, got.String)
 	}
 	if s.Background.Valid || s.ChatQuestionAt != "" || s.AgentState.String != "waiting" {
 		t.Fatalf("the id write keeps the state and clears the conversation's columns: %+v", s)
@@ -246,8 +246,8 @@ func TestSetTerminalAgentSessionID_EmptyPathStoresNull(t *testing.T) {
 	if written, err := d.SetTerminalAgentSessionID(codex, pid, codexTestUUID, ""); err != nil || !written {
 		t.Fatalf("written=%v err=%v", written, err)
 	}
-	if s := storedSession(t, d, codex); s.TranscriptPath.Valid {
-		t.Fatalf("an empty path stored %q", s.TranscriptPath.String)
+	if got := storedTranscriptPath(t, d, codex); got.Valid {
+		t.Fatalf("an empty path stored %q", got.String)
 	}
 }
 
@@ -276,8 +276,8 @@ func TestSetTerminalTranscriptPath_WritesOnChangeOnly(t *testing.T) {
 			t.Fatalf("%s: written=%v err=%v, want %v", tc.name, written, err, tc.want)
 		}
 	}
-	if s := storedSession(t, d, codex); s.TranscriptPath.String != path {
-		t.Fatalf("path = %q", s.TranscriptPath.String)
+	if got := storedTranscriptPath(t, d, codex); got.String != path {
+		t.Fatalf("path = %q", got.String)
 	}
 	var stored sql.NullString
 	if err := d.QueryRow(`SELECT agent_transcript_path FROM terminal_sessions WHERE id = ?`, claude).Scan(&stored); err != nil ||
@@ -381,4 +381,39 @@ func TestRestampCodexPromptTurn(t *testing.T) {
 	if !s.AgentStateAt.Equal(now) || s.AgentState.String != "working" {
 		t.Fatalf("got %q at %v, want working at %v (before %s)", s.AgentState.String, s.AgentStateAt, now, before)
 	}
+}
+
+// GetTerminalSession reads no transcript path on any kind: the column is
+// 00109's, and which agent keeps its SessionStart path is the session
+// adapter's call (sessionagent.LoadSession, LLMTRANSPORT-01), made through
+// TerminalTranscriptPath.
+func TestTerminalTranscriptPath_ReadsTheColumnGetTerminalSessionLeaves(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	codex := newAgentStateRow(t, d, pid, "codex", codexTestUUID)
+	const path = "/Users/example/.codex/sessions/rollout-a.jsonl"
+	if written, err := d.SetTerminalTranscriptPath(codex, pid, codexTestUUID, path); err != nil || !written {
+		t.Fatalf("written=%v err=%v", written, err)
+	}
+	if s := storedSession(t, d, codex); s.TranscriptPath.Valid {
+		t.Fatalf("GetTerminalSession read the path %q", s.TranscriptPath.String)
+	}
+	got, err := d.TerminalTranscriptPath(codex)
+	if err != nil || got.String != path {
+		t.Fatalf("TerminalTranscriptPath = %q, %v", got.String, err)
+	}
+	if _, err := d.TerminalTranscriptPath(999); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("a missing row: %v", err)
+	}
+}
+
+// storedTranscriptPath is row id's agent_transcript_path, read the way
+// sessionagent.LoadSession reads it.
+func storedTranscriptPath(t *testing.T, d *DB, id int64) sql.NullString {
+	t.Helper()
+	path, err := d.TerminalTranscriptPath(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

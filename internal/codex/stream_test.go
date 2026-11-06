@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logcanary"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
@@ -97,7 +98,8 @@ func TestQuery_ToolEventsFromCodexItems(t *testing.T) {
 
 	assert.Equal(t, "I'll check the board.\n\nHere are the open targets.", textOf(chunks),
 		"distinct agent messages are separated (protocol v2 never wipes the preamble)")
-	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 1200, OutputTokens: 90}}, usage)
+	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", Tokens: llmusage.Tokens{Input: 400, CacheRead: 800, Output: 90}}}, usage)
+	assert.Equal(t, 1200, usage[0].InputTokens(), "tokens_in stays all input (CHAT-01)")
 }
 
 // Without the v2 events (ai query v1, the REPL) nothing but text and
@@ -189,7 +191,6 @@ echo '{"type":"turn.completed"}'
 // other line: its result reaches the chat and the answer follows.
 func TestQuery_LineOverOneMiBIsRead(t *testing.T) {
 	c := NewClient("gpt-x", "", longLineStub(t, 3<<20))
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	chunks, err := queryAll(t, c)
 	require.NoError(t, err)
@@ -213,7 +214,6 @@ func TestQuery_LineOverLimitIsSkippedAndTheRunEnds(t *testing.T) {
 	t.Cleanup(func() { maxStreamLine = old })
 
 	c := NewClient("gpt-x", "", longLineStub(t, 1<<20))
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	chunks, err := queryAll(t, c)
 	require.NoError(t, err)
@@ -386,7 +386,7 @@ func TestQuery_LastLineWithoutNewline(t *testing.T) {
 			usage = append(usage, *ch.Usage)
 		}
 	}
-	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 10, OutputTokens: 2}}, usage)
+	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", Tokens: llmusage.Tokens{Input: 10, Output: 2}}}, usage)
 }
 
 // A completed turn with no answer text fails like QuerySync and the batch
@@ -509,7 +509,6 @@ exec sleep 30
 	})
 
 	c := NewClient("gpt-x", "", script)
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -548,7 +547,7 @@ exec sleep 30
 	require.ErrorIs(t, err, context.Canceled)
 	require.Len(t, tools, 2)
 	assert.Equal(t, ai.ToolEvent{ID: "item_1", Name: "mcp__watchtower__list_targets", Done: true, Result: "stopped before the tool finished"}, tools[1])
-	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", InputTokens: 50, OutputTokens: 5}}, usage)
+	assert.Equal(t, []ai.TurnUsage{{Model: "gpt-x", Tokens: llmusage.Tokens{Input: 50, Output: 5}}}, usage)
 }
 
 // Items without an id get a per-run one: two id-less tool calls stay two

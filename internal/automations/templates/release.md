@@ -14,7 +14,9 @@ match exactly.
 
 When the command fails, the run fails and shows the end of its output. When
 it succeeds, a session checks that the release is healthy, and the report
-holds the end of the command's output and the session's summary.
+holds the end of the command's output and the session's summary. When the Mac
+cannot watch the session ("not watched"), the report says why and leaves the
+outcome open.
 
 ```js
 const cmd = "make release";
@@ -37,10 +39,19 @@ const check = session({
   wait: "finish",
 });
 
+// not_watched: the Mac cannot read the session's log, so the check's outcome
+// is unknown; the session keeps running, and the report says why.
+function checkLine(c) {
+  if (c.status === "not_watched") {
+    return "not watched (" + c.reason + "): the outcome is unknown; look at the session on the Mac";
+  }
+  return c.summary || c.error || "no summary";
+}
+
 output.report({
   title: "Release: " + check.status,
   body: "`" + cmd + "` succeeded.\n\n```\n" + tail(r.stdout) + "\n```\n\n" +
-    "Check (" + check.status + "): " + (check.summary || check.error || "no summary"),
+    "Check (" + check.status + "): " + checkLine(check),
 });
 return check.status;
 ```

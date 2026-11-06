@@ -99,9 +99,9 @@ func (p *Pipeline) accumulateUsage(usage *digest.Usage) {
 	if usage == nil {
 		return
 	}
-	p.totalInputTokens += usage.InputTokens
-	p.totalOutputTokens += usage.OutputTokens
-	p.totalAPITokens += usage.TotalAPITokens
+	p.totalInputTokens += usage.InputTokens()
+	p.totalOutputTokens += usage.OutputTokens()
+	p.totalAPITokens += usage.TotalAPITokens()
 }
 
 // logf logs through the pipeline's logger, which may be nil (a pipeline built

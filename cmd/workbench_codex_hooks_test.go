@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 )
 
 // The Codex hook mapping (spec 2026-10-12-codex-workbench-agent §5, §6.3,
@@ -48,7 +49,7 @@ func codexRowIn(t *testing.T, database *db.DB, pid int64, sessionID string) int6
 
 func codexRow(t *testing.T, database *db.DB, row int64) *db.TerminalSession {
 	t.Helper()
-	s, err := database.GetTerminalSession(row)
+	s, err := sessionagent.LoadSession(database, row)
 	require.NoError(t, err)
 	return s
 }
@@ -803,11 +804,11 @@ func TestHookCwd_CodexHooksRecordTheMainAgentCwd(t *testing.T) {
 // (Settings → Notifications) and PROJ-11's Codex v1 limits name it with that
 // pointer; nothing pretends a codex row can get Claude's idle_prompt.
 func TestProj11_CodexNoIdleSignalIsDisclosedNotSilent(t *testing.T) {
-	caps := agentkind.Codex.SessionCaps()
+	caps := sessionagent.CapsOf(string(agentkind.Codex))
 	assert.False(t, caps.IdleSignal, "codex has no idle signal")
 	assert.False(t, caps.Elicitation, "codex reports no elicitation")
 
-	raw, err := os.ReadFile(filepath.Join("testdata", "codex_hooks", "hook_events.json"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "codex_hooks", "spikes", "hook_events.json"))
 	require.NoError(t, err)
 	var recorded struct {
 		Events []string `json:"events"`

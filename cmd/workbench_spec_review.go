@@ -13,13 +13,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/ai"
-	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/specreview"
 )
@@ -105,55 +104,17 @@ type specReviewCLIAgent struct {
 
 func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user string) (string, bool, error) {
 	ctx = digest.WithSource(ctx, specreview.ModelSource)
-	if a.cfg.AI.Provider == "ollama" {
+	if provider := providers.ByID(a.cfg.AI.Provider); !provider.Caps.ReadsFolder() {
+		// A transport with no file tools answers from the prompt's data.
 		out, _, _, err := cliBoundedGenerator(a.cfg).Generate(ctx, system, user, "")
-		return out, false, wrapSpecReviewErr("ollama reviewer", err)
+		return out, false, wrapSpecReviewErr(provider.ID+" reviewer", err)
 	}
 	if folder == "" {
-		// Never a claude or codex run outside read-folder mode.
+		// Never a file-reading run outside read-folder mode.
 		return "", false, errors.New("no folder to read")
 	}
-	var out string
-	var err error
-	if a.cfg.AI.Provider == "codex" {
-		home, removeHome, homeErr := specReviewCodexHome()
-		if homeErr != nil {
-			return "", false, wrapSpecReviewErr("codex reviewer", homeErr)
-		}
-		defer removeHome()
-		out, _, err = specReviewCodexClient(a.cfg, a.model, folder, home).QuerySync(ctx, system, user, "")
-		return out, true, wrapSpecReviewErr("codex reviewer", err)
-	}
-	out, _, err = specReviewClaudeClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
-	return out, true, wrapSpecReviewErr("claude reviewer", err)
-}
-
-// specReviewClaudeClient: no database path, so no --mcp-config; with
-// --strict-mcp-config claude then mounts no server.
-func specReviewClaudeClient(cfg *config.Config, model, folder string) *ai.Client {
-	c := ai.NewClient(model, "", cfg.ClaudePath)
-	c.SetReadFolder(folder)
-	c.SetMaxTurns(specreview.MaxTurns)
-	c.SetProcessGroup(true)
-	return c
-}
-
-// specReviewCodexClient: SetNoMCPServers disables the owner's codex servers
-// and mounts none (an empty database path alone would leave them on). The
-// run is capped at specreview.MaxTurns model turns, as claude's --max-turns
-// caps the claude reviewer (SPECREVIEW-01, AUTO-08's turn unit): counted
-// from its rollout in home (specReviewCodexHome), or by the stream rule in
-// the owner's home, --ephemeral, when home is "".
-func specReviewCodexClient(cfg *config.Config, model, folder, home string) *codex.Client {
-	c := codex.NewClient(model, "", cfg.CodexPath)
-	c.SetReadFolder(folder)
-	c.SetNoMCPServers()
-	if home != "" {
-		c.SetRunHome(home)
-	}
-	c.SetMaxTurns(specreview.MaxTurns)
-	c.SetProcessGroup(true)
-	return c
+	out, err := specReviewReadFolder(ctx, a.cfg, a.model, folder, system, user)
+	return out, true, err
 }
 
 // specReviewCodexHome is the codex reviewer's private CODEX_HOME, a fresh
@@ -233,7 +194,7 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 // does; a shell session or a missing one is an error the run turns into a note.
 func specReviewFeed(database *db.DB) func(context.Context, int64) ([]sessionfeed.Entry, error) {
 	return func(ctx context.Context, id int64) ([]sessionfeed.Entry, error) {
-		sess, err := database.GetTerminalSession(id)
+		sess, err := sessionagent.LoadSession(database, id)
 		if err != nil {
 			return nil, fmt.Errorf("session %d: %w", id, err)
 		}

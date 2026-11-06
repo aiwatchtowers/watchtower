@@ -63,6 +63,7 @@ const (
 	CapCompressedTranscript Cap = "compressed_transcript"
 	CapSubagentFeed         Cap = "subagent_feed"
 	CapTranscriptWatch      Cap = "transcript_watch" // FailureSignal "pull": the §3.5 rollout watch
+	CapAnalytics            Cap = "analytics"
 	CapQuickConnections     Cap = "quick_connections"
 	// CapQuota: the transport can report a subscription quota with its reset
 	// (a local OpenAI-compatible server has no subscription).
@@ -100,6 +101,8 @@ type Caps struct {
 	RegistryProbe        bool
 	CompressedTranscript bool
 	SubagentFeed         bool
+	// Analytics: the session's transcript reaches agent analytics (S9).
+	Analytics bool
 }
 
 // Has reports whether the row offers c.
@@ -145,6 +148,8 @@ func (c Caps) Has(want Cap) bool {
 		return c.Tools == "watchtower+quick_connections"
 	case CapTranscriptWatch:
 		return c.FailureSignal == "pull"
+	case CapAnalytics:
+		return c.Analytics
 	}
 	panic("unknown capability " + string(want))
 }
@@ -196,7 +201,7 @@ var adapters = []*Adapter{
 			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
 			Interrupt: "in_turn", WarmSession: true, ChildProcess: true, Quota: true,
 			FailureSignal: "hook", InterruptSignal: "hook", IdleSignal: true, PermissionWait: true,
-			MidturnInput: true, RegistryProbe: true, SubagentFeed: true},
+			MidturnInput: true, RegistryProbe: true, SubagentFeed: true, Analytics: true},
 		Batch: func(r *run) digest.Generator {
 			g := digest.NewClaudeGenerator(fakeModel, fakeModel, bins.claude)
 			g.SetIsolatedChild() // cmd/generator.go routedGenerator
@@ -204,8 +209,7 @@ var adapters = []*Adapter{
 		},
 		Stream: func(r *run) chat.Querier {
 			c := ai.NewClient(fakeModel, r.mcpDB(), bins.claude)
-			c.SetProcessGroup(true) // cmd/generator.go newQueryClient (#957)
-			c.EmitToolEvents()      // `ai query --events v2`
+			c.EmitToolEvents() // `ai query --events v2`
 			c.SetExternalMCPServers(r.external)
 			if r.readFolder != "" {
 				c.SetReadFolder(r.readFolder)
@@ -237,11 +241,11 @@ var adapters = []*Adapter{
 			Interrupt: "kill_turn", ChildProcess: true, Quota: true,
 			// The session row's targets (§3.5): pulled failure and interrupt
 			// (S1, S2), the probe (S6), compressed rollouts (S7, N1). G7's
-			// spikes on codex 0.159.2 settled the rest (agentkind.SessionCaps):
+			// spikes on codex 0.159.2 settled the rest (sessionagent.Caps):
 			// no permission wait (S3, owner ask #521), no line while it works
 			// (S5: its MCP forms raise no state), no idle signal (S10).
 			FailureSignal: "pull", InterruptSignal: "pull",
-			RegistryProbe: true, CompressedTranscript: true, SubagentFeed: true},
+			RegistryProbe: true, CompressedTranscript: true, SubagentFeed: true, Analytics: true},
 		Batch: func(r *run) digest.Generator {
 			g := codex.NewCodexGenerator(fakeModel, fakeModel, bins.codex)
 			g.SetIsolatedChild() // cmd/generator.go routedGenerator
@@ -249,7 +253,9 @@ var adapters = []*Adapter{
 		},
 		Stream: func(r *run) chat.Querier { return codexClient(r) },
 		Chat: func(r *run) chat.Backend {
-			return chat.NewTurnBackend(codexClient(r), r.chatDB(), r.conv, chat.WithSystemPrompt(sysPrompt))
+			c := codexClient(r)
+			c.SetWebSearch() // the session alone (codexSessionClient)
+			return chat.NewTurnBackend(c, r.chatDB(), r.conv, chat.WithSystemPrompt(sysPrompt))
 		},
 		Session: codexSession,
 	},
@@ -274,11 +280,10 @@ var adapters = []*Adapter{
 	},
 }
 
-// codexClient is the codex chat/query client as cmd builds it: its own
-// process group (codexSessionClient, newQueryClient), the v2 tool events.
+// codexClient is the codex chat/query client as cmd builds it
+// (codexSessionClient, newQueryClient): the v2 tool events.
 func codexClient(r *run) *codex.Client {
 	c := codex.NewClient(fakeModel, r.mcpDB(), bins.codex)
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	c.SetExternalMCPServers(r.external)
 	if r.readFolder != "" {
@@ -671,7 +676,10 @@ func driveChat(ctx context.Context, r *run, a *Adapter, s *Scenario, o *Outcome)
 		}
 		emit := func(e chat.Event) {
 			o.Events = append(o.Events, e)
-			if (s.Fixture.Drive == driveCancelAtText && e.Type == chat.EventTextDelta) ||
+			// Cancel at text once the whole first message has arrived: a
+			// fixture may split it across deltas, and cancelling at the
+			// first one races the rest of it.
+			if (s.Fixture.Drive == driveCancelAtText && e.Type == chat.EventTextDelta && strings.Contains(o.text(), markFirst)) ||
 				(s.Fixture.Drive == driveCancelAtTool && e.Type == chat.EventToolStart) {
 				once.Do(func() { go func() { _ = b.Cancel() }() })
 			}

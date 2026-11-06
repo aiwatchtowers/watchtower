@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
@@ -139,11 +140,14 @@ const automationAgentSystemPrompt = "You are one step of an automation script th
 // the child's `watchtower mcp` is pointed at it, since the allowlisted env
 // drops WATCHTOWER_CONFIG_PATH.
 func newAutomationAgentRunner(cfg *config.Config, configPath, dbPath string, database *db.DB) automations.AgentRunner {
-	switch cfg.AI.Provider {
-	case "", "claude":
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "claude"}
-	case "codex":
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "codex"}
+	provider := cfg.AI.Provider
+	if provider == "" {
+		provider = providers.ByID("").ID
+	}
+	// Not providers.ByID(provider): an unknown id runs the in-process loop,
+	// never the default CLI child.
+	if providers.RunsChild(provider) {
+		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider}
 	}
 	return &runtimeBAgentRunner{cfg: cfg, database: database, reg: buildAutomationRegistry(cfg, database)}
 }
@@ -245,35 +249,17 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	readyFile := filepath.Join(readyDir, "ready")
 	mcpArgs := append(r.mcpArgs(req), "--automation-ready-file", readyFile)
 	env := automationAgentEnv(req.RunID)
-	var client ai.Provider
-	if r.provider == "codex" {
-		home, removeHome, err := codexAgentHome(r.dbPath, mcpArgs)
-		if err != nil {
-			return automations.AgentResult{}, err
-		}
-		defer removeHome()
-		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
-		c.SetMCPArgs(mcpArgs)
-		c.SetMCPEnvVars(codexAgentServerEnv)
-		// codex only: CODEX_HOME joins the env allowlist, pointing at the
-		// scrubbed per-run home (codexAgentHome) instead of ~/.codex; the
-		// run's rollout is written there and counted for the turn cap
-		// (AUTO-08), and goes with the home.
-		c.SetChildEnv(env)
-		c.SetRunHome(home)
-		c.SetServersFromHome()
-		c.SetMaxTurns(automationAgentMaxTurns)
-		c.SetProcessGroup(true)
-		client = c
-	} else {
-		c := ai.NewClient(model, r.dbPath, r.cfg.ClaudePath)
-		c.SetMCPArgs(mcpArgs)
-		c.SetWatchtowerTools(append(slices.Clone(req.Tools), "get_action"))
-		c.SetMaxTurns(automationAgentMaxTurns)
-		c.SetChildEnv(env)
-		c.SetProcessGroup(true)
-		client = c
+	newClient := wiringFor(r.provider).newAgentClient
+	if newClient == nil {
+		return automations.AgentResult{}, fmt.Errorf("agent(): provider %s runs no CLI child", r.provider)
 	}
+	client, cleanup, err := newClient(agentClientWiring{
+		cfg: r.cfg, dbPath: r.dbPath, model: model, mcpArgs: mcpArgs, env: env, tools: req.Tools,
+	})
+	if err != nil {
+		return automations.AgentResult{}, err
+	}
+	defer cleanup()
 	if err := req.BeforeModelCall(); err != nil {
 		return automations.AgentResult{}, err
 	}
@@ -473,12 +459,16 @@ func automationAgentEnv(runID int64) []string {
 // ceil(len(instruction+text)/4) tokens (the reply's share as output).
 func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult {
 	res := automations.AgentResult{Text: text}
-	if u != nil && u.CostUSD > 0 {
-		cost := u.CostUSD
+	var t llmusage.Tokens
+	if u != nil {
+		t = u.Tokens
+	}
+	if cost := t.ReportedCost(); cost > 0 {
 		res.ReportedCostUSD = &cost
 	}
-	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
-		res.InputTokens, res.OutputTokens = int64(u.InputTokens), int64(u.OutputTokens)
+	// AUTO-08 (ask #488): fresh input plus output, cache not debited.
+	if t.Input > 0 || t.Output > 0 {
+		res.InputTokens, res.OutputTokens = t.Input, t.Output
 		return res
 	}
 	total := int64(len(instruction)+len(text)+3) / 4

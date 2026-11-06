@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/terminal"
 )
 
@@ -63,7 +63,7 @@ var workbenchSessionStateCmd = &cobra.Command{
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: session state not recorded: %v\n", err)
 			return nil
 		}
-		if agent == agentkind.Codex {
+		if launchHooks(agent) {
 			runCodexSessionStateHook(cmd.InOrStdin(), cmd.ErrOrStderr())
 			return nil
 		}
@@ -108,16 +108,13 @@ func hookPath(cwd string) string {
 	return filepath.Clean(cwd)
 }
 
-// agentFailure is the failure a StopFailure records: its error type on one
-// line, clipped, or ” when the field is missing or not a string. nil for
-// every other event.
-func (in hookEvent) agentFailure() *db.AgentFailure {
-	if in.Event != "StopFailure" {
+// agentFailure is the failure a StopFailure (a hook's, or a pulled turn's)
+// records: its error type on one line, clipped, or "" when the field is
+// missing or not a string. nil for every other event.
+func agentFailure(in hookEvent) *db.AgentFailure {
+	e, ok := in.FailureText()
+	if !ok {
 		return nil
-	}
-	var e string
-	if json.Unmarshal(in.Error, &e) != nil {
-		e = ""
 	}
 	return &db.AgentFailure{Error: briefClip(asks.OneLine(e), agentErrorRunes)}
 }
@@ -203,10 +200,10 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 		return fmt.Errorf("reading the hook input: %w", err)
 	}
 	state, ok := agentStateFor(in.Event, in.NotificationType)
-	if !ok || in.SessionID == "" || (in.agentTurnEvent() && !in.recordsAgentTurn()) {
+	if !ok || in.SessionID == "" || (in.AgentTurnEvent() && !in.RecordsAgentTurn()) {
 		return nil
 	}
-	turn, subagentToolRun := in.toolRunTurn()
+	turn, subagentToolRun := toolRunTurnOf(in)
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,
@@ -217,13 +214,12 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 	}
 	defer database.Close()
 	switch {
-	case in.agentTurnEvent():
+	case in.AgentTurnEvent():
 		err = recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Claude)
 	case subagentToolRun:
-		err = recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at)
+		err = recordSubagentToolRun(database, rowID, workbenchID, in, state, at)
 	default:
-		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", in.agentFailure(),
-			in.Event == "UserPromptSubmit", at, turn)
+		err = recordAgentEvent(database, rowID, workbenchID, in, agentStateWrite{state: state, at: at, turn: turn})
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
 	return err
@@ -234,11 +230,11 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 // its tool results clear only a granted permission, and over the Stop's
 // count they are a heartbeat. At most
 // one of the two writes lands: one needs approval, the other waiting.
-func recordSubagentToolRun(database *db.DB, rowID, workbenchID int64, sessionID, state string, at time.Time) error {
-	if err := recordAgentState(database, rowID, workbenchID, sessionID, state, agentStateApproval, nil, false, at, hookTurn{}); err != nil {
+func recordSubagentToolRun(database *db.DB, rowID, workbenchID int64, in hookEvent, state string, at time.Time) error {
+	if err := recordAgentEvent(database, rowID, workbenchID, in, agentStateWrite{state: state, onlyFrom: agentStateApproval, at: at}); err != nil {
 		return err
 	}
-	return recordBackgroundReport(database, rowID, workbenchID, sessionID, at, nil)
+	return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, nil)
 }
 
 // codexStateEvents are the Codex events `session-state --agent codex`
@@ -282,10 +278,11 @@ func runCodexSessionStateHook(stdin io.Reader, stderr io.Writer) {
 // Codex runs its state hooks synchronously, so no hook outlives its turn and
 // the transcript turn order is not needed. An event of another session (a
 // foreign id, or a row with no id yet: spec I6) writes nothing. After the
-// state write comes the session's worktree ledger, as for Claude Code.
+// state write comes the session's worktree ledger, as for Claude Code. Every
+// event clears the row's watch issue (spec 2026-11-05 §3.5).
 func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent, at time.Time) error {
 	if !codexStateEvents[in.Event] || in.SessionID == "" || in.SessionID != row.ClaudeSessionID.String ||
-		(in.agentTurnEvent() && in.AgentID == "") {
+		(in.AgentTurnEvent() && in.AgentID == "") {
 		return nil
 	}
 	_, database, err := openJiraCmdDB()
@@ -295,20 +292,25 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 	defer database.Close()
 	rowID, workbenchID := row.ID, row.WorkbenchID.Int64
 	state, _ := agentStateFor(in.Event, "")
-	turn, subagentToolRun := in.toolRunTurn()
+	turn, subagentToolRun := toolRunTurnOf(in)
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
 	turn.transcriptPath = ""
 	switch {
 	case in.Event == "Interrupt":
 		err = recordCodexStopState(database, row, in, at)
-	case in.agentTurnEvent():
+	case in.AgentTurnEvent():
 		err = recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Codex)
 	case subagentToolRun:
-		err = recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at)
+		err = recordSubagentToolRun(database, rowID, workbenchID, in, state, at)
 	case in.Event == "UserPromptSubmit":
-		err = recordCodexPrompt(database, rowID, workbenchID, in.SessionID, at, turn)
+		err = recordCodexPrompt(database, rowID, workbenchID, in, at, turn)
 	default:
-		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil, false, at, turn)
+		err = recordAgentEvent(database, rowID, workbenchID, in, agentStateWrite{state: state, at: at, turn: turn})
+	}
+	// Any hook event of the row's session says the agent is heard again: a
+	// not-watched mark goes and the session host's watch re-arms (§3.5).
+	if _, clearErr := database.ClearAgentWatchIssue(rowID); clearErr != nil {
+		err = errors.Join(err, clearErr)
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
 	return err
@@ -322,27 +324,14 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 // first: a probe write landing before it turns the row to an older failed
 // `waiting`, which the prompt's `working` then replaces (and clears); one
 // landing after it is older than the new stamp and held back.
-func recordCodexPrompt(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, turn hookTurn) error {
+func recordCodexPrompt(database *db.DB, rowID, workbenchID int64, in hookEvent, at time.Time, turn hookTurn) error {
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	if _, err := database.RestampCodexPromptTurn(rowID, workbenchID, sessionID, at.Truncate(time.Millisecond)); err != nil {
+	if _, err := database.RestampCodexPromptTurn(rowID, workbenchID, in.SessionID, at.Truncate(time.Millisecond)); err != nil {
 		return err
 	}
-	return recordAgentState(database, rowID, workbenchID, sessionID, agentStateWorking, "", nil, true, at, turn)
-}
-
-// agentTurnEvent says the event starts or ends a subagent's or teammate's
-// turn (board #543).
-func (in hookEvent) agentTurnEvent() bool {
-	return in.Event == "SubagentStart" || in.Event == "SubagentStop"
-}
-
-// recordsAgentTurn says a SubagentStart or SubagentStop names an agent the
-// turns track: one with an agent_id and a type. Claude Code's internal agents
-// (prompt suggestions, /btw) have no type and say nothing about the work.
-func (in hookEvent) recordsAgentTurn() bool {
-	return in.AgentID != "" && in.AgentType != ""
+	return recordAgentEvent(database, rowID, workbenchID, in, agentStateWrite{state: agentStateWorking, at: at, turn: turn})
 }
 
 // recordAgentTurn records a SubagentStart's or SubagentStop's turn on the
@@ -368,7 +357,7 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at
 		return err
 	}
 	remaining, ok := backgroundAgents(in.BackgroundTasks, turns, in.AgentID)
-	if agent == agentkind.Codex {
+	if !sessionagent.CapsOf(string(agent)).BackgroundTasks {
 		remaining, ok = codexBackgroundCount(turns), true
 	}
 	if !ok {
@@ -380,7 +369,7 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at
 // toolRunTurn classifies a PostToolUse: subagent is true for one fired
 // inside a subagent, and a main-thread one gets its turn placement. The zero
 // values are every other event.
-func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
+func toolRunTurnOf(in hookEvent) (turn hookTurn, subagent bool) {
 	if in.Event != "PostToolUse" {
 		return hookTurn{}, false
 	}
@@ -409,6 +398,26 @@ type hookTurn struct {
 	// board #566); "" = none. It rides in the state write, or is written
 	// alone when the state write is a repeat or held back.
 	cwd string
+}
+
+// agentStateWrite is what one event writes on its row besides what the
+// event itself says: the state it maps to, the state it may only replace
+// ("" = any), its time and its turn placement.
+type agentStateWrite struct {
+	state, onlyFrom string
+	at              time.Time
+	turn            hookTurn
+}
+
+// recordAgentEvent is the one entry point of a session event into the
+// row's state (spec 2026-11-05 §3.5, PROJ-11): a hook's event (push) or a
+// session adapter's pull event (sessionagent.Puller.Event) both land here,
+// under recordAgentState's guards (the time order holds; a payload whose
+// session id differs from the stored one writes nothing). The event decides
+// the failure (a StopFailure's error) and whether it is the owner's prompt.
+func recordAgentEvent(database *db.DB, rowID, workbenchID int64, ev hookEvent, w agentStateWrite) error {
+	return recordAgentState(database, rowID, workbenchID, ev.SessionID, w.state, w.onlyFrom, agentFailure(ev),
+		ev.Event == "UserPromptSubmit", w.at, w.turn)
 }
 
 // terminalSessionRowID is the terminal_sessions row the Desktop launched

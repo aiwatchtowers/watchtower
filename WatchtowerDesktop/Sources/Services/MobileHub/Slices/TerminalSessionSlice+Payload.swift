@@ -36,17 +36,13 @@ extension TerminalSessionSlice {
             reportDone: summary?.done,
             reportTotal: summary?.total,
             reportPRLine: prLine?.text,
-            reportPRLineClipped: prLine?.clipped
+            reportPRLineClipped: prLine?.clipped,
+            watchIssue: state.watchIssue
         )
     }
 
     /// The Kit's `TerminalSessionState.Agent` raw value for the row's agent.
-    static func wireAgent(_ agent: AgentKind) -> String {
-        switch agent {
-        case .claude: "claude_code"
-        case .codex: "codex_cli"
-        }
-    }
+    static func wireAgent(_ agent: AgentKind) -> String { agent.session.wireAgent }
 
     /// When the current state was reported: the trusted hook stamp, else a
     /// finished session's `finished_at` (also one that reads Ready to check

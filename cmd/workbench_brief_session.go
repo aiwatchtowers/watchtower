@@ -267,12 +267,14 @@ func recordCodexSessionStart(stdin io.Reader, stderr io.Writer, database *db.DB,
 // applyCodexSessionStart makes planCodexSessionStart's writes on row: the id
 // first, so the mark's and the path's guards see the final id, then the
 // run's mark (a codex row has its state hooks by construction, spec §6.3),
-// then the absolute transcript path every accepted start stores. With
-// nothing to write it does not wait for the write lock.
+// then the absolute transcript path every accepted start stores, then the
+// watch issue's clear. A foreign start with nothing to write does not wait
+// for the write lock (the clear reads first and writes only a set issue).
 func applyCodexSessionStart(database *db.DB, row db.TerminalSession, ev hookEvent) error {
 	plan := planCodexSessionStart(row.ClaudeSessionID, ev)
 	path := codexPathToStore(row, ev, plan)
-	if plan == sessionStartNone && path == "" {
+	current := row.ClaudeSessionID.Valid && row.ClaudeSessionID.String == ev.SessionID
+	if plan == sessionStartNone && path == "" && !current {
 		return nil
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
@@ -292,6 +294,12 @@ func applyCodexSessionStart(database *db.DB, row db.TerminalSession, ev hookEven
 		if _, err := database.SetTerminalTranscriptPath(row.ID, wb, ev.SessionID, path); err != nil {
 			return fmt.Errorf("storing the transcript path: %w", err)
 		}
+	}
+	// A SessionStart is a hook event too, a compaction of the current
+	// session with nothing else to store included: the session host's watch
+	// re-arms on the (maybe new) path (spec 2026-11-05 §3.5).
+	if _, err := database.ClearAgentWatchIssue(row.ID); err != nil {
+		return fmt.Errorf("clearing the watch issue: %w", err)
 	}
 	return nil
 }

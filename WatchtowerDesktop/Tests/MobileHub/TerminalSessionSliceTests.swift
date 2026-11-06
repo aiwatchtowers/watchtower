@@ -114,7 +114,7 @@ final class TerminalSessionSliceTests: XCTestCase {
             payload, matches: try SliceJSON.kitFixture("workbench/terminal_session.json"),
             optionalKeys: ["title_clipped", "target_id", "state_at", "state_caption_clipped", "oldest_ask_id",
                            "finish_summary_clipped", "agent_error_clipped", "report_target_id", "report_done",
-                           "report_total", "report_pr_line", "report_pr_line_clipped"]
+                           "report_total", "report_pr_line", "report_pr_line_clipped", "watch_issue"]
         )
         XCTAssertTrue(SliceJSON.allKeys(payload).isDisjoint(with: neverPublishedKeys))
         XCTAssertEqual(payload["agent"] as? String, "claude_code")
@@ -165,7 +165,13 @@ final class TerminalSessionSliceTests: XCTestCase {
             Case(name: "failed with an empty error", live: true, seed: { db, id, _ in
                 try self.setState(db, id, state: "waiting", failedError: "")
             }, expected: .failed, wire: "failed"),
-            Case(name: "not started", live: false, seed: { _, _, _ in }, expected: .notStarted, wire: "not_started")
+            Case(name: "not started", live: false, seed: { _, _, _ in }, expected: .notStarted, wire: "not_started"),
+            // G5 (U6): a working codex row the Mac cannot watch.
+            Case(name: "working, not watched", live: true, seed: { db, id, _ in
+                try self.setState(db, id, state: "working")
+                try db.execute(sql: "UPDATE terminal_sessions SET kind = 'codex', agent_watch_issue = 'compressed' WHERE id = ?",
+                               arguments: [id])
+            }, expected: .working, wire: "working")
         ]
         let seeded = try dbPool.write { db -> [(Case, Int64)] in
             let project = try TestDatabase.insertWorkbench(db)
@@ -204,6 +210,9 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(byName["agents working"]?["state_caption"] as? String, "2 agents working")
         XCTAssertEqual(byName["agents working"]?["state_tone"] as? String, "green")
         XCTAssertEqual(byName["agents working"]?["state_glyph"] as? String, "person.2.fill")
+        XCTAssertEqual(byName["working, not watched"]?["state_caption"] as? String, "Working · not watched")
+        XCTAssertEqual(byName["working, not watched"]?["watch_issue"] as? String, "compressed")
+        XCTAssertNil(byName["working"]?["watch_issue"], "a watched session carries no watch_issue")
     }
 
     /// #411: a count lowered to zero shows Agents working for the policy's

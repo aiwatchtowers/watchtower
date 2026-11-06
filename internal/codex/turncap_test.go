@@ -364,7 +364,6 @@ func cappedClient(t *testing.T, steps []string, maxTurns int, runHome string) (*
 	})
 	c := NewClient("m", "", "")
 	c.codexCmd = writeStubCodex(t, b.String())
-	c.SetProcessGroup(true)
 	c.SetMaxTurns(maxTurns)
 	if runHome != "" {
 		c.SetRunHome(runHome)
@@ -454,7 +453,7 @@ func TestCodexClient_UsageAfterTheCapStillCounts(t *testing.T) {
 	}
 	assertBudget(t, err, 2)
 	require.NotNil(t, usage, "the reported usage is kept")
-	assert.Equal(t, 70, usage.InputTokens)
+	assert.Equal(t, 70, usage.InputTokens())
 }
 
 // A retry notice earlier in the run is no failure of the run's own: the

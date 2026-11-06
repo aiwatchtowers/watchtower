@@ -22,7 +22,7 @@ You turn analytics on per workbench. Watchtower then reads the transcript files 
 
 Each API call counts once, even when a resumed or forked session replays it. The earliest session owns a replayed call.
 
-Cost is computed when a call is stored, from a built-in price table. A model the table does not know costs 0 and is counted as estimated.
+Cost is computed when a call is stored, from a built-in price table. A model the table does not know costs 0; the totals show how many calls had **no price**.
 
 When the table changes, older rows are re-priced from their stored tokens. Claude Code's own cost figure is kept per session so you can compare.
 
@@ -54,7 +54,7 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 
 - **`stats` shows `"enabled": false`.** Run `enable` first.
 - **No sessions.** Nothing in `~/.claude/projects/` matched the folder. Sessions run before the folder moved are not found.
-- **Cost is 0 for a model.** The price table does not know it yet. The calls are counted as estimated. Codex models have no price, so a Codex session always shows **no price**.
+- **Cost is 0 for a model.** The price table does not know it yet. The totals say how many calls had **no price**. Codex models have no price, so a Codex session always shows **no price**.
 - **A Codex session is missing.** Only sessions the workbench started are read, and only once Codex has reported the session (its first prompt). `scan --json` counts `codex_rollouts_missing` (no rollout file found) and `codex_outside_workbench` (the session ran outside the workbench folder). A Codex session's subagent threads are not counted yet.
 - **History not moved yet — restart the daemon or run watchtower agents scan.** Analytics from an older version still sit in the main database and moving them failed. Nothing loads until the move succeeds; the daemon retries it every cycle, and the daemon log says why it failed.
 - **A block says "Not measured yet for older sessions".** The session was stored before the sizes were recorded. Wait for the daemon's next cycles, or run `watchtower agents scan`; if the transcript is gone, those sessions stay unmeasured.

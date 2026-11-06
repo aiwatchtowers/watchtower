@@ -517,7 +517,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - Modify:
   - `internal/llmusage/llmusage.go` (`Tokens`, embedded in `Call`), `internal/ai/provider.go` (`TurnUsage` embeds `Tokens`; `InputTokens` becomes derived), `internal/ai/client.go` (`ai.Usage`), `internal/digest/pipeline.go` (`digest.Usage`);
   - the leaves: `internal/codex`, `internal/ollama`, `internal/agentloop` (records `ollama`), `internal/chat/claude_translate.go`;
-  - `internal/chat/turn_backend.go` and `events.go` (the v2 `usage` keys `fresh_in`/`cache_read`/`cache_write`/`cost_usd`/`estimated`), `internal/automations/attempt_meter.go`, `cmd/usage_llm.go` (a stored `http` is reported as `ollama`);
+  - `internal/chat/turn_backend.go` and `events.go` (the v2 `usage` keys `fresh_in`/`cache_read`/`cache_write`/`cost_usd`/`estimated`), `internal/automations/attempt_meter.go`, `cmd/usage_llm.go` (a spooled `http` reads as `ollama` through `providers.LedgerLabel`);
   - Swift: `WatchtowerCore/Services/Chat/ChatEvent.swift` (tolerant decode);
   - docs: `docs/features/llm-usage-ledger.md`, `docs/inventory/plan-usage.md`.
 
@@ -531,11 +531,11 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - `TestTokens_AllInputIsFreshPlusCache`;
   - `TestTurnUsage_InputTokensStaysAllInput` (CHAT-01 rows keep their meaning);
   - `TestUsageEvent_V2CarriesSplitKeys` (pinned keys);
-  - `TestAgentloop_RecordsOllamaLabel`;
-  - `TestUsageLLM_HTTPRowReportedAsOllama` (a stored `http` row plus a spool line with `http` both show under `ollama`);
+  - `TestLLMUSAGE01_AgentloopRecordsOllamaLabel`;
+  - `TestLLMUSAGE01_LedgerLabelHTTPReadsAsOllama` (`internal/providers`) and `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama` (`cmd`: a spool line with `http` reads as `ollama`; the report has no provider column today, so the mapping lives in the reader for any future provider dimension, with no new JSON keys);
   - `TestAuto08_DebitIsFreshPlusOutputOnEveryProvider` (one table over claude, codex and runtime B);
   - Swift `ChatEventTests.testUsageWithSplitKeysDecodes` and `testUsageWithoutSplitKeysDecodes`.
-- [ ] **Step 2:** `go test ./internal/llmusage ./internal/ai ./internal/chat ./internal/agentloop ./internal/automations -run 'Tokens|TurnUsage|UsageEvent|OllamaLabel|TestAuto08_Debit'`, `go test ./cmd -run UsageLLM_HTTP` and `make test-swift FILTER=ChatEventTests` FAIL.
+- [ ] **Step 2:** `go test ./internal/llmusage ./internal/ai ./internal/chat ./internal/agentloop ./internal/automations -run 'Tokens|TurnUsage|UsageEvent|OllamaLabel|TestAuto08_Debit'`, `go test ./cmd -run UsageLLM_SpoolHTTP` and `make test-swift FILTER=ChatEventTests` FAIL.
 - [ ] **Step 3:** Implement. The old field names stay as derived accessors until every reader has moved, inside this task.
 - [ ] **Step 4:** PASS. `go test ./internal/llmusage -run 'TestLLMUSAGE01'` stays green. `make lint-diff`.
 - [ ] **Step 5:** Commit `refactor(llmusage): one token block across usage types; runtime B records ollama (N3)`.
@@ -571,6 +571,8 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - [ ] **Step 3:** Implement. Rerun A1's suite unchanged: no matrix cell may change.
 - [ ] **Step 4:** PASS; `go test ./internal/transporttest`; `go test ./internal/llmusage`; `make lint-diff`.
 - [ ] **Step 5:** Commit `refactor(transport): one factory with options; process groups always on`.
+
+**As built (2026-11-06):** `Transport` and `Options` live in `internal/providers/transport` (an import cycle rules out `internal/providers`; the daemon's coach uses it too); `Options` carries `Config` and `DBPath`, and leaves out `Tier`, `ChildEnv`, `MaxTurns` and `Images`, which no factory caller needs. `NewChatBackend` and the agent() child are cmd-bound, so they are `transportWiring` rows in `cmd/transport_wiring.go`; the Quick Connection env rule is `quickConnectionEnv` there. Group-only `ConfigureChild` made a terminal Ctrl-C miss the child of the three `jira` AI commands, which now cancel on a signal (`cancelAIChildOnSignal`). Deferred, with the reason, in spec §3.4: the wrapper-level `SetIsolatedChild` probes and the `turn_backend` probes.
 
 ### Task A5: `internal/sessionagent`, the Workbench session adapter
 

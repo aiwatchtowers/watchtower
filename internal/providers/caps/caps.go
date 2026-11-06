@@ -54,11 +54,10 @@ var table = map[string]Capabilities{
 		CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: ReadFolderTools,
 		TurnCap: "native", Interrupt: "in_turn", WarmSession: true, ClaudeAITools: true,
 		ReservePeer: "codex", Quota: true},
-	// WebSearch stays off until the owner decides L5 (ask #533): the codex
-	// chat leaves web search to the owner's own codex setting (ask #323)
-	// and its prompt promises none.
+	// WebSearch: the chat session's codex runs search the cached index
+	// (codex.Client.SetWebSearch, ask #533); every other codex run has it off.
 	"codex": {Tools: ToolsWithConnections, ToolEvents: true, TextStream: "message", Usage: "split",
-		Images: true, ReadFolder: ReadFolderShellSandbox, TurnCap: "counted", Interrupt: "kill_turn",
+		Images: true, WebSearch: true, ReadFolder: ReadFolderShellSandbox, TurnCap: "counted", Interrupt: "kill_turn",
 		ReservePeer: "claude", Quota: true},
 	// The chat and `ai query --tools chat` run runtime B (agentloop) with
 	// the watchtower tools and the Quick Connections.

@@ -45,18 +45,14 @@ var adapterFiles = []string{
 }
 
 // capabilityFiles declare which capabilities each agent kind has: the only
-// places outside the adapters where a kind maps to its caps.
-var capabilityFiles = []string{
-	"internal/agentkind/caps.go",
-}
+// places outside the adapters where a kind maps to its caps. Since A5 the
+// session caps are internal/sessionagent's (an adapter), so none is left.
+var capabilityFiles = []string{}
 
 // plannedAdapters are adapter paths the transport independence plan creates
-// later (A4, A5). Only these may be missing; once one exists the test asks
-// for its removal from this set, so a typo in the lists above cannot hide.
-var plannedAdapters = map[string]bool{
-	"cmd/transport_wiring.go": true,
-	"internal/sessionagent":   true,
-}
+// later. Only these may be missing; once one exists the test asks for its
+// removal from this set, so a typo in the lists above cannot hide.
+var plannedAdapters = map[string]bool{}
 
 // transportNames are the string literals that name a transport.
 var transportNames = map[string]bool{"claude": true, "codex": true, "ollama": true, "http": true}

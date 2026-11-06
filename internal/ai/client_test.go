@@ -311,8 +311,8 @@ func TestQuerySync_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Hello from Claude", result)
 	require.NotNil(t, usage)
-	assert.Equal(t, 10, usage.InputTokens)
-	assert.Equal(t, 5, usage.OutputTokens)
+	assert.Equal(t, 10, usage.InputTokens())
+	assert.Equal(t, 5, usage.OutputTokens())
 }
 
 func TestQuerySync_TrimsTrailingNewlines(t *testing.T) {

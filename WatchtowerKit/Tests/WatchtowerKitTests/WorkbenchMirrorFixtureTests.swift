@@ -239,6 +239,17 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(session.reportDone, 1)
         XCTAssertEqual(session.reportTotal, 2)
         XCTAssertEqual(session.reportPRLine, "PR #175 open")
+        XCTAssertEqual(session.watchIssue, "compressed")
+    }
+
+    /// A record from a Mac older than G5 has no `watch_issue`: it still
+    /// decodes, as watched.
+    func testTerminalSessionWithoutWatchIssueDecodes() throws {
+        var json = try object("terminal_session")
+        json.removeValue(forKey: "watch_issue")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(session.watchIssue)
+        XCTAssertEqual(session.id, 31)
     }
 
     /// `codex_cli` decodes as the known Codex agent; an agent this build does

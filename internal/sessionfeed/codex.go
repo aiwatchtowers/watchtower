@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"watchtower/internal/agentlog"
+	"watchtower/internal/agentfiles"
 )
 
 var codexIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -50,7 +50,7 @@ func ParseCodex(r io.Reader, startOffset int64, conv string) (*Result, error) {
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
 		lineStart := res.Offset
-		raw, n, complete, err := agentlog.NextLine(br, maxLineBytes)
+		raw, n, complete, err := agentfiles.NextLine(br, maxLineBytes)
 		if !complete {
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("reading rollout: %w", err)

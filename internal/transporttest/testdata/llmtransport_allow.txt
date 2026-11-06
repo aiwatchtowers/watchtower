@@ -4,16 +4,6 @@
 # "permanent:" entries stay (decoders, display names, URL/MCP schemes, path
 # conventions); every other entry names the task that removes it.
 
-cmd/ai.go | runAITest | "claude" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runAITest | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runAITest | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runConnectionProbe | "codex" | 1 | A4: the codex probe's system-prompt nonce is the codex adapter's; moves with runAITest into cmd/transport_wiring.go
-cmd/ai_session.go | newSessionBackend | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai_session.go | newSessionBackend | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai_session_routing.go | reserveConnectionsCapable | "codex" | 1 | A4: the codex launch's Quick Connection env skips become the ChildEnv option (spec §3.4)
-cmd/automations_backends.go | (*cliAgentRunner).Run | "codex" | 1 | A4: the codex agent() client and its run home are built by the factory (spec §3.4)
-cmd/automations_backends.go | newAutomationAgentRunner | "claude" | 1 | A4: automation agent runner factory, moves into cmd/transport_wiring.go
-cmd/automations_backends.go | newAutomationAgentRunner | "codex" | 1 | A4: automation agent runner factory, moves into cmd/transport_wiring.go
 cmd/connections.go | requireSecretTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | runConnectionsList | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | runConnectionsOAuth | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
@@ -22,36 +12,11 @@ cmd/connections.go | validateHTTPURL | "http" | 1 | permanent: a Quick Connectio
 cmd/connections_import.go | importCandidateLine | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | importConnection | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | runConnectionsImport | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
-cmd/generator.go | buildAIClient | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildAIClient | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildGenerator | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildGenerator | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/generator.go | codexEnvSkips | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/generator.go | connectionServer | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
-cmd/generator.go | newQueryClient | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | newQueryClient | assert *codex.Client | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/integrate_workbench.go | execCommandRunner | "claude" | 1 | permanent: resolves the claude binary for `claude mcp add` (install plumbing, no model call)
-cmd/terminal.go | terminalAgentHome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_askguard.go | var workbenchAskGuardCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_askguard_stop.go | (*askGuardSession).hasStateHooks | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_brief.go | runWorkbenchBrief | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_brief_session.go | applySessionStart | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_check.go | runWorkbenchCheck | agentkind.Codex | 2 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_hook_input.go | parseHookEvent | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_hook_row.go | hookAgentFor | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_hook_row.go | resolveCodexHookRow | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_launch_args.go | checkLaunchArgsFlags | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_permission_wait.go | waitPermissionDecision | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_feed.go | requireAgentSession | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_feed.go | requireAgentSession | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_feed.go | sessionFeedConversations | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_probe.go | probeSession | agentkind.Codex | 1 | G5: codex rollout pull by agent kind; G5 moves it into the session host behind the A5 adapter
-cmd/workbench_session_probe.go | sessionOutcome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_state.go | recordAgentTurn | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_state.go | var workbenchSessionStateCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_spec_review.go | (*specReviewCLIAgent).Review | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/workbench_spec_review.go | (*specReviewCLIAgent).Review | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/workbench_worktree.go | installWorktreeIntegration | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
+cmd/workbench_brief_session.go | applySessionStart | agentkind.Claude | 1 | permanent: identity check, a Claude Code hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
+cmd/workbench_hook_row.go | resolveCodexHookRow | agentkind.Codex | 1 | permanent: identity check, a Codex hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.Label | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
@@ -62,19 +27,13 @@ internal/config/ai_routing.go | KnownAIProvider | "claude" | 1 | permanent: vali
 internal/config/ai_routing.go | KnownAIProvider | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/config/ai_routing.go | KnownAIProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/confluenceedit/xhtml.go | safeHref | "http" | 1 | permanent: URL scheme check, not an LLM transport
-internal/daemon/coach.go | var coachGeneratorFactory | "claude" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-internal/daemon/coach.go | var coachGeneratorFactory | "codex" | 2 | A4: client factory switch, moves into cmd/transport_wiring.go
-internal/daemon/coach.go | var coachGeneratorFactory | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 internal/db/chat_routing.go | (*DB).SetChatRouting | "claude" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
-internal/db/terminal_sessions.go | (*DB).GetTerminalSession | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 internal/externalmcp/discover.go | discoveryTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/externalmcp/importsrc.go | claudeCandidate | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/hub/actions/handlers/session_start.go | (*Handlers).launch | "codex" | 1 | G7: phone session action decided by agent kind; becomes a capability (not_supported)
 internal/hub/hub.go | FromEnv | "http" | 1 | permanent: URL scheme check, not an LLM transport
-internal/hub/slices/sources/workbench.go | wireAgent | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/instructions/suggest.go | NewFeedReader | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 internal/mcpoauth/discovery.go | requireSecure | "http" | 1 | permanent: URL scheme check, not an LLM transport
 internal/media/linkrule/linkrule.go | NormalizeURL | "http" | 2 | permanent: URL scheme check, not an LLM transport
 internal/media/webfetch/fetch.go | webScheme | "http" | 1 | permanent: URL scheme check, not an LLM transport
@@ -84,13 +43,3 @@ internal/providerrouting/router.go | configProvider | "codex" | 1 | permanent: v
 internal/providerrouting/router.go | configProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config decoder)
 internal/sessioncleanup/deps.go | protectedExe | "claude" | 1 | permanent: process names protected from cleanup (executable path convention)
 internal/sessioncleanup/deps.go | protectedExe | "codex" | 1 | permanent: process names protected from cleanup (executable path convention)
-internal/sessionfeed/read.go | ReadSession | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionfeed/read.go | ReadSession | agentkind.Codex | 2 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionhost/profile.go | ProfileFor | "codex" | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionstart/launch.go | Launch | agentkind.Claude | 5 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionstart/launch.go | Launch | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/sessionstart/launch.go | Mode.validate | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/terminal/transcript.go | OpenTranscript | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/terminal/transcript.go | OpenTranscript | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/tools/workbench_session_target.go | checkSessionTarget | "claude" | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-internal/tools/workbench_session_target.go | checkSessionTarget | "codex" | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter

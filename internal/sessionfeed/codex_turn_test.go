@@ -106,3 +106,59 @@ func TestCodexLastTurn_ZstdAndMissing(t *testing.T) {
 	_, err = CodexLastTurn(filepath.Join(t.TempDir(), "gone.jsonl"))
 	require.Error(t, err)
 }
+
+// A read failure names its class (spec §3.5): the watch gives up at once on
+// permission and compressed, after 30 s on missing, after three ticks on
+// unreadable.
+func TestCodexLastTurn_ReadFailuresAreTypedWatchIssues(t *testing.T) {
+	issueOf := func(err error) string {
+		t.Helper()
+		var wi *WatchIssueError
+		require.ErrorAs(t, err, &wi)
+		return wi.Issue
+	}
+	_, err := CodexLastTurn(filepath.Join(t.TempDir(), "gone.jsonl"))
+	assert.Equal(t, "missing", issueOf(err))
+
+	p := writeRollout(t, turnStartedLine)
+	require.NoError(t, os.Chmod(p, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	if _, rerr := os.ReadFile(p); rerr == nil {
+		t.Skip("running as a user that reads mode 000 files")
+	}
+	_, err = CodexLastTurn(p)
+	assert.Equal(t, "permission", issueOf(err))
+
+	z := filepath.Join(t.TempDir(), "rollout-z.jsonl")
+	require.NoError(t, os.WriteFile(z, append([]byte{0x28, 0xb5, 0x2f, 0xfd}, []byte(turnFailedLine)...), 0o600))
+	_, err = CodexLastTurn(z)
+	assert.Equal(t, "compressed", issueOf(err))
+}
+
+// An interrupted turn (turn_aborted) is the pull's Interrupt: reported with
+// its time so the watch ends the turn as waiting.
+func TestCodexLastTurn_AbortedTurnCarriesItsTime(t *testing.T) {
+	got, err := CodexLastTurn(writeRollout(t, turnStartedLine, turnAbortedLine))
+	require.NoError(t, err)
+	assert.False(t, got.Failed)
+	assert.True(t, got.Aborted)
+	assert.Equal(t, time.Date(2026, 11, 5, 12, 18, 0, 348e6, time.UTC), got.At)
+
+	got, err = CodexLastTurn(writeRollout(t, turnAbortedLine, turnStartedLine))
+	require.NoError(t, err)
+	assert.False(t, got.Aborted, "a new turn after the abort runs")
+}
+
+// A committed last line that is not JSON is an undecodable tail; an
+// unterminated last line is not: it is left for the next read.
+func TestCodexLastTurn_UndecodableTail(t *testing.T) {
+	got, err := CodexLastTurn(writeRollout(t, turnStartedLine, `{not json`))
+	require.NoError(t, err)
+	assert.True(t, got.TailUndecodable)
+
+	p := filepath.Join(t.TempDir(), "rollout-p.jsonl")
+	require.NoError(t, os.WriteFile(p, []byte(turnStartedLine+"\n"+turnFailedLine[:40]), 0o600))
+	got, err = CodexLastTurn(p)
+	require.NoError(t, err)
+	assert.False(t, got.TailUndecodable, "an unterminated last line waits for the next tick")
+}

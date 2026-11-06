@@ -124,7 +124,7 @@ func TestClassifyFields_WritesClassificationAndUsage(t *testing.T) {
 
 	gen := &scriptedAI{
 		reply: "```json\n[{\"id\":\"customfield_1\",\"useful\":true,\"hint\":\"estimation\"},{\"id\":\"customfield_2\",\"useful\":false}]\n```",
-		usage: &ai.Usage{InputTokens: 3, OutputTokens: 4, TotalAPITokens: 7},
+		usage: &ai.Usage{Tokens: llmusage.Tokens{Input: 3, Output: 4, CacheRead: 4}},
 	}
 	fd := NewFieldDiscovery(nil, d, gen, 1)
 	require.NoError(t, fd.ClassifyFields(context.Background(), fields))
@@ -154,7 +154,7 @@ func TestClassifyFields_Guards(t *testing.T) {
 
 	assert.ErrorContains(t, NewFieldDiscovery(nil, d, nil, 1).ClassifyFields(context.Background(), fields), "AI provider not configured")
 
-	failing := &scriptedAI{err: errors.New("down"), usage: &ai.Usage{InputTokens: 2}}
+	failing := &scriptedAI{err: errors.New("down"), usage: &ai.Usage{Tokens: llmusage.Tokens{Input: 2}}}
 	fd := NewFieldDiscovery(nil, d, failing, 1)
 	assert.ErrorContains(t, fd.ClassifyFields(context.Background(), fields), "LLM classification")
 	in, _, _ := fd.AccumulatedUsage()

@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"watchtower/internal/agentkind"
 )
 
 const codexTestID = "01a10000-0000-7000-8000-000000000101"
@@ -18,9 +16,9 @@ const codexTestID = "01a10000-0000-7000-8000-000000000101"
 func codexOwnerText(t *testing.T, content []byte) (string, error) {
 	t.Helper()
 	path := writeRollout(t, t.TempDir(), "2026/10/12", content)
-	tr, err := OpenTranscript(agentkind.Codex, codexTestID, path, "")
+	tr, err := OpenCodexRollout("", codexTestID, path)
 	if err != nil {
-		t.Fatalf("OpenTranscript: %v", err)
+		t.Fatalf("OpenCodexRollout: %v", err)
 	}
 	return tr.OwnerText(2000)
 }
@@ -128,7 +126,7 @@ func TestCodexRollout_ImagesOnlyMessageSkipped(t *testing.T) {
 
 func TestCodexRollout_CapsRunes(t *testing.T) {
 	path := writeRollout(t, t.TempDir(), "2026/10/12", fixture(t, "paginated.jsonl"))
-	tr, err := OpenTranscript(agentkind.Codex, codexTestID, path, "")
+	tr, err := OpenCodexRollout("", codexTestID, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,9 +143,9 @@ func TestCodexRollout_LocateByStoredPathThenGlob(t *testing.T) {
 
 	read := func(storedPath string) string {
 		t.Helper()
-		tr, err := OpenTranscript(agentkind.Codex, codexTestID, storedPath, home)
+		tr, err := OpenCodexRollout(home, codexTestID, storedPath)
 		if err != nil {
-			t.Fatalf("OpenTranscript(%q): %v", storedPath, err)
+			t.Fatalf("OpenCodexRollout(%q): %v", storedPath, err)
 		}
 		got, err := tr.OwnerText(2000)
 		if err != nil {
@@ -172,18 +170,18 @@ func TestCodexRollout_LocateByStoredPathThenGlob(t *testing.T) {
 
 func TestCodexRollout_MissingIsErrNoTranscript(t *testing.T) {
 	home := t.TempDir()
-	if _, err := OpenTranscript(agentkind.Codex, codexTestID, "", home); !errors.Is(err, ErrNoTranscript) {
+	if _, err := OpenCodexRollout(home, codexTestID, ""); !errors.Is(err, ErrNoTranscript) {
 		t.Errorf("no sessions dir: err = %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(home, "sessions", "2026", "10", "12"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenTranscript(agentkind.Codex, codexTestID, "", home); !errors.Is(err, ErrNoTranscript) {
+	if _, err := OpenCodexRollout(home, codexTestID, ""); !errors.Is(err, ErrNoTranscript) {
 		t.Errorf("no rollout: err = %v", err)
 	}
 	// Removed between locate and read.
 	path := writeRollout(t, home, "2026/10/12", fixture(t, "paginated.jsonl"))
-	tr, err := OpenTranscript(agentkind.Codex, codexTestID, path, home)
+	tr, err := OpenCodexRollout(home, codexTestID, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +194,7 @@ func TestCodexRollout_MissingIsErrNoTranscript(t *testing.T) {
 }
 
 func TestCodexRollout_EmptyHomeIsAnErrorNotCwd(t *testing.T) {
-	if _, err := OpenTranscript(agentkind.Codex, codexTestID, "", ""); err == nil || errors.Is(err, ErrNoTranscript) {
+	if _, err := OpenCodexRollout("", codexTestID, ""); err == nil || errors.Is(err, ErrNoTranscript) {
 		t.Errorf("empty home: err = %v, want a hard error", err)
 	}
 }
@@ -205,14 +203,14 @@ func TestCodexRollout_NonUUIDRejected(t *testing.T) {
 	home := t.TempDir()
 	writeRollout(t, home, "2026/10/12", fixture(t, "paginated.jsonl"))
 	for _, id := range []string{"", "*", "../../etc/passwd", strings.ToUpper(codexTestID), codexTestID + "x"} {
-		_, err := OpenTranscript(agentkind.Codex, id, "", home)
+		_, err := OpenCodexRollout(home, id, "")
 		if err == nil || errors.Is(err, ErrNoTranscript) {
 			t.Errorf("id %q: err = %v, want a rejection", id, err)
 		}
 	}
 }
 
-func TestOpenTranscript_ClaudeAndUnknownKind(t *testing.T) {
+func TestOpenClaudeTranscript(t *testing.T) {
 	dir := t.TempDir()
 	id := "3f2a1b4c-0000-4000-8000-0000000000aa"
 	sub := filepath.Join(dir, "projects", "-tmp-acme")
@@ -223,14 +221,11 @@ func TestOpenTranscript_ClaudeAndUnknownKind(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, id+".jsonl"), []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tr, err := OpenTranscript(agentkind.Claude, id, "/ignored/for/claude", dir)
+	tr, err := OpenClaudeTranscript(dir, id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, err := tr.OwnerText(2000); err != nil || got != "fix the login redirect" {
 		t.Errorf("claude OwnerText = %q, %v", got, err)
-	}
-	if _, err := OpenTranscript("shell", id, "", dir); err == nil {
-		t.Error("a shell kind opened a transcript")
 	}
 }

@@ -32,7 +32,7 @@
         "cost_reported": false,
         "images": true,
         "pdfs": false,
-        "web_search": false,
+        "web_search": true,
         "read_folder": "shell_sandbox",
         "turn_cap": "counted",
         "interrupt": "kill_turn",

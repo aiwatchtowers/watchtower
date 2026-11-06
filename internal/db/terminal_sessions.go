@@ -44,7 +44,7 @@ type TerminalSession struct {
 	TitleSource     string
 	FolderPath      string
 	ClaudeSessionID sql.NullString // the agent's own session id (Claude Code or Codex); NULL on a codex row until its first SessionStart
-	TranscriptPath  sql.NullString // agent_transcript_path; read on codex rows only (Claude readers keep their own lookup)
+	TranscriptPath  sql.NullString // agent_transcript_path; GetTerminalSession leaves it unread (sessionagent.LoadSession, TerminalTranscriptPath)
 	WorktreeBranch  sql.NullString // worktree_branch: the wt/<slug> branch of the worktree Watchtower created for this row; NULL = none
 	AgentState      sql.NullString
 	AgentStateAt    time.Time     // zero when never reported
@@ -98,17 +98,26 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	if failedAt.Valid {
 		s.AgentFailure = &AgentFailure{At: failedAt.String, Error: agentError}
 	}
-	// Only a codex row reads agent_transcript_path: a codex row exists only
-	// once 00109 added the column, so the readers that open a database
-	// without migrating it (`workbench asks`, the Claude hooks) keep working
-	// on a 00108 database.
-	if s.Kind == string(agentkind.Codex) {
-		if err := db.QueryRow(`SELECT agent_transcript_path FROM terminal_sessions WHERE id = ?`, id).
-			Scan(&s.TranscriptPath); err != nil {
-			return nil, fmt.Errorf("reading terminal session %d transcript path: %w", id, err)
-		}
-	}
 	return &s, nil
+}
+
+// TerminalTranscriptPath reads row id's agent_transcript_path, the path the
+// agent's SessionStart reported. GetTerminalSession leaves it out: the
+// column is 00109's, and the readers that open a database without migrating
+// it (`workbench asks`, the Claude hooks) keep working on a 00108 database.
+// The session adapter reads it for an agent that keeps the path
+// (sessionagent.LoadSession), whose rows exist only once 00109 ran. A
+// missing row is ErrTerminalSessionNotFound.
+func (db *DB) TerminalTranscriptPath(id int64) (sql.NullString, error) {
+	var path sql.NullString
+	err := db.QueryRow(`SELECT agent_transcript_path FROM terminal_sessions WHERE id = ?`, id).Scan(&path)
+	if errors.Is(err, sql.ErrNoRows) {
+		return path, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return path, fmt.Errorf("reading terminal session %d transcript path: %w", id, err)
+	}
+	return path, nil
 }
 
 // PlacedSession is a session row Watchtower started in a worktree it

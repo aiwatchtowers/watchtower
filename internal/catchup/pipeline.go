@@ -354,7 +354,7 @@ func usageFields(u *digest.Usage) (model string, inTok, outTok int, cost float64
 	if u == nil {
 		return "", 0, 0, 0
 	}
-	return u.Model, u.InputTokens, u.OutputTokens, u.CostUSD
+	return u.Model, u.InputTokens(), u.OutputTokens(), u.CostUSD()
 }
 
 // jsonString marshals a recap body or coverage record. Both are plain structs

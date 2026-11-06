@@ -24,6 +24,11 @@ enum StatisticsShotFixtures {
     }
 
     static func decode() throws -> AgentReportOverview {
+        try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json()))
+    }
+
+    /// The overview fixture with the Statistics figures, as JSON to patch.
+    static func json() throws -> [String: Any] {
         let tests = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -40,7 +45,7 @@ enum StatisticsShotFixtures {
         let blocks = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.blocks.utf8)) as? [String: Any])
         for (key, value) in blocks where key != "extra_hints" { json[key] = value }
         json["hints"] = try XCTUnwrap(json["hints"] as? [Any]) + XCTUnwrap(blocks["extra_hints"] as? [Any])
-        return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        return json
     }
 
     private static let blocks = #"""
