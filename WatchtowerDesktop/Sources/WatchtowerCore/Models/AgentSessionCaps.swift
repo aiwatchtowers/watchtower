@@ -2,9 +2,10 @@ import Foundation
 
 /// What a Workbench session's agent offers beyond its state hooks (spec
 /// 2026-11-05-llm-transport-independence §3.5 "Session capabilities").
-/// Consumers ask it instead of the kind. Mirrors Go's
-/// `agentkind.SessionCaps` by hand (a Go↔Swift dual path); plan Task A5's
-/// shared `agent_capabilities.json` replaces both.
+/// Consumers ask it instead of the kind. The rows mirror Go's
+/// `sessionagent.Caps` (WatchtowerCore stays Kit-free, so it does not read
+/// the Kit's `AgentSessionCapabilities`); `AgentSessionCapsTests` pins them
+/// to the shared `internal/sessionagent/agent_capabilities.json`.
 package struct AgentSessionCaps: Equatable, Sendable {
     /// A line pasted with its Return while the agent works is taken at the
     /// agent's next step instead of waiting for the turn's end.
@@ -48,12 +49,12 @@ package struct AgentSessionCaps: Equatable, Sendable {
     /// alone is not enough: every dialog that can open mid-turn must raise a
     /// hook state first (an MCP elicitation included), or a line pasted with
     /// its Return would answer a form Watchtower cannot see. Go's
-    /// `SessionCaps.TakesLineWhileWorking`.
+    /// `sessionagent.Caps.TakesLineWhileWorking`.
     package var takesLineWhileWorking: Bool { midturnInput && elicitation }
 
     /// The phone's one Esc (PROJ-21) may go to the session: a prompt the hooks
     /// report is never at risk, and no unreported form can be open. Go's
-    /// `SessionCaps.TakesInterrupt`.
+    /// `sessionagent.Caps.TakesInterrupt`.
     package var takesInterrupt: Bool { permissionWait && elicitation }
 
     /// `agent`'s row. Codex's comes from plan Task G7's spikes on codex

@@ -1,0 +1,37 @@
+{
+  "comment": "Workbench session capabilities per agent kind (spec 2026-11-05-llm-transport-independence §3.5). Go's sessionagent adapters are the source; this file is pinned to them by TestSessionAgent_CapsFixtureMatchesAdapters and copied to WatchtowerKit/Sources/WatchtowerKit/Resources/agent_capabilities.json (AgentSessionCapabilitiesTests).",
+  "agents": {
+    "claude": {
+      "state_events": ["SessionStart", "UserPromptSubmit", "Notification", "PermissionRequest", "PostToolUse", "StopFailure", "SubagentStart", "SubagentStop", "Stop"],
+      "failure_signal": "hook",
+      "interrupt_signal": "hook",
+      "idle_signal": true,
+      "permission_wait": true,
+      "midturn_input": true,
+      "phone_input": true,
+      "elicitation": true,
+      "registry_probe": true,
+      "compressed_transcript": false,
+      "subagent_feed": true,
+      "analytics": true,
+      "launch_hooks": false,
+      "background_tasks": true
+    },
+    "codex": {
+      "state_events": ["SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "Interrupt", "Stop"],
+      "failure_signal": "pull",
+      "interrupt_signal": "pull",
+      "idle_signal": false,
+      "permission_wait": false,
+      "midturn_input": true,
+      "phone_input": true,
+      "elicitation": false,
+      "registry_probe": true,
+      "compressed_transcript": true,
+      "subagent_feed": true,
+      "analytics": true,
+      "launch_hooks": true,
+      "background_tasks": false
+    }
+  }
+}
