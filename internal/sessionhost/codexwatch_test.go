@@ -37,6 +37,8 @@ type fakeWatchStore struct {
 	rowErrs int
 	// recordErrs is how many RecordTurn calls fail before one lands.
 	recordErrs int
+	// issueErrs is how many SetIssue calls fail before one lands.
+	issueErrs int
 }
 
 func (s *fakeWatchStore) Row(int64) (db.CodexWatchRow, error) {
@@ -70,6 +72,10 @@ func (s *fakeWatchStore) RecordTurn(_ db.CodexWatchRow, turn sessionfeed.CodexTu
 func (s *fakeWatchStore) SetIssue(seen db.CodexWatchRow, issue string, _ time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.issueErrs > 0 {
+		s.issueErrs--
+		return false, fmt.Errorf("database is locked")
+	}
 	moved := seen.SessionID != s.row.SessionID || seen.TranscriptPath != s.row.TranscriptPath || !seen.StateAt.Equal(s.row.StateAt)
 	if s.row.State != "working" || s.row.Failed || s.row.Finished || s.row.WatchIssue == issue || moved {
 		return false, nil
@@ -574,5 +580,23 @@ func TestCodexWatch_GiveUpEndsTheArmEvenWhenClearedBeforeTheNextTick(t *testing.
 	f.tick(CodexWatchEvery)
 	if issues, _ := f.store.snapshot(); len(issues) != 2 {
 		t.Fatalf("issues = %v; want the second give-up after a fresh 30 s", issues)
+	}
+}
+
+// A give-up whose write fails (a busy database) is written on a later tick,
+// though the rollout never changes again: a failed turn with no readable time.
+func TestCodexWatch_FailedGiveUpIsRetried(t *testing.T) {
+	f := newWatchFixture(t)
+	f.store.issueErrs = 1
+	noTime := strings.Replace(wTurnFailed, `"timestamp":"2026-11-05T12:19:00.918Z",`, "", 1)
+	f.write(wTurnStarted, noTime)
+	f.tick(CodexWatchEvery)
+	if issues, _ := f.store.snapshot(); len(issues) != 0 {
+		t.Fatalf("issues = %v; want none after the failed write", issues)
+	}
+	f.tick(CodexWatchEvery)
+	f.tick(CodexWatchEvery)
+	if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
+		t.Fatalf("issues = %v; want unreadable written once on the retry", issues)
 	}
 }

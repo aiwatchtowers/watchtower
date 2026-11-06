@@ -245,11 +245,13 @@ func (w *CodexWatch) unreadableTick(now time.Time) {
 // giveUp marks the row not watched; one log line per row and issue, with
 // the row id and the class only (FILES-01). A stored verdict ends the arm:
 // a hook may clear the issue before the next tick, and the next prompt then
-// starts a fresh arm, never this one's expired grace.
+// starts a fresh arm, never this one's expired grace. A failed write leaves
+// the file to be read again next tick, so the verdict is retried.
 func (w *CodexWatch) giveUp(issue string, now time.Time) {
 	ok, err := w.store.SetIssue(w.seen, issue, now)
 	if err != nil {
 		w.logOnce("marking the row not watched", err)
+		w.arm.clean = false
 		return
 	}
 	w.disarm()
