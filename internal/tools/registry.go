@@ -58,10 +58,23 @@ const AutomationEditorSurface = "automation_editor"
 
 // InboxSurface is the owner's own press in the Desktop's Inbox (spec
 // 2026-10-22-inbox-built-in-automations-design §6.2, gap 17): no MCP server,
-// chat or tool loop mounts it, and like the workbench it is no trust place —
-// its one tool is AlwaysAsk, proposed and approved by the same press
-// (`actions propose --approve`).
+// chat or tool loop mounts it, and like the workbench it is no trust place.
+// apply_track_action (AlwaysAsk) is proposed and approved by the same press
+// (`actions propose --approve`); create_target answers a card's target
+// button and the InboxReplyTools a row's Reply, both proposed only.
 const InboxSurface = "inbox"
+
+// inboxReplyTools are the tools a Reply from an Inbox row proposes (Inbox
+// builder B, asks #445 and #451): on the inbox surface, External, and never
+// approved in the same press — `actions propose --approve` refuses them, so
+// a reply waits for the owner's Approve in Needs approval.
+var inboxReplyTools = []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}
+
+// InboxReplyTools returns a fresh copy of the Reply tools' names.
+func InboxReplyTools() []string { return slices.Clone(inboxReplyTools) }
+
+// IsInboxReplyTool reports whether name is one of the Reply tools.
+func IsInboxReplyTool(name string) bool { return slices.Contains(inboxReplyTools, name) }
 
 // Binding is where a proposal came from: the chat surface, conversation and
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
@@ -549,12 +562,22 @@ func (r *Registry) propose(ctx context.Context, name string, args json.RawMessag
 // insertProposal records row. An Inbox button's proposal goes through
 // db.InsertInboxButtonProposal, whose one write transaction refuses a second
 // open proposal for the button and one whose task already exists (AGENT-05);
-// its typed refusals come back wrapped.
+// a Reply to an Inbox item goes through db.InsertInboxReplyProposal, which
+// refuses a second open reply to the same item. Typed refusals come back
+// wrapped.
 func (r *Registry) insertProposal(row db.AgentAction) (int64, error) {
-	if row.ContextType != db.InboxButtonContextType {
+	var (
+		id  int64
+		err error
+	)
+	switch {
+	case row.ContextType == db.InboxButtonContextType:
+		id, err = r.db.InsertInboxButtonProposal(row)
+	case row.ContextType == db.InboxItemContextType && IsInboxReplyTool(row.Tool):
+		id, err = r.db.InsertInboxReplyProposal(row, inboxReplyTools)
+	default:
 		return r.db.InsertAgentAction(row)
 	}
-	id, err := r.db.InsertInboxButtonProposal(row)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", row.Tool, err)
 	}
