@@ -170,6 +170,7 @@ struct InboxRowActionsFooter: View {
                 TextField("Reply…", text: Binding(get: { text }, set: { onPress(.replyChanged($0)) }))
                     .textFieldStyle(.kit)
                     .focused($composing)
+                    .onAppear { composing = true }
                     .onExitCommand { onPress(.cancelReply) }
                 Button("Propose Reply") { onPress(.proposeReply) }
                     .buttonStyle(.kitSecondary)

@@ -24,6 +24,9 @@ struct InboxFolderMenu: View {
     let content: InboxFolderMenuContent
     var onAction: (InboxFolderMenuAction) -> Void = { _ in }
 
+    /// New Folder and Rename put the cursor in their field.
+    @FocusState private var draftFocused: Bool
+
     /// The tree scrolls; New Folder, New Artifact… and the state line stay
     /// pinned under it, however many folders there are.
     var body: some View {
@@ -179,6 +182,8 @@ struct InboxFolderMenu: View {
                     .frame(width: IconSize.header)
                 TextField("Folder name", text: Binding(get: { draft.title }, set: { onAction(.draftChanged($0)) }))
                     .textFieldStyle(.kit)
+                    .focused($draftFocused)
+                    .onAppear { draftFocused = true }
                     .onSubmit { onAction(.commitDraft) }
                     .onExitCommand { onAction(.cancelDraft) }
             }
