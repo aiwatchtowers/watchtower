@@ -13,7 +13,9 @@
 // transport failure never does. Toward the relay a switch is accepted at
 // least AntiFlap after the previous one; toward CloudKit always (rules 9–10),
 // a lapse's only once a fresh account read says nobody else pays (rule 16). The
-// last accepted request wins.
+// last accepted request wins. A pass reads nothing from the relay: what needs
+// the account is recorded there and decided by the Step (asks.go,
+// entitlement.go).
 //
 // An accepted switch (rule 11; Step) runs in this order, each step durable
 // in hub_meta so a restart finishes the same switch and never rotates twice:
@@ -133,8 +135,8 @@ type AccountPhone struct {
 }
 
 // Switcher is the hub's dual transport. Request and Stale are called from
-// inside a processor's pass and never call into a processor; Step, Run and
-// the processors' passes may run concurrently.
+// inside a processor's pass: they never call into a processor and never read
+// the relay (asks.go); Step, Run and the processors' passes may run concurrently.
 type Switcher struct {
 	c      Config
 	sealer *secure.Sealer
@@ -143,6 +145,10 @@ type Switcher struct {
 	kick   chan struct{}
 
 	stepMu sync.Mutex // one Step at a time
+	// answersQueued: this Step queued answers its end writes out (asks.go).
+	answersQueued bool
+	// askAt is the index of the ask this Step is deciding (asks.go).
+	askAt int
 
 	mu     sync.Mutex // guards active, pending, paying and every read-modify-write of the switch record
 	active transport.Kind

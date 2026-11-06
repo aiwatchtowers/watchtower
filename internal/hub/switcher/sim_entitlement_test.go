@@ -710,10 +710,10 @@ func TestG2APendingSwitchIsNotOverridden(t *testing.T) {
 		w.mu.Lock()
 		w.paying[id] = true // so the phone may ask for the relay
 		w.mu.Unlock()
-		if err := w.sw.Request(w.ctx, id, transport.KindCloudKit, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), id, transport.KindCloudKit, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.sw.Request(w.ctx, id, transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), id, transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		w.mu.Lock()
@@ -725,6 +725,9 @@ func TestG2APendingSwitchIsNotOverridden(t *testing.T) {
 		w.advance(switcher.NoPayerPoll)
 		w.sw.PollOther(w.ctx) // no Step: the request stays in flight
 		w.sw.PollOther(w.ctx)
+		w.mu.Lock()
+		w.paying[id] = true // the Step decides the request: the phone may ask for the relay
+		w.mu.Unlock()
 		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}

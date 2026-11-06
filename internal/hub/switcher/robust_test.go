@@ -41,23 +41,39 @@ func TestRequestInTheLeaveWindowSeesTheNewTransport(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		a, lagging := w.addPhone(true), w.addPhone(true)
 		e := w.epoch()
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := w.sw.Step(w.ctx); err != nil { // no PollOther yet: the old side's notices wait
 			t.Fatal(err)
 		}
 		w.wantActive(transport.KindRelay)
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		if w.sw.Pending() || w.epoch() != e+1 {
 			t.Fatalf("a request for the committed transport started a switch (epoch %d)", w.epoch())
 		}
-		c, _, ok, err := w.sw.Stale(w.ctx, transport.KindCloudKit, lagging.ID().String())
-		if err != nil || !ok || c.Kind != wire.ControlSwitched || *c.Target != wire.TransportRelay ||
-			*c.Epoch != e+1 || *c.By != a.ID().String() {
-			t.Fatalf("stale answer %+v %v %v", c, ok, err)
+		// On the relay the stale answer is the Step's (asks.go): the old side's
+		// queue then carries the switch's own notice and this answer.
+		if _, _, ok, err := w.sw.Stale(w.ctx, transport.KindCloudKit, lagging.ID().String()); err != nil || ok {
+			t.Fatalf("stale in the pass: %v %v", ok, err)
+		}
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.sw.PollOther(w.ctx)
+		if _, err := lagging.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		got := switched(lagging)
+		if len(got) != 2 {
+			t.Fatalf("notices %+v, want the switch's and the stale answer", got)
+		}
+		for _, c := range got {
+			if *c.Target != wire.TransportRelay || *c.Epoch != e+1 || *c.By != a.ID().String() {
+				t.Fatalf("stale answer %+v", c)
+			}
 		}
 	})
 }
@@ -71,7 +87,7 @@ func TestSwitchHoldsThePublisherUnderItsOwnReason(t *testing.T) {
 		var n atomic.Int32
 		n.Store(1)
 		w.failingKeyboxes(&n)
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := w.sw.Step(w.ctx); err == nil {
@@ -109,7 +125,7 @@ func TestOldSideSealsNothingBetweenRotationAndAnnounce(t *testing.T) {
 		var n atomic.Int32
 		n.Store(1)
 		w.failingKeyboxes(&n)
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		_ = w.sw.Step(w.ctx)
@@ -165,7 +181,7 @@ func TestASwitchSurvivesARotationBeforeItsAnnounceAndAnUnsealablePhone(t *testin
 				return append(boxes, wire.Keybox{Grant: wire.DeviceGrant{DeviceID: ghost.String()}, Keys: &kk}), err
 			}
 		})
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		_ = w.sw.Step(w.ctx)
@@ -210,7 +226,7 @@ func TestAFailingStepBacksOff(t *testing.T) {
 			return nil, errors.New("always")
 		}
 	})
-	if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+	if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(w.ctx, 1500*time.Millisecond)
@@ -256,7 +272,7 @@ func TestAHangingOldSideNeverHoldsTheSwitch(t *testing.T) {
 			w.relay.SetHanging(true)
 			t.Cleanup(func() { w.relay.SetHanging(false) })
 			w.onCloudKit(a)
-			if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindCloudKit, ""); err != nil {
+			if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindCloudKit, ""); err != nil {
 				t.Fatal(err)
 			}
 			start := time.Now()
@@ -291,7 +307,7 @@ func TestAHangingOldSideNeverHoldsTheSwitch(t *testing.T) {
 				w.ckFake.SetHanging(true)
 				t.Cleanup(func() { w.ckFake.SetHanging(false) })
 			}
-			if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+			if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 				t.Fatal(err)
 			}
 			start := time.Now()
@@ -348,7 +364,7 @@ func TestTheAnnounceRewindsTheNewTransportsMailboxes(t *testing.T) {
 		if err := w.st.SetZoneToken(zone, 7); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := w.sw.Step(w.ctx); err != nil {

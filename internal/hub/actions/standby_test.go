@@ -29,7 +29,7 @@ type fakeSwitch struct {
 
 func (f *fakeSwitch) IsActive(k transport.Kind) bool { return k == f.active }
 
-func (f *fakeSwitch) Request(_ context.Context, from string, target transport.Kind, _ string) error {
+func (f *fakeSwitch) Request(_ context.Context, _ transport.Kind, from string, target transport.Kind, _ string) error {
 	f.requests = append(f.requests, from+" "+string(target))
 	return f.reject
 }

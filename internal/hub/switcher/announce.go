@@ -26,9 +26,14 @@ func (s *Switcher) Step(ctx context.Context) error {
 	// (the hub on the relay and heading there), so a pending switch never
 	// waits behind a read; one that needs no read supersedes a pending move
 	// like any request toward CloudKit. A lapse that accepts a switch itself
-	// is carried out below.
+	// is carried out below. What a pass recorded for a Step to decide (asks.go)
+	// comes first: those were read before anything a lapse decides now.
+	s.askAt = 0
+	s.decideAsks(ctx)
 	s.lapses(ctx)
-	return s.carryOut(ctx)
+	err := s.carryOut(ctx)
+	s.flushAnswers(ctx)
+	return err
 }
 
 // carryOut is the accepted switch's steps and any request accepted meanwhile.
@@ -48,6 +53,7 @@ func (s *Switcher) carryOut(ctx context.Context) error {
 				continue
 			}
 			s.drain(ctx, r.From) // step 2
+			s.decideAsks(ctx)    // what the drain read: a later request still replaces r (rotate skips)
 			s.pauseOld(r)
 			skipped, err := s.rotate(r) // step 3
 			if err != nil || skipped {

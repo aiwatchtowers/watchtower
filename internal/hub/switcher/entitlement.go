@@ -152,10 +152,9 @@ const metaLapsePending = "lapse_pending"
 // Step that decides it. The lapse path reads nothing here and never blocks on
 // the relay: it runs inside a processor's pass (OnControl, Request) or flush
 // (EntitlementInactive, with the processor's lock held), so a slow account
-// read there would burn the pass and starve every phone behind it. (Request's
-// not_paying check, canFollowToRelay, and Stale still read the relay in the
-// pass: older code, with the same shape, tracked apart.) The ids and times
-// are kept in hub_meta, so a restart does not lose a lapse that was waiting.
+// read there would burn the pass and starve every phone behind it (a request
+// toward the relay and a stale write's answer wait for the Step the same way,
+// asks.go). The ids and times are kept in hub_meta, so a restart does not lose a lapse that was waiting.
 func (s *Switcher) queueLapse(device string, asked bool) error {
 	id := canonical(device)
 	s.mu.Lock()
@@ -437,18 +436,6 @@ func (s *Switcher) recheckLapsed(ctx context.Context) {
 		if paying[canonical(d)] {
 			s.endLapse(ctx, d)
 		}
-	}
-}
-
-// endLapseIfPaying ends device's lapse when a fresh account read lists it
-// as paying.
-func (s *Switcher) endLapseIfPaying(ctx context.Context, device string) {
-	dev, linked, err := s.c.Store.Device(device)
-	if err != nil || !linked || dev.RelayLapsedAt == nil || s.c.Paying == nil {
-		return
-	}
-	if paying, err := s.readPaying(ctx); err == nil && paying[canonical(dev.ID)] {
-		s.endLapse(ctx, dev.ID)
 	}
 }
 

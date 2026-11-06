@@ -93,6 +93,9 @@ func (s *Switcher) checkNoPayer(ctx context.Context) {
 		s.np.reset(time.Time{})
 		return
 	}
+	if s.asksWaiting() {
+		return // the Step decides them first: this tick is tried again at the next poll
+	}
 	fp, quiet := s.fingerprint()
 	if fp == "" || !quiet {
 		s.np.reset(now)
