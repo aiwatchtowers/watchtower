@@ -678,6 +678,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.inboxPipe.SetSyncResult(syncStart, inboxSyncErr)
 	}
 	d.phaseInbox(ctx)
+	d.phaseWaitingForMe(ctx)
 	d.phaseStreamDigests(ctx)
 	d.phaseIdeaFinder(ctx)
 	d.phaseMemory(ctx)

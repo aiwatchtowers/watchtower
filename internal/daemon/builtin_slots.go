@@ -19,6 +19,7 @@ const (
 	ideaFinderID     = "idea-finder"
 	customTracksID   = "custom-tracks"
 	reactionsID      = "reactions"
+	waitingForMeID   = "waiting-for-me"
 )
 
 // TrackMyThreadsPrimitives is tracks.extract over the daemon's tracks
@@ -62,6 +63,33 @@ func (d *Daemon) WatchPrimitives() map[string]automations.PrimitiveFunc {
 		s = d.customTracksPipe
 	}
 	return builtin.WatchPrimitives(d.db, s, d.planOwner, nil)
+}
+
+// WaitingForMePrimitives is attention.waiting over the daemon's database.
+func (d *Daemon) WaitingForMePrimitives() map[string]automations.PrimitiveFunc {
+	return builtin.WaitingPrimitives(d.db, time.Now)
+}
+
+// WaitingForMeGate is Waiting for me's sync gate: due every cycle, so its
+// list follows the detector's pass that just ran. Attention detection off
+// skips it before the gate is asked (its feature, FEAT-01).
+func (d *Daemon) WaitingForMeGate() builtin.Gate { return everyCycle{} }
+
+type everyCycle struct{}
+
+func (everyCycle) Due(context.Context, builtin.Entry, time.Time) bool { return true }
+
+// phaseWaitingForMe is Waiting for me's slot, right after phaseInbox: the
+// built-in rewrites its one living artifact from the open attention items.
+// It has no legacy phase: until it is active its queued Run Now is
+// cancelled (only the slot would take it).
+func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
+	if !d.builtinOn(waitingForMeID) {
+		d.cancelQueuedBuiltinRuns(waitingForMeID, time.Now())
+		return
+	}
+	d.ensureBuiltinsSwept()
+	d.builtins.RunSlot(ctx, builtin.SlotWaitingForMe)
 }
 
 // TrackMyThreadsGate is Track my threads' sync gate: tracks and digests on, a

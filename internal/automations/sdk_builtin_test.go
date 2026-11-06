@@ -573,3 +573,54 @@ return [...out].join("|");`, false)
 		t.Errorf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
 	}
 }
+
+// A read primitive (attention.waiting) takes no argument, runs as one tool
+// step under its builtin: permission with no tokens debited, and returns
+// {status, ...Fields}.
+func TestBuiltinSDK_ReadPrimitiveIsAToolStep(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done", Fields: map[string]any{"items": []any{map[string]any{"id": 7}}}}}
+	f := builtinFixture(t, map[string]*fakePrimitive{automations.PrimitiveAttentionWaiting: p})
+	a := f.seedBuiltin(t, builtinRecipeText(`const out = [];
+for (const arg of [undefined, {}, {prompt: "P"}, "x"]) {
+  try { const r = attention.waiting(arg); out.push(r.status + ":" + r.items[0].id); } catch (e) { out.push(e.name); }
+}
+return out.join(",");`, "", "builtin:attention.waiting"), true)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	want := "done:7,done:7," + automations.ErrNameValidation + "," + automations.ErrNameValidation
+	if r.Status != db.RunSucceeded || r.Summary != want {
+		t.Fatalf("run = %s %q (%s); want %q", r.Status, r.Summary, r.Error, want)
+	}
+	if p.count() != 2 || p.calls[0].Prompt != "" || p.calls[0].BuiltinID != testBuiltinID {
+		t.Errorf("calls = %+v; want two, without a prompt", p.calls)
+	}
+	for _, s := range f.steps(t, r.ID) {
+		if s.Kind != automations.StepKindTool || s.Name != automations.PrimitiveAttentionWaiting ||
+			s.Permission != "builtin:attention.waiting" || s.InputTokens != 0 || s.OutputTokens != 0 {
+			t.Errorf("step = %+v", s)
+		}
+	}
+	if r.InputTokens != 0 || r.OutputTokens != 0 {
+		t.Errorf("run usage = %d/%d; want none", r.InputTokens, r.OutputTokens)
+	}
+}
+
+// A read primitive's error fails the run as PrimitiveFailed; a dry run
+// calls it, as a dry run calls a read tool.
+func TestBuiltinSDK_ReadPrimitiveErrorAndDryRun(t *testing.T) {
+	p := &fakePrimitive{err: errors.New("no such table")}
+	f := builtinFixture(t, map[string]*fakePrimitive{automations.PrimitiveAttentionWaiting: p})
+	a := f.seedBuiltin(t, builtinRecipeText(`return attention.waiting().status;`, "", "builtin:attention.waiting"), true)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	if r.Status != db.RunFailed || !strings.Contains(r.Error, automations.ErrNamePrimitiveFailed) {
+		t.Errorf("run = %s (%s); want failed with %s", r.Status, r.Error, automations.ErrNamePrimitiveFailed)
+	}
+	p.err, p.res = nil, automations.PrimitiveResult{Status: "done"}
+	id := f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerDryRun})
+	dry, err := f.e.ExecuteInline(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Status != db.RunSucceeded || dry.Summary != "done" || p.count() != 2 {
+		t.Errorf("dry run = %s %q (%s), calls %d; want the read made", dry.Status, dry.Summary, dry.Error, p.count())
+	}
+}

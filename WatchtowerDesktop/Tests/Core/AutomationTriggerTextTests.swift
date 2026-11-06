@@ -92,7 +92,8 @@ final class AutomationTriggerTextTests: XCTestCase {
             "tracks": "After every sync",
             "ideas": "Every few hours",
             "reactions": "When you react in Slack",
-            "custom_tracks": "After every sync"
+            "custom_tracks": "After every sync",
+            "waiting_for_me": "After every sync"
         ]
         for (slot, text) in words {
             let spec = #"{"sync":"\#(slot)"}"#
@@ -110,5 +111,7 @@ final class AutomationTriggerTextTests: XCTestCase {
         XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:reaction.compose"),
                        "Turn your reactions into proposals")
         XCTAssertEqual(AutomationCardPresentation.permissionLine("track:scan"), "Add events to this watch's track")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:attention.waiting"),
+                       "Read the messages waiting on you")
     }
 }

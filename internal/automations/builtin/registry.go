@@ -24,8 +24,8 @@ var recipeFS embed.FS
 // recipe's trigger.sync).
 type Slot string
 
-// The sync slots (automations.SyncSlots). SlotCustomTracks holds the watch
-// recipes (Personal), no built-in.
+// The sync slots (automations.SyncSlots; SlotWaitingForMe is in waiting.go).
+// SlotCustomTracks holds the watch recipes (Personal), no built-in.
 const (
 	SlotMorningBrief Slot = "morning_brief"
 	SlotCustomTracks Slot = "custom_tracks"
@@ -199,6 +199,25 @@ var registry = []Entry{
 		When:          func(*config.Config) string { return "When you react to a Slack message" },
 		RunNow:        false,
 		NoRunNowNote:  "Reactions run for each reaction you place",
+	},
+	{
+		ID:         "waiting-for-me",
+		Name:       "Waiting for me",
+		Slot:       SlotWaitingForMe,
+		Recipe:     mustRecipe("waiting-for-me"),
+		FeatureIDs: []string{"secretary-inbox"},
+		Primitives: []string{automations.PrimitiveAttentionWaiting},
+		Reads:      []string{"The mentions, messages, tickets and mail attention detection found"},
+		Does: []string{
+			"Lists everything that still waits on your answer, newest first",
+			"Updates the list after every sync; an item leaves when you answer it in the source, mark it done or snooze it",
+			"Uses no AI",
+		},
+		Sends:         []string{"One Waiting for me list in your Inbox"},
+		ResultFilter:  "messages",
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
+		RunNow:        true,
 	},
 }
 

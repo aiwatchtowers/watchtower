@@ -296,10 +296,11 @@ func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
 }
 
 // TestCard_DoesAndResultFilter: every card lists what it does and names the
-// Inbox filter its result lands in and its default folder (the root for the
-// shipped four).
+// Inbox filter its result lands in and its default folder (the root for
+// every shipped built-in so far).
 func TestCard_DoesAndResultFilter(t *testing.T) {
-	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations"}
+	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations",
+		"waiting-for-me": "messages"}
 	f := newFixture(t)
 	for _, e := range All() {
 		card, err := Card(f.d, f.cfg, f.ws, e, nil, f.clock.Now())

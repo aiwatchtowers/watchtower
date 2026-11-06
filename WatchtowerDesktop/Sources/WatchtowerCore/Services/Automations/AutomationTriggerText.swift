@@ -26,7 +26,8 @@ package enum AutomationTriggerText {
         "tracks": "After every sync",
         "ideas": "Every few hours",
         "reactions": "When you react in Slack",
-        "custom_tracks": "After every sync"
+        "custom_tracks": "After every sync",
+        "waiting_for_me": "After every sync"
     ]
 
     private static let eventWords: [String: String] = [

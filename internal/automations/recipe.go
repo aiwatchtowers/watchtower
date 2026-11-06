@@ -66,7 +66,7 @@ const (
 )
 
 // SyncSlots are the daemon sync slots a trigger.sync may name.
-var SyncSlots = []string{"morning_brief", slotCustomTracks, "tracks", "reactions", "ideas"}
+var SyncSlots = []string{"morning_brief", slotCustomTracks, "tracks", "reactions", "ideas", "waiting_for_me"}
 
 // slotCustomTracks is the one sync slot a Personal recipe may use: a watch
 // recipe holding track:scan.
