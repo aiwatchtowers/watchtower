@@ -105,19 +105,31 @@ func TestApprovalHook_EveryWriterNotifies(t *testing.T) {
 		require.NoError(t, err)
 		file, err := parser.ParseFile(token.NewFileSet(), f, src, 0)
 		require.NoError(t, err)
+		// Package-level consts and vars holding such SQL: a function that
+		// names one writes too.
+		sqlNames := map[string]bool{}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs := spec.(*ast.ValueSpec)
+				for i, v := range vs.Values {
+					if i < len(vs.Names) && nodeWrites(v, write, nil) {
+						sqlNames[vs.Names[i].Name] = true
+					}
+				}
+			}
+		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
-			writes, calls := false, false
+			writes, calls := nodeWrites(fn.Body, write, sqlNames), false
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				switch x := n.(type) {
-				case *ast.BasicLit:
-					if x.Kind == token.STRING && write.MatchString(x.Value) {
-						writes = true
-					}
-				case *ast.CallExpr:
+				if x, ok := n.(*ast.CallExpr); ok {
 					if sel, ok := x.Fun.(*ast.SelectorExpr); ok && notifies[sel.Sel.Name] {
 						calls = true
 					}
@@ -133,6 +145,22 @@ func TestApprovalHook_EveryWriterNotifies(t *testing.T) {
 	assert.ElementsMatch(t, []string{"InsertAgentAction", "TransitionAgentAction", "DismissAgentAction",
 		"ApproveAgentActionWithArgs", "InsertInboxButtonProposal", "InsertReminder", "MarkReminderDone",
 		"SnoozeReminder"}, writers, "the writers the scan found")
+}
+
+// nodeWrites reports whether n holds a string literal matching write, or
+// names one of sqlNames (a package-level const or var that holds one).
+func nodeWrites(n ast.Node, write *regexp.Regexp, sqlNames map[string]bool) bool {
+	found := false
+	ast.Inspect(n, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.BasicLit:
+			found = found || (x.Kind == token.STRING && write.MatchString(x.Value))
+		case *ast.Ident:
+			found = found || sqlNames[x.Name]
+		}
+		return !found
+	})
+	return found
 }
 
 func TestApprovalHook_NeverCalledInsideTransaction(t *testing.T) {
