@@ -260,7 +260,7 @@ An all-zero shared secret is refused on either side.
 
 Ending the link needs those two answered account reads and nothing else. No feed pass, data-zone read or marker plays a part in it.
 
-**The foreground only,** because S60 lives only in the model's memory and would die with a background launch, leaving a Mac gone with no reason, and because the warning must be on screen first. A background launch does nothing. **A limit that follows: a phone nobody opens keeps its keys, with no bound.** This is the agent's decision, listed in "Still waiting".
+**The foreground only,** because S60 lives only in the model's memory and would die with a background launch, leaving a Mac gone with no reason, and because the warning must be on screen first. A background launch does nothing. **A limit that follows: a phone nobody opens keeps its keys, with no bound.** The owner accepted this (ask #1098).
 
 **What `termCheck()` sends first (ask #1040, point 5),** in the order `synced` uses on a refusal today: read, send, read again. For each current row in `Transaction.unfinished` (read at `6bac964c6`):
 
@@ -907,7 +907,7 @@ Task 13, Task 0 ─ Task 17 ─ Task 11 (PR C)
 
 ### Task 17: The left-behind phone's banner and the term
 
-**Depends on:** Task 13; Task 0, seen by the owner; the owner's answers on the term's three rows marked for the owner ("Still waiting")
+**Depends on:** Task 13; Task 0, seen by the owner
 
 **Files:**
 - Modify: `WatchtowerMobile/Sources/App/Relay/RelayAccountCenter.swift` (a read that sets the mark, and `termCheck()`), `WatchtowerMobile/Sources/App/LinkStore.swift` (`macMoved`), `WatchtowerKit/Sources/WatchtowerSync/Relay/TransportFollowerPolicy.swift` (a command, on `slotLost`, `switched` or `marker` toward iCloud with no other route), `WatchtowerMobile/Sources/App/Hubs/TransportFollower.swift`, `WatchtowerMobile/Sources/Features/Now/RelayBannerModel.swift`, `NowModel.swift` and `NowView.swift` (the row for another Mac), `WatchtowerMobile/Sources/Features/Settings/MacsModel.swift` and `MacsView.swift` (the row's line), `WatchtowerMobile/Sources/Features/Onboarding/LinkNotice.swift`, `LinkingViewModel.swift` (`unlinkRow` at the term), `WatchtowerMobile/Sources/App/Hubs/HubSession.swift` (the check in the foreground), `WatchtowerMobile/Tests/ScreenshotTourTests.swift` (S59, S60, S61). The banner is the plain, calm card of ask #1040, not amber
@@ -1030,10 +1030,11 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | A relay-only phone's keys have a term of about 21 days from the first refusal | ask #1082 |
 | At the term all link keys go | ask #1086 |
 | The term is carried out by ending the link through today's `unlinkRow`: the replica, Not delivered rows and the row go too, recordings stay, it waits for a running recording, and the person links again, even if they pay afterwards. The hub's row usually stays, because the farewell is usually refused | ask #1093 |
-| The term acts only in the foreground and only after two answered account reads at least 5 minutes apart show the phone not paying or with no slot, an undelivered purchase or renewal sent first (ask #1040, point 5). Nothing else ends a link | decided by the agent, reviews of asks #1090, #1092, #1094, #1095 and #1097; **for the owner: the foreground condition** |
-| A phone that pays and holds the Mac in a slot, with the Mac moved to iCloud, has no term: S59 and **Forget This Mac**, keys kept until pressed. If the marker does not open, it has no S59 either. Narrows "the term ends the link" (ask #1093) and the keys' term (ask #1082) to phones the relay refuses | proposed in review of ask #1095; **with the owner, ask #1096** |
+| The term acts only in the foreground and only after two answered account reads at least 5 minutes apart show the phone not paying or with no slot, an undelivered purchase or renewal sent first (ask #1040, point 5). Nothing else ends a link | the foreground condition, with a phone never opened keeping its keys with no limit: ask #1098; the rest decided by the agent, reviews of asks #1090, #1092, #1094, #1095 and #1097 |
+| A phone that pays and holds the Mac in a slot, with the Mac moved to iCloud, has no term: S59 and **Forget This Mac**, keys kept until pressed. If the marker does not open, it has no S59 either. Narrows "the term ends the link" (ask #1093) and the keys' term (ask #1082) to phones the relay refuses | ask #1098 |
 | A purchase this phone made that the relay has not seen holds a lapse's term while it is current, and S61 says to tap **Restore Purchases**, on the card; a renewal does not. `transferLimit`, `notImplemented` and `updateRequired` hold it with no line. No purchase holds a lost slot's term. A refusal counts only from the send at the term | decided by the agent after reading `RelayAccountCenter`, reviews of asks #1094, #1095 and #1097 |
-| A refused link warns from the first refusal with a fixed date, `since + 21 days` (S61), on Now for any Mac and on its Settings row. The date is the link's term, so ask #1077's rule on numbers does not touch it. A person back past the date sees the line first, and the link ends at a later opening, at least 5 minutes on | the warning asked for in ask #1094; the timing decided by the agent; **with the owner, ask #1096** |
+| A refused link warns from the first refusal with a fixed date, `since + 21 days` (S61), on Now for any Mac and on its Settings row. The date is the link's term, so ask #1077's rule on numbers does not touch it. A person back past the date sees the line first, and the link ends at a later opening, at least 5 minutes on | the warning asked for in ask #1094; the timing decided by the agent |
+| No local notification of the link's end date | ask #1098 |
 | A failed account read waits, with no cap, so a phone whose reads never answer keeps its keys | ask #1093 |
 | S60 names 21 days and S61 a date. That is the link's term, not an exposure bound, so ask #1077's rule on numbers does not touch it; the wording is the agent's, and the owner checks it on Task 0's frame | decided by the agent, review of ask #1089 |
 | One mark: each answered read clears it on paying with a slot, and else sets `.lapse` or `.slot` by what it shows, keeping `since`. A known move is a separate flag for S59, cleared only on a marker toward the relay | decided by the agent, reviews of asks #1089, #1090 and #1095 |
@@ -1053,7 +1054,6 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 
 ## Still waiting on later owner steps
 
-- **The term's three rows marked for the owner. Task 17 does not start before the owner answers.** Two are in ask #1096: a phone that pays with its Mac moved has no term; and the warning for a person back past the date, which is the line on one opening, at least 5 minutes before the end. The third is the foreground condition: a phone nobody opens keeps its keys, with no bound, a limit that follows from the term needing an account read with the warning on screen.
 - **The numeric thresholds in "Measuring the cost."** The owner sets them before the measuring run; the controller asks.
 - **Frames S58, S59, S60 and S61.** Shown to the owner before Tasks 16 and 17 (Task 0).
 
