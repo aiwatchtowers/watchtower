@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/gitbin"
 	"watchtower/internal/sessionreport"
 )
 
@@ -201,7 +203,7 @@ func TestWorkbenchSessionReport_FinishedGoldenFillsEveryField(t *testing.T) {
 		"agent_state_at", "finished_at", "finish_summary"} {
 		assert.NotEmpty(t, session[key], "session.%s", key)
 	}
-	assert.Equal(t, map[string]any{"done": float64(3), "total": float64(5)}, got["progress"])
+	assert.Equal(t, map[string]any{"done": float64(3), "total": float64(5), "merged": float64(0)}, got["progress"])
 	assert.NotEmpty(t, got["pr_note"])
 	// Each key is filled on at least one entry of the list.
 	filled := func(list string, keys ...string) {
@@ -265,4 +267,53 @@ func TestWorkbenchSessionReport_MergedReadsOnce(t *testing.T) {
 	assert.Equal(t, "PR #147 merged 2026-10-02T12:00:00Z — Session report",
 		prReportLine(sessionreport.PR{Ref: "pr:147", PRNumber: &n, State: "merged", Title: "Session report",
 			MergedAt: "2026-10-02T12:00:00Z"}))
+}
+
+// --summary refreshes the merge verdicts with git only (board #986): a task
+// whose branch is merged into its parent's branch shows as merged on the row
+// line, apart from done, and gh never runs.
+func TestWorkbenchSessionReport_SummaryRefreshesTheMergedShare(t *testing.T) {
+	repo := gitBranchRepo(t) // main + "feature"
+	bin, _ := gitbin.Locate()
+	git := func(args ...string) {
+		c := exec.Command(bin, args...)
+		c.Dir = repo
+		out, err := c.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	git("checkout", "-q", "-b", "wt/m", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "m.txt"), []byte("m\n"), 0o644))
+	git("add", "m.txt")
+	git("commit", "-q", "-m", "m")
+	git("checkout", "-q", "feature")
+	git("merge", "-q", "--no-ff", "-m", "merge m", "wt/m")
+	git("branch", "wt/fresh")
+	git("checkout", "-q", "main")
+
+	fixture := filepath.Join(t.TempDir(), "merged.sql")
+	require.NoError(t, os.WriteFile(fixture, []byte(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
+    (500, 'Feature', '2026-09-28', '2026-10-05', NULL, 'in_progress', 1, 'feature'),
+    (501, 'Done task', '2026-09-28', '2026-10-05', 500, 'done', 1, 'wt/done'),
+    (502, 'Merged task', '2026-09-28', '2026-10-05', 500, 'in_review', 1, 'wt/m'),
+    (503, 'Fresh task', '2026-09-28', '2026-10-05', 500, 'todo', 1, 'wt/fresh');
+INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id) VALUES
+    (1, 1, 'claude', 'Feature', 500, '/tmp/acme', 'uuid-1');
+`), 0o644))
+	loadSessionReportFixture(t, fixture, repo)
+	calls := sessionReportGH(t, true)
+
+	out, err := runSessionReport(t, "--workbench", "1", "--summary", "--json")
+	require.NoError(t, err, out)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &rows), out)
+	require.Len(t, rows, 1)
+	assert.EqualValues(t, 1, rows[0]["done"])
+	assert.EqualValues(t, 3, rows[0]["total"])
+	assert.EqualValues(t, 1, rows[0]["merged"], "wt/m only: a fresh branch has no work of its own")
+	assert.Empty(t, calls(), "--summary never runs gh")
+
+	out, err = runSessionReport(t, "--workbench", "1", "--summary")
+	require.NoError(t, err)
+	assert.Contains(t, out, "1/3 · 1 merged")
 }

@@ -110,7 +110,11 @@ type refInfo struct {
 	ahead, behind []int
 }
 
-func newGitState(ctx context.Context, o Options) *gitState {
+func newGitState(ctx context.Context, o Options) *gitState { return newGitStateAgainst(ctx, o, "") }
+
+// newGitStateAgainst is newGitState with base (a branch name) in place of the
+// default branch; "" = the default branch.
+func newGitStateAgainst(ctx context.Context, o Options, base string) *gitState {
 	g := &gitState{o: o}
 	// No git call at all unless the folder is inside a repository, so a
 	// plain folder never spawns git; inside one, ExecRunner runs the git
@@ -133,7 +137,10 @@ func newGitState(ctx context.Context, o Options) *gitState {
 		return g
 	}
 	g.workTree = true
-	g.defaultName = g.findDefaultName(ctx)
+	g.defaultName = base
+	if base == "" {
+		g.defaultName = g.findDefaultName(ctx)
+	}
 	if ctx.Err() != nil {
 		return g
 	}
@@ -152,7 +159,9 @@ func newGitState(ctx context.Context, o Options) *gitState {
 	if ctx.Err() != nil {
 		return g
 	}
-	if len(g.bases) == 0 {
+	if len(g.bases) == 0 && base != "" {
+		g.notes = append(g.notes, fmt.Sprintf("base branch %s could not be resolved locally or on origin; merge checks into it skipped", base))
+	} else if len(g.bases) == 0 {
 		g.notes = append(g.notes, fmt.Sprintf("default branch %s could not be resolved locally or on origin (renamed? run `git remote set-head origin -a`); branch checks skipped", g.defaultName))
 	}
 	return g
@@ -173,6 +182,17 @@ func OpenRepository(ctx context.Context, folder string, run Runner) *Repository 
 	return &Repository{g: newGitState(ctx, Options{Folder: folder, Run: run})}
 }
 
+// OpenRepositoryAgainst is OpenRepository with base — a branch, local or on
+// origin — in place of the default branch: BranchMerge then says whether a
+// branch's work is in base, with the same detection (a commit-less branch cut
+// from base is not merged; merge, fast-forward, cherry and squash are).
+func OpenRepositoryAgainst(ctx context.Context, folder, base string, run Runner) *Repository {
+	if run == nil {
+		run = ExecRunner
+	}
+	return &Repository{g: newGitStateAgainst(ctx, Options{Folder: folder, Run: run}, base)}
+}
+
 // GitMissing reports that the folder is inside a repository but no git
 // binary exists outside the /usr/bin/git shim (gh, which runs git from PATH,
 // must not run either).
@@ -181,11 +201,12 @@ func (r *Repository) GitMissing() bool { return r.g.noGit }
 // Notes say why branch checks are skipped, if they are.
 func (r *Repository) Notes() []string { return r.g.notes }
 
-// BranchMerge is a branch's merge state against the default branch.
+// BranchMerge is a branch's merge state against the default branch (or the
+// base OpenRepositoryAgainst named).
 type BranchMerge int
 
 const (
-	BranchUnknown   BranchMerge = iota // a git call failed, no default branch, or the branch is the default one
+	BranchUnknown   BranchMerge = iota // a git call failed, no base, or the branch is the base itself
 	BranchMissing                      // exists neither locally nor on origin
 	BranchMerged                       // its work is in the default branch (merge, fast-forward, cherry, squash)
 	BranchNotMerged                    // every base says its work is not in it
