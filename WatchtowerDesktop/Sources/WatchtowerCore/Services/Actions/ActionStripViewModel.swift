@@ -147,9 +147,11 @@ package final class ActionStripViewModel {
         // The stand-in rule (`WaitingForMeState`): a stale Waiting for me
         // list never counts beside the Messages entry it gives way to.
         let artifacts = waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree))
-        let refState = try InboxRefState.read(db, refs: InboxFolderCounts.refs(of: artifacts), nowUTC: nowUTC)
+        let refs = InboxFolderCounts.refs(of: artifacts)
+        let refState = try InboxRefState.read(db, refs: Array(refs.values.joined()), nowUTC: nowUTC)
         let legacy = try legacyCounts(db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
-        let counts = InboxFolderCounts.counts(tree: tree, artifacts: artifacts, refState: refState, legacy: legacy)
+        let counts = InboxFolderCounts.counts(
+            tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy)
         return InboxFolderCounts.badge(counts: counts, tree: tree)
     }
 

@@ -15,9 +15,11 @@ package enum InboxFolderCounts {
     /// Needs approval counts the approvals it shows, whether a recipe card
     ///   or a native one draws each: only its `legacy` count, never its
     ///   artifacts' rows, which are those same approvals.
+    /// `refs` is `refs(of: artifacts)`: each document parsed once.
     package static func counts(
         tree: InboxFolderTree,
         artifacts: [Int64: [AutomationOutputCard]],
+        refs: [Int64: [InboxRef]],
         refState: InboxRefState,
         legacy: [Int64: Int]
     ) -> [Int64: Int] {
@@ -25,23 +27,27 @@ package enum InboxFolderCounts {
         for folder in tree.folders {
             var count = legacy[folder.id] ?? 0
             if folder.kind != .approvals {
-                count += (artifacts[folder.id] ?? []).reduce(0) { $0 + artifactCount($1, refState: refState) }
+                count += (artifacts[folder.id] ?? []).reduce(0) {
+                    $0 + artifactCount($1, refs: refs[$1.id] ?? [], refState: refState)
+                }
             }
             out[folder.id] = count
         }
         return out
     }
 
-    /// One artifact's share of its folder's count.
-    package static func artifactCount(_ card: AutomationOutputCard, refState: InboxRefState) -> Int {
-        let refs = InboxRef.refs(blocksJSON: card.blocksJSON)
+    /// One artifact's share of its folder's count; `refs` are its rows' refs.
+    package static func artifactCount(_ card: AutomationOutputCard, refs: [InboxRef], refState: InboxRefState) -> Int {
         if refs.isEmpty { return card.isUnread ? 1 : 0 }
         return refs.filter(refState.waits).count
     }
 
-    /// Every row ref of `artifacts`: what `InboxRefState.read` checks.
-    package static func refs(of artifacts: [Int64: [AutomationOutputCard]]) -> [InboxRef] {
-        artifacts.values.flatMap { $0.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) } }
+    /// Each artifact's row refs (card id → refs), its document parsed once:
+    /// what `InboxRefState.read` checks and `counts` counts.
+    package static func refs(of artifacts: [Int64: [AutomationOutputCard]]) -> [Int64: [InboxRef]] {
+        var out: [Int64: [InboxRef]] = [:]
+        for card in artifacts.values.joined() { out[card.id] = InboxRef.refs(blocksJSON: card.blocksJSON) }
+        return out
     }
 
     /// The sidebar badge: the sum over the folders the menu shows (a hidden

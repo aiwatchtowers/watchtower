@@ -25,10 +25,14 @@ final class InboxFolderCountsTests: XCTestCase {
         )
     }
 
+    private func count(_ card: AutomationOutputCard, _ state: InboxRefState) -> Int {
+        InboxFolderCounts.artifactCount(card, refs: InboxRef.refs(blocksJSON: card.blocksJSON), refState: state)
+    }
+
     func testPlainArtifactCountsOneWhileUnread() {
         let state = InboxRefState()
-        XCTAssertEqual(InboxFolderCounts.artifactCount(card(1), refState: state), 1)
-        XCTAssertEqual(InboxFolderCounts.artifactCount(card(2, read: true), refState: state), 0)
+        XCTAssertEqual(count(card(1), state), 1)
+        XCTAssertEqual(count(card(2, read: true), state), 0)
     }
 
     func testRefArtifactCountsItsWaitingRowsWhateverItsReadState() {
@@ -37,16 +41,18 @@ final class InboxFolderCountsTests: XCTestCase {
         let state = InboxRefState(shown: [waiting, shownOnly], waiting: [waiting])
         let refs = [("inbox_item", Int64(10)), ("idea", 11), ("track", 12)]
 
-        XCTAssertEqual(InboxFolderCounts.artifactCount(card(1, refs: refs), refState: state), 1,
+        XCTAssertEqual(count(card(1, refs: refs), state), 1,
                        "a shown row that does not wait and a closed row are not counted")
-        XCTAssertEqual(InboxFolderCounts.artifactCount(card(2, read: true, refs: refs), refState: state), 1)
+        XCTAssertEqual(count(card(2, read: true, refs: refs), state), 1)
         XCTAssertEqual(InboxFolderCounts.artifactCount(card(3, refs: [("track", 12)]), refState: state), 0,
                        "every row closed: 0 even unread")
     }
 
     func testFolderCountsItsOwnArtifactsNotItsChildrens() {
+        let artifacts = [Int64(3): [card(1), card(2)], 4: [card(3)]]
         let counts = InboxFolderCounts.counts(
-            tree: tree, artifacts: [3: [card(1), card(2)], 4: [card(3)]], refState: InboxRefState(), legacy: [:])
+            tree: tree, artifacts: artifacts, refs: InboxFolderCounts.refs(of: artifacts), refState: InboxRefState(),
+            legacy: [:])
 
         XCTAssertEqual(counts[3], 2)
         XCTAssertEqual(counts[4], 1)
@@ -57,12 +63,21 @@ final class InboxFolderCountsTests: XCTestCase {
     func testNeedsApprovalCountsTheApprovalsItShowsNotItsArtifactRows() {
         let action = InboxRef(kind: .action, id: 7)
         let state = InboxRefState(shown: [action], waiting: [action])
+        let artifacts = [Int64(2): [card(1, refs: [("action", 7)]), card(2)]]
         let counts = InboxFolderCounts.counts(
-            tree: tree, artifacts: [2: [card(1, refs: [("action", 7)]), card(2)]], refState: state,
+            tree: tree, artifacts: artifacts, refs: InboxFolderCounts.refs(of: artifacts), refState: state,
             legacy: [2: 3, 1: 2])
 
         XCTAssertEqual(counts[2], 3, "the recipe card's row is one of those three approvals")
         XCTAssertEqual(counts[1], 2, "legacy terms add to the root")
+    }
+
+    func testRefsOfParsesEachCardOnceByID() {
+        let artifacts = [Int64(1): [card(10, refs: [("track", 1)]), card(11)], 3: [card(12, refs: [("idea", 2), ("idea", 3)])]]
+        let refs = InboxFolderCounts.refs(of: artifacts)
+        XCTAssertEqual(refs[10], [InboxRef(kind: .track, id: 1)])
+        XCTAssertEqual(refs[11], [])
+        XCTAssertEqual(refs[12], [InboxRef(kind: .idea, id: 2), InboxRef(kind: .idea, id: 3)])
     }
 
     func testBadgeLeavesHiddenFoldersOut() {
