@@ -260,6 +260,7 @@ var cliNoContentCommands = map[string]bool{
 	"imap list":                        true,
 	"imap remove":                      true,
 	"imap rename":                      true,
+	"inbox approvals changed":          true,
 	"inbox backfill-mentions":          true,
 	"inbox dismiss":                    true,
 	"inbox folders create":             true,
