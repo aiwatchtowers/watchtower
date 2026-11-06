@@ -15,15 +15,15 @@ const (
 	MaxTitleRunes   = 60
 )
 
-// cleanTitle trims a title and checks it: 1..MaxTitleRunes runes, no
-// control characters (a newline included).
+// cleanTitle trims a title and checks it: 1..MaxTitleRunes runes, on one
+// line (no control or format character, no line or paragraph separator).
 func cleanTitle(raw string) (string, error) {
 	title := strings.TrimSpace(raw)
 	n := utf8.RuneCountInString(title)
 	if n == 0 || n > MaxTitleRunes || !utf8.ValidString(title) {
 		return "", ErrBadTitle
 	}
-	if strings.IndexFunc(title, unicode.IsControl) >= 0 {
+	if strings.IndexFunc(title, notOnOneLine) >= 0 {
 		return "", ErrBadTitle
 	}
 	return title, nil
@@ -35,4 +35,11 @@ func checkIcon(icon string) error {
 		return nil
 	}
 	return refuse(ErrUnknownIcon, "unknown icon %q", icon)
+}
+
+// notOnOneLine is a rune a title may not hold: a control (Cc, a newline
+// included), a format character (Cf, such as U+202E, which reorders what
+// the menu shows) or a line/paragraph separator (Zl, Zp).
+func notOnOneLine(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
 }

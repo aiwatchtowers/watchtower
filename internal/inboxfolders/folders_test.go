@@ -361,6 +361,10 @@ func TestCreate_Titles(t *testing.T) {
 		"Rel\nease",
 		"Rel\x00ease",
 		"Rel\u0085ease",
+		"Rel\u2028ease",
+		"Rel\u2029ease",
+		"Rel\u202Eease",
+		"Rel\u200Bease",
 		"bad\xffutf8",
 	}
 	before := f.tree()
