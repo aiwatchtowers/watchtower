@@ -2,10 +2,13 @@ package chat
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 )
 
 // Querier is the one-shot streaming call a stateless provider offers;
@@ -48,17 +51,79 @@ func NewTurnBackend(q Querier, d *db.DB, conversationID int64, opts ...TurnOptio
 
 func (b *turnBackend) Start(ctx context.Context) (string, error) { return "", ctx.Err() }
 
+// imageQuerier is a querier that takes image files for its next query only
+// (codex.Client: --image).
+type imageQuerier interface{ SetImages(paths []string) }
+
+// turnImagePattern names a turn's image files in the system temp
+// directory (fsutil.StaleTempPatterns sweeps one a killed turn left).
+const turnImagePattern = "wt-chat-image-*"
+
+// writeTurnImages writes each image's checked bytes to its own 0600 temp
+// file, held from the stale-temp sweep while the turn runs (CHAT-04: the
+// provider gets a path, never the content on argv, and never the owner's
+// own path, which could change after the check). release removes them.
+func writeTurnImages(images []TurnImage) (paths []string, release func(), err error) {
+	var holds []func()
+	release = func() {
+		for _, h := range holds {
+			h()
+		}
+		for _, p := range paths {
+			_ = os.Remove(p)
+		}
+	}
+	for _, img := range images {
+		p, werr := fsutil.WritePrivateTemp(turnImagePattern+imageExt(img.MediaType), string(img.Data))
+		if werr != nil {
+			release()
+			return nil, func() {}, fmt.Errorf("writing a turn image: %w", werr)
+		}
+		paths = append(paths, p)
+		hold, herr := fsutil.HoldTempFile(p)
+		if herr != nil {
+			release()
+			return nil, func() {}, fmt.Errorf("holding a turn image: %w", herr)
+		}
+		holds = append(holds, hold)
+	}
+	return paths, release, nil
+}
+
+// imageExt is the file extension of an image media type.
+func imageExt(mediaType string) string {
+	switch mediaType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	}
+	return ".png"
+}
+
 func (b *turnBackend) Turn(ctx context.Context, c Command, emit func(Event)) error {
 	replay, err := ReplayFromDB(b.d, b.conversationID, c.TurnID, c.Attachments)
 	if err != nil {
 		return err
 	}
-	// Text-like attachments are inlined ahead of the replay + user text; an
-	// image/PDF is an *AttachmentError, returned before the provider is
-	// called (the session maps it to attachment_unsupported).
-	text, err := InlineTextAttachments(c.Text, c.Attachments)
+	// Text-like attachments are inlined ahead of the replay + user text;
+	// images go by file to a querier that takes them (codex --image); any
+	// other image or PDF is an *AttachmentError, returned before the
+	// provider is called (the session maps it to attachment_unsupported).
+	iq, takesImages := b.q.(imageQuerier)
+	text, images, err := TurnAttachments(c.Text, c.Attachments, AttachmentCaps{Images: takesImages})
 	if err != nil {
 		return err
+	}
+	if len(images) > 0 {
+		paths, release, err := writeTurnImages(images)
+		if err != nil {
+			return err
+		}
+		defer release()
+		iq.SetImages(paths)
 	}
 
 	turnCtx, cancel := context.WithCancel(ctx)

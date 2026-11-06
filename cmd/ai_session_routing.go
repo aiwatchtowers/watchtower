@@ -113,7 +113,7 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				if requiredClaudeAI.mode.On || len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0 {
 					return false, nil
 				}
-				if supported, err := sessionTextAttachmentCapability(c.Attachments); err != nil || !supported {
+				if supported, err := sessionAttachmentCapability(p, c.Attachments); err != nil || !supported {
 					return supported, err
 				}
 				if p != cfg.AI.Provider {
@@ -186,13 +186,15 @@ func reserveConnectionsCapable(cfg *config.Config, database *db.DB, provider str
 	return len(codexEnvSkips(cfg, conns, os.Environ())) == 0, nil
 }
 
-func sessionTextAttachmentCapability(attachments []chat.Attachment) (bool, error) {
-	_, err := chat.InlineTextAttachments("", attachments)
+// sessionAttachmentCapability reports whether provider p's replay backend
+// takes the turn's files (chat.ProviderAttachmentCaps; a PDF never).
+func sessionAttachmentCapability(p string, attachments []chat.Attachment) (bool, error) {
+	_, _, err := chat.TurnAttachments("", attachments, chat.ProviderAttachmentCaps(p))
 	if err == nil {
 		return true, nil
 	}
 	var rejection *chat.AttachmentError
-	if errors.As(err, &rejection) && rejection.RequiresClaude {
+	if errors.As(err, &rejection) && rejection.CapabilityMissing {
 		return false, nil
 	}
 	return false, fmt.Errorf("checking turn attachments: %w", err)

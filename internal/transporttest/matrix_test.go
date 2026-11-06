@@ -151,7 +151,7 @@ func TestTransportSuite(t *testing.T) {
 var gapSignatures = map[string]*regexp.Regexp{
 	"L1":  regexp.MustCompile(`token too long`),
 	"L5":  regexp.MustCompile(`web search`),
-	"L6":  regexp.MustCompile(`images and PDFs need the Claude provider`),
+	"L6":  regexp.MustCompile(`need a provider that reads them`),
 	"L7":  regexp.MustCompile(`no usage event|the first message was wiped|the partial text was not delivered|the text before the tool was not kept`),
 	"L9":  regexp.MustCompile(`not a capability refusal`),
 	"L10": regexp.MustCompile(`not a providers\.Failure`),

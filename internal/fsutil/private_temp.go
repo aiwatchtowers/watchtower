@@ -99,8 +99,9 @@ func openNoBlock(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 }
 
-// StaleTempPatterns are the temp files that held a prompt or an MCP config,
-// this version's and older versions' (wt-chat-prompt-, wt-chat-mcp- and
+// StaleTempPatterns are the temp files that held a prompt, an MCP config or
+// a chat turn's image (wt-chat-image-, codex --image), this version's and
+// older versions' (wt-chat-prompt-, wt-chat-mcp- and
 // wt-mcp-*.json came before the pipes of #604), as filepath.Match patterns.
 // A live call removes its own within ten minutes or holds it with a flock
 // (HoldTempFile, which the sweep skips), so SweepStaleTemp may remove every
@@ -108,7 +109,7 @@ func openNoBlock(path string) (*os.File, error) {
 // ids and live for a whole session, and wt-mcp-status- is the same family's
 // session-long name, which the broad wt-mcp- pattern would otherwise catch.
 var (
-	StaleTempPatterns = []string{SystemPromptTempPrefix + "*", "wt-chat-prompt-*", "wt-chat-mcp-*", "wt-mcp-*.json"}
+	StaleTempPatterns = []string{SystemPromptTempPrefix + "*", "wt-chat-prompt-*", "wt-chat-mcp-*", "wt-mcp-*.json", "wt-chat-image-*"}
 	staleTempKept     = []string{"wt-chat-turn-", "wt-mcp-status-"}
 )
 

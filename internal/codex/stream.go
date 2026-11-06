@@ -112,7 +112,7 @@ func (s *queryStream) handle(line []byte) bool {
 	switch {
 	case item == nil:
 		return true
-	case item.Type == "mcp_tool_call" || item.Type == "command_execution":
+	case item.Type == "mcp_tool_call" || item.Type == "command_execution" || item.Type == "web_search":
 		if item.ID == "" {
 			item.ID = s.anonTool(event.Type)
 		}
@@ -344,11 +344,13 @@ func lastLine(s string) string {
 // toolName is the item's tool name in the claude CLI's form, so the chat
 // shows and summarises it the same way: mcp__watchtower__<tool> for the
 // watchtower server whatever key it is mounted under, mcp__<server>__<tool>
-// for another server, "shell" for a command.
+// for another server, "shell" for a command, "WebSearch" for a web search.
 func (s *queryStream) toolName(item *CodexItem) string {
 	switch {
 	case item.Type == "command_execution":
 		return "shell"
+	case item.Type == "web_search":
+		return webSearchTool
 	case s.watchtower != "" && item.Server == s.watchtower:
 		return "mcp__watchtower__" + item.Tool
 	}
@@ -357,10 +359,55 @@ func (s *queryStream) toolName(item *CodexItem) string {
 
 func (s *queryStream) toolStart(item *CodexItem) *ai.ToolEvent {
 	args := item.Arguments
-	if item.Type == "command_execution" {
+	switch item.Type {
+	case "command_execution":
 		args, _ = json.Marshal(map[string]string{"command": item.Command})
+	case "web_search":
+		args = webSearchArgs(item)
 	}
 	return &ai.ToolEvent{ID: item.ID, Name: s.toolName(item), Args: args}
+}
+
+// webSearchTool is the name a web search step carries: Claude's WebSearch,
+// so the chat summarises it and lists its pages the same way.
+const webSearchTool = "WebSearch"
+
+// webSearchArgs is a web_search item's query as the step's arguments; nil
+// while codex has not said it.
+func webSearchArgs(item *CodexItem) json.RawMessage {
+	q := item.SearchQuery()
+	if q == "" {
+		return nil
+	}
+	args, _ := json.Marshal(map[string]string{"query": q})
+	return args
+}
+
+// webSearchEnd is a finished web_search item's step end: its query and the
+// pages found as Claude's WebSearch "Links:" line (chat.webSearchSources).
+func webSearchEnd(ev *ai.ToolEvent, item *CodexItem) *ai.ToolEvent {
+	ev.Args = webSearchArgs(item)
+	ev.OK = item.Status != "failed"
+	type link struct {
+		Title string `json:"title"`
+		URL   string `json:"url"`
+	}
+	var links []link
+	for _, r := range item.Results {
+		if r.URL != "" {
+			links = append(links, link{r.Title, r.URL})
+		}
+	}
+	switch {
+	case len(links) > 0:
+		b, _ := json.Marshal(links)
+		ev.Result = "Links: " + string(b)
+	case ev.OK:
+		ev.Result = "No pages found"
+	default:
+		ev.Result = "the web search failed"
+	}
+	return ev
 }
 
 // toolEnd is the item's end: OK with its result text, or failed with the
@@ -368,6 +415,9 @@ func (s *queryStream) toolStart(item *CodexItem) *ai.ToolEvent {
 // never an empty reason.
 func (s *queryStream) toolEnd(item *CodexItem) *ai.ToolEvent {
 	ev := &ai.ToolEvent{ID: item.ID, Name: s.toolName(item), Done: true}
+	if item.Type == "web_search" {
+		return webSearchEnd(ev, item)
+	}
 	if item.Type == "command_execution" {
 		ev.OK = item.Status == "completed" && (item.ExitCode == nil || *item.ExitCode == 0)
 		ev.Result = item.AggregatedOutput

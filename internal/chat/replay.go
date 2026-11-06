@@ -193,7 +193,7 @@ func (s *replaySkips) skip(err error) string {
 	case !errors.As(err, &ae):
 		s.rejected++
 		return err.Error()
-	case ae.RequiresClaude:
+	case ae.CapabilityMissing:
 		return "images and PDFs are not replayed"
 	case ae.Reason == errUnreadable:
 		s.unreadable++
@@ -245,7 +245,7 @@ func replayFiles(hist []db.ChatMessage, files map[int64][]db.ChatProjectFile, cu
 				parts = append(parts, overBudget(f.Name))
 				continue
 			}
-			l, err := loadAttachment(Attachment{Path: f.Path, Mime: f.Mime, Name: f.Name}, true)
+			l, err := loadAttachment(Attachment{Path: f.Path, Mime: f.Mime, Name: f.Name}, AttachmentCaps{})
 			switch {
 			case err != nil:
 				parts = append(parts, replayFileNote(f.Name, skips.skip(err)))

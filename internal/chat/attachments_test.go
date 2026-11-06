@@ -289,7 +289,31 @@ func TestInlineTextAttachments_BinaryRejectedBeforeRead(t *testing.T) {
 	p := writeAttachmentFixture(t, "shot.png", fixturePNG)
 	_, err := InlineTextAttachments("look", []Attachment{{Path: p, Mime: "image/png", Name: "shot.png"}})
 	ae := requireAttachmentError(t, err, "shot.png")
-	assert.Contains(t, ae.Reason, "Claude")
+	assert.True(t, ae.CapabilityMissing)
+	assert.Equal(t, "images and PDFs need a provider that reads them", ae.Reason)
+}
+
+// An image-capable backend gets the image's checked bytes back, not
+// inlined; a PDF is still refused by capability, before anything is read.
+func TestTurnAttachments_ImagesByCapability(t *testing.T) {
+	img := writeAttachmentFixture(t, "shot.png", fixturePNG)
+	txt := writeAttachmentFixture(t, "a.csv", []byte("a,b"))
+	text, images, err := TurnAttachments("look", []Attachment{
+		{Path: img, Mime: "image/png", Name: "shot.png"}, {Path: txt, Mime: "text/csv", Name: "a.csv"},
+	}, AttachmentCaps{Images: true})
+	require.NoError(t, err)
+	require.Len(t, images, 1)
+	assert.Equal(t, "image/png", images[0].MediaType)
+	assert.Equal(t, fixturePNG, images[0].Data)
+	assert.Contains(t, text, "a,b")
+	assert.NotContains(t, text, "shot.png")
+
+	pdf := writeAttachmentFixture(t, "doc.pdf", fixturePDF)
+	_, _, err = TurnAttachments("read", []Attachment{{Path: pdf, Mime: "application/pdf", Name: "doc.pdf"}},
+		AttachmentCaps{Images: true, PDFs: true})
+	ae := requireAttachmentError(t, err, "doc.pdf")
+	assert.True(t, ae.CapabilityMissing)
+	assert.Equal(t, "PDFs need a provider that reads them", ae.Reason)
 }
 
 func TestInlineTextAttachments_NoAttachmentsIsIdentity(t *testing.T) {

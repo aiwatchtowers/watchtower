@@ -161,7 +161,8 @@ func TestTurnBackend_CancelEndsInterrupted(t *testing.T) {
 }
 
 // TestTurnBackend_AttachmentRejectedBeforeTheCall uses a real (existing) PNG
-// so the rejection exercises the "images/PDFs need Claude" textOnly branch,
+// so the rejection exercises the capability branch (a querier that takes
+// no images),
 // not a "file not found" short-circuit (task-20-review.md Important I1 item 5).
 func TestTurnBackend_AttachmentRejectedBeforeTheCall(t *testing.T) {
 	d, conv := seedConversation(t)
@@ -174,7 +175,7 @@ func TestTurnBackend_AttachmentRejectedBeforeTheCall(t *testing.T) {
 	e := h.next(EventError)
 	assert.Equal(t, CodeAttachmentUnsupported, e.Code)
 	assert.False(t, e.Retryable)
-	assert.Contains(t, e.Message, "Claude", "rejected via the textOnly branch, not a file-not-found error")
+	assert.Contains(t, e.Message, "need a provider that reads them", "rejected by capability, not a file-not-found error")
 	require.NoError(t, h.finish())
 	calls, _, _ := fq.seen()
 	assert.Zero(t, calls, "nothing reaches the provider")

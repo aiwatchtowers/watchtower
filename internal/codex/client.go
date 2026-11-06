@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/ai"
@@ -54,6 +55,36 @@ type Client struct {
 	// runHome is the run's private CODEX_HOME (SetRunHome); "" = the
 	// inherited one and an --ephemeral run.
 	runHome string
+	// webSearch is the web search every run sets (SetWebSearch); nil = the
+	// owner's own codex setting, untouched (ask #323).
+	webSearch *bool
+	// images are the next run's --image paths (SetImages), taken by it.
+	imagesMu sync.Mutex
+	images   []string
+}
+
+// SetWebSearch sets codex's web search for every run: on
+// (web_search="live") or off (web_search="disabled"). Unset, a run keeps
+// the owner's own codex setting (ask #323). A read-folder run never
+// searches.
+func (c *Client) SetWebSearch(on bool) { c.webSearch = &on }
+
+// SetImages hands the next run, and only it, the images at paths: one
+// --image=<path> each (CHAT-04: a path, never content). The caller owns the
+// files and removes them after the run.
+func (c *Client) SetImages(paths []string) {
+	c.imagesMu.Lock()
+	defer c.imagesMu.Unlock()
+	c.images = slices.Clone(paths)
+}
+
+// takeImages is the images set for this run, cleared for the next.
+func (c *Client) takeImages() []string {
+	c.imagesMu.Lock()
+	defer c.imagesMu.Unlock()
+	imgs := c.images
+	c.images = nil
+	return imgs
 }
 
 // SetNoMCPServers makes the run tool-less on MCP: every server of the
@@ -141,7 +172,7 @@ func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
 	if err != nil {
 		return nil
 	}
-	args, _, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
+	args, _, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, c.takeImages())
 	if promptFile != "" {
 		_ = os.Remove(promptFile)
 	}
@@ -179,15 +210,22 @@ func NewClient(model, dbPath, codexPath string) *Client {
 // child has exited. workDir is an optional working directory to pass via
 // --cd.
 func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) (args []string, stdin, promptFile string, err error) {
-	return c.buildRunArgs(systemPrompt, userMessage, workDir, nil)
+	return c.buildRunArgs(systemPrompt, userMessage, workDir, nil, nil)
 }
 
 // buildRunArgs is buildArgs with the run's MCP mount flags (mount) after
-// the exec prefix.
-func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount []string) (args []string, stdin, promptFile string, err error) {
+// the exec prefix and the run's images (SetImages) before the prompt.
+func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount, images []string) (args []string, stdin, promptFile string, err error) {
 	args = append(c.execArgs(), mount...)
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
+	}
+	for _, p := range images {
+		// codex splits an --image value on commas (buildImageArgs).
+		if strings.Contains(p, ",") {
+			return nil, "", "", errors.New("an image path contains a comma")
+		}
+		args = append(args, "--image="+p)
 	}
 	instr, stdin, promptFile, err := promptArgs(c.codexCmd, systemPrompt, userMessage)
 	if err != nil {
@@ -209,7 +247,14 @@ func (c *Client) execArgs() []string {
 		prefix = slices.DeleteFunc(prefix, func(a string) bool { return a == "--ephemeral" })
 	}
 	if c.readFolder == "" {
-		return append(prefix, featuresOff(toolRunFeatures)...)
+		args := append(prefix, featuresOff(toolRunFeatures)...)
+		switch {
+		case c.webSearch == nil:
+			return args
+		case *c.webSearch:
+			return append(args, "-c", `web_search="live"`)
+		}
+		return append(args, "-c", `web_search="disabled"`)
 	}
 	args := append(prefix, featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
 	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", `web_search="disabled"`)
@@ -291,6 +336,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 	textCh := make(chan ai.StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
+	images := c.takeImages() // now: the caller may set the next turn's while this one runs
 
 	go func() {
 		defer close(textCh)
@@ -302,7 +348,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			errCh <- mountErr
 			return
 		}
-		args, promptStdin, promptFile, buildErr := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
+		args, promptStdin, promptFile, buildErr := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, images)
 		if buildErr != nil {
 			errCh <- buildErr
 			return
@@ -424,11 +470,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // the full response text and token usage.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (text string, usage *ai.Usage, err error) {
 	defer func() { err = providers.ContextFailure("codex", ctx, providers.ProcessFailure("codex", err)) }()
+	images := c.takeImages()
 	m, mountErr := c.mount()
 	if mountErr != nil {
 		return "", nil, mountErr
 	}
-	args, promptStdin, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
+	args, promptStdin, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, images)
 	if err != nil {
 		return "", nil, err
 	}

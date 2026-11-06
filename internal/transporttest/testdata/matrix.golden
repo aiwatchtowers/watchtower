@@ -83,7 +83,7 @@ codex/chat fail-model pass
 codex/chat fail-overload pass
 codex/chat fail-quota pass
 codex/chat fail-rate-limit pass
-codex/chat image gap:L6
+codex/chat image pass
 codex/chat interrupt-text pass
 codex/chat interrupt-tool pass
 codex/chat multi-turn-replay pass

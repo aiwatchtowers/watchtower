@@ -34,10 +34,50 @@ const MaxTurnAttachmentEncodedBytes int64 = 30 << 20
 // AttachmentError is a per-file rejection. The session maps it to the
 // protocol error code "attachment_unsupported" (not retryable).
 type AttachmentError struct {
-	// RequiresClaude identifies a supported binary file rejected only by a text-only backend.
-	RequiresClaude bool
-	Name           string
-	Reason         string
+	// CapabilityMissing identifies a supported binary file rejected only
+	// because this backend cannot take its kind (AttachmentCaps).
+	CapabilityMissing bool
+	Name              string
+	Reason            string
+}
+
+// AttachmentCaps is what a backend takes beside text files, which every
+// backend inlines.
+type AttachmentCaps struct{ Images, PDFs bool }
+
+// allAttachments is the Claude backend's: images and PDFs as content blocks.
+var allAttachments = AttachmentCaps{Images: true, PDFs: true}
+
+// ProviderAttachmentCaps is what provider's chat backend takes: Claude
+// images and PDFs, codex images (--image, L6), ollama text only. A2's
+// capability table replaces it.
+func ProviderAttachmentCaps(provider string) AttachmentCaps {
+	switch provider {
+	case "", "claude":
+		return allAttachments
+	case "codex":
+		return AttachmentCaps{Images: true}
+	}
+	return AttachmentCaps{}
+}
+
+// takes reports whether caps cover kind.
+func (c AttachmentCaps) takes(kind attachmentKind) bool {
+	switch kind {
+	case kindImage:
+		return c.Images
+	case kindPDF:
+		return c.PDFs
+	}
+	return true
+}
+
+// missingReason is the refusal of a file caps do not cover, by capability.
+func (c AttachmentCaps) missingReason() string {
+	if c.Images {
+		return "PDFs need a provider that reads them"
+	}
+	return "images and PDFs need a provider that reads them"
 }
 
 func (e *AttachmentError) Error() string {
@@ -89,8 +129,8 @@ func classifyAttachment(sniffed, declared string) (kind attachmentKind, mediaTyp
 	return 0, "", 0, false
 }
 
-// loadAttachment validates and reads one file. textOnly rejects images/PDFs
-// before their bytes are read (codex/ollama cannot take them).
+// loadAttachment validates and reads one file. A kind caps do not cover is
+// rejected before its bytes are read (CapabilityMissing).
 //
 // The path is resolved exactly once: O_NOFOLLOW refuses a symlink outright,
 // and every check after the open (regular-file, sniff, size) runs against
@@ -99,7 +139,7 @@ func classifyAttachment(sniffed, declared string) (kind attachmentKind, mediaTyp
 // size limit this way. The read itself is capped at limit+1 bytes via
 // io.LimitReader regardless of what stat reported, so a file that grows
 // after the open is still never read past the limit.
-func loadAttachment(a Attachment, textOnly bool) (loadedAttachment, error) {
+func loadAttachment(a Attachment, caps AttachmentCaps) (loadedAttachment, error) {
 	name := a.Name
 	if name == "" {
 		name = filepath.Base(a.Path)
@@ -123,8 +163,8 @@ func loadAttachment(a Attachment, textOnly bool) (loadedAttachment, error) {
 	if !ok {
 		return loadedAttachment{}, reject(fmt.Sprintf("unsupported file type %q (images, PDFs and text files only)", a.Mime))
 	}
-	if textOnly && kind != kindText {
-		return loadedAttachment{}, &AttachmentError{Name: name, Reason: "images and PDFs need the Claude provider", RequiresClaude: true}
+	if !caps.takes(kind) {
+		return loadedAttachment{}, &AttachmentError{Name: name, Reason: caps.missingReason(), CapabilityMissing: true}
 	}
 	if size > limit {
 		return loadedAttachment{}, reject(fmt.Sprintf("file is %d bytes; the limit for this type is %d", size, limit))
@@ -267,7 +307,7 @@ func buildContentBlocks(atts []Attachment) ([]json.RawMessage, int64, error) {
 	blocks := make([]json.RawMessage, 0, len(atts))
 	var total int64
 	for _, a := range atts {
-		l, err := loadAttachment(a, false)
+		l, err := loadAttachment(a, allAttachments)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -325,22 +365,44 @@ func claudeUserLine(blocks []json.RawMessage, text string) ([]byte, error) {
 	return append(line, '\n'), nil
 }
 
-// InlineTextAttachments is the codex/ollama path: text-like files are inlined
+// InlineTextAttachments is the text-only path: text-like files are inlined
 // ahead of the user text; any image/PDF is an *AttachmentError before the call.
 func InlineTextAttachments(text string, atts []Attachment) (string, error) {
+	text, _, err := TurnAttachments(text, atts, AttachmentCaps{})
+	return text, err
+}
+
+// TurnImage is an image a turn hands its provider by file (codex --image):
+// its checked bytes and media type.
+type TurnImage struct {
+	MediaType string
+	Data      []byte
+}
+
+// TurnAttachments is the replay backends' path (codex, ollama): text-like
+// files are inlined ahead of the user text, the images caps take are
+// returned for the provider to get by file, and any other image or PDF is
+// an *AttachmentError before the call.
+func TurnAttachments(text string, atts []Attachment, caps AttachmentCaps) (string, []TurnImage, error) {
 	if len(atts) == 0 {
-		return text, nil
+		return text, nil, nil
 	}
+	caps.PDFs = false // a PDF never travels by file
 	parts := make([]string, 0, len(atts)+1)
+	var images []TurnImage
 	for _, a := range atts {
-		l, err := loadAttachment(a, true)
+		l, err := loadAttachment(a, caps)
 		if err != nil {
-			return "", err
+			return "", nil, err
+		}
+		if l.kind == kindImage {
+			images = append(images, TurnImage{MediaType: l.mediaType, Data: l.data})
+			continue
 		}
 		parts = append(parts, inlineFile(l.name, string(l.data)))
 	}
 	parts = append(parts, text)
-	return strings.Join(parts, "\n\n"), nil
+	return strings.Join(parts, "\n\n"), images, nil
 }
 
 // attachmentErrorEvent maps an *AttachmentError to the protocol error event.
