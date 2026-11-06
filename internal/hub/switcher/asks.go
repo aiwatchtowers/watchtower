@@ -34,8 +34,9 @@ import (
 //
 // Nothing waits on an ask that cannot be finished. One the record cannot take
 // (an unreadable switched_at, say) is answered unavailable, as it was in the
-// pass. An answer that does not seal keeps its decision and is retried at the
-// next Steps, maxAnswerTries in all, while the asks behind it go on. Past that
+// pass. A request's answer that does not seal keeps its decision (a stale answer
+// is decided again) and is retried at the next Steps, maxAnswerTries in all,
+// while the asks behind it go on. Past that
 // the phone gets no answer: its request may not be repeated (an upgrade waits at
 // .requested). A store that fails stops the run and everything waits for the
 // next Step, the run loop's tick at the latest: no switch can be recorded then.
@@ -60,8 +61,8 @@ var errAnswerLater = errors.New("switcher: the answer waits for a later step")
 // Stale, the answer to a write on the standby transport. Read is the transport
 // it was read on, where a rejection or a stale answer goes. Link is the phone's
 // link nonce then: a phone re-linked since never hears it, and the hub never
-// acts on it. Answer is a decided answer that has not sealed yet, sealed in Epoch
-// (0 = the current one), after Tries tries.
+// acts on it. Answer is a request's decided answer that has not sealed yet, sealed
+// in Epoch (0 = the current one); Tries counts the tries to seal.
 type waitingAsk struct {
 	Read   transport.Kind `json:"read"`
 	Device string         `json:"device"`
@@ -364,9 +365,12 @@ func (s *Switcher) decideStale(ctx context.Context, a waitingAsk, dev state.Devi
 
 // answerAsk queues c for the phone on the transport the ask was read on,
 // removing the ask in the same transaction. A control that does not seal keeps
-// the ask with c decided (errAnswerLater: the asks behind it go on), for
-// maxAnswerTries Steps in all; then it is logged and dropped, and the phone gets
-// no answer.
+// the ask (errAnswerLater: the asks behind it go on), for maxAnswerTries Steps in
+// all; then it is logged and dropped, and the phone gets no answer. A request
+// keeps c as decided, so its retry cannot overrule a later press; a stale answer
+// keeps nothing and is decided again, since it only says where the hub is now.
+// Accepted: a kept not_paying or too_soon can reach a new upgrade that began in
+// those Steps, a false refusal the owner's Try Again cures.
 func (s *Switcher) answerAsk(a waitingAsk, c wire.Control, epoch uint32) error {
 	var row *state.Control
 	keep := false
@@ -389,7 +393,9 @@ func (s *Switcher) answerAsk(a waitingAsk, c wire.Control, epoch uint32) error {
 			if err != nil || s.askAt >= len(asks) {
 				return err
 			}
-			a.Answer, a.Epoch = &c, epoch
+			if !a.Stale {
+				a.Answer, a.Epoch = &c, epoch
+			}
 			asks[s.askAt] = a
 			return saveAsksTx(tx, asks)
 		}

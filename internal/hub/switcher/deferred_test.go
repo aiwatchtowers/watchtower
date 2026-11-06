@@ -782,3 +782,47 @@ func TestG2APendingRecordIsNotOverridden(t *testing.T) {
 		w.wantActive(transport.KindRelay)
 	})
 }
+
+// A stale answer that did not seal is decided again at its retry: a free phone
+// never hears hub_on_relay from a hub that has moved to iCloud meanwhile.
+func TestAKeptStaleAnswerIsDecidedAgainAtItsRetry(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		free, b := w.addPhone(false), w.addPhone(true)
+		w.moveTo(b, wire.TransportRelay)
+		w.sealingCanFail()
+		if _, err := free.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		told := count(free, wire.ControlHubOnRelay)
+		w.failSealsFor(free)
+		w.act(free)
+		w.sw.PollOther(w.ctx)
+		if err := w.sw.Step(w.ctx); err != nil { // does not seal: kept
+			t.Fatal(err)
+		}
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v == "" {
+			t.Fatalf("the stale answer was not kept: %q %v", v, err)
+		}
+		w.onCloudKit(b)
+		w.ask(b, wire.TransportCloudKit)
+		w.sw.PollOther(w.ctx)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantPressActedOn(b)
+		w.failSealsFor(nil)
+		if err := w.sw.Step(w.ctx); err != nil { // the key is back, the hub on iCloud
+			t.Fatal(err)
+		}
+		w.sw.PollOther(w.ctx)
+		if _, err := free.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if n := count(free, wire.ControlHubOnRelay); n != told {
+			t.Fatalf("%d hub_on_relay from a hub on iCloud, had %d", n, told)
+		}
+		if v, _, err := w.st.Meta("switch_asks"); err != nil || v != "" {
+			t.Fatalf("the list is %q %v", v, err)
+		}
+	})
+}
