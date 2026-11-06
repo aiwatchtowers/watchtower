@@ -32,8 +32,13 @@ final class InboxFolderViewsTests: XCTestCase {
             InboxFolderRow(id: Int64(100 + index), kind: .owner, title: "Folder \(index)", icon: "",
                            depth: 1 + index % 3, count: index)
         }
-        try assertRenders(InboxFolderMenu(content: InboxFolderMenuContent(rows: [tree[0], tree[1]] + many)),
-                          width: 220)
+        let hundred = InboxFolderMenu(content: InboxFolderMenuContent(rows: [tree[0], tree[1]] + many))
+        try assertRenders(hundred, width: 220)
+        // The tree scrolls: a hundred folders do not make the column a
+        // hundred rows tall, so New Folder and the note stay on screen.
+        let height = ViewRenderProbe.fittingHeight(hundred, width: 220)
+        XCTAssertTrue(height.isFinite)
+        XCTAssertLessThan(height, 100 * ListLayout.rowMinHeight, "the rows must scroll, not grow the column")
     }
 
     // MARK: - Helpers
@@ -56,5 +61,24 @@ final class InboxFolderViewsTests: XCTestCase {
             .render(view, try XCTUnwrap(NSAppearance(named: .aqua)))
         XCTAssertGreaterThan(bitmap.pixelsWide, 0, file: file, line: line)
         XCTAssertGreaterThan(bitmap.pixelsHigh, 0, file: file, line: line)
+        XCTAssertGreaterThan(Self.distinctColours(bitmap, limit: 2), 1, "the view drew nothing", file: file,
+                             line: line)
+    }
+
+    /// Distinct raw RGBA values in `bitmap`, counting up to `limit` only
+    /// (`DesignShotsTests`' blank check).
+    private static func distinctColours(_ bitmap: NSBitmapImageRep, limit: Int) -> Int {
+        guard let data = bitmap.bitmapData else { return 0 }
+        let bytesPerPixel = bitmap.bitsPerPixel / 8
+        var seen = Set<UInt32>()
+        for y in 0..<bitmap.pixelsHigh {
+            let row = data + y * bitmap.bytesPerRow
+            for x in 0..<bitmap.pixelsWide {
+                let pixel = row + x * bytesPerPixel
+                seen.insert(UInt32(pixel[0]) << 24 | UInt32(pixel[1]) << 16 | UInt32(pixel[2]) << 8 | UInt32(pixel[3]))
+                if seen.count >= limit { return seen.count }
+            }
+        }
+        return seen.count
     }
 }
