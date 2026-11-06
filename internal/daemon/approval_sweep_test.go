@@ -93,3 +93,21 @@ func TestDaemon_InstallApprovalHookWakesInProcess(t *testing.T) {
 	assert.Equal(t, int32(1), exec.wakes.Load())
 	assert.False(t, strings.Contains(logs.String(), "approval hook"), logs.String())
 }
+
+// Run installs the daemon's own approval hook, replacing the one a tool
+// registry set while the daemon was wired.
+func TestDaemon_RunInstallsInProcessApprovalHook(t *testing.T) {
+	d, database, exec, _, id := newApprovalTestDaemon(t)
+	wiring := false
+	database.SetApprovalHook(func(string) { wiring = true })
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	require.NoError(t, d.Run(ctx))
+
+	before := exec.wakes.Load()
+	_, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`})
+	require.NoError(t, err)
+	assert.False(t, wiring, "Run replaced the wiring-time hook")
+	assert.Equal(t, 1, queuedRuns(t, database, id))
+	assert.Equal(t, before+1, exec.wakes.Load(), "the in-process executor was woken")
+}
