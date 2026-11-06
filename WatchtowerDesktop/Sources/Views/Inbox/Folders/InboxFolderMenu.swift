@@ -24,25 +24,33 @@ struct InboxFolderMenu: View {
     let content: InboxFolderMenuContent
     var onAction: (InboxFolderMenuAction) -> Void = { _ in }
 
+    /// The tree scrolls; New Folder, New Artifact… and the state line stay
+    /// pinned under it, however many folders there are.
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.tight) {
-            ForEach(content.visibleRows) { row in
-                if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .before) {
-                    dropLine(depth: row.depth)
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    ForEach(content.visibleRows) { row in
+                        if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .before) {
+                            dropLine(depth: row.depth)
+                        }
+                        folderRow(row)
+                        if let draft = content.newFolderDraft, draft.renamingID == nil,
+                           let parent = draftParent(draft), lastVisibleDescendant(of: parent) == row.id {
+                            draftField(draft, depth: parent.depth + 1)
+                        }
+                        if let summary = content.deleteConfirmation, summary.folderID == row.id {
+                            deleteConfirmation(summary, depth: row.depth)
+                        }
+                    }
                 }
-                folderRow(row)
-                if let draft = content.newFolderDraft, draft.renamingID == nil, let parent = draftParent(draft),
-                   lastVisibleDescendant(of: parent) == row.id {
-                    draftField(draft, depth: parent.depth + 1)
-                }
-                if let summary = content.deleteConfirmation, summary.folderID == row.id {
-                    deleteConfirmation(summary, depth: row.depth)
-                }
+                .padding(Spacing.regular)
             }
             footer
+                .padding(.horizontal, Spacing.regular)
+                .padding(.bottom, Spacing.regular)
         }
         .controlSize(.small)
-        .padding(Spacing.regular)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -212,6 +220,6 @@ struct InboxFolderMenu: View {
                     .padding(.horizontal, Spacing.regular)
             }
         }
-        .padding(.top, Spacing.medium)
+        .padding(.top, Spacing.regular)
     }
 }
