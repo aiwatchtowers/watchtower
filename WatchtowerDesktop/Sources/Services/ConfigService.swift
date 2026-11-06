@@ -113,9 +113,9 @@ final class ConfigService {
         configPath: String,
         routingRead: (() async throws -> ChatRoutingStatus)? = nil,
         connection: ProviderConnection? = nil,
-        catalog: AIModelCatalog? = nil
+        catalog: AIModelCatalog = .shared
     ) {
-        self.catalog = catalog ?? .shared
+        self.catalog = catalog
         providerConnection = connection ?? ProviderConnection()
         routingApplication = ProviderRoutingApplication(read: routingRead ?? {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
@@ -326,9 +326,14 @@ final class ConfigService {
     /// retains validation semantics for callers editing only ai.provider.
     func selectPreferredProvider(_ provider: String) {
         selectAIProvider(provider)
-        // Before the catalog is read nothing is known about the pair: the
-        // reserve is left as it is (Go validates the file on load).
-        guard catalog.isLoaded else { return }
+        // Before the catalog is read nothing is known about the pair, and Go
+        // refuses to load a file whose enabled fallback is not a pair: the
+        // reserve is turned off until the owner picks it again.
+        guard catalog.isLoaded else {
+            aiFallbackEnabled = false
+            if aiFallbackProvider == provider { aiFallbackProvider = nil }
+            return
+        }
         if let peer = catalog.reservePeer(of: provider) {
             if aiFallbackProvider != nil { aiFallbackProvider = peer }
         } else {
@@ -415,22 +420,30 @@ final class ConfigService {
         }
     }
 
-    /// The provider and the reserve pair against the catalog's rows; with no
-    /// catalog read yet only the file's shape is checked (Go validates the
-    /// pair when it loads the file).
+    /// The provider and the reserve pair against the catalog's rows. With no
+    /// catalog read yet the pair cannot be confirmed, so an enabled fallback
+    /// is refused (Go refuses to load a file whose fallback is not a pair).
     private func validateAISelection(_ selected: String, ai: [String: Any]) throws {
-        guard catalog.isLoaded else { return }
+        let fallback = ai["fallback"] as? [String: Any] ?? [:]
+        let reserve = fallback["provider"] as? String ?? ""
+        let enabled = fallback["enabled"] as? Bool == true
+        guard catalog.isLoaded else {
+            if !reserve.isEmpty && reserve == selected {
+                throw ConfigUnreadableError(reason: "Reserve must be a different provider")
+            }
+            if enabled {
+                throw ConfigUnreadableError(reason: "Provider details are still loading; turn the reserve on again once they load")
+            }
+            return
+        }
         guard catalog.provider(selected) != nil else {
             throw ConfigUnreadableError(reason: "Unknown AI provider")
         }
-        guard let fallback = ai["fallback"] as? [String: Any] else { return }
-        let reserve = fallback["provider"] as? String ?? ""
-        let peer = catalog.reservePeer(of: selected)
         if !reserve.isEmpty && (catalog.reservePeer(of: reserve) == nil || reserve == selected) {
-            throw ConfigUnreadableError(reason: "Reserve must be a different Claude or Codex provider")
+            throw ConfigUnreadableError(reason: "Reserve must be a different provider that has a reserve pair")
         }
-        if fallback["enabled"] as? Bool == true && (reserve.isEmpty || peer != reserve) {
-            throw ConfigUnreadableError(reason: "Enabled fallback requires different Claude and Codex providers")
+        if enabled && (reserve.isEmpty || catalog.reservePeer(of: selected) != reserve) {
+            throw ConfigUnreadableError(reason: "Enabled fallback requires the preferred provider's reserve pair")
         }
     }
 

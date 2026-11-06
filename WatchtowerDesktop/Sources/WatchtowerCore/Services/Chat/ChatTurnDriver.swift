@@ -93,7 +93,10 @@ package final class ChatTurnDriver {
         case let .sessionReady(sid, provider, model, routing, capabilities):
             recordSession(sid)
             recordActual(provider: provider, model: model, routing: routing)
-            if let capabilities { actualCapabilities = capabilities }
+            // A session_ready that names its provider replaces the row (nil
+            // when it carries none: the catalog's row is read instead); the
+            // routing placeholder names none and keeps it.
+            if capabilities != nil || !provider.isEmpty { actualCapabilities = capabilities }
         case .turnStart:
             break
         case let .textDelta(turnID, text):

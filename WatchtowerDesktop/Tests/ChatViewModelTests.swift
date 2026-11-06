@@ -22,6 +22,8 @@ final class ChatViewModelTests: XCTestCase {
     private var defaultsSuite: String!
 
     override func setUpWithError() throws {
+        // The routing card and the composer read the shared catalog's rows.
+        ProviderCatalogFixture.seedShared()
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         defaultsSuite = "ChatViewModelTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: defaultsSuite)

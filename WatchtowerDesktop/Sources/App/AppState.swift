@@ -244,7 +244,7 @@ final class AppState {
     @ObservationIgnored private(set) lazy var transcriptionModelAutoDownloader = makeTranscriptionModelAutoDownloader()
 
     /// Provider/model registry from `watchtower ai models --json`, shared by
-    /// the chat model picker and Settings suggestions. Loaded lazily.
+    /// the chat model picker and Settings suggestions; read at window open.
     let aiModelCatalog = AIModelCatalog.shared
 
     /// Persistent chat ViewModels — survive tab switches.

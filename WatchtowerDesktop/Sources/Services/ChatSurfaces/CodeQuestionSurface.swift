@@ -144,7 +144,10 @@ enum CodeQuestionSurface {
             turnPrompt: { $0.text },
             postTurn: { input in
                 var result = ChatPostTurnResult.identity(input)
-                if !capabilities(currentChoice()).readsFolder, !hasCannotReadNotice(conversationID: conversationID, dbPool: dbPool) {
+                // The notice is stored for good: written only when the row is
+                // known, never on a catalog not read yet.
+                if AIModelCatalog.shared.isLoaded, !capabilities(currentChoice()).readsFolder,
+                   !hasCannotReadNotice(conversationID: conversationID, dbPool: dbPool) {
                     result.notices = [cannotReadFilesNotice]
                 }
                 return result

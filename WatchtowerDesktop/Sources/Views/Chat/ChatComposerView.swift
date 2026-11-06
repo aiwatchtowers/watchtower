@@ -85,12 +85,9 @@ struct ChatComposerView: View {
         if let presentation = chatVM.routingPresentation {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 if let actual = presentation.actual { Text(actual).font(.caption).foregroundStyle(.secondary) }
-                // U3's line names what the provider lacks; U1's attach reason
-                // shows only when that line does not already say it.
+                // U3: what the provider lacks (images among them, U1).
                 if let missing = presentation.missingCapabilities {
                     Text(missing).font(.caption).foregroundStyle(.secondary)
-                } else if let reason = chatVM.attachUnavailableReason {
-                    Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
                 if let preview = presentation.preview {
                     ChatRoutingStatusView(preview: preview, actionEnabled: !chatVM.isBusy,

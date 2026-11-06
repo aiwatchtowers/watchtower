@@ -84,9 +84,17 @@ package struct ChatUsage: Equatable, Sendable {
     package let costUSD: Double?
     package let estimated: Bool
 
-    package init(turnID: String, tokensIn: Int, tokensOut: Int, model: String,
-                 freshIn: Int = 0, cacheRead: Int = 0, cacheWrite: Int = 0, costUSD: Double? = nil,
-                 estimated: Bool = false) {
+    package init(
+        turnID: String,
+        tokensIn: Int,
+        tokensOut: Int,
+        model: String,
+        freshIn: Int = 0,
+        cacheRead: Int = 0,
+        cacheWrite: Int = 0,
+        costUSD: Double? = nil,
+        estimated: Bool = false
+    ) {
         self.turnID = turnID
         self.tokensIn = tokensIn
         self.tokensOut = tokensOut

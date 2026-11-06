@@ -97,7 +97,7 @@ package struct ChatRoutingPresentation {
         self.busy = busy
     }
     package var choice: String {
-        guard automatic, pair != nil else {
+        guard automatic else {
             return ProviderFallbackPreview.pinnedChoice(provider: pair?.preferred.name ?? actualDisplayName ?? "")
         }
         return ProviderFallbackPreview.chatPolicyAutomatic + " · Auto"
