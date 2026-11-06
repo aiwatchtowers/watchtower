@@ -96,6 +96,18 @@ func (h *hubRuntime) switcherConfig(ac actions.Config) switcher.Config {
 	}
 	if h.acct != nil {
 		c.Paying = h.payingByDevice
+		c.OthersPay = func(ctx context.Context, lapsedRelayID string) (bool, error) {
+			acct, err := h.followed(h.acct.Fresh(ctx))
+			if err != nil {
+				return false, err
+			}
+			for _, p := range acct.GetPhones() {
+				if p.GetPaying() && p.GetPhoneDeviceId() != lapsedRelayID {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
 		c.AnyPaying = func(ctx context.Context) (bool, error) {
 			acct, err := h.followed(h.acct.Fresh(ctx))
 			if err != nil {

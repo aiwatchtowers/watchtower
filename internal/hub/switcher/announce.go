@@ -22,7 +22,7 @@ import (
 func (s *Switcher) Step(ctx context.Context) error {
 	s.stepMu.Lock()
 	defer s.stepMu.Unlock()
-	s.lapses()
+	s.lapses(ctx)
 	for {
 		r, ok, err := s.record()
 		if err != nil || !ok || r.Done {

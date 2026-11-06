@@ -94,7 +94,7 @@ func (s *Switcher) Request(ctx context.Context, from string, target transport.Ki
 	}
 	person := from != wire.SwitchedByEntitlement
 	if person && target == transport.KindCloudKit && reason == wire.SwitchedByEntitlement {
-		return s.lapse(from, true)
+		return s.queueLapse(from, true)
 	}
 	if !person && target != transport.KindCloudKit {
 		return &actions.SwitchRejected{Reason: actions.SwitchNotSupported}

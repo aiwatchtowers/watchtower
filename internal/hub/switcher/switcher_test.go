@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,7 @@ type world struct {
 	// payHang: the account read blocks until its context ends.
 	unmatched bool
 	payHang   bool
+	notFresh  bool   // the reader answers from an earlier read
 	onRead    func() // runs inside an account read (a phone linking meanwhile)
 }
 
@@ -143,6 +145,39 @@ func newWorld(t *testing.T, flavour string) *world {
 				return nil, w.payErr
 			}
 			return maps.Clone(w.paying), nil
+		},
+		OthersPay: func(ctx context.Context, lapsedRelayID string) (bool, error) {
+			w.mu.Lock()
+			hang, err, unmatched := w.payHang, w.payErr, w.unmatched
+			paying := maps.Clone(w.paying)
+			notFresh := w.notFresh
+			w.mu.Unlock()
+			if hang {
+				<-ctx.Done()
+				return false, ctx.Err()
+			}
+			if notFresh {
+				return false, switcher.ErrNotFresh
+			}
+			if err != nil {
+				return false, err
+			}
+			lapsed := ""
+			devices, derr := w.st.Devices()
+			if derr != nil {
+				return false, derr
+			}
+			for _, d := range devices {
+				if d.RelayDeviceID != "" && d.RelayDeviceID == lapsedRelayID {
+					lapsed = strings.ToLower(d.ID)
+				}
+			}
+			for id, p := range paying {
+				if p && strings.ToLower(id) != lapsed {
+					return true, nil
+				}
+			}
+			return unmatched, nil
 		},
 		AnyPaying: func(ctx context.Context) (bool, error) {
 			w.mu.Lock()

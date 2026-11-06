@@ -14,7 +14,7 @@ You answer an ask on the phone and watch the session go on. Over iCloud, that ro
 
 Relay carries the same sealed records iCloud does, so our server can't read anything. A subscription belongs to one iPhone and holds up to 3 Macs. You choose iCloud or Relay for each Mac, and the choice applies to every phone of that Mac.
 
-A phone with no subscription gets no updates from a Mac on Relay. A short Relay outage never switches a Mac: your changes wait on the phone until it is back or you switch. A Mac does move back to iCloud on its own when Relay has listed no subscribed phone for it on two checks five minutes apart and every phone linked to it also works over iCloud; a phone that works over Relay only keeps the Mac on Relay.
+A phone with no subscription gets no updates from a Mac on Relay. A Relay you cannot reach never switches a Mac, however long it lasts: your changes wait on the phone until it is back or you switch. A Mac moves back to iCloud on its own only when Relay answers that no subscribed phone holds it, on two checks five minutes apart, and every phone linked to it also works over iCloud; a phone that works over Relay only keeps the Mac on Relay. A phone that lost its iCloud since you linked it can lose its connection when the Mac moves: link it again, or switch the Mac back to Relay from a subscribed phone.
 
 On the Mac, Settings → **Mobile** lists each phone as **iCloud**, **Relay** or **Waiting for Relay**, and who switched it last. Its **Relay** row says whether the Mac is connected.
 
@@ -73,7 +73,7 @@ The switch moves that Mac, and every phone of it, to iCloud once the Mac reads t
 ### "Your Relay subscription ended"
 <!-- learn: none -->
 
-A subscription that ends moves your Macs back to iCloud, unless another subscribed phone keeps a Mac on Relay.
+A subscription that ends moves a Mac back to iCloud only when no other subscribed phone is left for it, whether or not that phone is linked to the Mac. A Mac with no phone left on Relay but one phone without iCloud stays on Relay until someone subscribes or you switch it; a phone without iCloud loses its connection when a Mac moves, until you link it again.
 
 - **"Your Relay subscription ended. This iPhone is back on iCloud."** Everything works over iCloud. **Subscribe** starts again; **OK** closes the message.
 - **"Your Relay subscription ended. Work Mac moves to iCloud when it's back."** The Mac is closed, and it moves when it wakes.

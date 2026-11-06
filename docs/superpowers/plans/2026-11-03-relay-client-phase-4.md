@@ -142,7 +142,7 @@ Phase 4 merges into `feature/relay-client-next` without these. Relay does not tu
 | Condition | Owner |
 |---|---|
 | G1, device records on the relay: **closed** (board #1534, ask #1056; a closed hub still misses a farewell, a v1 limit in `docs/features/relay-client.md`) | Go hub session |
-| ~~G2, a desktop hub after a move with the old phone gone~~ **Closed** (asks #1055, #1070): `switcher.checkNoPayer` moves a desktop host on the relay to iCloud (by `entitlement_expired`) after two fresh reads of "nobody pays" five minutes apart, only if every linked phone has an iCloud route (ask #1072); a lost expiry, a full account or a stuck transfer, not the healthy move, which adopts the Mac into the new slots; limits in `docs/features/relay-client.md` | Go hub session |
+| ~~G2, a desktop hub after a move with the old phone gone~~ **Closed** (asks #1055, #1070): `switcher.checkNoPayer` moves a desktop host on the relay to iCloud (by `entitlement_expired`) after two fresh reads of "nobody pays" five minutes apart, only if every linked phone has an iCloud route (ask #1072); a lost expiry, a full account or a stuck transfer, not the healthy move, which adopts the Mac into the new slots; rule 16 (`lapse`) stays while anybody pays and decides over a fresh read (ask #1075); limits in `docs/features/relay-client.md` | Go hub session |
 | G3, the duplicate alert at a switch: **closed**, accepted as a v1 limit (Open decision 10, ask #1038) | owner's ruling |
 | G4, a `push_off` alert at a switch to iCloud: **closed**, accepted as a v1 limit (ask #1054) | owner's ruling |
 | #1537, a hello lost on a failed owner read: fixed (closed in `relay-lc/1537`: `ErrOwnerUnreadable` for a private hello, struck like #1532) | Go hub session |

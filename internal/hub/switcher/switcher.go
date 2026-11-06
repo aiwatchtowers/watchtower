@@ -7,8 +7,10 @@
 // (sim rule 12a, actions/standby.go).
 //
 // Only a person switches (rule 8): a phone's transport_switch, or the relay
-// entitlement lapsing (by = "entitlement_expired"); a transport failure
-// never does. Toward the relay a switch is accepted at least AntiFlap after
+// entitlement lapsing (by = "entitlement_expired"), which is also what the
+// relay's answer that no phone pays for the hub moves it by (nopayer.go, G2,
+// by ruling, two fresh answers and every phone with an iCloud route); a
+// transport failure never does. Toward the relay a switch is accepted at least AntiFlap after
 // the previous one; toward CloudKit always and at once (rules 9–10). The
 // last accepted request wins.
 //
@@ -108,7 +110,11 @@ type Config struct {
 	Paying          func(ctx context.Context) (map[string]bool, error)
 	// AnyPaying (optional) is whether any phone in the relay account pays,
 	// matched to a linked phone or not; an error is unknown (nopayer.go).
-	AnyPaying      func(ctx context.Context) (bool, error)
+	AnyPaying func(ctx context.Context) (bool, error)
+	// OthersPay (optional) is whether any phone in the relay account other
+	// than the one with relay device id lapsed pays, linked to this Mac or
+	// not, from a fresh read; an error is undecided (rule 16, ask #1075).
+	OthersPay      func(ctx context.Context, lapsedRelayID string) (bool, error)
 	OldSideTimeout time.Duration
 	Clock          func() time.Time
 	// OnSwitched (nil = none) sees each switch once its commit moved the
@@ -134,11 +140,12 @@ type Switcher struct {
 	active transport.Kind
 	// pending is the lapses waiting for a Step, paying the last account
 	// read that answered (entitlement.go). Device ids in uuidString form.
-	pending map[string]bool
+	pending map[string]*lapseRequest
 	paying  map[string]bool
 
-	npMu sync.Mutex // the no-payer check (nopayer.go)
-	np   noPayer
+	lapseMu sync.Mutex // one lapse decision at a time (entitlement.go)
+	npMu    sync.Mutex // the no-payer check (nopayer.go)
+	np      noPayer
 
 	boMu    sync.Mutex // the failed-Step backoff
 	boDelay time.Duration
@@ -193,6 +200,7 @@ func New(c Config) (*Switcher, error) {
 			s.pauseOld(r)
 		}
 	}
+	s.loadPending()
 	return s, nil
 }
 

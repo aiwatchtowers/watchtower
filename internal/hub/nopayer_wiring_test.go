@@ -190,3 +190,40 @@ func TestG2IsNotStarvedByTheLapseRecheck(t *testing.T) {
 	g.poll()
 	eventually(t, 10*time.Second, "the host on CloudKit", func() bool { return g.h.sw.IsActive(transport.KindCloudKit) })
 }
+
+// Rule 16 through the real reader and the desktop wiring (Config.OthersPay):
+// a phone of the account that is not linked here and pays keeps the Mac on
+// the relay; with nobody paying the lapse moves it.
+func TestALapseReadsTheAccountThroughTheDesktopWiring(t *testing.T) {
+	for _, unlinkedPays := range []bool{true, false} {
+		name := "nobody pays"
+		if unlinkedPays {
+			name = "an unlinked phone pays"
+		}
+		t.Run(name, func(t *testing.T) {
+			g := startG2(t, true)
+			devices, err := g.h.st.Devices()
+			if err != nil || len(devices) != 1 {
+				t.Fatalf("devices %v %v", devices, err)
+			}
+			lapsed := devices[0]
+			phones := []*relayv1.SlotHolder{{PhoneDeviceId: lapsed.RelayDeviceID, Paying: false}}
+			if unlinkedPays {
+				phones = append(phones, &relayv1.SlotHolder{PhoneDeviceId: "unlinked-phone", Paying: true})
+			}
+			g.fake.SetAccountState(&relayv1.AccountState{Phones: phones})
+			g.clock.Advance(time.Minute) // past the reader's window
+			if err := g.h.sw.OnControl(context.Background(), transport.Control{Kind: transport.EntitlementExpired, Detail: lapsed.RelayDeviceID}); err != nil {
+				t.Fatal(err)
+			}
+			if unlinkedPays {
+				time.Sleep(300 * time.Millisecond)
+				if !g.h.sw.IsActive(transport.KindRelay) {
+					t.Fatal("moved with a paying phone in the account")
+				}
+				return
+			}
+			eventually(t, 10*time.Second, "the host on CloudKit", func() bool { return g.h.sw.IsActive(transport.KindCloudKit) })
+		})
+	}
+}
