@@ -1,0 +1,219 @@
+import SwiftUI
+import WatchtowerCore
+
+/// The native actions of one artifact row with a `ref` (spec "Native row
+/// actions for a `ref`"): exactly that kind's Inbox card buttons today, plus
+/// **Reply…** on an `inbox_item` with a write path (asks #445, #451).
+struct InboxRowActionsContent: Equatable {
+    enum Kind: Equatable {
+        /// A ping: Open (with a permalink, under its source's label),
+        /// Reply… (Slack, Jira, Linear), Done, Hide, Snooze ▾, ⋯ (Discuss in
+        /// Chat, Hand to Agent…).
+        case inboxItem(openLabel: String?, canReply: Bool)
+        /// A track: Done, ⋯ (Stop watching, Make a Task — or, for a custom
+        /// track, Go to Target and Delete…).
+        case track(custom: Bool)
+        /// An idea: the verdict buttons while it awaits one (Approve,
+        /// Reject, Not now ▾), else Activate and Drop.
+        case idea(awaitsVerdict: Bool)
+        /// A due reminder: Done, Snooze 1h.
+        case reminder
+        /// A proposal: Approve, Reject, Edit…; after a failed apply Retry
+        /// and Dismiss.
+        case action(failed: Bool)
+    }
+
+    enum State: Equatable {
+        case idle
+        /// A press on this row runs: its buttons wait, a progress mark shows.
+        case busy
+        /// The last press failed: the row stays with the error and **Retry**.
+        case failed(message: String)
+    }
+
+    /// The Reply composer under an `inbox_item` row, or the caption while
+    /// its proposal waits in Needs approval.
+    enum Reply: Equatable {
+        case composing(text: String, error: String?)
+        case waiting
+    }
+
+    let kind: Kind
+    var state: State = .idle
+    var reply: Reply?
+    /// A's `.preview` mode: every native action drawn disabled.
+    var isPreview = false
+
+    var isBusy: Bool { state == .busy }
+}
+
+/// A press on a row's native actions.
+enum InboxRowPress: Equatable {
+    case open, reply, done, hide, snooze(duration: String), discussInChat, handToAgent
+    case stopWatching, makeTask, goToTarget, deleteTrack
+    case approve, reject, edit, retry, dismiss, notNow(until: String), activate, drop
+    case snoozeHour
+    /// **Retry** under a failed press: repeats it.
+    case retryFailedPress
+    case replyChanged(String), proposeReply, cancelReply
+}
+
+/// The trailing buttons of a row with a `ref` (plan Task 1: no wiring; Task
+/// 13 hands them to A's `ArtifactRefHooks.nativeActions`).
+struct InboxRowActionsView: View {
+    let content: InboxRowActionsContent
+    var onPress: (InboxRowPress) -> Void = { _ in }
+
+    var body: some View {
+        HStack(spacing: Spacing.compact) {
+            buttons
+                .disabled(content.isBusy || content.isPreview)
+            if content.isBusy {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .buttonStyle(.kitSecondary)
+        .controlSize(.small)
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        switch content.kind {
+        case let .inboxItem(openLabel, canReply):
+            if let openLabel { Button(openLabel) { onPress(.open) } }
+            if canReply {
+                Button("Reply…") { onPress(.reply) }
+                    .disabled(content.reply != nil)
+            }
+            Button("Done") { onPress(.done) }
+            Button("Hide") { onPress(.hide) }
+            Menu("Snooze") {
+                ForEach(InboxMessagePane.snoozeChoices, id: \.duration) { choice in
+                    Button(choice.label) { onPress(.snooze(duration: choice.duration)) }
+                }
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            if !content.isBusy {
+                more {
+                    Button("Discuss in Chat") { onPress(.discussInChat) }
+                    Button("Hand to Agent…") { onPress(.handToAgent) }
+                }
+            }
+        case let .track(custom):
+            Button("Done") { onPress(.done) }
+            if !content.isBusy {
+                more {
+                    Button("Stop watching") { onPress(.stopWatching) }
+                    if custom {
+                        Button("Go to Target") { onPress(.goToTarget) }
+                        Button("Delete…") { onPress(.deleteTrack) }
+                    } else {
+                        Button("Make a Task") { onPress(.makeTask) }
+                    }
+                }
+            }
+        case let .idea(awaitsVerdict):
+            if awaitsVerdict {
+                Button("Approve") { onPress(.approve) }
+                Button("Reject", role: .destructive) { onPress(.reject) }
+                Menu("Not now") {
+                    ForEach(IdeaNotNow.allCases, id: \.label) { choice in
+                        Button(choice.label) { onPress(.notNow(until: choice.until())) }
+                    }
+                }
+                .menuStyle(.button)
+                .fixedSize()
+            } else {
+                Button("Activate") { onPress(.activate) }
+                Button("Drop", role: .destructive) { onPress(.drop) }
+            }
+        case .reminder:
+            Button("Done") { onPress(.done) }
+            Button("Snooze 1h") { onPress(.snoozeHour) }
+        case let .action(failed):
+            if failed {
+                Button("Retry") { onPress(.retry) }
+                Button("Dismiss") { onPress(.dismiss) }
+            } else {
+                Button("Approve") { onPress(.approve) }
+                Button("Reject") { onPress(.reject) }
+                Button("Edit…") { onPress(.edit) }
+            }
+        }
+    }
+
+    private func more<Items: View>(@ViewBuilder _ items: () -> Items) -> some View {
+        Menu(content: items) { Image(systemName: "ellipsis") }
+            .menuStyle(.button)
+            .buttonStyle(.kitIcon(isOn: false))
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+            .accessibilityLabel("More")
+    }
+}
+
+/// What sits under a row with a `ref`: a failed press's error with
+/// **Retry**, the Reply composer (or its refusal), or "Reply waiting for
+/// approval". Nothing for an idle row.
+struct InboxRowActionsFooter: View {
+    let content: InboxRowActionsContent
+    var onPress: (InboxRowPress) -> Void = { _ in }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            if case let .failed(message) = content.state {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(Tone.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    Button("Retry") { onPress(.retryFailedPress) }
+                        .buttonStyle(.kitSecondary)
+                }
+            }
+            switch content.reply {
+            case let .composing(text, error):
+                composer(text: text, error: error)
+            case .waiting:
+                Text("Reply waiting for approval")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case nil:
+                EmptyView()
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private func composer(text: String, error: String?) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            HStack(spacing: Spacing.regular) {
+                TextField("Reply…", text: Binding(get: { text }, set: { onPress(.replyChanged($0)) }))
+                    .textFieldStyle(.kit)
+                    .onSubmit { onPress(.proposeReply) }
+                    .onExitCommand { onPress(.cancelReply) }
+                Button("Propose Reply") { onPress(.proposeReply) }
+                    .buttonStyle(.kitSecondary)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.isBusy)
+                Button("Cancel") { onPress(.cancelReply) }
+                    .buttonStyle(.kitQuiet)
+            }
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(Tone.error)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } else {
+                Text("Goes to Needs approval — nothing is sent until you approve it")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
