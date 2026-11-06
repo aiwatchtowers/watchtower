@@ -180,8 +180,8 @@ type inboxFolderRouteJSON struct {
 	Created      bool            `json:"created"`
 }
 
-// writeJSONLine prints v as one compact line, so it is the last stdout line.
-func writeJSONLine(w io.Writer, v any) error {
+// inboxFoldersJSONLine prints v as one compact line, so it is the last stdout line.
+func inboxFoldersJSONLine(w io.Writer, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -242,7 +242,7 @@ func runInboxFoldersList(cmd *cobra.Command, _ []string) error {
 		for _, f := range tree.Folders {
 			folders = append(folders, toInboxFolderJSON(f))
 		}
-		return writeJSONLine(out, inboxFoldersListJSON{Revision: tree.Revision, Folders: folders})
+		return inboxFoldersJSONLine(out, inboxFoldersListJSON{Revision: tree.Revision, Folders: folders})
 	}
 	fmt.Fprintf(out, "Revision %d\n", tree.Revision)
 	depth := map[int64]int{}
@@ -279,21 +279,21 @@ func folderNotes(f inboxfolders.Folder) string {
 // printInboxFolderWrite prints a create/update/move result.
 func printInboxFolderWrite(cmd *cobra.Command, verb string, tree inboxfolders.Tree, f inboxfolders.Folder) error {
 	if ifFlags.json {
-		return writeJSONLine(cmd.OutOrStdout(), inboxFolderWriteJSON{Revision: tree.Revision, Folder: toInboxFolderJSON(f)})
+		return inboxFoldersJSONLine(cmd.OutOrStdout(), inboxFolderWriteJSON{Revision: tree.Revision, Folder: toInboxFolderJSON(f)})
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s folder #%d %q (revision %d)\n", verb, f.ID, f.Title, tree.Revision)
 	return nil
 }
 
-// optionalInt64 is the flag's value when it was given, else nil.
-func optionalInt64(cmd *cobra.Command, name string, v int64) *int64 {
+// inboxFoldersInt64Flag is the flag's value when it was given, else nil.
+func inboxFoldersInt64Flag(cmd *cobra.Command, name string, v int64) *int64 {
 	if !cmd.Flags().Changed(name) {
 		return nil
 	}
 	return &v
 }
 
-func optionalString(cmd *cobra.Command, name, v string) *string {
+func inboxFoldersStringFlag(cmd *cobra.Command, name, v string) *string {
 	if !cmd.Flags().Changed(name) {
 		return nil
 	}
@@ -310,7 +310,7 @@ func runInboxFoldersCreate(cmd *cobra.Command, _ []string) error {
 	}
 	defer closeDB()
 	req := inboxfolders.CreateRequest{Title: ifFlags.title, Icon: ifFlags.icon,
-		ParentID: optionalInt64(cmd, "parent", ifFlags.parent), ExpectRevision: ifFlags.expectRevision}
+		ParentID: inboxFoldersInt64Flag(cmd, "parent", ifFlags.parent), ExpectRevision: ifFlags.expectRevision}
 	if cmd.Flags().Changed("position") {
 		p := ifFlags.position
 		req.Position = &p
@@ -335,8 +335,8 @@ func runInboxFoldersUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer closeDB()
-	req := inboxfolders.UpdateRequest{Title: optionalString(cmd, "title", ifFlags.title),
-		Icon: optionalString(cmd, "icon", ifFlags.icon), ExpectRevision: ifFlags.expectRevision}
+	req := inboxfolders.UpdateRequest{Title: inboxFoldersStringFlag(cmd, "title", ifFlags.title),
+		Icon: inboxFoldersStringFlag(cmd, "icon", ifFlags.icon), ExpectRevision: ifFlags.expectRevision}
 	if cmd.Flags().Changed("hidden") {
 		h := ifFlags.hidden
 		req.Hidden = &h
@@ -391,7 +391,7 @@ func runInboxFoldersDelete(cmd *cobra.Command, args []string) error {
 		for _, r := range moved.Renamed {
 			renamed = append(renamed, inboxFolderRenamedJSON{ID: r.ID, From: r.From, To: r.To})
 		}
-		return writeJSONLine(out, inboxFolderDeleteJSON{Revision: tree.Revision, Moved: inboxFolderMovedJSON{
+		return inboxFoldersJSONLine(out, inboxFolderDeleteJSON{Revision: tree.Revision, Moved: inboxFolderMovedJSON{
 			Folders: moved.Folders, Automations: moved.Automations, Artifacts: moved.Artifacts, Renamed: renamed}})
 	}
 	fmt.Fprintf(out, "Deleted folder #%d (revision %d): moved up %d folders, %d automations, %d artifacts\n",
@@ -415,16 +415,16 @@ func runInboxFoldersRoute(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer closeDB()
-	req := inboxfolders.RouteRequest{FolderID: optionalInt64(cmd, "folder", ifFlags.folder),
+	req := inboxfolders.RouteRequest{FolderID: inboxFoldersInt64Flag(cmd, "folder", ifFlags.folder),
 		NewTitle: ifFlags.newTitle, NewIcon: ifFlags.newIcon,
-		ParentID: optionalInt64(cmd, "parent", ifFlags.parent), ExpectRevision: ifFlags.expectRevision}
+		ParentID: inboxFoldersInt64Flag(cmd, "parent", ifFlags.parent), ExpectRevision: ifFlags.expectRevision}
 	tree, f, created, err := store.Route(cmd.Context(), automationID, req)
 	if err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
 	if ifFlags.json {
-		return writeJSONLine(out, inboxFolderRouteJSON{Revision: tree.Revision, AutomationID: automationID,
+		return inboxFoldersJSONLine(out, inboxFolderRouteJSON{Revision: tree.Revision, AutomationID: automationID,
 			Folder: toInboxFolderJSON(f), Created: created})
 	}
 	verb := "Routed"
