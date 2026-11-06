@@ -18,8 +18,8 @@ final class SidebarCountsViewModel {
     var recommendationCount: Int = 0
     var activeTaskCount: Int = 0
     var overdueTaskCount: Int = 0
-    /// The Inbox badge (R1, `ActionStripViewModel.badgeCount`): Needs your
-    /// decision + unread messages + an unread latest briefing + due reminders.
+    /// The Inbox badge (`ActionStripViewModel.badgeCount`): the sum of the
+    /// counts of every folder the Inbox menu shows.
     var inboxStripCount: Int = 0
 
     /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
@@ -216,10 +216,10 @@ final class SidebarCountsViewModel {
                 // pre-catchup_recaps schema like the reads below it.
                 let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
                 let waitingRecap = hasWaitingRecap ? 1 : 0
-                // The Inbox tab's strip: pending/failed proposals + due reminders
-                // + unread automation inbox outputs, user-independent and
-                // tolerant of a schema predating any of them (a missing table
-                // counts 0; any other read error fails the fetch).
+                // The Inbox badge: the visible folders' counts summed,
+                // user-independent and tolerant of a schema predating any of
+                // its sources (a missing table counts 0; any other read error
+                // fails the fetch).
                 let nowUTC = ISO8601DateFormatter().string(from: Date())
                 let stripCount = try ActionStripViewModel.badgeCount(db, nowUTC: nowUTC)
                 // Memory disputes, tolerant of a pre-memory schema.

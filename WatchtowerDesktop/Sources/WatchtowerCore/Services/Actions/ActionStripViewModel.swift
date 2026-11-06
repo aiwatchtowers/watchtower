@@ -130,20 +130,42 @@ package final class ActionStripViewModel {
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
     }
 
-    /// The Inbox sidebar badge (R1, spec §6.1): Needs your decision (proposals
-    /// awaiting the owner, ideas awaiting a verdict) + unread Messages + 1 when
-    /// the latest briefing is unread + due reminders + built-in upgrade
-    /// notices (C2). Unread automation outputs
-    /// and track cards show only as the list's unread dots.
-    /// Each source tolerates a schema that predates it (its table missing
-    /// counts 0); any other read error is thrown, never folded into 0.
+    /// The Inbox sidebar badge: the sum of the counts of every folder the
+    /// menu shows (inbox builder B, `InboxFolderCounts`). It keeps every
+    /// term of the 2026-10-18 badge as a folder's legacy count — Needs
+    /// approval: proposals awaiting the owner, due reminders, built-in
+    /// upgrade notices (C2); the root: ideas awaiting a verdict, unread
+    /// Messages (while that entry stands in for Waiting for me) and 1 when
+    /// the latest briefing is unread — and adds the automation artifacts:
+    /// 1 per unread one, or its rows that wait on the owner. Track cards
+    /// stay unread dots only. Each source tolerates a schema that predates
+    /// it (its table missing counts 0); any other read error is thrown,
+    /// never folded into 0.
     nonisolated package static func badgeCount(_ db: Database, nowUTC: String) throws -> Int {
-        try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
+        let tree = try InboxFolderQueries.tree(db)
+        let artifacts = try InboxFolderQueries.artifactsByFolder(db, tree: tree)
+        let refState = try InboxRefState.read(db, refs: InboxFolderCounts.refs(of: artifacts), nowUTC: nowUTC)
+        let counts = InboxFolderCounts.counts(
+            tree: tree, artifacts: artifacts, refState: refState, legacy: try legacyCounts(db, nowUTC: nowUTC, tree: tree)
+        )
+        return InboxFolderCounts.badge(counts: counts, tree: tree)
+    }
+
+    /// The badge's terms from before the folders, by the folder that shows
+    /// them now: Needs approval (the root on a database without it) and the
+    /// root.
+    nonisolated package static func legacyCounts(_ db: Database, nowUTC: String, tree: InboxFolderTree) throws -> [Int64: Int] {
+        let approvals = try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
             + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
-            + zeroIfTableMissing { try IdeaQueries.countForReview(db) }
-            + zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) }
-            + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }
             + zeroIfTableMissing { try BuiltinUpgradeNotice.load(db).count }
+        let messages = try InboxFolderQueries.messagesStandIn(db)
+            ? zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) } : 0
+        let root = try zeroIfTableMissing { try IdeaQueries.countForReview(db) }
+            + messages
+            + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }
+        var out: [Int64: Int] = [tree.root.id: root]
+        out[tree.approvals?.id ?? tree.root.id, default: 0] += approvals
+        return out
     }
 
     /// `count()`, or 0 when its table does not exist yet (an older schema).

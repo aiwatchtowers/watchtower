@@ -63,17 +63,19 @@ package enum AgentActionQueries {
     /// decisions, so they are not counted. Project rows are excluded like in
     /// `fetchStrip` (STRIP-01).
     package static func awaitingOwnerCount(_ db: Database) throws -> Int {
-        try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notWorkbenchRow) AND NOT \(settledSessionCall)
-            """) ?? 0
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM agent_actions WHERE \(awaitingOwnerClause)") ?? 0
     }
+
+    /// The `agent_actions` rows that wait on the owner, as an unqualified
+    /// WHERE clause with no `?`: `awaitingOwnerCount`'s predicate, shared with
+    /// the Inbox's render-time check of an `action` ref (`InboxRefState`).
+    package static let awaitingOwnerClause =
+        "status IN ('pending','failed') AND \(notWorkbenchRow) AND NOT \(settledSessionCall)"
 
     /// The rows `awaitingOwnerCount` counts (pending/failed, `notWorkbenchRow`), newest first.
     package static func awaitingOwner(_ db: Database, limit: Int) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
-            SELECT * FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notWorkbenchRow) AND NOT \(settledSessionCall)
+            SELECT * FROM agent_actions WHERE \(awaitingOwnerClause)
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             """, arguments: [limit])
