@@ -143,7 +143,7 @@ func TestApprovalHook_EveryWriterNotifies(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, []string{"InsertAgentAction", "TransitionAgentAction", "DismissAgentAction",
-		"ApproveAgentActionWithArgs", "InsertInboxButtonProposal", "InsertReminder", "MarkReminderDone",
+		"ApproveAgentActionWithArgs", "InsertInboxButtonProposal", "InsertInboxReplyProposal", "InsertReminder", "MarkReminderDone",
 		"SnoozeReminder"}, writers, "the writers the scan found")
 }
 
@@ -348,6 +348,10 @@ func TestActionCanBeApproval(t *testing.T) {
 		{AgentAction{Tool: "t", ArgsJSON: `{}`, ContextType: "project"}, false},
 		{AgentAction{Tool: "t", ArgsJSON: `{}`, ContextType: "project", External: true}, true},
 		{AgentAction{Tool: "t", ArgsJSON: `{}`, Surface: "inbox"}, false},
+		{AgentAction{Tool: "apply_track_action", ArgsJSON: `{}`, Surface: "inbox"}, false},
+		{AgentAction{Tool: "send_slack_message", ArgsJSON: `{}`, Surface: "inbox", External: true}, true},
+		{AgentAction{Tool: "add_jira_comment", ArgsJSON: `{}`, Surface: "inbox", External: true}, true},
+		{AgentAction{Tool: "add_linear_comment", ArgsJSON: `{}`, Surface: "inbox", External: true}, true},
 	} {
 		id, err := d.InsertAgentAction(c.row)
 		require.NoError(t, err)
@@ -383,4 +387,15 @@ func TestApprovalDriftOf_SameSecondIsDriftAndConverges(t *testing.T) {
 	drift, err = d.ApprovalDriftOf(context.Background(), a, now, 50)
 	require.NoError(t, err)
 	assert.False(t, drift.Any(), "the redraw a second later converges")
+}
+
+// The SQL list of Reply tools in approvalRowClause is the Go list
+// (InboxReplyToolNames): a Reply proposal is an approval (the spec's STRIP-01
+// narrowing), every other inbox row stays a one-press row.
+func TestApprovalRowClause_ListsEveryInboxReplyTool(t *testing.T) {
+	for _, name := range InboxReplyToolNames() {
+		assert.Contains(t, approvalRowClause, "'"+name+"'", name)
+	}
+	assert.Equal(t, len(InboxReplyToolNames()), strings.Count(approvalRowClause, "'")/2-2,
+		"the clause names exactly the Reply tools plus 'project' and 'inbox'")
 }

@@ -72,5 +72,6 @@ func (db *DB) InsertInboxReplyProposal(a AgentAction, replyTools []string) (int6
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("committing inbox reply proposal: %w", err)
 	}
+	db.approvalChanged(ActionRef(id))
 	return id, nil
 }

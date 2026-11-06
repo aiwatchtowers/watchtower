@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +49,9 @@ func ParseApprovalRef(ref string) (kind string, id int64, err error) {
 // outside any transaction of the writer, synchronously, and its outcome
 // never changes the writer's result. Set once per process; nil removes it.
 func (db *DB) SetApprovalHook(fn func(ref string)) {
+	if db.approvalHook == nil {
+		db.approvalHook = new(atomic.Pointer[func(ref string)])
+	}
 	if fn == nil {
 		db.approvalHook.Store(nil)
 		return
@@ -55,19 +60,34 @@ func (db *DB) SetApprovalHook(fn func(ref string)) {
 }
 
 // HasApprovalHook reports whether an approval hook is set on the handle.
-func (db *DB) HasApprovalHook() bool { return db.approvalHook.Load() != nil }
+func (db *DB) HasApprovalHook() bool {
+	return db.approvalHook != nil && db.approvalHook.Load() != nil
+}
 
 // approvalChanged calls the approval hook, if one is set, with ref.
 func (db *DB) approvalChanged(ref string) {
+	if db.approvalHook == nil {
+		return
+	}
 	if fn := db.approvalHook.Load(); fn != nil {
 		(*fn)(ref)
 	}
 }
 
+// inboxReplyToolNames are the tools a Reply from an Inbox row proposes
+// (Inbox builder B, asks #445 and #451) — the one list; tools.InboxReplyTools
+// reads it. On the inbox surface only these are approvals (the spec's
+// STRIP-01 narrowing): every other inbox row is a button's one-press row.
+var inboxReplyToolNames = []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}
+
+// InboxReplyToolNames returns a fresh copy of the Reply tools' names.
+func InboxReplyToolNames() []string { return slices.Clone(inboxReplyToolNames) }
+
 // approvalRowClause is the half of openActionClause that never changes over
 // a row's life: not a workbench's direct-apply audit row unless External,
-// not an Inbox button's one-press row.
-const approvalRowClause = `(context_type IS NOT 'project' OR external = 1) AND surface != 'inbox'`
+// and on the inbox surface only a Reply proposal (never a button's
+// one-press row).
+const approvalRowClause = `(context_type IS NOT 'project' OR external = 1) AND (surface != 'inbox' OR tool IN ('send_slack_message', 'add_jira_comment', 'add_linear_comment'))`
 
 // ActionCanBeApproval reports whether agent_actions row id is a row that can
 // ever be an open approval (approvalRowClause) — one indexed read, so the
