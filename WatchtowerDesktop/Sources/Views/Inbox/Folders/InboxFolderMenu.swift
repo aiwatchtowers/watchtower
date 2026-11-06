@@ -113,9 +113,34 @@ struct InboxFolderMenu: View {
                     onAction(.menu(folderID: row.id, $0))
                 }
             }
-            .accessibilityElement(children: .contain)
+            // One VoiceOver element per folder: its default action selects
+            // it, and its ⋯ entries (and Expand/Collapse) are named actions,
+            // so the options never depend on hover.
+            .accessibilityElement(children: .combine)
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { onAction(.select(row.id)) }
+            .accessibilityActions {
+                if row.kind == .owner, content.hasChildren(row) {
+                    Button(row.isExpanded ? "Collapse" : "Expand") { onAction(.toggleExpanded(row.id)) }
+                }
+                ForEach(Array(accessibilityEntries(row).enumerated()), id: \.offset) { _, entry in
+                    Button(entry.title) {
+                        if let command = entry.command { onAction(.menu(folderID: row.id, command)) }
+                    }
+                }
+            }
         }
+    }
+
+    /// The row's ⋯ entries flattened for VoiceOver ("Icon: Flag"), the
+    /// writes left out while the menu is read-only.
+    private func accessibilityEntries(_ row: InboxFolderRow) -> [InboxMenuEntry] {
+        menuEntries(row).flatMap { entry in
+            entry.children.isEmpty ? [entry] : entry.children.map { child in
+                InboxMenuEntry(title: "\(entry.title): \(child.title)", command: child.command)
+            }
+        }
+        .filter { $0.command != nil && (!content.isReadOnly || $0.command?.isRead == true) }
     }
 
     /// A chevron for a folder with children; the same width otherwise, so
