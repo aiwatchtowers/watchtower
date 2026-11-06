@@ -478,8 +478,9 @@ func TestNeedsApproval_FeatureOffQueuesNothing(t *testing.T) {
 func TestNeedsApproval_CopyMustKeepTheApprovalTrigger(t *testing.T) {
 	e, _ := Lookup(NeedsApprovalID)
 	for name, trigger := range map[string]string{
-		"sync":  "trigger:\n  sync: waiting_for_me\n",
-		"where": "trigger:\n  event:\n    type: approval\n    where: {ref: \"action:*\"}\n",
+		"sync":          "trigger:\n  sync: waiting_for_me\n",
+		"where":         "trigger:\n  event:\n    type: approval\n    where: {ref: \"action:*\"}\n",
+		"another event": "trigger:\n  event:\n    type: slack.new_messages\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
@@ -492,6 +493,11 @@ func TestNeedsApproval_CopyMustKeepTheApprovalTrigger(t *testing.T) {
 			a := f.rowOf(t, NeedsApprovalID)
 			if a.ParseError == "" || a.Runnable() {
 				t.Errorf("row = parse %q runnable %v; want a parse error", a.ParseError, a.Runnable())
+			}
+			// A where on approval is the parser's own refusal; any other
+			// parseable trigger is the built-in indexer's.
+			if name != "where" && !strings.Contains(a.ParseError, `must stay "event: approval"`) {
+				t.Errorf("parse error = %q; want the built-in trigger rule", a.ParseError)
 			}
 		})
 	}
