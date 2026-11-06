@@ -939,7 +939,7 @@ const slotAutomationSQL = `a.trigger_kind = 'sync'`
 // slotRunAutomationSQL is the automations whose runs the run sweeps treat
 // as slot runs: every slot automation (slotAutomationSQL), plus a built-in
 // whose row has no trigger. A reindex turns an owner copy that does not
-// parse into such a row (trigger_kind ''), possibly while a run it started
+// parse into such a row (an empty trigger_kind), possibly while a run it started
 // at its slot or inline in a CLI (`briefing generate`) is still live; that
 // run keeps the slot sweeps' rules (a live inline run is ended only past its
 // deadline), never the executor start sweep's. The claim side is the trigger
