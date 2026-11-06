@@ -104,6 +104,7 @@ func TestApprovalFire_101RefsCapAt100AndTruncated(t *testing.T) {
 	require.Len(t, runs, 1)
 	p := payloadOf(t, runs[0])
 	assert.Len(t, p.Events, automations.MaxEventsPerRun)
+	assert.Len(t, p.Cycles, automations.MaxEventsPerRun, "the refs are capped with the events")
 	assert.Equal(t, 101, p.Count)
 	assert.True(t, p.Truncated)
 }

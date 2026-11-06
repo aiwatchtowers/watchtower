@@ -344,6 +344,24 @@ func TestMergeQueuedEvents_AppendsCapsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// The cycles list is capped with the events: past maxEvents a new cycle is
+// dropped and the run is truncated.
+func TestMergeQueuedEvents_CapsCycles(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "watch", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent,
+		EventJSON: eventPayload(t, []string{"A"}, nil, 0, false)})
+	for _, c := range []string{"B", "C"} {
+		if !mustMerge(t, d, run, c, nil, 0, 2) {
+			t.Fatalf("merge of cycle %s refused", c)
+		}
+	}
+	p := mustRunPayload(t, d, run)
+	if !reflect.DeepEqual(p.Cycles, []string{"A", "B"}) || !p.Truncated {
+		t.Errorf("payload = cycles %v truncated %v; want [A B] true", p.Cycles, p.Truncated)
+	}
+}
+
 func TestMergeQueuedEvents_RefusesNonQueuedAndNonEvent(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunAutomation(t, d, "watch", 2)

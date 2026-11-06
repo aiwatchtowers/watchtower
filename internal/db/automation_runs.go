@@ -359,7 +359,8 @@ func runOfEventCycleTx(tx *sql.Tx, automationID int64, cycle string) (int64, boo
 // MergeQueuedAutomationRunEvents merges one cycle's matched events into an
 // event run that is still queued (P4's bus, when EnqueueAutomationRun
 // coalesced a new cycle onto a queued run of an earlier one), in one
-// transaction: the cycle is appended to event_json's cycles, events up to
+// transaction: the cycle is appended to event_json's cycles while they hold
+// fewer than maxEvents (else dropped, and truncated set), events up to
 // maxEvents in all (the older ones kept, newer ones beyond the cap dropped),
 // total is added to count, and truncated is set once anything was dropped.
 // event_cycle is never written, so the run keeps its first cycle there and
@@ -393,10 +394,13 @@ func (db *DB) MergeQueuedAutomationRunEvents(runID int64, cycleID string, events
 	if slices.Contains(p.Cycles, cycleID) {
 		return true, nil
 	}
-	p.Cycles = append(p.Cycles, cycleID)
+	cycleDropped := len(p.Cycles) >= maxEvents
+	if !cycleDropped {
+		p.Cycles = append(p.Cycles, cycleID)
+	}
 	p.Events = append(p.Events, events[:min(len(events), max(maxEvents-len(p.Events), 0))]...)
 	p.Count += total
-	p.Truncated = p.Truncated || len(p.Events) < p.Count
+	p.Truncated = p.Truncated || cycleDropped || len(p.Events) < p.Count
 	encoded, err := json.Marshal(p)
 	if err != nil {
 		return false, fmt.Errorf("encoding the events of automation run %d: %w", runID, err)
