@@ -205,6 +205,11 @@ func (s *queryStream) tool(eventType string, item *CodexItem) bool {
 	if s.toolsOpen == nil {
 		s.toolsOpen = map[string]bool{}
 	}
+	if item.Type == "web_search" && item.Query == "" && eventType != "item.completed" {
+		// codex starts a search before it knows the query: the step starts
+		// when the query is there, so it shows what was searched.
+		return true
+	}
 	if _, seen := s.toolsOpen[item.ID]; !seen {
 		s.toolsOpen[item.ID] = true
 		start := s.toolStart(item)
@@ -375,38 +380,37 @@ const webSearchTool = "WebSearch"
 // webSearchArgs is a web_search item's query as the step's arguments; nil
 // while codex has not said it.
 func webSearchArgs(item *CodexItem) json.RawMessage {
-	q := item.SearchQuery()
-	if q == "" {
+	if item.Query == "" {
 		return nil
 	}
-	args, _ := json.Marshal(map[string]string{"query": q})
+	args, _ := json.Marshal(map[string]string{"query": item.Query}) // strings only: never fails
 	return args
 }
 
-// webSearchEnd is a finished web_search item's step end: its query and the
-// pages found as Claude's WebSearch "Links:" line (chat.webSearchSources).
+// webSearchEnd is a finished web_search item's step end: failed with
+// codex's error, or the pages found as Claude's WebSearch "Links:" line
+// (chat.webSearchSources).
 func webSearchEnd(ev *ai.ToolEvent, item *CodexItem) *ai.ToolEvent {
-	ev.Args = webSearchArgs(item)
-	ev.OK = item.Status != "failed"
-	type link struct {
-		Title string `json:"title"`
-		URL   string `json:"url"`
+	if item.ToolError != nil || item.Status == "failed" {
+		ev.Result = "the web search failed"
+		if item.ToolError != nil && strings.TrimSpace(item.ToolError.Message) != "" {
+			ev.Result = item.ToolError.Message
+		}
+		return ev
 	}
-	var links []link
+	ev.OK = true
+	links := make([]CodexWebResult, 0, len(item.Results))
 	for _, r := range item.Results {
 		if r.URL != "" {
-			links = append(links, link{r.Title, r.URL})
+			links = append(links, r)
 		}
 	}
-	switch {
-	case len(links) > 0:
-		b, _ := json.Marshal(links)
-		ev.Result = "Links: " + string(b)
-	case ev.OK:
+	if len(links) == 0 {
 		ev.Result = "No pages found"
-	default:
-		ev.Result = "the web search failed"
+		return ev
 	}
+	b, _ := json.Marshal(links) // strings only: never fails
+	ev.Result = "Links: " + string(b)
 	return ev
 }
 

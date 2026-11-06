@@ -55,19 +55,10 @@ type Client struct {
 	// runHome is the run's private CODEX_HOME (SetRunHome); "" = the
 	// inherited one and an --ephemeral run.
 	runHome string
-	// webSearch is the web search every run sets (SetWebSearch); nil = the
-	// owner's own codex setting, untouched (ask #323).
-	webSearch *bool
 	// images are the next run's --image paths (SetImages), taken by it.
 	imagesMu sync.Mutex
 	images   []string
 }
-
-// SetWebSearch sets codex's web search for every run: on
-// (web_search="live") or off (web_search="disabled"). Unset, a run keeps
-// the owner's own codex setting (ask #323). A read-folder run never
-// searches.
-func (c *Client) SetWebSearch(on bool) { c.webSearch = &on }
 
 // SetImages hands the next run, and only it, the images at paths: one
 // --image=<path> each (CHAT-04: a path, never content). The caller owns the
@@ -76,6 +67,13 @@ func (c *Client) SetImages(paths []string) {
 	c.imagesMu.Lock()
 	defer c.imagesMu.Unlock()
 	c.images = slices.Clone(paths)
+}
+
+// peekImages is the images set for the next run, left in place.
+func (c *Client) peekImages() []string {
+	c.imagesMu.Lock()
+	defer c.imagesMu.Unlock()
+	return c.images
 }
 
 // takeImages is the images set for this run, cleared for the next.
@@ -172,7 +170,7 @@ func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
 	if err != nil {
 		return nil
 	}
-	args, _, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, c.takeImages())
+	args, _, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, c.peekImages())
 	if promptFile != "" {
 		_ = os.Remove(promptFile)
 	}
@@ -247,14 +245,7 @@ func (c *Client) execArgs() []string {
 		prefix = slices.DeleteFunc(prefix, func(a string) bool { return a == "--ephemeral" })
 	}
 	if c.readFolder == "" {
-		args := append(prefix, featuresOff(toolRunFeatures)...)
-		switch {
-		case c.webSearch == nil:
-			return args
-		case *c.webSearch:
-			return append(args, "-c", `web_search="live"`)
-		}
-		return append(args, "-c", `web_search="disabled"`)
+		return append(prefix, featuresOff(toolRunFeatures)...)
 	}
 	args := append(prefix, featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
 	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", `web_search="disabled"`)

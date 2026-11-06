@@ -2,8 +2,12 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"watchtower/internal/ai"
@@ -63,31 +67,42 @@ const turnImagePattern = "wt-chat-image-*"
 // file, held from the stale-temp sweep while the turn runs (CHAT-04: the
 // provider gets a path, never the content on argv, and never the owner's
 // own path, which could change after the check). release removes them.
+// Errors carry the errno only, never a path (FILES-01).
 func writeTurnImages(images []TurnImage) (paths []string, release func(), err error) {
+	if strings.Contains(os.TempDir(), ",") {
+		return nil, nil, errors.New("the temp folder's path (TMPDIR) has a comma, which codex cannot take for an image; set TMPDIR to a path without one")
+	}
 	var holds []func()
 	release = func() {
 		for _, h := range holds {
-			h()
-		}
-		for _, p := range paths {
-			_ = os.Remove(p)
+			h() // removes the file, held or not
 		}
 	}
 	for _, img := range images {
 		p, werr := fsutil.WritePrivateTemp(turnImagePattern+imageExt(img.MediaType), string(img.Data))
 		if werr != nil {
 			release()
-			return nil, func() {}, fmt.Errorf("writing a turn image: %w", werr)
+			return nil, nil, fmt.Errorf("writing a turn image: %w", errnoOnly(werr))
+		}
+		hold, herr := fsutil.HoldTempFile(p)
+		holds = append(holds, hold)
+		if herr != nil {
+			// As for codex's prompt file: the sweep only takes files older
+			// than a turn runs, so the turn goes on.
+			log.Printf("chat: a turn image not shielded from the stale-temp sweep: %v", herr)
 		}
 		paths = append(paths, p)
-		hold, herr := fsutil.HoldTempFile(p)
-		if herr != nil {
-			release()
-			return nil, func() {}, fmt.Errorf("holding a turn image: %w", herr)
-		}
-		holds = append(holds, hold)
 	}
 	return paths, release, nil
+}
+
+// errnoOnly is err's errno when it is a path error, else a generic error:
+// a temp file's error names its path in its text.
+func errnoOnly(err error) error {
+	if pe, ok := errors.AsType[*fs.PathError](err); ok {
+		return pe.Err
+	}
+	return errors.New("temp file error")
 }
 
 // imageExt is the file extension of an image media type.

@@ -10,7 +10,7 @@ import (
 
 // attachmentFailBackend always rejects the turn with an *AttachmentError,
 // ignoring ctx entirely — it stands in for a real backend's BuildContentBlocks
-// (or InlineTextAttachments) failure, which is returned before any provider
+// (or TurnAttachments) failure, which is returned before any provider
 // call is made.
 type attachmentFailBackend struct{}
 

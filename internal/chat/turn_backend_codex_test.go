@@ -204,3 +204,27 @@ func TestTurnBackend_CodexImageAttachmentReachesTheModel(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(argv), "--image")
 }
+
+// A failed codex turn still removes its image copy, after codex had it.
+func TestCodexTurn_FailedTurnRemovesItsImage(t *testing.T) {
+	bin, dir := recordingCodexStub(t, `{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"model overloaded"}}`)
+	d, conv := seedConversation(t)
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", bin), d, conv), nil)
+	h.next(EventSessionReady)
+	p := writeAttachmentFixture(t, "shot.png", fixturePNG)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "what is this?",
+		Attachments: []Attachment{{Path: p, Mime: "image/png", Name: "shot.png"}}})
+	h.next(EventError)
+	require.NoError(t, h.finish())
+	seen, err := os.ReadFile(filepath.Join(dir, "seen-1"))
+	require.NoError(t, err, "codex had the image while it ran")
+	assert.Equal(t, fixturePNG, seen)
+	argv, err := os.ReadFile(filepath.Join(dir, "argv"))
+	require.NoError(t, err)
+	for a := range strings.SplitSeq(string(argv), "\n") {
+		if v, ok := strings.CutPrefix(a, "--image="); ok {
+			assert.NoFileExists(t, v, "the failed turn's image copy is removed")
+		}
+	}
+}

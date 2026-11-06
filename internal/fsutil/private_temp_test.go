@@ -91,6 +91,7 @@ func TestSweepStaleTemp_AllPrefixes(t *testing.T) {
 		write(SystemPromptTempPrefix+"a.txt", old),
 		write("wt-chat-prompt-a.txt", old),
 		write("wt-chat-mcp-a.json", old),
+		write("wt-chat-image-a.png", old), // a killed codex turn's --image copy
 		write("wt-mcp-a.json", old),
 	}
 	fresh := write(SystemPromptTempPrefix+"fresh.txt", now)

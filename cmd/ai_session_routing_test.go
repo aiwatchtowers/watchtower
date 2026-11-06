@@ -379,3 +379,16 @@ func TestSessionAttachmentCapability_CodexTakesImagesNotPDFs(t *testing.T) {
 		require.Equal(t, tc.want, got, "%s %s", tc.provider, tc.atts[0].Name)
 	}
 }
+
+// Routing and the turn decide image support the same way: a provider the
+// routing says takes images builds a chat client the turn backend hands
+// them to (chat's imageQuerier), so a routed image turn is never refused.
+func TestSessionAttachmentCapability_MatchesTheCodexClient(t *testing.T) {
+	require.True(t, chat.ProviderAttachmentCaps("codex").Images)
+	cfg := &config.Config{}
+	cfg.AI.Provider = "codex"
+	var q chat.Querier = codexSessionClient(sessionWiring{cfg: cfg, database: db.OpenTestDB(t), dbPath: ":memory:",
+		conv: &db.ChatConversation{ID: 1}, model: "m"})
+	_, ok := q.(interface{ SetImages([]string) })
+	require.True(t, ok, "the codex chat client takes images")
+}

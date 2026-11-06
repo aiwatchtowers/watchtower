@@ -216,7 +216,7 @@ func ownerMessageIDs(hist []db.ChatMessage) []int64 {
 }
 
 // replayFiles renders the text files sent with hist's owner messages as
-// <file> blocks (the current turn's inlining rules, InlineTextAttachments),
+// <file> blocks (the current turn's inlining rules, TurnAttachments),
 // newest message first, while their bytes fit capBytes. A file that does not
 // fit, an image or PDF, and a file that can no longer be read are named with
 // the reason instead, so the model can ask for it again. A file sent again

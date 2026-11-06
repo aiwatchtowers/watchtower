@@ -68,16 +68,17 @@ func (c AttachmentCaps) takes(kind attachmentKind) bool {
 		return c.Images
 	case kindPDF:
 		return c.PDFs
+	case kindText:
 	}
 	return true
 }
 
-// missingReason is the refusal of a file caps do not cover, by capability.
-func (c AttachmentCaps) missingReason() string {
-	if c.Images {
+// missingReason is the refusal of a file of kind a backend does not take.
+func missingReason(kind attachmentKind) string {
+	if kind == kindPDF {
 		return "PDFs need a provider that reads them"
 	}
-	return "images and PDFs need a provider that reads them"
+	return "images need a provider that reads them"
 }
 
 func (e *AttachmentError) Error() string {
@@ -164,7 +165,7 @@ func loadAttachment(a Attachment, caps AttachmentCaps) (loadedAttachment, error)
 		return loadedAttachment{}, reject(fmt.Sprintf("unsupported file type %q (images, PDFs and text files only)", a.Mime))
 	}
 	if !caps.takes(kind) {
-		return loadedAttachment{}, &AttachmentError{Name: name, Reason: caps.missingReason(), CapabilityMissing: true}
+		return loadedAttachment{}, &AttachmentError{Name: name, Reason: missingReason(kind), CapabilityMissing: true}
 	}
 	if size > limit {
 		return loadedAttachment{}, reject(fmt.Sprintf("file is %d bytes; the limit for this type is %d", size, limit))
@@ -312,9 +313,7 @@ func buildContentBlocks(atts []Attachment) ([]json.RawMessage, int64, error) {
 			return nil, 0, err
 		}
 		if total += l.encodedSize(); total > MaxTurnAttachmentEncodedBytes {
-			return nil, 0, &AttachmentError{Name: l.name, Reason: fmt.Sprintf(
-				"the message's files come to %d MB encoded; one message carries at most %d MB — send fewer or smaller files",
-				(total+(1<<20)-1)>>20, MaxTurnAttachmentEncodedBytes>>20)}
+			return nil, 0, overTurnCap(l.name, total)
 		}
 		b, err := l.block()
 		if err != nil {
@@ -365,11 +364,12 @@ func claudeUserLine(blocks []json.RawMessage, text string) ([]byte, error) {
 	return append(line, '\n'), nil
 }
 
-// InlineTextAttachments is the text-only path: text-like files are inlined
-// ahead of the user text; any image/PDF is an *AttachmentError before the call.
-func InlineTextAttachments(text string, atts []Attachment) (string, error) {
-	text, _, err := TurnAttachments(text, atts, AttachmentCaps{})
-	return text, err
+// overTurnCap is the refusal of a turn whose files, as they travel,
+// come to total bytes, past MaxTurnAttachmentEncodedBytes at file name.
+func overTurnCap(name string, total int64) error {
+	return &AttachmentError{Name: name, Reason: fmt.Sprintf(
+		"the message's files come to %d MB encoded; one message carries at most %d MB — send fewer or smaller files",
+		(total+(1<<20)-1)>>20, MaxTurnAttachmentEncodedBytes>>20)}
 }
 
 // TurnImage is an image a turn hands its provider by file (codex --image):
@@ -382,18 +382,24 @@ type TurnImage struct {
 // TurnAttachments is the replay backends' path (codex, ollama): text-like
 // files are inlined ahead of the user text, the images caps take are
 // returned for the provider to get by file, and any other image or PDF is
-// an *AttachmentError before the call.
+// an *AttachmentError before the call, as is a set over
+// MaxTurnAttachmentEncodedBytes (the provider sends images base64).
+// AttachmentCaps{} is the text-only path.
 func TurnAttachments(text string, atts []Attachment, caps AttachmentCaps) (string, []TurnImage, error) {
 	if len(atts) == 0 {
 		return text, nil, nil
 	}
-	caps.PDFs = false // a PDF never travels by file
+	caps.PDFs = false // a PDF never travels by file, nor is it inlined
 	parts := make([]string, 0, len(atts)+1)
 	var images []TurnImage
+	var total int64
 	for _, a := range atts {
 		l, err := loadAttachment(a, caps)
 		if err != nil {
 			return "", nil, err
+		}
+		if total += l.encodedSize(); total > MaxTurnAttachmentEncodedBytes {
+			return "", nil, overTurnCap(l.name, total)
 		}
 		if l.kind == kindImage {
 			images = append(images, TurnImage{MediaType: l.mediaType, Data: l.data})

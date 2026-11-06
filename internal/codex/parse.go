@@ -37,12 +37,9 @@ type CodexItem struct {
 	AggregatedOutput string `json:"aggregated_output"`
 	ExitCode         *int   `json:"exit_code"`
 
-	// web_search: the query (also in the action, which an item started
-	// before its query was known lacks) and the pages found.
-	Query  string `json:"query"`
-	Action *struct {
-		Query string `json:"query"`
-	} `json:"action"`
+	// web_search: the query (empty on the item.started line) and the pages
+	// found.
+	Query   string           `json:"query"`
 	Results []CodexWebResult `json:"results"`
 }
 
@@ -50,14 +47,6 @@ type CodexItem struct {
 type CodexWebResult struct {
 	Title string `json:"title"`
 	URL   string `json:"url"`
-}
-
-// SearchQuery is a web_search item's query, "" while it is not known.
-func (i *CodexItem) SearchQuery() string {
-	if i.Query == "" && i.Action != nil {
-		return i.Action.Query
-	}
-	return i.Query
 }
 
 // CodexToolResult is an mcp_tool_call's result: MCP content blocks.
