@@ -143,23 +143,30 @@ package final class ActionStripViewModel {
     /// never folded into 0.
     nonisolated package static func badgeCount(_ db: Database, nowUTC: String) throws -> Int {
         let tree = try InboxFolderQueries.tree(db)
-        let artifacts = try InboxFolderQueries.artifactsByFolder(db, tree: tree)
+        let waitingForMe = try InboxFolderQueries.waitingForMe(db)
+        // The stand-in rule (`WaitingForMeState`): a stale Waiting for me
+        // list never counts beside the Messages entry it gives way to.
+        let artifacts = waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree))
         let refState = try InboxRefState.read(db, refs: InboxFolderCounts.refs(of: artifacts), nowUTC: nowUTC)
-        let counts = InboxFolderCounts.counts(
-            tree: tree, artifacts: artifacts, refState: refState, legacy: try legacyCounts(db, nowUTC: nowUTC, tree: tree)
-        )
+        let legacy = try legacyCounts(db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
+        let counts = InboxFolderCounts.counts(tree: tree, artifacts: artifacts, refState: refState, legacy: legacy)
         return InboxFolderCounts.badge(counts: counts, tree: tree)
     }
 
     /// The badge's terms from before the folders, by the folder that shows
     /// them now: Needs approval (the root on a database without it) and the
     /// root.
-    nonisolated package static func legacyCounts(_ db: Database, nowUTC: String, tree: InboxFolderTree) throws -> [Int64: Int] {
+    nonisolated package static func legacyCounts(
+        _ db: Database,
+        nowUTC: String,
+        tree: InboxFolderTree,
+        messagesStandIn: Bool
+    ) throws -> [Int64: Int] {
         let approvals = try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
             + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
             + zeroIfTableMissing { try BuiltinUpgradeNotice.load(db).count }
-        let messages = try InboxFolderQueries.messagesStandIn(db)
-            ? zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) } : 0
+        let messages = messagesStandIn
+            ? try zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) } : 0
         let root = try zeroIfTableMissing { try IdeaQueries.countForReview(db) }
             + messages
             + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }

@@ -136,6 +136,37 @@ final class InboxFolderCountsTests: XCTestCase {
         XCTAssertEqual(after, 1, "the message counts once, as Waiting for me's waiting row")
     }
 
+    /// The stand-in rule: after a failed run the Messages entry is back and
+    /// the stale Waiting for me list of the earlier success leaves the root,
+    /// so each open message counts once.
+    func testStaleWaitingForMeListLeavesTheBadgeAfterAFailedRun() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let now = "2026-10-16T12:00:00Z"
+        try await pool.write { db in
+            try InboxFolderFixtures.seed(db)
+            let first = try TestDatabase.insertInboxItem(db, messageTS: "1")
+            let second = try TestDatabase.insertInboxItem(db, messageTS: "2")
+            let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me")
+            try db.execute(sql: """
+                UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me'
+                WHERE id = ?
+                """, arguments: [id])
+            let run = try TestDatabase.insertAutomationRun(db, automationID: id, status: "succeeded")
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: id, runID: run,
+                blocksJSON: InboxFolderFixtures.listDocument([("inbox_item", first), ("inbox_item", second)]),
+                outputKey: "waiting")
+            try TestDatabase.insertAutomationRun(db, automationID: id, status: "failed")
+        }
+
+        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now) }
+
+        XCTAssertEqual(badge, 2, "two open messages, counted once by the Messages entry")
+        let state = try await pool.read { try InboxFolderQueries.waitingForMe($0) }
+        XCTAssertTrue(state.messagesStandIn)
+    }
+
     func testBadgeWithoutTheFolderSeedRowsCountsEverythingInTheRoot() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }

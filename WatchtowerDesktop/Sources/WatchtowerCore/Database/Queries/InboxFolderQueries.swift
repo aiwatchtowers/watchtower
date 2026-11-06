@@ -172,23 +172,62 @@ package enum InboxFolderQueries {
         }
     }
 
-    /// The Messages legacy entry stands in for Waiting for me (spec "Waiting
-    /// for me") until the built-in's first successful run and after a failed
-    /// one: true unless its latest finished run succeeded. No row for the
-    /// built-in, or an older database, stands in.
-    package static func messagesStandIn(_ db: Database) throws -> Bool {
+    /// The `waiting-for-me` built-in as the root's composition needs it.
+    package static func waitingForMe(_ db: Database) throws -> WaitingForMeState {
         do {
+            let automationID = try Int64.fetchOne(
+                db, sql: "SELECT id FROM automations WHERE builtin_id = ?", arguments: [waitingForMeBuiltinID])
+            guard let automationID else { return WaitingForMeState(automationID: nil, messagesStandIn: true) }
             let status = try String.fetchOne(db, sql: """
-                SELECT r.status FROM automation_runs r JOIN automations a ON a.id = r.automation_id
-                WHERE a.builtin_id = ? AND r.status NOT IN ('queued', 'running', 'waiting')
-                ORDER BY r.id DESC LIMIT 1
-                """, arguments: [waitingForMeBuiltinID])
-            return status != "succeeded"
+                SELECT status FROM automation_runs
+                WHERE automation_id = ? AND status NOT IN ('queued', 'running', 'waiting')
+                ORDER BY id DESC LIMIT 1
+                """, arguments: [automationID])
+            return WaitingForMeState(automationID: automationID, messagesStandIn: status != "succeeded")
         } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
-            return true
+            // A missing table stands in. A missing `builtin_id` column (a
+            // file from before 00150) is not caught: it cannot happen, the
+            // Desktop runs `db migrate` at launch before it opens the file.
+            return WaitingForMeState(automationID: nil, messagesStandIn: true)
         }
+    }
+
+    /// The Messages legacy entry stands in for Waiting for me: see
+    /// `WaitingForMeState.messagesStandIn`.
+    package static func messagesStandIn(_ db: Database) throws -> Bool {
+        try waitingForMe(db).messagesStandIn
     }
 
     /// The `waiting-for-me` built-in's id (`builtin.Entry`, Go).
     package static let waitingForMeBuiltinID = "waiting-for-me"
+}
+
+/// The `waiting-for-me` built-in's place in the root (spec "Waiting for me").
+///
+/// **The stand-in rule:** the Messages legacy entry stands in for Waiting for
+/// me until the built-in's first successful run and after a failed one —
+/// `messagesStandIn` is true unless its latest finished run succeeded (no row
+/// for the built-in stands in). While it stands in, the built-in's own
+/// artifacts are left out of the root (not drawn, not counted): a stale list
+/// from an earlier success would repeat the open messages the Messages entry
+/// already shows. Task 12's root composition and the badge both apply it
+/// through `withoutStandInArtifacts`.
+package struct WaitingForMeState: Equatable, Sendable {
+    /// The built-in's automation row; nil before it is indexed.
+    package let automationID: Int64?
+    package let messagesStandIn: Bool
+
+    package init(automationID: Int64?, messagesStandIn: Bool) {
+        self.automationID = automationID
+        self.messagesStandIn = messagesStandIn
+    }
+
+    /// `artifacts` (folder id → cards) without the built-in's cards while the
+    /// Messages entry stands in; unchanged otherwise.
+    package func withoutStandInArtifacts(
+        _ artifacts: [Int64: [AutomationOutputCard]]
+    ) -> [Int64: [AutomationOutputCard]] {
+        guard messagesStandIn, let automationID else { return artifacts }
+        return artifacts.mapValues { $0.filter { $0.automationID != automationID } }
+    }
 }
