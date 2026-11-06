@@ -3,11 +3,14 @@ import GRDB
 import WatchtowerCore
 
 /// A workbench's session work links (board #987) with the ledger roots
-/// still on disk, read off the main actor: the row's place line counts the
-/// lanes from it without a stat of its own.
+/// still on disk and the folder's resolved spelling, read off the main
+/// actor: the row's place line counts the lanes from it without a file
+/// system call of its own.
 struct SessionWorkSnapshot: Equatable {
     let links: [Int64: SessionWorkLinks]
     let workbenchFolder: String
+    /// `workbenchFolder` with its symlinks resolved at the read.
+    var resolvedWorkbenchFolder: String?
     /// Ledger roots (`SessionLanes.normalized`) that existed at the read.
     let existingRoots: Set<String>
 
@@ -16,7 +19,7 @@ struct SessionWorkSnapshot: Equatable {
         guard let links = links[sessionID] else { return [] }
         return SessionLanes.roots(
             links.worktrees, runStart: links.runStart, workbenchFolder: workbenchFolder,
-            place: place, exists: existingRoots.contains
+            resolvedWorkbenchFolder: resolvedWorkbenchFolder, place: place, exists: existingRoots.contains
         )
     }
 }
@@ -45,12 +48,20 @@ extension WorkbenchesViewModel {
             }
             let roots = Set(links.values.flatMap { $0.worktrees.map { SessionLanes.normalized($0.root) } })
             let existing = await statLaneRoots(roots)
+            let resolved = await Self.resolvedWorkbenchFolder(folder)
             guard read == sessionWorkReads[projectID] else { return }
-            sessionWork[projectID] = SessionWorkSnapshot(links: links, workbenchFolder: folder, existingRoots: existing)
+            sessionWork[projectID] = SessionWorkSnapshot(
+                links: links, workbenchFolder: folder, resolvedWorkbenchFolder: resolved, existingRoots: existing
+            )
         } catch {
             NSLog("WorkbenchesViewModel: could not read the session work links of workbench %lld: %@",
                   projectID, error.localizedDescription)
         }
+    }
+
+    /// `folder`'s symlink-resolved spelling, read off the main actor.
+    nonisolated static func resolvedWorkbenchFolder(_ folder: String) async -> String {
+        await Task.detached(priority: .utility) { SessionLanes.resolvedFolder(folder) }.value
     }
 
     /// Which of `roots` exist, stat'ed off the main actor (`statLaneRoots`'

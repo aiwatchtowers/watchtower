@@ -130,6 +130,18 @@ final class SessionTargetBranchTests: XCTestCase {
                        ["/tmp/repo/.claude/worktrees/lane-a"])
     }
 
+    /// Review F1: the ledger holds resolved roots; the caller hands in the
+    /// workbench folder's resolved spelling (read off the main actor), and
+    /// `roots` itself touches no file system.
+    func testAResolvedWorkbenchFolderIsTheMainCheckout() {
+        let records = [record("/real/acme", after), record("/real/acme/.claude/worktrees/lane-a", after)]
+        XCTAssertEqual(SessionLanes.roots(records, runStart: runStart, workbenchFolder: "/link/acme",
+                                          resolvedWorkbenchFolder: "/real/acme", place: .main) { _ in true },
+                       ["/real/acme/.claude/worktrees/lane-a"])
+        XCTAssertEqual(SessionLanes.roots(records, runStart: runStart, workbenchFolder: "/link/acme", place: .main) { _ in true },
+                       ["/real/acme", "/real/acme/.claude/worktrees/lane-a"], "no resolved spelling: lexical only")
+    }
+
     /// An unknown place may be any of the recorded worktrees: no lanes.
     func testAnUnknownPlaceShowsNoLanes() {
         let records = [record("/tmp/acme/.claude/worktrees/lane-a", after)]
