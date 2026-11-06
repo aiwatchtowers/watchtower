@@ -1912,3 +1912,21 @@ extension ChatViewModelTests {
         XCTAssertNil(claude.attachUnavailableReason)
     }
 }
+
+extension ChatViewModelTests {
+    /// U1 after a switch: a chat that last ran on Ollama and is pinned to
+    /// Claude reads Claude's row, not the history's, until a session starts.
+    func testPinnedSwitchReadsTheChosenProvidersRow() async throws {
+        let id = try await dbManager.dbPool.write { db in
+            let id = try TestDatabase.insertChatConversation(db)
+            try db.execute(sql: "UPDATE chat_conversations SET actual_provider = 'ollama' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .ollama, defaults: defaults)
+        vm.select(conversationID: id)
+        vm.switchProvider(.claude)
+        XCTAssertNil(vm.attachUnavailableReason, "Claude reads images and PDFs")
+        vm.switchProvider(.ollama)
+        XCTAssertEqual(vm.attachUnavailableReason, "Images and PDFs need a provider that reads them.")
+    }
+}
