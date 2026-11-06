@@ -37,8 +37,9 @@ type AgentReportEvent struct {
 // AgentReportSession is one session of the report window.
 type AgentReportSession struct {
 	SessionUUID, StartedAt, EndedAt, Model, GitBranch string
-	OldFormat                                         bool // some source file has parser_version < 2 (a present one clears on its next scan)
-	Facts                                             bool // every source file has parser_version >= 3, so the v2 facts were measured
+	Agent                                             string // "claude" or "codex"
+	OldFormat                                         bool   // some source file has parser_version < 2 (a present one clears on its next scan)
+	Facts                                             bool   // every source file has parser_version >= 3, so the v2 facts were measured
 }
 
 // AgentReportSessions lists a workbench's sessions that started or ended at or
@@ -54,7 +55,7 @@ func (d *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportSe
 			FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
 			JOIN agent_log_files f ON f.path = e.src_path
 			WHERE s.project_id = ?)
-		SELECT s.session_uuid, s.started_at, s.ended_at, s.model, s.git_branch,
+		SELECT s.session_uuid, s.started_at, s.ended_at, s.model, s.git_branch, s.agent,
 			EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid
 				AND files.parser_version < ?),
 			EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid)
@@ -66,7 +67,7 @@ func (d *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportSe
 		[]any{projectID, projectID, agentReportMinParserVersion, agentReportFactsParserVersion, projectID, since, since},
 		func(r *sql.Rows) error {
 			var s AgentReportSession
-			if err := r.Scan(&s.SessionUUID, &s.StartedAt, &s.EndedAt, &s.Model, &s.GitBranch, &s.OldFormat, &s.Facts); err != nil {
+			if err := r.Scan(&s.SessionUUID, &s.StartedAt, &s.EndedAt, &s.Model, &s.GitBranch, &s.Agent, &s.OldFormat, &s.Facts); err != nil {
 				return err
 			}
 			out = append(out, s)
