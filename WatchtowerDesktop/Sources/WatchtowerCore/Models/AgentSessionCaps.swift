@@ -18,15 +18,21 @@ package struct AgentSessionCaps: Equatable, Sendable {
     package let idleSignal: Bool
     /// The agent reports an MCP elicitation through a hook.
     package let elicitation: Bool
+    /// A failed or interrupted turn is read from the agent's transcript, not
+    /// a hook: the session host's rollout watch, or the app's bridge probe
+    /// for a session the host does not watch (spec §3.5, G5).
+    package let rolloutWatch: Bool
 
     package init(
-        midturnInput: Bool, phoneInput: Bool, permissionWait: Bool, idleSignal: Bool, elicitation: Bool
+        midturnInput: Bool, phoneInput: Bool, permissionWait: Bool, idleSignal: Bool, elicitation: Bool,
+        rolloutWatch: Bool = false
     ) {
         self.midturnInput = midturnInput
         self.phoneInput = phoneInput
         self.permissionWait = permissionWait
         self.idleSignal = idleSignal
         self.elicitation = elicitation
+        self.rolloutWatch = rolloutWatch
     }
 
     /// A kind that is not an agent (a shell) offers nothing.
@@ -56,7 +62,8 @@ package struct AgentSessionCaps: Equatable, Sendable {
         case .claude:
             Self(midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true)
         case .codex:
-            Self(midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false)
+            Self(midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false,
+                 rolloutWatch: true)
         }
     }
 

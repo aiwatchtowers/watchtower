@@ -110,12 +110,13 @@ final class SessionBackgroundProberTests: XCTestCase {
         _ rows: [SessionAgentStateRow],
         at now: Date,
         live: Set<Int64> = [1],
-        run: Date? = nil
+        run: Date? = nil,
+        hostWatched: Set<Int64> = []
     ) -> SessionSwitcherPresentation.State? {
         let startedAt: [Int64: Date] = [1: run ?? started]
         let over = prober.displayOver(rows, liveIDs: live, startedAt: startedAt)
         let statuses = SessionAgentStatus.resolve(rows, liveIDs: live, startedAt: startedAt, now: now, displayOver: over)
-        prober.probeDue(rows, statuses: statuses, startedAt: startedAt, now: now)
+        prober.probeDue(rows, statuses: statuses, startedAt: startedAt, now: now, hostWatched: hostWatched)
         return statuses[1]?.state
     }
 
@@ -402,5 +403,39 @@ final class SessionBackgroundProberTests: XCTestCase {
         pass(prober, [codexRow()], at: back.addingTimeInterval(every))
         await settled(prober)
         XCTAssertEqual(runner.invocations.count, 3, "a check that ran keeps the short interval")
+    }
+
+    /// G5 (spec 2026-11-05 §3.5): the session host watches a codex session
+    /// it says it watches, so the bridge never checks it; a session the
+    /// host does not watch (an older host) is still checked.
+    func testProj11_BridgeChecksOnlyCodexRowsTheHostDoesNotWatch() async {
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("not_stale"))
+        let prober = makeProber(runner)
+        let at = started.addingTimeInterval(10)
+        pass(prober, [codexRow()], at: at, hostWatched: [1])
+        await settled(prober)
+        XCTAssertEqual(runner.invocations, [], "a host-watched session is not bridged")
+
+        pass(prober, [codexRow()], at: at.addingTimeInterval(SessionBackgroundProber.codexTurnCheckEvery))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 1, "an unwatched one is")
+    }
+
+    /// The plan's name for the same rule: only local-fallback (unwatched)
+    /// codex rows are polled.
+    func testPollsOnlyLocalFallbackCodexRows() async {
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("not_watched"))
+        let prober = makeProber(runner)
+        var settles = 0
+        prober.onSettled = { settles += 1 }
+        let at = started.addingTimeInterval(10)
+        pass(prober, [codexRow()], at: at, hostWatched: [1])
+        pass(prober, [codexRow(kind: "claude")], at: at)
+        await settled(prober)
+        XCTAssertEqual(runner.invocations, [])
+        pass(prober, [codexRow()], at: at.addingTimeInterval(SessionBackgroundProber.codexTurnCheckEvery))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertEqual(settles, 1, "a not_watched answer reads the rows again")
     }
 }

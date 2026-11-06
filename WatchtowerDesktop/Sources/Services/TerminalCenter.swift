@@ -180,6 +180,11 @@ final class TerminalCenter {
     /// (`SessionHostPaths.scope`): hosted launches carry it, and a reattach
     /// touches only runs of it ("" from an older host counts as it).
     @ObservationIgnored var sessionHostScope = ""
+    /// The current workspace's database file: a launch of an agent whose
+    /// turns the session host reads from its rollout asks the host to
+    /// watch it there (`SessionHostWatchSpec`, spec 2026-11-05 §3.5);
+    /// "" = no watch request.
+    @ObservationIgnored var sessionHostDatabase = ""
     /// The one client `connectSessionHost` made, answering or not. New
     /// sessions launch through it even when it did not answer at launch:
     /// each launch asks it to connect (or respawn the host) once more, and
@@ -259,7 +264,27 @@ final class TerminalCenter {
     }
 
     private func makeHosted(_ client: SessionHostClient) -> HostedTerminalSession {
-        HostedTerminalSession(client: client) { [weak self] in self?.sessionHostScope ?? "" }
+        HostedTerminalSession(
+            client: client,
+            scope: { [weak self] in self?.sessionHostScope ?? "" },
+            watch: { [weak self] row in self?.watchSpec(row: row) }
+        )
+    }
+
+    /// The host's watch request for row `row`'s launch: its agent's kind
+    /// when that agent's turns are read from its rollout, with the
+    /// workspace database; nil otherwise.
+    private func watchSpec(row: Int64) -> SessionHostWatchSpec? {
+        guard !sessionHostDatabase.isEmpty, let agent = rows[row]?.kind.agent,
+              AgentSessionCaps.of(agent).rolloutWatch else { return nil }
+        return SessionHostWatchSpec(agent: agent.rawValue, database: sessionHostDatabase)
+    }
+
+    /// The live sessions the session host watches itself (it said so in its
+    /// hello): the app's bridge probe leaves them alone (spec §3.5, G5).
+    var hostWatchedIDs: Set<Int64> {
+        guard sessionHost?.watchesCodexRollouts == true else { return [] }
+        return liveIDs.filter { processes[$0]?.isHosted == true }
     }
 
     /// Connects to the session host once per app run: a second call (the

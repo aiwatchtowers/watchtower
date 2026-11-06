@@ -109,4 +109,19 @@ final class SessionRowTests: XCTestCase {
         XCTAssertTrue(row.metaItems.dropFirst().allSatisfy { $0.tone == .secondary })
         XCTAssertFalse(row.toneUses.contains { $0.role == .progress }, "the mini progress bar is gone")
     }
+
+    /// U6 (spec 2026-11-05 §3.5): a working session the Mac cannot watch
+    /// shows the Mac's "Working · not watched" caption and names the reason
+    /// in its hint; a record without `watch_issue` (an older Mac) has none.
+    func testANotWatchedSessionShowsTheMacCaptionAndItsReason() throws {
+        let row = SessionRowModel(try session([
+            "state_kind": "working", "state_caption": "Working · not watched", "state_tone": "green",
+            "watch_issue": "compressed"
+        ]), now: Date())
+        XCTAssertTrue(row.caption.hasPrefix("Working · not watched"))
+        XCTAssertEqual(row.watchHint,
+                       "Watchtower can't read this session's log (compressed). Watching starts again with the next prompt.")
+        let watched = SessionRowModel(try session(["state_kind": "working", "state_caption": "Working"]), now: Date())
+        XCTAssertNil(watched.watchHint)
+    }
 }

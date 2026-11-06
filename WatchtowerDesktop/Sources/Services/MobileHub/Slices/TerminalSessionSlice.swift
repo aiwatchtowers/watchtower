@@ -74,6 +74,9 @@ struct TerminalSessionSlice: SliceSource {
         let reportTotal: Int?
         let reportPRLine: String?
         let reportPRLineClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        /// Why the Mac cannot watch this working session (Go
+        /// `sessionPayload.WatchIssue`); nil = watched.
+        let watchIssue: String?
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -88,6 +91,7 @@ struct TerminalSessionSlice: SliceSource {
             case reportDone, reportTotal
             case reportPRLine = "report_pr_line"
             case reportPRLineClipped = "report_pr_line_clipped"
+            case watchIssue = "watch_issue"
         }
     }
 

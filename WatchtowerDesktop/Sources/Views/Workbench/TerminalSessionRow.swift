@@ -180,9 +180,10 @@ struct SessionLiveDot: View {
 }
 
 /// A session's state glyph and caption ("? Waiting for you · ask #12"),
-/// where a site has room for more than the dot: the panel row, the header
-/// switcher button and its popover rows. One accessibility element reading
-/// the caption.
+/// where a site has room for more than the dot: the panel row, the session
+/// strip, the header switcher button and its popover rows. One accessibility
+/// element reading the caption; a session the Mac cannot watch ("Working ·
+/// not watched", U6) names the reason in its tooltip.
 struct SessionStateLabel: View {
     let state: SessionSwitcherPresentation.State
     /// The row's caption (with a not started session's age), else the
@@ -211,6 +212,7 @@ struct SessionStateLabel: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
+        .help(SessionStatePresentation.watchIssueHelp(for: state) ?? "")
     }
 }
 

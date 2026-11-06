@@ -773,6 +773,7 @@ extension WorkbenchesViewModel {
     /// the reattach did, marks the center's liveness settled.
     func startHostReattach() {
         terminalCenter?.sessionHostScope = SessionHostPaths.scope(databasePath: dbPool.path)
+        terminalCenter?.sessionHostDatabase = dbPool.path
         let connection = terminalCenter?.sessionHostConnection
         hostReattach = Task { [weak self, weak center = terminalCenter] in
             await connection?.value

@@ -20,7 +20,8 @@ Differences from Claude Code you may notice:
 - Session titles come from Codex's own history.
 - Watchtower types answers and comments the way Codex expects: Return submits, Ctrl+J starts a new line.
 - **Hand to Session** (⌥⌘↩ from a code question) works with either agent.
-- A turn that stops on an error, such as a usage limit or a provider error, shows **Error: …** a few seconds after it stops, for example "Error: usage limit exceeded". Your next prompt clears it.
+- A turn that stops on an error, such as a usage limit or a provider error, shows **Error: …** within a couple of seconds, for example "Error: usage limit exceeded". Your next prompt clears it. Watchtower reads this from Codex's session log, also while the app is closed.
+- When Watchtower cannot read that log, the session shows **Working · not watched** instead of a plain **Working**. Hover over it for the reason. Watching starts again with your next prompt. An automation waiting on such a session gets "not watched" right away and reports it; it never counts it as done.
 - A line you send from Workchat while Codex works waits for the end of the turn: Codex can open a form mid-turn that Watchtower cannot see.
 - Codex permission prompts are answered in the terminal only: no Workchat card, no answer from the iPhone.
 - Codex reports no idle prompt and no MCP form, so a Codex session sends no idle notice. **Settings → Features → Notifications** says **Idle notices are not available for Codex sessions.** under **Workbench notifications**.
@@ -47,6 +48,7 @@ action: nav:projects
 - **"Codex: not set up".** Click **Set up Codex**.
 - **A Codex session shows no state.** The hooks may not be trusted yet. Try **Repair install** (it is available only when something is broken), then start a new session.
 - **A Codex session stays Working after you press Esc.** A Watchtower update added a Codex hook that is not trusted yet. Click **Repair install**, then start a new session.
+- **A Codex session shows Working · not watched.** Watchtower cannot read the session's log: it is missing, compressed in a way it cannot read, unreadable, or not permitted. The session still runs; check it in its terminal. Your next prompt starts watching again.
 - **Sessions only report from Watchtower's terminal.** A Codex run elsewhere has no board tools.
 
 ## Related

@@ -502,4 +502,37 @@ final class SessionAgentStatusTests: XCTestCase {
         XCTAssertEqual(statuses[1]?.at, stamp(1), "the stop it shows is the background Stop's")
         XCTAssertEqual(statuses[2]?.state, .live(.background, backgroundAgents: 2))
     }
+
+    /// U6 (spec 2026-11-05 §3.5): a working row the session host cannot
+    /// watch reads "Working · not watched", with the reason in its tooltip;
+    /// the mark never shows on any other state.
+    func testWorkingNotWatchedCaption() {
+        var watched = row("working", at: stamp(1))
+        watched.agentWatchIssue = "compressed"
+        let state = SessionAgentStatus.effective(row: watched, live: true, startedAt: started, now: readAt)
+        XCTAssertEqual(state.kind, .working)
+        XCTAssertEqual(state.watchIssue, "compressed")
+        XCTAssertEqual(SessionStatePresentation.caption(for: state), "Working · not watched")
+        XCTAssertEqual(
+            SessionStatePresentation.watchIssueHelp(for: state),
+            "Watchtower can't read this Codex session's log (compressed). Watching starts again with the next prompt."
+        )
+        XCTAssertEqual(SessionStatePresentation.color(for: state), .green)
+
+        var asks = watched
+        asks.openAsks = 1
+        asks.openQuestionAsks = 1
+        let withAsk = SessionAgentStatus.effective(row: asks, live: true, startedAt: started, now: readAt)
+        XCTAssertEqual(SessionStatePresentation.caption(for: withAsk), "Working · not watched · 1 ask open")
+
+        var waiting = row("waiting", at: stamp(1))
+        waiting.agentWatchIssue = "missing"
+        let stopped = SessionAgentStatus.effective(row: waiting, live: true, startedAt: started, now: readAt)
+        XCTAssertNil(stopped.watchIssue)
+        XCTAssertEqual(SessionStatePresentation.caption(for: stopped), "Stopped")
+        XCTAssertNil(SessionStatePresentation.watchIssueHelp(for: stopped))
+
+        let plain = SessionAgentStatus.effective(row: row("working", at: stamp(1)), live: true, startedAt: started, now: readAt)
+        XCTAssertEqual(SessionStatePresentation.caption(for: plain), "Working")
+    }
 }

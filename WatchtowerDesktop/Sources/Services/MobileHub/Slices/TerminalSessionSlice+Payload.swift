@@ -36,7 +36,8 @@ extension TerminalSessionSlice {
             reportDone: summary?.done,
             reportTotal: summary?.total,
             reportPRLine: prLine?.text,
-            reportPRLineClipped: prLine?.clipped
+            reportPRLineClipped: prLine?.clipped,
+            watchIssue: state.watchIssue
         )
     }
 

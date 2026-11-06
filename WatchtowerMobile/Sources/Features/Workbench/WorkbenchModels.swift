@@ -30,6 +30,9 @@ struct SessionRowModel: Equatable, Identifiable {
     /// The Mac's orange states plus a session with open asks (finished with
     /// open asks): the only sessions whose orange is a waiting element.
     private let isWaiting: Bool
+    /// Why the Mac cannot watch this working session, read as the Mac's
+    /// tooltip (U6): the row's accessibility hint; nil when watched.
+    let watchHint: String?
 
     /// `asOf`: the Mac's last contact while it is asleep; a live session's
     /// time then reads "as of …" instead of counting on.
@@ -45,6 +48,9 @@ struct SessionRowModel: Equatable, Identifiable {
         self.tone = tone
         self.isWaiting = isWaiting
         glyph = session.stateGlyph.isEmpty ? nil : session.stateGlyph
+        watchHint = session.watchIssue.map {
+            "Watchtower can't read this session's log (\($0)). Watching starts again with the next prompt."
+        }
         isRing = session.isRing
         openAsks = session.openAsks
 

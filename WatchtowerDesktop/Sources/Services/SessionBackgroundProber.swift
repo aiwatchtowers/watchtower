@@ -22,14 +22,16 @@ import WatchtowerCore
 /// failure of a streak and the flip to over, not every retry. Every
 /// bookkeeping entry is in memory only.
 ///
-/// The same probe checks a live Codex session that reads Working for a
-/// failed turn (board #959, PROJ-11): Codex has no `StopFailure` hook and
-/// fires no Stop on a failed turn, so the CLI reads the turn's end from the
-/// session's rollout and stores the Error state itself. One check per
-/// session per `codexTurnCheckEvery` (a CLI child each time: the cost of
-/// reading the error from the rollout, owned in PROJ-11's Codex limits); a
-/// `failed` answer reads the rows again. A check that cannot run is logged
-/// once per streak and tried again only after `retryAfter`.
+/// The same probe is the bridge for a live session whose agent's failed
+/// turn is read from its rollout (`AgentSessionCaps.rolloutWatch`, Codex:
+/// no `StopFailure` hook, no Stop on a failed turn; board #959, PROJ-11) and
+/// reads Working, when the session host does not watch it itself
+/// (`hostWatched`: a host older than spec 2026-11-05 §3.5's watch, G5): the
+/// CLI reads the turn's end from the rollout and stores the Error state, or
+/// marks a rollout it cannot read not watched. One check per session per
+/// `codexTurnCheckEvery` (a CLI child each time); a `failed` or
+/// `not_watched` answer reads the rows again. A check that cannot run is
+/// logged once per streak and tried again only after `retryAfter`.
 @MainActor
 final class SessionBackgroundProber {
     /// How soon a probe that could not run is tried again.
@@ -97,9 +99,10 @@ final class SessionBackgroundProber {
         _ rows: [SessionAgentStateRow],
         statuses: [Int64: SessionAgentStatus],
         startedAt: [Int64: Date],
-        now: Date
+        now: Date,
+        hostWatched: Set<Int64> = []
     ) {
-        checkCodexTurns(rows, statuses: statuses, now: now)
+        checkCodexTurns(rows, statuses: statuses, now: now, hostWatched: hostWatched)
         for row in rows where inFlight[row.id] == nil {
             guard let status = statuses[row.id], let workbench = row.projectID, let agents = row.agentBackground,
                   let count = Self.count(of: row, live: status.state.live, startedAt: startedAt[row.id]),
@@ -127,12 +130,15 @@ final class SessionBackgroundProber {
         codexCheckFailing = []
     }
 
-    /// Starts a turn check for every live Codex session that reads Working
-    /// and was not checked in the last `codexTurnCheckEvery`; forgets the
-    /// sessions that no longer do.
-    private func checkCodexTurns(_ rows: [SessionAgentStateRow], statuses: [Int64: SessionAgentStatus], now: Date) {
+    /// Starts a turn check for every live rollout-watched session the host
+    /// does not watch that reads Working and was not checked in the last
+    /// `codexTurnCheckEvery`; forgets the sessions that no longer qualify.
+    private func checkCodexTurns(
+        _ rows: [SessionAgentStateRow], statuses: [Int64: SessionAgentStatus], now: Date, hostWatched: Set<Int64>
+    ) {
         var working: Set<Int64> = []
-        for row in rows where row.agent == .codex {
+        for row in rows where row.agent.map({ AgentSessionCaps.of($0).rolloutWatch }) == true
+            && !hostWatched.contains(row.id) {
             guard let status = statuses[row.id], let workbench = row.projectID,
                   status.state.live, status.state.kind == .working else { continue }
             working.insert(row.id)
@@ -160,9 +166,15 @@ final class SessionBackgroundProber {
             if codexCheckFailing.remove(session) != nil {
                 print("[SessionProbe] session \(session): codex turn check runs again")
             }
-            if result.outcome == .failed {
+            switch result.outcome {
+            case .failed:
                 print("[SessionProbe] session \(session): the codex turn failed")
                 onSettled?()
+            case .notWatched:
+                print("[SessionProbe] session \(session): the codex rollout is not watched")
+                onSettled?()
+            default:
+                break
             }
         }
     }

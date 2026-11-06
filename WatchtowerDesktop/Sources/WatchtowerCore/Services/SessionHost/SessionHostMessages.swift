@@ -3,6 +3,19 @@ import Foundation
 // Codable mirrors of the Go session host's JSON payloads (a dual path:
 // keep the keys in step with `internal/sessionhost`).
 
+/// What a launch asks the host to watch (Go `sessionhost.WatchSpec`, spec
+/// 2026-11-05 §3.5): the agent kind whose rollout the host reads and the
+/// workspace database the row lives in.
+package struct SessionHostWatchSpec: Codable, Equatable, Sendable {
+    package let agent: String
+    package let database: String
+
+    package init(agent: String, database: String) {
+        self.agent = agent
+        self.database = database
+    }
+}
+
 package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
     package let row: Int64
     package let run: String
@@ -15,6 +28,9 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
     /// The workspace the row id belongs to (`SessionHostPaths.scope`); the
     /// host stores it and lists it back.
     package let scope: String
+    /// The host's transcript watch for this launch; nil = none (a shell, a
+    /// Claude Code session).
+    package let watch: SessionHostWatchSpec?
 
     package init(
         row: Int64,
@@ -25,7 +41,8 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         cwd: String,
         cols: Int,
         rows: Int,
-        scope: String = ""
+        scope: String = "",
+        watch: SessionHostWatchSpec? = nil
     ) {
         self.row = row
         self.run = run
@@ -36,6 +53,7 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         self.cols = cols
         self.rows = rows
         self.scope = scope
+        self.watch = watch
     }
 
     package init(from decoder: any Decoder) throws {
@@ -49,6 +67,7 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         cols = try container.decode(Int.self, forKey: .cols)
         rows = try container.decode(Int.self, forKey: .rows)
         scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? ""
+        watch = try container.decodeIfPresent(SessionHostWatchSpec.self, forKey: .watch)
     }
 }
 

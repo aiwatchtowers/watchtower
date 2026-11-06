@@ -10,8 +10,10 @@ final class AgentSessionCapsTests: XCTestCase {
             midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true
         ))
         XCTAssertEqual(AgentSessionCaps.of(AgentKind.codex), AgentSessionCaps(
-            midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false
+            midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false,
+            rolloutWatch: true
         ))
+        XCTAssertFalse(AgentSessionCaps.of(AgentKind.claude).rolloutWatch, "Claude's StopFailure hook reports a failed turn")
     }
 
     /// Claude reports every mid-turn dialog; Codex's MCP forms raise no

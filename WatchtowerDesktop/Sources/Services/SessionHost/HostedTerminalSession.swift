@@ -21,6 +21,9 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// The workspace scope a launch carries (`SessionHostPaths.scope`), read
     /// at each launch.
     private let scope: () -> String
+    /// The host's watch request for a row's launch (`TerminalCenter`'s:
+    /// a rollout-watched agent and the workspace database); nil = none.
+    private let watch: (Int64) -> SessionHostWatchSpec?
     private let terminal: PalettedTerminalView
     private var transport: (any SessionHostTransport)?
     /// The host's key of the current run.
@@ -72,9 +75,14 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// The pane's reason when the host cannot be reached or started.
     static let hostNotRunningReason = "the session host is not running"
 
-    init(client: SessionHostClient, scope: @escaping () -> String = { "" }) {
+    init(
+        client: SessionHostClient,
+        scope: @escaping () -> String = { "" },
+        watch: @escaping (Int64) -> SessionHostWatchSpec? = { _ in nil }
+    ) {
         self.client = client
         self.scope = scope
+        self.watch = watch
         terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         terminal.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         terminal.hostInput = { [weak self] bytes in self?.sendToHost(bytes) }
@@ -100,11 +108,12 @@ final class HostedTerminalSession: TerminalSessionProcess {
         neverStarted = true
         terminal.dropsTerminalReplies = false
         let scope = scope()
+        let watch = watch(row)
         connect(key) { [terminal] in
             .json(.launch, SessionHostLaunchRequest(
                 row: key.row, run: key.run, executable: launch.executable, args: launch.args,
                 env: launch.processEnvironment, cwd: launch.currentDirectory,
-                cols: terminal.getTerminal().cols, rows: terminal.getTerminal().rows, scope: scope
+                cols: terminal.getTerminal().cols, rows: terminal.getTerminal().rows, scope: scope, watch: watch
             ))
         }
     }

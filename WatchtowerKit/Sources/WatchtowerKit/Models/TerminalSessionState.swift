@@ -104,6 +104,11 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
     /// Cap 120.
     public let reportPRLine: String?
     public let reportPRLineClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// Why the Mac cannot watch this working session (`missing`,
+    /// `permission`, `compressed`, `unreadable`; spec 2026-11-05 §3.5): the
+    /// caption then reads "Working · not watched". Absent when watched, and
+    /// from a Mac older than the field.
+    public let watchIssue: String?
 
     // convertFromSnakeCase maps "*_id" -> "*Id" and "report_pr_line" ->
     // "reportPrLine", so those keys use that form.
@@ -120,5 +125,6 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         case reportDone, reportTotal
         case reportPRLine = "reportPrLine"
         case reportPRLineClipped = "reportPrLineClipped"
+        case watchIssue
     }
 }

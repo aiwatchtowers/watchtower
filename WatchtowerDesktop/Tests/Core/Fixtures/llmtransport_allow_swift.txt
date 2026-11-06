@@ -25,7 +25,6 @@ WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.s
 WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | outcome | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice+Payload.swift | wireAgent | .claude | 1 | A5: agent kind wire mapping for the phone slice; moves to the session adapter's capabilities
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice+Payload.swift | wireAgent | .codex | 1 | A5: agent kind wire mapping for the phone slice; moves to the session adapter's capabilities
-WatchtowerDesktop/Sources/Services/SessionBackgroundProber.swift | checkCodexTurns | .codex | 1 | G5: codex rollout pull by agent kind; G5 moves it into the session host behind the A5 adapter
 WatchtowerDesktop/Sources/Services/TerminalCenter.swift | codexResumes | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/Services/TerminalCenter.swift | hasTranscript | .claude | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/Services/TerminalCenter.swift | hasTranscript | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
