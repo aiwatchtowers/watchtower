@@ -359,8 +359,9 @@ func runOfEventCycleTx(tx *sql.Tx, automationID int64, cycle string) (int64, boo
 // MergeQueuedAutomationRunEvents merges one cycle's matched events into an
 // event run that is still queued (P4's bus, when EnqueueAutomationRun
 // coalesced a new cycle onto a queued run of an earlier one), in one
-// transaction: the cycle is appended to event_json's cycles while they hold
-// fewer than maxEvents (else dropped, and truncated set), events up to
+// transaction: the cycle is appended to event_json's cycles (never capped:
+// they are the run's delivered-cycle record, read by EnqueueAutomationRun's
+// dedupe), events up to
 // maxEvents in all (the older ones kept, newer ones beyond the cap dropped),
 // total is added to count, and truncated is set once anything was dropped.
 // event_cycle is never written, so the run keeps its first cycle there and
@@ -369,6 +370,19 @@ func runOfEventCycleTx(tx *sql.Tx, automationID int64, cycle string) (int64, boo
 // not an event run, returns (false, nil); a missing run wraps
 // ErrAutomationRunNotFound.
 func (db *DB) MergeQueuedAutomationRunEvents(runID int64, cycleID string, events []json.RawMessage, total int, maxEvents int) (merged bool, err error) {
+	return db.mergeQueuedEvents(runID, cycleID, events, total, maxEvents, false)
+}
+
+// MergeQueuedApprovalEvents is MergeQueuedAutomationRunEvents for the
+// approval trigger (builtin.Fire), whose cycles carry the approval refs and
+// are never read by a cycle dedupe (its runs have no event_cycle): past
+// maxEvents cycles a new ref is dropped and the run marked truncated, so a
+// burst of distinct refs cannot grow event_json without bound.
+func (db *DB) MergeQueuedApprovalEvents(runID int64, ref string, events []json.RawMessage, total int, maxEvents int) (merged bool, err error) {
+	return db.mergeQueuedEvents(runID, ref, events, total, maxEvents, true)
+}
+
+func (db *DB) mergeQueuedEvents(runID int64, cycleID string, events []json.RawMessage, total, maxEvents int, capCycles bool) (merged bool, err error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("merging events into automation run %d: %w", runID, err)
@@ -394,7 +408,7 @@ func (db *DB) MergeQueuedAutomationRunEvents(runID int64, cycleID string, events
 	if slices.Contains(p.Cycles, cycleID) {
 		return true, nil
 	}
-	cycleDropped := len(p.Cycles) >= maxEvents
+	cycleDropped := capCycles && len(p.Cycles) >= maxEvents
 	if !cycleDropped {
 		p.Cycles = append(p.Cycles, cycleID)
 	}

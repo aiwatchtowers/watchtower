@@ -22,8 +22,8 @@ const SweepRef = "sweep"
 // changed (ref = action:<id> | reminder:<id> | sweep) and then calls wake —
 // AUTO-09: it only queues. The run is trigger 'event' with event_json
 // {cycles, events: [{"type": "approval", "ref": ref}], count, truncated}; a
-// run already queued takes the ref through MergeQueuedAutomationRunEvents
-// (at most automations.MaxEventsPerRun events, then truncated), so a burst
+// run already queued takes the ref through MergeQueuedApprovalEvents
+// (at most automations.MaxEventsPerRun events and refs, then truncated), so a burst
 // of changes is one run. The run's cycles list carries the refs, so a ref
 // already in the queued run merges as a no-op. An action ref whose row can
 // never be an approval (db.ActionCanBeApproval: a workbench audit row, an
@@ -65,7 +65,7 @@ func Fire(d *db.DB, ref string, wake func()) error {
 		}
 		merged := !coalesced
 		if coalesced {
-			if merged, err = d.MergeQueuedAutomationRunEvents(runID, ref, events, 1, automations.MaxEventsPerRun); err != nil {
+			if merged, err = d.MergeQueuedApprovalEvents(runID, ref, events, 1, automations.MaxEventsPerRun); err != nil {
 				return err
 			}
 		}
