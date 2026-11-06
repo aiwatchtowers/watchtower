@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	"watchtower/internal/sessionagent"
-
 	"golang.org/x/sys/unix"
+
+	"watchtower/internal/sessionagent"
 )
 
 // DiscardHangup catches SIGHUP and drops it, so the host survives the hangup

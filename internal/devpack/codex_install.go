@@ -356,10 +356,8 @@ func ourHookSuffixes(workbenchID int64) []string {
 			out = append(out, l)
 		}
 	}
-	if codex, ok := sessionagent.For(agentkind.Codex); ok {
-		for _, r := range codex.HookSpecs() {
-			out = append(out, " "+r.Subcommand)
-		}
+	for _, r := range sessionagent.MustFor(agentkind.Codex).HookSpecs() {
+		out = append(out, " "+r.Subcommand)
 	}
 	return out
 }

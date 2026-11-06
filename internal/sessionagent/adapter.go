@@ -84,8 +84,10 @@ type Transcript interface {
 	// newlines and capped at capChars runes; terminal.ErrNoTranscript when
 	// the agent has not written one (yet).
 	OwnerText(capChars int) (string, error)
-	// ImportFile is the file the analytics importer reads, located under
-	// AGENTLOG-04's rules; ok is false when there is none.
+	// ImportFile is the file the analytics importer reads, ok false when
+	// there is none. Codex's follows AGENTLOG-04 (no symlinks below its
+	// roots); Claude's is unused by the importer, which lists Claude
+	// transcripts by folder (agentfiles.ListTranscripts).
 	ImportFile() (path string, ok bool)
 	// Open opens a file ImportFile returned, decompressed when compressed
 	// is true (in memory only, AGENTLOG-05).
@@ -152,6 +154,17 @@ var adapters = map[Kind]Adapter{
 func For(k Kind) (Adapter, bool) {
 	a, ok := adapters[k]
 	return a, ok
+}
+
+// MustFor is the adapter of agent kind k, for a caller that names a kind
+// constant; a kind with no adapter is a programming error and panics with
+// its name.
+func MustFor(k Kind) Adapter {
+	a, ok := For(k)
+	if !ok {
+		panic("sessionagent: no session adapter for agent kind " + string(k))
+	}
+	return a
 }
 
 // Of is the adapter of the stored kind s (terminal_sessions.kind).

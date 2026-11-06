@@ -189,11 +189,7 @@ var (
 // claudeHookSpec is the claude session adapter's install row of event with
 // subcommand; a row the adapter does not have is a programming error.
 func claudeHookSpec(event, subcommand string) hookSpec {
-	claude, ok := sessionagent.For(agentkind.Claude)
-	if !ok {
-		panic("devpack: no claude session adapter")
-	}
-	for _, h := range claude.HookSpecs() {
+	for _, h := range sessionagent.MustFor(agentkind.Claude).HookSpecs() {
 		if h.Event == event && h.Subcommand == subcommand {
 			return hookSpec{event: h.Event, subcommand: h.Subcommand, legacySubcommand: h.LegacySubcommand,
 				flags: h.Flags, timeoutSec: h.TimeoutSec, async: h.Async, matcher: h.Matcher,

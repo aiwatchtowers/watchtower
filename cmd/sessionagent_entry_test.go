@@ -40,7 +40,9 @@ func TestSessionAgent_OneStateEntryPoint(t *testing.T) {
 						entryTakesEvent = true
 					}
 					if sel, ok := p.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "Event" {
-						entryTakesEvent = true
+						if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "sessionagent" {
+							entryTakesEvent = true
+						}
 					}
 				}
 			}

@@ -282,8 +282,10 @@ func stampOf(st os.FileInfo) fileStamp {
 // codexPuller is the codex session adapter's pull signal reader
 // (sessionagent.Adapter.Watch): the rollout's last turn and its home.
 func codexPuller() sessionagent.Puller {
-	codex, _ := sessionagent.For(agentkind.Codex)
-	p, _ := codex.Watch()
+	p, ok := sessionagent.MustFor(agentkind.Codex).Watch()
+	if !ok {
+		panic("sessionhost: the codex session adapter pulls nothing")
+	}
 	return p
 }
 

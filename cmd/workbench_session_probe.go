@@ -252,7 +252,7 @@ func pullCodexTurn(database *db.DB, puller sessionagent.Puller, row *db.Terminal
 // turn end, or no agent.
 func sessionPuller(kind string) (sessionagent.Puller, bool) {
 	a, ok := sessionagent.Of(kind)
-	if !ok || !a.Caps().RolloutWatch() {
+	if !ok {
 		return nil, false
 	}
 	return a.Watch()

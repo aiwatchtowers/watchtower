@@ -179,7 +179,7 @@ func workbenchCodexFiles(main *db.DB, id int64, o Options) ([]TranscriptFile, ma
 	}
 	codex, ok := o.Sessions(agentkind.Codex)
 	if !ok {
-		return nil, nil, 0, errors.New("no codex session adapter")
+		panic("agentlog: no codex session adapter")
 	}
 	var files []TranscriptFile
 	var missing int

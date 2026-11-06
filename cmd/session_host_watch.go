@@ -52,8 +52,7 @@ func recordCodexPull(database *db.DB, row db.CodexWatchRow, turn sessionfeed.Cod
 	if turn.At.IsZero() {
 		return nil
 	}
-	codex, _ := sessionagent.For(agentkind.Codex)
-	puller, ok := codex.Watch()
+	puller, ok := sessionagent.MustFor(agentkind.Codex).Watch()
 	if !ok {
 		return nil
 	}

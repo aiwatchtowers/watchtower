@@ -54,11 +54,7 @@ type CodexHook struct {
 // is single-quoted when it needs to be (the CLI store sits under
 // "Application Support").
 func CodexHookSet(bin string) []CodexHook {
-	codex, ok := sessionagent.For(agentkind.Codex)
-	if !ok {
-		return nil
-	}
-	rows := codex.HookSpecs()
+	rows := sessionagent.MustFor(agentkind.Codex).HookSpecs()
 	hooks := make([]CodexHook, 0, len(rows))
 	for _, r := range rows {
 		hooks = append(hooks, CodexHook{

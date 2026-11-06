@@ -99,7 +99,7 @@ type LaunchReq struct {
 }
 
 // WatchSpec names what a launch's watch reads: the agent kind (one whose
-// SessionCaps.RolloutWatch is set) and the workspace database the row lives
+// sessionagent.Caps.RolloutWatch() is set) and the workspace database the row lives
 // in (never logged).
 type WatchSpec struct {
 	Agent    string `json:"agent"`
