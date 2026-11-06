@@ -2,6 +2,7 @@ package sessionreport
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,8 +145,8 @@ func TestProj14_MergedSurvivesBranchCleanup(t *testing.T) {
 	assert.Equal(t, "merged", got["into:feature/x:wt/m"].State)
 	assert.Equal(t, "open", got["into:feature/x:wt/fresh"].State, "a fresh branch has no work of its own")
 	assert.Equal(t, "open", got["into:feature/x:wt/open"].State)
-	assert.NotContains(t, got, "into:feature/x:wt/gone", "a missing branch is no conclusion")
-	assert.NotContains(t, got, "into:nope:wt/m", "a missing base is no conclusion")
+	assert.Equal(t, "unknown", got["into:feature/x:wt/gone"].State, "a missing branch is no conclusion, only stamped")
+	assert.Equal(t, "unknown", got["into:nope:wt/m"].State, "a missing base is no conclusion, only stamped")
 
 	gitRun(t, dir, "branch", "-q", "-D", "wt/m")
 	later := func() time.Time { return refreshNow.Add(time.Hour) }
@@ -206,4 +207,65 @@ func TestRefresh_BadIntoRefIsSkipped(t *testing.T) {
 	res := Refresh(context.Background(), d, id, []string{"into:feature/x", "into::wt/m"}, RefreshOptions{Now: fixedNow})
 	assert.Contains(t, res.Note, "the state of 2 ref(s) could not be read")
 	assert.Empty(t, states(t, d, id))
+}
+
+// TestProj14_MergedSurvivesCleanupOfAPushedBranch (review F1): a branch
+// pushed, merged into its base by a fast-forward and then deleted locally by
+// session cleanup is read from origin, where git cannot tell the merge from
+// a branch with no work; the cached merged stays. Without a merged row the
+// same origin-only shape reads open.
+func TestProj14_MergedSurvivesCleanupOfAPushedBranch(t *testing.T) {
+	dir := newFeatureRepo(t)
+	gitRun(t, dir, "checkout", "-q", "feature/x")
+	gitRun(t, dir, "checkout", "-q", "-b", "wt/ff")
+	commitFile(t, dir, "ff.txt", "ff")
+	gitRun(t, dir, "checkout", "-q", "feature/x")
+	gitRun(t, dir, "merge", "-q", "--ff-only", "wt/ff")
+	gitRun(t, dir, "checkout", "-q", "main")
+	gitRun(t, dir, "update-ref", "refs/remotes/origin/wt/ff", "wt/ff") // pushed
+	gitRun(t, dir, "update-ref", "refs/remotes/origin/wt/pushedfresh", "feature/x")
+	d, id := newWorkbench(t, dir)
+	ref := "into:feature/x:wt/ff"
+
+	Refresh(context.Background(), d, id, []string{ref}, RefreshOptions{Now: fixedNow})
+	require.Equal(t, "merged", states(t, d, id)[ref].State)
+
+	gitRun(t, dir, "branch", "-q", "-D", "wt/ff") // session cleanup
+	later := refreshNow.Add(time.Hour)
+	Refresh(context.Background(), d, id, []string{ref, "into:feature/x:wt/pushedfresh"},
+		RefreshOptions{Now: func() time.Time { return later }})
+	got := states(t, d, id)
+	assert.Equal(t, "merged", got[ref].State, "the cleaned-up, still pushed branch stays merged")
+	assert.Equal(t, later.Format(time.RFC3339), got[ref].CheckedAt, "kept, but stamped: it backs off")
+	assert.Equal(t, "open", got["into:feature/x:wt/pushedfresh"].State, "no merged row: origin's word stands")
+}
+
+// Review F2: a ref that reads no verdict is stamped, so it backs off, and
+// the least recently checked refs go first.
+func TestRefresh_UnresolvableRefsBackOffAndGoLast(t *testing.T) {
+	dir := newFeatureRepo(t)
+	d, id := newWorkbench(t, dir)
+	gone, ok := "into:feature/x:wt/gone", "into:feature/x:wt/m"
+	Refresh(context.Background(), d, id, []string{gone}, RefreshOptions{Now: fixedNow})
+	require.Equal(t, "unknown", states(t, d, id)[gone].State)
+
+	gits := countGit(t)
+	Refresh(context.Background(), d, id, []string{gone}, RefreshOptions{Now: func() time.Time { return refreshNow.Add(30 * time.Second) }})
+	assert.Zero(t, gits(), "a stamped ref is fresh: no git")
+
+	// Both stale: the never-checked ref is read first, so a budget that
+	// allows one read spends it there.
+	var mu sync.Mutex
+	tick := 0
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		tick++
+		return refreshNow.Add(2*time.Minute + time.Duration(tick)*4*time.Second)
+	}
+	res := Refresh(context.Background(), d, id, []string{gone, ok}, RefreshOptions{Budget: 10 * time.Second, Now: clock})
+	assert.Contains(t, res.Note, "1 ref(s) keep their cached state")
+	got := states(t, d, id)
+	assert.Equal(t, "merged", got[ok].State, "read first")
+	assert.Equal(t, refreshNow.Format(time.RFC3339), got[gone].CheckedAt, "not reached")
 }

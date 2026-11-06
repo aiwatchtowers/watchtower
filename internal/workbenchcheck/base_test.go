@@ -101,3 +101,26 @@ func TestOpenRepositoryAgainst_OriginOnlyBase(t *testing.T) {
 		t.Fatalf("merge into origin/feature: %v, want merged", got)
 	}
 }
+
+// A branch left only on origin whose tip the base contains: a fast-forward
+// merge and a commit-less push look the same, and BranchMerge says not
+// merged; OriginOnlyContained flags the guess.
+func TestOpenRepositoryAgainst_OriginOnlyContained(t *testing.T) {
+	dir := newFeatureRepo(t)
+	gitRun(t, dir, "update-ref", "refs/remotes/origin/wt/ff", "wt/ff")
+	gitRun(t, dir, "branch", "-q", "-D", "wt/ff")
+	gitRun(t, dir, "update-ref", "refs/remotes/origin/wt/open", "wt/open")
+	gitRun(t, dir, "branch", "-q", "-D", "wt/open")
+	ctx := context.Background()
+	repo := OpenRepositoryAgainst(ctx, dir, "feature", nil)
+	if got := repo.BranchMerge(ctx, "wt/ff"); got != BranchNotMerged {
+		t.Fatalf("origin-only fast-forward: %v, want not merged (no reflog)", got)
+	}
+	if !repo.OriginOnlyContained(ctx, "wt/ff") {
+		t.Fatal("origin-only contained tip not flagged")
+	}
+	if repo.OriginOnlyContained(ctx, "wt/open") || repo.OriginOnlyContained(ctx, "wt/merge") ||
+		repo.OriginOnlyContained(ctx, "feature") {
+		t.Fatal("flagged a tip with own work, a local branch or the base")
+	}
+}

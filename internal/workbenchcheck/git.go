@@ -231,6 +231,19 @@ func (r *Repository) BranchMerge(ctx context.Context, branch string) BranchMerge
 	return BranchUnknown
 }
 
+// OriginOnlyContained reports that branch exists only on origin and a base
+// already contains its tip. Without the local reflog git cannot tell a
+// fast-forward merge from a branch pushed with no work of its own, so a "not
+// merged" verdict on such a branch is a guess (the local branch deleted after
+// its merge reads this way).
+func (r *Repository) OriginOnlyContained(ctx context.Context, branch string) bool {
+	if branch == "" || branch == r.g.defaultName {
+		return false
+	}
+	tip := r.g.branchState(ctx, branch)
+	return tip.state == tipFound && tip.originOnly && tip.ahead == 0
+}
+
 func (g *gitState) baseName() string { return g.baseLabel }
 
 func (g *gitState) git(ctx context.Context, args ...string) (string, int, error) {
@@ -290,6 +303,8 @@ type branchTip struct {
 	merge     verdict   // merged into any base; notMerged only when every base says so
 	ahead     int       // commits not in the base (the smallest over the bases)
 	committed time.Time // its newest commit's time
+	// originOnly: no local branch, the tip read from origin (no reflog).
+	originOnly bool
 }
 
 // tipOf resolves ref to its commit; "" with known=true when ref does not
@@ -446,7 +461,7 @@ func (g *gitState) readBranch(ctx context.Context, branch string) branchTip {
 		return branchTip{state: tipMissing}
 	}
 	sha := info.sha
-	tip := branchTip{state: tipFound, ahead: -1, committed: info.committed}
+	tip := branchTip{state: tipFound, ahead: -1, committed: info.committed, originOnly: !local}
 	allNotMerged := true
 	var rl branchReflog
 	for i, base := range g.bases {

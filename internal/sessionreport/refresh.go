@@ -97,6 +97,10 @@ func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 	if len(stale) == 0 {
 		return RefreshResult{}
 	}
+	// Least recently checked first (never checked before all): a ref that
+	// keeps reading no verdict is stamped too, so it waits its turn and
+	// does not spend the budget ahead of the others.
+	slices.SortStableFunc(stale, func(a, b string) int { return strings.Compare(cache[a].CheckedAt, cache[b].CheckedAt) })
 	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
 	defer cancel()
 	r := refresher{d: d, workbenchID: workbenchID, folder: wb.FolderPath, cache: cache, opts: opts}
@@ -225,7 +229,7 @@ func (r *refresher) read(ctx context.Context, ref string) (db.PRState, bool) {
 			r.skip(ref, "not an into:<base>:<branch> reference")
 			return db.PRState{}, false
 		}
-		return r.readInto(ctx, base, branch)
+		return r.readInto(ctx, ref, base, branch)
 	default:
 		r.skip(ref, "not a pr:, branch: or into: reference")
 		return db.PRState{}, false
@@ -303,10 +307,13 @@ func (r *refresher) readBranch(ctx context.Context, ref, branch string) (db.PRSt
 }
 
 // readInto is git's verdict on branch's work being in base: merged, or open
-// when every base ref says it is not. A branch git cannot find — session
-// cleanup deletes a merged worktree branch — or a read that failed keeps the
-// cached verdict, so a merged leaf stays merged after its branch is gone.
-func (r *refresher) readInto(ctx context.Context, base, branch string) (db.PRState, bool) {
+// when every base ref says it is not. Anything else keeps the cached verdict
+// (none yet = unknown) and only stamps its check time, so it backs off like
+// any checked ref: a branch git cannot find (session cleanup deletes a merged
+// worktree branch), a read that failed, and a cached merged branch left only
+// on origin with a tip the base contains — there git cannot tell a
+// fast-forward merge from a branch with no work of its own.
+func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.PRState, bool) {
 	repo, ok := r.bases[base]
 	if !ok {
 		repo = workbenchcheck.OpenRepositoryAgainst(ctx, r.folder, base, run)
@@ -323,14 +330,20 @@ func (r *refresher) readInto(ctx context.Context, base, branch string) (db.PRSta
 			}
 		}
 	}
+	cached, hasRow := r.cache[ref]
 	switch repo.BranchMerge(ctx, branch) {
 	case workbenchcheck.BranchMerged:
 		return db.PRState{State: "merged"}, true
 	case workbenchcheck.BranchNotMerged:
-		return db.PRState{State: "open"}, true
+		if cached.State != "merged" || !repo.OriginOnlyContained(ctx, branch) {
+			return db.PRState{State: "open"}, true
+		}
 	case workbenchcheck.BranchMissing, workbenchcheck.BranchUnknown:
 	}
-	return db.PRState{}, false
+	if !hasRow {
+		return db.PRState{State: "unknown"}, true
+	}
+	return cached, true
 }
 
 // branchPR finds the branch's pull request through gh: the cached number,
