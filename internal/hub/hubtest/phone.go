@@ -100,6 +100,10 @@ type Phone struct {
 	// epoch each one's envelope was sealed in.
 	Controls      []wire.Control
 	ControlEpochs []uint32
+	// RefusedForGood names the actions the transport refuses for good on their
+	// next write: a resend lists each and skips past them after the rows, the
+	// order the Swift phone's flush writes them in.
+	RefusedForGood map[uint64]bool
 	// Undelivered lists the actions a skip_to gave up on.
 	Undelivered []uint64
 	// Resealed lists the outbox actions sealed again in a newer epoch on a
@@ -587,15 +591,35 @@ func (p *Phone) resendFrom(from uint64) error {
 			return err
 		}
 	}
+	listed := false
 	for _, s := range slices.Sorted(slices.Values(p.outbox)) {
-		if s >= from {
-			if err := p.reseal(s); err != nil {
-				return err
-			}
-			if err := p.Send(s); err != nil {
-				return err
-			}
+		if s < from {
+			continue
 		}
+		if p.RefusedForGood[s] {
+			p.Undelivered = append(p.Undelivered, s)
+			p.Forget(s)
+			listed = true
+			continue
+		}
+		if err := p.reseal(s); err != nil {
+			return err
+		}
+		if err := p.Send(s); err != nil {
+			return err
+		}
+	}
+	if !listed {
+		return nil
+	}
+	first = p.nextAction
+	for _, s := range p.outbox {
+		if s >= from {
+			first = min(first, s)
+		}
+	}
+	if first > from {
+		return p.SkipTo(first)
 	}
 	return nil
 }

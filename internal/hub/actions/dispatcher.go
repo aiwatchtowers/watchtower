@@ -35,6 +35,11 @@ const (
 	// past the next expected action_seq. A skip only gives up actions the
 	// phone lost after a resend_from, never a jump across the counter.
 	MaxSkipAhead = 1 << 16
+	// ResendAskAgainAfter is how old a gap's resend_from must be before
+	// another action read ahead of that gap asks again: the ask or the
+	// phone's skip_to may be lost for good (a relay TTL, a purge). Nothing
+	// reads a mailbox on a timer for this, so an idle phone costs nothing.
+	ResendAskAgainAfter = 10 * time.Minute
 	// HandlerTimeout bounds one handler call. The handler runs apart from
 	// the pass's cancellation (a stopped pass lets the record in flight
 	// finish), so this cap is what keeps a hub stop bounded. The Swift

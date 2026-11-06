@@ -75,7 +75,7 @@ func (p *Processor) oldEpochAction(ctx context.Context, b mailbox, rec transport
 		if err := state.Enqueue(tx, q.control(b.queue)); err != nil {
 			return err
 		}
-		return state.SetResendRequested(tx, device, from)
+		return state.SetResendRequested(tx, device, from, p.cfg.Clock())
 	}); err != nil {
 		return err
 	}
