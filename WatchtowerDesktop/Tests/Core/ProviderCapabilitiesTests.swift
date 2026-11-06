@@ -52,6 +52,11 @@ final class ProviderCapabilitiesTests: XCTestCase {
         XCTAssertEqual(catalog.capabilities(for: "gemini"), .none)
         XCTAssertNotNil(ProviderCapabilities.none.attachUnavailableReason)
         XCTAssertNil(catalog.capabilities(for: "codex").attachUnavailableReason)
+
+        XCTAssertEqual(catalog.fallbackPair(preferred: "claude"), .claudeFirst)
+        XCTAssertEqual(catalog.fallbackPair(preferred: "codex"), .codexFirst)
+        XCTAssertNil(catalog.fallbackPair(preferred: "ollama"), "no reserve peer, no pair")
+        XCTAssertNil(AIModelCatalog().fallbackPair(preferred: "claude"), "a catalog not read knows no pair")
     }
 
     /// A session_ready names its provider's row; one without (the routing

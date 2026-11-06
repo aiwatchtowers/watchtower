@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 final class ProviderSettingsHealthTests: XCTestCase {
@@ -12,7 +13,7 @@ final class ProviderSettingsHealthTests: XCTestCase {
     }
     func testPastResetCannotDeclareRecoveredAndBothDirectionsUseRealTime() async throws {
         for provider in ["claude", "codex"] {
-            let model = ProviderSettingsHealth()
+            let model = ProviderSettingsHealth(catalog: AIModelCatalog(providers: ProviderCatalogFixture.providers()))
             XCTAssertNil(model.copy)
             await model.refresh { try status(provider, state: "quota_wait") }
             XCTAssertEqual(model.copy?.title, "AI is waiting for limits to reset")
@@ -31,8 +32,27 @@ final class ProviderSettingsHealthTests: XCTestCase {
             XCTAssertFalse(model.copy?.title.contains("No saved") == true)
         }
     }
+    /// A provider whose row has no reserve peer gets no pair copy: its own
+    /// limit only, never "both providers" or a reserve it does not have.
+    func testProviderWithoutReservePeerNamesNoReserve() async throws {
+        let model = ProviderSettingsHealth(catalog: AIModelCatalog(providers: ProviderCatalogFixture.providers()))
+        await model.refresh {
+            try ChatRoutingStatus.parse(Data("""
+            {"preferred_provider":"ollama","enabled":true,"revision":"r","providers":[
+            {"provider":"ollama","state":"quota_wait"},{"provider":"claude","state":"quota_wait"}]}
+            """.utf8))
+        }
+        XCTAssertEqual(model.copy?.title, "Ollama / Local reached its limit")
+        await model.refresh {
+            try ChatRoutingStatus.parse(Data("""
+            {"preferred_provider":"ollama","enabled":true,"revision":"r","providers":[
+            {"provider":"ollama","state":"available"},{"provider":"claude","state":"quota_wait"}]}
+            """.utf8))
+        }
+        XCTAssertEqual(model.copy?.title, "No saved quota block")
+    }
     func testRateLimitAndErrorsAreHonestAndRetryOnlyReadsMetadata() async throws {
-        let model = ProviderSettingsHealth()
+        let model = ProviderSettingsHealth(catalog: AIModelCatalog(providers: ProviderCatalogFixture.providers()))
         await model.refresh { try status("codex", state: "quota_wait", allowed: false) }
         XCTAssertEqual(model.copy?.title, "Limits checked recently")
         await model.refresh { throw URLError(.cannotOpenFile) }
@@ -45,7 +65,7 @@ final class ProviderSettingsHealthTests: XCTestCase {
         XCTAssertTrue(model.copy?.detail.contains("not a connection test") == true)
     }
     func testReloadInvalidatesHeldMetadataAndBusyCopy() async throws {
-        let model = ProviderSettingsHealth()
+        let model = ProviderSettingsHealth(catalog: AIModelCatalog(providers: ProviderCatalogFixture.providers()))
         var finish: CheckedContinuation<ChatRoutingStatus, Error>?
         let task = Task { await model.refresh { try await withCheckedThrowingContinuation { finish = $0 } } }
         while finish == nil { await Task.yield() }

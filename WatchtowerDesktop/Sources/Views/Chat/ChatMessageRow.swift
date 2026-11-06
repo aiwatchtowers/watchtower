@@ -95,7 +95,7 @@ struct ChatMessageRow: View, Equatable {
 
     @ViewBuilder private var statusCard: some View {
         if item.message.errorCode == ChatErrorCode.quotaExhausted.rawValue {
-            ChatRoutingStatusView(preview: ProviderFallbackPreview(preferred: .claude, state: .stopped),
+            ChatRoutingStatusView(preview: ProviderFallbackPreview(state: .stopped),
                                   onAction: actions.reviewActions.map { review in { review(item.id) } })
         } else {
         switch item.message.status {

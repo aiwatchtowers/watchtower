@@ -8,7 +8,9 @@ struct ProviderSettings: View {
     let policy: ManagedPolicy
 
     private var preferred: String { config.aiProvider ?? "claude" }
-    private var reserve: String { preferred == "codex" ? "claude" : "codex" }
+    /// The reserve the preferred provider pairs with: the catalog's
+    /// `reserve_peer` (LLMTRANSPORT-01); nil hides the reserve section.
+    private var reserve: String? { config.reservePeer }
     private var connection: ProviderConnection { config.providerConnection }
     private var signature: String {
         [preferred, config.aiModelLight, config.aiModelStrong, config.claudePath, config.codexPath,
@@ -17,7 +19,8 @@ struct ProviderSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             preferredSection
-            if preferred == "ollama" { ollamaSection } else { reserveSection }
+            if let reserve { reserveSection(reserve) }
+            if preferred == "ollama" { ollamaSection }
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text(ProviderSettingsCopy.workers).font(.caption).foregroundStyle(.secondary)
                 TextField(ProviderSettingsCopy.workers, value: $config.aiWorkers, format: .number).textFieldStyle(.kit)
@@ -25,7 +28,9 @@ struct ProviderSettings: View {
             if let error = catalog.lastError {
                 Text(ProviderSettingsCopy.catalogError(error)).font(.caption).foregroundStyle(Tone.warning)
             }
-            if preferred != "ollama" { healthSection }
+            // Saved quota blocks exist only for a provider that reports a
+            // subscription quota (its capability row).
+            if catalog.capabilities(for: preferred).quota { healthSection }
             Text(ProviderFallbackPreview.scope).font(.caption).foregroundStyle(.secondary)
         }
         .controlSize(.small)
@@ -48,7 +53,7 @@ struct ProviderSettings: View {
             connectionActions(preferred)
         }
     }
-    private var reserveSection: some View {
+    private func reserveSection(_ reserve: String) -> some View {
         SettingsSection(title: ProviderFallbackPreview.reserveLabel) {
             HStack {
                 Text(ProviderConnection.name(reserve)).font(.headline)

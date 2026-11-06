@@ -11,7 +11,7 @@ package enum ChatErrorPresentation {
     package static func message(for code: String?, provider: String? = nil) -> String {
         switch code {
         case "auth": "The AI provider isn't signed in. " + signInHint(provider: provider)
-        case "quota_exhausted": ProviderFallbackPreview(preferred: .claude, state: .stopped).copy.title
+        case "quota_exhausted": ProviderFallbackPreview(state: .stopped).copy.title
         case "rate_limit": "The provider is rate-limiting requests. Try again in a moment."
         case "provider_unavailable": "The AI provider couldn't be started."
         case "session_lost": "The previous session couldn't be resumed."

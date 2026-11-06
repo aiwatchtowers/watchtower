@@ -36,3 +36,13 @@ package enum ProviderCatalogFixture {
         return parsed.providers
     }
 }
+
+/// The fixture catalog's fallback pairs, as `AIModelCatalog.fallbackPair`
+/// reads them from the Go-written rows (`ProviderCapabilitiesTests` pins
+/// that the two agree): presentation tests and design shots run both
+/// directions without a Swift copy of the pair rule.
+package extension ProviderFallbackPreview.Pair {
+    static let claudeFirst = Self(preferred: .init(id: "claude", name: "Claude"), reserve: .init(id: "codex", name: "Codex"))
+    static let codexFirst = claudeFirst.reversed
+    static let fixturePairs = [claudeFirst, codexFirst]
+}

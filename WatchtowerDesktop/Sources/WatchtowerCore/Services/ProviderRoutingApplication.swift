@@ -88,13 +88,13 @@ package final class ProviderRoutingApplication {
             return .init(title: "Settings saved and applied", detail: "New background tasks use the saved AI settings.",
                          action: nil, emphasis: .success)
         case .applying:
-            let approved = ProviderFallbackPreview(preferred: .claude, state: .applying).copy
+            let approved = ProviderFallbackPreview(state: .applying).copy
             return .init(title: approved.title,
                          detail: "Waiting for the background service to confirm the saved settings. "
                             + "Active tasks and Workbench sessions keep running.",
                          action: nil, emphasis: approved.emphasis, busy: true)
         case .failed:
-            let approved = ProviderFallbackPreview(preferred: .claude, state: .applyError).copy
+            let approved = ProviderFallbackPreview(state: .applyError).copy
             return .init(title: approved.title,
                          detail: "The current background configuration is not confirmed. Retry to apply the latest saved settings.",
                          action: approved.action, emphasis: approved.emphasis)

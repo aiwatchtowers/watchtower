@@ -86,6 +86,18 @@ package final class AIModelCatalog {
         return peer
     }
 
+    /// Provider id as one side of a fallback pair: its display name from the
+    /// row, the id itself when the row is not known.
+    package func fallbackSide(_ id: String) -> ProviderFallbackPreview.Provider {
+        .init(id: id, name: provider(id)?.displayName ?? id)
+    }
+
+    /// The fallback pair with id preferred; nil when id pairs with nothing
+    /// or the catalog is not read yet (no routing card, no reserve).
+    package func fallbackPair(preferred id: String) -> ProviderFallbackPreview.Pair? {
+        reservePeer(of: id).map { .init(preferred: fallbackSide(id), reserve: fallbackSide($0)) }
+    }
+
     /// Whether the catalog has been read (a row for any provider).
     package var isLoaded: Bool { !providers.isEmpty }
 

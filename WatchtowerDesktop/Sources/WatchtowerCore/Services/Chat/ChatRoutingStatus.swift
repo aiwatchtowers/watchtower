@@ -61,9 +61,9 @@ package struct ChatRoutingStatus: Decodable, Equatable, Sendable {
 
 /// Production chat presentation; the approved catalog owns copy for each state.
 package struct ChatRoutingPresentation {
-    /// The fallback pair's preferred side; nil for a provider whose
-    /// capability row has no reserve peer (U3: the line only, no card).
-    package let preferred: ProviderFallbackPreview.Provider?
+    /// The fallback pair (the catalog's `reserve_peer`); nil for a provider
+    /// whose capability row has no reserve peer (U3: the line only, no card).
+    package let pair: ProviderFallbackPreview.Pair?
     package let automatic: Bool
     package let actualProvider: String?
     package let actualModel: String?
@@ -76,7 +76,7 @@ package struct ChatRoutingPresentation {
     package let capabilities: ProviderCapabilities?
 
     package init(
-        preferred: ProviderFallbackPreview.Provider?,
+        pair: ProviderFallbackPreview.Pair?,
         automatic: Bool,
         actualProvider: String?,
         actualModel: String?,
@@ -88,7 +88,7 @@ package struct ChatRoutingPresentation {
     ) {
         self.actualDisplayName = actualDisplayName
         self.capabilities = capabilities
-        self.preferred = preferred
+        self.pair = pair
         self.automatic = automatic
         self.actualProvider = actualProvider
         self.actualModel = actualModel
@@ -97,16 +97,14 @@ package struct ChatRoutingPresentation {
         self.busy = busy
     }
     package var choice: String {
-        guard automatic, preferred != nil else {
-            return ProviderFallbackPreview.pinnedChoice(provider: preferred?.rawValue ?? actualDisplayName ?? "")
+        guard automatic, pair != nil else {
+            return ProviderFallbackPreview.pinnedChoice(provider: pair?.preferred.name ?? actualDisplayName ?? "")
         }
         return ProviderFallbackPreview.chatPolicyAutomatic + " · Auto"
     }
     package var actual: String? {
         guard let actualProvider, !actualProvider.isEmpty else { return nil }
-        let provider = actualDisplayName
-            ?? ProviderFallbackPreview.Provider.allCases.first { $0.rawValue.lowercased() == actualProvider }?.rawValue
-            ?? actualProvider
+        let provider = actualDisplayName ?? pairName(actualProvider) ?? actualProvider
         return "Current provider: " + provider + (actualModel.flatMap { $0.isEmpty ? nil : " · " + $0 } ?? "")
     }
     /// What the provider cannot do, as one caption (U3): nil when it takes
@@ -120,19 +118,21 @@ package struct ChatRoutingPresentation {
         return "No " + missing.joined(separator: " or ") + " with this provider."
     }
     package var preview: ProviderFallbackPreview? {
-        guard let preferred else { return nil }
+        guard let pair else { return nil }
         let state: ProviderFallbackPreview.State
-        if !automatic { state = .pinned } else if actualProvider == preferred.other.rawValue.lowercased(), reason == "quota_exhausted" {
-            let preferredState = health?.provider(preferred.rawValue.lowercased())?.state
-            state = health?.enabled == true && health?.preferredProvider == preferred.rawValue.lowercased()
+        if !automatic { state = .pinned } else if actualProvider == pair.reserve.id, reason == "quota_exhausted" {
+            let preferredState = health?.provider(pair.preferred.id)?.state
+            state = health?.enabled == true && health?.preferredProvider == pair.preferred.id
                 && preferredState == "available" ? .recovered : .fallback
         } else if reason == "required_capability_missing" { state = .unsupported } else { return nil }
-        let next = health?.provider(preferred.rawValue.lowercased())?.nextProbeAt?
+        let next = health?.provider(pair.preferred.id)?.nextProbeAt?
             .formatted(date: .omitted, time: .shortened)
-        return ProviderFallbackPreview(preferred: preferred, state: state, nextCheck: next,
-                                       observedProvider: actualProvider.map { value in
-                                           ProviderFallbackPreview.Provider.allCases.first { $0.rawValue.lowercased() == value }?.rawValue ?? value
-                                       }, observedModel: actualModel)
+        return ProviderFallbackPreview(pair: pair, state: state, nextCheck: next,
+                                       observedProvider: actualProvider.map { pairName($0) ?? $0 }, observedModel: actualModel)
+    }
+    /// The display name of a provider id on either side of the pair.
+    private func pairName(_ id: String) -> String? {
+        pair.flatMap { [$0.preferred, $0.reserve].first { $0.id == id }?.name }
     }
     package var canUsePreferred: Bool { preview?.state == .recovered && !busy }
 }

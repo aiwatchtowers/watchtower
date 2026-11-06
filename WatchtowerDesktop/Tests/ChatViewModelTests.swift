@@ -1602,6 +1602,7 @@ final class ChatViewModelTests: XCTestCase {
 
 extension ChatViewModelTests {
     func testNewAutomaticChatOmitsPinsAndObservesActualWithoutRecyclingBusyHost() async throws {
+        ProviderCatalogFixture.seedShared() // display names and the pair are the catalog's
         let vm = try makeViewModel()
         let created = await vm.newConversation()
         let id = try XCTUnwrap(created)
@@ -1898,13 +1899,13 @@ extension ChatViewModelTests {
         ProviderCatalogFixture.seedShared()
         let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .ollama, defaults: defaults)
         let presentation = try XCTUnwrap(vm.routingPresentation, "the line shows for Ollama too")
-        XCTAssertNil(presentation.preferred)
+        XCTAssertNil(presentation.pair)
         XCTAssertNil(presentation.preview, "no routing card without a reserve peer")
         XCTAssertEqual(presentation.missingCapabilities, "No images or file reading with this provider.")
         XCTAssertEqual(vm.attachUnavailableReason, "Images and PDFs need a provider that reads them.")
 
         let claude = try makeViewModel()
-        XCTAssertNotNil(claude.routingPresentation?.preferred, "a paired provider keeps the routing card")
+        XCTAssertEqual(claude.routingPresentation?.pair?.reserve.id, "codex", "a paired provider keeps the routing card")
         XCTAssertNil(claude.routingPresentation?.missingCapabilities)
         XCTAssertNil(claude.attachUnavailableReason)
     }

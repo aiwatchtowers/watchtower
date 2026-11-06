@@ -94,15 +94,12 @@ final class ChatViewModel {
         let provider = automaticRouting ? preferredProvider : selectedProvider
         let catalog = AIModelCatalog.shared
         // The routing card belongs to a provider with a reserve peer (its
-        // capability row, U3); before the catalog is read the pair copy keeps
-        // today's presentation.
-        let paired = !catalog.isLoaded || catalog.reservePeer(of: provider.rawValue) != nil
-        let preferred = paired ? ProviderFallbackPreview.Provider.allCases.first {
-            $0.rawValue.lowercased() == provider.rawValue
-        } : nil
+        // capability row, U3); before the catalog is read no pair is known,
+        // so the line shows without the card.
+        let pair = catalog.fallbackPair(preferred: provider.rawValue)
         let driver = pool.client(for: conversationID)?.driver
         let actualProvider = driver?.actualProvider ?? currentConversation?.actualProvider
-        return ChatRoutingPresentation(preferred: preferred, automatic: automaticRouting,
+        return ChatRoutingPresentation(pair: pair, automatic: automaticRouting,
                                        actualProvider: actualProvider,
                                        actualModel: driver?.actualModel ?? currentConversation?.actualModel,
                                        reason: driver?.routing?.reason ?? currentConversation?.routingReason,

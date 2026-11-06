@@ -40,8 +40,11 @@ package final class ProviderConnection {
     private var tasks: [Int: Task<Void, Never>] = [:]
     private let metadata: (Selection) async throws -> Metadata
     private let test: (Selection) async throws -> Result
+    /// The rows the copy names the reserve from (`reserve_peer`).
+    @ObservationIgnored private let catalog: AIModelCatalog
 
     package init(
+        catalog: AIModelCatalog = .shared,
         metadata: @escaping (Selection) async throws -> Metadata = { selected in
             if selected.provider == "ollama" { return .notVerified }
             return try ProviderExecutableMetadata.check(provider: selected.provider, override: selected.path)
@@ -52,7 +55,7 @@ package final class ProviderConnection {
             let data = try await runner.run(args: ProviderConnection.arguments(selected), timeout: 55)
             return try JSONDecoder().decode(Result.self, from: data)
         }
-    ) { self.metadata = metadata; self.test = test }
+    ) { self.catalog = catalog; self.metadata = metadata; self.test = test }
 
     private static func testLocal(_ selected: Selection) async throws -> Result {
         let base = selected.serverURL?.isEmpty == false ? (selected.serverURL ?? "") : ProviderSettingsCopy.defaultOllamaURL
@@ -203,11 +206,15 @@ package final class ProviderConnection {
     package static func name(_ id: String) -> String { id == "ollama" ? "Ollama / Local" : id == "codex" ? "Codex" : "Claude" }
     package func label(for provider: String) -> String {
         let current = selection?.provider == provider ? state : .notVerified
-        return ProviderFallbackPreview(preferred: .claude, state: current).connectionLabel
+        return ProviderFallbackPreview(state: current).connectionLabel
     }
     package var copy: ProviderFallbackPreview.Copy? {
         guard let selection else { return nil }
-        let provider: ProviderFallbackPreview.Provider = selection.provider == "codex" ? .codex : .claude
+        // The copy names the provider under test as the reserve of its peer
+        // (the policy copy as the preferred one); a provider with no peer
+        // pairs with itself, so the copy still names it.
+        let side = ProviderFallbackPreview.Provider(id: selection.provider, name: Self.name(selection.provider))
+        let pair = catalog.fallbackPair(preferred: selection.provider) ?? .init(preferred: side, reserve: side)
         if testing {
             return .init(title: Self.testingLabel,
                          detail: selection.provider == "ollama" ? Self.localWarning : Self.warning,
@@ -216,7 +223,7 @@ package final class ProviderConnection {
         if state == .ready {
             return .init(title: "Connection test completed", detail: result ?? "", action: nil, emphasis: .success)
         }
-        let approved = ProviderFallbackPreview(preferred: state == .policy ? provider : provider.other, state: state).copy
+        let approved = ProviderFallbackPreview(pair: state == .policy ? pair : pair.reversed, state: state).copy
         let action = actionKind.map { action in
             action == .metadata ? "Retry connection check" : kind == .test ? "Retry connection test" : Self.testLabel
         }

@@ -46,11 +46,10 @@ WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliNa
 WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "codex" | 1 | permanent: display-name table for a provider id
 WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "ollama" | 1 | permanent: display-name table for a provider id
 WatchtowerDesktop/Sources/Views/Settings/ImportExternalConnectionsView.swift | serverRow | "codex" | 1 | permanent: path convention of the import source (~/.codex vs ~/.claude.json), not a transport
-WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | - | "codex" | 1 | A2: provider settings decide sections from the provider name; read the capability row
 WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | connectionActions | "ollama" | 1 | A2: provider settings decide sections from the provider name; read the capability row
 WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | pathField | "codex" | 2 | A2: provider settings decide sections from the provider name; read the capability row
 WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | selection | "codex" | 1 | A2: provider settings decide sections from the provider name; read the capability row
-WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | var body | "ollama" | 2 | A2: provider settings decide sections from the provider name; read the capability row
+WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | var body | "ollama" | 1 | A2: provider settings decide sections from the provider name; read the capability row
 WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | var preferredSection | "ollama" | 1 | A2: provider settings decide sections from the provider name; read the capability row
 WatchtowerDesktop/Sources/Views/Settings/QuickConnectionsDetail.swift | var body | "codex" | 1 | A2: Quick Connections notice decided from the provider name; reads the capability row
 WatchtowerDesktop/Sources/Views/Settings/SystemSettings+Workbench.swift | var workbenchSection | "ollama" | 1 | A2: agent/provider compatibility decided by name; reads the capability row
@@ -81,11 +80,8 @@ WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderConnection.swift | - |
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderConnection.swift | init | "ollama" | 1 | A2: Ollama tested from Swift over HTTP and names by provider; moves to Go capabilities
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderConnection.swift | name | "codex" | 1 | A2: Ollama tested from Swift over HTTP and names by provider; moves to Go capabilities
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderConnection.swift | name | "ollama" | 1 | A2: Ollama tested from Swift over HTTP and names by provider; moves to Go capabilities
-WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderConnection.swift | var copy | "codex" | 1 | A2: Ollama tested from Swift over HTTP and names by provider; moves to Go capabilities
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderConnection.swift | var copy | "ollama" | 2 | A2: Ollama tested from Swift over HTTP and names by provider; moves to Go capabilities
-WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderFallbackPreview.swift | - | .claude | 1 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderSettingsCopy.swift | provider | "ollama" | 1 | permanent: display name of a provider id
-WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderSettingsHealth.swift | var copy | "codex" | 1 | A2: health preview decided from the provider name; reads the capability row
 WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | codexImportNotice | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
 WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionSwitcherPresentation.swift | var agentTag | .codex | 1 | permanent: display-name suffix of the session's agent
 WatchtowerDesktop/Sources/WatchtowerCore/Services/TerminalLaunch.swift | exitMessage | .claude | 1 | A5: launch argv by agent kind; moves behind the session adapter

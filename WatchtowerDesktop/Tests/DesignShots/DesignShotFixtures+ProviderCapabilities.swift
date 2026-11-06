@@ -13,7 +13,7 @@ enum ProviderCapabilitiesShotFixtures {
         let caps = ProviderCapabilities(tools: "watchtower+quick_connections", toolEvents: true, textStream: "token",
                                         usage: "totals", turnCap: "native")
         let presentation = ChatRoutingPresentation(
-            preferred: nil, automatic: true, actualProvider: "ollama", actualModel: "llama3.1", reason: nil,
+            pair: nil, automatic: true, actualProvider: "ollama", actualModel: "llama3.1", reason: nil,
             health: nil, busy: false, actualDisplayName: "Ollama / Local", capabilities: caps)
         return AnyView(VStack(alignment: .leading, spacing: Spacing.small) {
             if let actual = presentation.actual { Text(actual).font(.caption).foregroundStyle(.secondary) }
