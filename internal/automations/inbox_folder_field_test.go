@@ -218,7 +218,7 @@ func TestInboxFolderField_FolderCreatedBeforeCommit(t *testing.T) {
 
 // AUTO-04: a failed run writes no folder_id, no artifact and no journal line
 // about the folder.
-func TestInboxFolderField_FailedRunWritesNoFolder(t *testing.T) {
+func TestAuto04_FailedRunWritesNoFolder(t *testing.T) {
 	ff := newFolderFixture(t)
 	ff.create(t, "Release")
 	a := ff.seed(t, "digest", `output.inbox({title: "t", body: "b", folder: "release"});
