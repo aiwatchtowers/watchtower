@@ -19,12 +19,11 @@ import (
 //	111 done        wt/a  (merged, but done counts as done)
 //	112 in_review   wt/b  merged
 //	113 todo        wt/c  merged (git decides, not the status)
-//	114 in_progress feature/x (the epic's own branch: no base)
+//	114 in_progress feature/x (the epic's own branch: never merged)
 //	115 todo        no branch
 //	116 blocked     wt/f  open
 //	121 in_progress wt/g  merged into feature/x-ui
-//	122 todo        feature/x-ui (its group's branch, skipped: base
-//	                feature/x, merged there)
+//	122 todo        feature/x-ui (its group's branch: never merged)
 func mergedFixture(t *testing.T) *db.DB {
 	t.Helper()
 	d := db.OpenTestDB(t)
@@ -61,27 +60,26 @@ func mergedFixture(t *testing.T) *db.DB {
 func TestProj14_MergedLeafCountsAsMerged(t *testing.T) {
 	d := mergedFixture(t)
 	r := build(t, d, 1)
-	assert.Equal(t, Progress{Done: 1, Total: 8, Merged: 4}, r.Progress, "112, 113, 121 and 122")
+	assert.Equal(t, Progress{Done: 1, Total: 8, Merged: 3}, r.Progress, "112, 113 and 121")
 	s := summaryOf(t, d, 1)
-	assert.Equal(t, []int{1, 8, 4}, []int{s.Done, s.Total, s.Merged}, "the row line agrees")
+	assert.Equal(t, []int{1, 8, 3}, []int{s.Done, s.Total, s.Merged}, "the row line agrees")
 
 	g := phaseByID(t, r.Phases, 110)
 	assert.Equal(t, []int{1, 6, 2}, []int{g.Done, g.Total, g.Merged})
 	ui := phaseByID(t, r.Phases, 120)
-	assert.Equal(t, []int{0, 2, 2}, []int{ui.Done, ui.Total, ui.Merged})
+	assert.Equal(t, []int{0, 2, 1}, []int{ui.Done, ui.Total, ui.Merged})
 
 	// Nothing merged: the numbers are today's.
 	runSQL(t, d, `DELETE FROM workbench_pr_states`)
 	assert.Equal(t, Progress{Done: 1, Total: 8}, build(t, d, 1).Progress)
 }
 
-// TestProj14_SharedBranchNeverCountsMerged: a leaf with no branch, or on
-// the branch of every ancestor that carries one, is never merged, whatever
-// the cache holds.
+// TestProj14_SharedBranchNeverCountsMerged: a leaf on its nearest
+// branch-carrying ancestor's own branch, or with no branch, is never merged,
+// whatever the cache holds.
 func TestProj14_SharedBranchNeverCountsMerged(t *testing.T) {
 	d := mergedFixture(t)
 	runSQL(t, d, `UPDATE targets SET branch = '' WHERE id IN (112, 113, 121)`)
-	runSQL(t, d, `UPDATE targets SET branch = 'feature/x' WHERE id IN (120, 122)`)
 	assert.Equal(t, Progress{Done: 1, Total: 8}, build(t, d, 1).Progress)
 }
 
@@ -91,7 +89,7 @@ func TestMergeBase(t *testing.T) {
 	require.NoError(t, err)
 	for id, want := range map[int64]string{
 		111: "feature/x", 112: "feature/x", 116: "feature/x", 121: "feature/x-ui",
-		114: "", 115: "", 122: "feature/x", 100: "", 120: "feature/x",
+		114: "", 115: "", 122: "", 100: "", 120: "feature/x",
 	} {
 		base, _, ok := b.mergeBase(b.byID[id])
 		assert.Equal(t, want != "", ok, "target %d", id)
@@ -110,7 +108,7 @@ func mergeRefsOf(t *testing.T, d *db.DB, sessionID int64) []string {
 func TestSessionRefs_EndWithTheMergeVerdicts(t *testing.T) {
 	d := mergedFixture(t)
 	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f",
-		"into:feature/x-ui:wt/g", "into:feature/x:feature/x-ui"}
+		"into:feature/x-ui:wt/g"}
 	assert.ElementsMatch(t, want, mergeRefsOf(t, d, 1))
 	refs, err := SessionRefs(context.Background(), d, 1, 1)
 	require.NoError(t, err)
@@ -311,8 +309,8 @@ func TestRefreshedSummaries_StopAtTheSummaryBudget(t *testing.T) {
 	}
 	rows, res, err := RefreshedSummaries(context.Background(), d, 1, RefreshOptions{Network: true, Now: clock})
 	require.NoError(t, err)
-	assert.Contains(t, res.Note, "the 3s time budget ran out; 4 ref(s) keep their cached state")
+	assert.Contains(t, res.Note, "the 3s time budget ran out; 3 ref(s) keep their cached state")
 	assert.Empty(t, calls(), "gh never runs, whatever Network says")
 	require.Len(t, rows, 1)
-	assert.Equal(t, []int{1, 8, 4}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
+	assert.Equal(t, []int{1, 8, 3}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
 }
