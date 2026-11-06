@@ -104,6 +104,30 @@ func imageArgs(args []string) []string {
 // watchtower server mounted; scrubbed) shows each web search as one step
 // with its pages, beside the MCP call. Codex sends a web_search item with
 // two "id" keys; the later one names the search.
+// A search whose completion never came (codex exited, the turn was
+// stopped) is still shown, as a red step (CHAT-02).
+func TestQuery_UnfinishedWebSearchIsClosedAsARedStep(t *testing.T) {
+	c := NewClient("gpt-x", "", fakeCodexScript(t, strings.Join([]string{`{"type":"turn.started"}`,
+		`{"type":"item.started","item":{"id":"item_1","type":"web_search","id":"ws1","query":"","action":{"type":"other"}}}`,
+		`{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"partial"}}`}, "\n"), "", 0))
+	c.EmitToolEvents()
+	textCh, errCh, _ := c.Query(context.Background(), "sys", "msg", "")
+	var tools []*ai.ToolEvent
+	for ch := range textCh {
+		if ch.Tool != nil {
+			tools = append(tools, ch.Tool)
+		}
+	}
+	for range errCh {
+	}
+	require.Len(t, tools, 2)
+	assert.Equal(t, "WebSearch", tools[0].Name)
+	assert.Equal(t, "ws1", tools[0].ID)
+	assert.True(t, tools[1].Done)
+	assert.False(t, tools[1].OK)
+	assert.Equal(t, "codex stopped before reporting this tool's result", tools[1].Result)
+}
+
 func TestQuery_RecordedWebSearchIsAStep(t *testing.T) {
 	tools := queryTools(t, strings.Join(fixtureLines(t, "web_search_live.jsonl"), "\n"))
 	var names []string

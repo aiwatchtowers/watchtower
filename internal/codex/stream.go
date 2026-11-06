@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,9 @@ type queryStream struct {
 	// started tools (id, name) in order, for closing the open ones.
 	toolsOpen map[string]bool
 	toolOrder []ai.ToolEvent
+	// searchesPending are the web searches started without a query whose
+	// step waits for it (tool); finish shows one never completed.
+	searchesPending []string
 	// anonymous numbers the ids given to items codex sent without one;
 	// anonOpen lists the id-less tools started and not yet completed,
 	// anonMsg the id-less agent message started and not yet completed.
@@ -205,10 +209,16 @@ func (s *queryStream) tool(eventType string, item *CodexItem) bool {
 	if s.toolsOpen == nil {
 		s.toolsOpen = map[string]bool{}
 	}
-	if item.Type == "web_search" && item.Query == "" && eventType != "item.completed" {
+	if item.Type == "web_search" {
 		// codex starts a search before it knows the query: the step starts
 		// when the query is there, so it shows what was searched.
-		return true
+		if item.Query == "" && eventType != "item.completed" {
+			if !slices.Contains(s.searchesPending, item.ID) {
+				s.searchesPending = append(s.searchesPending, item.ID)
+			}
+			return true
+		}
+		s.searchesPending = slices.DeleteFunc(s.searchesPending, func(id string) bool { return id == item.ID })
 	}
 	if _, seen := s.toolsOpen[item.ID]; !seen {
 		s.toolsOpen[item.ID] = true
@@ -276,6 +286,13 @@ func (s *queryStream) finish() {
 	case s.skipped > 0 || s.undecodable > 0:
 		reason = "codex's report of this tool's result could not be read"
 	}
+	for _, id := range s.searchesPending {
+		// A search that never reported its query is still shown, and closed.
+		if s.send(ai.StreamChunk{Tool: &ai.ToolEvent{ID: id, Name: webSearchTool}}) {
+			_ = s.send(ai.StreamChunk{Tool: &ai.ToolEvent{ID: id, Name: webSearchTool, Done: true, Result: reason}})
+		}
+	}
+	s.searchesPending = nil
 	for _, t := range s.toolOrder {
 		if s.toolsOpen[t.ID] {
 			s.toolsOpen[t.ID] = false
