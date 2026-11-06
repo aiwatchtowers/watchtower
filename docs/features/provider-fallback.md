@@ -363,3 +363,51 @@ job-selected generation; dynamic callers must pass their job context, including
 through nested pool/timeout wrappers. An enabled old job retains its durable
 receipts after reserve is disabled, and a disabled old job does not acquire
 routing/deferred semantics merely because a newer job enables it.
+
+### Settings connections and limits
+
+Settings → System → AI edits the preferred provider and the other cloud provider's
+independent light/strong model bucket and CLI path. Reserve starts off; installing,
+checking, or testing a CLI never enables it. Switching Claude ↔ Codex keeps both
+buckets. Selecting Ollama disables reserve and keeps the existing local server and
+model controls. Policy restrictions keep stored choices and refuse forbidden calls.
+
+**Check connection** only checks whether the selected executable can be found. It
+never runs an auth command, reads credentials, opens a keyring or sends a model
+request. Native sign-in status cannot safely be established by binary existence,
+so an installed CLI remains **Not verified**. A known auth failure from the
+explicit test instead gives the sign-in guidance. Metadata/transport failures
+remain distinct from missing sign-in.
+
+**Test connection** warns before the button that it sends one short request using
+the selected provider's strong model and account, possibly spending paid quota.
+It uses the current form's model and CLI path without saving them, testing the
+light model, or falling back to another provider. The existing `ai test` command
+now invokes the canonical isolated no-tools batch leaf: no owner startup hooks,
+MCP tools or shell snapshots. Its additive `--cli-path` override is test-only;
+HTTP providers reject that flag and retain their direct HTTP test. Local Settings
+tests retain one request per distinct light/strong model against the form URL.
+Failures cross into Desktop as sanitized messages plus a typed `error_code`, not
+arbitrary child stderr. Real attempts retain normal leaf usage recording.
+
+`ai test` and `ai routing-status` skip the root schema-upgrade hook: a connection
+or limits check does not migrate a database or rewrite the configuration. The
+explicit probe still sets its ordinary usage-spool destination after reading the
+configuration. Their existing CLI audit classifications remain unchanged.
+
+**Check again** under Saved provider limits reads the saved configuration, never
+the unsaved form. `ai routing-status --check-again` reserves the existing
+`ManualCheck` per-minute gate over exactly the router's account/model scopes.
+Its optional provider `manual_allowed` field distinguishes a throttled check.
+It sends no synthetic recovery prompt, claims no probe lease, and never clears a
+quota block because a timestamp passed. Only a real eligible request can prove
+recovery. Missing local health remains an error rather than successful recovery.
+Ollama has no cloud health scope and is not misreported as unauthenticated.
+
+Connection, limits and apply have separate operations and Retry actions. The
+app-owned models invalidate stale results on configuration reload/save or form
+selection/model/path/workspace changes. Save and apply continue using the actual
+saved file version and daemon acknowledgement; a successful connection test does
+not claim that the daemon applied anything. Production status cards and approved
+catalog scenes share `ProviderFallbackStatus` and `ProviderFallbackPreview` copy;
+sample chat names, default-model summaries and sample times stay in fixtures.

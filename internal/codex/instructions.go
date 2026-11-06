@@ -180,3 +180,15 @@ func parseCodexVersion(out string) ([3]int, error) {
 func versionLess(a, b [3]int) bool {
 	return slices.Compare(a[:], b[:]) < 0
 }
+
+// holdPromptFile holds codex's model_instructions_file for the whole run
+// (fsutil.HoldTempFile: codex re-reads it for every model request, and the
+// hold keeps the stale-temp sweep off it) and logs, without the file's
+// name, when the hold could not shield it. Defer the returned release.
+func holdPromptFile(path string) (release func()) {
+	release, err := fsutil.HoldTempFile(path)
+	if err != nil {
+		log.Printf("codex: system prompt file not shielded from the stale-temp sweep: %v", err)
+	}
+	return release
+}

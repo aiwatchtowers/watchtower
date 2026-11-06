@@ -7,6 +7,63 @@ import WatchtowerCore
 @MainActor
 @Suite("ConfigService")
 struct ConfigServiceTests {
+    @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])
+    func reserveBuckets(provider: String) throws {
+        let other = provider == "claude" ? "codex" : "claude"
+        let path = makeTempConfig("ai: {provider: \(provider), providers: {"
+            + "\(provider): {models: {strong: preferred-model}}, \(other): {models: {strong: reserve-model}}}}")
+        let service = ConfigService(configPath: path)
+        #expect(!service.aiFallbackEnabled)
+        #expect(service.reserveModel("strong") == "reserve-model")
+        service.aiFallbackProvider = other
+        service.setReserveModel("light", value: "reserve-light")
+        service.aiFallbackEnabled = true
+        try service.save()
+        let saved = ConfigService(configPath: path)
+        #expect(saved.aiFallbackEnabled)
+        #expect(saved.aiModelStrong == "preferred-model")
+        #expect(saved.reserveModel("light") == "reserve-light")
+        saved.selectPreferredProvider(other)
+        #expect(saved.aiModelStrong == "reserve-model")
+        #expect(saved.reserveModel("strong") == "preferred-model")
+        try saved.save()
+        saved.selectPreferredProvider("ollama")
+        #expect(!saved.aiFallbackEnabled)
+        try saved.save()
+        saved.selectPreferredProvider(provider)
+        #expect(saved.aiModelStrong == "preferred-model")
+    }
+
+    @Test("Editing only reserve models preserves legacy preferred overrides")
+    func reserveEditPreservesLegacyPreferred() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: opus, models: {light: haiku}}")
+        let service = ConfigService(configPath: path)
+        service.aiFallbackProvider = "codex"
+        service.setReserveModel("strong", value: "reserve-model")
+        try service.save()
+        let saved = ConfigService(configPath: path)
+        #expect(saved.aiModelStrong == "opus")
+        #expect(saved.aiModelLight == "haiku")
+        #expect(saved.reserveModel("strong") == "reserve-model")
+    }
+
+    @Test("Unedited reserve keeps newer CLI edits even after a previous Save")
+    func reserveExternalWinner() throws {
+        let path = makeTempConfig("ai: {provider: claude}")
+        let service = ConfigService(configPath: path)
+        service.aiFallbackProvider = "codex"
+        service.aiFallbackEnabled = true
+        try service.save()
+        var yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path)) as? [String: Any])
+        var ai = try #require(yaml["ai"] as? [String: Any])
+        ai["fallback"] = ["enabled": false, "provider": "codex"]
+        yaml["ai"] = ai
+        try Yams.dump(object: yaml).write(toFile: path, atomically: true, encoding: .utf8)
+        service.syncInterval = "2m"
+        try service.save()
+        #expect(!ConfigService(configPath: path).aiFallbackEnabled)
+    }
+
     @Test("Migrated model edits update authoritative provider bucket")
     func migratedModelEdits() throws {
         let path = makeTempConfig("ai: {provider: claude, model: sonnet, providers: {claude: {models: {strong: opus}}, codex: {}}}")

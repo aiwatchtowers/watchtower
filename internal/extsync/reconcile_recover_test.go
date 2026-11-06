@@ -123,7 +123,10 @@ func TestReconcileReloadsCommentSetOfMissingComment(t *testing.T) {
 func TestReconcileRecoveryResumesAfterBudgetCut(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
-	start := time.Now().UTC().Truncate(time.Second).Add(-30 * 24 * time.Hour)
+	// Midday UTC: every Fetch advances the clock a minute, and the reconcile
+	// is due again on a new UTC date, so a start near midnight would roll the
+	// date mid-test and enumerate a second time.
+	start := time.Now().UTC().Truncate(24 * time.Hour).Add(12*time.Hour - 30*24*time.Hour)
 	ids := []string{"p1", "p2", "p3", "p4"}
 	for _, id := range ids {
 		f.addPage(id, 1, start.Add(-48*time.Hour))

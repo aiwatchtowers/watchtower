@@ -25,6 +25,22 @@ func TestSlackSearchRange(t *testing.T) {
 	assert.Equal(t, "2026-09-23", before)
 }
 
+// BackfillSearchDays names the same days slackSearchRange sends, as UTC
+// midnights, whatever zone the bounds are in.
+func TestBackfillSearchDays_MatchesTheSearchRange(t *testing.T) {
+	la, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	// Local midnights in Los Angeles are 07:00 or 08:00 UTC.
+	from := time.Date(2026, 3, 10, 0, 0, 0, 0, la)
+	to := time.Date(2026, 3, 12, 0, 0, 0, 0, la)
+	first, last := BackfillSearchDays(from, to)
+	assert.Equal(t, time.Date(2026, 3, 9, 0, 0, 0, 0, time.UTC), first)
+	assert.Equal(t, time.Date(2026, 3, 13, 0, 0, 0, 0, time.UTC), last)
+	after, before := slackSearchRange(from, to)
+	assert.Equal(t, first.Format("2006-01-02"), after)
+	assert.Equal(t, last.Format("2006-01-02"), before)
+}
+
 // oneMatchSearch answers search.messages with one match on one page and
 // records every query it was sent.
 func oneMatchSearch(queries *[]string, mu *gosync.Mutex) http.HandlerFunc {
@@ -50,6 +66,24 @@ func oneMatchSearch(queries *[]string, mu *gosync.Mutex) http.HandlerFunc {
 func rateLimitedSearch(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Retry-After", "0")
 	w.WriteHeader(http.StatusTooManyRequests)
+}
+
+// `slack backfill` never calls Run: BackfillSearch itself loads the account
+// (the owner's own media and the file-host domain depend on it).
+func TestBackfillSearch_LoadsTheAccountWithoutRun(t *testing.T) {
+	var queries []string
+	var mu gosync.Mutex
+	ts := newTestSetup(t, searchAuditMux(oneMatchSearch(&queries, &mu)))
+	ts.orch.logger = log.New(io.Discard, "", 0)
+	require.NoError(t, ts.db.UpdateSlackAccountConnection(ts.accountID, "T001", "Acme", "acme", ts.ns("U_OWNER")))
+	require.Zero(t, ts.orch.account.ID, "a fresh orchestrator has no account")
+
+	_, err := ts.orch.BackfillSearch(context.Background(),
+		time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	assert.Equal(t, ts.accountID, ts.orch.account.ID)
+	assert.Equal(t, "acme", ts.orch.account.TeamDomain)
+	assert.Equal(t, ts.ns("U_OWNER"), ts.orch.account.CurrentUserID)
 }
 
 func TestBackfillSearch_SavesRangeWithoutTouchingWatermarkOrAuthState(t *testing.T) {

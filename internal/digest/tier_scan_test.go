@@ -38,6 +38,7 @@ type allowedStrongSource struct {
 // tagged-but-unlisted source that stays strong, plus the untagged call sites
 // this same task tagged (tag-only — their tier did not change).
 var allowedStrongSources = []allowedStrongSource{
+	{"probe", "cmd/ai.go runAITest: explicit Test connection exercises the selected strong model; both leaf tiers are pinned to that form model (docs/features/provider-fallback.md)"},
 	// Already tagged before this task, deliberately strong (verify-tiers.md
 	// §4 "no change" tables — several already say so in their own code
 	// comments):

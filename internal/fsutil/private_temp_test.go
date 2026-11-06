@@ -2,7 +2,10 @@ package fsutil
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -137,5 +140,162 @@ func TestSweepStaleDir(t *testing.T) {
 	}
 	if _, err := os.Stat(freshFile); err != nil {
 		t.Errorf("fresh file removed: %v", err)
+	}
+}
+
+// A child that reads a held file, writes output and reads it again (codex
+// re-reads its model_instructions_file for every model request) gets the
+// content each time; the file goes only on release, and a second release
+// is a no-op.
+func TestHoldTempFile_KeepsTheFileUntilRelease(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	path, err := WritePrivateTemp(SystemPromptTempPrefix+"*.txt", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := HoldTempFile(path)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if held, perr := mayBeHeld(path); !held || perr != nil {
+		t.Fatalf("mayBeHeld = %v, %v; want held by the flock", held, perr)
+	}
+	out, err := exec.Command("/bin/sh", "-c", `cat "$0"; cat "$0"`, path).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "bodybody" {
+		t.Fatalf("child read %q", out)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("a held file must stay until release: %v", err)
+	}
+	release()
+	release()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file still there: %v", err)
+	}
+	noop, err := HoldTempFile("")
+	if err != nil {
+		t.Fatalf("hold of \"\": %v", err)
+	}
+	noop()
+}
+
+// A file the hold cannot open is still removed on release, and the error
+// says it is unshielded without naming it (it reaches a log).
+func TestHoldTempFile_UnshieldedStillRemoved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a 0000 file")
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	path, err := WritePrivateTemp(SystemPromptTempPrefix+"*.txt", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	release, err := HoldTempFile(path)
+	if err == nil {
+		t.Fatal("want an unshielded error for a file the hold cannot open")
+	}
+	if strings.Contains(err.Error(), filepath.Base(path)) {
+		t.Errorf("error names the file: %v", err)
+	}
+	release()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file still there: %v", err)
+	}
+}
+
+// The sweep never takes a held file, however old (a long codex run, or a
+// Mac that slept through one): the holder's flock marks it live. Once the
+// hold is gone without a remove — the holder was killed, and the kernel
+// dropped its lock — the stale file is a leftover and goes.
+func TestHoldTempFile_SweepSkipsAHeldFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	path, err := WritePrivateTemp(SystemPromptTempPrefix+"*.txt", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	release, err := HoldTempFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if n, err := SweepStaleTemp(10*time.Minute, time.Now()); err != nil || n != 0 {
+		t.Fatalf("sweep removed %d (%v), want the held file kept", n, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("held file swept: %v", err)
+	}
+
+	// A holder that died: its descriptor (and so its lock) is gone, the file
+	// stays. Simulated with a lock taken and dropped by a second open.
+	orphan, err := WritePrivateTemp(SystemPromptTempPrefix+"*.txt", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if err := os.Chtimes(orphan, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := SweepStaleTemp(10*time.Minute, time.Now()); err != nil || n != 1 {
+		t.Fatalf("sweep removed %d (%v), want the orphan only", n, err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan still there: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("held file swept: %v", err)
+	}
+}
+
+// The probe fails closed: a stale prompt file the sweep cannot open (so
+// cannot tell whether a live process holds it) is kept, not removed, and
+// the sweep reports the probe failure.
+func TestSweepStaleTemp_KeepsAFileItCannotProbe(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a 0000 file")
+	}
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	path, err := WritePrivateTemp(SystemPromptTempPrefix+"*.txt", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	stale := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	n, err := SweepStaleTemp(10*time.Minute, time.Now())
+	if n != 0 {
+		t.Fatalf("sweep removed %d, want the unprobeable file kept", n)
+	}
+	if err == nil || !strings.Contains(err.Error(), "probing") {
+		t.Fatalf("err = %v, want the probe failure reported", err)
+	}
+	if strings.Contains(err.Error(), filepath.Base(path)) {
+		t.Errorf("error names the file: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file swept: %v", err)
 	}
 }

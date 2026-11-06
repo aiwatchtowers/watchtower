@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest an idea or an improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Please describe the problem first; the solution can come second.
+        Leave real names, company names and message text out of examples.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like Watchtower to handle it?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and workarounds
+      description: Anything you have tried or considered instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Inbox, briefing and day plan
+        - Sources and connections (Slack, Google, Jira, Confluence, Linear)
+        - AI chat
+        - Automations
+        - Workbench (coding agents)
+        - Meetings and transcription
+        - iPhone companion
+        - CLI
+        - Other
+    validations:
+      required: true

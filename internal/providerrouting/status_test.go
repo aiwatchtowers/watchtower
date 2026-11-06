@@ -2,6 +2,7 @@ package providerrouting
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,4 +86,46 @@ func TestStatusExpiredLeaseProjectsWaitingWithoutWriting(t *testing.T) {
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, before, after)
+}
+
+func TestCheckStatusRateGateKeepsExactModelQuotaBothDirections(t *testing.T) {
+	for _, p := range []string{"claude", "codex"} {
+		t.Run(p, func(t *testing.T) {
+			now := time.Date(2026, 1, 1, 1, 2, 0, 0, time.UTC)
+			store := providerhealth.New(t.TempDir(), func() time.Time { return now })
+			req := Request{Identity: func(string) string { return "fixture-account" }, Model: func(string, digest.Tier) string { return "form-model" }}
+			scope := providerhealth.ModelScope(providerhealth.AccountScope(p, "fixture-account"), "form-model")
+			ctx := context.Background()
+			require.NoError(t, store.RecordQuota(ctx, scope, &providers.Failure{Provider: p, Category: providers.Quota}))
+			router := &Router{Health: store, Allowed: func(string) error { return nil }}
+			first, err := router.CheckStatus(ctx, req, p)
+			require.NoError(t, err)
+			require.True(t, *first.ManualAllowed)
+			require.Equal(t, providerhealth.QuotaWait, first.State)
+			second, err := router.CheckStatus(ctx, req, p)
+			require.NoError(t, err)
+			require.False(t, *second.ManualAllowed)
+			now = now.Add(time.Minute)
+			third, err := router.CheckStatus(ctx, req, p)
+			require.NoError(t, err)
+			require.True(t, *third.ManualAllowed)
+			require.Equal(t, providerhealth.QuotaWait, third.State)
+			// Even a reset in the past never becomes a recovery success.
+			now = now.Add(24 * time.Hour)
+			last, err := router.CheckStatus(ctx, req, p)
+			require.NoError(t, err)
+			require.Equal(t, providerhealth.QuotaWait, last.State)
+		})
+	}
+}
+
+func TestCheckStatusRefusalAndStorageFailure(t *testing.T) {
+	ctx := context.Background()
+	denied := errors.New("denied")
+	router := &Router{Allowed: func(string) error { return denied }}
+	_, err := router.CheckStatus(ctx, Request{}, "codex")
+	require.ErrorIs(t, err, denied)
+	router.Allowed = func(string) error { return nil }
+	_, err = router.CheckStatus(ctx, Request{}, "codex")
+	require.ErrorIs(t, err, providerhealth.ErrDegraded)
 }

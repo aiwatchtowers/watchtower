@@ -94,6 +94,23 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(counter.hits, 0)
     }
 
+    /// A page that navigates itself away is still a loaded page: the
+    /// policy cancel of its own navigation is no failure (the printer would
+    /// otherwise report "Print failed" for a page that printed fine).
+    func testASelfNavigatingPageLoadsWithoutAFailure() async throws {
+        let probe = CoordinatorProbe()
+        let webView = probe.makeWebView()
+        probe.coordinator.show(.page("<html><head><title>page</title></head><body><script>location='https://example.com'</script></body></html>"),
+                               token: 0)
+        try await waitUntil { probe.loaded > 0 }
+        XCTAssertEqual(probe.loaded, 1, "the content load finished")
+        // A grace for a late failure callback of the cancelled navigation; a
+        // slow runner can only make this pass vacuously, never fail it.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(probe.failures, [], "the cancelled self-navigation is no failure")
+        XCTAssertEqual(webView.url?.absoluteString, "about:blank")
+    }
+
     func testAFilePreviewLoadsItsSiblingsButNotTheNetwork() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -184,6 +201,142 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(counter.hits, 0)
     }
 
+    /// The rules failing reports once through `onFailed`, and the message
+    /// page shown instead is never reported as the loaded content.
+    func testRulesFailureReportsOnceAndNeverLoaded() async throws {
+        struct Broken: LocalizedError {
+            var errorDescription: String? { "rules broke" }
+        }
+        let probe = CoordinatorProbe()
+        probe.coordinator.rules = { _ in throw Broken() }
+        let webView = probe.makeWebView()
+        probe.coordinator.show(.page("<html><head><title>secret page</title></head><body></body></html>"), token: 0)
+        let text = try await waitForText(webView) { $0.contains("could not be prepared") }
+        XCTAssertEqual(text, "The preview could not be prepared: rules broke")
+        // A grace for a late didFinish of the message page.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(probe.failures, ["The preview could not be prepared: rules broke"])
+        XCTAssertEqual(probe.loaded, 0, "the message page is not the content")
+    }
+
+    /// The printer's offscreen view (`makeWebView`) has the same network
+    /// barrier as the in-app view.
+    func testThePrinterRouteLoadsNothingFromTheNetwork() async throws {
+        let probe = CoordinatorProbe()
+        _ = probe.makeWebView()
+        probe.coordinator.show(.page("<html><body><img src=\"\(counter.base)/x.png\"><p>doc</p></body></html>"), token: 0)
+        try await waitUntil { probe.loaded > 0 }
+        // A grace for a late image attempt; it can only pass vacuously.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(counter.hits, 0, "the image never reached the listener")
+        XCTAssertEqual(probe.failures, [])
+    }
+
+    /// A content navigation that fails reports once through `onFailed`
+    /// (an unreadable page fails its scheme task, which is no cancel; a
+    /// missing one would load a 404 page instead).
+    func testAFailedContentNavigationReportsOnce() async throws {
+        let (folder, page) = try Self.unreadablePage()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let probe = CoordinatorProbe()
+        _ = probe.makeWebView()
+        probe.coordinator.show(.file(page, folder: folder), token: 0)
+        try await waitUntil { !probe.failures.isEmpty }
+        // A grace for a late second report; it can only pass vacuously.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(probe.failures.count, 1, "\(probe.failures)")
+        XCTAssertTrue(probe.failures.first?.hasPrefix("The page could not be loaded:") == true, "\(probe.failures)")
+        XCTAssertEqual(probe.loaded, 0)
+    }
+
+    /// The web content process ending reports through `onFailed` once,
+    /// however often WebKit says so.
+    func testAnEndedContentProcessReportsOnce() async throws {
+        let probe = CoordinatorProbe()
+        probe.coordinator.rules = Self.neverReadyRules
+        let webView = probe.makeWebView()
+        probe.coordinator.show(.page("<p>doc</p>"), token: 0)
+        probe.coordinator.webViewWebContentProcessDidTerminate(webView)
+        probe.coordinator.webViewWebContentProcessDidTerminate(webView)
+        XCTAssertEqual(probe.failures, ["The page stopped: its web content process ended."])
+        probe.coordinator.cancel()
+    }
+
+    // MARK: ArtifactPrinter — every way a job ends drops it
+
+    /// A page that never finishes loading ends the job after the timeout
+    /// with a notice, instead of a Print… that silently does nothing.
+    func testThePrinterTimesOutAPageThatNeverLoads() async throws {
+        let coordinator = SandboxedHTMLView.Coordinator()
+        coordinator.rules = Self.neverReadyRules
+        let errors = ErrorLog()
+        let job = ArtifactPrinter(title: "t", coordinator: coordinator, loadTimeout: .milliseconds(100)) { errors.list.append($0) }
+        let window = Self.offscreenWindow()
+        ArtifactPrinter.start(job, .page("<p>doc</p>"), window: window)
+        XCTAssertTrue(ArtifactPrinter.isRunning(job))
+        try await waitUntil { !errors.list.isEmpty }
+        XCTAssertEqual(errors.list, ["Print failed: the page did not finish loading."])
+        XCTAssertFalse(ArtifactPrinter.isRunning(job), "the timed-out job is dropped")
+    }
+
+    /// The content process ending fails the job exactly once: no second
+    /// report from WebKit or from the load timeout afterwards.
+    func testThePrinterFailsOnceWhenTheContentProcessEnds() async throws {
+        let coordinator = SandboxedHTMLView.Coordinator()
+        coordinator.rules = Self.neverReadyRules
+        let errors = ErrorLog()
+        let job = ArtifactPrinter(title: "t", coordinator: coordinator, loadTimeout: .milliseconds(200)) { errors.list.append($0) }
+        let window = Self.offscreenWindow()
+        ArtifactPrinter.start(job, .page("<p>doc</p>"), window: window)
+        let webView = try XCTUnwrap(coordinator.webView)
+        coordinator.webViewWebContentProcessDidTerminate(webView)
+        coordinator.webViewWebContentProcessDidTerminate(webView)
+        XCTAssertEqual(errors.list, ["Print failed: The page stopped: its web content process ended."])
+        XCTAssertFalse(ArtifactPrinter.isRunning(job), "the failed job is dropped")
+        // Past the timeout: it was cancelled with the job.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(errors.list.count, 1, "\(errors.list)")
+    }
+
+    /// A content navigation that fails ends the job with its reason.
+    func testThePrinterFailsWhenTheContentNavigationFails() async throws {
+        let (folder, page) = try Self.unreadablePage()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let errors = ErrorLog()
+        let job = ArtifactPrinter(title: "t") { errors.list.append($0) }
+        let window = Self.offscreenWindow()
+        ArtifactPrinter.start(job, .file(page, folder: folder), window: window)
+        try await waitUntil { !errors.list.isEmpty }
+        XCTAssertEqual(errors.list.count, 1, "\(errors.list)")
+        XCTAssertTrue(errors.list.first?.hasPrefix("Print failed: The page could not be loaded:") == true, "\(errors.list)")
+        XCTAssertFalse(ArtifactPrinter.isRunning(job), "the failed job is dropped")
+    }
+
+    /// A page that exists but cannot be opened: the scheme handler fails
+    /// its task. The folder is the caller's to remove.
+    private static func unreadablePage() throws -> (folder: URL, page: URL) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let page = folder.appendingPathComponent("locked.html")
+        try "<p>locked</p>".write(to: page, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: page.path)
+        return (folder, page)
+    }
+
+    /// Rules that are never ready: the content never starts loading, until
+    /// the load is cancelled.
+    private static let neverReadyRules: @MainActor (Bool) async throws -> WKContentRuleList = { _ in
+        try await Task.sleep(for: .seconds(60))
+        throw CancellationError()
+    }
+
+    /// Never ordered in (no window on screen during tests).
+    private static func offscreenWindow() -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: .borderless, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
     /// A file preview (#563) loads its folder's visible files only — no
     /// dotfile as a script or in a frame, none through a symlink with a
     /// visible name (`notes.js` → `.secrets/config.js`, a folder link to
@@ -260,6 +413,17 @@ final class SandboxedHTMLViewTests: XCTestCase {
 
     // MARK: helpers
 
+    /// Polls `done` until it holds or `timeout` passes (then fails).
+    private func waitUntil(timeout: Duration = .seconds(10), _ done: () -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while clock.now < deadline {
+            if done() { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTFail("timed out")
+    }
+
     private func waitForText(_ webView: WKWebView, until done: (String) -> Bool) async throws -> String {
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(10)
@@ -315,6 +479,34 @@ final class SandboxedHTMLViewTests: XCTestCase {
         ))
         return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
     }
+}
+
+/// A coordinator with an offscreen web view made the printer's way
+/// (`SandboxedHTMLView.makeWebView`), recording its callbacks.
+@MainActor
+private final class CoordinatorProbe {
+    let coordinator = SandboxedHTMLView.Coordinator()
+    private(set) var loaded = 0
+    private(set) var failures: [String] = []
+    private var webView: WKWebView?
+
+    init() {
+        coordinator.onLoaded = { [weak self] _ in self?.loaded += 1 }
+        coordinator.onFailed = { [weak self] in self?.failures.append($0) }
+    }
+
+    /// The probe keeps the view alive (the coordinator holds it weakly).
+    func makeWebView() -> WKWebView {
+        let view = SandboxedHTMLView.makeWebView(coordinator: coordinator, frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        webView = view
+        return view
+    }
+}
+
+/// What a printer job reported through `onError`.
+@MainActor
+private final class ErrorLog {
+    var list: [String] = []
 }
 
 /// A loopback listener that counts every connection made to it and answers

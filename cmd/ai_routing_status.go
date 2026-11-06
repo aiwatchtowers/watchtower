@@ -30,7 +30,8 @@ type routingStatusOutput struct {
 var routingStatusApplication = readRoutingApplication
 
 func init() {
-	aiCmd.AddCommand(&cobra.Command{Use: "routing-status", Short: "Read local provider quota metadata without inference", Args: cobra.NoArgs,
+	var checkAgain bool
+	command := &cobra.Command{PersistentPreRunE: func(*cobra.Command, []string) error { return nil }, Use: "routing-status", Short: "Read local provider quota metadata without inference", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(flagConfig)
 			if err != nil {
@@ -58,14 +59,25 @@ func init() {
 				if p == "" {
 					continue
 				}
-				status, err := router.Status(cmd.Context(), req, p)
+				if p != "claude" && p != "codex" {
+					continue
+				}
+				var status providerrouting.Status
+				var err error
+				if checkAgain {
+					status, err = router.CheckStatus(cmd.Context(), req, p)
+				} else {
+					status, err = router.Status(cmd.Context(), req, p)
+				}
 				if err != nil {
 					return err
 				}
 				out.Providers = append(out.Providers, status)
 			}
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
-		}})
+		}}
+	command.Flags().BoolVar(&checkAgain, "check-again", false, "reserve a metadata-only limits check (at most once per minute)")
+	aiCmd.AddCommand(command)
 }
 
 // Keep local paths and raw file contents out of the metadata boundary.

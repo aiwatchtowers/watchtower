@@ -66,7 +66,7 @@ final class ProviderFallbackPreviewTests: XCTestCase {
         XCTAssertEqual(connection.copy.action, "Retry")
         XCTAssertTrue(apply.enabled)
         XCTAssertEqual(apply.copy.action, "Retry")
-        XCTAssertTrue(apply.copy.detail.contains("previous settings"))
+        XCTAssertTrue(apply.copy.detail.contains("not confirmed"))
         let unknown = ProviderFallbackPreview(preferred: .codex, state: .notVerified)
         XCTAssertFalse(unknown.enabled)
         XCTAssertTrue(unknown.copy.detail.contains("sends a short AI request"))

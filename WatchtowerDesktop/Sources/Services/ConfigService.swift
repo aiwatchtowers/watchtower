@@ -35,6 +35,12 @@ final class ConfigService {
     var aiWorkers: Int?
     var briefingHour: Int = 8
     var aiProvider: String?
+    var aiFallbackEnabled = false
+    var aiFallbackProvider: String?
+    @ObservationIgnored private var loadedFallbackEnabled = false
+    @ObservationIgnored private var loadedFallbackProvider: String?
+    let providerConnection: ProviderConnection
+    let providerHealth = ProviderSettingsHealth()
     var claudePath: String?
     var codexPath: String?
     /// `workbench.default_agent` (board #399, D1): the agent a new workbench
@@ -99,7 +105,12 @@ final class ConfigService {
     }
 
     /// Test-friendly initializer accepting an explicit config file path.
-    init(configPath: String, routingRead: (() async throws -> ChatRoutingStatus)? = nil) {
+    init(
+        configPath: String,
+        routingRead: (() async throws -> ChatRoutingStatus)? = nil,
+        connection: ProviderConnection? = nil
+    ) {
+        providerConnection = connection ?? ProviderConnection()
         routingApplication = ProviderRoutingApplication(read: routingRead ?? {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             let data = try await runner.run(args: ["--config", configPath, "ai", "routing-status"], timeout: 5)
@@ -127,6 +138,7 @@ final class ConfigService {
     }
 
     func reload() {
+        resetProviderOperations()
         routingApplication.configurationReloaded()
         defer { resetModelEditTracking() }
         guard let str = readConfigText() else { return }
@@ -163,6 +175,7 @@ final class ConfigService {
             }
 
             if let ai = yaml["ai"] as? [String: Any] {
+                loadFallback(ai)
                 prepareProviderModels(ai)
                 aiModel = ai["model"] as? String
                 aiWorkers = ai["workers"] as? Int
@@ -175,9 +188,7 @@ final class ConfigService {
             }
 
             loadProviderModels()
-            claudePath = yaml["claude_path"] as? String
-            codexPath = yaml["codex_path"] as? String
-            workbenchDefaultAgent = Self.agent(fromYAML: yaml)
+            loadCLIPaths(yaml)
 
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? true
@@ -297,6 +308,7 @@ final class ConfigService {
         cached["models"] = currentModels
         providerBuckets[old] = cached
         aiProvider = provider
+        providerConnection.invalidate()
         let models = providerBuckets[provider]?["models"] as? [String: Any] ?? [:]
         aiModelLight = models["light"] as? String
         aiModelStrong = models["strong"] as? String
@@ -304,10 +316,49 @@ final class ConfigService {
         editedModelTiers = []
     }
 
+    /// The Settings picker changes the pair together. The lower-level selector
+    /// retains validation semantics for callers editing only ai.provider.
+    func selectPreferredProvider(_ provider: String) {
+        selectAIProvider(provider)
+        if provider == "ollama" {
+            aiFallbackEnabled = false
+            aiFallbackProvider = nil
+        } else if aiFallbackProvider != nil {
+            aiFallbackProvider = provider == "claude" ? "codex" : "claude"
+        }
+    }
+
+    var connectionConfigPath: String { configPath }
+    func refreshProviderHealth() async {
+        await providerHealth.refresh {
+            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+            let data = try await runner.run(args: ["--config", configPath, "ai", "routing-status", "--check-again"], timeout: 5)
+            return try ChatRoutingStatus.parse(data)
+        }
+    }
+
+    func reserveModel(_ tier: String) -> String? {
+        let id = aiFallbackProvider ?? ((aiProvider ?? "claude") == "codex" ? "claude" : "codex")
+        return (providerBuckets[id]?["models"] as? [String: Any])?[tier] as? String
+    }
+
+    func setReserveModel(_ tier: String, value: String?) {
+        guard let id = aiFallbackProvider else { return }
+        var bucket = providerBuckets[id] ?? [:]
+        var models = bucket["models"] as? [String: Any] ?? [:]
+        models[tier] = value ?? ""
+        bucket["models"] = models
+        providerBuckets[id] = bucket
+        var edits = editedProviderBuckets[id]?["models"] as? [String: Any] ?? [:]
+        edits[tier] = value ?? ""
+        editedProviderBuckets[id] = ["models": edits]
+        providerConnection.invalidate()
+    }
+
     private func captureLegacyModels(
         _ ai: [String: Any], original: String, selected: String, buckets: inout [String: [String: Any]]
     ) {
-        guard original != selected || editedProviderBuckets[original] != nil,
+        guard original != selected || !editedProviderBuckets.isEmpty,
               buckets[original] == nil else { return }
         let legacy = ai["models"] as? [String: Any] ?? [:]
         let model = ai["model"] as? String
@@ -317,6 +368,37 @@ final class ConfigService {
             "light": Self.migratedModel(legacy["light"] as? String, provider: original),
             "strong": Self.migratedModel(strong?.isEmpty == false ? strong : fallback, provider: original)
         ]]
+    }
+
+    private func loadCLIPaths(_ yaml: [String: Any]) {
+        claudePath = yaml["claude_path"] as? String
+        codexPath = yaml["codex_path"] as? String
+        workbenchDefaultAgent = Self.agent(fromYAML: yaml)
+    }
+
+    private func resetProviderOperations() {
+        providerConnection.invalidate()
+        providerHealth.invalidate()
+        aiFallbackEnabled = false
+        aiFallbackProvider = nil
+        loadedFallbackEnabled = false
+        loadedFallbackProvider = nil
+    }
+
+    private func loadFallback(_ ai: [String: Any]) {
+        aiFallbackEnabled = (ai["fallback"] as? [String: Any])?["enabled"] as? Bool ?? false
+        aiFallbackProvider = (ai["fallback"] as? [String: Any])?["provider"] as? String
+        loadedFallbackEnabled = aiFallbackEnabled
+        loadedFallbackProvider = aiFallbackProvider
+    }
+
+    private func applyFallback(to ai: inout [String: Any]) {
+        if aiFallbackEnabled != loadedFallbackEnabled || aiFallbackProvider != loadedFallbackProvider {
+            var fallback = ai["fallback"] as? [String: Any] ?? [:]
+            fallback["enabled"] = aiFallbackEnabled
+            fallback["provider"] = aiFallbackProvider ?? ""
+            ai["fallback"] = fallback
+        }
     }
 
     private func validateAISelection(_ selected: String, ai: [String: Any]) throws {
@@ -337,6 +419,7 @@ final class ConfigService {
         var ai = (yaml["ai"] as? [String: Any]) ?? [:]
         var buckets = ai["providers"] as? [String: [String: Any]] ?? [:]
         let selected = aiProvider ?? "claude"
+        applyFallback(to: &ai)
         try validateAISelection(selected, ai: ai)
         let original = ai["provider"] as? String ?? "claude"
         captureLegacyModels(ai, original: original, selected: selected, buckets: &buckets)
@@ -479,6 +562,8 @@ final class ConfigService {
     }
 
     func save() throws {
+        providerConnection.invalidate()
+        providerHealth.invalidate()
         // Re-read the config file right before writing instead of using the
         // in-memory `rawYAML` snapshot captured at the last reload(). Between
         // load and save, an external process (e.g. `watchtower jira login`,
@@ -559,6 +644,7 @@ final class ConfigService {
         routingApplication.saved()
 
         rawYAML = yaml
+        loadFallback(yaml["ai"] as? [String: Any] ?? [:])
         lastSaveChangedPurge = purgeChanged
         diskPurgeRevokedData = purgeRevokedData
         // Adopt what is on disk now, so a switch the CLI turned on behind this
@@ -587,7 +673,8 @@ final class ConfigService {
     private static let nonEditableFields: Set<String> = [
         "configPath", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
         "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
-        "_providerBuckets", "_editedProviderBuckets", "editedModelTiers"
+        "_providerBuckets", "_editedProviderBuckets", "editedModelTiers",
+        "_providerConnection", "_providerHealth", "providerConnection", "providerHealth", "loadedFallbackEnabled", "loadedFallbackProvider"
     ]
 
     /// Every settings field (the stored properties, by reflection, so a new
