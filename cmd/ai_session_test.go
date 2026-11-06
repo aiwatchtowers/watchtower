@@ -263,8 +263,8 @@ func TestClaudeSessionOptions_FencesExternalServersInPrompt(t *testing.T) {
 	assert.Equal(t, "sys\n\n"+ai.ExternalDataRule(ext), claudeSessionOptions(w, ext).SystemPrompt)
 }
 
-// webSearchFlags is every web_search value a codex argv sets with -c.
-func webSearchFlags(args []string) []string {
+// webSearchValues is every web_search value a codex argv sets with -c.
+func webSearchValues(args []string) []string {
 	var out []string
 	for i, a := range args {
 		if a == "-c" && i+1 < len(args) && strings.HasPrefix(args[i+1], "web_search=") {
@@ -290,7 +290,7 @@ func TestCodexTurn_WebSearchFlagMatchesPrompt(t *testing.T) {
 		c := codexSessionClient(sessionWiring{cfg: cfg, database: database, dbPath: dbPath, model: "m",
 			mcpArgs: sessionMCPArgs(surface, conv, filepath.Join(t.TempDir(), "turn"), 0)})
 		require.True(t, sessionPromptOptions(cfg, surface, 0, time.Now(), chat.ClaudeAIPrompt{}).WebSearch, surface)
-		assert.Equal(t, []string{`web_search="cached"`}, webSearchFlags(c.ArgsForTest("sys", "msg")), surface)
+		assert.Equal(t, []string{`web_search="cached"`}, webSearchValues(c.ArgsForTest("sys", "msg")), surface)
 	}
 }
 
@@ -300,7 +300,7 @@ func TestCodexTurn_WebSearchFlagMatchesPrompt(t *testing.T) {
 // reviewer. Claude's scope is the same: only the session unhides WebSearch.
 // (The automation agent() child's own CODEX_HOME disables it too:
 // TestCodexAgentClient_WebSearchOff.)
-func TestCodexTurn_WebSearchOffOutsideTheChatSession(t *testing.T) {
+func TestCodexQueryClients_WebSearchOff(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEX_HOME", t.TempDir())
 	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
@@ -321,18 +321,19 @@ func TestCodexTurn_WebSearchOffOutsideTheChatSession(t *testing.T) {
 			require.NoError(t, err)
 			c, ok := client.(*codex.Client)
 			require.True(t, ok, "%T", client)
-			assert.Equal(t, []string{`web_search="disabled"`}, webSearchFlags(c.ArgsForTest("sys", "msg")),
+			assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(c.ArgsForTest("sys", "msg")),
 				"ai query --tools %q --surface %q read-folder=%v", tc.tools, tc.surface, opts.ReadFolder != "")
 			cleanup()
 		}
 	}
 
 	reviewer := specReviewCodexClient(cfg, "m", t.TempDir(), "")
-	assert.Equal(t, []string{`web_search="disabled"`}, webSearchFlags(reviewer.ArgsForTest("sys", "msg")), "spec reviewer")
+	assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(reviewer.ArgsForTest("sys", "msg")), "spec reviewer")
 }
 
 // An automation's agent() child on codex never searches the web: its argv
-// and its own CODEX_HOME's config both turn web search off.
+// turns web search off (its own CODEX_HOME's config.toml does too,
+// codexAgentHome).
 func TestCodexAgentClient_WebSearchOff(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEX_HOME", t.TempDir())
@@ -341,7 +342,7 @@ func TestCodexAgentClient_WebSearchOff(t *testing.T) {
 		mcpArgs: []string{"--chat", "--surface", "automation"}})
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
-	assert.Equal(t, []string{`web_search="disabled"`}, webSearchFlags(client.(*codex.Client).ArgsForTest("sys", "msg")))
+	assert.Equal(t, []string{`web_search="disabled"`}, webSearchValues(client.(*codex.Client).ArgsForTest("sys", "msg")))
 }
 
 // The codex session's system prompt carries Claude's web-search rules in

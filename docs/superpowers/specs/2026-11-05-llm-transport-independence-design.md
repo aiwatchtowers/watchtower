@@ -118,7 +118,7 @@ Line numbers are as of that commit.
 
 ### 2.2 The (c) gaps
 
-**LLM calls (13 found, 12 open)**
+**LLM calls (13 found, 11 open)**
 
 | # | Who loses | What | Where |
 |---|---|---|---|
@@ -126,7 +126,7 @@ Line numbers are as of that commit.
 | L2 | claude one-shot | **Fixed on `feature/codex-parity` by #957 (merge `69a239b63`).** Was: no process group of its own, so a Stop sent SIGINT to `claude` alone. Now `newQueryClient` sets a group with a 1 s group kill for claude and codex through the `processGroupConfigurable` probe (`cmd/generator.go:225-230`). Kept in the table for the record; the suite still asserts it (§4.1 "timeout and context kill"). | `cmd/generator.go:225-230` |
 | L3 | codex `agent()` | No turn cap. Claude gets `SetMaxTurns(12)`. | `cmd/automations_backends.go:259` vs `:265` |
 | L4 | codex spec reviewer | No turn cap. Claude gets `specreview.MaxTurns`. | `cmd/workbench_spec_review.go:129` vs `:136-141` |
-| L5 | codex, ollama main chat | No web search. The prompt says "no internet" (`WebSearch` is set only when the provider is not codex or ollama), while codex's own web search is neither offered nor turned off in chat. | `cmd/ai_session.go:186`; `internal/chat/prompt.go:30` |
+| L5 | codex, ollama main chat | **Fixed for codex on `feature/transport-neutral` (owner decision ask #533, board #971): the `ai session` codex client searches with `web_search="cached"`, every other codex run sets it off; ollama keeps none.** Was: no web search. The prompt says "no internet" (`WebSearch` is set only when the provider is not codex or ollama), while codex's own web search is neither offered nor turned off in chat. | `cmd/ai_session.go:186`; `internal/chat/prompt.go:30` |
 | L6 | codex, ollama main chat | No image or PDF attachments, and no project binaries, even though `codex exec --image` already works for media (`internal/codex/generator.go:66-98`). The Swift composer accepts the file, and the turn fails after Send. | `internal/chat/attachments.go:127`; `internal/chat/prompt_sections.go:436`; `WatchtowerCore/Services/Chat/AttachmentValidator.swift` (no provider input) |
 | L7 | runtime B, plain ollama | No `usage` event, so the chat message has no tokens. Runtime B streams the final answer as one chunk. Fixed: the usage chunk in G3; in G3b runtime B streams each model message's text as it arrives, before its tool steps, a later message after a blank line, and a stop keeps the text already shown. | `internal/agentloop/client.go` `Query` (usage is returned by `run` and never emitted); `internal/ollama/client.go:173-238` |
 | L8 | runtime B chat | No Quick Connections: `agentloop` gets the Watchtower registry only. | `cmd/ai_session.go:219-224` |

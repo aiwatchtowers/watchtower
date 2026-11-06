@@ -43,7 +43,7 @@ action: chat:How do I make an automation that runs every Monday?
 
 **Where answers come from.** The assistant searches everything Watchtower synced and indexed (Slack, mail, Jira with comments, calendar, transcripts and recaps, digests, decisions, ideas). That search follows the Knowledge search feature switch. Each answer folds its steps into "Worked for 12s · 4 steps", and a line below it opens the **Sources** panel, grouped by Slack channel, Jira project, Confluence space, mail, meetings and other.
 
-**The web.** On Claude and Codex the assistant can also search the public web for public knowledge such as documentation, products or news, and cites each page; the pages show under **Web** in the **Sources** panel. It never puts your private data into a search and cannot open a page you name. Codex searches a cached index of the web, so a page from the last few hours can be missing. Ollama has no web search.
+**The web.** On Claude and Codex the assistant can also search the public web for public knowledge such as documentation, products or news, and cites each page; the pages show under **Web** in the **Sources** panel. It never puts your private data into a search and never fetches a link you give it: Claude only searches, and Codex opens only pages already in its search index, so a very recent page can be missing. Ollama has no web search.
 
 **Providers.** Choose **Preferred + reserve · Auto** or **Only** a provider. See [limits, pins and recovery](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits).
 

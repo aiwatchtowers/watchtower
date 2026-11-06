@@ -255,11 +255,13 @@ func (c *Client) execArgs() []string {
 		// which the caller removes after the run.
 		prefix = slices.DeleteFunc(prefix, func(a string) bool { return a == "--ephemeral" })
 	}
-	if c.readFolder == "" {
-		return append(append(prefix, featuresOff(toolRunFeatures)...), "-c", c.webSearchArg())
+	off, sandbox := toolRunFeatures, []string(nil)
+	if c.readFolder != "" {
+		off = append([]string{"shell_tool"}, toolRunFeatures...)
+		sandbox = []string{"-c", "features.shell_tool=true", "--sandbox", "read-only"}
 	}
-	args := append(prefix, featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
-	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", c.webSearchArg())
+	args := append(append(prefix, featuresOff(off)...), sandbox...)
+	return append(args, "-c", c.webSearchArg())
 }
 
 // runMount is one launch's MCP mount: the -c flags, the environment the
