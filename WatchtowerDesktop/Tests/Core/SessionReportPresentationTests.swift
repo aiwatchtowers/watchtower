@@ -33,6 +33,8 @@ final class SessionReportPresentationTests: XCTestCase {
         XCTAssertEqual(Presentation.phaseLine(.init(targetID: 1, text: "UI", done: 3, total: 8, merged: 5)).count,
                        "3/8 · 5 merged")
         XCTAssertEqual(Presentation.phaseLine(.init(targetID: 1, text: "UI", done: 3, total: 8)).count, "3/8")
+        XCTAssertEqual(Presentation.miniBarValue(done: 3.0 / 32, merged: 25.0 / 32), "9% done, 78% merged")
+        XCTAssertEqual(Presentation.miniBarValue(done: 0, merged: 1.5), "0% done, 100% merged", "clamped")
     }
 
     func testRanFor() throws {

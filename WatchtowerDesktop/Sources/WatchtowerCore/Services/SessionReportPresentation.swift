@@ -42,6 +42,13 @@ package enum SessionReportPresentation {
         merged > 0 ? " · \(merged) merged" : ""
     }
 
+    /// The row mini bar's VoiceOver value with a merged share, "10% done,
+    /// 75% merged" (fractions 0...1).
+    package static func miniBarValue(done: Double, merged: Double) -> String {
+        let percent = { (v: Double) in Int((min(1, max(0, v)) * 100).rounded()) }
+        return "\(percent(done))% done, \(percent(merged))% merged"
+    }
+
     private static func fraction(_ part: Int, of total: Int) -> Double {
         guard total > 0 else { return 0 }
         return min(1, max(0, Double(part) / Double(total)))

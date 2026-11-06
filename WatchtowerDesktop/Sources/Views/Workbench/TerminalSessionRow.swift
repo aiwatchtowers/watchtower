@@ -287,5 +287,7 @@ private struct SessionProgressMiniBar: View {
             }
         }
         .frame(height: 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityValue(SessionReportPresentation.miniBarValue(done: done, merged: merged))
     }
 }
