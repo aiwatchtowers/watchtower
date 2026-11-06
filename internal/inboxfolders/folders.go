@@ -578,12 +578,20 @@ func (s *snapshot) ownerCount() int {
 // titleTaken reports whether a child of parent other than except carries
 // title, ignoring case.
 func (s *snapshot) titleTaken(parent int64, title string, except int64) bool {
+	var titles []string
 	for _, id := range s.children[parent] {
-		if id != except && strings.EqualFold(s.byID[id].Title, title) {
-			return true
+		if id != except {
+			titles = append(titles, s.byID[id].Title)
 		}
 	}
-	return false
+	return sameTitleIn(titles, title)
+}
+
+// sameTitleIn reports whether titles holds title ignoring case
+// (strings.EqualFold): the one sibling-uniqueness rule, for every write and
+// for the renames of a delete.
+func sameTitleIn(titles []string, title string) bool {
+	return slices.ContainsFunc(titles, func(t string) bool { return strings.EqualFold(t, title) })
 }
 
 // titlesMovingUp renames the children of id that are moving up to parent
@@ -591,33 +599,32 @@ func (s *snapshot) titleTaken(parent int64, title string, except int64) bool {
 // "<title> (2)", "(3)"…, the first free among parent's children and every
 // moving child's title, the title cut to keep MaxTitleRunes.
 func (s *snapshot) titlesMovingUp(id, parent int64) []Renamed {
-	taken := map[string]bool{}
-	staying := map[string]bool{}
+	var staying, taken []string
 	for _, sib := range s.children[parent] {
 		if sib != id {
-			key := strings.ToLower(s.byID[sib].Title)
-			staying[key], taken[key] = true, true
+			staying = append(staying, s.byID[sib].Title)
 		}
 	}
+	taken = slices.Clone(staying)
 	for _, kid := range s.children[id] {
-		taken[strings.ToLower(s.byID[kid].Title)] = true
+		taken = append(taken, s.byID[kid].Title)
 	}
 	renamed := []Renamed{}
 	for _, kid := range s.children[id] {
 		title := s.byID[kid].Title
-		if !staying[strings.ToLower(title)] {
+		if !sameTitleIn(staying, title) {
 			continue
 		}
 		next := numberedTitle(title, taken)
-		taken[strings.ToLower(next)] = true
+		taken = append(taken, next)
 		renamed = append(renamed, Renamed{ID: kid, From: title, To: next})
 	}
 	return renamed
 }
 
 // numberedTitle is title + " (n)" for the lowest n ≥ 2 not in taken
-// (lower-cased keys), the title cut so the result fits MaxTitleRunes.
-func numberedTitle(title string, taken map[string]bool) string {
+// (sameTitleIn), the title cut so the result fits MaxTitleRunes.
+func numberedTitle(title string, taken []string) string {
 	for n := 2; ; n++ {
 		suffix := " (" + strconv.Itoa(n) + ")"
 		base := []rune(title)
@@ -625,7 +632,7 @@ func numberedTitle(title string, taken map[string]bool) string {
 			base = base[:keep]
 		}
 		next := strings.TrimRightFunc(string(base), unicode.IsSpace) + suffix
-		if !taken[strings.ToLower(next)] {
+		if !sameTitleIn(taken, next) {
 			return next
 		}
 	}

@@ -230,6 +230,29 @@ func TestDelete_TitleClashChainsNumbers(t *testing.T) {
 	assert.Equal(t, []string{"Needs approval", "Notes", "Notes (2)", "notes (4)", "NOTES (3)"}, f.childTitles(f.root))
 }
 
+// The renames use the same case rule as every other write (EqualFold), so
+// Σ, σ and ς are one title.
+func TestDelete_TitleClashFoldsLikeTheWrites(t *testing.T) {
+	f := newFixture(t)
+	f.create("Σ", 0)
+	f.create("ς (2)", 0)
+	release := f.create("Release", 0)
+	upper := f.create("Σ", release.ID)
+	other := f.create("Other", 0)
+	final := f.create("ς", other.ID)
+
+	_, moved, err := f.s.Delete(f.ctx, release.ID, f.rev())
+	require.NoError(t, err)
+	assert.Equal(t, []Renamed{{ID: upper.ID, From: "Σ", To: "Σ (3)"}}, moved.Renamed,
+		"Σ (2) would clash with ς (2)")
+
+	_, moved, err = f.s.Delete(f.ctx, other.ID, f.rev())
+	require.NoError(t, err)
+	assert.Equal(t, []Renamed{{ID: final.ID, From: "ς", To: "ς (4)"}}, moved.Renamed,
+		"ς clashes with the staying Σ")
+	assert.Equal(t, []string{"Needs approval", "Σ", "ς (2)", "Σ (3)", "ς (4)"}, f.childTitles(f.root))
+}
+
 func TestDelete_TitleClashRenameKeepsTheCap(t *testing.T) {
 	f := newFixture(t)
 	long := strings.Repeat("a", MaxTitleRunes-1) + "я"
