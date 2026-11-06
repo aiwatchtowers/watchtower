@@ -21,6 +21,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 	"watchtower/internal/streamline"
@@ -28,13 +29,21 @@ import (
 
 // Usage holds token metrics from an AI call.
 type Usage struct {
-	InputTokens    int
-	OutputTokens   int
-	TotalAPITokens int
-	// CostUSD is the CLI's total_cost_usd when it reports one (QuerySync);
-	// 0 = not reported.
-	CostUSD float64
+	llmusage.Tokens
 }
+
+// InputTokens is the fresh (uncached) input.
+func (u Usage) InputTokens() int { return int(u.Input) }
+
+// OutputTokens is the output tokens.
+func (u Usage) OutputTokens() int { return int(u.Output) }
+
+// TotalAPITokens is every input token, cache reads and writes included.
+func (u Usage) TotalAPITokens() int { return int(u.AllInput()) }
+
+// CostUSD is the provider's reported cost (claude's total_cost_usd); 0 = not
+// reported.
+func (u Usage) CostUSD() float64 { return u.ReportedCost() }
 
 // cliUsage is the nested usage object in the Claude CLI JSON response.
 type cliUsage struct {
@@ -47,6 +56,12 @@ type cliUsage struct {
 		FiveMin int `json:"ephemeral_5m_input_tokens"`
 		OneHour int `json:"ephemeral_1h_input_tokens"`
 	} `json:"cache_creation"`
+}
+
+// tokens is the envelope's usage as a block, the cache writes split by TTL.
+func (u cliUsage) tokens() llmusage.Tokens {
+	return llmusage.ClaudeTokens(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens,
+		u.CacheCreation.FiveMin, u.CacheCreation.OneHour, u.OutputTokens)
 }
 
 // resultUsage is the usage a result envelope or result stream event
@@ -1005,12 +1020,10 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result)))
 	}
 
-	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
-	usage := &Usage{
-		InputTokens:    resp.Usage.InputTokens,
-		OutputTokens:   resp.Usage.OutputTokens,
-		TotalAPITokens: totalAPI,
-		CostUSD:        resp.CostUSD,
+	usage := &Usage{Tokens: resp.Usage.tokens()}
+	if resp.CostUSD > 0 {
+		cost := resp.CostUSD
+		usage.ReportedCostUSD = &cost
 	}
 
 	return strings.TrimRight(resp.Result, "\n"), usage, nil
@@ -1172,10 +1185,7 @@ func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
 		}
 		return out
 	case "result":
-		u := e.Usage
-		return []StreamChunk{{Usage: &TurnUsage{Model: s.model,
-			InputTokens:  u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
-			OutputTokens: u.OutputTokens}}}
+		return []StreamChunk{{Usage: &TurnUsage{Model: s.model, Tokens: e.Usage.tokens()}}}
 	}
 	return nil
 }

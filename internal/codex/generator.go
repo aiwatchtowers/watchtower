@@ -154,15 +154,7 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	}
 	recordCodexCall(ctx, model, start, reported, ran, prompt, result, true)
 
-	// claude's shape: InputTokens without the cached part (freshInput).
-	digestUsage := &digest.Usage{
-		Model:          model,
-		InputTokens:    usage.freshInput(),
-		OutputTokens:   usage.OutputTokens,
-		TotalAPITokens: usage.InputTokens,
-	}
-
-	return result, digestUsage, nil
+	return result, &digest.Usage{Model: model, Tokens: usage.tokens()}, nil
 }
 
 // disabledFeatures are the codex feature flags every codex run Watchtower
@@ -414,8 +406,7 @@ func recordCodexCall(ctx context.Context, model string, start time.Time, u *Code
 	c := llmusage.Call{Provider: "codex", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok && ran}
 	switch {
 	case u != nil:
-		fresh := int64(u.freshInput())
-		c.Input, c.CacheRead, c.Output = fresh, int64(u.InputTokens)-fresh, int64(u.OutputTokens)
+		c.Tokens = u.tokens()
 	case ran:
 		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
 	}

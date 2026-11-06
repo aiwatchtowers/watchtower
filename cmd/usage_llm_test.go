@@ -57,8 +57,16 @@ func usageLLMJSON(t *testing.T, args ...string) usageLLMReport {
 func usageAt() string { return time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) }
 
 func usageCall(id, surface, purpose, process, model string, est float64) llmusage.Call {
-	c := llmusage.Call{CallID: id, At: usageAt(), Surface: surface, Purpose: purpose, Process: process,
-		Model: model, Input: 100, CacheRead: 1000, CacheWrite5m: 10, CacheWrite1h: 5, Output: 50, OK: true}
+	c := llmusage.Call{
+		CallID:  id,
+		At:      usageAt(),
+		Surface: surface,
+		Purpose: purpose,
+		Process: process,
+		Model:   model,
+		OK:      true,
+		Tokens:  llmusage.Tokens{Input: 100, CacheRead: 1000, CacheWrite5m: 10, CacheWrite1h: 5, Output: 50},
+	}
 	if est >= 0 {
 		c.EstCostUSD = &est
 	}
@@ -496,4 +504,30 @@ func TestUsageLLM_AutomationRowsCarryCacheAndChatsAreNeverUntagged(t *testing.T)
 	assert.Regexp(t, `Mine\s+1\s+2\s+2330\s+100\s`, text.String(), "the text row's tokens include the cache")
 	assert.Regexp(t, `Total \(no workbenches\).*\n\s+0 with estimated usage · 0 without a price · 2 untagged\n`,
 		text.String(), "the total's gaps are printed under it")
+}
+
+// N3 (ask #514): the CLI reads a spooled runtime-B call labelled "http" as
+// ollama, through llmusage.ProviderLabel, the one place a future provider
+// dimension of the report maps it; the spool file itself is not rewritten.
+func TestUsageLLM_SpoolHTTPReadsAsOllama(t *testing.T) {
+	ws := t.TempDir()
+	spool := llmusage.SpoolPath(ws)
+	old := usageCall("old-http", "watchtower", "automation.agent", "daemon", "local-model", 0)
+	old.Provider = "http"
+	cur := usageCall("cur", "watchtower", "automation.agent", "daemon", "haiku", 0)
+	cur.Provider = "claude"
+	writeUsageSpool(t, spool, old, cur)
+	before, err := os.ReadFile(spool)
+	require.NoError(t, err)
+
+	calls, err := readUsageSpool(spool)
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, c := range calls {
+		got[c.CallID] = c.Provider
+	}
+	assert.Equal(t, map[string]string{"old-http": "ollama", "cur": "claude"}, got)
+	after, err := os.ReadFile(spool)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "history is not rewritten")
 }

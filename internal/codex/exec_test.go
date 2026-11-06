@@ -59,7 +59,7 @@ func TestQuerySync_ParsesJSONLOutput(t *testing.T) {
 	if out != "Hello, world!" {
 		t.Errorf("output = %q", out)
 	}
-	if usage == nil || usage.InputTokens != 42 || usage.OutputTokens != 17 {
+	if usage == nil || usage.InputTokens() != 42 || usage.OutputTokens() != 17 {
 		t.Errorf("usage = %+v", usage)
 	}
 }
@@ -211,8 +211,8 @@ func TestGenerate_ParsesJSONL(t *testing.T) {
 	if usage == nil || usage.Model != "gpt-5.4" {
 		t.Errorf("usage = %+v", usage)
 	}
-	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
-		t.Errorf("usage tokens = %d/%d", usage.InputTokens, usage.OutputTokens)
+	if usage.InputTokens() != 10 || usage.OutputTokens() != 5 {
+		t.Errorf("usage tokens = %d/%d", usage.InputTokens(), usage.OutputTokens())
 	}
 }
 

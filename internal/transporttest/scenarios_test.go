@@ -512,7 +512,7 @@ func assertUsageCache(c *Cell) error {
 	all := want["fresh"] + want["read"] + want["write"]
 	switch c.Level {
 	case LevelBatch:
-		if c.O.Usage == nil || int64(c.O.Usage.TotalAPITokens) != all {
+		if c.O.Usage == nil || int64(c.O.Usage.TotalAPITokens()) != all {
 			return fmt.Errorf("batch usage %+v, want %d API tokens", c.O.Usage, all)
 		}
 	default:

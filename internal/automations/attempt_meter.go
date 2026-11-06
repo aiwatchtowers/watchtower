@@ -96,7 +96,7 @@ func ModelAttemptUsage(a providerrouting.Attempt, o providerrouting.Outcome) Mod
 		// children that never started. Only a leaf that reported nothing at
 		// all, cache included, and is estimated gets input and partial-output
 		// estimation here.
-		reported := c.Input + c.CacheRead + c.CacheWrite5m + c.CacheWrite1h + c.Output
+		reported := c.AllInput() + c.Output
 		if reported == 0 && c.Estimated {
 			estimate := modelUsage(nil, a.InputBytes, len(o.Result.Text))
 			in, c.Output, c.Estimated = estimate.InputTokens, estimate.OutputTokens, true

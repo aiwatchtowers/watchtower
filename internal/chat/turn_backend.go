@@ -138,8 +138,7 @@ func ChunkEvents(turnID string, c ai.StreamChunk) []Event {
 		}
 		return []Event{{Type: EventToolEnd, TurnID: turnID, ID: c.Tool.ID, OK: &ok, Summary: summary, Sources: sources}}
 	case c.Usage != nil:
-		return []Event{{Type: EventUsage, TurnID: turnID, Model: c.Usage.Model,
-			TokensIn: c.Usage.InputTokens, TokensOut: c.Usage.OutputTokens}}
+		return []Event{usageEvent(turnID, c.Usage.Model, c.Usage.Tokens)}
 	case c.Text != "":
 		return []Event{{Type: EventTextDelta, TurnID: turnID, Text: c.Text}}
 	}

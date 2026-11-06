@@ -421,12 +421,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 	recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, result, true)
 
-	// claude's shape: InputTokens without the cached part (freshInput).
-	usage = &ai.Usage{
-		InputTokens:    codexUsage.freshInput(),
-		OutputTokens:   codexUsage.OutputTokens,
-		TotalAPITokens: codexUsage.InputTokens,
-	}
+	usage = &ai.Usage{Tokens: codexUsage.tokens()}
 
 	return result, usage, nil
 }

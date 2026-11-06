@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,7 +110,7 @@ type fastGenerator struct {
 
 func (g *fastGenerator) Generate(_ context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	g.systemPrompt, g.userMessage, g.sessionID = systemPrompt, userMessage, sessionID
-	return "result", &Usage{OutputTokens: 7, Model: "test-model"}, "session-123", nil
+	return "result", &Usage{Model: "test-model", Tokens: llmusage.Tokens{Output: 7}}, "session-123", nil
 }
 
 // TestWithCallTimeout_BlockingGeneratorTimesOut pins H8: a hung claude/codex
@@ -204,7 +205,7 @@ func TestWithCallTimeout_FastPathPassesThroughUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "result", result)
 	require.NotNil(t, usage)
-	assert.Equal(t, 7, usage.OutputTokens)
+	assert.Equal(t, 7, usage.OutputTokens())
 	assert.Equal(t, "test-model", usage.Model)
 	assert.Equal(t, "session-123", sessionID)
 

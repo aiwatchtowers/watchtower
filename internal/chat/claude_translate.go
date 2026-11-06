@@ -256,8 +256,8 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 		}
 		f.events, f.results = t.toolResults(m)
 	case "result":
-		f.events = t.result(l)
 		c := t.usageCall(l)
+		f.events = t.result(l, c.Tokens)
 		call = &c
 	case "system":
 		if l.Subtype == "init" {
@@ -439,15 +439,16 @@ func (t *ClaudeTranslator) toolResults(m *claudeMessage) ([]Event, []toolResult)
 	return out, results
 }
 
-func (t *ClaudeTranslator) result(l claudeLine) []Event {
+// result ends the turn: its usage event (the split from tokens, the ledger
+// call's numbers, when the line carries usage), then turn_done or error.
+func (t *ClaudeTranslator) result(l claudeLine, tokens llmusage.Tokens) []Event {
 	turnID := t.turnID()
 	interrupted := t.interrupted
 	t.interrupted = false
 	t.textTurn = "" // the turn is over: its successor starts without a break
 	usage := Event{Type: EventUsage, TurnID: turnID, Model: t.model}
 	if l.Usage != nil {
-		usage.TokensIn = l.Usage.InputTokens + l.Usage.CacheRead + l.Usage.CacheCreation
-		usage.TokensOut = l.Usage.OutputTokens
+		usage = usageEvent(turnID, t.model, tokens)
 	}
 	switch {
 	case l.Subtype == "success" && !l.IsError:

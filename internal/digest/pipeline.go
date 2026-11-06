@@ -20,20 +20,32 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/textutil"
 )
 
-// Usage holds token metrics from an AI generation call.
+// Usage holds token metrics from an AI generation call: the leaf's usage
+// block and the model it ran.
 type Usage struct {
-	InputTokens    int     // Our prompt tokens (estimated from prompt size)
-	OutputTokens   int     // AI response tokens
-	CostUSD        float64 // Deprecated: always 0. Kept for struct compatibility.
-	TotalAPITokens int     // Total tokens API processed (input + cache_read + cache_creation)
-	Model          string  // Actual model used for this call
+	llmusage.Tokens
+	Model string // Actual model used for this call
 }
+
+// InputTokens is the fresh (uncached) input.
+func (u Usage) InputTokens() int { return int(u.Input) }
+
+// OutputTokens is the response tokens.
+func (u Usage) OutputTokens() int { return int(u.Output) }
+
+// TotalAPITokens is every input token the API processed: fresh input plus
+// cache reads and writes.
+func (u Usage) TotalAPITokens() int { return int(u.AllInput()) }
+
+// CostUSD is the provider's reported cost, 0 when it reported none.
+func (u Usage) CostUSD() float64 { return u.ReportedCost() }
 
 // Generator generates text responses from a system prompt and user message.
 // The default implementation calls Claude CLI; tests can substitute a mock.
@@ -264,9 +276,9 @@ func (p *Pipeline) accumulateUsage(usage *Usage) {
 	if usage == nil {
 		return
 	}
-	p.totalInputTokens.Add(int64(usage.InputTokens))
-	p.totalOutputTokens.Add(int64(usage.OutputTokens))
-	p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+	p.totalInputTokens.Add(int64(usage.InputTokens()))
+	p.totalOutputTokens.Add(int64(usage.OutputTokens()))
+	p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
 }
 
 // New creates a new digest pipeline.
@@ -1098,14 +1110,20 @@ func (p *Pipeline) planChannelBatches(entries []batchEntry) [][]batchEntry {
 // batchAggregator carries the per-window mutable accounting state shared
 // between worker goroutines in dispatchChannelBatches.
 type batchAggregator struct {
-	completed   atomic.Int32
-	generated   atomic.Int32
-	errCount    atomic.Int32
-	totalInput  atomic.Int64
-	totalOutput atomic.Int64
-	totalAPI    atomic.Int64
-	errorsMu    sync.Mutex
-	errors      []error
+	completed atomic.Int32
+	generated atomic.Int32
+	errCount  atomic.Int32
+	usageMu   sync.Mutex
+	usage     llmusage.Tokens
+	errorsMu  sync.Mutex
+	errors    []error
+}
+
+// addUsage adds one batch's usage to the window's total.
+func (a *batchAggregator) addUsage(u *Usage) {
+	a.usageMu.Lock()
+	defer a.usageMu.Unlock()
+	a.usage.Add(u.Tokens)
 }
 
 func (a *batchAggregator) recordError(err error) {
@@ -1142,12 +1160,9 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 	}
 	wg.Wait()
 
-	totalUsage := &Usage{
-		InputTokens:    int(agg.totalInput.Load()),
-		OutputTokens:   int(agg.totalOutput.Load()),
-		CostUSD:        0,
-		TotalAPITokens: int(agg.totalAPI.Load()),
-	}
+	agg.usageMu.Lock()
+	totalUsage := &Usage{Tokens: agg.usage}
+	agg.usageMu.Unlock()
 
 	gen := int(agg.generated.Load())
 	errs := int(agg.errCount.Load())
@@ -1224,11 +1239,9 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	p.LastStepPeriodTo = time.Unix(int64(lastMsgTS), 0)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 	if usage != nil {
-		p.LastStepInputTokens = usage.InputTokens
-		p.LastStepOutputTokens = usage.OutputTokens
-		agg.totalInput.Add(int64(usage.InputTokens))
-		agg.totalOutput.Add(int64(usage.OutputTokens))
-		agg.totalAPI.Add(int64(usage.TotalAPITokens))
+		p.LastStepInputTokens = usage.InputTokens()
+		p.LastStepOutputTokens = usage.OutputTokens()
+		agg.addUsage(usage)
 		p.accumulateUsage(usage)
 	} else {
 		p.LastStepInputTokens = 0
@@ -1241,7 +1254,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	p.lastStepMu.Unlock()
 	if usage != nil {
 		p.logger.Printf("digest: generated for channel %s (%d messages, %d+%d tokens)",
-			e.channelID, len(e.msgs), usage.InputTokens, usage.OutputTokens)
+			e.channelID, len(e.msgs), usage.InputTokens(), usage.OutputTokens())
 	} else {
 		p.logger.Printf("digest: generated for channel %s (%d messages)", e.channelID, len(e.msgs))
 	}
@@ -1297,9 +1310,7 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	}
 
 	if usage != nil {
-		agg.totalInput.Add(int64(usage.InputTokens))
-		agg.totalOutput.Add(int64(usage.OutputTokens))
-		agg.totalAPI.Add(int64(usage.TotalAPITokens))
+		agg.addUsage(usage)
 		p.accumulateUsage(usage)
 	}
 
@@ -1311,8 +1322,8 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	p.LastStepPeriodTo = time.Unix(int64(nowUnix), 0)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 	if usage != nil {
-		p.LastStepInputTokens = usage.InputTokens
-		p.LastStepOutputTokens = usage.OutputTokens
+		p.LastStepInputTokens = usage.InputTokens()
+		p.LastStepOutputTokens = usage.OutputTokens()
 	}
 	if p.OnProgress != nil {
 		p.OnProgress(int(agg.completed.Load()), total, fmt.Sprintf("Batch done (%d channels, %d saved)", len(batch), saved))
@@ -1875,8 +1886,8 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	}
 	if usage != nil {
 		d.Model = usage.Model
-		d.InputTokens = usage.InputTokens
-		d.OutputTokens = usage.OutputTokens
+		d.InputTokens = usage.InputTokens()
+		d.OutputTokens = usage.OutputTokens()
 		d.CostUSD = 0
 	}
 

@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/meeting"
 )
 
@@ -42,7 +43,7 @@ func (m *transcriptMockGen) Generate(_ context.Context, _, userMessage, _ string
 		out = m.responses[0]
 		m.responses = m.responses[1:]
 	}
-	return out, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 20}, "s1", nil
+	return out, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5, CacheRead: 10}}, "s1", nil
 }
 
 const transcriptMockRecapJSON = `{"summary":"s","key_decisions":["d"],"action_items":[],"open_questions":[]}`

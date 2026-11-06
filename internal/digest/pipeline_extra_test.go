@@ -2,6 +2,7 @@ package digest
 
 import (
 	"testing"
+	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -48,8 +49,8 @@ func TestPipeline_AccumulatedStats_AfterUpdate(t *testing.T) {
 
 func TestPipeline_AccumulatedUsage_AfterAccumulate(t *testing.T) {
 	p := &Pipeline{}
-	p.accumulateUsage(&Usage{InputTokens: 10, OutputTokens: 20, TotalAPITokens: 30})
-	p.accumulateUsage(&Usage{InputTokens: 5, OutputTokens: 5, TotalAPITokens: 5})
+	p.accumulateUsage(&Usage{Tokens: llmusage.Tokens{Input: 10, Output: 20, CacheRead: 20}})
+	p.accumulateUsage(&Usage{Tokens: llmusage.Tokens{Input: 5, Output: 5}})
 	in, out, cost, total := p.AccumulatedUsage()
 	assert.Equal(t, 15, in)
 	assert.Equal(t, 25, out)

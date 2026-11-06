@@ -263,8 +263,7 @@ func (s *queryStream) finish() {
 		}
 	}
 	if s.usage != nil {
-		_ = s.send(ai.StreamChunk{Usage: &ai.TurnUsage{Model: s.model,
-			InputTokens: s.usage.InputTokens, OutputTokens: s.usage.OutputTokens}})
+		_ = s.send(ai.StreamChunk{Usage: &ai.TurnUsage{Model: s.model, Tokens: s.usage.tokens()}})
 	}
 }
 

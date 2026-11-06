@@ -196,9 +196,9 @@ func (a *BoardAnalyzer) addUsage(usage *ai.Usage) {
 	if usage == nil {
 		return
 	}
-	a.totalInputTokens += usage.InputTokens
-	a.totalOutputTokens += usage.OutputTokens
-	a.totalAPITokens += usage.TotalAPITokens
+	a.totalInputTokens += usage.InputTokens()
+	a.totalOutputTokens += usage.OutputTokens()
+	a.totalAPITokens += usage.TotalAPITokens()
 }
 
 // SetLanguage sets the output language for board analysis.

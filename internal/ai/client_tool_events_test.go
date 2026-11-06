@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -67,7 +68,8 @@ printf '{"type":"result","subtype":"success","result":"Here is the answer.","ses
 	assert.Equal(t, "t3", tools[2].ID)
 	assert.Equal(t, ToolEvent{ID: "t3", Name: "mcp__watchtower__get_person", Done: true, OK: false, Result: "no such person"}, tools[3])
 	require.NotNil(t, usage, "the result's usage closes the stream")
-	assert.Equal(t, TurnUsage{Model: "claude-test", InputTokens: 17, OutputTokens: 7}, *usage)
+	assert.Equal(t, TurnUsage{Model: "claude-test", Tokens: llmusage.Tokens{Input: 10, CacheRead: 5, CacheWrite5m: 2, Output: 7}}, *usage)
+	assert.Equal(t, 17, usage.InputTokens(), "tokens_in stays all input (CHAT-01)")
 	assert.NotNil(t, chunks[len(chunks)-1].Usage, "usage is the last chunk")
 }
 

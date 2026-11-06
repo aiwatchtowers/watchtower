@@ -114,8 +114,8 @@ func TestCodexLive_ChatToolStepAndUsage(t *testing.T) {
 	assert.Contains(t, text.String(), toolNonce)
 	require.Len(t, usage, 1)
 	assert.Equal(t, model, usage[0].Model)
-	assert.Positive(t, usage[0].InputTokens)
-	assert.Positive(t, usage[0].OutputTokens)
+	assert.Positive(t, usage[0].InputTokens())
+	assert.Positive(t, usage[0].OutputTokens())
 }
 
 // TestCodexLive_ReadFolder: a read-folder run (code questions, the spec

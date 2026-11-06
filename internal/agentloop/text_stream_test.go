@@ -182,7 +182,7 @@ func TestAgentloopQuery_StreamsDeltas(t *testing.T) {
 	assert.JSONEq(t, `{"status":"open"}`, string(start.Args))
 	last := chunks[len(chunks)-1]
 	require.NotNil(t, last.Usage)
-	assert.Equal(t, ai.TurnUsage{Model: "m", InputTokens: 250, OutputTokens: 30}, *last.Usage)
+	assert.Equal(t, ai.TurnUsage{Model: "m", Tokens: llmusage.Tokens{Input: 250, Output: 30}}, *last.Usage)
 
 	reqs := srv.requests()
 	require.Len(t, reqs, 2)

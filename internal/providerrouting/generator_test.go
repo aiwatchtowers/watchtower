@@ -364,7 +364,7 @@ func TestContextGeneratorForwardsExactContextTextImageAndHooks(t *testing.T) {
 		if system != "system" || user != "user" {
 			t.Fatal(system, user)
 		}
-		return "reply", &digest.Usage{InputTokens: 1}, session, nil
+		return "reply", &digest.Usage{Tokens: llmusage.Tokens{Input: 1}}, session, nil
 	}}}
 	gen := NewContextGenerator(func(got context.Context) digest.Generator {
 		if got != ctx {
@@ -373,7 +373,7 @@ func TestContextGeneratorForwardsExactContextTextImageAndHooks(t *testing.T) {
 		return leaf
 	})
 	text, usage, session, err := gen.Generate(ctx, "system", "user", "session")
-	if err != nil || text != "reply" || usage.InputTokens != 1 || session != "session" {
+	if err != nil || text != "reply" || usage.InputTokens() != 1 || session != "session" {
 		t.Fatal(text, usage, session, err)
 	}
 	image, ok := digest.ImageCapable(gen, ctx)
@@ -381,7 +381,7 @@ func TestContextGeneratorForwardsExactContextTextImageAndHooks(t *testing.T) {
 		t.Fatal("lost image capability")
 	}
 	text, usage, err = image.GenerateWithImage(ctx, "system", "user", "image.png", "image/png")
-	if err != nil || text != "reply" || usage.InputTokens != 1 || calls != 2 {
+	if err != nil || text != "reply" || usage.InputTokens() != 1 || calls != 2 {
 		t.Fatal(text, usage, calls, err)
 	}
 }

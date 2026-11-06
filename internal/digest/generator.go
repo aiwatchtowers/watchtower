@@ -179,6 +179,12 @@ type cliUsage struct {
 	} `json:"cache_creation"`
 }
 
+// tokens is the envelope's usage as a block, the cache writes split by TTL.
+func (u cliUsage) tokens() llmusage.Tokens {
+	return llmusage.ClaudeTokens(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens,
+		u.CacheCreation.FiveMin, u.CacheCreation.OneHour, u.OutputTokens)
+}
+
 // cliResponse is the JSON structure returned by `claude --output-format json`.
 type cliResponse struct {
 	limit      *providers.ClaudeRateLimitInfo
@@ -307,15 +313,7 @@ func generateDir() string {
 
 // cliUsageOf turns a result envelope's usage into a Usage for model.
 func cliUsageOf(model string, resp *cliResponse) *Usage {
-	// Total API tokens = everything the API processed (including cache reads/writes).
-	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
-	return &Usage{
-		Model:          model,
-		InputTokens:    resp.Usage.InputTokens,
-		OutputTokens:   resp.Usage.OutputTokens,
-		CostUSD:        0,
-		TotalAPITokens: totalAPI,
-	}
+	return &Usage{Model: model, Tokens: resp.Usage.tokens()}
 }
 
 // runClaude runs one claude child the way every generator call does — args

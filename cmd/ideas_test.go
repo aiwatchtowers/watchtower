@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/ideas"
+	"watchtower/internal/llmusage"
 )
 
 // testCmdLogger is a discard logger for exercising runIdeasMineIncremental's
@@ -50,7 +51,7 @@ func (g *fakeCmdGen) Generate(_ context.Context, _, user, _ string) (string, *di
 	if err != nil {
 		return "", nil, "", err
 	}
-	return out, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 15}, "sess", nil
+	return out, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5, CacheRead: 5}}, "sess", nil
 }
 
 // setupIdeasTestEnv creates a temp HOME with a config file and an empty
@@ -739,10 +740,10 @@ type ideasRecGen struct {
 func (g *ideasRecGen) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls = append(g.calls, system+"\n"+user)
 	if strings.Contains(user, "=== REGISTRY ===") {
-		return `{"ops":[]}`, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "", nil
+		return `{"ops":[]}`, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "", nil
 	}
 	return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-0"}],"decisions":[]}]}`, g.acctID),
-		&digest.Usage{InputTokens: 10, OutputTokens: 5}, "", nil
+		&digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "", nil
 }
 
 // consolidations are the recorded consolidation calls.

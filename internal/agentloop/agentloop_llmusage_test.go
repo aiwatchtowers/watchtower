@@ -59,7 +59,7 @@ func TestAgentloopRecordsEachModelCall(t *testing.T) {
 
 	got := calls.all()
 	require.Len(t, got, 2, "one row per model call")
-	require.Equal(t, "http", got[0].Provider)
+	require.Equal(t, "ollama", got[0].Provider, "runtime B over Ollama records ollama (N3)")
 	require.Equal(t, "local-model", got[0].Model)
 	require.Equal(t, int64(50), got[0].Input)
 	require.Equal(t, int64(5), got[0].Output)
@@ -87,4 +87,19 @@ func TestAgentloopRecordsFailedModelCall(t *testing.T) {
 	require.Len(t, got, 1)
 	require.False(t, got[0].OK)
 	require.True(t, got[0].Estimated)
+}
+
+// N3: runtime B's only base URL is ai.ollama_url, so its calls are Ollama
+// calls in the ledger; "http" is retired as a label.
+func TestAgentloop_RecordsOllamaLabel(t *testing.T) {
+	calls := captureCalls(t)
+	srv := pathCheckingServer(t, finalResp("done"))
+	c := NewClient("local-model", srv.URL, nil, tools.Binding{Surface: "main"})
+	c.reg = &fakeReg{tools: map[string]*tools.Tool{}, readData: []any{}}
+
+	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
+	require.NoError(t, err)
+	got := calls.all()
+	require.Len(t, got, 1)
+	require.Equal(t, "ollama", got[0].Provider)
 }

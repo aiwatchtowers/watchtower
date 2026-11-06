@@ -273,7 +273,8 @@ func openUsageDB(path string) (*db.DB, error) {
 
 // readUsageSpool returns the spool's calls (the .importing file and the live
 // one, which overlap while an import runs) once per call_id, dropping the
-// surfaces llm_calls would refuse and the lines without a parsable time.
+// surfaces llm_calls would refuse and the lines without a parsable time; a
+// provider reads through llmusage.ProviderLabel.
 func readUsageSpool(path string) ([]llmusage.Call, error) {
 	calls, err := llmusage.ReadSpool(path)
 	if err != nil {
@@ -294,6 +295,7 @@ func readUsageSpool(path string) ([]llmusage.Call, error) {
 			continue
 		}
 		c.At = at.UTC().Format(time.RFC3339)
+		c.Provider = llmusage.ProviderLabel(c.Provider) // N3: runtime B's old "http"
 		out = append(out, c)
 	}
 	return out, nil

@@ -517,7 +517,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - Modify:
   - `internal/llmusage/llmusage.go` (`Tokens`, embedded in `Call`), `internal/ai/provider.go` (`TurnUsage` embeds `Tokens`; `InputTokens` becomes derived), `internal/ai/client.go` (`ai.Usage`), `internal/digest/pipeline.go` (`digest.Usage`);
   - the leaves: `internal/codex`, `internal/ollama`, `internal/agentloop` (records `ollama`), `internal/chat/claude_translate.go`;
-  - `internal/chat/turn_backend.go` and `events.go` (the v2 `usage` keys `fresh_in`/`cache_read`/`cache_write`/`cost_usd`/`estimated`), `internal/automations/attempt_meter.go`, `cmd/usage_llm.go` (a stored `http` is reported as `ollama`);
+  - `internal/chat/turn_backend.go` and `events.go` (the v2 `usage` keys `fresh_in`/`cache_read`/`cache_write`/`cost_usd`/`estimated`), `internal/automations/attempt_meter.go`, `cmd/usage_llm.go` (a spooled `http` reads as `ollama` through `llmusage.ProviderLabel`);
   - Swift: `WatchtowerCore/Services/Chat/ChatEvent.swift` (tolerant decode);
   - docs: `docs/features/llm-usage-ledger.md`, `docs/inventory/plan-usage.md`.
 
@@ -532,10 +532,10 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - `TestTurnUsage_InputTokensStaysAllInput` (CHAT-01 rows keep their meaning);
   - `TestUsageEvent_V2CarriesSplitKeys` (pinned keys);
   - `TestAgentloop_RecordsOllamaLabel`;
-  - `TestUsageLLM_HTTPRowReportedAsOllama` (a stored `http` row plus a spool line with `http` both show under `ollama`);
+  - `TestProviderLabel_HTTPReadsAsOllama` (`internal/llmusage`) and `TestUsageLLM_SpoolHTTPReadsAsOllama` (`cmd`: a spool line with `http` reads as `ollama`; the report has no provider column today, so the mapping lives in the reader for any future provider dimension, with no new JSON keys);
   - `TestAuto08_DebitIsFreshPlusOutputOnEveryProvider` (one table over claude, codex and runtime B);
   - Swift `ChatEventTests.testUsageWithSplitKeysDecodes` and `testUsageWithoutSplitKeysDecodes`.
-- [ ] **Step 2:** `go test ./internal/llmusage ./internal/ai ./internal/chat ./internal/agentloop ./internal/automations -run 'Tokens|TurnUsage|UsageEvent|OllamaLabel|TestAuto08_Debit'`, `go test ./cmd -run UsageLLM_HTTP` and `make test-swift FILTER=ChatEventTests` FAIL.
+- [ ] **Step 2:** `go test ./internal/llmusage ./internal/ai ./internal/chat ./internal/agentloop ./internal/automations -run 'Tokens|TurnUsage|UsageEvent|OllamaLabel|TestAuto08_Debit'`, `go test ./cmd -run UsageLLM_SpoolHTTP` and `make test-swift FILTER=ChatEventTests` FAIL.
 - [ ] **Step 3:** Implement. The old field names stay as derived accessors until every reader has moved, inside this task.
 - [ ] **Step 4:** PASS. `go test ./internal/llmusage -run 'TestLLMUSAGE01'` stays green. `make lint-diff`.
 - [ ] **Step 5:** Commit `refactor(llmusage): one token block across usage types; runtime B records ollama (N3)`.
