@@ -95,10 +95,11 @@ func ApprovalHook(d *db.DB, wake func(), logf func(format string, args ...any)) 
 
 // SweepApprovals compares the open approvals with the needs-approval
 // built-in's artifacts and fires once (SweepRef) when they disagree: an open
-// approval without an artifact written at or after its last change (a
-// reminder that came due among them) or an artifact of a closed or deleted
-// approval. It only reads; a built-in that is not indexed or not runnable is
-// not compared. fired reports whether it fired.
+// approval without an artifact written after its last change (a reminder
+// that came due among them) or an artifact of a closed or deleted approval.
+// It only reads; a built-in that is not indexed or not runnable, or that has
+// a run queued, running or waiting (that run redraws), is not compared.
+// fired reports whether it fired.
 func SweepApprovals(ctx context.Context, d *db.DB, now time.Time, wake func()) (fired bool, err error) {
 	a, err := d.GetBuiltinAutomation(NeedsApprovalID)
 	if errors.Is(err, db.ErrAutomationNotFound) {
@@ -109,6 +110,9 @@ func SweepApprovals(ctx context.Context, d *db.DB, now time.Time, wake func()) (
 	}
 	if !a.Runnable() || a.DisabledReason != "" {
 		return false, nil
+	}
+	if busy, err := d.HasUnfinishedAutomationRun(a.ID); err != nil || busy {
+		return false, err
 	}
 	drift, err := d.ApprovalDriftOf(ctx, a.ID, now, automations.MaxOutputsPerRun)
 	if err != nil || !drift.Any() {

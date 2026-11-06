@@ -331,3 +331,21 @@ func TestApprovalHook_RealApprovalQueuesARun(t *testing.T) {
 	require.Len(t, runs, 1, "the decision queues a run")
 	assert.Equal(t, []string{db.ActionRef(act)}, eventRefs(t, payloadOf(t, runs[0])))
 }
+
+// A run already queued, running or waiting redraws: the sweep leaves it.
+func TestSweepApprovals_SkipsWhileARunIsUnfinished(t *testing.T) {
+	d := db.OpenTestDB(t)
+	a := seedNeedsApproval(t, d, true)
+	_, err := d.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`})
+	require.NoError(t, err)
+	for _, status := range []string{db.RunQueued, db.RunRunning, db.RunWaiting} {
+		_, err := d.Exec(`DELETE FROM automation_runs`)
+		require.NoError(t, err)
+		_, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'event', ?)`, a, status)
+		require.NoError(t, err)
+		fired, err := SweepApprovals(context.Background(), d, time.Now(), nil)
+		require.NoError(t, err)
+		assert.False(t, fired, status)
+		assert.Len(t, approvalRuns(t, d, a), 1, status)
+	}
+}

@@ -95,6 +95,19 @@ const openActionClause = `(status = 'pending'
 // openReminderClause is REMIND-01's due set: pending and remind_at <= ?.
 const openReminderClause = `status = 'pending' AND remind_at <= ?`
 
+// HasUnfinishedAutomationRun reports whether automation id has a run queued,
+// running or waiting (dry runs aside) — the approval sweep leaves the
+// comparison to the run that is coming.
+func (db *DB) HasUnfinishedAutomationRun(id int64) (bool, error) {
+	var ok bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM automation_runs WHERE automation_id = ?
+		AND status IN ('queued','running','waiting') AND trigger != 'dry_run')`, id).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("reading the unfinished runs of automation %d: %w", id, err)
+	}
+	return ok, nil
+}
+
 // ApprovalDrift is what ApprovalDriftOf found: how many open approvals have
 // no artifact written at or after their last change (Missing), and how many
 // artifacts belong to an approval that is closed or gone (Closed).
