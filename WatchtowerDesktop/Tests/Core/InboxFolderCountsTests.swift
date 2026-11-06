@@ -44,7 +44,7 @@ final class InboxFolderCountsTests: XCTestCase {
         XCTAssertEqual(count(card(1, refs: refs), state), 1,
                        "a shown row that does not wait and a closed row are not counted")
         XCTAssertEqual(count(card(2, read: true, refs: refs), state), 1)
-        XCTAssertEqual(InboxFolderCounts.artifactCount(card(3, refs: [("track", 12)]), refState: state), 0,
+        XCTAssertEqual(count(card(3, refs: [("track", 12)]), state), 0,
                        "every row closed: 0 even unread")
     }
 
