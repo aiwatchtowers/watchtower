@@ -121,6 +121,51 @@ func (codexAdapter) Caps() Caps {
 
 func (codexAdapter) WireAgent() string { return "codex_cli" }
 
+// codexLoginCommand is the login shell's command for Codex: /bin/sh reads
+// the script from LaunchScriptEnv, so only /bin/sh ever parses values.
+const codexLoginCommand = `exec /bin/sh -c 'eval "$` + LaunchScriptEnv + `"'`
+
+// LaunchCommand runs codex as `workbench launch-args` resolved it
+// (s.Binary); with none there is no binary and the start exits 127 ("Codex
+// was not found"). The script is `<binary> <launch-args…> [resume '<id>']
+// [-- "$PROMPT"]`, every value single-quoted, with path_prepend ahead of
+// PATH; nothing but `--` and the prompt follows `resume <id>` (a `-c` after
+// the subcommand would replace every root `-c`). The prompt is read after
+// `--`, so one starting with "-" is no flag.
+func (codexAdapter) LaunchCommand(s Start) LaunchCommand {
+	var prompt string
+	if s.Prompt != nil && !s.Resume {
+		prompt = *s.Prompt
+	}
+	if s.Binary == nil {
+		return LaunchCommand{Command: "exit 127", Prompt: prompt}
+	}
+	words := []string{"exec", "env", "-u", FirstPromptEnv, "-u", LaunchScriptEnv, ShellQuote(s.Binary.Binary)}
+	for _, a := range s.Binary.Args {
+		words = append(words, ShellQuote(a))
+	}
+	if s.Resume {
+		words = append(words, "resume", ShellQuote(s.SessionID))
+	}
+	if s.Prompt != nil && !s.Resume {
+		words = append(words, "--", `"$`+FirstPromptEnv+`"`)
+	}
+	path := ""
+	if s.Binary.PathPrepend != "" {
+		path = "PATH=" + ShellQuote(s.Binary.PathPrepend) + `:"$PATH" `
+	}
+	return LaunchCommand{
+		Command: codexLoginCommand,
+		Env:     []string{LaunchScriptEnv + "=" + path + strings.Join(words, " ")},
+		Prompt:  prompt,
+		Runs:    true,
+	}
+}
+
+// StoresTranscriptPath: the rollout path Codex's SessionStart reported, so
+// its readers need not walk the sessions tree.
+func (codexAdapter) StoresTranscriptPath() bool { return true }
+
 // ComposerNewline: Ctrl+J (LF) inserts a line break; CR submits a bracketed
 // paste, multi-line too, as one prompt.
 func (codexAdapter) ComposerNewline() []byte { return []byte{0x0A} }

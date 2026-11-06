@@ -49,7 +49,7 @@ func codexRowIn(t *testing.T, database *db.DB, pid int64, sessionID string) int6
 
 func codexRow(t *testing.T, database *db.DB, row int64) *db.TerminalSession {
 	t.Helper()
-	s, err := database.GetTerminalSession(row)
+	s, err := sessionagent.LoadSession(database, row)
 	require.NoError(t, err)
 	return s
 }

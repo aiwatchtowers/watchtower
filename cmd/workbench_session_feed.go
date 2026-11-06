@@ -118,7 +118,7 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	sess, err := database.GetTerminalSession(id)
+	sess, err := sessionagent.LoadSession(database, id)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return fmt.Errorf("session %d not found", id)
 	}

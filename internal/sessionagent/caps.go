@@ -58,6 +58,11 @@ type Caps struct {
 	// tasks still in flight; otherwise the count is the subagent turns still
 	// open.
 	BackgroundTasks bool `json:"background_tasks"`
+	// AppSessionID: the app chooses the agent's session id when it starts a
+	// new session (Claude Code's --session-id), so the row holds one from
+	// its creation and a relaunch resumes it; otherwise the agent mints its
+	// own and its first SessionStart reports it.
+	AppSessionID bool `json:"app_session_id"`
 }
 
 // TakesLineWhileWorking reports whether a line may go into the session while

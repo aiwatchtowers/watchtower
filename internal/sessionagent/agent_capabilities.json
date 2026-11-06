@@ -15,7 +15,8 @@
       "subagent_feed": true,
       "analytics": true,
       "launch_hooks": false,
-      "background_tasks": true
+      "background_tasks": true,
+      "app_session_id": true
     },
     "codex": {
       "state_events": ["SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "Interrupt", "Stop"],
@@ -31,7 +32,8 @@
       "subagent_feed": true,
       "analytics": true,
       "launch_hooks": true,
-      "background_tasks": false
+      "background_tasks": false,
+      "app_session_id": false
     }
   }
 }

@@ -118,7 +118,7 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return sessionProbeResult{}, err
 	}
 	defer database.Close()
-	row, err := database.GetTerminalSession(sessionID)
+	row, err := sessionagent.LoadSession(database, sessionID)
 	if err != nil {
 		return sessionProbeResult{}, err
 	}
@@ -236,7 +236,7 @@ func pullCodexTurn(database *db.DB, puller sessionagent.Puller, row *db.Terminal
 	}
 	// recordAgentState does not say whether its guards let the write land:
 	// the row read back carries this failure's stamp only when it did.
-	after, err := database.GetTerminalSession(row.ID)
+	after, err := sessionagent.LoadSession(database, row.ID)
 	if err != nil {
 		return "", "", err
 	}

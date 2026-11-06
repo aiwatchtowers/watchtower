@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"watchtower/internal/agentkind"
@@ -122,12 +123,44 @@ func (claudeAdapter) Caps() Caps {
 		FailureSignal: SignalHook, InterruptSignal: SignalHook,
 		IdleSignal: true, PermissionWait: true, MidturnInput: true, PhoneInput: true, Elicitation: true,
 		RegistryProbe: true, SubagentFeed: true, Analytics: true, BackgroundTasks: true,
+		AppSessionID: true,
 	}
 }
 
 func (claudeAdapter) WireAgent() string { return "claude_code" }
 
 func (claudeAdapter) ComposerNewline() []byte { return nil }
+
+// LaunchCommand: `exec claude` with the app's id, `--resume` for a resume.
+// A first prompt travels in FirstPromptEnv: /bin/sh reads it whatever the
+// login shell, and `env -u` keeps it out of everything Claude Code runs.
+// claude is found on the login shell's PATH, so it always runs.
+func (claudeAdapter) LaunchCommand(s Start) LaunchCommand {
+	switch {
+	case s.Resume:
+		return LaunchCommand{Command: "exec claude --resume " + s.SessionID, Runs: true}
+	case s.Prompt == nil:
+		return LaunchCommand{Command: "exec claude --session-id " + s.SessionID, Runs: true}
+	}
+	return LaunchCommand{
+		Command: "exec /bin/sh -c 'exec env -u " + FirstPromptEnv + " claude --session-id " + s.SessionID +
+			` "$` + FirstPromptEnv + `"'`,
+		Prompt: positionalPrompt(*s.Prompt),
+		Runs:   true,
+	}
+}
+
+// StoresTranscriptPath: Claude readers find a transcript by session id.
+func (claudeAdapter) StoresTranscriptPath() bool { return false }
+
+// positionalPrompt gives a prompt starting with "-" a leading space, so
+// claude never reads it as a flag (its usage documents no `--`).
+func positionalPrompt(p string) string {
+	if strings.HasPrefix(p, "-") {
+		return " " + p
+	}
+	return p
+}
 
 // claudeTranscript is a Claude Code transcript (projects/*/<id>.jsonl).
 type claudeTranscript struct{ row Row }

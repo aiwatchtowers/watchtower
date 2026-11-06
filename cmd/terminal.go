@@ -115,7 +115,7 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	sess, err := database.GetTerminalSession(id)
+	sess, err := sessionagent.LoadSession(database, id)
 	if err != nil {
 		return err
 	}

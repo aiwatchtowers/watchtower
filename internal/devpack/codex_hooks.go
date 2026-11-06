@@ -133,13 +133,9 @@ func CodexMCPOverrides(bin string, workbenchID int64) []string {
 }
 
 // LaunchArgs is how the Desktop starts codex for a workbench terminal
-// session: Binary with Args, with PathPrepend put in front of PATH so a node
-// shim finds node next to it.
-type LaunchArgs struct {
-	Binary      string   `json:"binary"`
-	PathPrepend string   `json:"path_prepend"`
-	Args        []string `json:"args"`
-}
+// session (sessionagent.LaunchArgs, which the codex adapter's start command
+// reads).
+type LaunchArgs = sessionagent.LaunchArgs
 
 // CodexLaunchArgs resolves the codex binary and builds its launch flags for
 // workbench workbenchID, with bin the watchtower binary the MCP server and the

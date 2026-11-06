@@ -40,6 +40,8 @@ final class AgentSessionCapabilitiesTests: XCTestCase {
         XCTAssertFalse(codex.takesLineWhileWorking, "an MCP form opens with no hook state")
         XCTAssertFalse(codex.takesInterrupt)
         XCTAssertFalse(codex.idleSignal)
+        XCTAssertTrue(claude.appSessionID)
+        XCTAssertFalse(codex.appSessionID, "Codex mints its own session id")
         XCTAssertNil(AgentSessionCapabilities.of("shell"))
     }
 
@@ -50,7 +52,7 @@ final class AgentSessionCapabilitiesTests: XCTestCase {
         let known: Set<String> = [
             "state_events", "failure_signal", "interrupt_signal", "idle_signal", "permission_wait", "midturn_input",
             "phone_input", "elicitation", "registry_probe", "compressed_transcript", "subagent_feed", "analytics",
-            "launch_hooks", "background_tasks"
+            "launch_hooks", "background_tasks", "app_session_id"
         ]
         for (kind, row) in agents {
             XCTAssertEqual(Set(row.keys), known, kind)

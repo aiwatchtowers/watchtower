@@ -58,6 +58,13 @@ type Adapter interface {
 	// break instead of submitting, nil when it has none beyond the ones
 	// every agent knows (sessionhost.Profile.Newline).
 	ComposerNewline() []byte
+	// LaunchCommand is the login shell's command for one start of the
+	// agent (sessionstart.Launch; the Desktop's TerminalLaunch.make).
+	LaunchCommand(s Start) LaunchCommand
+	// StoresTranscriptPath reports that the row keeps the transcript path
+	// the agent's SessionStart reported (agent_transcript_path), which
+	// LoadSession reads.
+	StoresTranscriptPath() bool
 }
 
 // Row is what an adapter reads of a terminal session.

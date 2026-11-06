@@ -15,8 +15,8 @@ cmd/connections_import.go | runConnectionsImport | "codex" | 1 | permanent: the 
 cmd/generator.go | codexEnvSkips | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/generator.go | connectionServer | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/integrate_workbench.go | execCommandRunner | "claude" | 1 | permanent: resolves the claude binary for `claude mcp add` (install plumbing, no model call)
-cmd/workbench_brief_session.go | applySessionStart | agentkind.Claude | 1 | A5 follow-up: identity check, a hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
-cmd/workbench_hook_row.go | resolveCodexHookRow | agentkind.Codex | 1 | A5 follow-up: identity check, a hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
+cmd/workbench_brief_session.go | applySessionStart | agentkind.Claude | 1 | permanent: identity check, a Claude Code hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
+cmd/workbench_hook_row.go | resolveCodexHookRow | agentkind.Codex | 1 | permanent: identity check, a Codex hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.Label | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
@@ -30,7 +30,6 @@ internal/confluenceedit/xhtml.go | safeHref | "http" | 1 | permanent: URL scheme
 internal/db/chat_routing.go | (*DB).SetChatRouting | "claude" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
-internal/db/terminal_sessions.go | (*DB).GetTerminalSession | agentkind.Codex | 1 | A5 follow-up: schema-compat read of agent_transcript_path (00109); internal/db sits below internal/sessionagent, so it needs a caller-side decision
 internal/externalmcp/discover.go | discoveryTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/externalmcp/importsrc.go | claudeCandidate | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/hub/actions/handlers/session_start.go | (*Handlers).launch | "codex" | 1 | G7: phone session action decided by agent kind; becomes a capability (not_supported)
@@ -44,6 +43,3 @@ internal/providerrouting/router.go | configProvider | "codex" | 1 | permanent: v
 internal/providerrouting/router.go | configProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config decoder)
 internal/sessioncleanup/deps.go | protectedExe | "claude" | 1 | permanent: process names protected from cleanup (executable path convention)
 internal/sessioncleanup/deps.go | protectedExe | "codex" | 1 | permanent: process names protected from cleanup (executable path convention)
-internal/sessionstart/launch.go | Launch | agentkind.Claude | 5 | A5 follow-up: launch argv by agent kind (Go twin of TerminalLaunch.make); moves behind the session adapter with the Swift twin
-internal/sessionstart/launch.go | Launch | agentkind.Codex | 1 | A5 follow-up: launch argv by agent kind (Go twin of TerminalLaunch.make); moves behind the session adapter with the Swift twin
-internal/sessionstart/launch.go | Mode.validate | agentkind.Claude | 1 | A5 follow-up: launch argv by agent kind (Go twin of TerminalLaunch.make); moves behind the session adapter with the Swift twin

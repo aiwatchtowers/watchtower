@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/devpack"
+	"watchtower/internal/sessionagent"
 )
 
 // The environment names a launch sets (TerminalLaunch's twins).
@@ -25,13 +25,14 @@ const (
 	// AutomationRunEnv names the automation run that started the session
 	// (AGENT-07, Go RunEnvMarker).
 	AutomationRunEnv = "WATCHTOWER_AUTOMATION_RUN_ID"
-	// FirstPromptEnv carries a new session's first prompt; only /bin/sh
-	// reads it, and `env -u` drops it before the agent runs.
-	FirstPromptEnv = "WATCHTOWER_FIRST_PROMPT"
+	// FirstPromptEnv carries a new session's first prompt (the session
+	// adapter's sessionagent.FirstPromptEnv).
+	FirstPromptEnv = sessionagent.FirstPromptEnv
 	// SetupCommandEnv carries the owner's worktree setup command verbatim.
 	SetupCommandEnv = "WATCHTOWER_WORKTREE_SETUP"
-	// CodexCommandEnv carries the /bin/sh script a Codex launch runs.
-	CodexCommandEnv = "WATCHTOWER_CODEX_COMMAND"
+	// CodexCommandEnv carries the /bin/sh script a Codex launch runs
+	// (sessionagent.LaunchScriptEnv).
+	CodexCommandEnv = sessionagent.LaunchScriptEnv
 )
 
 // FallbackShell is the login shell when none (or a relative one) is given.
@@ -50,14 +51,10 @@ const SetupPrefix = "/bin/sh -c '" +
 	`[ "$s" -eq 0 ] || echo "watchtower: the worktree setup command failed (exit $s); starting the agent anyway."` +
 	"'; "
 
-// codexLoginCommand is the login shell's command for Codex: /bin/sh reads the
-// script from CodexCommandEnv, so only /bin/sh ever parses values.
-const codexLoginCommand = `exec /bin/sh -c 'eval "$` + CodexCommandEnv + `"'`
-
 // Mode is how a session starts: a new agent (Resume false), a resumed agent
 // (Resume true), or the owner's plain login shell (Agent "").
 type Mode struct {
-	// Agent is agentkind.Claude, agentkind.Codex, or "" for a shell.
+	// Agent is an agent kind (terminal_sessions.kind), or "" for a shell.
 	Agent string
 	// SessionID: a new Claude session's id the app chose (required); a
 	// new Codex session has none (Codex mints its own); a resume's stored
@@ -84,122 +81,71 @@ type Spec struct {
 
 // Launch is TerminalLaunch.make's twin. shell is the owner's login shell
 // (FallbackShell when empty or relative); row reaches an agent launch as
-// SessionRowEnv (0 = none). A Codex mode runs codex as `launch-args`
-// resolved it; with codex nil there is no binary and the launch exits 127
-// ("Codex was not found"), as on the Desktop. setup, when not blank, runs
-// before a new agent start only. Unlike the Swift twin, Launch validates
-// what reaches the shell: an unknown agent or a session id that is not a
-// lowercase canonical UUID is an error.
+// SessionRowEnv (0 = none). The agent's start command comes from its
+// session adapter (sessionagent.Adapter.LaunchCommand); an agent whose hooks
+// arrive with its launch flags runs as `launch-args` resolved it (codex),
+// and with codex nil there is no binary and the launch exits 127, as on the
+// Desktop. setup, when not blank, runs before a new agent start only.
+// Unlike the Swift twin, Launch validates what reaches the shell: an
+// unknown agent or a session id that is not a lowercase canonical UUID is
+// an error.
 func Launch(m Mode, row int64, dir, shell string, codex *devpack.LaunchArgs, setup string) (Spec, error) {
-	if err := m.validate(); err != nil {
+	agent, err := m.validate()
+	if err != nil {
 		return Spec{}, err
 	}
 	executable := shell
 	if !strings.HasPrefix(shell, "/") {
 		executable = FallbackShell
 	}
-	agent := agentkind.Kind(m.Agent)
-	var args []string
-	switch {
-	case m.Agent == "":
-		args = []string{"-l"}
-	case agent == agentkind.Claude && m.Resume:
-		args = []string{"-l", "-c", "exec claude --resume " + m.SessionID}
-	case agent == agentkind.Claude && m.Prompt == nil:
-		args = []string{"-l", "-c", "exec claude --session-id " + m.SessionID}
-	case agent == agentkind.Claude:
-		// `env -u` keeps the prompt out of everything Claude Code runs;
-		// /bin/sh reads the variable whatever the login shell.
-		args = []string{"-l", "-c", "exec /bin/sh -c 'exec env -u " + FirstPromptEnv + " claude --session-id " +
-			m.SessionID + ` "$` + FirstPromptEnv + `"'`}
-	case codex == nil:
-		args = []string{"-l", "-c", "exit 127"}
-	default:
-		args = []string{"-l", "-c", codexLoginCommand}
+	spec := Spec{Executable: executable, Args: []string{"-l"}, Dir: dir, Row: row}
+	if agent == nil {
+		return spec, nil
 	}
-	withSetup := strings.TrimSpace(setup) != "" && m.Agent != "" && !m.Resume &&
-		(codex != nil || agent == agentkind.Claude)
+	cmd := agent.LaunchCommand(sessionagent.Start{SessionID: m.SessionID, Prompt: m.Prompt, Resume: m.Resume,
+		Binary: codex})
+	withSetup := strings.TrimSpace(setup) != "" && !m.Resume && cmd.Runs
+	command := cmd.Command
 	if withSetup {
-		args[len(args)-1] = SetupPrefix + args[len(args)-1]
+		command = SetupPrefix + command
 	}
-	spec := Spec{Executable: executable, Args: args, Dir: dir, Row: row}
-	if row != 0 && m.Agent != "" {
+	spec.Args = append(spec.Args, "-c", command)
+	if row != 0 {
 		spec.Env = append(spec.Env, SessionRowEnv+"="+strconv.FormatInt(row, 10))
 	}
-	if agent == agentkind.Codex && codex != nil {
-		spec.Env = append(spec.Env, CodexCommandEnv+"="+codexScript(*codex, m))
-	}
+	spec.Env = append(spec.Env, cmd.Env...)
 	if m.Prompt != nil && !m.Resume {
-		prompt := *m.Prompt
-		if agent == agentkind.Claude {
-			prompt = positionalPrompt(prompt)
-		}
-		spec.Env = append(spec.Env, FirstPromptEnv+"="+prompt)
+		spec.Env = append(spec.Env, FirstPromptEnv+"="+cmd.Prompt)
 	}
 	if withSetup {
 		spec.Env = append(spec.Env, SetupCommandEnv+"="+setup)
 	}
-	if m.AutomationRunID != 0 && m.Agent != "" {
+	if m.AutomationRunID != 0 {
 		spec.Env = append(spec.Env, AutomationRunEnv+"="+strconv.FormatInt(m.AutomationRunID, 10))
 	}
 	return spec, nil
 }
 
-func (m Mode) validate() error {
+// validate checks m and returns its agent's adapter, nil for a shell.
+func (m Mode) validate() (sessionagent.Adapter, error) {
 	if m.Agent == "" {
 		if m.Resume || m.SessionID != "" || m.Prompt != nil {
-			return errors.New("a shell takes no session id, prompt or resume")
+			return nil, errors.New("a shell takes no session id, prompt or resume")
 		}
-		return nil
+		return nil, nil
 	}
-	kind, ok := agentkind.Parse(m.Agent)
+	agent, ok := sessionagent.Of(m.Agent)
 	if !ok {
-		return fmt.Errorf("unknown agent kind %q", m.Agent)
+		return nil, fmt.Errorf("unknown agent kind %q", m.Agent)
 	}
-	needsID := m.Resume || kind == agentkind.Claude
+	needsID := m.Resume || agent.Caps().AppSessionID
 	if (needsID || m.SessionID != "") && !IsValidSessionID(m.SessionID) {
-		return errors.New("the session id is not a lowercase canonical UUID")
+		return nil, errors.New("the session id is not a lowercase canonical UUID")
 	}
 	if m.Resume && m.Prompt != nil {
-		return errors.New("a resume takes no first prompt")
+		return nil, errors.New("a resume takes no first prompt")
 	}
-	return nil
-}
-
-// codexScript is `<binary> <launch-args…> [resume '<id>'] [-- "$PROMPT"]`,
-// every value single-quoted, with path_prepend ahead of PATH. Nothing but
-// `--` and the prompt follows `resume <id>`.
-func codexScript(codex devpack.LaunchArgs, m Mode) string {
-	words := []string{"exec", "env", "-u", FirstPromptEnv, "-u", CodexCommandEnv, ShellQuote(codex.Binary)}
-	for _, a := range codex.Args {
-		words = append(words, ShellQuote(a))
-	}
-	if m.Resume {
-		words = append(words, "resume", ShellQuote(m.SessionID))
-	}
-	if m.Prompt != nil && !m.Resume {
-		words = append(words, "--", `"$`+FirstPromptEnv+`"`)
-	}
-	path := ""
-	if codex.PathPrepend != "" {
-		path = "PATH=" + ShellQuote(codex.PathPrepend) + `:"$PATH" `
-	}
-	return path + strings.Join(words, " ")
-}
-
-// ShellQuote wraps v in POSIX single quotes; each single quote inside is
-// written as quote, backslash, quote, quote (the shell idiom for a quote).
-func ShellQuote(v string) string {
-	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
-}
-
-// positionalPrompt gives a prompt starting with "-" a leading space, so
-// claude never reads it as a flag.
-func positionalPrompt(p string) string {
-	if strings.HasPrefix(p, "-") {
-		return " " + p
-	}
-	return p
+	return agent, nil
 }
 
 // IsValidSessionID accepts a lowercase canonical UUID only, any version (Claude

@@ -74,7 +74,7 @@ func resolveCodexHookRow(d *db.DB, env func(string) string) (db.TerminalSession,
 	if !ok { // not a row id of ours: no row to act on
 		return db.TerminalSession{}, false, nil
 	}
-	row, err := d.GetTerminalSession(rowID)
+	row, err := sessionagent.LoadSession(d, rowID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return db.TerminalSession{}, false, nil
 	}

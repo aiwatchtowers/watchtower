@@ -14,7 +14,7 @@ import (
 // conversations come from its agent's adapter. A missing session wraps
 // db.ErrTerminalSessionNotFound; a shell session is refused.
 func ReadSession(ctx context.Context, d *db.DB, sessionID int64, toolUseID string, dirs sessionfeed.Dirs) ([]sessionfeed.Entry, error) {
-	sess, err := d.GetTerminalSession(sessionID)
+	sess, err := LoadSession(d, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("session %d: %w", sessionID, err)
 	}
