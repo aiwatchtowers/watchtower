@@ -76,7 +76,8 @@ for (const pr of changed) {
   }
   // not_watched: the Mac cannot read the session's log, so the review's
   // outcome is unknown; like an error, the pull request is left for the
-  // next round and never marked reviewed.
+  // next round and never marked reviewed. The session keeps running and may
+  // still post its review, so check it on the Mac before the next round.
   if (s.status === "not started" || s.status === "error" || s.status === "not_watched") {
     left++; // tried again next round
   } else {
@@ -85,7 +86,7 @@ for (const pr of changed) {
   let line = "- #" + pr.number + " " + pr.title + " (" + pr.url + "): " + s.status;
   if (s.summary) line += " — " + s.summary;
   if (s.error) line += " — " + s.error;
-  if (s.reason) line += " — not watched (" + s.reason + "), left for the next round";
+  if (s.reason) line += " (" + s.reason + "): the session may still be reviewing it; left for the next round";
   lines.push(line);
 }
 if (left > 0) {

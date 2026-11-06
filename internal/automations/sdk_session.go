@@ -80,19 +80,21 @@ func SessionModule(b Backends) Module {
 			return runSession(env, b, step, req)
 		})
 		if err == nil {
-			logNotWatched(env, out)
+			err = logNotWatched(env, out)
 		}
 		return out, err
 	}}}
 }
 
 // logNotWatched writes the run-log line of a not_watched end (N6): one log
-// step naming the session and the reason, within log()'s per-run cap. A
-// replayed run replays it like the script's own log lines.
-func logNotWatched(env *Env, out any) {
+// step naming the session and the reason, within log()'s per-run cap (past
+// it the reason is still in the session step's journalled result). A
+// replayed run replays it like the script's own log lines, so its error (a
+// replay mismatch) is the call's.
+func logNotWatched(env *Env, out any) error {
 	raw, ok := out.(encodedResult)
 	if !ok || env.Journal.CountKind(StepKindLog) >= MaxLogCalls {
-		return
+		return nil
 	}
 	var end struct {
 		SessionID int64  `json:"session_id"`
@@ -100,10 +102,11 @@ func logNotWatched(env *Env, out any) {
 		Reason    string `json:"reason"`
 	}
 	if json.Unmarshal(raw, &end) != nil || end.Status != sessionNotWatched {
-		return
+		return nil
 	}
 	msg := fmt.Sprintf("session %d is not watched (%s): its outcome is unknown", end.SessionID, end.Reason)
-	_, _ = env.Call(StepKindLog, "log", msg, func(*Step) (any, error) { return nil, nil })
+	_, err := env.Call(StepKindLog, "log", msg, func(*Step) (any, error) { return nil, nil })
+	return err
 }
 
 // sessionsStarted counts the run's session() steps that started a session

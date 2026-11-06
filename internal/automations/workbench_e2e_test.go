@@ -575,7 +575,7 @@ func TestTemplates_SessionWaitersHandleNotWatched(t *testing.T) {
 			t.Fatalf("reviewed = %v; want only #14 (the not-watched #15 is never marked reviewed)", rev)
 		}
 		rep := w.onlyReport(t)
-		mustContain(t, "report body", rep.Body, "#15 Retry the sync (https://example.com/acme/pull/15): not_watched — not watched (missing), left for the next round")
+		mustContain(t, "report body", rep.Body, "#15 Retry the sync (https://example.com/acme/pull/15): not_watched (missing): the session may still be reviewing it; left for the next round")
 		mustContain(t, "report body", rep.Body, "1 pull request left for the next round.")
 	})
 }
