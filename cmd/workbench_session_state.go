@@ -197,8 +197,9 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 		return fmt.Errorf("invalid --workbench %q", briefClip(rawWorkbenchID, 40))
 	}
 	// The event time is when the hook started, not when a large input
-	// finished reading: a slow read must not outrank a later event.
-	at := hookNow()
+	// finished reading: a slow read must not outrank a later event. The lock
+	// budget starts there too, so the input wait counts against it.
+	at, deadline := hookNow(), lockNow().Add(stateHookBudget)
 	ctx, cancel := context.WithTimeout(context.Background(), sessionStateInputWait)
 	in, err := readHookEvent(ctx, stdin, sessionStateStdinLimit, agentkind.Claude)
 	cancel()
@@ -215,7 +216,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 	}
 	turn, subagentToolRun := in.toolRunTurn()
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
-	turn.lock = stateHookLockWait.until(lockNow().Add(stateHookBudget))
+	turn.lock = stateHookLockWait.until(deadline)
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,
 	// so Claude Code never waits for it.
@@ -438,10 +439,13 @@ type hookTurn struct {
 // session until the next event.
 var stateHookLockWait = hookLockWait{wait: 2 * time.Second, retry: true}
 
-// stateHookBudget is the lock waiting one async state hook process may do in
-// all, from its start: the hook's 5 s timeout less a margin for the process
-// start, the input and the database open. A write past it is not tried, so
-// Claude Code never kills the hook part-way through its writes.
+// stateHookBudget is how long after its start — before the input is read —
+// one async state hook process may still begin a lock wait: the input wait,
+// the database open and every lock wait come out of it, and the 0.5 s left
+// of the hook's 5 s timeout covers the process start and the last write's
+// own work. A write past it is not tried, so Claude Code never kills the
+// hook part-way through its writes. (The SessionStart's id move takes the
+// same budget from after its input: its hook has 10 s.)
 const stateHookBudget = 4500 * time.Millisecond
 
 // lockNow is the clock the lock budget reads; a var for tests.

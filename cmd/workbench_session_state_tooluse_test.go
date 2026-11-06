@@ -421,3 +421,41 @@ func TestSessionState_SubagentToolFailureIsAHeartbeat(t *testing.T) {
 	delete(after, "agent_background_at")
 	assert.Equal(t, before, after, "a subagent's failed tool changed more than agent_background_at")
 }
+
+// slowInput is a hook input whose read moves the lock clock on by took.
+type slowInput struct {
+	r    *strings.Reader
+	now  *time.Time
+	took time.Duration
+	done bool
+}
+
+func (s *slowInput) Read(p []byte) (int, error) {
+	if !s.done {
+		s.done = true
+		*s.now = s.now.Add(s.took)
+	}
+	return s.r.Read(p)
+}
+
+// Board #988 verify (N1): the lock budget starts at the hook's start, before
+// the input is read, so a slow input leaves less time for the writes — a
+// write the input wait pushed past the budget is not tried.
+func TestSessionState_LockBudgetStartsBeforeTheInput(t *testing.T) {
+	for _, tc := range []struct {
+		took time.Duration
+		want string
+	}{{100 * time.Millisecond, "working"}, {stateHookBudget + time.Millisecond, ""}} {
+		database, pid, row := briefSessionFixture(t)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		now := time.Now()
+		lockClock(t, func() time.Time { return now })
+		in := &slowInput{r: strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")), now: &now, took: tc.took}
+		_, errOut, err := runSessionState(t, pid, in)
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, storedAgentState(t, database, row), "input took %s", tc.took)
+		if tc.want == "" {
+			assert.Contains(t, errOut, "no time left", "input took %s", tc.took)
+		}
+	}
+}
