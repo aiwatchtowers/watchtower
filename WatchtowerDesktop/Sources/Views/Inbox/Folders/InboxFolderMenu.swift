@@ -27,27 +27,39 @@ struct InboxFolderMenu: View {
     /// New Folder and Rename put the cursor in their field.
     @FocusState private var draftFocused: Bool
 
+    /// The scroll anchor of a New Folder field.
+    private static let draftFieldID = "inbox-folder-draft"
+
     /// The tree scrolls; New Folder, New Artifact… and the state line stay
     /// pinned under it, however many folders there are.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    ForEach(content.visibleRows) { row in
-                        if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .before) {
-                            dropLine(depth: row.depth)
-                        }
-                        folderRow(row)
-                        if let draft = content.folderDraft, case let .create(parentID) = draft.target,
-                           let parent = draftParent(parentID), lastVisibleDescendant(of: parent) == row.id {
-                            draftField(draft, depth: parent.depth + 1)
-                        }
-                        if let summary = content.deleteConfirmation, summary.folderID == row.id {
-                            deleteConfirmation(summary, depth: row.depth)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Spacing.tight) {
+                        ForEach(content.visibleRows) { row in
+                            if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .before) {
+                                dropLine(depth: row.depth)
+                            }
+                            folderRow(row)
+                            if let draft = content.folderDraft, case let .create(parentID) = draft.target,
+                               let parent = draftParent(parentID), lastVisibleDescendant(of: parent) == row.id {
+                                draftField(draft, depth: parent.depth + 1)
+                                    .id(Self.draftFieldID)
+                            }
+                            if let summary = content.deleteConfirmation, summary.folderID == row.id {
+                                deleteConfirmation(summary, depth: row.depth)
+                            }
                         }
                     }
+                    .padding(Spacing.regular)
                 }
-                .padding(Spacing.regular)
+                // New Folder from the footer adds its field at the end of a
+                // long tree: bring it into view.
+                .onChange(of: content.folderDraft?.target) { _, target in
+                    guard target != nil else { return }
+                    withAnimation(Motion.panel) { proxy.scrollTo(Self.draftFieldID) }
+                }
             }
             footer
                 .padding(.horizontal, Spacing.regular)
