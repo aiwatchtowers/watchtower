@@ -22,7 +22,7 @@
 
 **Capability definition files:** `internal/agentkind/caps.go` and `WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentSessionCaps.swift` declare which session capabilities each agent kind has. They are the only places outside the adapters where a kind maps to its caps; both guards skip them by path and fail if they disappear. Consumers read those caps instead of the kind.
 
-**Known blind spots (accepted):** the guards match names written at the check. They do not resolve a named constant (`p == config.DefaultAIProvider`), a map keyed by a name, `strings.EqualFold`/`HasPrefix`, a Swift comparison split across lines, or a Swift membership test over a named array. `WatchtowerMobile/` and Go outside `cmd/` and `internal/` are out of the scan (spec §4.4); the phone's kind checks are G7's. Review catches these forms; a new adapter-shaped check written that way is still a breach of the contract.
+**Known blind spots (accepted):** the guards match names written at the check. They do not resolve a named constant (`p == config.DefaultAIProvider`), a map keyed by a name, `strings.EqualFold`/`HasPrefix`, a Swift comparison split across lines, or a Swift membership test over a named or multi-line array. `WatchtowerMobile/` and Go outside `cmd/` and `internal/` are out of the scan (spec §4.4); the phone's kind checks are G7's. Review catches these forms; a new adapter-shaped check written that way is still a breach of the contract.
 
 **Why locked:** Each name check is a place where one transport silently gets less (spec §2.2 lists twenty such gaps). Deciding by capability keeps every surface the same on every transport, or discloses the difference before Send.
 

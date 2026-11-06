@@ -41,6 +41,9 @@ final class LLMTransportGuardTests: XCTestCase {
     func testLLMTRANSPORT01CatchesANewNameCheck() {
         let source = """
         // if provider == "claude" { } is a comment, not a check
+        let help = \"\"\"
+            paths/* look like a block comment opener
+            \"\"\"
         /* provider == "codex" in a block comment
            is not a check either */
         func pick(provider: String, kind: AgentKind) {
@@ -181,10 +184,18 @@ final class LLMTransportGuardTests: XCTestCase {
     /// depth outside string literals.
     private struct Lexer {
         var inBlock = false
+        var inMultilineString = false
         var depth = 0
 
         /// Returns the line without comments and its brace depth change.
         mutating func code(_ line: String) -> (String, Int) {
+            // A `"""` line opens or closes a multi-line string; its body is
+            // text, never a comment start or a brace.
+            if !inBlock, line.components(separatedBy: "\"\"\"").count % 2 == 0 {
+                inMultilineString.toggle()
+                return (line, 0)
+            }
+            if inMultilineString { return (line, 0) }
             var out = ""
             var inString = false
             var escaped = false
