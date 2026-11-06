@@ -14,11 +14,9 @@ struct SessionWorkSnapshot: Equatable {
     /// Session `sessionID`'s lane worktrees beside its agent's own `place`.
     func lanes(of sessionID: Int64, place: SessionPlace) -> [String] {
         guard let links = links[sessionID] else { return [] }
-        var placeRoot: String?
-        if case let .worktree(_, root, _) = place { placeRoot = root.path }
         return SessionLanes.roots(
             links.worktrees, runStart: links.runStart, workbenchFolder: workbenchFolder,
-            placeRoot: placeRoot, exists: existingRoots.contains
+            place: place, exists: existingRoots.contains
         )
     }
 }

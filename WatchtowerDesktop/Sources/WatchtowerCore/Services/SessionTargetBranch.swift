@@ -81,24 +81,33 @@ package enum SessionLanes {
     }
 
     /// The distinct roots, sorted, that were first seen at or after
-    /// `runStart` (the row's run mark; none without a readable one), are not
-    /// the workbench's own checkout (a root holding `workbenchFolder`), are
-    /// not `placeRoot` (the agent's own worktree) and still exist.
+    /// `runStart` (the row's run mark; none without a readable one), that
+    /// still exist, and that are not the agent's own checkout: a ledger root
+    /// is a worktree's top level, so a root holding the workbench folder is
+    /// the main checkout and a root holding the place's folder (a worktree
+    /// place's `folder_root` may be a subfolder of its top level, or the
+    /// removed cwd) is the agent's own worktree. An unknown place could be
+    /// any of them: no lanes until it is known (fail closed).
     package static func roots(
         _ records: [Record],
         runStart: String?,
         workbenchFolder: String,
-        placeRoot: String?,
+        place: SessionPlace,
         exists: (String) -> Bool
     ) -> [String] {
+        var held = [workbenchFolder, resolved(workbenchFolder)]
+        switch place {
+        case .unknown: return []
+        case .main: break
+        case let .worktree(_, root, _): held += [root.path, resolved(root.path)]
+        case let .removed(_, path): held += [path, resolved(path)]
+        }
         guard let start = runStart.flatMap(SessionAgentStatus.parseStamp) else { return [] }
-        let folders = [workbenchFolder, resolved(workbenchFolder)]
-        let own = placeRoot.map { [normalized($0), resolved($0)] } ?? []
         var roots: Set<String> = []
         for record in records {
             guard let seen = SessionAgentStatus.parseStamp(record.firstAt), seen >= start else { continue }
             let root = normalized(record.root)
-            guard !own.contains(root), !folders.contains(where: { isWithin($0, root) }) else { continue }
+            guard !held.contains(where: { isWithin($0, root) }) else { continue }
             roots.insert(root)
         }
         return roots.filter(exists).sorted()

@@ -94,7 +94,7 @@ final class SessionTargetBranchTests: XCTestCase {
         ]
         let roots = SessionLanes.roots(
             records, runStart: runStart, workbenchFolder: folder,
-            placeRoot: "/tmp/acme/.claude/worktrees/ctl/"
+            place: worktreePlace("/tmp/acme/.claude/worktrees/ctl/")
         ) { !$0.hasSuffix("/gone") }
         XCTAssertEqual(roots, ["/tmp/acme/.claude/worktrees/lane-a", "/tmp/acme/.claude/worktrees/lane-b"])
     }
@@ -102,16 +102,46 @@ final class SessionTargetBranchTests: XCTestCase {
     func testARepositoryAboveTheWorkbenchFolderIsTheMainCheckout() {
         let roots = SessionLanes.roots(
             [record("/tmp", after), record("/tmp/acme-lane", after)], runStart: runStart,
-            workbenchFolder: folder, placeRoot: nil
+            workbenchFolder: folder, place: .main
         ) { _ in true }
         XCTAssertEqual(roots, ["/tmp/acme-lane"], "a sibling whose name starts like the folder is no parent")
     }
 
+    private func worktreePlace(_ root: String) -> SessionPlace {
+        .worktree(name: "ctl", root: URL(fileURLWithPath: root, isDirectory: true), status: WorkbenchGitStatus(branch: "b"))
+    }
+
+    /// A workbench bound to a subfolder of its repository: a worktree
+    /// place's root is the worktree's top level joined with that subfolder
+    /// (Go's `folder_root`), the ledger holds the top level only.
+    func testASubfolderWorkbenchExcludesTheAgentsOwnWorktree() {
+        let records = [
+            record("/tmp/repo", after),                                   // the main checkout
+            record("/tmp/repo/.claude/worktrees/ctl", after),             // the agent's own worktree
+            record("/tmp/repo/.claude/worktrees/lane-a", after)
+        ]
+        let place = worktreePlace("/tmp/repo/.claude/worktrees/ctl/apps/web")
+        XCTAssertEqual(SessionLanes.roots(records, runStart: runStart, workbenchFolder: "/tmp/repo/apps/web",
+                                          place: place) { _ in true },
+                       ["/tmp/repo/.claude/worktrees/lane-a"])
+        let removed = SessionPlace.removed(name: "ctl", path: "/tmp/repo/.claude/worktrees/ctl/apps/web/src")
+        XCTAssertEqual(SessionLanes.roots(records, runStart: runStart, workbenchFolder: "/tmp/repo/apps/web",
+                                          place: removed) { _ in true },
+                       ["/tmp/repo/.claude/worktrees/lane-a"])
+    }
+
+    /// An unknown place may be any of the recorded worktrees: no lanes.
+    func testAnUnknownPlaceShowsNoLanes() {
+        let records = [record("/tmp/acme/.claude/worktrees/lane-a", after)]
+        XCTAssertEqual(SessionLanes.roots(records, runStart: runStart, workbenchFolder: folder, place: .unknown) { _ in true },
+                       [])
+    }
+
     func testNoRunStartMeansNoLanes() {
         let records = [record("/tmp/acme/.claude/worktrees/lane-a", after)]
-        XCTAssertEqual(SessionLanes.roots(records, runStart: nil, workbenchFolder: folder, placeRoot: nil) { _ in true }, [])
-        XCTAssertEqual(SessionLanes.roots(records, runStart: "x", workbenchFolder: folder, placeRoot: nil) { _ in true }, [])
-        XCTAssertEqual(SessionLanes.roots([], runStart: runStart, workbenchFolder: folder, placeRoot: nil) { _ in true }, [])
+        XCTAssertEqual(SessionLanes.roots(records, runStart: nil, workbenchFolder: folder, place: .main) { _ in true }, [])
+        XCTAssertEqual(SessionLanes.roots(records, runStart: "x", workbenchFolder: folder, place: .main) { _ in true }, [])
+        XCTAssertEqual(SessionLanes.roots([], runStart: runStart, workbenchFolder: folder, place: .main) { _ in true }, [])
     }
 
     // MARK: - Query
