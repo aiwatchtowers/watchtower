@@ -274,6 +274,9 @@ func TestRecipe_TriggerExactlyOne(t *testing.T) {
 		{"80-rune multibyte name", "name: " + strings.Repeat("я", 80) + "\ntrigger:\n  manual: true\n", strings.Repeat("я", 80), Trigger{Kind: TriggerManual}},
 	}
 	for _, typ := range EventTypes {
+		if typ == ApprovalEvent {
+			continue // built-in only and no where fields: TestRecipe_ApprovalTrigger*
+		}
 		key := EventFields[typ][len(EventFields[typ])-1]
 		good = append(good, acceptedTrigger{"event " + typ, "name: T\ntrigger:\n  event:\n    type: " + typ + "\n    where: {" + key + ": \"rel*\"}\n", "T",
 			Trigger{Kind: TriggerEvent, Event: &EventTrigger{Type: typ, Where: map[string]string{key: "rel*"}}}})
@@ -920,5 +923,31 @@ func TestApprovalHash_ArtifactsIsHashed(t *testing.T) {
 	}
 	if fields(feed)["artifacts"] != "feed" || fields(living)["artifacts"] != "living" {
 		t.Errorf("fields artifacts feed=%q living=%q", fields(feed)["artifacts"], fields(living)["artifacts"])
+	}
+}
+
+func approvalRecipe(where string) []byte {
+	return recipeWith("name: A\ntrigger:\n  event:\n    type: approval\n"+where, "log(1);\n")
+}
+
+func TestRecipe_ApprovalTriggerBuiltinOnly(t *testing.T) {
+	r := mustParse(t, approvalRecipe(""), builtinScope)
+	if r.Trigger.Kind != TriggerEvent || r.Trigger.Event == nil || r.Trigger.Event.Type != ApprovalEvent {
+		t.Errorf("trigger = %+v", r.Trigger)
+	}
+	for _, s := range []Scope{{Kind: ScopePersonal}, {Kind: ScopeWorkbench, WorkbenchID: 1}} {
+		_, err := ParseRecipe("ok", approvalRecipe(""), s)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "an approval trigger is only for built-in automations") {
+			t.Errorf("scope %s: want the built-in-only refusal, got %v", s, err)
+		}
+	}
+}
+
+func TestRecipe_ApprovalTriggerRefusesWhere(t *testing.T) {
+	_, err := ParseRecipe("ok", approvalRecipe("    where: {ref: \"action:*\"}\n"), builtinScope)
+	var pe *ParseError
+	if !errors.As(err, &pe) || !strings.Contains(pe.Msg, `trigger.event.where key "ref" is not a matchable approval field`) {
+		t.Errorf("want the where refusal, got %v", err)
 	}
 }

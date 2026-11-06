@@ -260,7 +260,7 @@ immediately.
 same-cycle strip card — the owner asked to be interrupted at a chosen time,
 not immediately.
 
-**Test guards:** `internal/db/reminders_test.go::TestReminders_InsertListDueSnoozeDone`; `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testFetchDueReturnsOnlyPendingPast`, `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testSnoozeBumpsRemindAt`.
+**Test guards:** `internal/db/reminders_test.go::TestReminders_InsertListDueSnoozeDone` (since 2026-11-06, Inbox builder B Task 7: `MarkReminderDone`/`SnoozeReminder` return `(changed bool, err error)` — Done updates only a reminder not yet done, Snooze reports an unknown id — and the test keeps every assertion and adds the `changed` checks: a second Done and an unknown id change nothing; only a `changed` write calls the approval hook, and the daemon's approval sweep reads reminders and never flips one); `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testFetchDueReturnsOnlyPendingPast`, `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testSnoozeBumpsRemindAt`.
 
 **Locked since:** 2026-09-06
 

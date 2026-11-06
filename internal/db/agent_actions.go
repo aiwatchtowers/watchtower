@@ -78,7 +78,14 @@ func (db *DB) InsertAgentAction(a AgentAction) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("inserting agent action: %w", err)
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("inserting agent action: %w", err)
+	}
+	if approvalStatus(a.Status) {
+		db.approvalChanged(ActionRef(id))
+	}
+	return id, nil
 }
 
 // MaxAgentActionID returns the highest agent_actions id, 0 for an empty table.
@@ -194,12 +201,19 @@ func (db *DB) TransitionAgentAction(id int64, from []string, to, resultJSON, err
 		}
 		return false, fmt.Errorf("transitioning agent action %d to %s: %w", id, to, err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
+	// Only a transition that can touch an open approval notifies: one whose
+	// source or target is pending/failed. approved→executing (Apply's
+	// claim) and executing→applied never do.
+	notify := approvalStatus(to)
+	for _, f := range from {
+		notify = notify || approvalStatus(f)
 	}
-	return n > 0, nil
+	return db.actionChangedIf(id, res, notify)
 }
+
+// approvalStatus reports whether an agent_actions status can be an open
+// approval (pending, or failed while it waits on the owner).
+func approvalStatus(s string) bool { return s == "pending" || s == "failed" }
 
 // DismissAgentAction stamps dismissed_at on row id while it is still `failed`
 // with exactly errMsg and not yet dismissed — the owner's acknowledgement of
@@ -213,11 +227,7 @@ func (db *DB) DismissAgentAction(id int64, errMsg string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("dismissing agent action %d: %w", id, err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	return db.actionChanged(id, res)
 }
 
 // ApproveAgentActionWithArgs approves a pending row and replaces its args in
@@ -231,11 +241,28 @@ func (db *DB) ApproveAgentActionWithArgs(id int64, oldArgs, newArgs string) (boo
 	if err != nil {
 		return false, fmt.Errorf("approving agent action %d with edits: %w", id, err)
 	}
+	return db.actionChanged(id, res)
+}
+
+// actionChanged reads an autocommit agent_actions UPDATE's result: true when
+// it changed a row, and then the approval hook is called with the row's ref.
+func (db *DB) actionChanged(id int64, res sql.Result) (bool, error) {
+	return db.actionChangedIf(id, res, true)
+}
+
+// actionChangedIf is actionChanged calling the hook only when notify.
+func (db *DB) actionChangedIf(id int64, res sql.Result, notify bool) (bool, error) {
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("approving agent action %d with edits: %w", id, err)
+		return false, fmt.Errorf("agent action %d: %w", id, err)
 	}
-	return n > 0, nil
+	if n == 0 {
+		return false, nil
+	}
+	if notify {
+		db.approvalChanged(ActionRef(id))
+	}
+	return true, nil
 }
 
 // GetToolTrust returns the trust for tool on one chat surface; "ask" when

@@ -178,8 +178,10 @@ func slackSenderFactory(cfg *config.Config) tools.SlackSenderFactory {
 // buildToolRegistry is the ONE place the assistant's tools are assembled —
 // shared by `mcp --chat`, `actions …`, `jira create` and the runtime-B
 // `ai query --tools chat` ollama loop, so the entry points can never disagree
-// about what exists.
+// about what exists. It also installs the approval hook on database
+// (installApprovalHook): every approval write goes through a registry.
 func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
+	installApprovalHook(cfg, database)
 	reg := tools.New(database)
 	regTools := []*tools.Tool{
 		tools.NewCreateTarget(),

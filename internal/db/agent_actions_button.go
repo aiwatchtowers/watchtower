@@ -122,6 +122,11 @@ func (db *DB) InsertInboxButtonProposal(a AgentAction) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("committing inbox button proposal: %w", err)
 	}
+	// After Commit: the hook writes automation_runs, and inside the
+	// transaction it would wait on this transaction's own write lock.
+	if approvalStatus(a.Status) {
+		db.approvalChanged(ActionRef(id))
+	}
 	return id, nil
 }
 

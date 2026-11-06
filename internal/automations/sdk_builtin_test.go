@@ -279,6 +279,20 @@ func TestExecutor_PollClaimsEventBuiltinRuns(t *testing.T) {
 	if r := f.run(t, id); r.Status != db.RunSucceeded || p.count() != 1 {
 		t.Errorf("run = %s/%s, primitive calls %d; want succeeded and one", r.Status, r.ErrorKind, p.count())
 	}
+	// An approval event run (builtin.Fire's shape): not a slot run, so its
+	// trigger carries the events, not a {"builtin": …} input.
+	id = f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerEvent,
+		EventJSON: `{"cycles":["action:7"],"events":[{"type":"approval","ref":"action:7"}],"count":1,"truncated":false}`})
+	f.step(t, 1)
+	if r := f.run(t, id); r.Status != db.RunSucceeded || p.count() != 2 {
+		t.Fatalf("event run = %s/%s (%s), primitive calls %d; want succeeded and two", r.Status, r.ErrorKind, r.Error, p.count())
+	}
+	p.mu.Lock()
+	c := p.calls[1]
+	p.mu.Unlock()
+	if c.Trigger.Kind != db.TriggerEvent || len(c.Trigger.Events) != 1 || c.Trigger.Events[0]["ref"] != "action:7" {
+		t.Errorf("event run trigger = %+v", c.Trigger)
+	}
 }
 
 func TestAuto06_BuiltinInlineRefusesUnconfirmed(t *testing.T) {
