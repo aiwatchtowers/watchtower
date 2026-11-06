@@ -6,7 +6,7 @@ package enum InboxFoldersCLIError: Error, Equatable, LocalizedError {
     /// The revision race was lost ("the Inbox menu changed"): re-read the
     /// tree and say so; nothing was written.
     case menuChanged
-    /// The CLI refused the write; its message without cobra's "Error: ".
+    /// The CLI refused the write; its message (the last stderr line).
     case refused(String)
     /// No `watchtower` binary: every edit is off, reading still works.
     case cliUnavailable
@@ -160,19 +160,21 @@ package struct InboxFoldersCLI {
         case CLIRunnerError.binaryNotFound:
             return .cliUnavailable
         case let CLIRunnerError.nonZeroExit(code, stderr):
-            if stderr.contains(InboxFoldersCLIError.conflictPhrase) { return .menuChanged }
-            let message = stripErrorLead(stderr)
+            // The CLI prints the error alone (`logredact.Full(err)`, cmd/root.go)
+            // as its last line; earlier lines are warnings.
+            let message = lastLine(stderr)
+            if message.hasPrefix(InboxFoldersCLIError.conflictPhrase) { return .menuChanged }
             return .refused(message.isEmpty ? "watchtower exited with code \(code)" : message)
         default:
             return .refused(error.localizedDescription)
         }
     }
 
-    /// The CLI's message without cobra's "Error: " lead and the trailing newline.
-    package static func stripErrorLead(_ stderr: String) -> String {
-        let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lead = "Error: "
-        return text.hasPrefix(lead) ? String(text.dropFirst(lead.count)) : text
+    /// The last non-empty line of `text`, trimmed; "" when there is none.
+    private static func lastLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty } ?? ""
     }
 
     /// `--json` prints one object as the last stdout line; anything that is

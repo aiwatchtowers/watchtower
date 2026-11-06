@@ -135,7 +135,7 @@ final class InboxFoldersCLITests: XCTestCase {
 
     func testConflictPhraseMapsToMenuChanged() async {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
-            code: 1, stderr: "Error: the Inbox menu changed — reload it and try again (revision 6, you had 5)\n"))
+            code: 1, stderr: "the Inbox menu changed — reload it and try again (revision 6, you had 5)\n"))
         do {
             _ = try await InboxFoldersCLI(runner: runner).delete(4, expectRevision: 5)
             XCTFail("expected a conflict")
@@ -147,7 +147,7 @@ final class InboxFoldersCLITests: XCTestCase {
 
     func testRefusalMapsToRefusedWithoutErrorLead() async {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
-            code: 1, stderr: "Error: a folder named \"Release\" already exists here\n"))
+            code: 1, stderr: "warning: config has an unknown key\na folder named \"Release\" already exists here\n"))
         do {
             _ = try await InboxFoldersCLI(runner: runner).create(title: "Release", expectRevision: 1)
             XCTFail("expected a refusal")
@@ -157,6 +157,17 @@ final class InboxFoldersCLITests: XCTestCase {
         }
         XCTAssertEqual(InboxFoldersCLI.map(CLIRunnerError.nonZeroExit(code: 2, stderr: "")),
                        .refused("watchtower exited with code 2"))
+    }
+
+    /// A refusal that quotes a title holding the phrase is not a conflict:
+    /// only a message that starts with it is.
+    func testTitleContainingTheConflictPhraseIsARefusal() {
+        let message = #"a folder named "the Inbox menu changed" already exists here"#
+        XCTAssertEqual(InboxFoldersCLI.map(CLIRunnerError.nonZeroExit(code: 1, stderr: message + "\n")),
+                       .refused(message))
+        XCTAssertEqual(InboxFoldersCLI.map(CLIRunnerError.nonZeroExit(
+            code: 1, stderr: "warning: slow disk\nthe Inbox menu changed — reload it and try again (revision 2, you had 1)\n")),
+                       .menuChanged, "the conflict is the last line")
     }
 
     func testMissingBinaryMapsToCLIUnavailable() async {
