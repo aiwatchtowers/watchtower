@@ -368,6 +368,29 @@ final class HubBootTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory(TestHub.acme).path), "a linked hub stays")
     }
 
+    /// #1499: the launch keeps the files of a hub with an unreadable promoted entry (AppRoot's keep set); once the
+    /// owner's removal took the entry, the same pass hands them over and deletes them like any removed hub.
+    func testTheOrphanPassCleansAHubOnceItsUnreadablePromotedEntryWasRemoved() async throws {
+        let paths = try makePaths()
+        let defaults = try makeDefaults()
+        let linkStore = LinkStore(defaults: defaults)
+        let entry: [String: Any] = ["slot": "s", "state": ["fromANewerBuild": [String: Any]()]]
+        defaults.set(try JSONSerialization.data(withJSONObject: [TestHub.orphan: entry]), forKey: "link.promoted")
+        XCTAssertEqual(linkStore.unreadablePromotedHubIDs, [TestHub.orphan])
+        try paths.prepare(TestHub.orphan)
+        let registry = try HubRegistry.inMemory()
+        let keep = { Set(linkStore.promoted.keys).union(linkStore.unreadablePromotedHubIDs) }
+
+        try await HubBoot.removeOrphans(
+            registry: registry, paths: paths, keepingAll: keep(), factory: testFactory(paths, defaults: defaults))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory(TestHub.orphan).path), "kept while the entry is there")
+
+        linkStore.removeUnreadablePromoted(TestHub.orphan)
+        try await HubBoot.removeOrphans(
+            registry: registry, paths: paths, keepingAll: keep(), factory: testFactory(paths, defaults: defaults))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.hubDirectory(TestHub.orphan).path), "cleaned after it")
+    }
+
     func testAnOrphanWhoseHandOverFailedKeepsItsFiles() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()

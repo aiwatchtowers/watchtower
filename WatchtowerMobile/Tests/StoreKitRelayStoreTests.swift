@@ -39,6 +39,14 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
     }
 
+    /// `updates()` subscribes to StoreKit in a task of its own, and an event before that subscription is not delivered,
+    /// so a test gives it time before it causes one: a loaded CI machine missed a refund and a renewal otherwise.
+    private func listening() async throws -> AsyncStream<RelayTransaction>.AsyncIterator {
+        let iterator = store.updates().makeAsyncIterator()
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        return iterator
+    }
+
     /// StoreKit's transaction lists catch up with a purchase shortly after it returns: reads until there is a value.
     private func eventually<Value>(_ read: () async -> Value?) async -> Value? {
         let deadline = Date().addingTimeInterval(5)
@@ -115,7 +123,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
             return XCTFail("expected a purchase")
         }
         await store.finish(first)
-        var iterator = store.updates().makeAsyncIterator()
+        var iterator = try await listening()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
         let renewal = try await Self.next(&iterator) { $0.id != first.id }
         XCTAssertEqual(renewal.originalID, first.originalID)
@@ -129,7 +137,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
         await store.finish(bought)
         XCTAssertFalse(bought.revoked)
-        var iterator = store.updates().makeAsyncIterator()
+        var iterator = try await listening()
         try session.refundTransaction(identifier: UInt(bought.id))
         let refunded = try await Self.next(&iterator) { $0.revoked }
         XCTAssertEqual(refunded.id, bought.id)
@@ -198,7 +206,7 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
         XCTAssertFalse(first.isRenewal)
         await store.finish(first)
-        var iterator = store.updates().makeAsyncIterator()
+        var iterator = try await listening()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
         let renewal = try await Self.next(&iterator) { $0.id != first.id }
         XCTAssertTrue(renewal.isRenewal)

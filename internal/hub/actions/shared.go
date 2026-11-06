@@ -118,9 +118,14 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 					if ctx.Err() != nil {
 						return ctx.Err()
 					}
+					if errors.Is(err, link.ErrOwnerUnreadable) && p.strike(g.zone, rec, err) {
+						continue // passed over after the strikes: the later records go on
+					}
 					heldBack = true // read again next pass
 					errs = append(errs, fmt.Errorf("actions: a hello of the shared mailbox: %w", err))
+					continue
 				}
+				p.forget(g.zone, rec)
 				continue
 			}
 			b, own, ok, err := p.owner(g, rec)

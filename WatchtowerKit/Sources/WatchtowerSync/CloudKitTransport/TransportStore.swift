@@ -36,11 +36,17 @@ public final class TransportStore: Sendable {
         try $sweepsStashAtOpen.withValue(false, operation: body)
     }
 
-    public init(path: String) throws {
+    /// The stash folder every store used before each route had its own (board #1496): two route stores of one hub
+    /// shared it, and one store's sweep deleted the other's files. The default still names it, so a store that keeps
+    /// it (the CloudKit one) keeps its files.
+    public static let sharedStashFolder = "transport-assets"
+
+    /// `stashFolder` names the fetched-asset folder next to the database. Stores that sit in one folder pass
+    /// different names.
+    public init(path: String, stashFolder: String = TransportStore.sharedStashFolder) throws {
         queue = try DatabaseQueue(path: path)
-        assetsDirectory = URL(fileURLWithPath: path)
-            .deletingLastPathComponent()
-            .appendingPathComponent("transport-assets", isDirectory: true)
+        assetsDirectory = URL(fileURLWithPath: path).deletingLastPathComponent()
+            .appendingPathComponent(stashFolder, isDirectory: true)
         try createSchema()
         // Launch pass: stash files an earlier run leaked (before the
         // eviction/wipe sweeps existed, or a crash between a buffer and its
@@ -54,8 +60,8 @@ public final class TransportStore: Sendable {
         try createSchema()
     }
 
-    /// The fetched-asset stash directory (`transport-assets/` next to the
-    /// database); nil for an in-memory store. The phone sets its file
+    /// The fetched-asset stash directory (`stashFolder` next to the
+    /// database, `transport-assets/` by default); nil for an in-memory store. The phone sets its file
     /// protection class (mobile E2E D8); the store creates it on demand.
     public var stashDirectory: URL? { assetsDirectory }
 
@@ -1006,6 +1012,9 @@ extension TransportStore {
     }
 
     private static let resyncRunning = "running"
+    /// A zone's load (a first pull, or the replica's sweep wanting a full read): it restarts from 0 at once when a
+    /// middle page expires, where a resync after `TOKEN_EXPIRED` stalls.
+    private static let resyncLoad = "load"
     private static let resyncStalled = "stalled"
 
     /// Binds the store to the relay Mac `macDeviceID` (and `hubID` when known). A store holds
@@ -1160,17 +1169,27 @@ extension TransportStore {
     }
 
     /// Starts a `TOKEN_EXPIRED` resync of `zone`: the cursor back to 0 and nothing seen yet, persisted.
-    package func beginRelayResync(_ zone: CloudZoneID) throws {
-        try queue.write { db in try Self.startRelayResync(zone, db) }
+    package func beginRelayResync(_ zone: CloudZoneID, load: Bool = false) throws {
+        try queue.write { db in try Self.startRelayResync(zone, db, load: load) }
     }
 
-    private static func startRelayResync(_ zone: CloudZoneID, _ db: Database) throws {
+    /// Whether the running resync of `zone` is a load (`beginRelayResync(_:load:)`), not a `TOKEN_EXPIRED` resync.
+    package func relayResyncIsLoad(_ zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS (SELECT 1 FROM relay_resync_seen WHERE zone = ? AND name = ?)",
+                arguments: [Self.resyncMarkerZone(zone), Self.resyncLoad]) ?? false
+        }
+    }
+
+    private static func startRelayResync(_ zone: CloudZoneID, _ db: Database, load: Bool = false) throws {
         try db.execute(
             sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
             arguments: [zone.rawValue, resyncMarkerZone(zone)])
         try db.execute(
             sql: "INSERT INTO relay_resync_seen (zone, name) VALUES (?, ?)",
-            arguments: [resyncMarkerZone(zone), resyncRunning])
+            arguments: [resyncMarkerZone(zone), load ? resyncLoad : resyncRunning])
         try writeRelayCursor(0, zone: zone, db)
     }
 

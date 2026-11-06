@@ -744,11 +744,19 @@ final class AppEnvironment {
     /// asset stash (sealed files) take class C (D8) before the store opens, wherever the store lives.
     static func liveTransportStore(path: String) throws -> TransportStore {
         try FileProtection.protectDirectory(URL(fileURLWithPath: path).deletingLastPathComponent())
-        let store = try TransportStore(path: path)
+        let store = try TransportStore(path: path, stashFolder: transportStashFolder(forStoreFile: path))
         if let stash = store.stashDirectory {
             try FileProtection.protectDirectory(stash)
         }
         return store
+    }
+
+    /// Each route's store keeps its fetched assets in its own folder (board #1496): the CloudKit store in the folder
+    /// every store used to share (`transport-assets`, so an installed phone keeps its files), the relay store in
+    /// `relay-transport-assets`, which adopts its own rows' files out of the shared one at open.
+    nonisolated static func transportStashFolder(forStoreFile path: String) -> String {
+        URL(fileURLWithPath: path).lastPathComponent == relayTransportStoreFileName
+            ? "relay-transport-assets" : TransportStore.sharedStashFolder
     }
 
     /// Unsigned builds keep the replica in Application Support, which an

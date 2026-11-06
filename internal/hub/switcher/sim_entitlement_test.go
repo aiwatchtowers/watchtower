@@ -631,32 +631,67 @@ func TestG2APhoneLinkingDuringTheReadResetsTheCount(t *testing.T) {
 	})
 }
 
-// No phone with an iCloud route: nothing to follow to iCloud, so the hub
-// stays on the relay however long nobody pays. A route gained or lost
-// between the reads restarts the count (a route lost leaves none again).
-func TestG2NoICloudRouteMovesNothing(t *testing.T) {
+// The Mac moves to iCloud only if every linked phone has an iCloud route
+// (ask #1072): all with routes move it on two reads; one without keeps it on
+// the relay, however long nobody pays; a phone gaining or losing its route
+// between the reads restarts the count.
+func TestG2EveryPhoneWithARouteMovesTheHub(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
-		a := g2World(t, w)
-		w.route(a, false)
-		for range 4 {
+		g2World(t, w)
+		b := w.addPhone(false)
+		w.route(b, true)
+		w.advance(switcher.NoPayerPoll)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+func TestG2OnePhoneWithoutARouteKeepsTheHub(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		b := w.addPhone(false) // a relay-only phone: no iCloud user on its row
+		w.advance(switcher.NoPayerPoll)
+		for range 5 {
 			w.pollAfterInterval()
 		}
 		w.wantActive(transport.KindRelay)
-		w.route(a, true)
+		// The phone is unlinked-for-routes no more: it gains one, and counts again.
+		w.route(b, true)
 		w.pollAfterInterval() // count 1
-		w.route(a, false)     // the route is lost between the reads
+		w.wantActive(transport.KindRelay)
+		w.pollAfterInterval()
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+func TestG2ARouteGainedOrLostBetweenTheReadsRestartsTheCount(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := g2World(t, w)
+		w.pollAfterInterval() // count 1
+		w.route(a, false)     // lost between the reads
 		w.pollAfterInterval()
 		w.pollAfterInterval()
 		w.wantActive(transport.KindRelay)
 		w.route(a, true)
 		w.pollAfterInterval() // count 1 again
-		b := w.addPhone(false)
-		w.route(b, true) // a second route gained between the reads
-		w.advance(switcher.NoPayerPoll)
-		w.pollAfterInterval() // the routes changed: count 1
 		w.wantActive(transport.KindRelay)
 		w.pollAfterInterval()
 		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A route that cannot be told (the sidecar cannot be read) is unknown:
+// nothing moves.
+func TestG2AnUnreadableRouteMovesNothing(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		g2World(t, w)
+		w.pollAfterInterval() // count 1
+		_ = w.st.Close()
+		w.advance(switcher.NoPayerPoll)
+		w.sw.PollOther(w.ctx)
+		w.wantActive(transport.KindRelay)
 	})
 }
 

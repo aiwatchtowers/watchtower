@@ -180,6 +180,7 @@ final class DeviceSettings {
         }
         lastWrite = write
         await write.value
+        await sendAfterWrite?()
     }
 
     /// Deletes `hubID`'s Workbench choices and its shared-alert seen list (its link was removed).
@@ -241,6 +242,10 @@ final class DeviceSettings {
     /// today's, byte for byte.
     @ObservationIgnored var reportsWorkAlertsOff = false
 
+    /// Sends the queue on after a saved record, on a relay route, where a save only queues (`HubSession`); nil
+    /// elsewhere. Runs outside the write chain, after the choice is saved: a send can hang on a dead network.
+    @ObservationIgnored var sendAfterWrite: (@MainActor () async -> Void)?
+
     /// The alerts switch moved: the hub hears it in a new `device` record. A failed write is logged and clears the
     /// last write's stamp, so the next return to the foreground sends it (`touchIfStale`); the switch stays as set, its
     /// truth being the phone's. Any other write says it too. Returns whether a write ran: the caller then sends it,
@@ -298,12 +303,14 @@ final class DeviceSettings {
         let generation = (generations[setting] ?? 0) + 1
         generations[setting] = generation
         let prior = lastWrite
+        var saved = false
         let write = Task { [weak self] in
             await prior?.value
             guard let self else { return }
             let failure = await self.writeDeviceRecord()
             guard let failure else {
                 apply(true)
+                saved = true
                 if errorSetting == setting {
                     errorSetting = nil
                     lastError = nil
@@ -317,6 +324,7 @@ final class DeviceSettings {
         }
         lastWrite = write
         await write.value
+        if saved { await sendAfterWrite?() }
     }
 
     /// Saves the device record for the current choices. Returns why the

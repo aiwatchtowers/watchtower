@@ -862,7 +862,9 @@ func sweepEpochTx(tx *sql.Tx) (uint64, error) {
 // answer; a failed participant read the same); a private phone is the
 // Mac's own user, so its request is bound to the owner's user record name,
 // never to the name it sent. Refused codes are answered without a share
-// call. s is the Shares the participants and the owner are read from (a
+// call. A private hello whose creator is a named user while the Mac's own
+// user cannot be read just now is no refusal: ErrOwnerUnreadable, undecided
+// and not remembered, so the processor reads it again. s is the Shares the participants and the owner are read from (a
 // deviation from the plan's signature, which had none: the center keeps no
 // Shares).
 //
@@ -946,6 +948,13 @@ func (c *Center) handleCloudKitHello(ctx context.Context, s transport.Shares, re
 	var owner string
 	if payload.Scope == wire.ScopePrivate {
 		owner = c.owner(ctx, s)
+		if owner == "" && rec.Creator != "" && rec.Creator != transport.CurrentUserCreator {
+			if _, canName := s.(transport.CloudUser); canName {
+				// The creator cannot be checked just now: no decision, the
+				// hello is read again (bounded by the processor's strikes).
+				return Pending{}, ErrOwnerUnreadable
+			}
+		}
 	}
 	if !creatorMatches(payload, rec.Creator, owner) {
 		log.Printf("hub link: hello %s not written by its phone's user: no answer", safeName(rec.Name))
@@ -1034,7 +1043,7 @@ func (c *Center) acceptedBothShares(ctx context.Context, s transport.Shares, use
 // the phone already unlinked (the gate refuses it at once); Unlink marked
 // the sweep pending and due, so the next pass removes it.
 func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device string) error {
-	user, err := c.unlinkForRemoval(ctx, device)
+	user, err := c.unlinkForRemoval(ctx, device, nil)
 	if err != nil {
 		return err
 	}
@@ -1051,7 +1060,13 @@ func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device 
 // remove: a failed removal is logged, and the sweep Unlink marked pending
 // removes the participant at a later pass.
 func (c *Center) BeginRemove(ctx context.Context, device string) (finish func(ctx context.Context, s transport.Shares), err error) {
-	user, err := c.unlinkForRemoval(ctx, device)
+	return c.beginRemove(ctx, device, nil)
+}
+
+// beginRemove is BeginRemove with stands checked in the unlink's transaction
+// (DeviceRecord.Stands; nil: no check).
+func (c *Center) beginRemove(ctx context.Context, device string, stands func(*sql.Tx) error) (finish func(ctx context.Context, s transport.Shares), err error) {
+	user, err := c.unlinkForRemoval(ctx, device, stands)
 	if err != nil {
 		return nil, err
 	}
@@ -1065,7 +1080,7 @@ func (c *Center) BeginRemove(ctx context.Context, device string) (finish func(ct
 
 // unlinkForRemoval unlinks device and returns its iCloud user when it was
 // a shared-scope phone ("" otherwise), read before the unlink removed it.
-func (c *Center) unlinkForRemoval(ctx context.Context, device string) (string, error) {
+func (c *Center) unlinkForRemoval(ctx context.Context, device string, stands func(*sql.Tx) error) (string, error) {
 	var scope, user string
 	err := c.st.ReadTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`SELECT scope, user_record_name FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(&scope, &user)
@@ -1077,7 +1092,7 @@ func (c *Center) unlinkForRemoval(ctx context.Context, device string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("link: reading a phone: %w", err)
 	}
-	if err := c.Unlink(device); err != nil {
+	if err := c.unlink(device, stands); err != nil {
 		return "", err
 	}
 	if scope != wire.ScopeShared {

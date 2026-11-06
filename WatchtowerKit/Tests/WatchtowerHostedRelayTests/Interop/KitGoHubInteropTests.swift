@@ -158,12 +158,26 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         handoff.write("actions.done", String(bytes: try JSONSerialization.data(withJSONObject: report), encoding: .utf8) ?? "")
         _ = try await handoff.wait("go.ok", Self.goWait)
 
-        // 10. Unlink (R14): the farewell, flushed, then remove_slot.
+        // 10. The device record over the relay (G1): a rename, a permission request, the alerts switch.
+        handoff.step = "device_record"
+        let base = link.device(nonce: nil, unlinked: false)
+        let rewritten = DevicePayload(
+            deviceID: base.deviceID, name: "Renamed on the relay", model: base.model, appVersion: base.appVersion,
+            scope: base.scope, userRecordName: base.userRecordName, typingRequested: base.typingRequested,
+            startSessions: base.startSessions, permissionsRequested: true, updatedAt: Date(), workAlertsOff: true
+        )
+        try await secure.save([try CloudRecordFactory.record(for: rewritten, modifiedAt: rewritten.updatedAt)])
+        try await hubT.pull()
+        handoff.write("device.sent", "")
+        _ = try await handoff.wait("device.ok", Self.goWait)
+
+        // 11. Unlink (R14): the farewell, flushed, then remove_slot. The hub reads it before remove_slot: an unslotted
+        // hub is unvouched and cannot read the mailbox. The app pauses 3 s between the two, and the hub side fails the
+        // run if it takes longer, counted from this handoff, before the save.
         handoff.step = "unlink"
+        handoff.write("farewell.sent", "")
         try await secure.save([try CloudRecordFactory.record(for: link.device(nonce: nil, unlinked: true), modifiedAt: Date())])
         try await hubT.pull()
-        // The hub reads it before remove_slot: an unslotted hub is unvouched and cannot read the mailbox.
-        handoff.write("farewell.sent", "")
         _ = try await handoff.wait("farewell.ok", Self.goWait)
         try await pairing.removeSlot(mac: mac)
         let afterRemove = try await pairing.accountState().macs
@@ -171,7 +185,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         handoff.write("unlinked", "")
         _ = try await handoff.wait("unlink.ok", Self.goWait)
 
-        // 11. The slot is free again: add_slot of the same Mac. promote consumed the vouch (Worker
+        // 12. The slot is free again: add_slot of the same Mac. promote consumed the vouch (Worker
         // `pairing.ts`), so the phone vouches first, as before any add_slot.
         handoff.step = "readd"
         var add = Relay_V1_AddMacSlot()

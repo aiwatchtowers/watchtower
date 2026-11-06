@@ -562,8 +562,9 @@ func (p *Processor) readMailboxWith(ctx context.Context, b mailbox, ps *pass, re
 // own echo, rolled back) is dropped with no answer (D9). In the shared
 // mailbox, where readShared has routed the record by its sender, a name
 // naming another device than its sender is dropped too (sender_mismatch,
-// protocol §7.5 point 1) and the phone's device record is read; the hosted
-// relay's own mailboxes keep their phase-1 handling.
+// protocol §7.5 point 1). A device record is read on both transports, under
+// the same check; the hosted relay's own mailboxes keep their phase-1 handling
+// of every other kind.
 func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored, ps *pass) error {
 	opened, err := p.cfg.Opener.FromPhone(b.zone, rec.Name, rec.Envelope)
 	if err != nil {
@@ -626,8 +627,9 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		ps.report.Read++
 		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, rec.AttachmentID, ps)
 	case kindDevice:
-		if !b.shared {
-			return nil // the relay path reads no device records (phase 1 handling)
+		if !b.shared && !namesItsSender(opened) { // the shared mailbox checked this above
+			log.Printf("hub: dropped a device record of device %s: sender_mismatch", b.id)
+			return nil
 		}
 		ps.report.Read++
 		err = p.handleDeviceRecord(ctx, b, rec, opened)
