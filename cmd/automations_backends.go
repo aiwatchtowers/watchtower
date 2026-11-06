@@ -217,7 +217,8 @@ func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
 		Mode: providerrouting.PreferredReserve, Profile: providers.ToolPreflight, Retry: providerrouting.BeforeChild,
 		Tier: t, Revision: providers.RoutingRevision(r.cfg), Model: func(p string, _ digest.Tier) string { return tierModel(r.cfg, p, tier) },
 		Capable: func(p string, profile providers.InvocationProfile) bool {
-			return profile == providers.ToolPreflight && (p == "claude" || p == "codex")
+			caps, known := providers.CapsFor(p)
+			return profile == providers.ToolPreflight && known && providers.Satisfies(caps, profile)
 		}}
 }
 

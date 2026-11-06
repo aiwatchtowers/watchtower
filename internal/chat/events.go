@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"watchtower/internal/providers"
 )
 
 // Protocol v2 event types (spec §1.1). There is deliberately no "reset":
@@ -83,6 +85,10 @@ type Event struct {
 	Message           string          `json:"message,omitempty"`
 	Retryable         bool            `json:"retryable,omitempty"`
 	ActionID          int64           `json:"action_id,omitempty"`
+	// Capabilities is the actual provider's capability row on a
+	// session_ready (EventWriter fills it from Provider): what this
+	// session's transport offers, a fallback route's included.
+	Capabilities *providers.Capabilities `json:"capabilities,omitempty"`
 }
 
 // ToolWaitMessage is the waiting step's label.
@@ -161,6 +167,11 @@ func NewEventWriter(w io.Writer) *EventWriter { return &EventWriter{w: w} }
 
 // Emit writes one event line.
 func (w *EventWriter) Emit(e Event) error {
+	if e.Type == EventSessionReady && e.Provider != "" && e.Capabilities == nil {
+		if c, ok := providers.CapsFor(e.Provider); ok {
+			e.Capabilities = &c
+		}
+	}
 	b, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("encoding %s event: %w", e.Type, err)

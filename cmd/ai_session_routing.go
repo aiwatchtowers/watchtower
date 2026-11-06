@@ -107,20 +107,22 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				return m
 			}
 			req.CheckCapability = func(p string, _ providers.InvocationProfile) (bool, error) {
-				if p == "claude" {
-					return true, nil
-				}
-				if requiredClaudeAI.mode.On || len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0 {
+				caps, known := providers.CapsFor(p)
+				switch {
+				case !known:
+					return false, nil
+				case requiredClaudeAI.mode.On && !caps.ClaudeAITools:
+					return false, nil
+				case len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0 && !chat.AttachesProjectFiles(p):
 					return false, nil
 				}
-				if supported, err := sessionAttachmentCapability(p, c.Attachments); err != nil || !supported {
+				if supported, err := sessionAttachmentCapability(caps, c.Attachments); err != nil || !supported {
 					return supported, err
 				}
 				if p != cfg.AI.Provider {
 					return reserveConnectionsCapable(cfg, database, p)
 				}
-
-				return p == "codex" || p == "ollama", nil
+				return true, nil
 			}
 
 			return req, reason, nil
@@ -186,10 +188,15 @@ func reserveConnectionsCapable(cfg *config.Config, database *db.DB, provider str
 	return len(codexEnvSkips(cfg, conns, os.Environ())) == 0, nil
 }
 
-// sessionAttachmentCapability reports whether provider p's replay backend
-// takes the turn's files (chat.ProviderAttachmentCaps; a PDF never).
-func sessionAttachmentCapability(p string, attachments []chat.Attachment) (bool, error) {
-	_, _, err := chat.TurnAttachments("", attachments, chat.ProviderAttachmentCaps(p))
+// sessionAttachmentCapability reports whether a transport with caps takes
+// the turn's files: one that takes images and PDFs takes every kind (its
+// own size checks run at the turn); a replay transport takes them as
+// chat.TurnAttachments does (a PDF never).
+func sessionAttachmentCapability(caps providers.Capabilities, attachments []chat.Attachment) (bool, error) {
+	if caps.Images && caps.PDFs {
+		return true, nil
+	}
+	_, _, err := chat.TurnAttachments("", attachments, chat.AttachmentCapsOf(caps))
 	if err == nil {
 		return true, nil
 	}

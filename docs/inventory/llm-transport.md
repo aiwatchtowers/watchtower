@@ -38,4 +38,5 @@
 
 ## Changelog
 
+- 2026-11-06 (board #969 A2, plan ask #519): the Go baseline shrinks by the 23 A2 entries, now read from `providers.Capabilities`; three A2 entries whose name check is the codex adapter's (`runConnectionProbe`'s nonce, `reserveConnectionsCapable`'s env skips, `(*cliAgentRunner).Run`'s codex client) are retagged A4, which moves them into `cmd/transport_wiring.go` (spec §3.4); no entry added.
 - 2026-11-05: file created with LLMTRANSPORT-01 (spec `docs/superpowers/specs/2026-11-05-llm-transport-independence-design.md` §4.4, approved in ask #514; plan task A6, ask #519), with the full baseline of today's hits.

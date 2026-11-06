@@ -182,8 +182,9 @@ func sessionPromptOptions(cfg *config.Config, surface string, projectID int64, n
 		Surface: surface, ProjectID: projectID, ToolsAvailable: true,
 		Provider: cfg.AI.Provider, SkillsDir: skills.Dir(cfg.WorkspaceDir()), VaultDir: memoryVaultPath(cfg),
 		MemoryChat: cfg.Memory.Enabled && cfg.Memory.Surfaces.Chat, Now: now,
-		// Only the Claude backend unhides WebSearch (newSessionBackend).
-		WebSearch: cfg.AI.Provider != "codex" && cfg.AI.Provider != "ollama",
+		// The transport's web search (the Claude backend unhides WebSearch;
+		// codex's waits for ask #533, its row says no).
+		WebSearch: providers.ByID(cfg.AI.Provider).Caps.WebSearch,
 		ClaudeAI:  claudeAI,
 	}
 }

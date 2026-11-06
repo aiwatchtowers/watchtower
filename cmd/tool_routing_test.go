@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
@@ -147,4 +148,23 @@ func TestToolRoutingReturnedNativeIDStaysWithActualProviderAndModel(t *testing.T
 			require.Equal(t, 2, builds)
 		})
 	}
+}
+
+// The tool router's capability check is the table's: a profile is met by
+// what the provider's row offers, an unknown provider by nothing — no name
+// branch (LLMTRANSPORT-01).
+func TestRouting_CheckCapabilityReadsCaps(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AI.Provider = "claude"
+	req := newToolRouteProvider(cfg, nil).request("")
+	for _, id := range []string{"claude", "codex", "ollama", "gemini"} {
+		for _, profile := range []providers.InvocationProfile{providers.ToolPreflight, providers.ReviewReadonly, providers.Image} {
+			caps, known := providers.CapsFor(id)
+			got, err := req.CheckCapability(id, profile)
+			require.NoError(t, err)
+			assert.Equal(t, known && providers.Satisfies(caps, profile), got, "%s %s", id, profile)
+		}
+	}
+	got, _ := req.CheckCapability("ollama", providers.ReviewReadonly)
+	assert.False(t, got, "ollama reads no folder")
 }

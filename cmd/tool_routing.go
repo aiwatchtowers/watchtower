@@ -85,14 +85,15 @@ func (p *toolRouteProvider) request(sessionID string) providerrouting.Request {
 			_, m := providers.ResolveModelsFor(p.cfg, id)
 			return m
 		},
-		CheckCapability: func(id string, _ providers.InvocationProfile) (bool, error) {
+		CheckCapability: func(id string, profile providers.InvocationProfile) (bool, error) {
 			if p.capable != nil {
 				supported, err := p.capable(id)
 				if err != nil || !supported {
 					return supported, err
 				}
 			}
-			return id == "claude" || id == "codex", nil
+			caps, known := providers.CapsFor(id)
+			return known && providers.Satisfies(caps, profile), nil
 		}}
 }
 func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(context.Context, ai.Provider, providerrouting.Attempt) (providerrouting.Result, error)) (providerrouting.Result, error) {

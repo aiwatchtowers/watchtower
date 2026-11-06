@@ -29,6 +29,8 @@ type Provider struct {
 	// suggest them (e.g. claude's opus). Not serialized directly: `ai models`
 	// folds it into the same `models` field the live listing uses.
 	KnownModels []string `json:"-"`
+	// Caps is what the provider's transport offers (capabilities.go).
+	Caps Capabilities `json:"capabilities"`
 }
 
 // registry order is the display order in UIs.
@@ -40,6 +42,7 @@ var registry = []Provider{
 		DefaultLight:  "haiku",
 		DefaultStrong: "opus",
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
+		Caps:          mustCaps("claude"),
 	},
 	{
 		ID:          "codex",
@@ -51,6 +54,7 @@ var registry = []Provider{
 		// one pin away in Settings.
 		DefaultLight:  "gpt-5.6-luna",
 		DefaultStrong: "gpt-5.6-sol",
+		Caps:          mustCaps("codex"),
 	},
 	{
 		ID:          "ollama",
@@ -60,7 +64,17 @@ var registry = []Provider{
 		// literal to be likely installed. Unconfigured resolves to "" and the
 		// UI/CLI surfaces prompt the user to pick from the live list.
 		LiveModels: true,
+		Caps:       mustCaps("ollama"),
 	},
+}
+
+// mustCaps is id's capability row; a registry id without one is a bug.
+func mustCaps(id string) Capabilities {
+	c, ok := CapsFor(id)
+	if !ok {
+		panic("providers: no capability row for " + id)
+	}
+	return c
 }
 
 // All returns the registry in display order.

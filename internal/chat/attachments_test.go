@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/providers"
 )
 
 var (
@@ -355,4 +357,28 @@ func TestTurnAttachments_ImagesOverTheMessageCapRefused(t *testing.T) {
 	_, _, err := TurnAttachments("look", atts, AttachmentCaps{Images: true})
 	ae := requireAttachmentError(t, err, "shot4.png")
 	assert.Contains(t, ae.Reason, "one message carries at most 30 MB")
+}
+
+// A replay transport takes what its capability row says: codex images, not
+// PDFs; ollama neither — refused before the call, by capability.
+func TestAttachments_RefusedByCapability(t *testing.T) {
+	img := []Attachment{{Path: writeAttachmentFixture(t, "shot.png", fixturePNG), Mime: "image/png", Name: "shot.png"}}
+	pdf := []Attachment{{Path: writeAttachmentFixture(t, "doc.pdf", fixturePDF), Mime: "application/pdf", Name: "doc.pdf"}}
+	for _, tc := range []struct {
+		provider string
+		atts     []Attachment
+		ok       bool
+	}{{"codex", img, true}, {"codex", pdf, false}, {"ollama", img, false}, {"ollama", pdf, false}} {
+		c, _ := providers.CapsFor(tc.provider)
+		_, _, err := TurnAttachments("x", tc.atts, AttachmentCapsOf(c))
+		if tc.ok {
+			assert.NoError(t, err, tc.provider)
+			continue
+		}
+		ae := requireAttachmentError(t, err, tc.atts[0].Name)
+		assert.True(t, ae.CapabilityMissing, "%s %s", tc.provider, tc.atts[0].Name)
+	}
+	assert.True(t, AttachesProjectFiles("claude"))
+	assert.False(t, AttachesProjectFiles("codex"))
+	assert.False(t, AttachesProjectFiles("ollama"))
 }

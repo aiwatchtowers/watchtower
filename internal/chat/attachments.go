@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"unicode/utf8"
+
+	"watchtower/internal/providers"
 )
 
 // Attachment size limits (spec §7.1). Mirrored in Swift
@@ -48,17 +50,10 @@ type AttachmentCaps struct{ Images, PDFs bool }
 // allAttachments is the Claude backend's: images and PDFs as content blocks.
 var allAttachments = AttachmentCaps{Images: true, PDFs: true}
 
-// ProviderAttachmentCaps is what provider's chat backend takes: Claude
-// images and PDFs, codex images (--image, L6), ollama text only. A2's
-// capability table replaces it.
-func ProviderAttachmentCaps(provider string) AttachmentCaps {
-	switch provider {
-	case "", "claude":
-		return allAttachments
-	case "codex":
-		return AttachmentCaps{Images: true}
-	}
-	return AttachmentCaps{}
+// AttachmentCapsOf is what a transport with capabilities c takes beside
+// text: its images and PDFs rows (spec §3.3).
+func AttachmentCapsOf(c providers.Capabilities) AttachmentCaps {
+	return AttachmentCaps{Images: c.Images, PDFs: c.PDFs}
 }
 
 // takes reports whether caps cover kind.
