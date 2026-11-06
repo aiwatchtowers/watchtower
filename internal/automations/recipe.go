@@ -102,6 +102,7 @@ var EventTypes = []string{
 	"calendar.event_changed",
 	"confluence.page_changed",
 	SlackReactionAdded,
+	ApprovalEvent,
 }
 
 // MissedPolicy is what the scheduler does with a missed schedule.
@@ -360,6 +361,11 @@ func applyFields(f map[string]*yaml.Node, r *Recipe) error {
 	}
 	if r.Trigger.Kind == TriggerSync {
 		if err = syncTriggerAllowed(r.Scope, r.Trigger.Sync, m); err != nil {
+			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
+		}
+	}
+	if r.Trigger.Kind == TriggerEvent && r.Trigger.Event.Type == ApprovalEvent {
+		if err = approvalTriggerAllowed(r.Scope); err != nil {
 			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
 		}
 	}
@@ -693,6 +699,16 @@ func syncTriggerAllowed(scope Scope, slot string, m *Manifest) error {
 		return nil
 	}
 	return errors.New("a sync trigger is only for built-in automations")
+}
+
+// approvalTriggerAllowed is the one rule on who may declare trigger.event
+// approval: a built-in automation only (its runs are queued by the approval
+// hook, builtin.Fire, never by the event bus).
+func approvalTriggerAllowed(scope Scope) error {
+	if scope.IsBuiltin() {
+		return nil
+	}
+	return errors.New("an approval trigger is only for built-in automations")
 }
 
 func parseManual(n *yaml.Node) error {

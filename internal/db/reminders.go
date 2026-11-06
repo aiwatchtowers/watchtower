@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // Reminder is one parked message the owner asked to resurface (remind_me tool).
 type Reminder struct {
@@ -20,7 +23,12 @@ func (db *DB) InsertReminder(r Reminder) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("inserting reminder: %w", err)
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("inserting reminder: %w", err)
+	}
+	db.approvalChanged(ReminderRef(id))
+	return id, nil
 }
 
 func (db *DB) ListDueReminders(nowUTC string) ([]Reminder, error) {
@@ -41,18 +49,35 @@ func (db *DB) ListDueReminders(nowUTC string) ([]Reminder, error) {
 	return out, rows.Err()
 }
 
-func (db *DB) MarkReminderDone(id int64) error {
-	_, err := db.Exec(`UPDATE reminders SET status='done', done_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, id)
-	if err != nil {
-		return fmt.Errorf("marking reminder done: %w", err)
-	}
-	return nil
+// MarkReminderDone marks reminder id done. changed is false when it was
+// already done or does not exist: nothing was written and the approval hook
+// is not called.
+func (db *DB) MarkReminderDone(id int64) (changed bool, err error) {
+	res, err := db.Exec(`UPDATE reminders SET status='done', done_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ? AND status != 'done'`, id)
+	return db.reminderChanged(id, res, err, "marking reminder done")
 }
 
-func (db *DB) SnoozeReminder(id int64, until string) error {
-	_, err := db.Exec(`UPDATE reminders SET remind_at=?, status='pending' WHERE id=?`, until, id)
+// SnoozeReminder moves reminder id to until and makes it pending again.
+// changed is false for an unknown id.
+func (db *DB) SnoozeReminder(id int64, until string) (changed bool, err error) {
+	res, err := db.Exec(`UPDATE reminders SET remind_at=?, status='pending' WHERE id=?`, until, id)
+	return db.reminderChanged(id, res, err, "snoozing reminder")
+}
+
+// reminderChanged reads an autocommit reminder UPDATE's result and calls the
+// approval hook when it changed a row.
+func (db *DB) reminderChanged(id int64, res sql.Result, err error, what string) (bool, error) {
 	if err != nil {
-		return fmt.Errorf("snoozing reminder: %w", err)
+		return false, fmt.Errorf("%s: %w", what, err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	db.approvalChanged(ReminderRef(id))
+	return true, nil
 }

@@ -465,6 +465,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Before the PID file exists: a process that finds the daemon through it
 	// may send AutomationWakeSignal at once.
 	d.watchAutomationWake(ctx)
+	d.installApprovalHook()
 	if d.pidPath != "" {
 		if err := WritePID(d.pidPath); err != nil {
 			return fmt.Errorf("writing pid file: %w", err)
@@ -641,6 +642,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
+	d.phaseApprovalSweep(ctx)
 	d.phaseTranscriptAudioCleanup()
 	// Before the index, so this cycle's descriptions are searchable now.
 	d.phaseMediaDescribe(ctx)
