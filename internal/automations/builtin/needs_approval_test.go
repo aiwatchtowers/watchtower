@@ -620,3 +620,48 @@ func TestApprovalsList_RunLabelFromTheRun(t *testing.T) {
 		}
 	}
 }
+
+// A card's budget is fixed, never a function of how many approvals are
+// open: a long-text approval's card stays byte-identical (blocks, content
+// hash, changed_at) while the open count goes 1 → 2 → 50.
+func TestNeedsApproval_CardIndependentOfTheOpenCount(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	base := testStart.Add(-3 * time.Hour)
+	add := func(n int, text string) {
+		t.Helper()
+		for range n {
+			args, err := json.Marshal(map[string]string{"text": text})
+			if err != nil {
+				t.Fatal(err)
+			}
+			base = base.Add(time.Minute)
+			if _, err := f.d.Exec(`INSERT INTO agent_actions (tool, args_json, reason, created_at) VALUES ('create_target', ?, ?, ?)`,
+				string(args), strings.Repeat("Причина для acme. ", 100), base.Format(time.RFC3339)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	add(1, strings.Repeat("Длинный текст предложения для acme. ", 200))
+	var first db.AutomationOutput
+	for i, extra := range []int{0, 1, 48} {
+		add(extra, "Short task")
+		f.clock.Advance(time.Minute)
+		f.runNeedsApproval(t)
+		arts := f.artifacts(t)
+		card, ok := arts["action:1"]
+		if !ok {
+			t.Fatalf("step %d: no card for action:1 (%d cards)", i, len(arts))
+		}
+		if i == 0 {
+			first = card
+			continue
+		}
+		if card.BlocksJSON != first.BlocksJSON || card.ContentHash != first.ContentHash || !card.ChangedAt.Equal(first.ChangedAt) {
+			t.Errorf("step %d (%d open): action:1's card changed", i, len(arts))
+		}
+	}
+	if n := len(f.artifacts(t)); n != automations.MaxOutputsPerRun {
+		t.Errorf("cards = %d, want %d", n, automations.MaxOutputsPerRun)
+	}
+}

@@ -28,10 +28,15 @@ const (
 	approvalTextRunes   = 4000
 	// approvalsBudgetBytes bounds the JSON size of every approval's
 	// strings together, well under the SDK result cap
-	// (automations.MaxSDKResultBytes): each approval gets an even share,
-	// its short strings a fixed part of it and its text what they leave.
-	// Every approval is kept, only its words are cut.
+	// (automations.MaxSDKResultBytes): each approval gets a fixed share
+	// (approvalShareBytes), its short strings a fixed part of it and its
+	// text what they leave. Every approval is kept, only its words are cut.
 	approvalsBudgetBytes = 100 << 10
+	// approvalShareBytes is one approval's share, sized for the most
+	// approvals a run writes: never a function of how many are open, so an
+	// unchanged approval's card stays byte-identical (same content hash,
+	// read state kept) when others open or close.
+	approvalShareBytes = approvalsBudgetBytes / automations.MaxOutputsPerRun
 	// approvalRowOverhead is an approval's JSON besides its strings: the
 	// keys, key, kind, id, tone, status and the stamps.
 	approvalRowOverhead = 400
@@ -75,7 +80,7 @@ func ApprovalsPrimitives(d *db.DB, now func() time.Time) map[string]automations.
 				return automations.PrimitiveResult{}, err
 			}
 			items := make([]any, 0, len(view.Open))
-			share := approvalsBudgetBytes / max(len(view.Open), 1)
+			share := approvalShareBytes
 			for _, o := range view.Open {
 				items = append(items, approvalItem(o, labels[o.ID], share))
 			}
@@ -92,7 +97,7 @@ func ApprovalsPrimitives(d *db.DB, now func() time.Time) map[string]automations.
 }
 
 // approvalItem is the script's view of one open approval, its strings
-// within share bytes of JSON (approvalsBudgetBytes): the title, line, detail,
+// within share bytes of JSON (approvalShareBytes): the title, line, detail,
 // error, reason and run label an eighth of it each at most, the link only
 // when it fits its eighth, the text what is left.
 func approvalItem(o db.OpenApproval, runLabel string, share int) map[string]any {
