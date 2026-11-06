@@ -69,6 +69,15 @@ final class InboxFolderContentTests: XCTestCase {
         XCTAssertFalse(content.hasChildren(rows[4]))
     }
 
+    func testHiddenFolderAndItsSubtreeLeaveUnlessShown() {
+        var rows = tree + [InboxFolderRow(id: 5, kind: .owner, title: "Team", icon: "person.2", depth: 1, count: 0)]
+        rows[2].hidden = true
+        XCTAssertEqual(InboxFolderMenuContent(rows: rows).visibleRows.map(\.title),
+                       ["Inbox", "Needs approval", "Team"], "Release and its Blockers leave")
+        XCTAssertEqual(InboxFolderMenuContent(rows: rows, showsHidden: true).visibleRows.map(\.title),
+                       ["Inbox", "Needs approval", "Release", "Blockers", "Team"])
+    }
+
     func testReadOnlyWhileCLIIsMissingOrAMoveRuns() {
         XCTAssertFalse(InboxFolderMenuContent(rows: tree).isReadOnly)
         XCTAssertTrue(InboxFolderMenuContent(rows: tree, note: .cliUnavailable).isReadOnly)

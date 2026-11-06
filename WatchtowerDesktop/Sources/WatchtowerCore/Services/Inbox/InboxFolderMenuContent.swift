@@ -160,15 +160,21 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     /// No edit, drag or menu write: the CLI is missing or a move runs.
     package var isReadOnly: Bool { note == .cliUnavailable || pendingMoveID != nil }
 
-    /// The rows drawn: a collapsed folder's descendants are left out.
+    /// The rows drawn. `rows` is the whole tree; this is the one place that
+    /// leaves out a collapsed folder's descendants and — unless Show Hidden
+    /// Folders is on — a hidden folder with everything below it.
     package var visibleRows: [InboxFolderRow] {
-        var collapsedDepth: Int?
+        var skipBelow: Int?
         return rows.filter { row in
-            if let depth = collapsedDepth {
+            if let depth = skipBelow {
                 if row.depth > depth { return false }
-                collapsedDepth = nil
+                skipBelow = nil
             }
-            if !row.isExpanded { collapsedDepth = row.depth }
+            if row.hidden, !showsHidden {
+                skipBelow = row.depth
+                return false
+            }
+            if !row.isExpanded { skipBelow = row.depth }
             return true
         }
     }
