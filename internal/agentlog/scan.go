@@ -17,11 +17,13 @@ import (
 
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
+	"watchtower/internal/rollout"
 )
 
 // Options configures one Scan.
 type Options struct {
 	ClaudeDir string        // ~/.claude; tests pass a temp dir
+	CodexHome string        // $CODEX_HOME or ~/.codex (DefaultCodexHome); tests pass a temp dir
 	Budget    time.Duration // 0 = unbounded
 	Now       func() time.Time
 }
@@ -71,6 +73,9 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 	if o.ClaudeDir == "" {
 		o.ClaudeDir = DefaultClaudeDir()
 	}
+	if o.CodexHome == "" {
+		o.CodexHome = DefaultCodexHome()
+	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
@@ -105,6 +110,11 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 	if err != nil {
 		return nil, err
 	}
+	codexFiles, err := workbenchCodexFiles(main, id, o.CodexHome)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, codexFiles...)
 	deadline := time.Time{}
 	if o.Budget > 0 {
 		deadline = o.Now().Add(o.Budget)
@@ -129,6 +139,22 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 		return res, fmt.Errorf("recording import progress for workbench %d: %w", id, err)
 	}
 	return res, nil
+}
+
+// workbenchCodexFiles lists the rollouts of the workbench's codex rows
+// (interim wiring, see CodexTranscripts; A5 moves it onto the session
+// adapter). They come after the Claude transcripts. A vanished rollout has no
+// path to list, so v1 never marks one missing; its rows stay (AGENTLOG-03).
+func workbenchCodexFiles(main *db.DB, id int64, codexHome string) ([]TranscriptFile, error) {
+	rows, err := main.WorkbenchCodexSessions(id)
+	if err != nil {
+		return nil, err
+	}
+	cr := make([]CodexRow, len(rows))
+	for i, r := range rows {
+		cr[i] = CodexRow{TerminalSessionID: r.ID, SessionID: r.SessionID, StoredPath: r.TranscriptPath}
+	}
+	return CodexTranscripts(codexHome, cr), nil
 }
 
 // recordImportProgress upserts the workbench's agent_log_import row (spec
@@ -238,6 +264,9 @@ func ownsSession(d *agentlogdb.DB, tf TranscriptFile, owned map[string]bool, fol
 		return owned[tf.SessionUUID], nil
 	}
 	home := firstCWD(tf.Path)
+	if tf.Agent == AgentCodex {
+		home = codexCWD(tf.Path, tf.SessionUUID)
+	}
 	if r, err := filepath.EvalSymlinks(home); err == nil {
 		home = r
 	}
@@ -255,6 +284,9 @@ var batchRows = 1000
 // each slice, and stops between slices when stop says the scan is out of
 // time (res.Incomplete; the next scan resumes from the last committed slice).
 func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
+	if tf.Agent == AgentCodex {
+		return scanCodexFile(st, tf, wb, stop, res)
+	}
 	stored, err := st.al.GetAgentLogFile(tf.Path)
 	if err != nil {
 		return err
@@ -317,14 +349,18 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 // sessions' terminal session ids are read from watchtower.db first, outside
 // agentlog.db's write transaction.
 func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
-	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
+	agent := tf.Agent
+	if agent == "" {
+		agent = "claude"
+	}
+	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: agent, Size: tf.Size, MTime: tf.MTime,
 		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
 	if pr.More {
 		// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
 		f.Size, f.MTime = f.ReadOffset, ""
 	}
 	sessions := ownedSessions(pr.Sessions, tf, wb)
-	if err := resolveTerminalSessions(st.main, sessions); err != nil {
+	if err := resolveTerminalSessions(st.main, tf.Agent, sessions); err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
 	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
@@ -353,9 +389,10 @@ func hasSession(sessions []agentlogdb.AgentLogSession, uuid string) bool {
 	return false
 }
 
-// resolveTerminalSessions sets each session's TerminalSessionID to the Claude
-// terminal session that recorded it in watchtower.db, if any.
-func resolveTerminalSessions(main *db.DB, sessions []agentlogdb.AgentLogSession) error {
+// resolveTerminalSessions sets each session's TerminalSessionID to the
+// terminal session of the transcript's agent (Claude, or codex for a rollout)
+// that recorded it in watchtower.db, if any.
+func resolveTerminalSessions(main *db.DB, agent string, sessions []agentlogdb.AgentLogSession) error {
 	if len(sessions) == 0 {
 		return nil
 	}
@@ -363,7 +400,11 @@ func resolveTerminalSessions(main *db.DB, sessions []agentlogdb.AgentLogSession)
 	for i, s := range sessions {
 		uuids[i] = s.SessionUUID
 	}
-	ids, err := main.ClaudeTerminalSessionIDs(uuids)
+	lookup := main.ClaudeTerminalSessionIDs
+	if agent == AgentCodex {
+		lookup = main.CodexTerminalSessionIDs
+	}
+	ids, err := lookup(uuids)
 	if err != nil {
 		return err
 	}
@@ -484,4 +525,103 @@ func firstCWD(path string) string {
 
 func equalFold(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// scanCodexFile is scanFile for a codex rollout, opened with rollout.Open (a
+// zstd file is decompressed in memory only; nothing is written beside it,
+// AGENTLOG-05). Offsets are in the rollout's text. A plain file resumes from
+// its stored offset; a compressed one, which cannot seek and is rewritten
+// whole when codex compresses it, is reread from 0 whenever it changed (the
+// keys are idempotent). The slices share one buffered reader, so each starts
+// where the previous one stopped.
+func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
+	stored, err := st.al.GetAgentLogFile(tf.Path)
+	if err != nil {
+		return err
+	}
+	start, expect, unchanged := resumePoint(stored, tf)
+	if unchanged {
+		res.FilesSkipped++
+		return nil
+	}
+	rc, compressed, err := rollout.Open(tf.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // vanished between listing and open
+	}
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	seeker, plain := rc.(io.Seeker)
+	if compressed || !plain {
+		start = 0
+	}
+	if start > 0 {
+		if _, err := seeker.Seek(start, io.SeekStart); err != nil {
+			return err
+		}
+	}
+	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, SessionUUID: tf.SessionUUID, MaxRows: batchRows}
+	if start > 0 {
+		if o.CodexModel, o.CodexLastTotal, err = st.al.CodexResumeState(tf.SessionUUID); err != nil {
+			return err
+		}
+	}
+	br := bufio.NewReaderSize(rc, 64<<10)
+	for first := true; ; first = false {
+		pr, err := ParseCodex(br, start, o)
+		if err != nil {
+			return err
+		}
+		o.CodexLastTotal = pr.CodexLastTotal
+		if s := pr.Sessions[tf.SessionUUID]; s != nil && s.Model != "" {
+			o.CodexModel = s.Model
+		}
+		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
+		if err != nil {
+			return err
+		}
+		if first {
+			res.FilesScanned++
+		}
+		res.addSlice(pr, applied)
+		if !applied || !pr.More {
+			return nil
+		}
+		start, expect = next, next
+		if stop() {
+			res.Incomplete = true
+			return nil
+		}
+	}
+}
+
+// codexCWD is the cwd of session id's own session_meta among the first 200
+// lines of the rollout at path, or "" (a fork replays its parent's
+// session_meta after its own; only the session's own counts).
+func codexCWD(path, id string) string {
+	rc, _, err := rollout.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	br := bufio.NewReaderSize(rc, 64<<10)
+	for range 200 {
+		raw, _, complete, _ := NextLine(br, maxLineBytes)
+		if !complete {
+			return ""
+		}
+		if raw == nil {
+			continue
+		}
+		var l codexRolloutLine
+		if json.Unmarshal(raw, &l) != nil || l.Type != "session_meta" {
+			continue
+		}
+		var pl codexPayload
+		if json.Unmarshal(l.Payload, &pl) == nil && pl.ID == id && pl.CWD != "" {
+			return pl.CWD
+		}
+	}
+	return ""
 }

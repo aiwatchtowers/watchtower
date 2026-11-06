@@ -66,7 +66,7 @@ func TestOpen_SchemaAndPerms(t *testing.T) {
 	t.Cleanup(func() { _ = d2.Close() })
 	var versions int
 	require.NoError(t, d2.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id > 0`).Scan(&versions))
-	assert.Equal(t, 2, versions)
+	assert.Equal(t, 3, versions)
 }
 
 // agentlog.db's migrations run on a goose Provider; watchtower.db's on the

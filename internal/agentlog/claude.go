@@ -107,6 +107,15 @@ type ParseOptions struct {
 	// plus tool results to MaxRows (0 = read to the end); More then says the
 	// input may hold further complete lines.
 	MaxRows int
+	// SessionUUID is the codex session a rollout belongs to (ParseCodex
+	// only): the terminal session row's id, known before the read, so a read
+	// that starts past session_meta still knows its session.
+	SessionUUID string
+	// CodexModel and CodexLastTotal seed a codex read that does not start at
+	// offset 0: the model of the last turn_context before it and the running
+	// token total of the last stored response (ParseCodex only).
+	CodexModel     string
+	CodexLastTotal int64
 }
 
 type ParseResult struct {
@@ -124,6 +133,9 @@ type ParseResult struct {
 	More         bool     // stopped at MaxRows, not at the end of the input
 	Skills       []string // every skill name known at the end of the parse (seed for the next slice)
 	PriorLoaded  bool     // PriorSkills was called: Skills includes the listings before the start
+	// CodexLastTotal is the running token total of the read's last stored
+	// response (ParseCodex only): the next slice's seed.
+	CodexLastTotal int64
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any

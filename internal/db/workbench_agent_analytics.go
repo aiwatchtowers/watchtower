@@ -63,3 +63,52 @@ func (db *DB) ClaudeTerminalSessionIDs(uuids []string) (map[string]int64, error)
 	}
 	return out, nil
 }
+
+// CodexTerminalSessionIDs is ClaudeTerminalSessionIDs for codex rows: it maps
+// each of uuids that a codex terminal session recorded as its session id to
+// that session's id; a uuid without one is absent. A plain read, no
+// transaction.
+func (db *DB) CodexTerminalSessionIDs(uuids []string) (map[string]int64, error) {
+	out := map[string]int64{}
+	for _, u := range uuids {
+		var id int64
+		err := db.QueryRow(`SELECT id FROM terminal_sessions WHERE claude_session_id = ? AND kind = 'codex' LIMIT 1`, u).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("resolving codex terminal session of %s: %w", u, err)
+		}
+		out[u] = id
+	}
+	return out, nil
+}
+
+// CodexAnalyticsRow is one codex terminal session of a workbench that knows
+// its codex session id; TranscriptPath is agent_transcript_path ("" = none).
+type CodexAnalyticsRow struct {
+	ID             int64
+	SessionID      string
+	TranscriptPath string
+}
+
+// WorkbenchCodexSessions lists the workbench's codex terminal sessions that
+// have a session id, oldest first: the only codex rows agent analytics reads
+// rollouts for (AGENTLOG-04). A plain read, no transaction.
+func (db *DB) WorkbenchCodexSessions(workbenchID int64) ([]CodexAnalyticsRow, error) {
+	rows, err := db.Query(`SELECT id, claude_session_id, COALESCE(agent_transcript_path, '') FROM terminal_sessions
+		WHERE project_id = ? AND kind = 'codex' AND COALESCE(claude_session_id, '') <> '' ORDER BY id`, workbenchID)
+	if err != nil {
+		return nil, fmt.Errorf("listing codex sessions of workbench %d: %w", workbenchID, err)
+	}
+	defer rows.Close()
+	var out []CodexAnalyticsRow
+	for rows.Next() {
+		var r CodexAnalyticsRow
+		if err := rows.Scan(&r.ID, &r.SessionID, &r.TranscriptPath); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

@@ -223,8 +223,8 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	assert.Equal(t, []string{"claude_md_bytes", "claude_md_lines", "rules_bytes"}, mapKeys(ctx.Disk))
 	assert.JSONEq(t, `"done"`, string(ov.Import["state"]))
 	assert.Equal(t, []string{"active_ms", "away_ms", "cost_estimated_calls", "cost_usd", "sessions", "tokens"}, mapKeys(ov.Totals))
-	assert.Equal(t, []string{"active_ms", "avg_parallel", "branch", "cost_usd", "ended_at", "model", "old_format", "prs",
-		"session_uuid", "started_at"}, mapKeys(ov.Sessions[0]))
+	assert.Equal(t, []string{"active_ms", "agent", "avg_parallel", "branch", "cost_usd", "ended_at", "model", "old_format", "prs",
+		"session_uuid", "started_at", "unpriced_calls"}, mapKeys(ov.Sessions[0]))
 
 	out = runAgentsCmd(t, "report", "--workbench", wb, "--session", "s1", "--json")
 	assert.Equal(t, []string{"commands", "hints", "lanes", "session", "subagents", "time"}, jsonKeys(t, out))
