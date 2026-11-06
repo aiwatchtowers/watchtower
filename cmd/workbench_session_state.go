@@ -131,7 +131,8 @@ func (in hookEvent) agentFailure() *db.AgentFailure {
 // wakeup fires no UserPromptSubmit); one stamped before the stop's "waiting", or whose
 // tool call the transcript places before the stop, writes nothing. A
 // PostToolUseFailure (a tool ran and failed) is a PostToolUse, unless the
-// owner interrupted the tool (is_interrupt: nothing recorded). A main-thread
+// owner interrupted the tool (is_interrupt): recordHookAgentState then
+// records `waiting` for a main-thread one and nothing for a subagent's. A main-thread
 // PreToolUse (a tool starts) is the same signal under the same turn order,
 // but never over "needs approval" (board #988, ask #525:
 // hookTurn.notOverApproval). A
@@ -211,8 +212,11 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 	}
 	state, ok := agentStateFor(in.Event, in.NotificationType)
 	if !ok || in.SessionID == "" || (in.agentTurnEvent() && !in.recordsAgentTurn()) || in.subagentToolStart() ||
-		in.interruptedTool() {
+		(in.interruptedTool() && in.AgentID != "") {
 		return nil
+	}
+	if in.interruptedTool() {
+		state = agentStateWaiting
 	}
 	turn, subagentToolRun := in.toolRunTurn()
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
@@ -382,8 +386,10 @@ func (in hookEvent) subagentToolStart() bool {
 }
 
 // interruptedTool says the event is a PostToolUseFailure of a tool the owner
-// interrupted: it records nothing (after an interrupt no Stop comes, so a
-// `working` would stay until the next event).
+// interrupted (Esc). No Stop follows an interrupt, so a main-thread one
+// records the turn's end itself — `waiting`, over `working` or `approval`,
+// under a tool result's turn order (board #988) — and a subagent's records
+// nothing.
 func (in hookEvent) interruptedTool() bool {
 	return in.Event == "PostToolUseFailure" && in.IsInterrupt
 }

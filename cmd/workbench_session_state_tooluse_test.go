@@ -190,8 +190,9 @@ func TestSessionState_InjectedMessageTurnIsWorking(t *testing.T) {
 
 // Board #988 review (F4): a failed tool ran, so — like a PostToolUse — it
 // ends the "needs approval" of a granted permission, on the main thread and
-// in a subagent; a tool the owner interrupted (is_interrupt) records
-// nothing, on either.
+// in a subagent. A tool the owner interrupted (is_interrupt) ends the turn
+// on the main thread — `waiting`, since no Stop follows an interrupt — and
+// records nothing in a subagent.
 func TestProj11_PostToolUseFailureClearsApprovalUnlessInterrupted(t *testing.T) {
 	for _, tc := range []struct {
 		name, agentID string
@@ -200,7 +201,7 @@ func TestProj11_PostToolUseFailureClearsApprovalUnlessInterrupted(t *testing.T) 
 	}{
 		{"main thread", "", false, "working"},
 		{"subagent", "a1b2c3", false, "working"},
-		{"main thread, interrupted", "", true, "approval"},
+		{"main thread, interrupted", "", true, "waiting"},
 		{"subagent, interrupted", "a1b2c3", true, "approval"},
 	} {
 		database, pid, row := briefSessionFixture(t)
@@ -215,22 +216,40 @@ func TestProj11_PostToolUseFailureClearsApprovalUnlessInterrupted(t *testing.T) 
 		}
 		recordToolEvent(t, pid, at, 3, payload)
 		assert.Equal(t, tc.want, storedAgentState(t, database, row), tc.name)
-		if tc.interrupt {
+		if tc.interrupt && tc.agentID != "" {
 			assert.Equal(t, before, rowSnapshot(t, database, row), "%s: an interrupted tool wrote", tc.name)
 		}
 	}
 }
 
-// An interrupted main-thread tool out of `waiting` records nothing either:
-// no Stop follows an interrupt, so a `working` would stay.
-func TestSessionState_InterruptedToolOutOfWaitingRecordsNothing(t *testing.T) {
-	database, pid, row := briefSessionFixture(t)
+// interrupted is a main-thread PostToolUseFailure of call id, its transcript
+// at path, that the owner interrupted.
+func interrupted(id, path string) string {
+	return strings.TrimSuffix(toolEventPayload("PostToolUseFailure", id, path, ""), "}") + `,"is_interrupt":true}`
+}
+
+// Board #988 verify (N2): an interrupted main-thread tool ends the turn —
+// `working` becomes `waiting` with no Stop — under a tool result's turn
+// order: an ended turn's interrupted call, placed before the Stop, writes
+// nothing over a later turn's `working`.
+func TestSessionState_InterruptedToolRecordsWaiting(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 	_, at := hookClock(t)
-	recordToolEvent(t, pid, at, 1, statePayload("Notification", briefLaunchID, "idle_prompt"))
-	before := rowSnapshot(t, database, row)
-	recordToolEvent(t, pid, at, 2, strings.TrimSuffix(toolEventPayload("PostToolUseFailure", "toolu_A", "", ""), "}")+`,"is_interrupt":true}`)
-	assert.Equal(t, before, rowSnapshot(t, database, row))
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptToolUse("toolu_A"), transcriptToolResult("toolu_A"),
+		transcriptReply("done"))
+	recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	require.Equal(t, "waiting", hookStep(t, database, pid, row, at, 2, stopPayload(transcript)).AgentState.String)
+	recordToolEvent(t, pid, at, 3, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	appendTranscript(t, transcript, transcriptPrompt("again"), transcriptToolUse("toolu_B"))
+	recordToolEvent(t, pid, at, 4, toolEventPayload("PreToolUse", "toolu_B", transcript, ""))
+	require.Equal(t, "working", storedAgentState(t, database, row))
+
+	recordToolEvent(t, pid, at, 5, interrupted("toolu_A", transcript))
+	assert.Equal(t, "working", storedAgentState(t, database, row), "the ended turn's interrupted call wrote")
+
+	recordToolEvent(t, pid, at, 6, interrupted("toolu_B", transcript))
+	assert.Equal(t, "waiting", storedAgentState(t, database, row), "the interrupted tool did not end the turn")
 }
 
 // A subagent's tool start writes nothing (its state stays the main thread's)
