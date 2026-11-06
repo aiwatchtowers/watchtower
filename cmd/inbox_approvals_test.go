@@ -4,7 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,4 +153,42 @@ func TestApprovalHook_DaemonThatCannotWakeIsNotLogged(t *testing.T) {
 	approvalWakeAutomations = func(*config.Config) (bool, error) { return false, errors.New("boom") }
 	approvalWake(cfg)()
 	assert.Equal(t, []string{"approval hook: waking the daemon: boom"}, lines)
+}
+
+// The approval writers are called only from internal/tools (the registry) and
+// cmd/actions.go (its direct transitions on the handle it built a registry
+// on), so installApprovalHook in buildToolRegistry covers every cmd process
+// that changes an approval. A new caller elsewhere must install the hook.
+func TestApprovalWriters_CalledOnlyThroughTheRegistry(t *testing.T) {
+	writers := map[string]bool{"InsertAgentAction": true, "InsertInboxButtonProposal": true,
+		"TransitionAgentAction": true, "DismissAgentAction": true, "ApproveAgentActionWithArgs": true,
+		"InsertReminder": true, "MarkReminderDone": true, "SnoozeReminder": true}
+	allowed := func(path string) bool {
+		return strings.HasPrefix(path, "internal/db/") || strings.HasPrefix(path, "internal/tools/") || path == "cmd/actions.go"
+	}
+	var callers []string
+	for _, root := range []string{"../cmd", "../internal"} {
+		require.NoError(t, filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
+			if err != nil || e.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			if err != nil {
+				return err
+			}
+			rel := strings.TrimPrefix(filepath.ToSlash(path), "../")
+			ast.Inspect(file, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && writers[sel.Sel.Name] {
+						callers = append(callers, rel)
+						assert.True(t, allowed(rel), "%s calls %s outside the registry", rel, sel.Sel.Name)
+					}
+				}
+				return true
+			})
+			return nil
+		}))
+	}
+	assert.Contains(t, callers, "cmd/actions.go")
+	assert.Contains(t, callers, "internal/tools/registry.go")
 }
