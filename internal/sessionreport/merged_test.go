@@ -99,15 +99,22 @@ func TestMergeBase(t *testing.T) {
 	}
 }
 
-func TestSessionMergeRefs_NotDoneLeavesWithABase(t *testing.T) {
+// mergeRefsOf is session sessionID's into: refs.
+func mergeRefsOf(t *testing.T, d *db.DB, sessionID int64) []string {
+	t.Helper()
+	_, sc, err := loadScope(context.Background(), d, 1, sessionID)
+	require.NoError(t, err)
+	return sc.mergeRefs()
+}
+
+func TestSessionRefs_EndWithTheMergeVerdicts(t *testing.T) {
 	d := mergedFixture(t)
-	refs, err := SessionMergeRefs(context.Background(), d, 1, 1)
+	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f",
+		"into:feature/x-ui:wt/g", "into:feature/x:feature/x-ui"}
+	assert.ElementsMatch(t, want, mergeRefsOf(t, d, 1))
+	refs, err := SessionRefs(context.Background(), d, 1, 1)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f",
-		"into:feature/x-ui:wt/g", "into:feature/x:feature/x-ui"}, refs)
-	all, err := WorkbenchMergeRefs(context.Background(), d, 1)
-	require.NoError(t, err)
-	assert.Equal(t, refs, all)
+	assert.Equal(t, mergeRefsOf(t, d, 1), refs[len(refs)-len(want):], "the PR and branch refs, then the verdicts")
 }
 
 // newFeatureRepo builds main and feature/x (one commit), with leaf branches
@@ -283,8 +290,29 @@ func TestMergeRefs_CoverThePhaseLeaves(t *testing.T) {
 	assert.Equal(t, Progress{Total: 1, Merged: 1}, r.Progress, "rule 2: 112 only")
 	g := phaseByID(t, r.Phases, 110)
 	assert.Equal(t, []int{1, 6, 2}, []int{g.Done, g.Total, g.Merged}, "the phase counts its whole group")
-	refs, err := SessionMergeRefs(context.Background(), d, 1, 1)
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f"}, refs,
+	assert.ElementsMatch(t, []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f"}, mergeRefsOf(t, d, 1),
 		"every not-done leaf the phase counts is refreshed")
+}
+
+// Review F10: the row lines' refresh stops at SummaryRefreshBudget (a
+// fake clock moving 2 s per read), keeps the unchecked verdicts, and
+// still returns every row line, its counts from the cache.
+func TestRefreshedSummaries_StopAtTheSummaryBudget(t *testing.T) {
+	d := mergedFixture(t)
+	calls := ghStub(t)
+	var mu sync.Mutex
+	tick := 0
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		at := refreshNow.Add(time.Duration(tick) * 2 * time.Second)
+		tick++
+		return at
+	}
+	rows, res, err := RefreshedSummaries(context.Background(), d, 1, RefreshOptions{Network: true, Now: clock})
+	require.NoError(t, err)
+	assert.Contains(t, res.Note, "the 3s time budget ran out; 4 ref(s) keep their cached state")
+	assert.Empty(t, calls(), "gh never runs, whatever Network says")
+	require.Len(t, rows, 1)
+	assert.Equal(t, []int{1, 8, 4}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
 }

@@ -130,8 +130,9 @@ func TestWorkbenchSessionReport_GHFailureExitsZeroWithANote(t *testing.T) {
 	assert.Equal(t, []string{"auth status"}, calls())
 }
 
-// --summary reads the cache only; --session on the same workbench does run
-// gh, so the stub is live.
+// --summary never runs gh (since board #986 it runs a git-only refresh of
+// the merge verdicts first); --session on the same workbench does run gh,
+// so the stub is live.
 func TestWorkbenchSessionReport_SummaryNeverRunsGH(t *testing.T) {
 	repo := gitBranchRepo(t)
 	sessionReportWorkbench(t, repo)
@@ -316,4 +317,25 @@ INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_pa
 	out, err = runSessionReport(t, "--workbench", "1", "--summary")
 	require.NoError(t, err)
 	assert.Contains(t, out, "1/3 · 1 merged")
+}
+
+// Review F5: what the --summary merge refresh could not check is one stderr
+// line; stdout keeps the JSON alone.
+func TestWorkbenchSessionReport_SummaryRefreshNoteGoesToStderr(t *testing.T) {
+	repo := gitBranchRepo(t)
+	fixture := filepath.Join(t.TempDir(), "nobase.sql")
+	require.NoError(t, os.WriteFile(fixture, []byte(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
+    (500, 'Feature', '2026-09-28', '2026-10-05', NULL, 'in_progress', 1, 'feature/gone'),
+    (501, 'Task', '2026-09-28', '2026-10-05', 500, 'todo', 1, 'wt/x');
+INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id) VALUES
+    (1, 1, 'claude', 'Feature', 500, '/tmp/acme', 'uuid-1');
+`), 0o644))
+	loadSessionReportFixture(t, fixture, repo)
+
+	out, errOut, err := runWorkbench(t, "session-report", "--workbench", "1", "--summary", "--json")
+	require.NoError(t, err)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &rows), out)
+	assert.Equal(t, "session-report: merge states: base branch feature/gone could not be resolved locally or on origin; merge checks into it skipped\n", errOut)
 }

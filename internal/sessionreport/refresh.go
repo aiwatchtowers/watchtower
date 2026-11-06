@@ -68,6 +68,14 @@ type prJSON struct {
 // the cache only — never the board, so PROJ-07's drift check stays the only
 // place that flags merged_but_open.
 func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, opts RefreshOptions) RefreshResult {
+	res, _ := refresh(ctx, d, workbenchID, refs, opts)
+	return res
+}
+
+// refresh is Refresh, also returning the cache as it stands afterwards (the
+// rows read before, with every row it stored); nil when the cache could not
+// be read.
+func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, opts RefreshOptions) (RefreshResult, map[string]db.PRState) {
 	if opts.Budget <= 0 {
 		opts.Budget = DefaultRefreshBudget
 	}
@@ -76,11 +84,11 @@ func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 	}
 	wb, err := d.GetWorkbench(workbenchID)
 	if err != nil {
-		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}
+		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil
 	}
 	cache, err := d.PRStates(workbenchID)
 	if err != nil {
-		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}
+		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil
 	}
 	start := opts.Now()
 	var stale []string
@@ -95,7 +103,7 @@ func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 		}
 	}
 	if len(stale) == 0 {
-		return RefreshResult{}
+		return RefreshResult{}, cache
 	}
 	// Least recently checked first (never checked before all): a ref that
 	// keeps reading no verdict is stamped too, so it waits its turn and
@@ -114,7 +122,7 @@ func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 		}
 	}
 	r.noteSkipped()
-	return RefreshResult{Note: strings.Join(r.notes, "; ")}
+	return RefreshResult{Note: strings.Join(r.notes, "; ")}, cache
 }
 
 // isStale: the row is old enough to check again (or its time unreadable).
@@ -211,7 +219,9 @@ func (r *refresher) check(ctx context.Context, ref string) bool {
 	row.CheckedAt = r.opts.Now().UTC().Format(time.RFC3339)
 	if err := r.d.UpsertPRState(row); err != nil {
 		r.skip(ref, err.Error())
+		return true
 	}
+	r.cache[ref] = row
 	return true
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"slices"
 	"strings"
 
 	"watchtower/internal/agentkind"
@@ -27,14 +26,46 @@ type Summary struct {
 // never a shell) of workbench workbenchID, in session id order, from the DB and
 // the PR cache only.
 func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, error) {
-	states, err := d.PRStates(workbenchID)
-	if err != nil {
-		return nil, err
-	}
 	sessions, err := agentSessions(ctx, d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
+	states, err := d.PRStates(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	return summarize(sessions, states), nil
+}
+
+// RefreshedSummaries is Summaries after a refresh of the merge verdicts
+// every agent session's counts read (board #986): git only — opts.Network
+// is ignored, gh never runs — within opts.Budget (0 = SummaryRefreshBudget).
+// The board and the cache are each read once. The result's note says what
+// could not be refreshed.
+func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts RefreshOptions) ([]Summary, RefreshResult, error) {
+	sessions, err := agentSessions(ctx, d, workbenchID)
+	if err != nil {
+		return nil, RefreshResult{}, err
+	}
+	var refs []string
+	for _, as := range sessions {
+		refs = append(refs, as.sc.mergeRefs()...)
+	}
+	opts.Network = false
+	if opts.Budget <= 0 {
+		opts.Budget = SummaryRefreshBudget
+	}
+	res, states := refresh(ctx, d, workbenchID, refs, opts)
+	if states == nil {
+		if states, err = d.PRStates(workbenchID); err != nil {
+			return nil, res, err
+		}
+	}
+	return summarize(sessions, states), res, nil
+}
+
+// summarize is each session's row line from the PR cache states.
+func summarize(sessions []agentSession, states map[string]db.PRState) []Summary {
 	out := []Summary{}
 	for _, as := range sessions {
 		s := as.row
@@ -43,26 +74,7 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 		s.PRLine = as.sc.prLine(as.sc.prs(states))
 		out = append(out, s)
 	}
-	return out, nil
-}
-
-// WorkbenchMergeRefs is the into: keys (SessionMergeRefs) of every agent
-// session of workbench workbenchID: the refs a refresh before Summaries
-// checks, so the row lines' merged share stays current.
-func WorkbenchMergeRefs(ctx context.Context, d *db.DB, workbenchID int64) ([]string, error) {
-	sessions, err := agentSessions(ctx, d, workbenchID)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, as := range sessions {
-		for _, ref := range as.sc.mergeRefs() {
-			if !slices.Contains(out, ref) {
-				out = append(out, ref)
-			}
-		}
-	}
-	return out, nil
+	return out
 }
 
 // agentSession is one agent session's row fields (no counts yet) and scope.

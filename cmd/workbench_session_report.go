@@ -71,9 +71,14 @@ func runWorkbenchSessionReport(cmd *cobra.Command, _ []string) error {
 	}
 	w := cmd.OutOrStdout()
 	if workbenchSessionReportFlagSummary {
-		rows, err := sessionSummaries(ctx, database, id)
+		rows, res, err := sessionreport.RefreshedSummaries(ctx, database, id, sessionreport.RefreshOptions{})
 		if err != nil {
 			return err
+		}
+		// stdout stays the row lines; what the merge refresh could not
+		// check (a git failure, a cache write that failed) is one stderr line.
+		if res.Note != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "session-report: merge states: "+res.Note)
 		}
 		if workbenchSessionReportFlagJSON {
 			return writeJSON(w, rows)
@@ -92,23 +97,6 @@ func runWorkbenchSessionReport(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// sessionSummaries refreshes the merge verdicts of the workbench's agent
-// sessions — git only, never gh, within SummaryRefreshBudget — then reads
-// their row lines (board #986: the row's merged share refreshes itself).
-func sessionSummaries(ctx context.Context, database *db.DB, workbenchID int64) ([]sessionreport.Summary, error) {
-	refs, err := sessionreport.WorkbenchMergeRefs(ctx, database, workbenchID)
-	if err != nil {
-		return nil, err
-	}
-	if len(refs) > 0 {
-		// The row lines carry no note: what could not be checked keeps its cached verdict.
-		sessionreport.Refresh(ctx, database, workbenchID, refs, sessionreport.RefreshOptions{
-			Budget: sessionreport.SummaryRefreshBudget,
-		})
-	}
-	return sessionreport.Summaries(ctx, database, workbenchID)
-}
-
 // sessionReport refreshes the PR cache for session sessionID's refs, then
 // builds its report; the refresh's note becomes pr_note. An unknown session
 // fails before anything runs.
@@ -117,11 +105,6 @@ func sessionReport(ctx context.Context, database *db.DB, workbenchID, sessionID 
 	if err != nil {
 		return sessionreport.Report{}, err
 	}
-	merges, err := sessionreport.SessionMergeRefs(ctx, database, workbenchID, sessionID)
-	if err != nil {
-		return sessionreport.Report{}, err
-	}
-	refs = append(refs, merges...)
 	res := sessionreport.Refresh(ctx, database, workbenchID, refs, sessionreport.RefreshOptions{
 		Network: network, Budget: sessionreport.DefaultRefreshBudget,
 	})

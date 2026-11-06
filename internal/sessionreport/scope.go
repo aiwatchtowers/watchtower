@@ -325,26 +325,16 @@ func prRef(raw string) (string, sql.NullInt64) {
 
 func branchRef(branch string) string { return "branch:" + branch }
 
-// SessionRefs is the PR-cache keys ('pr:<n>' | 'branch:<name>') of the PRs
-// and branches session sessionID's in-scope targets carry: the refs a refresh
-// of its report checks.
+// SessionRefs is the PR-cache keys of session sessionID's report: the PRs
+// and branches ('pr:<n>' | 'branch:<name>') its in-scope targets carry, then
+// the merge verdicts ('into:<base>:<branch>', board #986) its counts read —
+// the refs a refresh of its report checks.
 func SessionRefs(ctx context.Context, d *db.DB, workbenchID, sessionID int64) ([]string, error) {
 	_, sc, err := loadScope(ctx, d, workbenchID, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return sc.refs(), nil
-}
-
-// SessionMergeRefs is the PR-cache keys ('into:<base>:<branch>') of the
-// merge verdicts session sessionID's progress needs: one per not-done
-// progress leaf whose branch has a base (board #986).
-func SessionMergeRefs(ctx context.Context, d *db.DB, workbenchID, sessionID int64) ([]string, error) {
-	_, sc, err := loadScope(ctx, d, workbenchID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	return sc.mergeRefs(), nil
+	return append(sc.refs(), sc.mergeRefs()...), nil
 }
 
 // loadScope reads session sessionID of workbench workbenchID and its scope. A
