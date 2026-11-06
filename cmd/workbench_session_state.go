@@ -233,7 +233,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", in.agentFailure(),
 			in.Event == "UserPromptSubmit", at, turn)
 	}
-	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
+	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at, turn.lock)
 	return err
 }
 
@@ -315,7 +315,7 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil,
 			in.Event == "UserPromptSubmit", at, turn)
 	}
-	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
+	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at, turn.lock)
 	return err
 }
 

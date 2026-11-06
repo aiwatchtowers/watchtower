@@ -1285,7 +1285,8 @@ cannot place keeps the time order. Out of `waiting` such a write also clears
 the background count and the chat question, as a `PostToolUse`'s does. A
 subagent's `PreToolUse` writes nothing. The async
 state hooks wait up to 2 s for the write lock and try once more after a busy
-lock, every write of one hook process inside one 4.5 s budget from its start
+lock, every write of one hook process — the worktree ledger's included —
+inside one 4.5 s budget from its start
 (the hook's 5 s timeout less a margin; a write or retry with no time left is
 not tried and is reported as one stderr line), the state write first (a
 `UserPromptSubmit` clears the chat question after it); so does the
