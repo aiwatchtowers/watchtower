@@ -135,15 +135,15 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	// A Reply from an Inbox row (Inbox builder B, asks #445/#451): the three
 	// Reply tools join the inbox surface, stay External and keep no trust
 	// level there, so every reply waits for the owner's Approve (AGENT-03).
-	assert.ElementsMatch(t, []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}, tools.InboxReplyTools)
-	for _, name := range tools.InboxReplyTools {
+	assert.ElementsMatch(t, []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}, tools.InboxReplyTools())
+	for _, name := range tools.InboxReplyTools() {
 		assert.True(t, inbox[name], "%s answers an Inbox row's Reply", name)
 		rt, ok := reg.Get(name)
 		require.True(t, ok, name)
 		assert.True(t, rt.External, "%s leaves the machine (AGENT-03)", name)
 		assert.NotContains(t, tools.TrustSurfaces(rt), tools.InboxSurface, "%s: the inbox keeps no trust level", name)
 	}
-	assert.ElementsMatch(t, append([]string{"apply_track_action", "create_target"}, tools.InboxReplyTools...),
+	assert.ElementsMatch(t, append([]string{"apply_track_action", "create_target"}, tools.InboxReplyTools()...),
 		surfaceNamesOf(reg, tools.InboxSurface, tools.AccessWrite), "no other write tool on the inbox surface")
 	for _, m := range []map[string]bool{main, target, reaction, project, surfaceToolNames(reg, tools.AutomationSurface),
 		surfaceToolNames(reg, tools.AutomationEditorSurface)} {

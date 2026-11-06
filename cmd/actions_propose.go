@@ -71,7 +71,7 @@ func proposeInboxAction() (int64, error) {
 	if actionsProposeFlagSurface != tools.InboxSurface {
 		return 0, fmt.Errorf("actions propose runs only on the %s surface, not %q", tools.InboxSurface, actionsProposeFlagSurface)
 	}
-	if actionsProposeFlagApprove && slices.Contains(tools.InboxReplyTools, t.Name) {
+	if actionsProposeFlagApprove && tools.IsInboxReplyTool(t.Name) {
 		// A Reply from a row (ask #451): proposed here, approved only by the
 		// owner's Approve in Needs approval, never in the same press.
 		return 0, fmt.Errorf("a reply is approved in Needs approval: actions propose takes no --approve for %s", t.Name)

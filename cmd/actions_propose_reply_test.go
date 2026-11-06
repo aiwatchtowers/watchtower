@@ -69,7 +69,7 @@ func replyPressArgs(tool, args string, extra ...string) []string {
 }
 
 func TestActionsPropose_ReplyRecordsOnePendingRow(t *testing.T) {
-	for _, tool := range tools.InboxReplyTools {
+	for _, tool := range tools.InboxReplyTools() {
 		t.Run(tool, func(t *testing.T) {
 			database := writeActionsConfig(t)
 			f := seedReplyFixture(t, database)
@@ -147,7 +147,7 @@ func TestActionsPropose_SlackReplyPinsItsThread(t *testing.T) {
 // press — --approve is refused for the three Reply tools before the owner is
 // asked and before a row is written; apply_track_action's one press stays.
 func TestActionsPropose_RefusesApproveForReplyTools(t *testing.T) {
-	for _, tool := range tools.InboxReplyTools {
+	for _, tool := range tools.InboxReplyTools() {
 		t.Run(tool, func(t *testing.T) {
 			database := writeActionsConfig(t)
 			f := seedReplyFixture(t, database)
@@ -180,7 +180,7 @@ func TestActionsPropose_ReplyRefusedUnderAgentMarkers(t *testing.T) {
 			database := writeActionsConfig(t)
 			f := seedReplyFixture(t, database)
 			t.Setenv(marker, "1")
-			for _, tool := range tools.InboxReplyTools {
+			for _, tool := range tools.InboxReplyTools() {
 				out, err := runPropose(t, replyPressArgs(tool, f.replyArgs(tool))...)
 				require.Error(t, err, out)
 				assert.Contains(t, err.Error(), marker)

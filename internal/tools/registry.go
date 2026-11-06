@@ -64,11 +64,17 @@ const AutomationEditorSurface = "automation_editor"
 // button and the InboxReplyTools a row's Reply, both proposed only.
 const InboxSurface = "inbox"
 
-// InboxReplyTools are the tools a Reply from an Inbox row proposes (Inbox
+// inboxReplyTools are the tools a Reply from an Inbox row proposes (Inbox
 // builder B, asks #445 and #451): on the inbox surface, External, and never
 // approved in the same press — `actions propose --approve` refuses them, so
 // a reply waits for the owner's Approve in Needs approval.
-var InboxReplyTools = []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}
+var inboxReplyTools = []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}
+
+// InboxReplyTools returns a fresh copy of the Reply tools' names.
+func InboxReplyTools() []string { return slices.Clone(inboxReplyTools) }
+
+// IsInboxReplyTool reports whether name is one of the Reply tools.
+func IsInboxReplyTool(name string) bool { return slices.Contains(inboxReplyTools, name) }
 
 // Binding is where a proposal came from: the chat surface, conversation and
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
