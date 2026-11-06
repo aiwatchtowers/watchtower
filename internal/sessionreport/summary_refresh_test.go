@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,4 +170,29 @@ func TestRefreshedSummaries_PhaseOnlyFailureLeavesTheRowUnmarked(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, []int{1, 1, 0}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
 	assert.False(t, rows[0].MergedStale, "the row's Merged reads no verdict")
+}
+
+// Verify R3: a failed read stamped due again waits behind a ref that became
+// due earlier, though its check time is older.
+func TestRefresh_AFailedReadGoesLast(t *testing.T) {
+	d, id, _, _ := repoBoard(t)
+	failing, ok := "into:nope:wt/m", "into:feature/x:wt/m"
+	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: id, Ref: failing, State: "merged",
+		CheckedAt: dueAgain("merged", refreshNow)}))
+	seed(t, d, id, ok, "open", 2*time.Minute)
+	require.Less(t, states(t, d, id)[failing].CheckedAt, states(t, d, id)[ok].CheckedAt, "the failed row's stamp is older")
+
+	var mu sync.Mutex
+	tick := 0
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		tick++
+		return refreshNow.Add(15*time.Second + time.Duration(tick)*4*time.Second)
+	}
+	res := Refresh(context.Background(), d, id, []string{failing, ok}, RefreshOptions{Budget: 10 * time.Second, Now: clock})
+	assert.Contains(t, res.Note, "1 ref(s) keep their cached state")
+	got := states(t, d, id)
+	assert.Equal(t, "merged", got[ok].State, "the ref due longer is read first")
+	assert.Equal(t, dueAgain("merged", refreshNow), got[failing].CheckedAt, "the failed one waits")
 }

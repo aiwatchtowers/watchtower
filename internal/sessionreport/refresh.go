@@ -121,10 +121,11 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string,
 	if len(stale) == 0 {
 		return RefreshResult{}, cache, nil
 	}
-	// Least recently checked first (never checked before all): a ref that
-	// keeps reading no verdict is stamped too, so it waits its turn and
-	// does not spend the budget ahead of the others.
-	slices.SortStableFunc(stale, func(a, b string) int { return strings.Compare(cache[a].CheckedAt, cache[b].CheckedAt) })
+	// Longest due first (never checked before all): a ref that keeps
+	// reading no verdict is stamped too — a failed read due again at once
+	// (dueAgain), so it is the most recently due and waits behind every
+	// other ref instead of spending the budget ahead of them.
+	slices.SortStableFunc(stale, func(a, b string) int { return dueSince(cache[a]).Compare(dueSince(cache[b])) })
 	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
 	defer cancel()
 	deadline := start.Add(opts.Budget)
@@ -156,6 +157,16 @@ func isStale(row db.PRState, now time.Time) bool {
 		return true
 	}
 	return now.Sub(at) > staleAfter(row.State)
+}
+
+// dueSince is when row became due for a check: its check time plus its
+// fresh window; the zero time for a row never checked or unreadable.
+func dueSince(row db.PRState) time.Time {
+	at, err := time.Parse(time.RFC3339, row.CheckedAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return at.Add(staleAfter(row.State))
 }
 
 // staleAfter is how long a row in state stays fresh.
@@ -443,9 +454,9 @@ func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.
 	return cached, true
 }
 
-// dueAgain is a check time that is already stale for a row in state: such a
-// row is checked again on the next run, after the refs left unchecked
-// longer.
+// dueAgain is a check time that is already stale for a row in state (its
+// fresh window and a second ago): the row is checked again on the next run,
+// and dueSince puts it behind every ref that became due before now.
 func dueAgain(state string, now time.Time) string {
 	return now.Add(-staleAfter(state) - time.Second).UTC().Format(time.RFC3339)
 }
