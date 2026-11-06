@@ -11,9 +11,9 @@ import WatchtowerCore
 ///   no tool mode; the answer only reads.
 /// - Reading more of the folder (owner decision 1, confirmed 2026-10-03 —
 ///   ruling R55): the provider's own read-only file tools, run in the
-///   workbench folder by `ai query --read-folder` — Claude and Codex; Ollama
-///   has none and is told so, and its conversation shows
-///   `cannotReadFilesNotice` once.
+///   workbench folder by `ai query --read-folder` when its capability row
+///   reads folders; a transport that does not is told so, and its
+///   conversation shows `cannotReadFilesNotice` once.
 /// - Stored as `chat_conversations` rows with `context_type =
 ///   'code_question'` and `context_id = '<workbench>:<path>:<line>'` (owner
 ///   decision 2), which the main chat's list and searches never read
@@ -39,10 +39,11 @@ enum CodeQuestionSurface {
         func switching(to provider: AIProvider) -> Self {
             provider == self.provider ? self : Self(provider: provider, model: "")
         }
+    }
 
-        /// Whether the provider reads the workbench folder itself (Claude,
-        /// Codex: the run carries `--read-folder`).
-        var readsFiles: Bool { provider != .ollama }
+    /// The pick's capability row (the shared catalog).
+    static func capabilities(_ choice: ModelChoice) -> ProviderCapabilities {
+        AIModelCatalog.shared.capabilities(for: choice.provider.rawValue)
     }
 
     /// The preselected pick: the configured provider at its default tier.
@@ -128,7 +129,7 @@ enum CodeQuestionSurface {
             let choice = currentChoice()
             return ChatRunOptions(provider: choice.provider.rawValue,
                                   model: choice.model.isEmpty ? nil : choice.model,
-                                  readFolder: choice.readsFiles ? workbench.folderPath : nil)
+                                  readFolder: capabilities(choice).readsFolder ? workbench.folderPath : nil)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: origin.contextID(workbenchID: workbench.id),
@@ -138,12 +139,12 @@ enum CodeQuestionSurface {
             ownerInstructions: true,
             systemPrompt: {
                 buildSystemPrompt(workbench: workbench, origin: origin, context: context(),
-                                  provider: currentChoice().provider)
+                                  capabilities: capabilities(currentChoice()))
             },
             turnPrompt: { $0.text },
             postTurn: { input in
                 var result = ChatPostTurnResult.identity(input)
-                if !currentChoice().readsFiles, !hasCannotReadNotice(conversationID: conversationID, dbPool: dbPool) {
+                if !capabilities(currentChoice()).readsFolder, !hasCannotReadNotice(conversationID: conversationID, dbPool: dbPool) {
                     result.notices = [cannotReadFilesNotice]
                 }
                 return result
@@ -172,24 +173,24 @@ enum CodeQuestionSurface {
 
     // MARK: - System prompt
 
-    /// What the provider can do with the folder (ruling R55), worded for its
-    /// own tools: Claude reads through Read/Grep/Glob/LS, Codex only through
-    /// its shell under the read-only sandbox, Ollama not at all.
-    static func readingInstructions(_ provider: AIProvider) -> String {
-        switch provider {
-        case .claude:
+    /// What the transport can do with the folder (ruling R55), worded for
+    /// how its row says it reads: file tools (Read/Grep/Glob/LS), a shell
+    /// under a read-only sandbox, or not at all.
+    static func readingInstructions(_ capabilities: ProviderCapabilities) -> String {
+        switch capabilities.readFolder {
+        case "tools":
             """
             You run inside the workbench folder with the read-only file tools Read, Grep, Glob and LS. Read other \
             files of the folder when the answer needs them; paths are relative to the folder. You cannot change, \
             create or delete any file, run commands or reach the web.
             """
-        case .codex:
+        case "shell_sandbox":
             """
             You run inside the workbench folder under a read-only sandbox. Read-only shell commands that inspect \
             files of the folder (cat, ls, rg, grep, sed -n, head) are fine when the answer needs them; paths are \
             relative to the folder. Never modify, create or delete anything, and do not reach the web.
             """
-        case .ollama:
+        default:
             """
             You cannot read any other file, run commands or reach the web: answer from the code above only, and \
             say so when the answer needs code you have not been shown.
@@ -198,7 +199,8 @@ enum CodeQuestionSurface {
     }
 
     static func buildSystemPrompt(
-        workbench: Workbench, origin: CodeQuestionOrigin, context: CodeQuestionContext?, provider: AIProvider
+        workbench: Workbench, origin: CodeQuestionOrigin, context: CodeQuestionContext?,
+        capabilities: ProviderCapabilities
     ) -> String {
         // Open Quickly with no file open: `<wb>::0`, the folder only.
         let contextBlock = context?.promptBlock ?? (origin.path.isEmpty ? """
@@ -212,7 +214,7 @@ enum CodeQuestionSurface {
         Asked at line: \(origin.line)
         """)
         let citeExample = origin.path.isEmpty ? "Sources/App.swift:12" : "\(origin.path):\(origin.line)"
-        let reading = readingInstructions(provider)
+        let reading = readingInstructions(capabilities)
         return """
         You are Watchtower's assistant, answering the owner's question about the code in their workbench \
         "\(workbench.name)".

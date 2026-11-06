@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import AppKit
 import WatchtowerCore
 
@@ -28,6 +29,10 @@ struct ChatComposerField: View {
     var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var attachmentProgress = AttachmentProgress()
+    /// Why this provider takes no images or PDFs (its capability row, U1):
+    /// the paperclip stays visible but disabled with this help, and a
+    /// dropped or pasted image or PDF is not added. nil = it takes them.
+    var attachUnavailableReason: String?
     /// Called with the full text and the caret (UTF-16 offset) on every edit
     /// or caret move — the @/ pickers' input. nil for a surface with no
     /// picker (the Discuss-chat default).
@@ -64,6 +69,7 @@ struct ChatComposerField: View {
             onPasteData: onPasteData,
             onRemoveAttachment: onRemoveAttachment,
             attachmentProgress: attachmentProgress,
+            attachUnavailableReason: attachUnavailableReason,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
             hasPendingContent: hasPendingContent,
@@ -94,6 +100,10 @@ struct ChatComposerFieldContent: View {
     var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var attachmentProgress = AttachmentProgress()
+    /// Why this provider takes no images or PDFs (its capability row, U1):
+    /// the paperclip stays visible but disabled with this help, and a
+    /// dropped or pasted image or PDF is not added. nil = it takes them.
+    var attachUnavailableReason: String?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var hasPendingContent = false
@@ -133,7 +143,7 @@ struct ChatComposerFieldContent: View {
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let onAttachFiles else { return false }
-            let files = urls.filter(\.isFileURL)
+            let files = urls.filter(\.isFileURL).filter { attachUnavailableReason == nil || !Self.isBinary($0) }
             guard !files.isEmpty else { return false }
             onAttachFiles(files)
             return true
@@ -150,9 +160,10 @@ struct ChatComposerFieldContent: View {
                         .font(.system(size: 16))
                         .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.kitIcon(isOn: false))
+                .disabled(attachUnavailableReason != nil)
                 .accessibilityLabel("Attach files")
-                .help("Attach images, PDFs or text files")
+                .help(attachUnavailableReason ?? "Attach images, PDFs or text files")
                 .padding(.bottom, 6)
             }
 
@@ -171,8 +182,8 @@ struct ChatComposerFieldContent: View {
                     maxHeight: maxHeight,
                     onEscape: onEscape,
                     onArrowUpWhenEmpty: onArrowUpWhenEmpty,
-                    onPasteData: onPasteData,
-                    onAttachFiles: onAttachFiles,
+                    onPasteData: attachUnavailableReason == nil ? onPasteData : nil,
+                    onAttachFiles: attachableFiles,
                     onLongTextPaste: offerLongPaste,
                     onCursorChange: onCursorChange,
                     onPickerKey: onPickerKey,
@@ -219,6 +230,22 @@ struct ChatComposerFieldContent: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// onAttachFiles without the images and PDFs a provider that reads none
+    /// refuses (U1): a pasted Finder file of those kinds is not added.
+    private var attachableFiles: (([URL]) -> Void)? {
+        guard let onAttachFiles, attachUnavailableReason != nil else { return onAttachFiles }
+        return { urls in
+            let files = urls.filter { !Self.isBinary($0) }
+            if !files.isEmpty { onAttachFiles(files) }
+        }
+    }
+
+    /// An image or a PDF, by the file's type.
+    static func isBinary(_ url: URL) -> Bool {
+        guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        return type.conforms(to: .image) || type.conforms(to: .pdf)
     }
 
     private func pickFiles(_ onAttachFiles: @escaping ([URL]) -> Void) {

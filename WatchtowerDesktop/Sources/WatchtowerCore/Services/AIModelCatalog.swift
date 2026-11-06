@@ -18,6 +18,8 @@ package final class AIModelCatalog {
         package let resolvedStrong: String
         package var models: [String]?
         package var error: String?
+        /// The transport's capability row; nil from a CLI older than A2.
+        package var capabilities: ProviderCapabilities?
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -30,6 +32,7 @@ package final class AIModelCatalog {
             case resolvedStrong = "resolved_strong"
             case models
             case error
+            case capabilities
         }
     }
 
@@ -47,11 +50,44 @@ package final class AIModelCatalog {
     package private(set) var isLoading = false
     package private(set) var lastError: String?
 
+    /// The app's one catalog: what the chat surfaces read a provider's
+    /// capabilities from (AppState.aiModelCatalog is this instance; it is
+    /// read once at launch, and again by Settings and the chat).
+    package static let shared = AIModelCatalog()
+
     package init() {}
+
+    /// A catalog already read (tests, previews).
+    package init(providers: [Provider]) {
+        self.providers = providers
+    }
+
+    /// Replaces the rows as a read would (tests seed the shared catalog
+    /// with the Go-written fixture).
+    package func replaceProviders(_ providers: [Provider]) {
+        self.providers = providers
+    }
 
     package func provider(_ id: String) -> Provider? {
         providers.first { $0.id == id }
     }
+
+    /// Provider id's capability row; `.none` (offers nothing) for an
+    /// unknown id or before the catalog is read.
+    package func capabilities(for id: String) -> ProviderCapabilities {
+        provider(id)?.capabilities ?? .none
+    }
+
+    /// The provider a fallback pairs id with: its row's reserve peer when
+    /// that provider names id back; nil when id pairs with nothing.
+    package func reservePeer(of id: String) -> String? {
+        let peer = capabilities(for: id).reservePeer
+        guard !peer.isEmpty, capabilities(for: peer).reservePeer == id else { return nil }
+        return peer
+    }
+
+    /// Whether the catalog has been read (a row for any provider).
+    package var isLoaded: Bool { !providers.isEmpty }
 
     /// Model suggestions for one provider's picker/menu: the resolved tier
     /// models and registry defaults first, then the live server list, deduped

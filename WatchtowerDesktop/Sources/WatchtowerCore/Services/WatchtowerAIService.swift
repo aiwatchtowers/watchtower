@@ -272,7 +272,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     package static func parseLine(_ line: String) -> StreamEvent? {
         guard let event = ChatEvent.parse(line) else { return nil }
         switch event {
-        case let .sessionReady(_, provider, model, routing):
+        case let .sessionReady(_, provider, model, routing, _):
             return .routing(provider: provider, model: model, metadata: routing)
         case let .textDelta(_, text):
             return text.isEmpty ? nil : .text(text)

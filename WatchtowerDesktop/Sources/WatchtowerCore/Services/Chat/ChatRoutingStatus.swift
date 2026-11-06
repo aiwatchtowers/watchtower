@@ -61,23 +61,33 @@ package struct ChatRoutingStatus: Decodable, Equatable, Sendable {
 
 /// Production chat presentation; the approved catalog owns copy for each state.
 package struct ChatRoutingPresentation {
-    package let preferred: ProviderFallbackPreview.Provider
+    /// The fallback pair's preferred side; nil for a provider whose
+    /// capability row has no reserve peer (U3: the line only, no card).
+    package let preferred: ProviderFallbackPreview.Provider?
     package let automatic: Bool
     package let actualProvider: String?
     package let actualModel: String?
     package let reason: String?
     package let health: ChatRoutingStatus?
     package let busy: Bool
+    /// The actual provider's display name (the catalog's), when known.
+    package let actualDisplayName: String?
+    /// The actual (or chosen) provider's capability row, when known.
+    package let capabilities: ProviderCapabilities?
 
     package init(
-        preferred: ProviderFallbackPreview.Provider,
+        preferred: ProviderFallbackPreview.Provider?,
         automatic: Bool,
         actualProvider: String?,
         actualModel: String?,
         reason: String?,
         health: ChatRoutingStatus?,
-        busy: Bool
+        busy: Bool,
+        actualDisplayName: String? = nil,
+        capabilities: ProviderCapabilities? = nil
     ) {
+        self.actualDisplayName = actualDisplayName
+        self.capabilities = capabilities
         self.preferred = preferred
         self.automatic = automatic
         self.actualProvider = actualProvider
@@ -87,16 +97,30 @@ package struct ChatRoutingPresentation {
         self.busy = busy
     }
     package var choice: String {
-        automatic ? ProviderFallbackPreview.chatPolicyAutomatic + " · Auto"
-            : ProviderFallbackPreview.pinnedChoice(provider: preferred.rawValue)
+        guard automatic, preferred != nil else {
+            return ProviderFallbackPreview.pinnedChoice(provider: preferred?.rawValue ?? actualDisplayName ?? "")
+        }
+        return ProviderFallbackPreview.chatPolicyAutomatic + " · Auto"
     }
     package var actual: String? {
         guard let actualProvider, !actualProvider.isEmpty else { return nil }
-        let provider = ProviderFallbackPreview.Provider.allCases.first { $0.rawValue.lowercased() == actualProvider }?.rawValue
+        let provider = actualDisplayName
+            ?? ProviderFallbackPreview.Provider.allCases.first { $0.rawValue.lowercased() == actualProvider }?.rawValue
             ?? actualProvider
         return "Current provider: " + provider + (actualModel.flatMap { $0.isEmpty ? nil : " · " + $0 } ?? "")
     }
+    /// What the provider cannot do, as one caption (U3): nil when it takes
+    /// attachments and reads folders, or its row is not known.
+    package var missingCapabilities: String? {
+        guard let capabilities else { return nil }
+        var missing: [String] = []
+        if !capabilities.takesAttachments { missing.append("images") }
+        if !capabilities.readsFolder { missing.append("file reading") }
+        guard !missing.isEmpty else { return nil }
+        return "No " + missing.joined(separator: " or ") + " with this provider."
+    }
     package var preview: ProviderFallbackPreview? {
+        guard let preferred else { return nil }
         let state: ProviderFallbackPreview.State
         if !automatic { state = .pinned } else if actualProvider == preferred.other.rawValue.lowercased(), reason == "quota_exhausted" {
             let preferredState = health?.provider(preferred.rawValue.lowercased())?.state

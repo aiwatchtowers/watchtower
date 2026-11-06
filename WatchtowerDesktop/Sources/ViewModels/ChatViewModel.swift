@@ -92,16 +92,41 @@ final class ChatViewModel {
 
     var routingPresentation: ChatRoutingPresentation? {
         let provider = automaticRouting ? preferredProvider : selectedProvider
-        guard let preferred = ProviderFallbackPreview.Provider.allCases.first(where: {
+        let catalog = AIModelCatalog.shared
+        // The routing card belongs to a provider with a reserve peer (its
+        // capability row, U3); before the catalog is read the pair copy keeps
+        // today's presentation.
+        let paired = !catalog.isLoaded || catalog.reservePeer(of: provider.rawValue) != nil
+        let preferred = paired ? ProviderFallbackPreview.Provider.allCases.first(where: {
             $0.rawValue.lowercased() == provider.rawValue
-        }) else { return nil }
+        }) : nil
         let driver = pool.client(for: conversationID)?.driver
+        let actualProvider = driver?.actualProvider ?? currentConversation?.actualProvider
         return ChatRoutingPresentation(preferred: preferred, automatic: automaticRouting,
-                                       actualProvider: driver?.actualProvider ?? currentConversation?.actualProvider,
+                                       actualProvider: actualProvider,
                                        actualModel: driver?.actualModel ?? currentConversation?.actualModel,
                                        reason: driver?.routing?.reason ?? currentConversation?.routingReason,
-                                       health: routingStatus, busy: isBusy)
+                                       health: routingStatus, busy: isBusy,
+                                       actualDisplayName: actualProvider.flatMap { catalog.provider($0)?.displayName },
+                                       capabilities: providerCapabilities)
     }
+
+    /// The capability row of the provider this chat runs on: the session's
+    /// own (its session_ready), else the catalog's for the actual or chosen
+    /// provider; nil while neither is known.
+    var providerCapabilities: ProviderCapabilities? {
+        let driver = pool.client(for: conversationID)?.driver
+        if let capabilities = driver?.actualCapabilities { return capabilities }
+        let catalog = AIModelCatalog.shared
+        guard catalog.isLoaded else { return nil }
+        let provider = automaticRouting ? preferredProvider : selectedProvider
+        let id = driver?.actualProvider ?? currentConversation?.actualProvider ?? provider.rawValue
+        return catalog.capabilities(for: id)
+    }
+
+    /// Why the composer takes no images or PDFs here (U1); nil when it does
+    /// or the provider's row is not known yet.
+    var attachUnavailableReason: String? { providerCapabilities?.attachUnavailableReason }
 
     /// Refresh only local metadata on chat/lifecycle/turn events; never an upstream probe.
     func refreshRoutingStatus() async {

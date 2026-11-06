@@ -68,6 +68,9 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
                 AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
             },
+            DesignShot(name: "chat-composer-ollama-capabilities", size: NSSize(width: 620, height: 0)) {
+                AnyView(ProviderCapabilitiesShotFixtures.ollamaComposer().shotFrame().detailBackground())
+            },
             DesignShot(name: "workchat-hold-caption", size: NSSize(width: 560, height: 0)) {
                 AnyView(SessionCapsShotFixtures.workchatHoldCaption().shotFrame().detailBackground())
             },

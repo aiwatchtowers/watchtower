@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 final class ChatComposerFieldViewTests: XCTestCase {
@@ -151,5 +152,29 @@ final class ChatComposerFieldViewTests: XCTestCase {
         XCTAssertFalse(try button.isDisabled())
         try button.tap()
         XCTAssertEqual(sent, 1)
+    }
+}
+
+extension ChatComposerFieldViewTests {
+    /// U1: with a provider that reads no images or PDFs the paperclip stays,
+    /// disabled, its help the reason; with one that does it is enabled.
+    func testAttachDisabledWithReasonWhenNoImages() throws {
+        let reason = try XCTUnwrap(ProviderCapabilities.none.attachUnavailableReason)
+        XCTAssertEqual(reason, "Images and PDFs need a provider that reads them.")
+        var stored = ""
+        let off = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
+                                    onSend: {}, placeholder: "Ask", onAttachFiles: { _ in },
+                                    attachUnavailableReason: reason)
+        let clip = try off.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" }
+        XCTAssertTrue(try clip.isDisabled())
+        XCTAssertEqual(try clip.help().string(), reason)
+
+        let on = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
+                                   onSend: {}, placeholder: "Ask", onAttachFiles: { _ in })
+        let enabled = try on.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" }
+        XCTAssertFalse(try enabled.isDisabled())
+        XCTAssertTrue(ChatComposerFieldContent.isBinary(URL(fileURLWithPath: "/tmp/a.png")))
+        XCTAssertTrue(ChatComposerFieldContent.isBinary(URL(fileURLWithPath: "/tmp/a.pdf")))
+        XCTAssertFalse(ChatComposerFieldContent.isBinary(URL(fileURLWithPath: "/tmp/a.csv")))
     }
 }

@@ -26,6 +26,9 @@ package final class ChatTurnDriver {
     package private(set) var actualProvider: String?
     package private(set) var actualModel: String?
     package private(set) var routing: ChatRoutingMetadata?
+    /// The actual provider's capability row from its session_ready (nil
+    /// until one names its provider).
+    package private(set) var actualCapabilities: ProviderCapabilities?
     package private(set) var lastSessionError: ChatSessionError?
     /// An eager ready can fail before any turn exists. Keep the real storage
     /// cause observable until an actual-metadata write succeeds.
@@ -87,9 +90,10 @@ package final class ChatTurnDriver {
 
     package func apply(_ event: ChatEvent) {
         switch event {
-        case let .sessionReady(sid, provider, model, routing):
+        case let .sessionReady(sid, provider, model, routing, capabilities):
             recordSession(sid)
             recordActual(provider: provider, model: model, routing: routing)
+            if let capabilities { actualCapabilities = capabilities }
         case .turnStart:
             break
         case let .textDelta(turnID, text):

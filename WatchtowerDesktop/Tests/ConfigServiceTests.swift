@@ -3,10 +3,41 @@ import Testing
 import Yams
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 @Suite("ConfigService")
 struct ConfigServiceTests {
+    /// The fallback pair is the catalog's reserve_peer: the shared catalog
+    /// holds the Go-written rows, as after the app's launch read.
+    init() { ProviderCatalogFixture.seedShared() }
+
+    @Test("The reserve pair comes from the catalog; a catalog without reserve_peer hides the reserve")
+    func testReservePairComesFromCatalog() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let paired = ConfigService(configPath: path)
+        #expect(paired.reservePeer == "codex")
+        paired.selectPreferredProvider("codex")
+        #expect(paired.aiFallbackProvider == "claude")
+
+        let unpaired = AIModelCatalog(providers: ProviderCatalogFixture.providers().map { row in
+            var row = row
+            if let caps = row.capabilities {
+                row.capabilities = ProviderCapabilities(
+                    tools: caps.tools, images: caps.images, pdfs: caps.pdfs, readFolder: caps.readFolder)
+            }
+            return row
+        })
+        let service = ConfigService(configPath: makeTempConfig("ai: {provider: claude}"), catalog: unpaired)
+        #expect(service.reservePeer == nil)
+        #expect(service.reserveModel("strong") == nil)
+        service.aiFallbackProvider = "codex"
+        service.aiFallbackEnabled = true
+        service.selectPreferredProvider("codex")
+        #expect(service.aiFallbackProvider == nil)
+        #expect(!service.aiFallbackEnabled)
+    }
+
     @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])
     func reserveBuckets(provider: String) throws {
         let other = provider == "claude" ? "codex" : "claude"

@@ -1889,3 +1889,23 @@ extension ChatViewModelTests {
         XCTAssertEqual(vm.draft, "Retain the unsent draft")
     }
 }
+
+extension ChatViewModelTests {
+    /// U3 (L11): a provider whose capability row has no reserve peer gets
+    /// the provider line and what it lacks, never the routing card; its
+    /// composer refuses images with U1's reason. Claude keeps its card.
+    func testOllamaProviderLineWithoutRoutingCard() async throws {
+        ProviderCatalogFixture.seedShared()
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .ollama, defaults: defaults)
+        let presentation = try XCTUnwrap(vm.routingPresentation, "the line shows for Ollama too")
+        XCTAssertNil(presentation.preferred)
+        XCTAssertNil(presentation.preview, "no routing card without a reserve peer")
+        XCTAssertEqual(presentation.missingCapabilities, "No images or file reading with this provider.")
+        XCTAssertEqual(vm.attachUnavailableReason, "Images and PDFs need a provider that reads them.")
+
+        let claude = try makeViewModel()
+        XCTAssertNotNil(claude.routingPresentation?.preferred, "a paired provider keeps the routing card")
+        XCTAssertNil(claude.routingPresentation?.missingCapabilities)
+        XCTAssertNil(claude.attachUnavailableReason)
+    }
+}

@@ -169,10 +169,13 @@ final class ChatSessionPool {
     /// not started yet and reads them when it launches. Unlike
     /// `retireSessions(projectID:deleted:)` the prompt did not change, so the
     /// session id is still recorded (it is never read since #604 G11: the
-    /// next session replays the history). Only Claude
-    /// sessions load claude.ai tools; the others are left alone.
+    /// next session replays the history). Only sessions whose transport
+    /// loads claude.ai tools (its capability row) retire; the others are
+    /// left alone.
     func retireIdleSessions() {
-        for (id, client) in clients where !client.isPending && (client.config.automatic || client.config.provider == AIProvider.claude.rawValue) {
+        for (id, client) in clients where !client.isPending && (client.config.automatic
+            || (client.driver.actualCapabilities
+                ?? AIModelCatalog.shared.capabilities(for: client.config.provider)).claudeAITools) {
             if client.isBusy {
                 client.retireAfterTurn(keepingSessionID: true)
             } else {

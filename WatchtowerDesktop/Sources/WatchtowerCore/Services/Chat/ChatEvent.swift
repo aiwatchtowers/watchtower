@@ -129,7 +129,8 @@ package struct ChatRoutingMetadata: Equatable, Sendable {
 /// One `watchtower ai session` protocol-v2 event (spec §1.1). There is no
 /// `reset` in v2: text already shown is never wiped (CHAT-02).
 package enum ChatEvent: Equatable, Sendable {
-    case sessionReady(sessionID: String?, provider: String, model: String, routing: ChatRoutingMetadata? = nil)
+    case sessionReady(sessionID: String?, provider: String, model: String, routing: ChatRoutingMetadata? = nil,
+                      capabilities: ProviderCapabilities? = nil)
     case turnStart(turnID: String)
     case textDelta(turnID: String, text: String)
     case toolStart(ChatToolStart)
@@ -141,6 +142,14 @@ package enum ChatEvent: Equatable, Sendable {
     /// Synthesized by the process wrapper when the session process exits.
     case exited(status: Int32, stderrTail: String)
 
+    /// The session_ready's capability row (the actual provider's); nil when
+    /// absent (the routing placeholder, an older CLI) or unreadable.
+    private static func capabilities(_ value: Any?) -> ProviderCapabilities? {
+        guard let object = value as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return try? JSONDecoder().decode(ProviderCapabilities.self, from: data)
+    }
+
     /// Decodes one NDJSON line; nil for anything that is not a known v2 event.
     /// Omitted (`omitempty`) fields decode to their zero value.
     package static func parse(_ line: String) -> Self? {
@@ -151,7 +160,8 @@ package enum ChatEvent: Equatable, Sendable {
         switch type {
         case "session_ready":
             return .sessionReady(sessionID: fields.optional("session_id"), provider: fields.string("provider"),
-                                 model: fields.string("model"), routing: ChatRoutingMetadata.parse(json))
+                                 model: fields.string("model"), routing: ChatRoutingMetadata.parse(json),
+                                 capabilities: Self.capabilities(json["capabilities"]))
         case "turn_start":
             return .turnStart(turnID: fields.string("turn_id"))
         case "text_delta":

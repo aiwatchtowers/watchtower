@@ -19,6 +19,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        ProviderCatalogFixture.seedShared() // folder reading is the provider's capability row
         do {
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
             workbench = try dbManager.dbPool.write { db -> Workbench in
@@ -162,6 +163,20 @@ final class CodeQuestionSurfaceTests: XCTestCase {
 
     /// Ollama has no file tools: no folder, a prompt that says so, and the
     /// notice once per conversation.
+    /// Folder reading and its instructions follow the capability row, not
+    /// the provider's name (LLMTRANSPORT-01): file tools, a read-only shell
+    /// sandbox, or none.
+    func testReadsFilesFromCapabilities() {
+        XCTAssertTrue(CodeQuestionSurface.capabilities(.init(provider: .claude, model: "")).readsFolder)
+        XCTAssertTrue(CodeQuestionSurface.capabilities(.init(provider: .codex, model: "")).readsFolder)
+        XCTAssertFalse(CodeQuestionSurface.capabilities(.init(provider: .ollama, model: "")).readsFolder)
+        XCTAssertTrue(CodeQuestionSurface.readingInstructions(ProviderCapabilities(readFolder: "tools"))
+            .contains("Read, Grep, Glob and LS"))
+        XCTAssertTrue(CodeQuestionSurface.readingInstructions(ProviderCapabilities(readFolder: "shell_sandbox"))
+            .contains("read-only sandbox"))
+        XCTAssertTrue(CodeQuestionSurface.readingInstructions(.none).contains("You cannot read any other file"))
+    }
+
     func testOllamaReadsNoFolderAndSaysSoOnce() async throws {
         let conv = try await conversation(.init(provider: .ollama, model: "llama3"))
         let ai = ScriptedAIService()

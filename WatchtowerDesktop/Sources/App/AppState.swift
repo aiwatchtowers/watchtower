@@ -245,7 +245,7 @@ final class AppState {
 
     /// Provider/model registry from `watchtower ai models --json`, shared by
     /// the chat model picker and Settings suggestions. Loaded lazily.
-    let aiModelCatalog = AIModelCatalog()
+    let aiModelCatalog = AIModelCatalog.shared
 
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
@@ -812,6 +812,9 @@ final class AppState {
         installLifecycleHooks()
         launchTask = Task {
             await syncCLIBinaryStore()
+            // The providers' capability rows the chat surfaces read
+            // (tools, folder reading, attachments): off the launch path.
+            Task { await aiModelCatalog.load() }
             // Only now resolve the CLI path and start polling: before the sync
             // the store copy may still be the stale one, and DaemonManager
             // caches whatever path it first resolves.

@@ -179,7 +179,7 @@ final class TargetChatViewModel {
         conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
         cliRunner: CLIRunnerProtocol? = nil,
-        toolsAvailable: Bool = Constants.aiProviderID() != "ollama",
+        toolsAvailable: Bool = AIModelCatalog.shared.capabilities(for: Constants.aiProviderID()).hasTools,
         center: EmbeddedChatCenter? = nil
     ) {
         self.target = target

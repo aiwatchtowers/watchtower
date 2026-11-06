@@ -6,21 +6,9 @@
 # entries stay (decoders, display names, config migration, path conventions);
 # every other entry names the task that removes it.
 
-WatchtowerDesktop/Sources/Services/Chat/ChatSessionPool.swift | retireIdleSessions | .claude | 1 | A2: session pool decides from the provider; reads the capability row
-WatchtowerDesktop/Sources/Services/ChatSurfaces/AutomationEditorChatSurface.swift | toolsAvailable | "ollama" | 1 | A2: tool access decided from the provider name; reads the capability row
-WatchtowerDesktop/Sources/Services/ChatSurfaces/CodeQuestionSurface.swift | - | .ollama | 1 | A2: folder reading and instructions decided from the provider; read the capability row
-WatchtowerDesktop/Sources/Services/ChatSurfaces/CodeQuestionSurface.swift | readingInstructions | .claude | 1 | A2: folder reading and instructions decided from the provider; read the capability row
-WatchtowerDesktop/Sources/Services/ChatSurfaces/CodeQuestionSurface.swift | readingInstructions | .codex | 1 | A2: folder reading and instructions decided from the provider; read the capability row
-WatchtowerDesktop/Sources/Services/ChatSurfaces/CodeQuestionSurface.swift | readingInstructions | .ollama | 1 | A2: folder reading and instructions decided from the provider; read the capability row
 WatchtowerDesktop/Sources/Services/ConfigService.swift | applyWorkbenchSection | .claude | 1 | permanent: config writer omits the default workbench.default_agent value
 WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "claude" | 1 | permanent: config migration: the legacy model regexes
 WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "codex" | 1 | permanent: config migration: the legacy model regexes
-WatchtowerDesktop/Sources/Services/ConfigService.swift | reserveModel | "codex" | 1 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table
-WatchtowerDesktop/Sources/Services/ConfigService.swift | selectPreferredProvider | "claude" | 1 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table
-WatchtowerDesktop/Sources/Services/ConfigService.swift | selectPreferredProvider | "ollama" | 1 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table
-WatchtowerDesktop/Sources/Services/ConfigService.swift | validateAISelection | "claude" | 2 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table (the known-set check moves with it)
-WatchtowerDesktop/Sources/Services/ConfigService.swift | validateAISelection | "codex" | 2 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table (the known-set check moves with it)
-WatchtowerDesktop/Sources/Services/ConfigService.swift | validateAISelection | "ollama" | 2 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table (the known-set check moves with it)
 WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | notFoundReason | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
 WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | outcome | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice+Payload.swift | wireAgent | .claude | 1 | A5: agent kind wire mapping for the phone slice; moves to the session adapter's capabilities
@@ -42,7 +30,6 @@ WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .co
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .ollama | 1 | permanent: display-name table of the closed AIProvider enum
 WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .claude | 1 | permanent: display name of the asking agent
 WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .codex | 1 | permanent: display name of the asking agent
-WatchtowerDesktop/Sources/ViewModels/TargetChatViewModel.swift | init | "ollama" | 1 | A2: tool access decided from the provider name; reads the capability row
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift | newStandalone | .claude | 2 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift | newStandalone | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift | rowToLaunch | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
@@ -97,9 +84,6 @@ WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderConnection.swift | var
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderFallbackPreview.swift | - | .claude | 1 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderSettingsCopy.swift | provider | "ollama" | 1 | permanent: display name of a provider id
 WatchtowerDesktop/Sources/WatchtowerCore/Services/ProviderSettingsHealth.swift | var copy | "codex" | 1 | A2: health preview decided from the provider name; reads the capability row
-WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | caption | "claude" | 1 | A2: Quick Connections support decided from the provider name; reads the capability row
-WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | caption | "codex" | 1 | A2: Quick Connections support decided from the provider name; reads the capability row
-WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | caption | "ollama" | 1 | A2: Quick Connections support decided from the provider name; A2 replaces it with the quick_connections capability
 WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | codexImportNotice | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
 WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionSwitcherPresentation.swift | var agentTag | .codex | 1 | permanent: display-name suffix of the session's agent
 WatchtowerDesktop/Sources/WatchtowerCore/Services/TerminalLaunch.swift | exitMessage | .claude | 1 | A5: launch argv by agent kind; moves behind the session adapter

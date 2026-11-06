@@ -56,6 +56,7 @@ struct ChatComposerView: View {
                 attachmentProgress: AttachmentProgress(importing: chatVM.composerAttachments.importing,
                                                        removing: chatVM.composerAttachments.removing,
                                                        sendWaits: chatVM.isWaitingForAttachments),
+                attachUnavailableReason: chatVM.attachUnavailableReason,
                 onCursorChange: { text, cursor in
                     lastCursor = cursor
                     chatVM.composer.update(text: text, cursor: cursor)
@@ -84,6 +85,13 @@ struct ChatComposerView: View {
         if let presentation = chatVM.routingPresentation {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 if let actual = presentation.actual { Text(actual).font(.caption).foregroundStyle(.secondary) }
+                // U3's line names what the provider lacks; U1's attach reason
+                // shows only when that line does not already say it.
+                if let missing = presentation.missingCapabilities {
+                    Text(missing).font(.caption).foregroundStyle(.secondary)
+                } else if let reason = chatVM.attachUnavailableReason {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                }
                 if let preview = presentation.preview {
                     ChatRoutingStatusView(preview: preview, actionEnabled: !chatVM.isBusy,
                                           onAction: routingAction(for: preview))

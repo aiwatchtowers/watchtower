@@ -1612,3 +1612,19 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertNil(chat.errorMessage)
     }
 }
+
+extension TargetChatViewModelTests {
+    /// The target chat's tools follow the configured provider's capability
+    /// row (`AIModelCatalog`), never its name: every table row with tools
+    /// gets them, a catalog not read yet gives none.
+    func testToolsAvailableFromCapabilities() {
+        ProviderCatalogFixture.seedShared()
+        let catalog = AIModelCatalog.shared
+        for id in ["claude", "codex", "ollama"] {
+            XCTAssertTrue(catalog.capabilities(for: id).hasTools, id)
+            XCTAssertTrue(AutomationEditorChatSurface.toolsAvailable(provider: id), id)
+        }
+        XCTAssertFalse(AutomationEditorChatSurface.toolsAvailable(provider: "gemini"), "an unknown provider has no tools")
+        XCTAssertFalse(AIModelCatalog().capabilities(for: "claude").hasTools, "a catalog not read yet offers nothing")
+    }
+}
