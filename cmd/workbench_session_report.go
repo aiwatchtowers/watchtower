@@ -21,8 +21,9 @@ var workbenchSessionReportCmd = &cobra.Command{
 		"finish summary. It first refreshes the PR cache for the session's refs within 10 s\n" +
 		"(local git merge detection, plus gh; --no-network keeps the refresh offline:\n" +
 		"git only, gh never runs). --summary prints one line per\n" +
-		"agent session (Claude Code or Codex) of the workbench from the cache only, never\n" +
-		"running git or gh.\n" +
+		"agent session (Claude Code or Codex) of the workbench from the cache, after a\n" +
+		"git-only refresh (within 3 s) of whether each task's branch is merged into its\n" +
+		"parent's branch; it never runs gh.\n" +
 		"Exits non-zero only when the workbench or the session does not resolve; a git or gh\n" +
 		"failure is reported in pr_note.",
 	Args: cobra.NoArgs,
@@ -42,7 +43,7 @@ func init() {
 	c.Flags().Int64Var(&workbenchSessionReportFlagWorkbench, workbenchFlag, 0, "workbench id")
 	fs := c.Flags()
 	fs.Int64Var(&workbenchSessionReportFlagSession, "session", 0, "terminal session id: print its report")
-	fs.BoolVar(&workbenchSessionReportFlagSummary, "summary", false, "print every agent session's row line (cache only)")
+	fs.BoolVar(&workbenchSessionReportFlagSummary, "summary", false, "print every agent session's row line (cache, plus a git-only merge refresh; never gh)")
 	fs.BoolVar(&workbenchSessionReportFlagJSON, "json", false, "output JSON")
 	fs.BoolVar(&workbenchSessionReportFlagNoNetwork, "no-network", false, "refresh offline: local git merge detection only, never gh")
 	c.MarkFlagsOneRequired("session", "summary")
@@ -70,9 +71,14 @@ func runWorkbenchSessionReport(cmd *cobra.Command, _ []string) error {
 	}
 	w := cmd.OutOrStdout()
 	if workbenchSessionReportFlagSummary {
-		rows, err := sessionreport.Summaries(ctx, database, id)
+		rows, res, err := sessionreport.RefreshedSummaries(ctx, database, id, sessionreport.RefreshOptions{})
 		if err != nil {
 			return err
+		}
+		// stdout stays the row lines; what the merge refresh could not
+		// check (a git failure, a cache write that failed) is one stderr line.
+		if res.Note != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "session-report: merge states: "+res.Note)
 		}
 		if workbenchSessionReportFlagJSON {
 			return writeJSON(w, rows)
@@ -133,7 +139,7 @@ func printReportHeader(w io.Writer, r sessionreport.Report) {
 	if br := reportBranches(r); len(br) > 0 {
 		fmt.Fprintf(w, "  branches: %s\n", strings.Join(br, ", "))
 	}
-	fmt.Fprintf(w, "  progress: %d / %d tasks\n", r.Progress.Done, r.Progress.Total)
+	fmt.Fprintf(w, "  progress: %d / %d tasks%s\n", r.Progress.Done, r.Progress.Total, mergedPart(r.Progress.Merged))
 }
 
 // printReportOnYou prints the open asks waiting for the owner.
@@ -186,7 +192,7 @@ func printReportDone(w io.Writer, r sessionreport.Report) {
 		fmt.Fprintln(w, "  (no phases)")
 	}
 	for _, p := range r.Phases {
-		line := fmt.Sprintf("  #%d %s  %d/%d", p.TargetID, p.Text, p.Done, p.Total)
+		line := fmt.Sprintf("  #%d %s  %d/%d%s", p.TargetID, p.Text, p.Done, p.Total, mergedPart(p.Merged))
 		switch {
 		case p.FinishedAt != "":
 			line += "  " + p.StartedAt + " -> " + p.FinishedAt
@@ -291,7 +297,7 @@ func printSessionSummaries(w io.Writer, rows []sessionreport.Summary) {
 		if s.TargetID != nil {
 			line += fmt.Sprintf("  target #%d", *s.TargetID)
 		}
-		line += fmt.Sprintf("  %d/%d", s.Done, s.Total)
+		line += fmt.Sprintf("  %d/%d%s", s.Done, s.Total, mergedPart(s.Merged))
 		if s.PRLine != "" {
 			line += "  " + s.PRLine
 		}
@@ -300,4 +306,13 @@ func printSessionSummaries(w io.Writer, rows []sessionreport.Summary) {
 		}
 		fmt.Fprintln(w, line)
 	}
+}
+
+// mergedPart is " · N merged" for a merged share, "" without one, so a count
+// with nothing merged reads as before.
+func mergedPart(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · %d merged", n)
 }

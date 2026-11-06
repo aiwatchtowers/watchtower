@@ -1702,7 +1702,7 @@ Watchtower is broken" with v4 (business D1, ask #148).
 
 ## PROJ-14 — a session report shows only that session's work, and only the session itself says it finished
 
-**Status:** Enforced (Go; owner approved 2026-10-03, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` Part 8; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-24 for the finish gates, owner approved spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md` in ask #550, board #947)
+**Status:** Enforced (Go; owner approved 2026-10-03, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` Part 8; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-24 for the finish gates, owner approved spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md` in ask #550, board #947; amended 2026-11-06 for the merged progress share, owner approved in ask #525, board #986)
 
 **Observable:** A `terminal_session_targets` link row comes only from that
 session's own workbench tools: `update_target`, `create_targets`,
@@ -1752,6 +1752,25 @@ database (the snapshot writes git objects only); the overview is made by the
 agent through `workbench review overview --session <id>`, which caches it
 under the key the Desktop round on the same tree reads and opens no round.
 
+Since 2026-11-06 (board #986, **owner-approved, ask #525**) the progress
+(report, phases and row line) counts a merged share apart from `done`: a
+not-done progress leaf whose branch git finds in its base — the branch of its
+nearest ancestor that carries one, when that differs from the leaf's own; a
+leaf with no branch or on that ancestor's branch (plan tasks on their
+feature's branch) never counts as merged — this base rule is a controller
+decision on board #986, not part of ask #525.
+The verdict is the drift check's merge detection against that base
+(`workbenchcheck.OpenRepositoryAgainst`: a commit-less fresh branch is not
+merged), cached in `workbench_pr_states` under `into:<base>:<branch>`; a
+branch git no longer finds keeps its cached verdict, and so does a cached
+merged branch left only on origin with a tip the base contains (session
+cleanup deleted the local branch; without its reflog git cannot tell a
+fast-forward merge from a branch with no work). `session-report
+--summary` refreshes these verdicts with git only, within 3 s, and never
+runs gh; the refresh still writes only `workbench_pr_states` and never the
+board. Done keeps its meaning (the board status); with nothing merged the
+numbers read as before.
+
 **Why locked:** Owner decision (spec 2026-10-03, decision 4). A report that
 listed another session's work, or a session marked finished by anything but
 its own agent, would make the owner trust a summary that is not this
@@ -1765,6 +1784,7 @@ owner's and the agent's backs.
 - `internal/sessionreport/refresh_test.go::TestSessionReport_ReportsAWorktreeBranch` (a placed session's `wt/` branch, board #229)
 - Codex (2026-10-12, board #399): `internal/sessionreport/summary_test.go::TestSessionReport_IncludesCodexSessions`; supporting: `internal/tools/workbench_docs_test.go::TestAgentLabel_CodexRowIsCodexCLI`, `internal/devpack/codex_hooks_test.go::TestCodexMCPOverrides_IncludeApproveAndAgentFlag` (the `env_vars` entry); every existing PROJ-14 guard unchanged
 - supporting: `internal/tools/workbench_finish_test.go` (`TestSessionLinks_EachWriteToolLinksItsTargets`, `TestSessionLinks_ReadToolsLinkNothing`, `TestSessionLinks_AFailedLinkKeepsTheWriteAndWarns`)
+- Merged share (2026-11-06, board #986, ask #525): `internal/sessionreport/merged_test.go::TestProj14_MergedLeafCountsAsMerged`, `::TestProj14_SharedBranchNeverCountsMerged`, `::TestProj14_MergedSurvivesBranchCleanup`, `::TestProj14_MergedSurvivesCleanupOfAPushedBranch`, `::TestProj14_MergeRefreshWritesOnlyThePRCache`; supporting: `internal/workbenchcheck/base_test.go::TestOpenRepositoryAgainst_*`, `cmd/workbench_session_report_test.go::TestWorkbenchSessionReport_SummaryRefreshesTheMergedShare`; `TestWorkbenchSessionReport_SummaryNeverRunsGH` unchanged
 - Finish gates (2026-10-24, board #947): `internal/tools/workbench_finish_gate_test.go::TestProj14_FinishRefusesOpenLeaves`, `::TestProj14_FinishTicketFromTargetIDWhenNotLaunched`, `::TestProj14_HandoverAskPassesBothGates`, `::TestProj14_HandoverAskRefusals`, `::TestProj14_FinishCheckOffSkipsGates`, `::TestProj14_FinishRefusesWithoutOverview`, `::TestProj14_ANoteAfterTheOverviewAsksForItAgain`, `::TestProj14_FinishRefusesUncoveredItems`, `::TestProj14_AllItemsDonePasses`, `::TestProj14_LeftItsWorktreeSkipsTheOverview`, `::TestProj14_GitFailureRefuses`, `::TestProj14_OpenLeavesRefusalListsAtMostTwenty`, `::TestProj14_EmptyDiffSkipsTheOverview`; supporting: `internal/reviewdiff/snapshot_test.go::TestSameTree`, `cmd/workbench_review_overview_test.go::TestReviewOverview_SessionForm*`
 
 **Locked since:** 2026-10-03
@@ -2613,6 +2633,7 @@ owner never saw.
 ## Changelog
 
 - 2026-11-06 (board #988, **owner approved in ask #525**: "a working agent is always Working"): **PROJ-11 amended** — a main-thread `PreToolUse` is a working signal (only out of `waiting`, the run mark or an empty row, never over `approval`, under `PostToolUse`'s transcript turn order, so the Stop still wins); a `PostToolUseFailure` is a `PostToolUse` (it may end `approval` — this rule: ask #527, pending owner confirmation), except an interrupted tool (`is_interrupt`), which records `waiting` on the main thread (no Stop follows an interrupt) and nothing in a subagent; the async state hooks and the `SessionStart` id move wait 2 s for the write lock with one retry on a busy lock; the v1 limit (c) "`PostToolUseFailure` is not hooked" is closed. **PROJ-04 / PROJ-02 amended** — the install writes and the removal takes out two more state entries, `PreToolUse` in its own `"*"` group (beside the ask tool block's `AskUserQuestion` group) and `PostToolUseFailure`; `integrate status` reports `state_hooks` only with all eight, so an existing folder is offered Repair (its Stop state and run mark keep working: `HasCoreStateHooks` is unchanged). Guard changes, none weakened: `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` expects three `PreToolUse` groups (the owner's first and unchanged, plus one each of ours) where it expected two, and `TestProj04_StateHooksKeepOwnerHooksAndKeys` also requires an emptied `PostToolUseFailure` to be dropped; `TestProj04_MalformedStateEventLeavesTheFileByteIdentical` runs over `PostToolUseFailure` and `PreToolUse` too. New guards listed under PROJ-11. Codex hooks unchanged (synchronous, no `PostToolUseFailure`).
+- 2026-11-06 (board #986): **PROJ-14 amended** — **owner approved in ask #525:** the session progress gains a merged share (a not-done leaf whose branch git finds in its base, apart from done), cached in `workbench_pr_states` under `into:<base>:<branch>` refs (no migration), and `session-report --summary` runs a git-only refresh of those verdicts (≤ 3 s, never gh). **Controller decision (not part of ask #525):** the base is the branch of the leaf's nearest branch-carrying ancestor, and a leaf on that ancestor's branch or with no branch has no base. Additive JSON key `merged` on progress, phases and summary rows. Strengthening, no guard relaxed: `TestWorkbenchSessionReport_SummaryNeverRunsGH` and every `TestProj14_*` unchanged; new guards listed under PROJ-14. PROJ-07 and PROJ-11 unchanged.
 - 2026-10-31 (**owner approved in ask #811**): **PROJ-20 amended — the local-PTY fallback is removed.** Every workbench session runs only in `watchtower session-host`; the Desktop's in-app SwiftTerm process (`SwiftTermSession`, `TerminalCenter.makeLocalProcess`, `TerminalCenter.unprotected`, the "This session stops when Watchtower quits." note and the quit alert's "N unprotected sessions will stop.") is gone. The Observable's fallback sentence is replaced by: when the host cannot be reached or started, the session does not open and the pane shows the reason; no session ever runs outside the host. A host that did not answer at launch is asked once more by each session start (the client's existing `ensureRunning`, no new retry loop). Guard changes approved in the same ask: `testProj20_ReattachAdoptsRunningSessionWithoutRelaunch` loses its `unprotected.isEmpty` assertion (its `HostedTerminalSession` check stays); the supporting `testQuitPromptNamesUnprotectedSessionsThatStop` is deleted; the supporting `testDetachAllNeverSignals` keeps only its hosted half (never signalled, connection closed, nothing forgotten). New supporting guards: `WatchtowerDesktop/Tests/TerminalCenterTests.swift::testProj20_NoSessionHostOpensNoSessionAndShowsTheReason` (no reachable host → nothing launched, the run ends with the reason in the pane and is not reported as a natural exit, so no PROJ-18 placed-session cleanup follows; the next start reaches a host that is back) and `testStartWithoutASessionHostClientOpensNothing`. No other guard changed.
 - 2026-10-28 (agent coach Plan 2, board #1120, **approved in ask #722**): amendment, no guard weakened. **PROJ-22** item (4): the daily miner folds into the coach once; suggestions reach the owner as coach proposals, still only on the owner's Accept; a moved row is decided only in the coach. See the amendment in PROJ-22.
 - 2026-10-26 (agent coach, board #1120, **approved in ask #659**): amendment, no guard weakened. **PROJ-22** item (3): `coach accept` is another writer of the owner's instructions, only on the owner's Accept. See the amendment in PROJ-22.

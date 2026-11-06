@@ -2902,7 +2902,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    ref         TEXT NOT NULL, -- 'pr:<number>' or 'branch:<name>'
+    ref         TEXT NOT NULL, -- 'pr:<number>', 'branch:<name>' or 'into:<base>:<branch>' (a merge verdict, board #986)
     state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
     pr_number   INTEGER, -- set for a pr ref, and for a branch whose PR gh found
     title       TEXT NOT NULL DEFAULT '',
