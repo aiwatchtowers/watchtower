@@ -63,15 +63,17 @@ func eventRefs(t *testing.T, p db.AutomationEventPayload) []string {
 func TestApprovalFire_QueuesOneEventRunAndWakes(t *testing.T) {
 	d := db.OpenTestDB(t)
 	id := seedNeedsApproval(t, d, true)
+	act, err := d.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`})
+	require.NoError(t, err)
 	wakes := 0
-	require.NoError(t, Fire(d, "action:7", func() { wakes++ }))
+	require.NoError(t, Fire(d, db.ActionRef(act), func() { wakes++ }))
 
 	runs := approvalRuns(t, d, id)
 	require.Len(t, runs, 1)
 	assert.Equal(t, db.TriggerEvent, runs[0].Trigger)
 	assert.Equal(t, db.RunQueued, runs[0].Status)
 	p := payloadOf(t, runs[0])
-	assert.Equal(t, []string{"action:7"}, eventRefs(t, p))
+	assert.Equal(t, []string{db.ActionRef(act)}, eventRefs(t, p))
 	assert.Equal(t, 1, p.Count)
 	assert.False(t, p.Truncated)
 	assert.Equal(t, 1, wakes)
@@ -82,13 +84,13 @@ func TestApprovalFire_QueuesOneEventRunAndWakes(t *testing.T) {
 func TestApprovalFire_SecondFireMergesIntoTheQueuedRun(t *testing.T) {
 	d := db.OpenTestDB(t)
 	id := seedNeedsApproval(t, d, true)
-	for _, ref := range []string{"action:7", "reminder:3", "action:7"} {
+	for _, ref := range []string{"reminder:7", "reminder:3", "reminder:7"} {
 		require.NoError(t, Fire(d, ref, nil))
 	}
 	runs := approvalRuns(t, d, id)
 	require.Len(t, runs, 1, "one queued run takes every ref")
 	p := payloadOf(t, runs[0])
-	assert.Equal(t, []string{"action:7", "reminder:3"}, eventRefs(t, p))
+	assert.Equal(t, []string{"reminder:7", "reminder:3"}, eventRefs(t, p))
 	assert.Equal(t, 2, p.Count)
 }
 
@@ -96,7 +98,7 @@ func TestApprovalFire_101RefsCapAt100AndTruncated(t *testing.T) {
 	d := db.OpenTestDB(t)
 	id := seedNeedsApproval(t, d, true)
 	for i := 1; i <= 101; i++ {
-		require.NoError(t, Fire(d, fmt.Sprintf("action:%d", i), nil))
+		require.NoError(t, Fire(d, fmt.Sprintf("reminder:%d", i), nil))
 	}
 	runs := approvalRuns(t, d, id)
 	require.Len(t, runs, 1)
@@ -109,43 +111,43 @@ func TestApprovalFire_101RefsCapAt100AndTruncated(t *testing.T) {
 func TestApprovalFire_ClaimedRunGetsANewOne(t *testing.T) {
 	d := db.OpenTestDB(t)
 	id := seedNeedsApproval(t, d, true)
-	require.NoError(t, Fire(d, "action:1", nil))
+	require.NoError(t, Fire(d, "reminder:1", nil))
 	first := approvalRuns(t, d, id)[0]
 	ok, err := d.ClaimAutomationRun(first.ID, "h-na", "", 0, 0, testStart)
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	require.NoError(t, Fire(d, "action:2", nil))
+	require.NoError(t, Fire(d, "reminder:2", nil))
 	runs := approvalRuns(t, d, id)
 	require.Len(t, runs, 2)
 	assert.Equal(t, db.RunQueued, runs[0].Status, "newest first")
-	assert.Equal(t, []string{"action:2"}, eventRefs(t, payloadOf(t, runs[0])))
+	assert.Equal(t, []string{"reminder:2"}, eventRefs(t, payloadOf(t, runs[0])))
 }
 
 func TestApprovalFire_NotRunnableQueuesNothing(t *testing.T) {
 	t.Run("not indexed", func(t *testing.T) {
 		d := db.OpenTestDB(t)
-		require.NoError(t, Fire(d, "action:1", func() { t.Error("woke") }))
+		require.NoError(t, Fire(d, "reminder:1", func() { t.Error("woke") }))
 	})
 	t.Run("unconfirmed", func(t *testing.T) {
 		d := db.OpenTestDB(t)
 		id := seedNeedsApproval(t, d, false)
 		require.NoError(t, d.SetBuiltinEnabled(NeedsApprovalID, true, testStart))
-		require.NoError(t, Fire(d, "action:1", func() { t.Error("woke") }))
+		require.NoError(t, Fire(d, "reminder:1", func() { t.Error("woke") }))
 		assert.Empty(t, approvalRuns(t, d, id))
 	})
 	t.Run("off", func(t *testing.T) {
 		d := db.OpenTestDB(t)
 		id := seedNeedsApproval(t, d, true)
 		require.NoError(t, d.SetBuiltinEnabled(NeedsApprovalID, false, testStart))
-		require.NoError(t, Fire(d, "action:1", func() { t.Error("woke") }))
+		require.NoError(t, Fire(d, "reminder:1", func() { t.Error("woke") }))
 		assert.Empty(t, approvalRuns(t, d, id))
 	})
 	t.Run("stopped by the daemon", func(t *testing.T) {
 		d := db.OpenTestDB(t)
 		id := seedNeedsApproval(t, d, true)
 		require.NoError(t, d.DisableRunawayAutomation(id, "a run would not end", testStart))
-		require.NoError(t, Fire(d, "action:1", func() { t.Error("woke") }))
+		require.NoError(t, Fire(d, "reminder:1", func() { t.Error("woke") }))
 		assert.Empty(t, approvalRuns(t, d, id))
 	})
 }
@@ -156,7 +158,7 @@ func TestApprovalFire_EnqueueErrorLoggedAndSwallowed(t *testing.T) {
 	// A trigger on automation_runs makes every insert fail.
 	_, err := d.Exec(`CREATE TRIGGER fail_runs BEFORE INSERT ON automation_runs BEGIN SELECT RAISE(ABORT, 'no runs'); END`)
 	require.NoError(t, err)
-	require.Error(t, Fire(d, "action:9", nil), "Fire returns the enqueue error")
+	require.Error(t, Fire(d, "reminder:9", nil), "Fire returns the enqueue error")
 
 	var lines []string
 	d.SetApprovalHook(ApprovalHook(d, func() { t.Error("woke after a failed enqueue") },
@@ -261,4 +263,70 @@ func TestSweepApprovals_NotRunnableComparesNothing(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, fired)
 	assert.Empty(t, approvalRuns(t, d, a))
+}
+
+// hookedNeedsApproval is a test database whose approval hook is Fire, with a
+// runnable needs-approval row.
+func hookedNeedsApproval(t *testing.T) (*db.DB, int64) {
+	t.Helper()
+	d := db.OpenTestDB(t)
+	id := seedNeedsApproval(t, d, true)
+	d.SetApprovalHook(ApprovalHook(d, nil, func(format string, args ...any) { t.Errorf(format, args...) }))
+	return d, id
+}
+
+// A workbench session's DirectApply write and an execute-trust call insert
+// approved and walk approved → executing → applied: never an approval, no run.
+func TestApprovalHook_DirectApplyQueuesNoRun(t *testing.T) {
+	d, id := hookedNeedsApproval(t)
+	for _, row := range []db.AgentAction{
+		{Tool: "update_target", ArgsJSON: `{}`, Status: "approved", TrustAtCreate: "execute", ContextType: "project", ContextID: "3"},
+		{Tool: "create_track", ArgsJSON: `{}`, Status: "approved", TrustAtCreate: "execute"},
+	} {
+		act, err := d.InsertAgentAction(row)
+		require.NoError(t, err)
+		for _, step := range [][2]string{{"approved", "executing"}, {"executing", "applied"}} {
+			ok, err := d.TransitionAgentAction(act, []string{step[0]}, step[1], "", "")
+			require.NoError(t, err)
+			require.True(t, ok)
+		}
+	}
+	// A project row that fails is still an audit row, not an approval.
+	act, err := d.InsertAgentAction(db.AgentAction{Tool: "update_target", ArgsJSON: `{}`, Status: "approved", ContextType: "project"})
+	require.NoError(t, err)
+	_, err = d.TransitionAgentAction(act, []string{"approved"}, "failed", "", "boom")
+	require.NoError(t, err)
+	assert.Empty(t, approvalRuns(t, d, id))
+}
+
+// An Inbox button press records a one-press row (surface inbox): no run.
+func TestApprovalHook_InboxButtonPressQueuesNoRun(t *testing.T) {
+	d, id := hookedNeedsApproval(t)
+	act, err := d.InsertInboxButtonProposal(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`, Surface: "inbox",
+		ContextType: db.InboxButtonContextType, ContextID: "1:0:abc"})
+	require.NoError(t, err)
+	for _, step := range [][2]string{{"pending", "approved"}, {"approved", "executing"}, {"executing", "applied"}} {
+		ok, err := d.TransitionAgentAction(act, []string{step[0]}, step[1], "", "")
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	assert.Empty(t, approvalRuns(t, d, id))
+}
+
+// A real approval: its proposal and its pending → approved decision each
+// queue (into one run).
+func TestApprovalHook_RealApprovalQueuesARun(t *testing.T) {
+	d, id := hookedNeedsApproval(t)
+	act, err := d.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`, Surface: "chat"})
+	require.NoError(t, err)
+	require.Len(t, approvalRuns(t, d, id), 1, "the proposal queues a run")
+	_, err = d.Exec(`DELETE FROM automation_runs WHERE automation_id = ?`, id)
+	require.NoError(t, err)
+
+	ok, err := d.TransitionAgentAction(act, []string{"pending"}, "approved", "", "")
+	require.NoError(t, err)
+	require.True(t, ok)
+	runs := approvalRuns(t, d, id)
+	require.Len(t, runs, 1, "the decision queues a run")
+	assert.Equal(t, []string{db.ActionRef(act)}, eventRefs(t, payloadOf(t, runs[0])))
 }

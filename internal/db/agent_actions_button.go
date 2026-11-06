@@ -124,7 +124,9 @@ func (db *DB) InsertInboxButtonProposal(a AgentAction) (int64, error) {
 	}
 	// After Commit: the hook writes automation_runs, and inside the
 	// transaction it would wait on this transaction's own write lock.
-	db.approvalChanged(ActionRef(id))
+	if approvalStatus(a.Status) {
+		db.approvalChanged(ActionRef(id))
+	}
 	return id, nil
 }
 

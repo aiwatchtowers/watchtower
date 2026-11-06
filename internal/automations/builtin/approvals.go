@@ -25,10 +25,19 @@ const SweepRef = "sweep"
 // run already queued takes the ref through MergeQueuedAutomationRunEvents
 // (at most automations.MaxEventsPerRun events, then truncated), so a burst
 // of changes is one run. The run's cycles list carries the refs, so a ref
-// already in the queued run merges as a no-op. A built-in that is not
+// already in the queued run merges as a no-op. An action ref whose row can
+// never be an approval (db.ActionCanBeApproval: a workbench audit row, an
+// Inbox button's one-press row, a missing row) queues nothing. A built-in that is not
 // indexed, not runnable (off, unconfirmed, a parse error) or stopped by the
 // daemon (AUTO-08) queues nothing and returns nil. wake may be nil.
 func Fire(d *db.DB, ref string, wake func()) error {
+	if kind, id, err := db.ParseApprovalRef(ref); err == nil && kind == db.ApprovalKindAction {
+		// A workbench's direct-apply audit row or an Inbox button's
+		// one-press row is never an approval, whatever its status.
+		if ok, err := d.ActionCanBeApproval(id); err != nil || !ok {
+			return err
+		}
+	}
 	a, err := d.GetBuiltinAutomation(NeedsApprovalID)
 	if errors.Is(err, db.ErrAutomationNotFound) {
 		return nil

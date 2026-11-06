@@ -37,13 +37,15 @@ func ParseApprovalRef(ref string) (kind string, id int64, err error) {
 	return kind, id, nil
 }
 
-// SetApprovalHook sets the function every approval writer calls with the
-// approval's ref after its statement changed a row (InsertAgentAction,
+// SetApprovalHook sets the function every approval writer (InsertAgentAction,
 // InsertInboxButtonProposal, TransitionAgentAction, DismissAgentAction,
 // ApproveAgentActionWithArgs, InsertReminder, MarkReminderDone,
-// SnoozeReminder). It is called once the statement has returned and outside
-// any transaction of the writer, synchronously, and its outcome never
-// changes the writer's result. Set once per process; nil removes it.
+// SnoozeReminder) calls with the approval's ref after its statement changed
+// a row that is or was an open approval: an action inserted pending, a
+// transition from or to pending/failed, a dismiss, an approve with edits,
+// every reminder write. It is called once the statement has returned and
+// outside any transaction of the writer, synchronously, and its outcome
+// never changes the writer's result. Set once per process; nil removes it.
 func (db *DB) SetApprovalHook(fn func(ref string)) {
 	if fn == nil {
 		db.approvalHook.Store(nil)
@@ -62,6 +64,23 @@ func (db *DB) approvalChanged(ref string) {
 	}
 }
 
+// approvalRowClause is the half of openActionClause that never changes over
+// a row's life: not a workbench's direct-apply audit row unless External,
+// not an Inbox button's one-press row.
+const approvalRowClause = `(context_type IS NOT 'project' OR external = 1) AND surface != 'inbox'`
+
+// ActionCanBeApproval reports whether agent_actions row id is a row that can
+// ever be an open approval (approvalRowClause) — one indexed read, so the
+// approval hook skips the rows that never are. A missing row is false.
+func (db *DB) ActionCanBeApproval(id int64) (bool, error) {
+	var ok bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM agent_actions WHERE id = ? AND `+approvalRowClause+`)`, id).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("reading agent action %d: %w", id, err)
+	}
+	return ok, nil
+}
+
 // openActionClause is the Go twin of the Desktop's "an action waits on the
 // owner" predicate (AgentActionQueries.awaitingOwnerCount, InboxRefState):
 // pending, or failed and not dismissed and not a settled session call (a
@@ -71,7 +90,7 @@ func (db *DB) approvalChanged(ref string) {
 const openActionClause = `(status = 'pending'
 	OR (status = 'failed' AND dismissed_at = ''
 	    AND NOT (tool = 'claude_ai_connector_call' AND error != 'session ended while the call ran; outcome unknown')))
-	AND (context_type IS NOT 'project' OR external = 1) AND surface != 'inbox'`
+	AND ` + approvalRowClause
 
 // openReminderClause is REMIND-01's due set: pending and remind_at <= ?.
 const openReminderClause = `status = 'pending' AND remind_at <= ?`

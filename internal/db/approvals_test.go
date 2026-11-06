@@ -93,7 +93,7 @@ func TestApprovalHook_EveryWriterNotifies(t *testing.T) {
 	// UPDATEs agent_actions or reminders calls the hook (directly or through
 	// actionChanged / reminderChanged).
 	write := regexp.MustCompile(`(?is)(insert\s+(or\s+\w+\s+)?into|update)\s+(agent_actions|reminders)\b`)
-	notifies := map[string]bool{"approvalChanged": true, "actionChanged": true, "reminderChanged": true}
+	notifies := map[string]bool{"approvalChanged": true, "actionChanged": true, "actionChangedIf": true, "reminderChanged": true}
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
 	var writers []string
@@ -288,4 +288,46 @@ func TestApprovalDriftOf(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, drift.Any(), "%+v", drift)
 	})
+}
+
+// Only a write that can touch an open approval notifies: an action inserted
+// approved, Apply's approved→executing claim and executing→applied do not.
+func TestApprovalHook_SkipsTransitionsNeverOpen(t *testing.T) {
+	d := openTestDB(t)
+	h := recordHook(t, d)
+	id, err := d.InsertAgentAction(AgentAction{Tool: "create_target", ArgsJSON: `{}`, Status: "approved"})
+	require.NoError(t, err)
+	for _, step := range [][2]string{{"approved", "executing"}, {"executing", "applied"}} {
+		ok, err := d.TransitionAgentAction(id, []string{step[0]}, step[1], "", "")
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	assert.Empty(t, h.take())
+
+	ok, err := d.TransitionAgentAction(id, []string{"applied"}, "failed", "", "boom")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, []string{ActionRef(id)}, h.take(), "a transition to failed notifies")
+}
+
+func TestActionCanBeApproval(t *testing.T) {
+	d := openTestDB(t)
+	for _, c := range []struct {
+		row  AgentAction
+		want bool
+	}{
+		{AgentAction{Tool: "t", ArgsJSON: `{}`}, true},
+		{AgentAction{Tool: "t", ArgsJSON: `{}`, ContextType: "project"}, false},
+		{AgentAction{Tool: "t", ArgsJSON: `{}`, ContextType: "project", External: true}, true},
+		{AgentAction{Tool: "t", ArgsJSON: `{}`, Surface: "inbox"}, false},
+	} {
+		id, err := d.InsertAgentAction(c.row)
+		require.NoError(t, err)
+		ok, err := d.ActionCanBeApproval(id)
+		require.NoError(t, err)
+		assert.Equal(t, c.want, ok, "%+v", c.row)
+	}
+	ok, err := d.ActionCanBeApproval(9999)
+	require.NoError(t, err)
+	assert.False(t, ok, "a missing row")
 }
