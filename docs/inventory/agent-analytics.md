@@ -22,6 +22,7 @@
 
 **Test guards:**
 - `internal/agentlog/claude_test.go::TestParseClaude_StoresNoText`
+- `internal/agentlog/codex_test.go::TestAgentlog01_CodexNoTranscriptText`
 - `internal/agentlog/claude_tools_test.go::TestParseClaude_ToolPairingOutcomesAndTargets`
 - `internal/agentlog/claude_tools_test.go::TestShellTarget_ContentSafe`
 - `internal/agentlog/claude_tools_test.go::TestParseClaude_RejectDecisionMarksDenied`
@@ -53,6 +54,12 @@
 - `internal/agentlog/scan_test.go::TestScan_ConcurrentWritersCountOnce`
 - `internal/agentlog/scan_test.go::TestScan_ConcurrentScansBothSucceed`
 - `internal/agentlog/claude_test.go::TestParseClaude_UUIDLessRecordsKeepDistinctKeys`
+- `internal/agentlog/codex_test.go::TestAgentlog02_CodexForkedRolloutCountsOnce`
+- `internal/agentlog/codex_test.go::TestAgentlog02_CodexRestampedForkCountsOnceAndKeepsTiming`
+- `internal/agentlog/codex_test.go::TestAgentlog02_CodexResultOnlyInForkFillsPendingRow`
+- `internal/agentlog/codex_test.go::TestParseCodex_TokenCountPerResponse`
+
+**Codex note (ask #507, decision D):** for a codex rollout the key is a content key a fork or resume replays unchanged: `api_call:codex:<the response's usage figures>/<the session's running totals>` (never the line's time; a repeated report of one response stores one row), `owner_turn:codex:<item id>` and `tool:codex:<call id>`. Only the session's own `session_meta` sets its start, so the parent stays the earlier session and keeps the replayed rows. A replayed row moves to the earlier session together with its time and source line, and a tool result fully pairs (with its duration) only a row a session of its own batch owns, so a copy re-stamped when written never times the owner's call; a result only the copy carries still fills a row left pending, without a duration (this holds for Claude rows too).
 
 **Robustness note:** a record without a uuid keys on `<src path>:<byte offset>` instead, so distinct records never collapse into one row; a read-type record without a `sessionId` stores nothing and is counted as `<no-session>`.
 
@@ -92,6 +99,8 @@
 
 **Observable:** Only directories under `~/.claude/projects` whose name equals the slug of the workbench folder (or of one of its worktree roots) or starts with that slug plus `-` are opened, and never through a symlink. A session belongs to the workbench containing its home cwd; for nested workbench folders the longest wins. Any other project's transcripts are never opened.
 
+Besides `~/.claude/projects`, rollouts under `$CODEX_HOME/sessions` (and `$CODEX_HOME/archived_sessions`) are read (ask #507, decision D), only for a codex `terminal_sessions` row of the workbench (any conversation id the row has had, from `terminal_session_agent_sessions`): its stored `agent_transcript_path` (named `rollout-*-<session id>.jsonl`, under one of those roots), or `$CODEX_HOME/sessions/<y>/<m>/<d>/rollout-*-<session id>.jsonl`, or `$CODEX_HOME/archived_sessions/rollout-*-<session id>.jsonl`, and only when the rollout's own `session_meta` cwd is the workbench folder or one of its worktree roots, longest folder wins — never through a symlink (the file and every folder below the sessions root). A rollout with no row, or another workbench's row, is never opened. Storing them needs `agentlog.db` migration 00003 (`agent IN ('claude','codex')` on `agent_log_files` and `agent_log_sessions`; any other agent is refused, guarded by `internal/agentlogdb/codex_test.go::TestMigration00003_UpgradeKeepsRowsAndCascade`). AGENTLOG-01/02/05/06 hold unchanged for codex; a codex model without a price shows tokens and "no price", as the ledger does.
+
 **Why locked:** The same directory holds every project the owner ever ran; reading an unrelated one would leak it into this workbench's analytics.
 
 **Test guards:**
@@ -99,6 +108,11 @@
 - `internal/agentlog/scan_test.go::TestScan_UnrelatedProjectNeverOpened`
 - `internal/agentlog/scan_test.go::TestScan_NestedWorkbenchesLongestWins`
 - `internal/agentlog/discover_test.go::TestListTranscripts_SymlinkedSubagentsDirSkipped`
+- `internal/agentlog/codex_test.go::TestAgentlog04_CodexOnlyWorkbenchRolloutsRead`
+- `internal/agentlog/codex_test.go::TestAgentlog04_CodexRowWithForeignCwdNotRead`
+- `internal/agentlog/codex_test.go::TestAgentlog04_CodexSymlinkSkipped`
+- `internal/agentlog/codex_test.go::TestAgentlog04_CodexLongestFolderWins`
+- `internal/agentlog/codex_test.go::TestAgentlog04_CodexStoredPathInSymlinkedFolderSkipped`
 
 **Locked since:** 2026-10-15
 
@@ -106,11 +120,12 @@
 
 **Status:** Enforced by review
 
-**Observable:** The core never writes, moves or deletes anything under `~/.claude`. There is no write call on transcript paths under `internal/agentlog`; reviewers check that `os.OpenFile`, `os.Create` and `os.Remove` usage stays absent there.
+**Observable:** The core never writes, moves or deletes anything under `~/.claude` or `$CODEX_HOME` (a compressed rollout is decompressed in memory only, through `internal/rollout`). There is no write call on transcript paths under `internal/agentlog`; reviewers check that `os.OpenFile`, `os.Create` and `os.Remove` usage stays absent there.
 
 **Why locked:** The transcripts are the agent's own state; modifying them could corrupt a resumable session.
 
-**Test guards:** none (Observable only).
+**Test guards:**
+- `internal/agentlog/codex_test.go::TestAgentlog05_CodexReadOnly` (codex: plain and compressed rollouts, every file's mode, mtime and hash under `CODEX_HOME` unchanged, nothing added)
 
 **Locked since:** 2026-10-15
 
@@ -125,6 +140,7 @@
 **Test guards:**
 - `internal/agentreport/timemodel_test.go::TestTimeModel_EveryCategorySumsToWall`
 - `internal/agentreport/timemodel_test.go::TestTimeModel_WaitClosedByTrigger`
+- `internal/agentreport/codex_test.go::TestAgentlog06_CodexTimeAddsUp`
 
 **Locked since:** 2026-10-16
 
@@ -154,3 +170,4 @@
 - 2026-10-19 (board #709, Task 6): AGENTLOG-07 gains evidence kind `skill` (Ref = a skill name from the period's listing, cited by S1); the guard `TestHints_CiteEvidence` gains a `skill` case resolving the Ref against the input's skills block, and the sibling `TestHintsS_CiteEvidence` checks S1. Nothing relaxed.
 - 2026-10-19 (board #709, Task 7): the trouble hints T1–T3 cite `session` and `command` evidence only (AGENTLOG-07 kinds), checked by `TestHintsT_CiteEvidence`; `TestHints_CiteEvidence` and `allRulesInput` unchanged. Nothing relaxed.
 - 2026-10-28 (board #1120, Plan 2 Task 2): `context`, `skills` and `trouble` gain a `lead` sentence; it holds counts, baseline part names, error classes and tool names only, never event text or targets, guarded by `TestAGENTLOG01_LeadHoldsNoEventText`. Nothing relaxed.
+- 2026-11-06 (ask #507 decision D, ask #514; plan 2026-11-05-llm-transport-independence Task G8): codex rollouts are imported. AGENTLOG-04 amended to also read `$CODEX_HOME/sessions` for the workbench's codex rows only (stored path or the dated glob, own `session_meta` cwd in the workbench, longest folder wins, no symlinks), with the guards `TestAgentlog04_CodexOnlyWorkbenchRolloutsRead`, `TestAgentlog04_CodexRowWithForeignCwdNotRead`, `TestAgentlog04_CodexSymlinkSkipped`, `TestAgentlog04_CodexLongestFolderWins`, `TestAgentlog04_CodexStoredPathInSymlinkedFolderSkipped`; AGENTLOG-05's Observable covers `$CODEX_HOME` and gains its first guard `TestAgentlog05_CodexReadOnly`; AGENTLOG-01/02/06 gain `TestAgentlog01_CodexNoTranscriptText`, `TestAgentlog02_CodexForkedRolloutCountsOnce` + `TestAgentlog02_CodexRestampedForkCountsOnceAndKeepsTiming` + `TestAgentlog02_CodexResultOnlyInForkFillsPendingRow` + `TestParseCodex_TokenCountPerResponse` and `TestAgentlog06_CodexTimeAddsUp`. `agentlog.db` migration 00003 widens the `agent` CHECK to `('claude','codex')`; `TestOpen_SchemaAndPerms` now counts three migrations. Nothing relaxed.
