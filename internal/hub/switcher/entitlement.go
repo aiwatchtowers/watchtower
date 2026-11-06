@@ -125,9 +125,9 @@ func (s *Switcher) EntitlementInactive(k transport.Kind, device string) {
 }
 
 // lapseRequest is a lapse waiting for a Step: asked is the phone's own
-// transport_switch(cloudkit, entitlement_expired), told that it was answered
-// already (a failed read answers it once, where the hub runs).
-type lapseRequest struct{ asked, told bool }
+// transport_switch(cloudkit, entitlement_expired) (a restart forgets it: the
+// phone repeats its request).
+type lapseRequest struct{ asked bool }
 
 const metaLapsePending = "lapse_pending"
 
@@ -237,9 +237,8 @@ func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) 
 	onRelay := s.activeKind() == transport.KindRelay && s.heading() == transport.KindRelay
 	others := false
 	if onRelay {
-		if others, err = s.othersPay(ctx, dev); err != nil {
-			s.undecided(dev.ID, req)
-			return err
+		if others, err = s.othersPay(ctx, dev); err != nil && !s.moveOnUnreadable(req) {
+			return err // undecided: the lapse waits for the next Step
 		}
 	}
 	stay := others && s.activeKind() == transport.KindRelay && s.heading() == transport.KindRelay
@@ -266,20 +265,18 @@ func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) 
 	return nil
 }
 
-// undecided is the one place for what a lapse that could not be decided (no
-// fresh account read) does for the phone that asked: it is told where the
-// hub runs, once, and the hub stays where it is. The lapse itself waits for
-// the next Step.
-func (s *Switcher) undecided(device string, req *lapseRequest) {
+// moveOnUnreadable is the one place for a lapse whose fresh account read
+// failed, timed out or was not made afresh (ask #1079). The phone's own
+// transport_switch(cloudkit, entitlement_expired) moves the Mac at once, as
+// the relay's rule 10 says a free phone's press always works: the cost is that
+// during a relay outage such a request can move the Mac off a paying phone,
+// which returns it with the Relay row. The relay's own signal (the control, a
+// refused write) stays undecided and is retried at the next Step: a failed
+// read is never "nobody pays" there.
+func (s *Switcher) moveOnUnreadable(req *lapseRequest) bool {
 	s.mu.Lock()
-	tell := req.asked && !req.told
-	if tell {
-		req.told = true
-	}
-	s.mu.Unlock()
-	if tell {
-		s.answerWhereItRuns(device)
-	}
+	defer s.mu.Unlock()
+	return req.asked
 }
 
 // heading is the transport the hub runs on, or moves to with a switch not

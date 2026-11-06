@@ -86,41 +86,84 @@ func TestARestartWithNoReadYetAndAnotherPayerKeepsTheHub(t *testing.T) {
 	})
 }
 
-// A read that failed, or was not made afresh, moves nothing: the phone's own
-// request is answered with where the hub runs (once), the lapse is retried at
-// the next Step and then decided, both ways.
-func TestAFailedOrNotFreshReadMovesNothingAndTheLapseIsRetriedThenDecided(t *testing.T) {
-	for _, how := range []string{"failed", "not fresh"} {
+// unreadable makes the account read fail, miss its freshness or hang.
+func (w *world) unreadable(how string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.payErr, w.notFresh, w.payHang = nil, false, false
+	switch how {
+	case "failed":
+		w.payErr = errors.New("relay account unreachable")
+	case "not fresh":
+		w.notFresh = true
+	case "hanging":
+		w.payHang = true
+	}
+}
+
+// The phone's own transport_switch(cloudkit, entitlement_expired) moves the
+// Mac at once when the account cannot be read (ask #1079, the relay's rule
+// 10): a failed, a not-fresh and a hanging read, the last after its one
+// bounded read.
+func TestAnAskedLapseWithAnUnreadableAccountMovesTheHubAtOnce(t *testing.T) {
+	for _, how := range []string{"failed", "not fresh", "hanging"} {
+		t.Run(how, func(t *testing.T) {
+			eachFlavour(t, func(t *testing.T, w *world) {
+				a, b := w.addPhone(true), w.addPhone(true)
+				w.moveTo(a, wire.TransportRelay, b)
+				w.unreadable(how)
+				w.askLapse(a)
+				start := time.Now()
+				w.settle(a, b)
+				if err := w.sw.Step(w.ctx); err != nil {
+					t.Fatal(err)
+				}
+				if d := time.Since(start); d > 4*testOldSide {
+					t.Fatalf("took %s: more than the one bounded read", d)
+				}
+				w.wantActive(transport.KindCloudKit)
+				if _, by, ok, err := w.sw.SwitchedAt(); err != nil || !ok || by != wire.SwitchedByEntitlement {
+					t.Fatalf("switched_by %q %v %v", by, ok, err)
+				}
+			})
+		})
+	}
+}
+
+// With a readable account the phone's own request still decides by ask #1075:
+// another phone pays, the Mac stays.
+func TestAnAskedLapseWithAnotherPayerOnAHealthyReadStays(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay, b)
+		w.askLapse(a)
+		w.settle(a, b)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindRelay)
+	})
+}
+
+// The relay's own signal with an unreadable account moves nothing: the lapse
+// waits, is retried at each Step, and is then decided, both ways.
+func TestARelaySignalLapseWithAnUnreadableAccountStaysAndRetries(t *testing.T) {
+	for _, how := range []string{"failed", "not fresh", "hanging"} {
 		for _, then := range []string{"another phone pays", "nobody pays"} {
 			t.Run(how+"/"+then, func(t *testing.T) {
 				eachFlavour(t, func(t *testing.T, w *world) {
 					a, b := w.addPhone(true), w.addPhone(true)
 					w.moveTo(a, wire.TransportRelay, b)
-					w.mu.Lock()
-					if how == "failed" {
-						w.payErr = errors.New("relay account unreachable")
-					} else {
-						w.notFresh = true
-					}
-					w.mu.Unlock()
-					before := len(switched(a))
-					w.askLapse(a)
-					w.settle(a, b)
-					w.wantActive(transport.KindRelay)
-					if len(switched(a)) != before+1 {
-						t.Fatalf("the request was not answered with where the hub runs: %d notices after %d", len(switched(a)), before)
-					}
-					for range 3 { // retried, still undecided, never answered again
+					w.unreadable(how)
+					w.expire(a)
+					for range 3 {
 						if err := w.sw.Step(w.ctx); err != nil {
 							t.Fatal(err)
 						}
 					}
 					w.wantActive(transport.KindRelay)
-					if len(switched(a)) != before+1 {
-						t.Fatal("the request was answered again")
-					}
+					w.unreadable("")
 					w.mu.Lock()
-					w.payErr, w.notFresh = nil, false
 					w.paying[b.ID().String()] = then == "another phone pays"
 					w.mu.Unlock()
 					if err := w.sw.Step(w.ctx); err != nil {
@@ -136,6 +179,49 @@ func TestAFailedOrNotFreshReadMovesNothingAndTheLapseIsRetriedThenDecided(t *tes
 			})
 		}
 	}
+}
+
+// A request that arrives for a phone whose relay-signal lapse is already
+// waiting joins it: the lapse is asked from then on, and moves at once.
+func TestAnAskedRequestJoinsAPendingRelaySignalLapse(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay, b)
+		w.unreadable("failed")
+		w.expire(a)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindRelay) // the signal alone waits
+		w.askLapse(a)
+		w.settle(a, b)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A restart loses that the phone asked, so the waiting lapse stays (it is
+// the relay's signal now); the phone repeats its request and the Mac moves.
+func TestARestartLosesAskedThenTheRepeatedRequestMoves(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay, b)
+		w.unreadable("failed")
+		w.expire(a) // waiting, not asked
+		w.rebuild(nil)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindRelay)
+		w.askLapse(a) // the phone repeats its request
+		w.settle(a, b)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindCloudKit)
+	})
 }
 
 // A restart while a lapse waits keeps it: it is in the sidecar, and the next
