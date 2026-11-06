@@ -133,6 +133,10 @@ struct InboxRowActionsFooter: View {
     let content: InboxRowActionsContent
     var onPress: (InboxRowPress) -> Void = { _ in }
 
+    /// The composer's field has the keyboard: only then does ⌘↩ propose,
+    /// so two open composers never answer the same press.
+    @FocusState private var composing: Bool
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             if case let .failed(message) = content.state {
@@ -165,11 +169,11 @@ struct InboxRowActionsFooter: View {
             HStack(spacing: Spacing.regular) {
                 TextField("Reply…", text: Binding(get: { text }, set: { onPress(.replyChanged($0)) }))
                     .textFieldStyle(.kit)
-                    .onSubmit { onPress(.proposeReply) }
+                    .focused($composing)
                     .onExitCommand { onPress(.cancelReply) }
                 Button("Propose Reply") { onPress(.proposeReply) }
                     .buttonStyle(.kitSecondary)
-                    .keyboardShortcut(.return, modifiers: .command)
+                    .keyboardShortcut(composing ? KeyboardShortcut(.return, modifiers: .command) : nil)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.isBusy)
                 Button("Cancel") { onPress(.cancelReply) }
                     .buttonStyle(.kitQuiet)
