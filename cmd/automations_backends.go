@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -97,17 +98,20 @@ func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, arg
 }
 
 // automationBackends are the backends of every executor that runs recipes:
-// the daemon's and `automations dry-run`'s.
+// the daemon's and `automations dry-run`'s (and the preview's and
+// draft_automation's). They carry the built-ins' read primitives, which a
+// dry run calls; the slot executors replace Primitives with the full set.
 func automationBackends(cfg *config.Config, database *db.DB, gen digest.Generator) automations.Backends {
 	return automations.Backends{
-		DB:        database,
-		Generator: gen,
-		Registry:  buildAutomationRegistry(cfg, database),
-		Clock:     automations.RealClock{},
-		Workbench: automationWorkbenchResolver(cfg, database),
-		Shell:     automations.NewProcessShellRunner(),
-		MCP:       newAutomationMCPCaller(cfg, database),
-		Agent:     newAutomationAgentRunner(cfg, flagConfig, cfg.DBPath(), database),
+		Primitives: builtin.ReadPrimitives(database, time.Now),
+		DB:         database,
+		Generator:  gen,
+		Registry:   buildAutomationRegistry(cfg, database),
+		Clock:      automations.RealClock{},
+		Workbench:  automationWorkbenchResolver(cfg, database),
+		Shell:      automations.NewProcessShellRunner(),
+		MCP:        newAutomationMCPCaller(cfg, database),
+		Agent:      newAutomationAgentRunner(cfg, flagConfig, cfg.DBPath(), database),
 	}
 }
 

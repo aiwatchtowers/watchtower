@@ -1,0 +1,37 @@
+{
+  "id": "waiting-for-me",
+  "slot": "waiting_for_me",
+  "overridden": false,
+  "shipped_hash": "7f9c26d09a1b66394cd2f70102ad11269d44a83848e9b0e3285e0379a82b15c2",
+  "base_hash": "",
+  "update_available": false,
+  "shipped_text": "---\nname: Waiting for me\nsummary: Messages that wait on your answer\ntrigger:\n  sync: waiting_for_me\nartifacts: living\npermissions:\n  - builtin:attention.waiting\noutputs: [inbox]\nbudget: {tokens: 1000, minutes: 2}\n---\nAfter every sync, lists the mentions, messages, tickets and mail that wait on your answer.\n\n```js\nvar waiting = attention.waiting();\n\n// \"\u003cwho\u003e in #channel\" or \"\u003cwho\u003e in a DM\" for Slack; \"\u003ckey\u003e — assigned to\n// you\" for a ticket and \"\u003caddress\u003e — \u003csubject\u003e\" for mail.\nfunction titleOf(item) {\n  var who = item.who || \"Someone\";\n  if (!item.where) {\n    return who;\n  }\n  var t = item.trigger;\n  var dash = t.indexOf(\"jira_\") === 0 || t.indexOf(\"linear_\") === 0 || t === \"email_received\";\n  return who + (dash ? \" — \" : \" in \") + item.where;\n}\n\nvar rows = waiting.items.map(function (item) {\n  var row = {\n    title: titleOf(item),\n    ref: { kind: \"inbox_item\", id: item.id }\n  };\n  if (item.age) {\n    row.badge = { text: item.age };\n  }\n  var subtitle = item.count \u003e 1 ? item.count_label + (item.text ? \" · \" + item.text : \"\") : item.text;\n  if (subtitle) {\n    row.subtitle = subtitle;\n  }\n  if (item.age_hours \u003e= 24) {\n    row.tone = \"warning\";\n  }\n  if (item.permalink) {\n    row.link = item.permalink;\n  }\n  return row;\n});\n\noutput.inbox({\n  key: \"waiting\",\n  title: \"Waiting for me\",\n  blocks: [{ type: \"list\", rows: rows, empty: \"Nobody is waiting on you\" }]\n});\n```\n",
+  "default_prompts": {},
+  "when": "After every sync, while attention detection is on",
+  "reads": [
+    "The mentions, messages, tickets and mail attention detection found"
+  ],
+  "does": [
+    "Lists everything that still waits on your answer, newest first",
+    "Updates the list after every sync; an item leaves when you answer it in the source, mark it done or snooze it",
+    "Uses no AI"
+  ],
+  "sends": [
+    "One Waiting for me list in your Inbox"
+  ],
+  "result_filter": "messages",
+  "default_folder": "inbox",
+  "parameters": [],
+  "feature_ids": [
+    "secretary-inbox"
+  ],
+  "enabled": true,
+  "run_now": true,
+  "copy_error": "",
+  "costs": {
+    "usd": 0,
+    "days": 7,
+    "reported": false,
+    "tokens": 0
+  }
+}

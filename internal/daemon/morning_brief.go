@@ -28,6 +28,7 @@ func (d *Daemon) BuiltinPrimitives() map[string]automations.PrimitiveFunc {
 	out := d.MorningBriefPrimitives()
 	for _, m := range []map[string]automations.PrimitiveFunc{
 		d.TrackMyThreadsPrimitives(), d.IdeaFinderPrimitives(), d.ReactionPrimitives(), d.WatchPrimitives(),
+		d.WaitingForMePrimitives(),
 	} {
 		maps.Copy(out, m)
 	}
