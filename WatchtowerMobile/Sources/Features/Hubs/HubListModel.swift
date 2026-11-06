@@ -75,6 +75,7 @@ enum HubListModel {
         sessions: [String: HubSession],
         unopened unopenedHubIDs: Set<String> = [],
         showsTransport: Bool = false,
+        subscriptionEnded: Bool = false,
         activeHubID: String?,
         now: Date
     ) -> [HubListItem] {
@@ -100,7 +101,8 @@ enum HubListModel {
                 canForget: removed || unopened || (offlineDays ?? 0) >= forgetAfterDays,
                 problem: unopened ? unopenedProblem : session?.lastFetchError,
                 transportLine: showsTransport ? MacsModel.transportLine(
-                    row.link, ownDeviceID: row.link.deviceID, inFlight: isSwitching(row.link), now: now
+                    row.link, ownDeviceID: row.link.deviceID, inFlight: isSwitching(row.link),
+                    subscriptionEnded: subscriptionEnded, now: now
                 ) : nil
             )
         }

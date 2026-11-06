@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
@@ -79,11 +80,23 @@ func (r *accountReader) invalidate() {
 // starts (the lock is not held over it): a read during a slow one answers
 // the answer before it.
 func (r *accountReader) State(ctx context.Context) (*relayv1.AccountState, error) {
+	return r.get(ctx, false)
+}
+
+// get is State and Fresh over one locked decision: inside the window a plain
+// read answers the last answer, a fresh one never does.
+func (r *accountReader) get(ctx context.Context, fresh bool) (*relayv1.AccountState, error) {
 	r.mu.Lock()
 	now := r.clock()
 	if !r.vouched() && !r.at.IsZero() && now.Sub(r.at) < unvouchedPoll {
 		last, lastErr := r.last, r.lastErr
 		r.mu.Unlock()
+		if fresh {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, switcher.ErrNotFresh
+		}
 		if last == nil {
 			if lastErr == nil {
 				lastErr = errors.New("hub: the account state is being read")
@@ -108,10 +121,21 @@ func (r *accountReader) State(ctx context.Context) (*relayv1.AccountState, error
 	return proto.Clone(st).(*relayv1.AccountState), nil
 }
 
+// Fresh is State for a caller that must not take an earlier answer for a
+// new one (the G2 check): inside the window it answers the last read's error
+// if that read failed, else switcher.ErrNotFresh, never the cached state.
+func (r *accountReader) Fresh(ctx context.Context) (*relayv1.AccountState, error) {
+	return r.get(ctx, true)
+}
+
 // readAccount is the hub's account-state read: through the reader, then the
 // admission stamps and the gate follow the answer.
 func (h *hubRuntime) readAccount(ctx context.Context) (*relayv1.AccountState, error) {
-	st, err := h.acct.State(ctx)
+	return h.followed(h.acct.State(ctx))
+}
+
+// followed is readAccount's tail: the stamps and the gate follow an answer.
+func (h *hubRuntime) followed(st *relayv1.AccountState, err error) (*relayv1.AccountState, error) {
 	if err != nil {
 		return nil, err
 	}

@@ -7,9 +7,12 @@
 // (sim rule 12a, actions/standby.go).
 //
 // Only a person switches (rule 8): a phone's transport_switch, or the relay
-// entitlement lapsing (by = "entitlement_expired"); a transport failure
-// never does. Toward the relay a switch is accepted at least AntiFlap after
-// the previous one; toward CloudKit always and at once (rules 9–10). The
+// entitlement lapsing (by = "entitlement_expired"), which is also what the
+// relay's answer that no phone pays for the hub moves it by (nopayer.go, G2,
+// by ruling, two fresh answers and every phone with an iCloud route); a
+// transport failure never does. Toward the relay a switch is accepted at
+// least AntiFlap after the previous one; toward CloudKit always (rules 9–10),
+// a lapse's only once a fresh account read says nobody else pays (rule 16). The
 // last accepted request wins.
 //
 // An accepted switch (rule 11; Step) runs in this order, each step durable
@@ -106,13 +109,27 @@ type Config struct {
 	Publisher       *slices.Publisher
 	Keyboxes        func() ([]wire.Keybox, error)
 	Paying          func(ctx context.Context) (map[string]bool, error)
-	OldSideTimeout  time.Duration
-	Clock           func() time.Time
+	// AnyPaying (optional) is whether any phone in the relay account pays,
+	// matched to a linked phone or not; an error is unknown (nopayer.go).
+	AnyPaying func(ctx context.Context) (bool, error)
+	// AccountPhones (optional) is a fresh read of the relay account's phones
+	// that hold this Mac in a slot, linked here or not; an error is
+	// undecided (rule 16, asks #1075, #1079; othersPay decides over it).
+	AccountPhones  func(ctx context.Context) ([]AccountPhone, error)
+	OldSideTimeout time.Duration
+	Clock          func() time.Time
 	// OnSwitched (nil = none) sees each switch once its commit moved the
 	// active transport to target, while the publisher is still held (the
 	// runtime drops the queued alert pushes on a switch to CloudKit and
 	// signals those alerts there, before the publisher resumes).
 	OnSwitched func(target transport.Kind)
+}
+
+// AccountPhone is one phone of the relay account's list: its relay device id
+// and whether it pays.
+type AccountPhone struct {
+	RelayDeviceID string
+	Paying        bool
 }
 
 // Switcher is the hub's dual transport. Request and Stale are called from
@@ -131,8 +148,12 @@ type Switcher struct {
 	active transport.Kind
 	// pending is the lapses waiting for a Step, paying the last account
 	// read that answered (entitlement.go). Device ids in uuidString form.
-	pending map[string]bool
+	pending map[string]*lapseRequest
 	paying  map[string]bool
+
+	lapseMu sync.Mutex // one lapse decision at a time (entitlement.go)
+	npMu    sync.Mutex // the no-payer check (nopayer.go)
+	np      noPayer
 
 	boMu    sync.Mutex // the failed-Step backoff
 	boDelay time.Duration
@@ -187,6 +208,7 @@ func New(c Config) (*Switcher, error) {
 			s.pauseOld(r)
 		}
 	}
+	s.loadPending()
 	return s, nil
 }
 
@@ -436,6 +458,10 @@ func (s *Switcher) PollOther(ctx context.Context) {
 		cancel()
 	}
 	s.writeOwedMarkers(ctx, "")
+	// G2 reads first on its tick: on an unvouched hub the reader answers a
+	// read inside its window from the last one, and G2 alone refuses that
+	// (a lapse recheck first would make every G2 read land in the window).
+	s.checkNoPayer(ctx)  // G2: nobody pays any more
 	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
 	if s.Pending() && s.stepDue() {
 		s.Kick()

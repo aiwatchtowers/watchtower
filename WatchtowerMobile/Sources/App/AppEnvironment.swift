@@ -115,7 +115,7 @@ final class AppEnvironment {
     func hubListItems(_ rows: [HubRow], unreadable: [String] = [], now: Date) -> [HubListItem] {
         HubListModel.items(
             rows: rows, unreadable: unreadable, sessions: sessions, unopened: unopenedHubIDs,
-            showsTransport: relayAccount != nil, activeHubID: activeHubID, now: now
+            showsTransport: relayAccount != nil, subscriptionEnded: relayAccount?.phase.subscriptionEnded ?? false, activeHubID: activeHubID, now: now
         )
     }
 

@@ -33,6 +33,9 @@ func (w *world) lapseWithAnotherPayer() (a, b *hubtest.Phone, z uint64) {
 	if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
 		w.t.Fatal(err)
 	}
+	if err := w.sw.Step(w.ctx); err != nil {
+		w.t.Fatal(err)
+	}
 	w.settle(b)
 	w.onCloudKit(a)
 	w.settle(a, b)
@@ -174,38 +177,6 @@ func TestConcurrentLapseReportsTellOnce(t *testing.T) {
 	})
 }
 
-// F4/F5: an entitlement_expired request toward CloudKit never waits on the
-// relay: with the relay hanging and no account read ever answered (nobody
-// known to pay, though b does), the hub moves to CloudKit at once.
-func TestAnEntitlementRequestNeverWaitsOnTheRelay(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
-		a, b := w.addPhone(true), w.addPhone(true)
-		w.mu.Lock()
-		w.payErr = errors.New("relay account unreachable") // never answered
-		w.mu.Unlock()
-		w.moveTo(a, wire.TransportRelay, b)
-		w.lapse(a)
-		w.relay.SetHanging(true)
-		t.Cleanup(func() { w.relay.SetHanging(false) })
-		w.onCloudKit(a)
-		target, reason := wire.TransportCloudKit, wire.SwitchedByEntitlement
-		if _, err := a.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target, Reason: &reason}); err != nil {
-			t.Fatal(err)
-		}
-		start := time.Now()
-		for range 3 {
-			w.sw.PollOther(w.ctx)
-			if err := w.sw.Step(w.ctx); err != nil {
-				t.Fatal(err)
-			}
-		}
-		w.wantActive(transport.KindCloudKit)
-		if d := time.Since(start); d > 10*time.Second {
-			t.Fatalf("took %s", d)
-		}
-	})
-}
-
 // F4/F5: on CloudKit already, the request is answered with where the hub
 // runs; with a switch toward the relay accepted but not run, it supersedes
 // it like any request toward CloudKit (no rotation).
@@ -246,6 +217,9 @@ func TestAnOldEpochIsKeptWhileAQueuedNoticeIsSealedInIt(t *testing.T) {
 		w.ckFake.SetAvailable(false)
 		w.lapse(a)
 		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}
 		w.settle(b) // the notice waits in a's CloudKit queue
@@ -327,6 +301,9 @@ func TestAnUnreadPreLapseActionNeverAppliesAfterTheLapseEnds(t *testing.T) {
 		z := w.act(a) // on the relay; no hub pass reads it
 		w.lapse(a)
 		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}
 		a.Forget(z) // R32: listed as not delivered

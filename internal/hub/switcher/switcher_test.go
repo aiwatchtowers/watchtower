@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,13 @@ type world struct {
 	calls  []string
 	paying map[string]bool
 	payErr error
+	// unmatched: the account lists a paying phone no linked device names;
+	// payHang: the account read blocks until its context ends.
+	unmatched bool
+	payHang   bool
+	notFresh  bool   // the reader answers from an earlier read
+	onRead    func() // runs inside an account read (a phone linking meanwhile)
+	reads     int    // account reads made through AccountPhones
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -138,6 +146,59 @@ func newWorld(t *testing.T, flavour string) *world {
 				return nil, w.payErr
 			}
 			return maps.Clone(w.paying), nil
+		},
+		AccountPhones: func(ctx context.Context) ([]switcher.AccountPhone, error) {
+			w.mu.Lock()
+			w.reads++
+			hang, err, unmatched := w.payHang, w.payErr, w.unmatched
+			paying := maps.Clone(w.paying)
+			notFresh := w.notFresh
+			w.mu.Unlock()
+			if hang {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			if notFresh {
+				return nil, switcher.ErrNotFresh
+			}
+			if err != nil {
+				return nil, err
+			}
+			// The relay's raw list: every linked phone with a relay id and
+			// whether it pays, and a paying phone no linked device names.
+			devices, derr := w.st.Devices()
+			if derr != nil {
+				return nil, derr
+			}
+			var out []switcher.AccountPhone
+			for _, d := range devices {
+				if d.RelayDeviceID != "" {
+					out = append(out, switcher.AccountPhone{RelayDeviceID: d.RelayDeviceID, Paying: paying[strings.ToLower(d.ID)] || paying[d.ID]})
+				}
+			}
+			if unmatched {
+				out = append(out, switcher.AccountPhone{RelayDeviceID: "unlinked-phone", Paying: true})
+			}
+			return out, nil
+		},
+		AnyPaying: func(ctx context.Context) (bool, error) {
+			w.mu.Lock()
+			hook := w.onRead
+			w.mu.Unlock()
+			if hook != nil {
+				hook()
+			}
+			w.mu.Lock()
+			hang, err, anyPays := w.payHang, w.payErr, w.unmatched
+			for _, p := range w.paying {
+				anyPays = anyPays || p
+			}
+			w.mu.Unlock()
+			if hang {
+				<-ctx.Done()
+				return false, ctx.Err()
+			}
+			return anyPays, err
 		},
 		OldSideTimeout: testOldSide,
 	}

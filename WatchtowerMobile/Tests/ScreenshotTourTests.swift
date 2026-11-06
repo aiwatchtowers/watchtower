@@ -307,7 +307,7 @@ final class ScreenshotTourTests: XCTestCase {
 
     /// S01–S07, S41, S55: Settings → Macs' Relay card in each state and the Macs' transport lines, each light, dark
     /// and narrow. The card is handed to the view (`MacsView(card:)`) over a never-started account center, which is
-    /// what turns the rows' transport lines on.
+    /// what turns the rows' transport lines on; S07 alone runs over a center whose subscription ended.
     private func captureRelayPhase4(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
         let now = Date()
         let env = host.env
@@ -364,10 +364,22 @@ final class ScreenshotTourTests: XCTestCase {
         another.switchedAt = at
         ended.switchedAt = at
         let lines = try macsLinking([home, thisPhone, another, ended, switching], now: now)
+        // The lapse row says "your subscription ended" only on a phone whose own subscription ended (S06): a center
+        // that read a revoked entitlement from the fake relay, in place of the never-started one for this frame.
+        let bed = AccountBed()
+        let token = try await bed.register()
+        try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "revoked", for: .seconds(86_400))
+        let endedCenter = bed.makeCenter()
+        endedCenter.start()
+        await endedCenter.foreground()?.value
+        XCTAssertEqual(endedCenter.phase, .free(ended: true))
+        let neverStarted = env.relayAccount
+        env.relayAccount = endedCenter
         try await shot(
             "S07", "macs-transport-lines", "bare stack, iCloud / Relay / lapse / switching rows",
             NavigationStack { MacsView() }.environment(lines)
         )
+        env.relayAccount = neverStarted // the frames after S07 run over the never-started center again
 
         rows += try await captureDiagnostics(host: host)
         rows += try await captureConnection(host: host, origin: origin, now: now) { macLink($0, $1, relay: $2) }
