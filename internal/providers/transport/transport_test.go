@@ -2,10 +2,10 @@ package transport
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/codex"
@@ -33,17 +33,14 @@ func TestFor_BuildsTheAdapter(t *testing.T) {
 	assert.IsType(t, &ollama.Client{}, For("ollama").NewQuerier(o))
 }
 
-// The querier options reach the child's argv: the model, the turn cap and
-// the read folder.
+// The querier options reach the child's argv: the model and the read folder.
 func TestNewQuerier_AppliesOptions(t *testing.T) {
 	folder := t.TempDir()
 	o := Options{Config: &config.Config{ClaudePath: "/usr/bin/false", CodexPath: "/usr/bin/false"},
-		Model: "pinned", ReadFolder: folder, MaxTurns: 3}
+		Model: "pinned", ReadFolder: folder}
 	claudeArgs := For("claude").NewQuerier(o).(*ai.Client).ArgsForTest("sys", "user")
-	require.Contains(t, claudeArgs, "pinned")
-	i := slices.Index(claudeArgs, "--max-turns")
-	require.GreaterOrEqual(t, i, 0, "%v", claudeArgs)
-	assert.Equal(t, "3", claudeArgs[i+1])
+	assert.Contains(t, claudeArgs, "pinned")
+	assert.True(t, slices.ContainsFunc(claudeArgs, func(a string) bool { return strings.Contains(a, "Read") }), "%v", claudeArgs)
 	codexArgs := For("codex").NewQuerier(o).(*codex.Client).ArgsForTest("sys", "user")
 	assert.Contains(t, codexArgs, "pinned")
 	assert.Contains(t, codexArgs, folder)

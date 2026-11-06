@@ -143,6 +143,8 @@ func newAutomationAgentRunner(cfg *config.Config, configPath, dbPath string, dat
 	if provider == "" {
 		provider = providers.ByID("").ID
 	}
+	// Not providers.ByID(provider): an unknown id runs the in-process loop,
+	// never the default CLI child.
 	if providers.RunsChild(provider) {
 		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider}
 	}
@@ -246,7 +248,11 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	readyFile := filepath.Join(readyDir, "ready")
 	mcpArgs := append(r.mcpArgs(req), "--automation-ready-file", readyFile)
 	env := automationAgentEnv(req.RunID)
-	client, cleanup, err := wiringFor(r.provider).newAgentClient(agentClientWiring{
+	newClient := wiringFor(r.provider).newAgentClient
+	if newClient == nil {
+		return automations.AgentResult{}, fmt.Errorf("agent(): provider %s runs no CLI child", r.provider)
+	}
+	client, cleanup, err := newClient(agentClientWiring{
 		cfg: r.cfg, dbPath: r.dbPath, model: model, mcpArgs: mcpArgs, env: env, tools: req.Tools,
 	})
 	if err != nil {

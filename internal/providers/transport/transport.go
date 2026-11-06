@@ -43,10 +43,6 @@ type Options struct {
 	ToolEvents bool
 	// IsolatedChild runs a generator's child through digest.IsolateChild.
 	IsolatedChild bool
-	// ChildEnv replaces the child's inherited environment; nil = inherit.
-	ChildEnv []string
-	// MaxTurns caps the run's model turns; 0 = no cap.
-	MaxTurns int
 }
 
 // Transport is one provider's row: its capabilities and its constructors.
@@ -58,17 +54,20 @@ type Transport struct {
 }
 
 // For is the row of provider id. An unknown or empty id is the default
-// provider's row, as providers.ByID resolves it.
+// provider's row, as providers.ByID resolves it; a registry provider with
+// no case here is a bug, which panics rather than run another transport.
 func For(id string) Transport {
 	p := providers.ByID(id)
 	t := Transport{ID: p.ID, Caps: p.Caps}
 	switch p.ID {
+	case "claude":
+		t.NewGenerator, t.NewQuerier = newClaudeGenerator, newClaudeQuerier
 	case "codex":
 		t.NewGenerator, t.NewQuerier = newCodexGenerator, newCodexQuerier
 	case "ollama":
 		t.NewGenerator, t.NewQuerier = newOllamaGenerator, newOllamaQuerier
 	default:
-		t.NewGenerator, t.NewQuerier = newClaudeGenerator, newClaudeQuerier
+		panic("transport: no constructors for provider " + p.ID)
 	}
 	return t
 }
@@ -126,10 +125,6 @@ func newClaudeQuerier(o Options) ai.Provider {
 	if o.ToolEvents {
 		c.EmitToolEvents()
 	}
-	if o.ChildEnv != nil {
-		c.SetChildEnv(o.ChildEnv)
-	}
-	c.SetMaxTurns(o.MaxTurns)
 	return c
 }
 
@@ -145,10 +140,6 @@ func newCodexQuerier(o Options) ai.Provider {
 	if o.ToolEvents {
 		c.EmitToolEvents()
 	}
-	if o.ChildEnv != nil {
-		c.SetChildEnv(o.ChildEnv)
-	}
-	c.SetMaxTurns(o.MaxTurns)
 	return c
 }
 

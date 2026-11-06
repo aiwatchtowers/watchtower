@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -44,7 +45,11 @@ var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	legacy := digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
 	return providerrouting.WrapGenerator(cfg, legacy, func(provider string) digest.Generator {
 		if !providers.RunsChild(provider) {
-			return digest.RefusedGenerator{Err: providers.Allowed(provider)}
+			err := providers.Allowed(provider)
+			if err == nil {
+				err = fmt.Errorf("coach: reserve provider %q runs no CLI child", provider)
+			}
+			return digest.RefusedGenerator{Err: err}
 		}
 		return transport.For(provider).NewGenerator(transport.Options{Config: cfg, IsolatedChild: true})
 	}, providerrouting.GeneratorOptions{Timeout: digest.DaemonAICallTimeout})

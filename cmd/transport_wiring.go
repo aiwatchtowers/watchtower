@@ -37,15 +37,18 @@ type transportWiring struct {
 }
 
 // wiringFor is provider id's wiring. An unknown or empty id is the default
-// provider's, as providers.ByID resolves it.
+// provider's, as providers.ByID resolves it; a registry provider with no
+// case here is a bug, which panics rather than run another transport.
 func wiringFor(id string) transportWiring {
-	switch providers.ByID(id).ID {
+	switch p := providers.ByID(id).ID; p {
+	case "claude":
+		return transportWiring{newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient}
 	case "codex":
 		return transportWiring{newChatBackend: newCodexChatBackend, newAgentClient: newCodexAgentClient}
 	case "ollama":
 		return transportWiring{newChatBackend: newRuntimeBChatBackend}
 	default:
-		return transportWiring{newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient}
+		panic("transport wiring: no constructors for provider " + p)
 	}
 }
 
@@ -59,12 +62,6 @@ func quickConnectionEnv(provider string) []string {
 		return os.Environ()
 	}
 	return nil
-}
-
-// toolsInProcess reports whether provider's tools run in this process (the
-// runtime-B loop) rather than in an MCP server child.
-func toolsInProcess(provider string) bool {
-	return !providers.RunsChild(providers.ByID(provider).ID)
 }
 
 // newClaudeChatBackend is the warm claude session.
@@ -240,7 +237,7 @@ func specReviewCodexClient(cfg *config.Config, model, folder, home string) *code
 // "probe" source (TierForSource).
 func runConnectionProbe(ctx context.Context, provider string, gen digest.Generator) error {
 	probeCtx := digest.WithSource(ctx, "probe")
-	if provider != "codex" {
+	if providers.ByID(provider).ID != "codex" {
 		_, _, _, err := gen.Generate(probeCtx, "", "respond with exactly: OK", "")
 		return err
 	}

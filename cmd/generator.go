@@ -191,7 +191,7 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 	// Runtime B: a provider with no MCP child on a tool-bearing chat surface
 	// gets the in-process loop. Handled first so we never build (and
 	// discard) a plain client, nor resolve the model twice.
-	if aiFlagTools == "chat" && toolsInProcess(cfg.AI.Provider) {
+	if aiFlagTools == "chat" && !providers.RunsChild(providers.ByID(cfg.AI.Provider).ID) {
 		if model == "" {
 			_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 		}

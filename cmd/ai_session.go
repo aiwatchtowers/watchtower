@@ -204,8 +204,8 @@ type sessionWiring struct {
 	onMounted func([]ai.ExternalMCPServer)
 }
 
-// newSessionBackend is the configured provider's backend for `ai session`
-// (transport_wiring.go).
+// newSessionBackend is the configured provider's backend for `ai session`;
+// also the tests' seam.
 func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 	return wiringFor(w.cfg.AI.Provider).newChatBackend(w)
 }
