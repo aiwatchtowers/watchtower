@@ -1295,7 +1295,9 @@ not tried and is reported as one stderr line), the state write first (a
 `UserPromptSubmit` clears the chat question after it); so does the
 `SessionStart` id move (`SetTerminalClaudeSessionID`, its own 4.5 s budget);
 the sync Stop hook, the run mark and Codex's synchronous hooks keep their one
-1 s wait. Codex is unchanged (no
+1 s wait. The worktree ledger's write comes last in that shared budget, so a long
+lock can leave it out (reported on stderr); the session/worktree pair's next
+event tries it again (`HasSessionWorktree` is read first). Codex is unchanged (no
 `PostToolUseFailure` event there, and its hooks are synchronous).
 
 Since 2026-10-12 (board #399, Codex): a `codex` row gets the same guarantees
