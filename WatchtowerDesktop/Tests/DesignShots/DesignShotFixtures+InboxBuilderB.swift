@@ -531,8 +531,8 @@ enum InboxBuilderBShotFixtures {
             DesignShot(name: "inbox-b-idea-finder-menu", size: NSSize(width: 620, height: 0)) {
                 AnyView(HStack(alignment: .top, spacing: Spacing.large) {
                     InboxFolderListRowView(row: InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder",
-                                                                summary: "1 to judge", detail: "updated 3 h ago"),
-                                        isSelected: true)
+                                                                summary: "1 to judge", detail: "updated 3 h ago"))
+                        .kitRow(isSelected: true)
                         .frame(width: 280)
                     menuPanel("Idea finder ⋯", InboxArtifactMenuContent.ideaFinderEntries)
                 }

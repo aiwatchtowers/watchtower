@@ -6,7 +6,8 @@ import WatchtowerCore
 /// state (root, owner folder, Needs approval).
 struct InboxFolderContentList: View {
     let content: InboxFolderListContent
-    var onSelect: (String) -> Void = { _ in }
+    /// A row picked by click or the arrow keys; nil when Escape clears it.
+    var onSelect: (String?) -> Void = { _ in }
     /// The empty root's and an empty owner folder's **New Artifact…**.
     var onNewArtifact: () -> Void = {}
 
@@ -21,20 +22,22 @@ struct InboxFolderContentList: View {
                     .padding(.top, Spacing.wide)
                     .frame(maxWidth: .infinity)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Spacing.tight) {
-                        Text(content.folderTitle)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, Spacing.regular)
-                            .padding(.bottom, Spacing.small)
-                        ForEach(content.rows) { row in
-                            InboxFolderListRowView(row: row, isSelected: content.selection == row.id)
-                                .onTapGesture { onSelect(row.id) }
-                        }
+                // A List, as today's Inbox list (`InboxSplitView`): arrow keys
+                // move the selection and VoiceOver reads the rows as a list.
+                List(selection: Binding(get: { content.selection }, set: { onSelect($0) })) {
+                    Text(content.folderTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .selectionDisabled()
+                        .listRowSeparator(.hidden)
+                    ForEach(content.rows) { row in
+                        InboxFolderListRowView(row: row)
+                            .tag(Optional(row.id))
+                            .listRowSeparator(.hidden)
                     }
-                    .padding(Spacing.regular)
                 }
+                .clearPlainList()
+                .onExitCommand { onSelect(nil) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -45,7 +48,6 @@ struct InboxFolderContentList: View {
 /// line under it.
 struct InboxFolderListRowView: View {
     let row: InboxFolderListRow
-    let isSelected: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
@@ -74,10 +76,8 @@ struct InboxFolderListRowView: View {
                 }
             }
         }
-        .kitRow(isSelected: isSelected)
-        .contentShape(Rectangle())
+        .padding(.vertical, Spacing.small)
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }
 
