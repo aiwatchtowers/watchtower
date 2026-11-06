@@ -594,3 +594,32 @@ func TestScan_CodexEarlierConversationOfTabRead(t *testing.T) {
 	require.NoError(t, f.al.QueryRow(`SELECT terminal_session_id FROM agent_log_sessions WHERE session_uuid = ?`, cxParent).Scan(&tsid))
 	assert.Equal(t, id, tsid)
 }
+
+// A fork whose replayed lines were re-stamped when written (an hour later):
+// tokens still count once, and the parent's tool call keeps its own timing
+// in either scan order.
+func TestAgentlog02_CodexRestampedForkCountsOnceAndKeepsTiming(t *testing.T) {
+	for _, order := range [][]string{{cxParent, cxFork}, {cxFork, cxParent}} {
+		f := newFixture(t)
+		parent := cxSession(t, cxParent, f.folder)
+		fork := strings.ReplaceAll(cxMeta(t, "00.000", cxFork, f.folder)+parent, "T10:00:", "T11:00:") +
+			strings.ReplaceAll(cxTokens(t, "35.000", 100, 0, 7, 0, 2437), "T10:00:", "T11:00:")
+		content := map[string]string{cxParent: parent, cxFork: fork}
+		f.codexRow(f.wb, cxParent, f.folder, "")
+		f.codexRow(f.wb, cxFork, f.folder, "")
+		for _, id := range order {
+			f.writeRollout(id, content[id])
+			r := f.scan()
+			require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+		}
+		calls, out := f.totals()
+		assert.Equal(t, int64(3), calls, "order %v", order)
+		assert.Equal(t, int64(137), out, "order %v", order)
+		var owner string
+		var ms int64
+		require.NoError(t, f.al.QueryRow(`SELECT session_uuid, duration_ms FROM agent_log_events WHERE key = ?`,
+			"tool:codex:call-1-"+cxParent).Scan(&owner, &ms))
+		assert.Equal(t, cxParent, owner, "order %v", order)
+		assert.Equal(t, int64(4000), ms, "the parent's own call-to-output time, order %v", order)
+	}
+}

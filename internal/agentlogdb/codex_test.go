@@ -83,10 +83,9 @@ func TestMigration00003_UpgradeKeepsRowsAndCascade(t *testing.T) {
 	var out int64
 	require.NoError(t, d.QueryRow(`SELECT output_tokens FROM agent_log_session_totals WHERE session_uuid = 's1'`).Scan(&out))
 	assert.Equal(t, int64(5), out)
-	rows, err := d.Query(`PRAGMA foreign_key_check`)
-	require.NoError(t, err)
-	assert.False(t, rows.Next(), "no dangling child row")
-	require.NoError(t, rows.Close())
+	var dangling int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&dangling))
+	assert.Zero(t, dangling, "no dangling child row")
 	_, err = d.Exec(`DELETE FROM agent_log_sessions WHERE session_uuid = 's1'`)
 	require.NoError(t, err)
 	for _, table := range children {
