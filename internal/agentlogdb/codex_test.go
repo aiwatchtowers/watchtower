@@ -41,7 +41,10 @@ func TestAgentlog04_CodexRowsAccepted(t *testing.T) {
 }
 
 // Migration 00003 on a populated version-2 file: every row and child row
-// stays, foreign keys check clean, the cascade and the totals view still work.
+// stays with its fields, the index is recreated, codex is accepted and any
+// other agent refused, foreign keys check clean, the cascade and the totals
+// view still work. (agentlog.db has no triggers and no schema golden; the
+// child tables reference agent_log_sessions by name, so the rebuild keeps them.)
 func TestMigration00003_UpgradeKeepsRowsAndCascade(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agentlog.db")
 	v2 := fstest.MapFS{}
@@ -80,6 +83,41 @@ func TestMigration00003_UpgradeKeepsRowsAndCascade(t *testing.T) {
 	for _, table := range append([]string{"agent_log_files", "agent_log_sessions"}, children...) {
 		assert.Equal(t, 1, count(table), table)
 	}
+	// The migrated claude rows keep every field.
+	f, err := d.GetAgentLogFile("/t/s1.jsonl")
+	require.NoError(t, err)
+	require.NotNil(t, f)
+	assert.Equal(t, "claude", f.Agent)
+	assert.Equal(t, int64(10), f.ReadOffset)
+	assert.Equal(t, 4, f.ParserVersion)
+	var agent, folder, home, src, started, ended, model string
+	var project int64
+	require.NoError(t, d.QueryRow(`SELECT agent, project_id, folder_path, home_cwd, source_path, started_at, ended_at, model
+		FROM agent_log_sessions WHERE session_uuid = 's1'`).Scan(&agent, &project, &folder, &home, &src, &started, &ended, &model))
+	assert.Equal(t, []any{"claude", int64(7), "/w", "/w", "/t/s1.jsonl", "2026-11-01T10:00:00Z", "2026-11-01T10:01:00Z", "m"},
+		[]any{agent, project, folder, home, src, started, ended, model})
+	var key, kind, ts string
+	var evOut int64
+	require.NoError(t, d.QueryRow(`SELECT key, kind, ts, output_tokens FROM agent_log_events WHERE session_uuid = 's1'`).Scan(&key, &kind, &ts, &evOut))
+	assert.Equal(t, []any{"m1:r1", "api_call", "2026-11-01T10:00:30Z", int64(5)}, []any{key, kind, ts, evOut})
+	var idx int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_log_sessions_project'`).Scan(&idx))
+	assert.Equal(t, 1, idx, "the sessions index is recreated")
+
+	// The widened CHECK: codex is accepted, any other agent is refused.
+	_, err = d.Exec(`INSERT INTO agent_log_files (path, agent) VALUES ('/t/c.jsonl', 'codex')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, folder_path, home_cwd, source_path, started_at, ended_at)
+		VALUES ('c1', 'codex', '/w', '/w', '/t/c.jsonl', '', '')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO agent_log_files (path, agent) VALUES ('/t/g.jsonl', 'gemini')`)
+	require.ErrorContains(t, err, "CHECK constraint failed")
+	_, err = d.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, folder_path, home_cwd, source_path, started_at, ended_at)
+		VALUES ('g1', 'gemini', '/w', '/w', '/t/g.jsonl', '', '')`)
+	require.ErrorContains(t, err, "CHECK constraint failed")
+	_, err = d.Exec(`DELETE FROM agent_log_sessions WHERE session_uuid = 'c1'`)
+	require.NoError(t, err)
+
 	var out int64
 	require.NoError(t, d.QueryRow(`SELECT output_tokens FROM agent_log_session_totals WHERE session_uuid = 's1'`).Scan(&out))
 	assert.Equal(t, int64(5), out)
