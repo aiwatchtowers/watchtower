@@ -1776,7 +1776,7 @@ budget ran out, the cache could not be read; not a verdict git only cannot
 give, such as a base too far ahead for the squash check, and only for the
 verdicts the row's own `merged` count reads — carries `merged_stale: true`
 (additive key; false when absent) and the Desktop row caption says so
-("N merged (stale)", "merged not checked"); a verdict read but not saved
+("N merged (unchecked)", "merged not checked"); a verdict read but not saved
 still counts in that run's rows.
 
 **Why locked:** Owner decision (spec 2026-10-03, decision 4). A report that

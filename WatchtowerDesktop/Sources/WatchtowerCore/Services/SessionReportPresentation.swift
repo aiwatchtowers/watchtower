@@ -201,7 +201,7 @@ package enum SessionReportPresentation {
     /// ticket, X/Y when anything is in scope (then "N merged" when tasks not
     /// done have their branch merged into their parent's, board #986), Go's
     /// PR line. A merged share the refresh could not check (`mergedStale`)
-    /// reads "N merged (stale)", or "merged not checked" with none counted.
+    /// reads "N merged (unchecked)", or "merged not checked" with none counted.
     /// A summary kept
     /// from an earlier run after a failed refresh ends in "· stale", so a
     /// failure never reads as a blank line; "" when there is nothing to say.
@@ -212,7 +212,7 @@ package enum SessionReportPresentation {
             parts.append("\(summary.done)/\(summary.total)")
             switch (summary.merged > 0, summary.mergedStale) {
             case (true, false): parts.append("\(summary.merged) merged")
-            case (true, true): parts.append("\(summary.merged) merged (stale)")
+            case (true, true): parts.append("\(summary.merged) merged (unchecked)")
             case (false, true): parts.append("merged not checked")
             case (false, false): break
             }

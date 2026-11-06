@@ -312,14 +312,14 @@ func printSessionSummaries(w io.Writer, rows []sessionreport.Summary) {
 }
 
 // summaryMergedPart is a row line's merged share: mergedPart, and when the
-// refresh could not check it " · N merged (stale)", or " · merged not
+// refresh could not check it " · N merged (unchecked)", or " · merged not
 // checked" with none counted.
 func summaryMergedPart(s sessionreport.Summary) string {
 	switch {
 	case s.Total == 0 || !s.MergedStale:
 		return mergedPart(s.Merged)
 	case s.Merged > 0:
-		return mergedPart(s.Merged) + " (stale)"
+		return mergedPart(s.Merged) + " (unchecked)"
 	}
 	return " · merged not checked"
 }
