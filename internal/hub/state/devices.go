@@ -32,6 +32,8 @@ type Device struct {
 	Ordered              bool
 	RelayDeviceID        string
 	ResendRequestedFrom  uint64
+	// ResendRequestedAt is when that gap was last asked (zero: not known).
+	ResendRequestedAt time.Time
 	// AckedEpoch is the newest hub epoch the phone confirmed (epoch_ack).
 	AckedEpoch uint32
 	// RelayAdmittedAt is when the relay first listed this phone as holding
@@ -89,7 +91,7 @@ const deviceColumns = `device_id, name, scope, linked_at, signing_key, agreement
 // deviceRead is what a read selects: the link's columns, the relay's admission
 // stamp, which only MarkRelayAdmitted writes (a re-link clears it), and the
 // switch only a device record's rewrite writes (a re-link clears it too).
-const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq, work_alerts_off`
+const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq, work_alerts_off, resend_requested_at`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -103,11 +105,12 @@ func scanDevice(r rowScanner) (Device, error) {
 		admitted           sql.NullFloat64
 		lapsed, skip       sql.NullFloat64
 		skipSeq            int64
+		resendAt           sql.NullFloat64
 	)
 	err := r.Scan(&d.ID, &d.Name, &d.Scope, &linked, &d.SigningKey, &d.AgreementKey, &nonce,
 		&d.TypingAllowed, &d.TypingRequested, &d.PermissionsAllowed, &d.PermissionsRequested,
 		&d.StartSessionsAllowed, &d.StartSessionsGranted,
-		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq, &d.WorkAlertsOff)
+		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq, &d.WorkAlertsOff, &resendAt)
 	if err != nil {
 		return Device{}, err
 	}
@@ -121,6 +124,9 @@ func scanDevice(r rowScanner) (Device, error) {
 	if skip.Valid {
 		t := fromReal(skip.Float64)
 		d.RelaySkipBefore = &t
+	}
+	if resendAt.Valid {
+		d.ResendRequestedAt = fromReal(resendAt.Float64)
 	}
 	d.RelaySkipSeq = uint64(max(skipSeq, 0))
 	d.LinkedAt = fromReal(linked)
@@ -256,9 +262,17 @@ func SetLastApplied(tx *sql.Tx, device string, seq uint64) error {
 	return updateDevice(tx, device, seq, `UPDATE devices SET last_applied_action_seq = ? WHERE device_id = ? COLLATE NOCASE`)
 }
 
-// SetResendRequested records the gap start a resend_from was written for,
-// so each gap gets one.
-func SetResendRequested(tx *sql.Tx, device string, from uint64) error {
+// SetResendRequested records the gap start a resend_from was written for and
+// when (zero: forgotten), so each gap gets one until that ask is old enough to
+// count as lost.
+func SetResendRequested(tx *sql.Tx, device string, from uint64, at time.Time) error {
+	var stamp any
+	if !at.IsZero() {
+		stamp = toReal(at)
+	}
+	if _, err := tx.Exec(`UPDATE devices SET resend_requested_at = ? WHERE device_id = ? COLLATE NOCASE`, stamp, device); err != nil {
+		return fmt.Errorf("stamping a resend_from: %w", err)
+	}
 	return updateDevice(tx, device, from, `UPDATE devices SET resend_requested_from = ? WHERE device_id = ? COLLATE NOCASE`)
 }
 

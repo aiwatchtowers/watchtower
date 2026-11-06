@@ -531,7 +531,7 @@ func TestUndeliveredCountsHeldAndGap(t *testing.T) {
 
 	st, err = state.Open(dir)
 	require.NoError(t, err)
-	require.NoError(t, st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.SetResendRequested(tx, dev, 3) }))
+	require.NoError(t, st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.SetResendRequested(tx, dev, 3, time.Now()) }))
 	require.NoError(t, st.Close())
 	assert.Equal(t, float64(3), hubPhonesByID(t)[id]["undelivered"], "held + 1 for the open gap")
 }

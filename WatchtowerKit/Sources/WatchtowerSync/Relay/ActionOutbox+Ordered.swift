@@ -142,8 +142,9 @@ extension ActionOutbox {
     // MARK: resend_from
 
     /// The hub asked for every action from `seq` on (sim rules 5–6), run on the chain after any flush in flight:
-    /// `sent` rows at or above it go back to `queued` and are written again as new versions (never listed); when
-    /// the first row still held is past `seq`, a `skip_to(first)` is queued ahead of them. Then a flush.
+    /// `sent` rows at or above it go back to `queued` and are written again as new versions (never listed), then a
+    /// flush. The ask is kept until it is answered (`closeAskedGap`), so a row refused for good on the way gets its
+    /// `skip_to` too, after a kill as well: the hub asks once per gap.
     public func resendFrom(_ seq: UInt64) async throws {
         _ = try await onChain { try await self.performResend(from: seq) }.value
     }
@@ -152,25 +153,38 @@ extension ActionOutbox {
         // Checked before anything moves: a lost skip would stall the order (the hub asks once per gap).
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        try store.raiseResendFloor(seq)
         _ = try store.requeue(fromSeq: seq)
         // A rewrite is not a first save: the rows put back leave no timing, whatever the pass ends in.
         for row in try store.outboxRows([.queued]) where row.actionSeq >= seq {
             stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
         }
-        // Before `first` is read: a row of an older epoch that does not open is listed here, so the skip covers it.
+        // Before the flush: a row of an older epoch that does not open is listed here, so the skip covers it.
         try await resealOlderEpochs(from: seq)
-        // Seqs in [seq, first) are settled, already Not delivered (each keeps its first reason) or gone (an
-        // `applied` echo or the owner's Dismiss): nothing to list (Ruling 1).
-        let first = try store.outboxRows([.queued]).first { $0.actionSeq >= seq }?.actionSeq ?? store.nextActionSeq()
-        if first > seq {
+        return try await reportedFlush()
+    }
+
+    /// Answers the ask the store still holds once its first seq has no row left to send: `skip_to(first)`, where
+    /// `first` is the lowest row at or above the ask still `queued` or `sent`, else the next seq, so nothing live is
+    /// ever passed. Seqs below `first` are settled, Not delivered (each keeps its first reason) or gone (an `applied`
+    /// echo or the owner's Dismiss): nothing to list (Ruling 1). A failure leaves the ask for the next pass: a locked
+    /// keychain must not stop rows that are already sealed.
+    private func closeAskedGap() async {
+        do {
+            guard let asked = try store.resendFloor() else { return }
+            let first = try store.outboxRows([.queued, .sent]).first { $0.actionSeq >= asked }?.actionSeq
+                ?? store.nextActionSeq()
+            guard first > asked else { return }
+            guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
+            guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
             let control = ControlPayload.skipTo(first, deviceID: device, hubID: hub)
             let at = now()
             let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
-            try store.enqueueControl(QueuedControl(
-                id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload,
-                queuedAt: at))
+            try store.queueSkip(QueuedControl(
+                id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at))
+        } catch {
+            logger.error("skip_to not queued, next pass: \(String(describing: type(of: error)), privacy: .public)")
         }
-        return try await reportedFlush()
     }
 
     /// Sim rule 14 (the hub asks again for what it can no longer open), after the requeue and before the skip is
@@ -366,6 +380,7 @@ extension ActionOutbox {
     @discardableResult
     func applyOrderedEcho(_ action: ActionRequestPayload) throws -> Bool {
         guard action.status != .pending else { return false }
+        if action.status.isFinal, let seq = action.actionSeq { try store.closeResendFloor(atOrBelow: seq) }
         // Only a `queued` row moves; the echo carries no version of the phone's write, so none is kept.
         try store.markSent(actionID: action.id, recordSeq: nil, at: now())
         switch action.status {
@@ -411,14 +426,39 @@ extension ActionOutbox {
 
     /// One pass (sim rules 1, 3, 7a): queued controls in order, then queued actions by seq, one record per call.
     /// The first non-permanent refusal stops the pass. A permanent refusal never does: the control stays queued for
-    /// the next pass, the action is listed as Not delivered, and the records after it go on.
+    /// the next pass, the action is listed as Not delivered, and the records after it go on. A row listed in a gap the
+    /// hub asked for gets its `skip_to` in the same pass.
     func performFlush() async throws -> OutboxFlushReport {
         var report = OutboxFlushReport()
         guard transport.isConditional, !flushesHeld else { return report }
+        await closeAskedGap()
+        guard try await writeQueuedControls(&report) else { return report }
+        for row in try store.outboxRows([.queued]) {
+            switch try await deliver(row) {
+            case .written:
+                report.written += 1
+            case .undelivered:
+                report.undelivered += 1
+            case .left:
+                break
+            case .stopped(let refusal):
+                report.stoppedOn = refusal
+                return report
+            }
+        }
+        if report.undelivered > 0 {
+            await closeAskedGap()
+            _ = try await writeQueuedControls(&report)
+        }
+        return report
+    }
+
+    /// Writes the queued controls in order; false when a non-permanent refusal stopped the pass.
+    private func writeQueuedControls(_ report: inout OutboxFlushReport) async throws -> Bool {
         for control in try store.queuedControls() {
             if case .hostedRelay = route, now().timeIntervalSince(control.queuedAt) >= Self.hostedRelayControlTTL {
                 // The relay would have purged any copy by now. On CloudKit there is no such TTL and a control is
-                // never dropped: a lost `skip_to` could stall every later action.
+                // never dropped. A `skip_to` dropped here is the hub's to ask for again (`ResendAskAgainAfter`).
                 try store.controlWritten(id: control.id)
                 logger.error(
                     "control \(control.id, privacy: .public) (\(control.kind.rawValue, privacy: .public)) unwritten for 14 days, dropped")
@@ -436,23 +476,10 @@ extension ActionOutbox {
                 logger.warning("control \(control.id, privacy: .public) refused for good, kept for the next pass")
             case .refused(let refusal):
                 report.stoppedOn = refusal
-                return report
+                return false
             }
         }
-        for row in try store.outboxRows([.queued]) {
-            switch try await deliver(row) {
-            case .written:
-                report.written += 1
-            case .undelivered:
-                report.undelivered += 1
-            case .left:
-                break
-            case .stopped(let refusal):
-                report.stoppedOn = refusal
-                return report
-            }
-        }
-        return report
+        return true
     }
 
     private enum Delivered {
@@ -489,7 +516,7 @@ extension ActionOutbox {
                 // The record is gone (the hub or hygiene deleted it, the TTL purged it): written again as new.
                 expect = .absent
             case .refused(let refusal) where refusal.isPermanent:
-                // This record alone: the hub's gap rule asks for it and `resend_from` skips it.
+                // This record alone: the hub's gap rule asks for it and `closeAskedGap` skips it.
                 stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
                 try store.markUndelivered(actionIDs: [row.actionID], reason: .refused, message: Self.refusedMessage)
                 return .undelivered
@@ -580,7 +607,7 @@ extension ActionOutbox {
 
     // MARK: 24 h without an answer (Ruling 5)
 
-    /// Every ordered row `queued` or `sent` since before `cutoff` (by `sent_at`, else `created_at`) is withdrawn and
+    /// Every ordered row `queued` or `sent` since before `cutoff` (by its first write's `sent_at`, else `created_at`) is withdrawn and
     /// listed as Not delivered with `no_answer`. A never-written row is listed at once; a written one first has its
     /// own record deleted under the version it wrote, so a later Retry cannot apply the action twice. An echo met
     /// on the way is applied instead (not listed); a refusal leaves the row for the next sweep.

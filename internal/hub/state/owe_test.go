@@ -29,7 +29,7 @@ func TestOweOverMovesEchoesAndDropsTheRest(t *testing.T) {
 				return err
 			}
 		}
-		return SetResendRequested(tx, dev, 5)
+		return SetResendRequested(tx, dev, 5, time.Now())
 	}); err != nil {
 		t.Fatal(err)
 	}

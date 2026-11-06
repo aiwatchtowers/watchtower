@@ -89,8 +89,8 @@ func TestBaselineMatchesSwiftColumns(t *testing.T) {
 		rows, err := db.Query(`SELECT m.name, group_concat(p.name || ' ' || p.type || ' ' || p."notnull" || ' ' || ifnull(p.dflt_value, '') || ' ' || p.pk, ', ' ORDER BY p.cid)
 			FROM sqlite_master m JOIN pragma_table_info(m.name) p
 			WHERE m.type = 'table' AND m.name NOT LIKE 'goose%' AND m.name NOT LIKE 'sqlite%'
-				-- 00002's, 00004's, 00007's and 00014's appended devices columns and 00003's pending_devices column: the baseline is what is pinned here.
-				AND NOT (m.name = 'devices' AND p.name IN ('work_alerts_off', 'last_applied_action_seq', 'ordered', 'relay_device_id', 'resend_requested_from', 'acked_epoch', 'relay_admitted_at', 'relay_lapsed_at', 'relay_skip_before', 'relay_skip_seq'))
+				-- 00002's, 00004's, 00007's, 00014's and 00015's appended devices columns and 00003's pending_devices column: the baseline is what is pinned here.
+				AND NOT (m.name = 'devices' AND p.name IN ('resend_requested_at', 'work_alerts_off', 'last_applied_action_seq', 'ordered', 'relay_device_id', 'resend_requested_from', 'acked_epoch', 'relay_admitted_at', 'relay_lapsed_at', 'relay_skip_before', 'relay_skip_seq'))
 				AND NOT (m.name = 'pending_devices' AND p.name = 'relay_device_id')
 				-- 00010's appended hub_epochs columns.
 				AND NOT (m.name = 'hub_epochs' AND p.name IN ('reason', 'retire_after'))
