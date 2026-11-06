@@ -27,14 +27,12 @@ var update = flag.Bool("update", false, "rewrite testdata/matrix.golden from tod
 
 const goldenPath = "testdata/matrix.golden"
 
-// openGaps are the open parity gaps of the spec's §2.2 (L2 and L12 are
-// fixed; L13 was found by this suite, as L12 was). A gap:<id> cell must
-// name one of them.
+// openGaps are the open parity gaps of the spec's §2.2. Closed: L2 (#957),
+// L12 (G1b), L1 (G1), L7-L10 (G3), S7-S8 (G6), S3-S5 and S10 (G7). L13 was
+// found by this suite, as L12 was. A gap:<id> cell must name one of them.
 var openGaps = map[string]bool{
-	"L1": true, "L3": true, "L4": true, "L5": true, "L6": true, "L7": true, "L8": true,
-	"L9": true, "L10": true, "L11": true, "L13": true,
-	"S1": true, "S2": true, "S3": true, "S4": true, "S5": true, "S6": true, "S7": true,
-	"S8": true, "S9": true, "S10": true,
+	"L3": true, "L4": true, "L5": true, "L6": true, "L11": true, "L13": true,
+	"S1": true, "S2": true, "S6": true, "S9": true,
 }
 
 // cellKey names a cell in the golden: "<adapter>/<level> <scenario>".
@@ -149,18 +147,12 @@ func TestTransportSuite(t *testing.T) {
 // flips its cells to pass; a fix that only changes the failure updates the
 // signature.
 var gapSignatures = map[string]*regexp.Regexp{
-	"L1":  regexp.MustCompile(`token too long`),
 	"L3":  regexp.MustCompile(`a response past the cap ran|no turn cap in force`),
 	"L5":  regexp.MustCompile(`web search`),
 	"L6":  regexp.MustCompile(`images and PDFs need the Claude provider`),
-	"L7":  regexp.MustCompile(`no usage event|the first message was wiped|the partial text was not delivered|the text before the tool was not kept`),
-	"L9":  regexp.MustCompile(`not a capability refusal`),
-	"L10": regexp.MustCompile(`not a providers\.Failure`),
 	"L13": regexp.MustCompile(`without a budget failure`),
 	"S1":  regexp.MustCompile(`no pull signal`),
 	"S2":  regexp.MustCompile(`no pull signal`),
-	"S3":  regexp.MustCompile(`pending permission requests`),
-	"S7":  regexp.MustCompile(`compressed transcript`),
 }
 
 // runMatrixCell runs one cell as a subtest and checks it against the
