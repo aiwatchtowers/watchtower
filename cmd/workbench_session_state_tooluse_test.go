@@ -400,3 +400,24 @@ func TestSessionState_PromptStateWriteGoesFirstWithinTheBudget(t *testing.T) {
 	assert.Equal(t, "working", storedAgentState(t, database, row), "the state write went first")
 	assert.NotEmpty(t, chatQuestionAt(t, database, row), "the clear had no time left")
 }
+
+// Board #988 review (F7): a subagent's failed tool over the Stop's counted
+// `waiting` is a background heartbeat, as its tool result is: it stamps
+// agent_background_at and changes nothing else.
+func TestSessionState_SubagentToolFailureIsAHeartbeat(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	s := hookStep(t, database, pid, row, at, 1,
+		stopWithBackground(`[{"id":"a","type":"subagent"},{"id":"b","type":"subagent"}]`))
+	require.Equal(t, "waiting", s.AgentState.String)
+	require.Equal(t, int64(2), s.Background.Int64)
+	before := rowSnapshot(t, database, row)
+
+	recordToolEvent(t, pid, at, 2, toolEventPayload("PostToolUseFailure", "toolu_S", "", "a1b2c3"))
+	after := rowSnapshot(t, database, row)
+	assert.NotEqual(t, before["agent_background_at"], after["agent_background_at"], "the heartbeat did not stamp the report")
+	delete(before, "agent_background_at")
+	delete(after, "agent_background_at")
+	assert.Equal(t, before, after, "a subagent's failed tool changed more than agent_background_at")
+}
