@@ -12,7 +12,7 @@ here are scrubbed to the fixtures' placeholders.
   kept (`user_prompt_submit_midturn.json`). Tab instead queues the line for
   after the turn. Recorded as `agentkind` `MidturnInput`, but no line is sent while codex works (`TakesLineWhileWorking` also needs `Elicitation`, see (c)): an MCP form open mid-turn would take the pasted line and its Return. Phone lines go when codex is idle (`PhoneInput`).
 - **(b) PermissionRequest hold and answer: works, not enabled.** The hook
-  can hold (20 s tried) and answer with `permission_request_output_*.json`
+  can hold (20 s tried) and answer with `spikes/permission_request_output_*.json`
   (the same schema Claude Code's permission-wait prints); a deny reaches the
   model as `Rejected("<message>")`, no output leaves the decision to the
   terminal. Unlike Claude Code, the terminal shows only "Running hook" and
@@ -21,7 +21,7 @@ here are scrubbed to the fixtures' placeholders.
   Mac's own answer away for the whole hold, so `PermissionWait` stays false
   (owner decision).
 - **(c) Idle signal and elicitation: not available.** codex 0.159.2 has the
-  hook events in `hook_events.json` and no `Notification`; the legacy
+  hook events in `spikes/hook_events.json` and no `Notification`; the legacy
   `notify` program gets `agent-turn-complete` only. An MCP
   `elicitation/create` shows a form in the terminal but fires no hook (only
   the `PreToolUse` of the tool call before it) and writes nothing to the

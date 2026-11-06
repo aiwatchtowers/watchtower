@@ -580,7 +580,7 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 
 	in, out, api := 0, 0, 0
 	if usage != nil {
-		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+		in, out, api = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 	}
 	storeErrMsg := ""
 	if err != nil {
@@ -858,7 +858,7 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 
 	in, out, api := 0, 0, 0
 	if usage != nil {
-		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+		in, out, api = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 	}
 	completeRun(1, in, out, api, "")
 
@@ -927,7 +927,7 @@ func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cf
 
 	in, out, api := 0, 0, 0
 	if usage != nil {
-		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+		in, out, api = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 	}
 	completeRun(1, in, out, api, "")
 	return string(chaptersJSON), nil
@@ -1015,7 +1015,7 @@ func runTranscriptFollowup(cmd *cobra.Command, args []string) error {
 	}
 	in, out, api := 0, 0, 0
 	if usage != nil {
-		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+		in, out, api = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 	}
 	completeRun(1, in, out, api, "")
 

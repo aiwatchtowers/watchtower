@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/providers"
 )
 
@@ -60,7 +61,7 @@ func TestOllamaQuery_EmitsUsage(t *testing.T) {
 	assert.Equal(t, "Hel", chunks[0].Text)
 	assert.Equal(t, "lo", chunks[1].Text)
 	require.NotNil(t, chunks[2].Usage, "the last chunk is the turn's usage")
-	assert.Equal(t, ai.TurnUsage{Model: "llama", InputTokens: 12, OutputTokens: 5}, *chunks[2].Usage)
+	assert.Equal(t, ai.TurnUsage{Model: "llama", Tokens: llmusage.Tokens{Input: 12, Output: 5}}, *chunks[2].Usage)
 
 	plain := NewClient("llama", srv.URL)
 	chunks, err = drainQuery(plain.Query(context.Background(), "", "hi", ""))

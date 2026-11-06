@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +32,7 @@ func (g *failingGenerator) Generate(_ context.Context, sys, user, _ string) (str
 	if g.calls <= g.failFirst {
 		return "", nil, "", errBatchGenerator
 	}
-	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 // cancelingGenerator answers successfully and cancels the run's context, so the
@@ -45,7 +46,7 @@ type cancelingGenerator struct {
 func (g *cancelingGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls++
 	g.cancel()
-	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 // firstChannelBlock matches a batch prompt's channel block header,
@@ -323,7 +324,7 @@ func (g *channelFailingGenerator) Generate(_ context.Context, sys, user, _ strin
 	if strings.Contains(sys+user, "("+g.failID+")") {
 		return "", nil, "", errBatchGenerator
 	}
-	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 // retryAttempts returns the retry-set attempt count of the digest of channel
@@ -457,7 +458,7 @@ func (g *poisonGenerator) Generate(_ context.Context, sys, user, _ string) (stri
 		g.poisoned++
 		return "", nil, "", errBatchGenerator
 	}
-	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 // An owed digest that always fails and a fresh digest of the SAME channel are

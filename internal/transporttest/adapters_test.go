@@ -671,7 +671,10 @@ func driveChat(ctx context.Context, r *run, a *Adapter, s *Scenario, o *Outcome)
 		}
 		emit := func(e chat.Event) {
 			o.Events = append(o.Events, e)
-			if (s.Fixture.Drive == driveCancelAtText && e.Type == chat.EventTextDelta) ||
+			// Cancel at text once the whole first message has arrived: a
+			// fixture may split it across deltas, and cancelling at the
+			// first one races the rest of it.
+			if (s.Fixture.Drive == driveCancelAtText && e.Type == chat.EventTextDelta && strings.Contains(o.text(), markFirst)) ||
 				(s.Fixture.Drive == driveCancelAtTool && e.Type == chat.EventToolStart) {
 				once.Do(func() { go func() { _ = b.Cancel() }() })
 			}

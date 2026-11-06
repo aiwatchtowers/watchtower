@@ -185,7 +185,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		n, usage, err := runCoachProposer(ctx, p, in)
 		stats := pipelineRunStats{items: n, err: err}
 		if usage != nil {
-			stats.inTok, stats.outTok, stats.totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+			stats.inTok, stats.outTok, stats.totalAPI = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 		}
 		if ctx.Err() != nil { // a cycle cancelled mid-run (sleep/wake) is retried next cycle
 			return stats

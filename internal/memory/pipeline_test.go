@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // pipelineTestConfig is a permissive enabled config for pipeline tests.
@@ -232,7 +233,7 @@ func TestPipelineHappyPath(t *testing.T) {
 	ts3 := fmt.Sprintf("%d.000300", base+120)
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		usage: digest.Usage{Model: "haiku", Tokens: llmusage.Tokens{Input: 100, Output: 20, CacheRead: 50}},
 		reply: func(user string) (string, error) {
 			if strings.Contains(user, "(C1GEN)") {
 				return episodeJSON("Prod deploy failed", "C1GEN", ts1, "C1GEN"), nil
@@ -316,7 +317,7 @@ func TestExtractLinksParticipantsAndChannelWithoutEntityHints(t *testing.T) {
 	ts3 := fmt.Sprintf("%d.000300", base+120)
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		usage: digest.Usage{Model: "haiku", Tokens: llmusage.Tokens{Input: 100, Output: 20, CacheRead: 50}},
 		reply: func(user string) (string, error) {
 			if strings.Contains(user, "(C1GEN)") {
 				return "[]", nil // nothing noteworthy on this window
@@ -353,7 +354,7 @@ func TestMemory04_WatermarkFreezeOnAIFailure(t *testing.T) {
 	ts1 := fmt.Sprintf("%d.000100", base)
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		usage: digest.Usage{Model: "haiku", Tokens: llmusage.Tokens{Input: 100, Output: 20, CacheRead: 50}},
 		reply: func(user string) (string, error) {
 			if strings.Contains(user, "(C2OPS)") {
 				return "", fmt.Errorf("model exploded")
@@ -409,7 +410,7 @@ func TestPipelineChunkCapLeavesDebt(t *testing.T) {
 	}
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 10, OutputTokens: 2, TotalAPITokens: 10},
+		usage: digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 2}},
 		reply: func(string) (string, error) { return "[]", nil },
 	}
 	cfg := pipelineTestConfig()
@@ -549,7 +550,7 @@ func TestMemory04_ShapeDegenerateJSONFreezesWatermark(t *testing.T) {
 	pipelineFixture(t, d)
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 10, OutputTokens: 2, TotalAPITokens: 10},
+		usage: digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 2}},
 		reply: func(user string) (string, error) {
 			if strings.Contains(user, "(C1GEN)") {
 				// Misnamed refs key: unmarshals to episodes with zero refs.
@@ -908,7 +909,7 @@ func TestBatchGroupsQuietChannelsIntoOneCall(t *testing.T) {
 	ts3 := fmt.Sprintf("%d.000300", base+120)
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		usage: digest.Usage{Model: "haiku", Tokens: llmusage.Tokens{Input: 100, Output: 20, CacheRead: 50}},
 		reply: func(user string) (string, error) {
 			require.False(t, strings.HasPrefix(user, "-"), "the user message must never start with '-': the claude CLI wrapper passes it as a raw \"-p\" argv value (internal/ai/client.go), and a leading dash is parsed as an unrecognized flag instead of -p's value — this broke every batch call on the first live E2E run")
 			require.Contains(t, user, "=== #general (C1GEN) ===", "both channels must appear in one prompt")
@@ -1241,7 +1242,7 @@ func TestMemorySemanticEnabledRunsInOrder(t *testing.T) {
 	writeAndIndex(t, v, d, dupEpisode("ep_01ARZ3NDEKTSV4RRFFQ69G5DB2", "C9DUP", recentTS))
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 10, OutputTokens: 2, TotalAPITokens: 10},
+		usage: digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 2}},
 		reply: semanticReply,
 	}
 	p := NewPipeline(d, v, gen, semanticTestConfig(), t.Logf)
@@ -1335,7 +1336,7 @@ func TestMemorySemanticBudgetStopsAISteps(t *testing.T) {
 	// Each extraction call reports a large output, blowing the budget before the
 	// semantic AI steps.
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 10, OutputTokens: 500, TotalAPITokens: 20},
+		usage: digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 500, CacheRead: 10}},
 		reply: semanticReply,
 	}
 	p := NewPipeline(d, v, gen, cfg, t.Logf)

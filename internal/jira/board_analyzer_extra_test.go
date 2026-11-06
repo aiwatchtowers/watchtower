@@ -5,6 +5,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -37,8 +38,8 @@ func TestBoardAnalyzer_AccumulatedUsage_Empty(t *testing.T) {
 
 func TestBoardAnalyzer_AddUsage_Accumulates(t *testing.T) {
 	a := NewBoardAnalyzer(nil, nil, nil, 1)
-	a.addUsage(&ai.Usage{InputTokens: 10, OutputTokens: 20, TotalAPITokens: 30})
-	a.addUsage(&ai.Usage{InputTokens: 5, OutputTokens: 15, TotalAPITokens: 25})
+	a.addUsage(&ai.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 20, CacheRead: 20}})
+	a.addUsage(&ai.Usage{Tokens: llmusage.Tokens{Input: 5, Output: 15, CacheRead: 20}})
 	in, out, total := a.AccumulatedUsage()
 	assert.Equal(t, 15, in)
 	assert.Equal(t, 35, out)

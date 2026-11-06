@@ -37,6 +37,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/kb"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/media/linkrule"
 	"watchtower/internal/media/webfetch"
 )
@@ -66,10 +67,10 @@ func (g *pipeGen) GenerateWithImage(ctx context.Context, _, _, path, mediaType s
 	}
 	if describe != nil {
 		out, err := describe(ctx, path, mediaType)
-		return out, &digest.Usage{InputTokens: 10, OutputTokens: 5}, err
+		return out, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, err
 	}
 	return `{"title":"Chart","description":"The image shows a bar chart.","text":"Q3 PROJ-7","keys":["PROJ-7"]}`,
-		&digest.Usage{InputTokens: 10, OutputTokens: 5}, nil
+		&digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, nil
 }
 
 func (g *pipeGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
@@ -80,7 +81,7 @@ func (g *pipeGen) Generate(context.Context, string, string, string) (string, *di
 	if out == "" {
 		out = `{"title":"Example page","summary":"The page describes the example."}`
 	}
-	return out, &digest.Usage{InputTokens: 7, OutputTokens: 3}, "", nil
+	return out, &digest.Usage{Tokens: llmusage.Tokens{Input: 7, Output: 3}}, "", nil
 }
 
 func (g *pipeGen) calls() (img, text int) {

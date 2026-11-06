@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
@@ -53,7 +54,7 @@ func TestAgentloopQuery_EmitsUsage(t *testing.T) {
 	require.NoError(t, err)
 	last := chunks[len(chunks)-1]
 	require.NotNil(t, last.Usage, "the turn ends with its usage")
-	assert.Equal(t, ai.TurnUsage{Model: "m", InputTokens: 250, OutputTokens: 30}, *last.Usage)
+	assert.Equal(t, ai.TurnUsage{Model: "m", Tokens: llmusage.Tokens{Input: 250, Output: 30}}, *last.Usage)
 	var texts []string
 	for _, ch := range chunks {
 		if ch.Text != "" {

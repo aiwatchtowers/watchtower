@@ -1,6 +1,10 @@
 package agentloop
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"watchtower/internal/llmusage"
+)
 
 // OpenAI-compatible chat-completions wire types, the subset the tool loop uses.
 // The same shape Ollama, LM Studio and vLLM speak on /v1/chat/completions.
@@ -60,6 +64,12 @@ type oaUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+// tokens is the usage as a block. prompt_tokens has no cache split, so it
+// is all fresh input.
+func (u *oaUsage) tokens() llmusage.Tokens {
+	return llmusage.Tokens{Input: int64(u.PromptTokens), Output: int64(u.CompletionTokens)}
 }
 
 // Streaming wire types: the chat.completion.chunk subset the loop reads.

@@ -30,7 +30,7 @@ func stubCoach(t *testing.T, proposeErr error) *coachCalls {
 	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) { c.judge++; return 0, 0, nil }
 	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
 		c.propose++
-		return 1, &digest.Usage{InputTokens: 5}, proposeErr
+		return 1, &digest.Usage{Tokens: llmusage.Tokens{Input: 5}}, proposeErr
 	}
 	t.Cleanup(func() { runCoachJudge, runCoachProposer = oj, op })
 	return c

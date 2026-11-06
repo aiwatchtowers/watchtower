@@ -256,8 +256,8 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 		}
 		f.events, f.results = t.toolResults(m)
 	case "result":
-		f.events = t.result(l)
 		c := t.usageCall(l)
+		f.events = t.result(l, c.Tokens)
 		call = &c
 	case "system":
 		if l.Subtype == "init" {
@@ -304,6 +304,13 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 		DurationMS: time.Since(t.turnStart).Milliseconds(),
 		OK:         l.Subtype == "success" && !l.IsError,
 	}
+	if u := l.Usage; u != nil {
+		c.Tokens = llmusage.ClaudeTokens(u.InputTokens, u.CacheRead, u.CacheCreation,
+			u.CacheCreationTTL.FiveMin, u.CacheCreationTTL.OneHour, u.OutputTokens)
+	} else {
+		c.Estimated = true
+		c.Output = llmusage.EstimateTokens(l.Result)
+	}
 	if l.CostUSD > 0 {
 		cost := l.CostUSD - t.childCost
 		if cost < 0 {
@@ -318,15 +325,6 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	if len(outs) > 0 {
 		t.childOutputs = outs
 	}
-	u := l.Usage
-	if u == nil {
-		c.Estimated = true
-		c.Output = llmusage.EstimateTokens(l.Result)
-		return c
-	}
-	c.Input, c.CacheRead, c.Output = int64(u.InputTokens), int64(u.CacheRead), int64(u.OutputTokens)
-	c.CacheWrite5m, c.CacheWrite1h = llmusage.SplitCacheWrites(int64(u.CacheCreation),
-		int64(u.CacheCreationTTL.FiveMin), int64(u.CacheCreationTTL.OneHour))
 	return c
 }
 
@@ -439,15 +437,18 @@ func (t *ClaudeTranslator) toolResults(m *claudeMessage) ([]Event, []toolResult)
 	return out, results
 }
 
-func (t *ClaudeTranslator) result(l claudeLine) []Event {
+// result ends the turn: its usage event (the split from tokens, the ledger
+// call's numbers, when the line carries usage), then turn_done or error.
+func (t *ClaudeTranslator) result(l claudeLine, tokens llmusage.Tokens) []Event {
 	turnID := t.turnID()
 	interrupted := t.interrupted
 	t.interrupted = false
 	t.textTurn = "" // the turn is over: its successor starts without a break
-	usage := Event{Type: EventUsage, TurnID: turnID, Model: t.model}
+	// A line without a usage object leaves the counts unset (CHAT-01 stores
+	// none) but still carries the turn's cost, flagged as estimated.
+	usage := Event{Type: EventUsage, TurnID: turnID, Model: t.model, CostUSD: tokens.ReportedCostUSD, Estimated: true}
 	if l.Usage != nil {
-		usage.TokensIn = l.Usage.InputTokens + l.Usage.CacheRead + l.Usage.CacheCreation
-		usage.TokensOut = l.Usage.OutputTokens
+		usage = usageEvent(turnID, t.model, tokens)
 	}
 	switch {
 	case l.Subtype == "success" && !l.IsError:

@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // mockGenerator implements digest.Generator for tests. It is mutex-guarded
@@ -41,7 +42,7 @@ func (m *mockGenerator) Generate(_ context.Context, system, user, _ string) (str
 		idx = len(m.responses) - 1
 	}
 	m.callCount++
-	return m.responses[idx], &digest.Usage{InputTokens: 100, OutputTokens: 50}, "", nil
+	return m.responses[idx], &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "", nil
 }
 
 // calls returns the number of successful Generate invocations, safely.
@@ -529,7 +530,7 @@ type ctxDeadlineGenerator struct {
 
 func (g *ctxDeadlineGenerator) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
 	_, g.sawDeadline = ctx.Deadline()
-	return g.response, &digest.Usage{InputTokens: 1, OutputTokens: 1}, "", nil
+	return g.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 1, Output: 1}}, "", nil
 }
 
 func TestPipeline_Extract_NonPositiveTimeoutHasNoDeadline(t *testing.T) {
