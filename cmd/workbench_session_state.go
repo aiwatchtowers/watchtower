@@ -184,8 +184,34 @@ func runSessionStateHook(stdin io.Reader, stderr io.Writer, rawWorkbenchID strin
 	if err == nil {
 		err = recordHookAgentState(stdin, stderr, rowID, rawWorkbenchID)
 	}
-	if err != nil {
-		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
+	reportStateHookError(stderr, err)
+}
+
+// chatQuestionNotCleared is a failed clear of the chat question: the state
+// write it follows may have landed, so it is reported apart.
+type chatQuestionNotCleared struct{ err error }
+
+func (e chatQuestionNotCleared) Error() string { return "chat question not cleared: " + e.err.Error() }
+func (e chatQuestionNotCleared) Unwrap() error { return e.err }
+
+// reportStateHookError prints a state hook's failure, one line per failure
+// it joins: a failed clear of the chat question under its own prefix, every
+// other one as "session state not recorded".
+func reportStateHookError(stderr io.Writer, err error) {
+	if err == nil {
+		return
+	}
+	errs := []error{err}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs = joined.Unwrap()
+	}
+	for _, e := range errs {
+		var clear chatQuestionNotCleared
+		if errors.As(e, &clear) {
+			fmt.Fprintf(stderr, "watchtower: %v\n", clear)
+			continue
+		}
+		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", e)
 	}
 }
 
@@ -283,9 +309,7 @@ func runCodexSessionStateHook(stdin io.Reader, stderr io.Writer) {
 	if codexStateEvents[in.Event] {
 		noteForeignCodexSession(stderr, row, in.SessionID, in.Event)
 	}
-	if err := recordCodexHookState(stderr, row, in, at); err != nil {
-		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
-	}
+	reportStateHookError(stderr, recordCodexHookState(stderr, row, in, at))
 }
 
 // recordCodexHookState records a Codex state event of row's session (spec
@@ -662,9 +686,13 @@ func clearChatQuestion(database *db.DB, row *db.TerminalSession, workbenchID int
 	if row.ChatQuestionAt == "" {
 		return nil
 	}
-	return lock.write(database, func() error {
+	err := lock.write(database, func() error {
 		return database.ClearChatQuestionBefore(row.ID, workbenchID, sessionID, at)
 	})
+	if err != nil {
+		return chatQuestionNotCleared{err}
+	}
+	return nil
 }
 
 // stopEndsToolRun: the Stop replaces a main-thread tool result's `working`

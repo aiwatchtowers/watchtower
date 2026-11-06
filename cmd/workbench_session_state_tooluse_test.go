@@ -478,3 +478,26 @@ func TestSessionState_LockBudgetStartsBeforeTheInput(t *testing.T) {
 		}
 	}
 }
+
+// Board #988 verify (N4): a prompt whose clear of the chat question runs out
+// of budget after its state write landed says so under its own prefix, not
+// as a lost state.
+func TestSessionState_FailedQuestionClearHasItsOwnLine(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now()
+	askChatQuestion(t, database, pid, row, base.Add(-time.Hour))
+	reads := 0
+	lockClock(t, func() time.Time {
+		reads++
+		if reads <= 2 { // the budget's start and the state write
+			return base
+		}
+		return base.Add(time.Hour)
+	})
+	_, errOut, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+	require.NoError(t, err)
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+	assert.Contains(t, errOut, "watchtower: chat question not cleared: no time left")
+	assert.NotContains(t, errOut, "session state not recorded")
+}
