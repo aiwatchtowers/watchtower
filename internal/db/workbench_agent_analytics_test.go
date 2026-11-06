@@ -35,10 +35,18 @@ func TestDB_CodexSessionsResolveTerminalIDs(t *testing.T) {
 	assert.Equal(t, map[string]int64{"cx-1": cx, "cx-9": ids["cx-9"]}, ids, "a Claude row never resolves as codex")
 	assert.NotZero(t, ids["cx-9"])
 
+	// A /clear moves cx2's tab to a new conversation: the old one stays listed
+	// and resolvable through the ledger, without the new one's stored path.
+	_, err = d.Exec(`UPDATE terminal_sessions SET claude_session_id = 'cx-3', agent_transcript_path = '/r/rollout-x-cx-3.jsonl' WHERE id = ?`, cx2)
+	require.NoError(t, err)
 	rows, err := d.WorkbenchCodexSessions(wb)
 	require.NoError(t, err)
 	assert.Equal(t, []CodexAnalyticsRow{
 		{ID: cx, SessionID: "cx-1", TranscriptPath: "/r/rollout-x-cx-1.jsonl"},
 		{ID: cx2, SessionID: "cx-2"},
+		{ID: cx2, SessionID: "cx-3", TranscriptPath: "/r/rollout-x-cx-3.jsonl"},
 	}, rows)
+	ids, err = d.CodexTerminalSessionIDs([]string{"cx-2", "cx-3"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int64{"cx-2": cx2, "cx-3": cx2}, ids)
 }

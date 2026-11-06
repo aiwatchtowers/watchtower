@@ -49,27 +49,31 @@ func (db *DB) AgentAnalyticsWorkbenchIDs() ([]int64, error) {
 // is absent. A plain read, no transaction: agent analytics resolve
 // agent_log_sessions.terminal_session_id with it outside agentlog.db's write.
 func (db *DB) ClaudeTerminalSessionIDs(uuids []string) (map[string]int64, error) {
-	return db.terminalSessionIDs("claude", uuids)
+	return db.terminalSessionIDs(`SELECT id FROM terminal_sessions WHERE claude_session_id = ? AND kind = 'claude' ORDER BY id LIMIT 1`, uuids)
 }
 
 // CodexTerminalSessionIDs is ClaudeTerminalSessionIDs for codex rows (ask
-// #507, decision D).
+// #507, decision D), through the agent session ledger
+// (terminal_session_agent_sessions): a codex tab keeps the conversations it
+// had before a /clear or a resume switched its current id.
 func (db *DB) CodexTerminalSessionIDs(uuids []string) (map[string]int64, error) {
-	return db.terminalSessionIDs("codex", uuids)
+	return db.terminalSessionIDs(`SELECT ts.id FROM terminal_session_agent_sessions a
+		JOIN terminal_sessions ts ON ts.id = a.terminal_session_id
+		WHERE a.agent_session_id = ? AND ts.kind = 'codex' ORDER BY ts.id LIMIT 1`, uuids)
 }
 
-// terminalSessionIDs maps each uuid to the oldest terminal session of kind
-// that recorded it as its agent session id.
-func (db *DB) terminalSessionIDs(kind string, uuids []string) (map[string]int64, error) {
+// terminalSessionIDs maps each uuid to the terminal session id query (one
+// placeholder: the uuid) returns for it.
+func (db *DB) terminalSessionIDs(query string, uuids []string) (map[string]int64, error) {
 	out := map[string]int64{}
 	for _, u := range uuids {
 		var id int64
-		err := db.QueryRow(`SELECT id FROM terminal_sessions WHERE claude_session_id = ? AND kind = ? ORDER BY id LIMIT 1`, u, kind).Scan(&id)
+		err := db.QueryRow(query, u).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("resolving %s terminal session of %s: %w", kind, u, err)
+			return nil, fmt.Errorf("resolving terminal session of %s: %w", u, err)
 		}
 		out[u] = id
 	}
@@ -85,14 +89,18 @@ type CodexAnalyticsRow struct {
 	TranscriptPath string
 }
 
-// WorkbenchCodexSessions lists the workbench's codex sessions, one per codex
-// session id (a resumed session can have several rows; the stored path of
-// any of them counts), oldest first: the only codex sessions agent analytics
-// reads rollouts for (AGENTLOG-04). A plain read, no transaction.
+// WorkbenchCodexSessions lists the workbench's codex sessions: every
+// conversation id its codex tabs have had (the agent session ledger, so one
+// a /clear or a resume replaced still counts), one per id, oldest row first:
+// the only codex sessions agent analytics reads rollouts for (AGENTLOG-04).
+// TranscriptPath is the stored path of a row whose current id it is (it
+// belongs to that conversation only). A plain read, no transaction.
 func (db *DB) WorkbenchCodexSessions(workbenchID int64) ([]CodexAnalyticsRow, error) {
-	rows, err := db.Query(`SELECT MIN(id), claude_session_id, COALESCE(MAX(agent_transcript_path), '') FROM terminal_sessions
-		WHERE project_id = ? AND kind = 'codex' AND COALESCE(claude_session_id, '') <> ''
-		GROUP BY claude_session_id ORDER BY MIN(id)`, workbenchID)
+	rows, err := db.Query(`SELECT MIN(ts.id), a.agent_session_id,
+			COALESCE(MIN(CASE WHEN ts.claude_session_id = a.agent_session_id THEN ts.agent_transcript_path END), '')
+		FROM terminal_session_agent_sessions a JOIN terminal_sessions ts ON ts.id = a.terminal_session_id
+		WHERE ts.project_id = ? AND ts.kind = 'codex' AND a.agent_session_id <> ''
+		GROUP BY a.agent_session_id ORDER BY MIN(ts.id), a.agent_session_id`, workbenchID)
 	if err != nil {
 		return nil, fmt.Errorf("listing codex sessions of workbench %d: %w", workbenchID, err)
 	}

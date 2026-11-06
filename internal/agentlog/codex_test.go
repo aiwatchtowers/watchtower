@@ -315,7 +315,7 @@ func TestAgentlog04_CodexLongestFolderWins(t *testing.T) {
 func TestAgentlog01_CodexNoTranscriptText(t *testing.T) {
 	f := newFixture(t)
 	f.writeRollout(cxParent, cxSession(t, cxParent, f.folder)+
-		cx(t, "13.000", "response_item", map[string]any{"type": "custom_tool_call", "name": "exec", "call_id": "call-2",
+		cx(t, "13.000", "response_item", map[string]any{"type": "custom_tool_call", "name": "functions.exec", "call_id": "call-2",
 			"input": `const r = await tools.exec_command({cmd: "rg SENTINEL-PATTERN", workdir: "/work"});`})+
 		cx(t, "14.000", "response_item", map[string]any{"type": "custom_tool_call_output", "call_id": "call-2",
 			"output": []any{map[string]any{"type": "input_text", "text": "SENTINEL-HIT"}}}))
@@ -324,6 +324,10 @@ func TestAgentlog01_CodexNoTranscriptText(t *testing.T) {
 	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
 	calls, _ := f.totals()
 	require.Equal(t, int64(2), calls)
+	var name, target string
+	require.NoError(t, f.al.QueryRow(`SELECT name, target FROM agent_log_events WHERE key = 'tool:codex:call-2'`).Scan(&name, &target))
+	assert.Equal(t, "Bash", name, "the namespaced exec tool is a shell call")
+	assert.Equal(t, "rg", target)
 	assertNoSentinel(t, f.al)
 }
 
@@ -573,4 +577,20 @@ func TestScan_CodexCompressedResumesAcrossScans(t *testing.T) {
 	calls, out := f.totals()
 	assert.Equal(t, int64(8), calls)
 	assert.Equal(t, int64(36), out)
+}
+
+// A /clear moves a codex tab to a new conversation; the old conversation is
+// still the workbench's (the agent session ledger) and is read.
+func TestScan_CodexEarlierConversationOfTabRead(t *testing.T) {
+	f := newFixture(t)
+	f.writeRollout(cxParent, cxSession(t, cxParent, f.folder))
+	id := f.codexRow(f.wb, cxParent, f.folder, "")
+	_, err := f.d.Exec(`UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?`, cxFork, id)
+	require.NoError(t, err)
+	r := f.scan()
+	assert.Equal(t, []string{cxParent}, f.sessionUUIDs())
+	assert.Equal(t, 1, r.CodexRolloutsMissing, "the new conversation has no rollout yet")
+	var tsid int64
+	require.NoError(t, f.al.QueryRow(`SELECT terminal_session_id FROM agent_log_sessions WHERE session_uuid = ?`, cxParent).Scan(&tsid))
+	assert.Equal(t, id, tsid)
 }

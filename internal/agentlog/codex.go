@@ -315,7 +315,7 @@ func codexTool(pl codexPayload, folder, cwd string) (name, target string) {
 	switch {
 	case codexShellTools[pl.Name]:
 		return "Bash", shellTarget(codexCommand(pl.Arguments))
-	case pl.Type == "custom_tool_call" && pl.Name == "exec":
+	case pl.Type == "custom_tool_call" && (pl.Name == "exec" || pl.Name == "functions.exec"):
 		if cmd, ok := customExecCommand(pl.Input); ok {
 			return "Bash", shellTarget(cmd)
 		}
