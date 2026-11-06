@@ -30,6 +30,10 @@ const (
 	probeUnknown  = "unknown" // no status, or one this version does not know
 	probeGone     = "gone"    // no registry entry, or its process is dead or its pid reused
 	probeFailed   = "failed"  // a working codex row's last turn failed and this probe stored it (board #959)
+	// probeNotWatched: a working codex row's rollout cannot be read
+	// (permission, or a compressed one that does not decode) and this probe
+	// marked it not watched (spec 2026-11-05 §3.5).
+	probeNotWatched = "not_watched"
 )
 
 // probeProcs is the process table the probe checks a registry entry's pid
@@ -41,9 +45,12 @@ var workbenchSessionProbeCmd = &cobra.Command{
 	Short: "Check a terminal session's stale background agent count, or a working codex turn's failure",
 	Long: "--session S --workbench N: when the codex row S reads working, reads its rollout and, when\n" +
 		"the last turn ended on an error, stores the Error state (outcome \"failed\"; codex has no\n" +
-		"StopFailure hook). Otherwise, when the row S reads waiting with background subagents\n" +
-		"and no report for 30 minutes, reads Claude Code's session registry entry of its\n" +
-		"conversation (~/.claude/sessions/<pid>.json, matched by sessionId). busy or\n" +
+		"StopFailure hook); a rollout it cannot read for its permissions or a compressed one that\n" +
+		"does not decode marks the row not watched (outcome \"not_watched\"). This is the app's\n" +
+		"bridge for a session the session host does not watch. Otherwise, when the row S reads\n" +
+		"waiting with background subagents and no report for 30 minutes, reads Claude Code's\n" +
+		"session registry entry of its conversation (~/.claude/sessions/<pid>.json, matched by\n" +
+		"sessionId), or a codex row's rollout (its subagents still running). busy or\n" +
 		"waiting leave the row alone; idle, shell, a missing or unknown status, no entry or a\n" +
 		"dead process end the count, unless a report or Stop landed since the probe read the row.\n" +
 		"It never starts a count and never changes the row's state. Prints one JSON object\n" +
@@ -117,14 +124,18 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return sessionProbeResult{}, fmt.Errorf("terminal session %d is not in workbench %d", sessionID, workbenchID)
 	}
 	res := sessionProbeResult{OK: true, Outcome: probeNotStale}
-	if row.Kind == string(agentkind.Codex) && row.AgentState.String == agentStateWorking {
-		errType, failed, err := recordCodexTurnFailure(database, row, logOut)
+	if agentkind.SessionCapsOf(row.Kind).RolloutWatch && row.AgentState.String == agentStateWorking {
+		errType, outcome, err := recordCodexTurnFailure(database, row, now, logOut)
 		if err != nil {
 			return sessionProbeResult{}, err
 		}
-		if failed {
+		switch outcome {
+		case probeFailed:
 			res.Outcome = probeFailed
 			_, _ = fmt.Fprintf(logOut, "session-probe: session %d: codex turn failed (error %q)\n", sessionID, errType)
+		case probeNotWatched:
+			res.Outcome = probeNotWatched
+			_, _ = fmt.Fprintf(logOut, "session-probe: session %d not watched (%s)\n", sessionID, errType)
 		}
 		return res, nil
 	}
@@ -138,7 +149,7 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return res, nil
 	}
 	var rawStatus string
-	res.Outcome, rawStatus, err = sessionOutcome(row)
+	res.Outcome, rawStatus, err = sessionOutcome(row, now)
 	if err != nil {
 		return sessionProbeResult{}, err
 	}
@@ -157,49 +168,61 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 // recordCodexTurnFailure stores the Error state on a working codex row whose
 // rollout ends its last turn on an error (board #959): Codex has no
 // StopFailure hook and its Stop does not fire on a failed turn, so the
-// rollout's task_complete is the only signal. The write is a StopFailure's —
-// `waiting` with agent_failed_at and the codex_error_info as the error —
-// stamped with the task_complete line's time, under recordAgentState's
-// guards: only over `working`, only for the conversation the row runs, and
-// only when that time is after the stored state's (a prompt that started a
-// new turn wins). The next prompt clears it as it clears Claude's. No
-// rollout, an unreadable one or a turn that did not fail writes nothing.
-func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession, logOut io.Writer) (errType string, written bool, err error) {
+// rollout's task_complete is the only signal. The write is recordCodexPull's
+// — the session host's watch writes the same way, so the two report a turn
+// once — under recordAgentState's guards: only over `working`, only for the
+// conversation the row runs, and only when the line's time is after the
+// stored state's (a prompt that started a new turn wins). The next prompt
+// clears it as it clears Claude's. A rollout whose permissions refuse the
+// read, or a compressed one that does not decode, marks the row not watched
+// at once (spec 2026-11-05 §3.5; errType is then the class); the cases the
+// session host's watch decides over time (a missing file, an undecodable
+// tail) are not this one-shot read's. outcome is probeFailed or
+// probeNotWatched when this probe wrote, "" otherwise.
+func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession, now time.Time, logOut io.Writer) (errType, outcome string, err error) {
 	sessionID := row.ClaudeSessionID.String
 	if sessionID == "" {
-		return "", false, nil
+		return "", "", nil
 	}
 	path, ok := sessionfeed.LocateCodex(terminalCodexHome(), sessionID, row.TranscriptPath.String)
 	if !ok {
-		return "", false, nil
+		return "", "", nil
 	}
 	turn, err := sessionfeed.CodexLastTurn(path)
+	var wi *sessionfeed.WatchIssueError
+	if errors.As(err, &wi) && (wi.Issue == db.WatchIssuePermission || wi.Issue == db.WatchIssueCompressed) {
+		written, err := database.SetAgentWatchIssue(row.ID, wi.Issue, now)
+		if err != nil || !written {
+			return "", "", err
+		}
+		return wi.Issue, probeNotWatched, nil
+	}
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	if !turn.Failed {
-		return "", false, nil
+		return "", "", nil
 	}
 	if turn.At.IsZero() {
 		// No time, no ordering against the stored state: never written.
 		_, _ = fmt.Fprintf(logOut, "session-probe: session %d: the codex turn failed but its time is unreadable\n", row.ID)
-		return "", false, nil
+		return "", "", nil
 	}
-	errType = briefClip(asks.OneLine(turn.Error), agentErrorRunes)
-	failure := &db.AgentFailure{Error: errType}
-	if err := recordAgentState(database, row.ID, row.WorkbenchID.Int64, sessionID, agentStateWaiting,
-		agentStateWorking, failure, false, turn.At, hookTurn{}); err != nil {
-		return "", false, err
+	pull := db.CodexWatchRow{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, SessionID: sessionID}
+	if err := recordCodexPull(database, pull, sessionfeed.CodexTurn{Failed: true, Error: turn.Error, At: turn.At}); err != nil {
+		return "", "", err
 	}
 	// recordAgentState does not say whether its guards let the write land:
 	// the row read back carries this failure's stamp only when it did.
 	after, err := database.GetTerminalSession(row.ID)
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
-	written = after.AgentFailure != nil && after.AgentState.String == agentStateWaiting &&
-		after.AgentFailure.At == db.AgentStateStamp(turn.At)
-	return errType, written, nil
+	if after.AgentFailure != nil && after.AgentState.String == agentStateWaiting &&
+		after.AgentFailure.At == db.AgentStateStamp(turn.At) {
+		return briefClip(asks.OneLine(turn.Error), agentErrorRunes), probeFailed, nil
+	}
+	return "", "", nil
 }
 
 // backgroundCountStale says row is waiting on a background count whose last
@@ -211,14 +234,42 @@ func backgroundCountStale(row *db.TerminalSession, now time.Time) bool {
 }
 
 // sessionOutcome is the verdict on row's session: Claude Code's registry
-// for a claude row. Codex keeps no such registry, so a codex row is unknown
-// without reading ~/.claude, and its stale count ends (spec 2026-10-12
-// §6.3: the existing failure path, one notice).
-func sessionOutcome(row *db.TerminalSession) (outcome, rawStatus string, err error) {
+// for a claude row, the rollout for a codex row (codexRolloutOutcome; it
+// never reads ~/.claude).
+func sessionOutcome(row *db.TerminalSession, now time.Time) (outcome, rawStatus string, err error) {
 	if row.Kind == string(agentkind.Codex) {
-		return probeUnknown, "", nil
+		return codexRolloutOutcome(row, now), "", nil
 	}
 	return registryOutcome(row.ClaudeSessionID.String)
+}
+
+// codexRolloutOutcome is a codex row's verdict from its rollout's subagent
+// lifecycle (S6; Codex keeps no session registry): busy while a subagent
+// still runs, idle when every one the rollout knows has finished, and
+// unknown — which ends the count, as before this read existed (spec
+// 2026-10-12 §6.3) — when there is no rollout, it cannot be read, or a
+// subagent's status is unknown.
+func codexRolloutOutcome(row *db.TerminalSession, now time.Time) string {
+	sessionID := row.ClaudeSessionID.String
+	path, ok := sessionfeed.LocateCodex(terminalCodexHome(), sessionID, row.TranscriptPath.String)
+	if !ok {
+		return probeUnknown
+	}
+	live, err := sessionfeed.LiveOf(sessionfeed.Conversation{Path: path, AgentSessionID: sessionID, Codex: true}, false, now)
+	if err != nil || live.AgentsState != "known" {
+		return probeUnknown
+	}
+	outcome := probeIdle
+	for _, a := range live.Agents {
+		switch a.Ref.Status {
+		case sessionfeed.StatusRunning:
+			return probeBusy
+		case sessionfeed.StatusFinished:
+		default:
+			outcome = probeUnknown
+		}
+	}
+	return outcome
 }
 
 // registryOutcome is the registry's verdict on conversation sessionID, with

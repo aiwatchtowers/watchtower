@@ -120,6 +120,10 @@ type sessionPayload struct {
 	ReportTotal          *int       `json:"report_total,omitempty"`
 	ReportPRLine         *string    `json:"report_pr_line,omitempty"`
 	ReportPRLineClipped  *bool      `json:"report_pr_line_clipped,omitempty"`
+	// WatchIssue is why the Mac cannot watch a working codex session
+	// (missing/permission/compressed/unreadable, spec 2026-11-05 §3.5);
+	// absent when watched. The caption then reads "Working · not watched".
+	WatchIssue *string `json:"watch_issue,omitempty"`
 }
 
 // publishedSession is one session of the window with its resolved state.
@@ -185,6 +189,10 @@ func (s *TerminalSessionSource) payload(p publishedSession, closedAsks int) sess
 		FinishSummary: finish, FinishSummaryClipped: finishClipped,
 		AgentError: agentErr, AgentErrorClipped: agentErrClipped,
 	}
+	if st.notWatched() {
+		issue := st.watchIssue
+		out.WatchIssue = &issue
+	}
 	if s.o.ReportSummary != nil {
 		if sum, ok := s.o.ReportSummary(p.workbenchID, p.id); ok {
 			line, lineClipped := clipText(sum.PRLine, maxPRLine)
@@ -248,7 +256,7 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 	err = scanRows(ctx, tx, `
 SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_active_at,
        s.agent_state, s.agent_state_at, s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
-       s.agent_background, s.agent_background_at,
+       s.agent_background, s.agent_background_at, COALESCE(s.agent_watch_issue, ''),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT COUNT(*) FROM owner_asks a
@@ -259,14 +267,14 @@ FROM terminal_sessions s
 WHERE s.project_id IS NOT NULL AND s.kind IN ('claude','codex')
 ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		var (
-			p                publishedSession
-			kind, agentError string
-			target, oldest   sql.NullInt64
-			row              sessionstate.Row
+			p                            publishedSession
+			kind, agentError, watchIssue string
+			target, oldest               sql.NullInt64
+			row                          sessionstate.Row
 		)
 		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt,
 			&row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
-			&row.AgentBackground, &row.AgentBackgroundAt,
+			&row.AgentBackground, &row.AgentBackgroundAt, &watchIssue,
 			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks); err != nil {
 			return err
 		}
@@ -286,6 +294,7 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 			row.RunStartedAt = db.AgentStateStamp(start)
 		}
 		p.state = resolveState(row, now, agentError, nullInt(oldest))
+		p.state.watchIssue = watchIssue
 		p.stateAt = stateAt(row, p.state)
 		out = append(out, p)
 		return nil
@@ -358,7 +367,11 @@ type sessionState struct {
 	err                      string // agent_error of a failed turn
 	oldestAskID              *int64 // nil without open asks
 	agents                   int    // background agents of a background session
+	watchIssue               string // agent_watch_issue; shown only on a working session
 }
+
+// notWatched: a working session the Mac cannot watch (§3.5, U6).
+func (st sessionState) notWatched() bool { return st.kind == kindWorking && st.watchIssue != "" }
 
 // resolveState maps sessionstate.Resolve's state onto the presentation
 // state, the way SessionAgentStatus.effective builds it.
@@ -488,10 +501,14 @@ func (st sessionState) glyph() string {
 func (st sessionState) caption() string {
 	switch st.kind {
 	case kindWorking:
-		if st.openAsks > 0 {
-			return "Working · " + asksOpen(st.openAsks)
+		working := "Working"
+		if st.notWatched() {
+			working = "Working · not watched"
 		}
-		return "Working"
+		if st.openAsks > 0 {
+			return working + " · " + asksOpen(st.openAsks)
+		}
+		return working
 	case kindWaitingOnAsk:
 		return "Waiting for you" + st.askSuffix()
 	case kindReadyToCheck:

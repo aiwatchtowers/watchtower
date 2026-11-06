@@ -282,7 +282,8 @@ func runCodexSessionStateHook(stdin io.Reader, stderr io.Writer) {
 // Codex runs its state hooks synchronously, so no hook outlives its turn and
 // the transcript turn order is not needed. An event of another session (a
 // foreign id, or a row with no id yet: spec I6) writes nothing. After the
-// state write comes the session's worktree ledger, as for Claude Code.
+// state write comes the session's worktree ledger, as for Claude Code. Every
+// event clears the row's watch issue (spec 2026-11-05 §3.5).
 func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent, at time.Time) error {
 	if !codexStateEvents[in.Event] || in.SessionID == "" || in.SessionID != row.ClaudeSessionID.String ||
 		(in.agentTurnEvent() && in.AgentID == "") {
@@ -309,6 +310,11 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 		err = recordCodexPrompt(database, rowID, workbenchID, in.SessionID, at, turn)
 	default:
 		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil, false, at, turn)
+	}
+	// Any hook event of the row's session says the agent is heard again: a
+	// not-watched mark goes and the session host's watch re-arms (§3.5).
+	if _, clearErr := database.ClearAgentWatchIssue(rowID); clearErr != nil {
+		err = errors.Join(err, clearErr)
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
 	return err

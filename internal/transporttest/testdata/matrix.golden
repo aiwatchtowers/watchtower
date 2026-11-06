@@ -104,7 +104,7 @@ codex/session session-foreign-id pass
 codex/session session-idle-notice unsupported
 codex/session session-interrupt pass
 codex/session session-midturn-line unsupported
-codex/session session-not-watched gap:S1
+codex/session session-not-watched pass
 codex/session session-older-event pass
 codex/session session-permission unsupported
 codex/session session-phone-refusals unsupported
@@ -115,7 +115,7 @@ codex/session session-subagent-feed pass
 codex/session session-subagents pass
 codex/session session-tool pass
 codex/session session-transcript pass
-codex/session session-unreadable-rollout gap:S1
+codex/session session-unreadable-rollout pass
 codex/stream fail-auth pass
 codex/stream fail-model pass
 codex/stream fail-overload pass

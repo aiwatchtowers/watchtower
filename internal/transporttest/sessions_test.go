@@ -20,9 +20,12 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/agentlog"
+	"watchtower/internal/automations"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/sessionfeed"
+	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstate"
 	"watchtower/internal/terminal"
 )
@@ -72,8 +75,9 @@ type sessionAgent struct {
 	// to set.
 	events map[sessionStep][]hookCall
 	// pull reads the agent's transcript for an intent the hooks do not
-	// report (§3.5 Watch) and writes what it finds; nil = no pull signal.
-	pull func(t *testing.T, e *sessionEnv, step sessionStep) error
+	// report (§3.5 Watch) and writes what it finds, or reads what it
+	// observes into res; nil = no pull signal.
+	pull func(t *testing.T, e *sessionEnv, step sessionStep, res *sessionResult) error
 	// transcriptPath is where the agent keeps the session's transcript.
 	transcriptPath func(e *sessionEnv) string
 	// transcript writes the session's transcript (or rollout) from the
@@ -521,7 +525,7 @@ func (ag *sessionAgent) play(e *sessionEnv, step sessionStep, res *sessionResult
 			res.PullErr = fmt.Errorf("%s: no hook reports %q and no pull signal reads it", ag.kind, step)
 			return
 		}
-		if err := ag.pull(e.t, e, step); err != nil {
+		if err := ag.pull(e.t, e, step, res); err != nil {
 			res.PullErr = err
 		}
 		return
@@ -923,16 +927,35 @@ func migratedDB(t *testing.T) string {
 	return migrated.path
 }
 
-// codexPull is codex's pull signal today: the rollout's last turn, read by
-// `workbench session-probe` (the Desktop's poll runs it every 5 s for a
-// working codex row, #959; G5 moves the watch into the session host). The
-// rollout is rewritten first with its turn ending now, as codex appends it
-// after the prompt. The watch-give-up and automation-wait intents have no
-// signal yet (S1).
-func codexPull(t *testing.T, e *sessionEnv, step sessionStep) error {
-	if step != stepFailure {
-		return fmt.Errorf("codex: no hook reports %q and no pull signal reads it", step)
+// codexPull is codex's pull signal (§3.5): a failed turn is read by
+// `workbench session-probe`, the app's bridge for a session the session
+// host does not watch (the rollout is rewritten first with its turn ending
+// now, as codex appends it after the prompt); the give-up is the session
+// host's own watch (sessionhost.CodexWatch over the workspace database, on a
+// clock moved past the 30 s missing give-up); the automation wait reads the
+// row the way session() does (automations.SessionWaitEnd).
+func codexPull(t *testing.T, e *sessionEnv, step sessionStep, res *sessionResult) error {
+	switch step {
+	case stepFailure:
+		return codexProbe(t, e)
+	case stepWatchGiveUp:
+		return codexWatchGiveUp(e)
+	case stepAutomationWait:
+		st, err := e.db.SessionEnds(e.row)
+		if err != nil {
+			return err
+		}
+		status, reason, ended := automations.SessionWaitEnd(st)
+		if !ended {
+			return fmt.Errorf("codex: session() is still waiting on a row %+v", st)
+		}
+		res.WaitStatus, res.WaitReason = status, reason
+		return nil
 	}
+	return fmt.Errorf("codex: no hook reports %q and no pull signal reads it", step)
+}
+
+func codexProbe(t *testing.T, e *sessionEnv) error {
 	writeCodexRollout(t, e.transcript, "rollout_failed")
 	restampRollout(t, e.transcript, time.Now())
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -946,6 +969,26 @@ func codexPull(t *testing.T, e *sessionEnv, step sessionStep) error {
 		return fmt.Errorf("session-probe: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// codexWatchGiveUp runs the session host's watch on the row for 32 s of its
+// clock, ticking every CodexWatchEvery: a rollout missing that long marks
+// the row not watched. The store never sees a turn (there is no rollout).
+func codexWatchGiveUp(e *sessionEnv) error {
+	var turnErr error
+	store := &sessionhost.DBWatchStore{DB: e.db, Record: func(*db.DB, db.CodexWatchRow, sessionfeed.CodexTurn) error {
+		turnErr = errors.New("codex: the watch recorded a turn from a missing rollout")
+		return turnErr
+	}}
+	w := sessionhost.NewCodexWatch(e.row, store, filepath.Join(e.home, ".codex"), func(string, ...any) {})
+	now := time.Now()
+	for range 16 {
+		now = now.Add(sessionhost.CodexWatchEvery)
+		if w.Tick(now) {
+			return errors.New("codex: the watch ended on a live row")
+		}
+	}
+	return turnErr
 }
 
 var rolloutStamp = regexp.MustCompile(`"timestamp":"[^"]*"`)
@@ -981,7 +1024,7 @@ func TestTransportSuite_SessionCapsMatchAgentKind(t *testing.T) {
 		}
 		ak := agent.SessionCaps()
 		if a.Caps.PermissionWait != ak.PermissionWait || a.Caps.IdleSignal != ak.IdleSignal ||
-			a.Caps.MidturnInput != ak.TakesLineWhileWorking() {
+			a.Caps.MidturnInput != ak.TakesLineWhileWorking() || (a.Caps.FailureSignal == "pull") != ak.RolloutWatch {
 			t.Errorf("%s: suite caps %+v disagree with agentkind %+v", a.Name, a.Caps, ak)
 		}
 	}

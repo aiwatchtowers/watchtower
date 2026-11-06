@@ -293,6 +293,11 @@ func applyCodexSessionStart(database *db.DB, row db.TerminalSession, ev hookEven
 			return fmt.Errorf("storing the transcript path: %w", err)
 		}
 	}
+	// A SessionStart is a hook event too: the session host's watch re-arms
+	// on the (maybe new) path (spec 2026-11-05 §3.5).
+	if _, err := database.ClearAgentWatchIssue(row.ID); err != nil {
+		return fmt.Errorf("clearing the watch issue: %w", err)
+	}
 	return nil
 }
 

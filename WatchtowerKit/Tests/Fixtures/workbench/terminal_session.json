@@ -21,5 +21,6 @@
   "state_tone": "orange",
   "target_id": 415,
   "title": "Archive closed targets",
+  "watch_issue": "compressed",
   "workbench_id": 7
 }

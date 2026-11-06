@@ -25,6 +25,10 @@ type SessionCaps struct {
 	// Elicitation: the agent reports an MCP elicitation through a hook
 	// (Claude Code's Notification elicitation_dialog).
 	Elicitation bool
+	// RolloutWatch: a failed or interrupted turn is read from the agent's
+	// transcript, not a hook (failure_signal "pull"): the session host's
+	// rollout watch, or the app's bridge probe (spec 2026-11-05 §3.5, G5).
+	RolloutWatch bool
 }
 
 // TakesLineWhileWorking reports whether a line may go into the session while its agent
@@ -51,13 +55,15 @@ func (c SessionCaps) TakesInterrupt() bool { return c.PermissionWait && c.Elicit
 //     whole hold: not enabled (owner decision);
 //   - no Notification hook event exists, and an MCP elicitation shows a
 //     form in the terminal but fires no hook and writes nothing to the
-//     rollout.
+//     rollout;
+//   - a failed turn fires no Stop and Codex has no StopFailure, so the
+//     failure is read from the rollout (board #959, G5).
 func (k Kind) SessionCaps() SessionCaps {
 	switch k {
 	case Claude:
 		return SessionCaps{MidturnInput: true, PhoneInput: true, PermissionWait: true, IdleSignal: true, Elicitation: true}
 	case Codex:
-		return SessionCaps{MidturnInput: true, PhoneInput: true}
+		return SessionCaps{MidturnInput: true, PhoneInput: true, RolloutWatch: true}
 	}
 	return SessionCaps{}
 }

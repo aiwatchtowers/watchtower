@@ -45,6 +45,7 @@ type session struct {
 	readDone  chan struct{}
 	signal    func(pgid int, sig syscall.Signal) error // Stop's group signal
 	afterReap func()                                   // test hook: between reap and drain
+	stopWatch func()                                   // ends the codex rollout watch; nil = none
 
 	// wmu orders writes to the PTY: an owner's Input (with its prompt
 	// update), an InputTo and a delivery's decide-then-write steps, so no

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"watchtower/internal/agentkind"
 )
 
 // DiscardHangup catches SIGHUP and drops it, so the host survives the hangup
@@ -71,6 +74,14 @@ type Options struct {
 	afterReap func()
 	// checkTimeout replaces CheckTimeout (tests only).
 	checkTimeout time.Duration
+	// CodexWatch opens the store of a codex launch's database for its
+	// rollout watch (spec 2026-11-05 §3.5); nil = the host watches nothing
+	// and its hello says so.
+	CodexWatch func(dbPath string) (CodexWatchStore, error)
+	// Logf receives the watch's lines; nil = the standard logger.
+	Logf func(format string, args ...any)
+	// codexWatchEvery replaces CodexWatchEvery (tests only).
+	codexWatchEvery time.Duration
 }
 
 // Server owns hosted sessions and serves clients over a listener.
@@ -96,6 +107,12 @@ func NewServer(opts Options) *Server {
 	}
 	if opts.checkTimeout <= 0 {
 		opts.checkTimeout = CheckTimeout
+	}
+	if opts.codexWatchEvery <= 0 {
+		opts.codexWatchEvery = CodexWatchEvery
+	}
+	if opts.Logf == nil {
+		opts.Logf = log.Printf
 	}
 	return &Server{
 		opts:     opts,
@@ -362,7 +379,8 @@ func (s *Server) hello(c *conn) bool {
 		_ = WriteFrame(c.nc, Error, encode(ErrorMsg{Message: msg}))
 		return false
 	}
-	return WriteFrame(c.nc, HelloOK, encode(HelloMsg{Version: ProtocolVersion, Pid: os.Getpid()})) == nil
+	return WriteFrame(c.nc, HelloOK, encode(HelloMsg{Version: ProtocolVersion, Pid: os.Getpid(),
+		CodexWatch: s.opts.CodexWatch != nil})) == nil
 }
 
 func (s *Server) launch(c *conn, bound *session, p []byte) *session {
@@ -410,11 +428,33 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 	s.notify()
 
 	go sess.readLoop()
+	s.startCodexWatch(sess, req)
 	go s.watch(sess)
 	if req.Detach {
 		return nil
 	}
 	return sess
+}
+
+// startCodexWatch starts the rollout watch of a launch whose Watch names a
+// rollout-watched agent and its database; it ends when the session's child
+// exits. A store that does not
+// open logs one line and the session runs unwatched (the app's bridge does
+// not cover it: the hello said this host watches).
+func (s *Server) startCodexWatch(sess *session, req LaunchReq) {
+	w := req.Watch
+	if s.opts.CodexWatch == nil || w == nil || !agentkind.SessionCapsOf(w.Agent).RolloutWatch || w.Database == "" {
+		return
+	}
+	store, err := s.opts.CodexWatch(w.Database)
+	if err != nil {
+		s.opts.Logf("session-host: codex watch: session %d: opening the database: %v", req.Row, err)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	sess.stopWatch = cancel
+	watch := NewCodexWatch(req.Row, store, codexHomeOf(req.Env), s.opts.Logf)
+	go watch.run(ctx, s.opts.codexWatchEvery, s.opts.Now)
 }
 
 // lookup returns the session of (row, run), or nil.
@@ -520,6 +560,9 @@ func (s *Server) stop(c *conn, p []byte) {
 // that did read it forgets the run.
 func (s *Server) watch(sess *session) {
 	code := sess.wait()
+	if sess.stopWatch != nil {
+		sess.stopWatch()
+	}
 	sess.mu.Lock()
 	sess.exited = true
 	sess.code = code

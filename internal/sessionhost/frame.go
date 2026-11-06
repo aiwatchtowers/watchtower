@@ -67,6 +67,10 @@ const minProtocolVersion = 1
 type HelloMsg struct {
 	Version int `json:"version"`
 	Pid     int `json:"pid,omitempty"`
+	// CodexWatch (host to app only): this host watches the rollout of every
+	// codex session launched with a Database (spec 2026-11-05 §3.5), so the
+	// app's bridge poll leaves those sessions alone. An older host omits it.
+	CodexWatch bool `json:"codex_watch,omitempty"`
 }
 
 // ErrorMsg is the payload of an Error frame.
@@ -92,6 +96,18 @@ type LaunchReq struct {
 	// Detach launches without binding this connection to the session (the
 	// hub never attaches; Desktop's pane does).
 	Detach bool `json:"detach,omitempty"`
+	// Watch asks the host to watch the agent's transcript (spec 2026-11-05
+	// §3.5); nil = not watched (an older app, a shell). Kept apart from
+	// Agent, which picks the typing profile.
+	Watch *WatchSpec `json:"watch,omitempty"`
+}
+
+// WatchSpec names what a launch's watch reads: the agent kind (one whose
+// SessionCaps.RolloutWatch is set) and the workspace database the row lives
+// in (never logged).
+type WatchSpec struct {
+	Agent    string `json:"agent"`
+	Database string `json:"database"`
 }
 
 // AttachReq attaches a client to a running session.

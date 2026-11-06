@@ -57,7 +57,6 @@ cmd/workbench_permission_wait.go | waitPermissionDecision | agentkind.Claude | 1
 cmd/workbench_session_feed.go | requireAgentSession | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_feed.go | requireAgentSession | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_feed.go | sessionFeedConversations | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_session_probe.go | probeSession | agentkind.Codex | 1 | G5: codex rollout pull by agent kind; G5 moves it into the session host behind the A5 adapter
 cmd/workbench_session_probe.go | sessionOutcome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_state.go | recordAgentTurn | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_state.go | var workbenchSessionStateCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter

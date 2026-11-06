@@ -71,7 +71,7 @@ func TestAgentKind_SessionCaps(t *testing.T) {
 	if got := Claude.SessionCaps(); got != (SessionCaps{MidturnInput: true, PhoneInput: true, PermissionWait: true, IdleSignal: true, Elicitation: true}) {
 		t.Fatalf("claude = %+v", got)
 	}
-	if got := Codex.SessionCaps(); got != (SessionCaps{MidturnInput: true, PhoneInput: true}) {
+	if got := Codex.SessionCaps(); got != (SessionCaps{MidturnInput: true, PhoneInput: true, RolloutWatch: true}) {
 		t.Fatalf("codex = %+v", got)
 	}
 	if got := SessionCapsOf("shell"); got != (SessionCaps{}) {
