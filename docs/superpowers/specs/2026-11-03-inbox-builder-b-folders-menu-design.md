@@ -313,7 +313,7 @@ Pinned `--json` keys (each with a `TestInboxFoldersCLI_<Verb>JSONKeys` test, the
 - folder object: `id`, `kind`, `slug`, `title`, `icon`, `parent_id` (null for the root), `position`, `hidden`, `automation_ids` (routed automations, ascending).
 - `list`: `revision`, `folders` (pre-order: root, then each folder followed by its children by position).
 - `create` / `update` / `move`: `revision` (the new one), `folder`.
-- `delete`: `revision`, `moved` → `folders`, `automations`, `artifacts`.
+- `delete`: `revision`, `moved` → `folders`, `automations`, `artifacts`, `renamed` (`id`, `from`, `to` of each moved folder renamed to keep sibling titles unique; an empty array when nothing was renamed).
 - `route`: `revision`, `automation_id`, `folder`, `created` (bool).
 
 Errors (exit 1, message on stderr, nothing written): `the Inbox menu changed — reload it and try again (revision N, you had M)`; `--expect-revision is required`; `the Inbox folder can't be changed` (root); `Needs approval can't be moved, renamed, hidden or deleted`; `a folder named "T" already exists here`; `folders nest at most 3 deep`; `unknown icon "x"`; `no folder N`; `no automation N`; `Needs approval's automation stays in Needs approval`; and the agent refusal.
