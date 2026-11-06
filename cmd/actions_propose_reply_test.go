@@ -191,24 +191,30 @@ func TestActionsPropose_ReplyRefusedUnderAgentMarkers(t *testing.T) {
 }
 
 func TestActionsPropose_ContextFlagIsAnInboxItem(t *testing.T) {
-	cases := map[string][]string{
-		"no id":             {"--context", "inbox_item:"},
-		"another type":      {"--context", "x:1"},
-		"a negative id":     {"--context", "inbox_item:-1"},
-		"a zero id":         {"--context", "inbox_item:0"},
-		"a padded id":       {"--context", "inbox_item:01"},
-		"no separator":      {"--context", "inbox_item"},
-		"with context-type": {"--context", "inbox_item:1", "--context-type", "inbox_item"},
-		"with context-id":   {"--context", "inbox_item:1", "--context-id", "1"},
+	const want = "want inbox_item:<positive id>"
+	const both = "--context replaces --context-type and --context-id"
+	cases := map[string]struct {
+		flags []string
+		msg   string
+	}{
+		"no id":             {[]string{"--context", "inbox_item:"}, `--context "inbox_item:": ` + want},
+		"another type":      {[]string{"--context", "x:1"}, `--context "x:1": ` + want},
+		"a negative id":     {[]string{"--context", "inbox_item:-1"}, `--context "inbox_item:-1": ` + want},
+		"a zero id":         {[]string{"--context", "inbox_item:0"}, `--context "inbox_item:0": ` + want},
+		"a padded id":       {[]string{"--context", "inbox_item:01"}, `--context "inbox_item:01": ` + want},
+		"no separator":      {[]string{"--context", "inbox_item"}, `--context "inbox_item": ` + want},
+		"with context-type": {[]string{"--context", "inbox_item:1", "--context-type", "inbox_item"}, both},
+		"with context-id":   {[]string{"--context", "inbox_item:1", "--context-id", "1"}, both},
 	}
-	for name, flags := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			database := writeActionsConfig(t)
 			f := seedReplyFixture(t, database)
 			args := append([]string{"--tool", "add_jira_comment", "--surface", "inbox",
-				"--args", f.replyArgs("add_jira_comment"), "--json"}, flags...)
+				"--args", f.replyArgs("add_jira_comment"), "--json"}, tc.flags...)
 			out, err := runPropose(t, args...)
 			require.Error(t, err, out)
+			assert.Contains(t, err.Error(), tc.msg)
 			assert.Zero(t, actionRowCount(t, database), "no row")
 		})
 	}
