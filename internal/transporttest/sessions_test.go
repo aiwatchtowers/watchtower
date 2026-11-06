@@ -951,8 +951,9 @@ func codexPull(t *testing.T, e *sessionEnv, step sessionStep, res *sessionResult
 		}
 		res.WaitStatus, res.WaitReason = status, reason
 		return nil
+	default:
+		return fmt.Errorf("codex: no hook reports %q and no pull signal reads it", step)
 	}
-	return fmt.Errorf("codex: no hook reports %q and no pull signal reads it", step)
 }
 
 func codexProbe(t *testing.T, e *sessionEnv) error {

@@ -6,6 +6,7 @@ import (
 
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/sessionhost"
 )
@@ -19,19 +20,22 @@ const codexWatchBusy = 2 * time.Second
 // its rollout watch (spec 2026-11-05 §3.5, decision C): the existing file
 // only, no migration (the app migrated it before the launch; a host binary
 // older or newer than the schema must never migrate it), and refused when
-// the file has no watch columns yet.
+// the file has no watch columns yet. The host logs its error, so the error
+// carries no path (FILES-01): the open's own, which names the file, is a
+// fingerprint.
 func openCodexWatchStore(dbPath string) (sessionhost.CodexWatchStore, error) {
 	d, err := db.OpenExistingRW(dbPath, codexWatchBusy)
 	if err != nil {
-		return nil, err
+		return nil, logredact.Errorf("opening the database: %s", logredact.Text(err.Error()))
 	}
 	ok, err := d.HasColumns("terminal_sessions", "agent_watch_issue", "agent_watch_issue_at")
-	if err == nil && !ok {
-		err = errors.New("the database has no watch columns yet (migration 00173)")
-	}
 	if err != nil {
 		_ = d.Close()
-		return nil, err
+		return nil, logredact.Errorf("reading the watch columns: %s", logredact.Text(err.Error()))
+	}
+	if !ok {
+		_ = d.Close()
+		return nil, errors.New("the database has no watch columns yet (migration 00173)")
 	}
 	return &sessionhost.DBWatchStore{DB: d, Record: recordCodexPull}, nil
 }

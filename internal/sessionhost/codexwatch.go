@@ -26,13 +26,18 @@ import (
 // CodexWatchEvery is how often a watch stats its rollout.
 const CodexWatchEvery = 2 * time.Second
 
-// codexMissingGiveUp is how long a rollout may be missing before the row is
-// marked not watched (`missing`).
-const codexMissingGiveUp = 30 * time.Second
+// CodexMissingGiveUp is how long a rollout may be missing before the row is
+// marked not watched (`missing`); the app's bridge uses it too.
+const CodexMissingGiveUp = 30 * time.Second
 
 // codexUnreadableTicks is how many ticks in a row with an undecodable tail
 // mark the row not watched (`unreadable`).
 const codexUnreadableTicks = 3
+
+// CodexUnreadableGiveUp is how long an unchanged rollout with an
+// undecodable tail lasts before the row is marked not watched: the watch's
+// codexUnreadableTicks, for the app's bridge, which keeps no ticks.
+const CodexUnreadableGiveUp = codexUnreadableTicks * CodexWatchEvery
 
 // CodexWatchStore is the database side of a watch: the row it reads each
 // tick and the two writes. RecordTurn writes a failed or aborted turn the
@@ -56,18 +61,25 @@ type CodexWatch struct {
 	locate    func(codexHome, sessionID, storedPath string) (string, bool)
 	read      func(path string) (sessionfeed.CodexTurn, error)
 
-	// Per arm: reset whenever the row stops reading `working`, its issue
+	// arm is reset whenever the row stops reading `working`, its issue
 	// clears or its transcript path changes.
+	arm codexArm
+	// logged holds the database errors already logged, by what failed:
+	// one line each for the watch's life.
+	logged map[string]bool
+}
+
+// codexArm is one arm's state of a CodexWatch.
+type codexArm struct {
 	armed        bool
 	storedPath   string // the row's agent_transcript_path this arm follows
 	path         string // the file read: storedPath, or what LocateCodex found
 	located      bool   // LocateCodex was tried this arm
 	missingSince time.Time
 	file         fileStamp // the file as last read; zero = never read
-	clean        bool      // the last read had a decodable tail: an unchanged file is not read again
+	clean        bool      // the last read was complete: an unchanged file is not read again
 	undecodable  int       // ticks in a row with an undecodable tail or a failed read
-	lastTurnAt   time.Time // the newest failed/aborted turn handed to the store
-	loggedErr    bool      // a row or write error was logged this arm
+	lastTurnAt   time.Time // the newest failed/aborted turn the store took
 }
 
 // fileStamp is what tells a rollout changed between two ticks.
@@ -77,9 +89,11 @@ type fileStamp struct {
 	mod  time.Time
 }
 
+// NewCodexWatch is the watch of terminal session row over store, reading
+// rollouts under codexHome and logging through logf.
 func NewCodexWatch(row int64, store CodexWatchStore, codexHome string, logf func(string, ...any)) *CodexWatch {
 	return &CodexWatch{row: row, store: store, codexHome: codexHome, logf: logf,
-		locate: sessionfeed.LocateCodex, read: sessionfeed.CodexLastTurn}
+		locate: sessionfeed.LocateCodex, read: sessionfeed.CodexLastTurn, logged: map[string]bool{}}
 }
 
 // run ticks every interval until ctx ends or the row is gone, then closes
@@ -104,10 +118,8 @@ func (w *CodexWatch) run(ctx context.Context, every time.Duration, now func() ti
 	}
 }
 
-// disarm forgets the arm's state, keeping the watch's wiring.
-func (w *CodexWatch) disarm() {
-	*w = CodexWatch{row: w.row, store: w.store, codexHome: w.codexHome, logf: w.logf, locate: w.locate, read: w.read}
-}
+// disarm forgets the arm's state.
+func (w *CodexWatch) disarm() { w.arm = codexArm{} }
 
 // Tick is one step of §3.5's table at now; done is true once the row is
 // gone (or is no codex row), and the watch ends.
@@ -127,11 +139,11 @@ func (w *CodexWatch) Tick(now time.Time) (done bool) {
 		w.disarm() // not armed: hooks alone drive the row; armed again when it works
 		return false
 	}
-	if !w.armed || r.TranscriptPath != w.storedPath {
+	if !w.arm.armed || r.TranscriptPath != w.arm.storedPath {
 		w.disarm()
-		w.armed, w.storedPath, w.path = true, r.TranscriptPath, r.TranscriptPath
+		w.arm.armed, w.arm.storedPath, w.arm.path = true, r.TranscriptPath, r.TranscriptPath
 	}
-	st, err := os.Stat(w.path)
+	st, err := os.Stat(w.arm.path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		w.missing(r, now)
@@ -143,13 +155,13 @@ func (w *CodexWatch) Tick(now time.Time) (done bool) {
 		w.unreadableTick(now)
 		return false
 	}
-	w.missingSince = time.Time{}
+	w.arm.missingSince = time.Time{}
 	stamp := stampOf(st)
-	if w.file != (fileStamp{}) && (stamp.ino != w.file.ino || stamp.size < w.file.size) {
+	if w.arm.file != (fileStamp{}) && (stamp.ino != w.arm.file.ino || stamp.size < w.arm.file.size) {
 		// Rotated: replaced or rewritten shorter. Read it from the start.
-		w.file, w.clean, w.undecodable, w.lastTurnAt = fileStamp{}, false, 0, time.Time{}
+		w.arm.file, w.arm.clean, w.arm.undecodable, w.arm.lastTurnAt = fileStamp{}, false, 0, time.Time{}
 	}
-	if w.clean && stamp == w.file {
+	if w.arm.clean && stamp == w.arm.file {
 		return false
 	}
 	w.readTurn(r, stamp, now)
@@ -159,23 +171,23 @@ func (w *CodexWatch) Tick(now time.Time) (done bool) {
 // missing is a tick with no file: one LocateCodex per arm, then the 30 s
 // give-up.
 func (w *CodexWatch) missing(r db.CodexWatchRow, now time.Time) {
-	if w.missingSince.IsZero() {
-		w.missingSince = now
+	if w.arm.missingSince.IsZero() {
+		w.arm.missingSince = now
 	}
-	if !w.located {
-		w.located = true
-		if p, ok := w.locate(w.codexHome, r.SessionID, r.TranscriptPath); ok && p != w.path {
-			w.path, w.file, w.clean = p, fileStamp{}, false
+	if !w.arm.located {
+		w.arm.located = true
+		if p, ok := w.locate(w.codexHome, r.SessionID, r.TranscriptPath); ok && p != w.arm.path {
+			w.arm.path, w.arm.file, w.arm.clean = p, fileStamp{}, false
 			return
 		}
 	}
-	if now.Sub(w.missingSince) >= codexMissingGiveUp {
+	if now.Sub(w.arm.missingSince) >= CodexMissingGiveUp {
 		w.giveUp(db.WatchIssueMissing, now)
 	}
 }
 
 func (w *CodexWatch) readTurn(r db.CodexWatchRow, stamp fileStamp, now time.Time) {
-	turn, err := w.read(w.path)
+	turn, err := w.read(w.arm.path)
 	var wi *sessionfeed.WatchIssueError
 	if errors.As(err, &wi) {
 		switch wi.Issue {
@@ -192,25 +204,36 @@ func (w *CodexWatch) readTurn(r db.CodexWatchRow, stamp fileStamp, now time.Time
 		w.unreadableTick(now)
 		return
 	}
-	w.file = stamp
+	w.arm.file = stamp
 	if turn.TailUndecodable {
-		w.clean = false
+		w.arm.clean = false
 		w.unreadableTick(now)
 	} else {
-		w.clean, w.undecodable = true, 0
+		w.arm.clean, w.arm.undecodable = true, 0
 	}
-	if (turn.Failed || turn.Aborted) && !turn.At.IsZero() && turn.At.After(w.lastTurnAt) {
-		if err := w.store.RecordTurn(r, turn); err != nil {
-			w.logOnce("recording the turn", err)
-			return
-		}
-		w.lastTurnAt = turn.At
+	if !turn.Failed && !turn.Aborted {
+		return
 	}
+	if turn.At.IsZero() {
+		// A turn that ended with no readable time cannot be ordered against
+		// the row's state, so it is never written: the row is not watched.
+		w.giveUp(db.WatchIssueUnreadable, now)
+		return
+	}
+	if !turn.At.After(w.arm.lastTurnAt) {
+		return
+	}
+	if err := w.store.RecordTurn(r, turn); err != nil {
+		w.logOnce("recording the turn", err)
+		w.arm.clean = false // read again next tick: the write is retried
+		return
+	}
+	w.arm.lastTurnAt = turn.At
 }
 
 func (w *CodexWatch) unreadableTick(now time.Time) {
-	w.undecodable++
-	if w.undecodable >= codexUnreadableTicks {
+	w.arm.undecodable++
+	if w.arm.undecodable >= codexUnreadableTicks {
 		w.giveUp(db.WatchIssueUnreadable, now)
 	}
 }
@@ -228,13 +251,14 @@ func (w *CodexWatch) giveUp(issue string, now time.Time) {
 	}
 }
 
-// logOnce logs an error once per arm. The error is the database's, never
-// the rollout's (a rollout read failure is a class, not a message).
+// logOnce logs an error once per what for the watch's life. The error is
+// the database's, never the rollout's (a rollout read failure is a class,
+// not a message).
 func (w *CodexWatch) logOnce(what string, err error) {
-	if w.loggedErr {
+	if w.logged[what] {
 		return
 	}
-	w.loggedErr = true
+	w.logged[what] = true
 	w.logf("session-host: codex watch: session %d: %s: %v", w.row, what, err)
 }
 

@@ -3,6 +3,7 @@ package sessionhost
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,8 @@ type fakeWatchStore struct {
 	reads   int
 	closed  bool
 	rowErrs int
+	// recordErrs is how many RecordTurn calls fail before one lands.
+	recordErrs int
 }
 
 func (s *fakeWatchStore) Row(int64) (db.CodexWatchRow, error) {
@@ -53,6 +56,10 @@ func (s *fakeWatchStore) Row(int64) (db.CodexWatchRow, error) {
 func (s *fakeWatchStore) RecordTurn(_ db.CodexWatchRow, turn sessionfeed.CodexTurn) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.recordErrs > 0 {
+		s.recordErrs--
+		return fmt.Errorf("database is locked")
+	}
 	s.turns = append(s.turns, turn)
 	if s.row.State == "working" && (s.row.StateAt.IsZero() || turn.At.After(s.row.StateAt)) {
 		s.row.State, s.row.StateAt, s.row.Failed = "waiting", turn.At, turn.Failed
@@ -71,7 +78,12 @@ func (s *fakeWatchStore) SetIssue(_ int64, issue string, _ time.Time) (bool, err
 	return true, nil
 }
 
-func (s *fakeWatchStore) Close() error { s.closed = true; return nil }
+func (s *fakeWatchStore) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
 
 func (s *fakeWatchStore) set(f func(r *db.CodexWatchRow)) {
 	s.mu.Lock()
@@ -164,6 +176,39 @@ func TestCodexWatch_MissingLocatesTheRolloutOnce(t *testing.T) {
 	f.tick(CodexWatchEvery)
 	if _, turns := f.store.snapshot(); len(turns) != 1 || !turns[0].Failed {
 		t.Fatalf("turns = %+v; want the located rollout's failure", turns)
+	}
+}
+
+// A failed turn whose write fails (a busy database) is written on a later
+// tick, though the rollout never changes again: codex is idle after it.
+func TestCodexWatch_FailedWriteIsRetried(t *testing.T) {
+	f := newWatchFixture(t)
+	f.store.recordErrs = 1
+	f.write(wTurnStarted, wTurnFailed)
+	f.tick(CodexWatchEvery)
+	if _, turns := f.store.snapshot(); len(turns) != 0 {
+		t.Fatalf("turns = %+v; want none after the failed write", turns)
+	}
+	f.tick(CodexWatchEvery)
+	f.tick(CodexWatchEvery)
+	if _, turns := f.store.snapshot(); len(turns) != 1 || !turns[0].Failed {
+		t.Fatalf("turns = %+v; want the failure written once on the retry", turns)
+	}
+	if n := strings.Count(f.logs.String(), "recording the turn"); n != 1 {
+		t.Fatalf("logged the write error %d times; want once:\n%s", n, f.logs.String())
+	}
+}
+
+// A failed turn with no readable time is never written (it cannot be
+// ordered against the row's state), so the row is marked not watched
+// instead of staying a silent `working`.
+func TestCodexWatch_FailedTurnWithNoTimeIsUnreadable(t *testing.T) {
+	f := newWatchFixture(t)
+	f.write(wTurnStarted, strings.Replace(wTurnFailed, `"timestamp":"2026-11-05T12:19:00.918Z",`, "", 1))
+	f.tick(CodexWatchEvery)
+	issues, turns := f.store.snapshot()
+	if len(turns) != 0 || len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
+		t.Fatalf("issues = %v, turns = %+v; want unreadable and no turn", issues, turns)
 	}
 }
 
@@ -387,11 +432,20 @@ func TestCodexWatch_HostAdoptionRearms(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { reap(t, info.Pid) })
+	if !info.Watched {
+		t.Fatal("Launched does not say the run is watched")
+	}
 	_ = c1.nc.Close()
 
 	c2 := dial(t, path)
 	c2.send(Attach, AttachReq{Row: 1, Run: "r1"})
-	c2.expect(Attached)
+	var attached SessionInfo
+	if err := json.Unmarshal(c2.expect(Attached), &attached); err != nil {
+		t.Fatal(err)
+	}
+	if !attached.Watched {
+		t.Fatal("Attached does not say the run is watched: the app's bridge would probe it too")
+	}
 	if err := os.WriteFile(rollout, []byte(wTurnStarted+"\n"+wTurnFailed+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -428,8 +482,8 @@ func TestCodexWatch_HostAdoptionRearms(t *testing.T) {
 }
 
 // Only a launch whose Watch names a rollout-watched agent and a database is
-// watched; the hello says the host watches, so the app's bridge leaves its
-// sessions alone.
+// watched, and only that run's SessionInfo says Watched; every other run is
+// left to the app's bridge.
 func TestCodexWatch_OnlyCodexLaunchesWithADatabase(t *testing.T) {
 	var opened int
 	var mu sync.Mutex
@@ -441,14 +495,10 @@ func TestCodexWatch_OnlyCodexLaunchesWithADatabase(t *testing.T) {
 	}})
 	c := dialRaw(t, path)
 	c.send(Hello, HelloMsg{Version: ProtocolVersion})
-	var hello HelloMsg
-	if err := json.Unmarshal(c.expect(HelloOK), &hello); err != nil {
-		t.Fatal(err)
+	c.expect(HelloOK)
+	if info := c.launchAgent(1, "codex", "sleep 30"); info.Watched { // no Watch
+		t.Fatal("a launch with no Watch reads watched")
 	}
-	if !hello.CodexWatch {
-		t.Fatal("hello does not say the host watches codex rollouts")
-	}
-	c.launchAgent(1, "codex", "sleep 30") // no Watch
 	for i, w := range []*WatchSpec{{Agent: "claude", Database: "/work/watchtower.db"}, {Agent: "codex"}} {
 		ci := dial(t, path)
 		ci.send(Launch, LaunchReq{Row: int64(i + 2), Run: "r1", Executable: "/bin/sh", Args: []string{"-c", "sleep 30"},
@@ -458,11 +508,46 @@ func TestCodexWatch_OnlyCodexLaunchesWithADatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { reap(t, info.Pid) })
+		if info.Watched {
+			t.Fatalf("launch %+v reads watched", *w)
+		}
 	}
-	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
 	if opened != 0 {
 		t.Fatalf("%d stores opened; want none", opened)
+	}
+}
+
+// A codex launch whose store does not open runs unwatched and says so, so
+// the app's bridge covers it; the one log line carries no path (FILES-01).
+func TestCodexWatch_StoreThatDoesNotOpenLeavesTheRunToTheBridge(t *testing.T) {
+	var lines []string
+	var mu sync.Mutex
+	path, _ := startHost(t, Options{
+		CodexWatch: func(string) (CodexWatchStore, error) {
+			return nil, errors.New("the database has no watch columns yet (migration 00173)")
+		},
+		Logf: func(format string, args ...any) {
+			mu.Lock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+			mu.Unlock()
+		},
+	})
+	c := dial(t, path)
+	c.send(Launch, LaunchReq{Row: 1, Run: "r1", Executable: "/bin/sh", Args: []string{"-c", "sleep 30"},
+		Cwd: os.TempDir(), Cols: 80, Rows: 24, Watch: &WatchSpec{Agent: "codex", Database: "/work/watchtower.db"}})
+	var info SessionInfo
+	if err := json.Unmarshal(c.expect(Launched), &info); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reap(t, info.Pid) })
+	if info.Watched {
+		t.Fatal("a run whose store did not open reads watched")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) != 1 || strings.Contains(lines[0], "/work") {
+		t.Fatalf("log lines = %q; want one, with no path", lines)
 	}
 }

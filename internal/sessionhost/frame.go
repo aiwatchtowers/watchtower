@@ -67,10 +67,6 @@ const minProtocolVersion = 1
 type HelloMsg struct {
 	Version int `json:"version"`
 	Pid     int `json:"pid,omitempty"`
-	// CodexWatch (host to app only): this host watches the rollout of every
-	// codex session launched with a Database (spec 2026-11-05 §3.5), so the
-	// app's bridge poll leaves those sessions alone. An older host omits it.
-	CodexWatch bool `json:"codex_watch,omitempty"`
 }
 
 // ErrorMsg is the payload of an Error frame.
@@ -132,6 +128,10 @@ type SessionInfo struct {
 	Launch uint64 `json:"launch,omitempty"`
 	// Agent is the launch's LaunchReq.Agent.
 	Agent string `json:"agent,omitempty"`
+	// Watched: the host watches this run's transcript (its Watch store
+	// opened, spec 2026-11-05 §3.5), so the app's bridge poll leaves it
+	// alone. False from an older host and for every run it does not watch.
+	Watched bool `json:"watched,omitempty"`
 }
 
 // ListResp is the payload of a Listed frame.

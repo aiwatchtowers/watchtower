@@ -171,6 +171,59 @@ func TestSessionProbe_CodexUndecodableCompressedRolloutIsNotWatched(t *testing.T
 	assert.Equal(t, probeNotStale, got["outcome"])
 }
 
+// The bridge follows the watch's give-ups without its ticks (spec §3.5):
+// a rollout missing while the row has worked 30 s is `missing`, and an
+// undecodable tail on a file unchanged for three watch ticks is
+// `unreadable`; a younger row or a fresher file is left alone.
+func TestSessionProbe_CodexBridgeGivesUpOnMissingAndUnreadable(t *testing.T) {
+	issue := func(database *db.DB, row int64) string {
+		var v sql.NullString
+		require.NoError(t, database.QueryRow(`SELECT agent_watch_issue FROM terminal_sessions WHERE id = ?`, row).Scan(&v))
+		return v.String
+	}
+	setStateAt := func(database *db.DB, row int64, at time.Time) {
+		_, err := database.Exec(`UPDATE terminal_sessions SET agent_state_at = ? WHERE id = ?`, db.AgentStateStamp(at), row)
+		require.NoError(t, err)
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		database, pid, row := codexRowFixture(t, codexTUISession)
+		codexHomeFixture(t)
+		storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+		_, err := database.Exec(`UPDATE terminal_sessions SET agent_transcript_path = ? WHERE id = ?`,
+			filepath.Join(t.TempDir(), "rollout-gone.jsonl"), row)
+		require.NoError(t, err)
+
+		setStateAt(database, row, time.Now().Add(-10*time.Second))
+		assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+		assert.Empty(t, issue(database, row), "missing for under 30 s")
+
+		setStateAt(database, row, time.Now().Add(-time.Minute))
+		got, logged := runSessionProbeLogged(t, pid, row)
+		assert.Equal(t, probeNotWatched, got["outcome"])
+		assert.Contains(t, logged, "not watched (missing)")
+		assert.NotContains(t, logged, "rollout-gone")
+		assert.Equal(t, db.WatchIssueMissing, issue(database, row))
+	})
+
+	t.Run("unreadable", func(t *testing.T) {
+		database, pid, row := codexRowFixture(t, codexTUISession)
+		home := codexHomeFixture(t)
+		storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+		writeCodexRollout(t, home, codexTUISession, codexTurnLine(time.Now(), "task_started", ""), "{not json")
+		p := filepath.Join(home, "sessions", "2026", "11", "05", "rollout-2026-11-05T12-00-00-"+codexTUISession+".jsonl")
+
+		assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+		assert.Empty(t, issue(database, row), "a fresh undecodable tail waits")
+
+		old := time.Now().Add(-time.Minute)
+		require.NoError(t, os.Chtimes(p, old, old))
+		got, _ := runSessionProbeLogged(t, pid, row)
+		assert.Equal(t, probeNotWatched, got["outcome"])
+		assert.Equal(t, db.WatchIssueUnreadable, issue(database, row))
+	})
+}
+
 // S6: a codex row's stale background count is judged from its rollout's
 // subagent lifecycle: busy while one still runs (the count stays), idle
 // once every one finished (it ends).

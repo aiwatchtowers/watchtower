@@ -17,8 +17,8 @@ const (
 	WatchIssueUnreadable = "unreadable"
 )
 
-// ValidWatchIssue says issue is one of the four classes.
-func ValidWatchIssue(issue string) bool {
+// validWatchIssue says issue is one of the four classes.
+func validWatchIssue(issue string) bool {
 	switch issue {
 	case WatchIssueMissing, WatchIssuePermission, WatchIssueCompressed, WatchIssueUnreadable:
 		return true
@@ -31,7 +31,7 @@ func ValidWatchIssue(issue string) bool {
 // no failure (a failure the pull read wins), and only when the stored issue
 // differs, so a repeat is false and a caller logs one line per row and issue.
 func (db *DB) SetAgentWatchIssue(id int64, issue string, at time.Time) (bool, error) {
-	if !ValidWatchIssue(issue) {
+	if !validWatchIssue(issue) {
 		return false, fmt.Errorf("terminal session %d: unknown watch issue %q", id, issue)
 	}
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_watch_issue = ?, agent_watch_issue_at = ?
@@ -46,10 +46,19 @@ func (db *DB) SetAgentWatchIssue(id int64, issue string, at time.Time) (bool, er
 
 // ClearAgentWatchIssue clears row id's watch issue: the next hook event of
 // the row says the agent is heard again, and the watch re-arms. false when
-// there was none.
+// there was none. Every codex hook calls it and the issue is almost always
+// unset, so it reads first and takes the write lock only to clear one.
 func (db *DB) ClearAgentWatchIssue(id int64) (bool, error) {
+	var set bool
+	err := db.QueryRow(`SELECT agent_watch_issue IS NOT NULL FROM terminal_sessions WHERE id = ?`, id).Scan(&set)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !set) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading terminal session %d watch issue: %w", id, err)
+	}
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_watch_issue = NULL, agent_watch_issue_at = NULL
-		WHERE id = ? AND (agent_watch_issue IS NOT NULL OR agent_watch_issue_at IS NOT NULL)`, id)
+		WHERE id = ? AND agent_watch_issue IS NOT NULL`, id)
 	if err != nil {
 		return false, fmt.Errorf("clearing terminal session %d watch issue: %w", id, err)
 	}

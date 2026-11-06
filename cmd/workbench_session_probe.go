@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,6 +14,7 @@ import (
 	"watchtower/internal/claudesession"
 	"watchtower/internal/db"
 	"watchtower/internal/sessionfeed"
+	"watchtower/internal/sessionhost"
 )
 
 // probeStaleAfter is how long a background agent count may go without a
@@ -102,7 +104,7 @@ type sessionProbeFailure struct {
 
 // probeSession reads terminal row sessionID of workbench workbenchID. A
 // working codex row gets its rollout read for a failed turn
-// (recordCodexTurnFailure, board #959) and nothing else. Otherwise, when its
+// (pullCodexTurn, board #959) and nothing else. Otherwise, when its
 // background count is stale at now, it ends it on the registry's verdict,
 // and only EndTerminalBackground writes. An ending outcome logs one line to
 // logOut naming the registry's raw status, so a format change that reads as
@@ -125,17 +127,17 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 	}
 	res := sessionProbeResult{OK: true, Outcome: probeNotStale}
 	if agentkind.SessionCapsOf(row.Kind).RolloutWatch && row.AgentState.String == agentStateWorking {
-		errType, outcome, err := recordCodexTurnFailure(database, row, now, logOut)
+		detail, outcome, err := pullCodexTurn(database, row, now, logOut)
 		if err != nil {
 			return sessionProbeResult{}, err
 		}
 		switch outcome {
 		case probeFailed:
 			res.Outcome = probeFailed
-			_, _ = fmt.Fprintf(logOut, "session-probe: session %d: codex turn failed (error %q)\n", sessionID, errType)
+			_, _ = fmt.Fprintf(logOut, "session-probe: session %d: codex turn failed (error %q)\n", sessionID, detail)
 		case probeNotWatched:
 			res.Outcome = probeNotWatched
-			_, _ = fmt.Fprintf(logOut, "session-probe: session %d not watched (%s)\n", sessionID, errType)
+			_, _ = fmt.Fprintf(logOut, "session-probe: session %d not watched (%s)\n", sessionID, detail)
 		}
 		return res, nil
 	}
@@ -165,40 +167,60 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 	return res, nil
 }
 
-// recordCodexTurnFailure stores the Error state on a working codex row whose
-// rollout ends its last turn on an error (board #959): Codex has no
-// StopFailure hook and its Stop does not fire on a failed turn, so the
-// rollout's task_complete is the only signal. The write is recordCodexPull's
-// — the session host's watch writes the same way, so the two report a turn
-// once — under recordAgentState's guards: only over `working`, only for the
-// conversation the row runs, and only when the line's time is after the
-// stored state's (a prompt that started a new turn wins). The next prompt
-// clears it as it clears Claude's. A rollout whose permissions refuse the
-// read, or a compressed one that does not decode, marks the row not watched
-// at once (spec 2026-11-05 §3.5; errType is then the class); the cases the
-// session host's watch decides over time (a missing file, an undecodable
-// tail) are not this one-shot read's. outcome is probeFailed or
-// probeNotWatched when this probe wrote, "" otherwise.
-func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession, now time.Time, logOut io.Writer) (errType, outcome string, err error) {
+// pullCodexTurn is the app's bridge for a working codex row the session
+// host does not watch (a local-PTY fallback session, an older host): it
+// stores the Error state when the rollout ends its last turn on an error
+// (board #959): Codex has no StopFailure hook and its Stop does not fire on
+// a failed turn, so the rollout's task_complete is the only signal. The
+// write is recordCodexPull's — the session host's watch writes the same
+// way, so the two report a turn once — under recordAgentState's guards:
+// only over `working`, only for the conversation the row runs, and only
+// when the line's time is after the stored state's (a prompt that started a
+// new turn wins). The next prompt clears it as it clears Claude's.
+//
+// When the rollout cannot be read it follows the watch's table (spec
+// 2026-11-05 §3.5) without the watch's ticks: a refused read or a
+// compressed rollout that does not decode marks the row not watched at
+// once; a rollout missing while the row has worked CodexMissingGiveUp, or
+// an undecodable tail on a file unchanged for CodexUnreadableGiveUp, marks
+// it too. detail is the clipped error of a failure or the class of a
+// not-watched mark; outcome is probeFailed or probeNotWatched when this
+// probe wrote, "" otherwise.
+func pullCodexTurn(database *db.DB, row *db.TerminalSession, now time.Time, logOut io.Writer) (detail, outcome string, err error) {
 	sessionID := row.ClaudeSessionID.String
 	if sessionID == "" {
 		return "", "", nil
 	}
+	missing := func() (string, string, error) {
+		// No stored path yet (before codex's SessionStart) is not armed.
+		if row.TranscriptPath.String == "" || row.AgentStateAt.IsZero() ||
+			now.Sub(row.AgentStateAt) < sessionhost.CodexMissingGiveUp {
+			return "", "", nil
+		}
+		return markCodexNotWatched(database, row.ID, db.WatchIssueMissing, now)
+	}
 	path, ok := sessionfeed.LocateCodex(terminalCodexHome(), sessionID, row.TranscriptPath.String)
 	if !ok {
-		return "", "", nil
+		return missing()
 	}
 	turn, err := sessionfeed.CodexLastTurn(path)
 	var wi *sessionfeed.WatchIssueError
-	if errors.As(err, &wi) && (wi.Issue == db.WatchIssuePermission || wi.Issue == db.WatchIssueCompressed) {
-		written, err := database.SetAgentWatchIssue(row.ID, wi.Issue, now)
-		if err != nil || !written {
-			return "", "", err
+	if errors.As(err, &wi) {
+		switch wi.Issue {
+		case db.WatchIssuePermission, db.WatchIssueCompressed:
+			return markCodexNotWatched(database, row.ID, wi.Issue, now)
+		case db.WatchIssueMissing:
+			return missing()
 		}
-		return wi.Issue, probeNotWatched, nil
+		return "", "", err
 	}
 	if err != nil {
 		return "", "", err
+	}
+	if turn.TailUndecodable {
+		if st, statErr := os.Stat(path); statErr == nil && now.Sub(st.ModTime()) >= sessionhost.CodexUnreadableGiveUp {
+			return markCodexNotWatched(database, row.ID, db.WatchIssueUnreadable, now)
+		}
 	}
 	if !turn.Failed {
 		return "", "", nil
@@ -209,7 +231,7 @@ func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession, now time.T
 		return "", "", nil
 	}
 	pull := db.CodexWatchRow{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, SessionID: sessionID}
-	if err := recordCodexPull(database, pull, sessionfeed.CodexTurn{Failed: true, Error: turn.Error, At: turn.At}); err != nil {
+	if err := recordCodexPull(database, pull, turn); err != nil {
 		return "", "", err
 	}
 	// recordAgentState does not say whether its guards let the write land:
@@ -223,6 +245,16 @@ func recordCodexTurnFailure(database *db.DB, row *db.TerminalSession, now time.T
 		return briefClip(asks.OneLine(turn.Error), agentErrorRunes), probeFailed, nil
 	}
 	return "", "", nil
+}
+
+// markCodexNotWatched marks row not watched with issue; outcome is
+// probeNotWatched only when this probe wrote it.
+func markCodexNotWatched(database *db.DB, rowID int64, issue string, now time.Time) (detail, outcome string, err error) {
+	written, err := database.SetAgentWatchIssue(rowID, issue, now)
+	if err != nil || !written {
+		return "", "", err
+	}
+	return issue, probeNotWatched, nil
 }
 
 // backgroundCountStale says row is waiting on a background count whose last
