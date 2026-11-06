@@ -182,6 +182,11 @@ func TestBuiltinIndex_RouteSeedFailureKeepsBuiltin(t *testing.T) {
 		!strings.Contains(lines[0], "route refused") {
 		t.Errorf("logged = %q", lines)
 	}
+	// Needs approval's own seed failed too (its default is not the root):
+	// one line of its own.
+	if na := linesOf(logs(), NeedsApprovalID); len(na) != 1 || !strings.Contains(na[0], "route refused") {
+		t.Errorf("needs-approval logged = %q, want its one failure line", na)
+	}
 
 	if _, err := f.d.Exec(`DROP TRIGGER test_refuse_route`); err != nil {
 		t.Fatal(err)
