@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
 	"watchtower/internal/llmusage"
 )
 

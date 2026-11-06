@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
@@ -423,15 +424,16 @@ func automationAgentEnv(runID int64) []string {
 // ceil(len(instruction+text)/4) tokens (the reply's share as output).
 func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult {
 	res := automations.AgentResult{Text: text}
-	if u == nil {
-		u = &ai.Usage{}
+	var t llmusage.Tokens
+	if u != nil {
+		t = u.Tokens
 	}
-	if cost := u.ReportedCost(); cost > 0 {
+	if cost := t.ReportedCost(); cost > 0 {
 		res.ReportedCostUSD = &cost
 	}
 	// AUTO-08 (ask #488): fresh input plus output, cache not debited.
-	if u.Input > 0 || u.Output > 0 {
-		res.InputTokens, res.OutputTokens = u.Input, u.Output
+	if t.Input > 0 || t.Output > 0 {
+		res.InputTokens, res.OutputTokens = t.Input, t.Output
 		return res
 	}
 	total := int64(len(instruction)+len(text)+3) / 4

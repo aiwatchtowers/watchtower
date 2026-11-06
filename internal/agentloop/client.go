@@ -429,7 +429,7 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool, o
 func recordModelCall(ctx context.Context, model string, start time.Time, msgs []oaMessage, resp *oaResponse, ok bool) {
 	c := llmusage.Call{Provider: "ollama", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
 	if u := resp.Usage; u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
-		c.Input, c.Output = int64(u.PromptTokens), int64(u.CompletionTokens)
+		c.Tokens = u.tokens()
 	} else {
 		var output string
 		if len(resp.Choices) > 0 {

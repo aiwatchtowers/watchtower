@@ -311,7 +311,9 @@ func generateDir() string {
 	return configDir
 }
 
-// cliUsageOf turns a result envelope's usage into a Usage for model.
+// cliUsageOf turns a result envelope's usage into a Usage for model. The
+// reported cost is left out (CostUSD() reads 0 on this path, as before): it
+// is recorded in the LLM ledger only.
 func cliUsageOf(model string, resp *cliResponse) *Usage {
 	return &Usage{Model: model, Tokens: resp.Usage.tokens()}
 }

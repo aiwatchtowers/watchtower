@@ -66,3 +66,19 @@ func TestUsageEvent_ClaudeResultCarriesSplitKeys(t *testing.T) {
 	assert.Equal(t, 0.5, m["cost_usd"])
 	assert.NotContains(t, m, "estimated")
 }
+
+// A result line without a usage object stores no counts (CHAT-01) but still
+// carries the turn's reported cost, flagged as estimated.
+func TestUsageEvent_ClaudeResultWithoutUsageKeepsCost(t *testing.T) {
+	tr := NewClaudeTranslator(fixedTurn("t1"))
+	evs := feedAll(t, tr,
+		`{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-x"}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":"Hi","session_id":"s1","total_cost_usd":0.5}`,
+	)
+	require.Equal(t, []string{EventUsage, EventTurnDone}, types(evs))
+	m := usageKeys(t, evs[0])
+	assert.NotContains(t, m, "tokens_in")
+	assert.NotContains(t, m, "tokens_out")
+	assert.Equal(t, 0.5, m["cost_usd"])
+	assert.Equal(t, true, m["estimated"])
+}

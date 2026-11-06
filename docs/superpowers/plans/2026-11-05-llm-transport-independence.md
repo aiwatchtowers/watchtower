@@ -531,8 +531,8 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - `TestTokens_AllInputIsFreshPlusCache`;
   - `TestTurnUsage_InputTokensStaysAllInput` (CHAT-01 rows keep their meaning);
   - `TestUsageEvent_V2CarriesSplitKeys` (pinned keys);
-  - `TestAgentloop_RecordsOllamaLabel`;
-  - `TestProviderLabel_HTTPReadsAsOllama` (`internal/llmusage`) and `TestUsageLLM_SpoolHTTPReadsAsOllama` (`cmd`: a spool line with `http` reads as `ollama`; the report has no provider column today, so the mapping lives in the reader for any future provider dimension, with no new JSON keys);
+  - `TestLLMUSAGE01_AgentloopRecordsOllamaLabel`;
+  - `TestLLMUSAGE01_ProviderLabelHTTPReadsAsOllama` (`internal/llmusage`) and `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama` (`cmd`: a spool line with `http` reads as `ollama`; the report has no provider column today, so the mapping lives in the reader for any future provider dimension, with no new JSON keys);
   - `TestAuto08_DebitIsFreshPlusOutputOnEveryProvider` (one table over claude, codex and runtime B);
   - Swift `ChatEventTests.testUsageWithSplitKeysDecodes` and `testUsageWithoutSplitKeysDecodes`.
 - [ ] **Step 2:** `go test ./internal/llmusage ./internal/ai ./internal/chat ./internal/agentloop ./internal/automations -run 'Tokens|TurnUsage|UsageEvent|OllamaLabel|TestAuto08_Debit'`, `go test ./cmd -run UsageLLM_SpoolHTTP` and `make test-swift FILTER=ChatEventTests` FAIL.

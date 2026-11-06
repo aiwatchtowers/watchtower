@@ -73,6 +73,17 @@ type resultUsage struct {
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
 }
 
+// tokens is the result's usage block with its reported cost (one claude
+// child per call, so total_cost_usd is this call's own).
+func (r resultUsage) tokens() llmusage.Tokens {
+	t := r.Usage.tokens()
+	if r.CostUSD > 0 {
+		cost := r.CostUSD
+		t.ReportedCostUSD = &cost
+	}
+	return t
+}
+
 // cliResponse is the JSON structure returned by `claude --output-format json`.
 type cliResponse struct {
 	Error      json.RawMessage `json:"error"`
@@ -1020,11 +1031,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result)))
 	}
 
-	usage := &Usage{Tokens: resp.Usage.tokens()}
-	if resp.CostUSD > 0 {
-		cost := resp.CostUSD
-		usage.ReportedCostUSD = &cost
-	}
+	usage := &Usage{Tokens: resp.tokens()}
 
 	return strings.TrimRight(resp.Result, "\n"), usage, nil
 }
@@ -1185,7 +1192,7 @@ func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
 		}
 		return out
 	case "result":
-		return []StreamChunk{{Usage: &TurnUsage{Model: s.model, Tokens: e.Usage.tokens()}}}
+		return []StreamChunk{{Usage: &TurnUsage{Model: s.model, Tokens: e.tokens()}}}
 	}
 	return nil
 }

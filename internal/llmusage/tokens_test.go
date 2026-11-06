@@ -17,7 +17,7 @@ func TestTokens_AllInputIsFreshPlusCache(t *testing.T) {
 // The spool line and the llm_calls columns keep their keys with the token
 // block embedded in Call (LLMUSAGE-01: an older process's spool line still
 // imports, and a newer line reads in an older importer).
-func TestCall_TokenKeysStayFlat(t *testing.T) {
+func TestLLMUSAGE01_CallTokenKeysStayFlat(t *testing.T) {
 	cost := 0.25
 	c := Call{CallID: "c", Tokens: Tokens{Input: 1, CacheRead: 2, CacheWrite5m: 3, CacheWrite1h: 4, Output: 5,
 		Estimated: true, ReportedCostUSD: &cost}}
@@ -37,7 +37,7 @@ func TestCall_TokenKeysStayFlat(t *testing.T) {
 }
 
 // N3: runtime B's old "http" rows read as ollama; every other label as is.
-func TestProviderLabel_HTTPReadsAsOllama(t *testing.T) {
+func TestLLMUSAGE01_ProviderLabelHTTPReadsAsOllama(t *testing.T) {
 	assert.Equal(t, "ollama", ProviderLabel("http"))
 	for _, p := range []string{"claude", "codex", "ollama", ""} {
 		assert.Equal(t, p, ProviderLabel(p))

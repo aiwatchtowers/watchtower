@@ -75,7 +75,8 @@ func (t Tokens) ReportedCost() float64 {
 func (t Tokens) CacheWrite() int64 { return t.CacheWrite5m + t.CacheWrite1h }
 
 // Add sums o into t: every count, the estimate flag, and the reported costs
-// (nil only while neither side reported one).
+// (nil only while neither side reported one; a lower bound when only some
+// parts reported a cost).
 func (t *Tokens) Add(o Tokens) {
 	t.Input += o.Input
 	t.CacheRead += o.CacheRead
@@ -92,10 +93,11 @@ func (t *Tokens) Add(o Tokens) {
 	}
 }
 
-// ProviderLabel is the provider a reader shows for a stored label. Runtime B
-// recorded "http" until 2026-11 (its only base URL is ai.ollama_url), so a
-// stored or spooled "http" reads as "ollama" (N3, ask #514); no row is
-// rewritten. The mapping goes when the 90-day retention has aged the last
+// ProviderLabel is the provider a reader shows for a recorded label. Runtime
+// B recorded "http" until 2026-11 (its only base URL is ai.ollama_url), so
+// "http" reads as "ollama" (N3, ask #514); no row is rewritten. Today only
+// the usage llm spool reader takes a provider; a reader of llm_calls rows
+// that takes one maps it here too. The mapping goes when the 90-day retention has aged the last
 // such row out.
 func ProviderLabel(stored string) string {
 	if stored == "http" {

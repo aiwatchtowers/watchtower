@@ -2,6 +2,7 @@ package agentloop
 
 import (
 	"encoding/json"
+
 	"watchtower/internal/llmusage"
 )
 

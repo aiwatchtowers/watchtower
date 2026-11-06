@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/llmusage"
 )
 
 // collectChunks drains a Query's channels: its chunks and its error.
@@ -40,7 +41,7 @@ printf '{"type":"assistant","message":{"model":"claude-test","content":[{"type":
 printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"no such person","is_error":true}]}}\n'
 printf '{"type":"assistant","parent_tool_use_id":"t9","message":{"content":[{"type":"text","text":"subagent noise"}]}}\n'
 printf '{"type":"assistant","message":{"model":"claude-test","content":[{"type":"text","text":"Here is the answer."}]}}\n'
-printf '{"type":"result","subtype":"success","result":"Here is the answer.","session_id":"s","usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":2,"output_tokens":7}}\n'
+printf '{"type":"result","subtype":"success","result":"Here is the answer.","session_id":"s","total_cost_usd":0.25,"usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":2,"output_tokens":7}}\n'
 `
 	c := NewClient("test-model", "", "")
 	c.claudeCmd = writeMockClaude(t, script)
@@ -68,7 +69,7 @@ printf '{"type":"result","subtype":"success","result":"Here is the answer.","ses
 	assert.Equal(t, "t3", tools[2].ID)
 	assert.Equal(t, ToolEvent{ID: "t3", Name: "mcp__watchtower__get_person", Done: true, OK: false, Result: "no such person"}, tools[3])
 	require.NotNil(t, usage, "the result's usage closes the stream")
-	assert.Equal(t, TurnUsage{Model: "claude-test", Tokens: llmusage.Tokens{Input: 10, CacheRead: 5, CacheWrite5m: 2, Output: 7}}, *usage)
+	assert.Equal(t, TurnUsage{Model: "claude-test", Tokens: llmusage.Tokens{Input: 10, CacheRead: 5, CacheWrite5m: 2, Output: 7, ReportedCostUSD: new(0.25)}}, *usage)
 	assert.Equal(t, 17, usage.InputTokens(), "tokens_in stays all input (CHAT-01)")
 	assert.NotNil(t, chunks[len(chunks)-1].Usage, "usage is the last chunk")
 }

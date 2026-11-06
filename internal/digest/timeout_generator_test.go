@@ -10,10 +10,11 @@ import (
 	"os/exec"
 	"testing"
 	"time"
-	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/llmusage"
 )
 
 // blockingGenerator blocks until ctx is done, then returns ctx.Err().

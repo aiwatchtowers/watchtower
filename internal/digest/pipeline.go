@@ -44,7 +44,8 @@ func (u Usage) OutputTokens() int { return int(u.Output) }
 // cache reads and writes.
 func (u Usage) TotalAPITokens() int { return int(u.AllInput()) }
 
-// CostUSD is the provider's reported cost, 0 when it reported none.
+// CostUSD is the reported cost the leaf carried, 0 when none. The claude
+// generator keeps its cost in the LLM ledger only, so it reads 0 here.
 func (u Usage) CostUSD() float64 { return u.ReportedCost() }
 
 // Generator generates text responses from a system prompt and user message.
@@ -1160,9 +1161,7 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 	}
 	wg.Wait()
 
-	agg.usageMu.Lock()
-	totalUsage := &Usage{Tokens: agg.usage}
-	agg.usageMu.Unlock()
+	totalUsage := &Usage{Tokens: agg.usage} // every worker is done (wg.Wait)
 
 	gen := int(agg.generated.Load())
 	errs := int(agg.errCount.Load())

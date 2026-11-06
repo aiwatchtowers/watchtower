@@ -74,7 +74,7 @@ type streamOptions struct {
 func recordOllamaCall(ctx context.Context, model string, start time.Time, u *chatUsage, prompt, output string, ok bool) {
 	c := llmusage.Call{Provider: "ollama", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
 	if u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
-		c.Input, c.Output = int64(u.PromptTokens), int64(u.CompletionTokens)
+		c.Tokens = u.tokens()
 	} else {
 		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
 	}

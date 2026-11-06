@@ -91,7 +91,7 @@ func TestAgentloopRecordsFailedModelCall(t *testing.T) {
 
 // N3: runtime B's only base URL is ai.ollama_url, so its calls are Ollama
 // calls in the ledger; "http" is retired as a label.
-func TestAgentloop_RecordsOllamaLabel(t *testing.T) {
+func TestLLMUSAGE01_AgentloopRecordsOllamaLabel(t *testing.T) {
 	calls := captureCalls(t)
 	srv := pathCheckingServer(t, finalResp("done"))
 	c := NewClient("local-model", srv.URL, nil, tools.Binding{Surface: "main"})

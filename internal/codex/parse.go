@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+
 	"watchtower/internal/llmusage"
 )
 

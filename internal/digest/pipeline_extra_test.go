@@ -2,9 +2,10 @@ package digest
 
 import (
 	"testing"
-	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
+
+	"watchtower/internal/llmusage"
 )
 
 func TestNewClaudeGenerator_Initialization(t *testing.T) {
