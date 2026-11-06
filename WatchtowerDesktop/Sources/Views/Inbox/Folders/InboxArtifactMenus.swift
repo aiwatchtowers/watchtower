@@ -5,6 +5,8 @@ import WatchtowerCore
 /// entry with children, a checkmark on the current choice.
 struct InboxMenuItems: View {
     let entries: [InboxMenuEntry]
+    /// Writes are disabled; reads (Learned Rules, Run History…) stay.
+    var readOnly = false
     let onCommand: (InboxMenuCommand) -> Void
 
     var body: some View {
@@ -13,7 +15,7 @@ struct InboxMenuItems: View {
                 button(entry)
             } else {
                 Menu(entry.title) {
-                    Self(entries: entry.children, onCommand: onCommand)
+                    Self(entries: entry.children, readOnly: readOnly, onCommand: onCommand)
                 }
             }
         }
@@ -33,6 +35,7 @@ struct InboxMenuItems: View {
                 Text(title)
             }
         }
+        .disabled(readOnly && !(entry.command?.isRead ?? false))
     }
 }
 
@@ -40,11 +43,12 @@ struct InboxMenuItems: View {
 struct InboxMoreMenu: View {
     let entries: [InboxMenuEntry]
     var help = "More"
+    var readOnly = false
     let onCommand: (InboxMenuCommand) -> Void
 
     var body: some View {
         Menu {
-            InboxMenuItems(entries: entries, onCommand: onCommand)
+            InboxMenuItems(entries: entries, readOnly: readOnly, onCommand: onCommand)
         } label: {
             Image(systemName: "ellipsis")
         }

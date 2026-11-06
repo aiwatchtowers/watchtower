@@ -62,29 +62,40 @@ struct InboxFolderMenu: View {
             draftField(draft, depth: row.depth)
         } else {
             let pending = content.pendingMoveID == row.id
-            HStack(spacing: Spacing.compact) {
-                disclosure(row)
-                Image(systemName: row.systemImage)
-                    .foregroundStyle(row.kind == .owner ? Color.secondary : Color.accentColor)
-                    .frame(width: IconSize.header)
-                Text(row.title)
-                    .font(.callout.weight(row.kind == .root ? .semibold : .regular))
-                    .lineLimit(1)
-                if row.hidden {
-                    Text("Hidden").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: Spacing.small)
-                if pending {
-                    ProgressView().controlSize(.mini)
-                } else if row.count >= 1 {
-                    Text("\(row.count)")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+            let selected = content.selection == row.id
+            HoverReader { hovered in
+                HStack(spacing: Spacing.compact) {
+                    disclosure(row)
+                    Image(systemName: row.systemImage)
+                        .foregroundStyle(row.kind == .owner ? Color.secondary : Color.accentColor)
+                        .frame(width: IconSize.header)
+                    Text(row.title)
+                        .font(.callout.weight(row.kind == .root ? .semibold : .regular))
+                        .lineLimit(1)
+                    if row.hidden {
+                        Text("Hidden").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: Spacing.small)
+                    if pending {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        if row.count >= 1 {
+                            Text("\(row.count)")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        // The folder's ⋯ (spec: "also its context menu"): on
+                        // the row under the pointer and on the selected one.
+                        if hovered || selected {
+                            InboxMoreMenu(entries: menuEntries(row), help: "\(row.title) Options",
+                                          readOnly: content.isReadOnly) { onAction(.menu(folderID: row.id, $0)) }
+                        }
+                    }
                 }
             }
             .padding(.leading, Spacing.medium * CGFloat(row.depth))
-            .kitRow(isSelected: content.selection == row.id)
+            .kitRow(isSelected: selected)
             .overlay {
                 if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .into) {
                     RoundedRectangle(cornerRadius: Radius.row)
@@ -95,12 +106,12 @@ struct InboxFolderMenu: View {
             .contentShape(Rectangle())
             .onTapGesture { onAction(.select(row.id)) }
             .contextMenu {
-                if !content.isReadOnly {
-                    InboxMenuItems(entries: menuEntries(row)) { onAction(.menu(folderID: row.id, $0)) }
+                InboxMenuItems(entries: menuEntries(row), readOnly: content.isReadOnly) {
+                    onAction(.menu(folderID: row.id, $0))
                 }
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(content.selection == row.id ? [.isButton, .isSelected] : .isButton)
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         }
     }
 
@@ -221,5 +232,16 @@ struct InboxFolderMenu: View {
             }
         }
         .padding(.top, Spacing.regular)
+    }
+}
+
+/// Hands its content whether the pointer is over it (a row's ⋯ shows on
+/// hover).
+private struct HoverReader<Content: View>: View {
+    @ViewBuilder let content: (Bool) -> Content
+    @State private var hovered = false
+
+    var body: some View {
+        content(hovered).onHover { hovered = $0 }
     }
 }

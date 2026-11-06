@@ -185,6 +185,15 @@ package enum InboxMenuCommand: Hashable, Sendable {
     case learnedRules, assistantProfile, showHiddenFolders, hideHiddenFolders, newFolder
     // The Idea finder legacy entry's ⋯.
     case findIdeasInPastMessages
+
+    /// A press that only opens or shows something: it stays available while
+    /// the menu is read-only (the CLI is missing, a move runs).
+    package var isRead: Bool {
+        switch self {
+        case .learnedRules, .assistantProfile, .runHistory, .showHiddenFolders, .hideHiddenFolders: true
+        default: false
+        }
+    }
 }
 
 /// One entry of an Inbox ⋯ menu: a press, or a submenu (`children`) such as
