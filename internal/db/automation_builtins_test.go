@@ -209,6 +209,37 @@ func TestMarkInterruptedRuns_WatchRunsAreSlotRuns(t *testing.T) {
 	wantAutomationRun(t, d, stale, RunFailed, ErrKindInterrupted)
 }
 
+// A reindex that turns a built-in's owner copy into a parse error (its
+// trigger cleared) while an inline run of it is live leaves that run to the
+// slot sweeps: the executor's start sweep never ends it, and the daemon's
+// slot sweep ends it only past its deadline (AUTO-08's live inline run).
+func TestMarkInterruptedRuns_BuiltinReindexedToParseErrorKeepsLiveInlineRun(t *testing.T) {
+	d := openTestDB(t)
+	b := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: b, Trigger: TriggerManual})
+	ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, 5, runTestNow.Add(-time.Minute))
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, err = d.Exec(`UPDATE automations SET trigger_kind = '', trigger_spec = '{}', parse_error = 'bad copy' WHERE id = ?`, b)
+	require.NoError(t, err)
+	require.False(t, mustGetAutomation(t, d, b).RunsAtSlot(), "no trigger: never claimed as a slot run")
+
+	n, err := d.MarkInterruptedAutomationRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	wantAutomationRun(t, d, run, RunRunning, "")
+
+	n, err = d.MarkInterruptedBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "a live inline run inside its deadline")
+	wantAutomationRun(t, d, run, RunRunning, "")
+
+	n, err = d.MarkStaleBuiltinRuns(runTestNow.Add(10 * time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "past its deadline the stale guard ends it")
+	wantAutomationRun(t, d, run, RunFailed, ErrKindInterrupted)
+}
+
 func TestAutomation_RunsAtSlotHoldsPersonalSyncRecipes(t *testing.T) {
 	for _, c := range []struct {
 		a    Automation
