@@ -35,11 +35,3 @@ func TestLLMUSAGE01_CallTokenKeysStayFlat(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &back))
 	assert.Equal(t, c, back)
 }
-
-// N3: runtime B's old "http" rows read as ollama; every other label as is.
-func TestLLMUSAGE01_ProviderLabelHTTPReadsAsOllama(t *testing.T) {
-	assert.Equal(t, "ollama", ProviderLabel("http"))
-	for _, p := range []string{"claude", "codex", "ollama", ""} {
-		assert.Equal(t, p, ProviderLabel(p))
-	}
-}

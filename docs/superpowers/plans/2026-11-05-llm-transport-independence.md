@@ -517,7 +517,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - Modify:
   - `internal/llmusage/llmusage.go` (`Tokens`, embedded in `Call`), `internal/ai/provider.go` (`TurnUsage` embeds `Tokens`; `InputTokens` becomes derived), `internal/ai/client.go` (`ai.Usage`), `internal/digest/pipeline.go` (`digest.Usage`);
   - the leaves: `internal/codex`, `internal/ollama`, `internal/agentloop` (records `ollama`), `internal/chat/claude_translate.go`;
-  - `internal/chat/turn_backend.go` and `events.go` (the v2 `usage` keys `fresh_in`/`cache_read`/`cache_write`/`cost_usd`/`estimated`), `internal/automations/attempt_meter.go`, `cmd/usage_llm.go` (a spooled `http` reads as `ollama` through `llmusage.ProviderLabel`);
+  - `internal/chat/turn_backend.go` and `events.go` (the v2 `usage` keys `fresh_in`/`cache_read`/`cache_write`/`cost_usd`/`estimated`), `internal/automations/attempt_meter.go`, `cmd/usage_llm.go` (a spooled `http` reads as `ollama` through `providers.LedgerLabel`);
   - Swift: `WatchtowerCore/Services/Chat/ChatEvent.swift` (tolerant decode);
   - docs: `docs/features/llm-usage-ledger.md`, `docs/inventory/plan-usage.md`.
 
@@ -532,7 +532,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - `TestTurnUsage_InputTokensStaysAllInput` (CHAT-01 rows keep their meaning);
   - `TestUsageEvent_V2CarriesSplitKeys` (pinned keys);
   - `TestLLMUSAGE01_AgentloopRecordsOllamaLabel`;
-  - `TestLLMUSAGE01_ProviderLabelHTTPReadsAsOllama` (`internal/llmusage`) and `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama` (`cmd`: a spool line with `http` reads as `ollama`; the report has no provider column today, so the mapping lives in the reader for any future provider dimension, with no new JSON keys);
+  - `TestLLMUSAGE01_LedgerLabelHTTPReadsAsOllama` (`internal/providers`) and `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama` (`cmd`: a spool line with `http` reads as `ollama`; the report has no provider column today, so the mapping lives in the reader for any future provider dimension, with no new JSON keys);
   - `TestAuto08_DebitIsFreshPlusOutputOnEveryProvider` (one table over claude, codex and runtime B);
   - Swift `ChatEventTests.testUsageWithSplitKeysDecodes` and `testUsageWithoutSplitKeysDecodes`.
 - [ ] **Step 2:** `go test ./internal/llmusage ./internal/ai ./internal/chat ./internal/agentloop ./internal/automations -run 'Tokens|TurnUsage|UsageEvent|OllamaLabel|TestAuto08_Debit'`, `go test ./cmd -run UsageLLM_SpoolHTTP` and `make test-swift FILTER=ChatEventTests` FAIL.

@@ -55,14 +55,14 @@
 
 **Status:** Enforced
 
-**Observable:** Every model call made by a Watchtower Go process produces exactly one `llm_calls` row (or one spool line the daemon imports once), recorded by the leaf implementation that holds the provider's numbers; wrappers add none. Every process start and every HTTP request in an LLM-endpoint package sits in a function that records into `internal/llmusage`, or is listed with a reason as not a model call. A failed ledger write never changes the call's result. One provider label per backend: `claude`, `codex`, `ollama` (plain Ollama and runtime B). `http` is retired: runtime B wrote it until 2026-11-06, those rows stay as they are, and a reader that takes the provider maps a stored `http` to `ollama` through `llmusage.ProviderLabel` (today the `usage llm` spool reader; the report has no provider column).
+**Observable:** Every model call made by a Watchtower Go process produces exactly one `llm_calls` row (or one spool line the daemon imports once), recorded by the leaf implementation that holds the provider's numbers; wrappers add none. Every process start and every HTTP request in an LLM-endpoint package sits in a function that records into `internal/llmusage`, or is listed with a reason as not a model call. A failed ledger write never changes the call's result. One provider label per backend: `claude`, `codex`, `ollama` (plain Ollama and runtime B). `http` is retired: runtime B wrote it until 2026-11-06, those rows stay as they are, and a reader that takes the provider maps a stored `http` to `ollama` through `providers.LedgerLabel` (today the `usage llm` spool reader; the report has no provider column).
 
 **Why locked:** The Usage screen and Home's AI spend are only trustworthy if a new feature cannot bypass the ledger by forgetting to opt in; an unrecorded leaf is a silent undercount.
 
 **Test guards:**
 - `internal/llmusage/leaves_test.go::TestLLMUSAGE01_LeavesRecord`
 - `internal/llmusage/leaves_test.go::TestLLMUsageLeavesCatchesNewLeaf` (the checker itself)
-- `internal/agentloop/agentloop_llmusage_test.go::TestLLMUSAGE01_AgentloopRecordsOllamaLabel`, `internal/llmusage/tokens_test.go::TestLLMUSAGE01_ProviderLabelHTTPReadsAsOllama`, `cmd/usage_llm_test.go::TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama` (provider labels, N3)
+- `internal/agentloop/agentloop_llmusage_test.go::TestLLMUSAGE01_AgentloopRecordsOllamaLabel`, `internal/providers/ledger_label_test.go::TestLLMUSAGE01_LedgerLabelHTTPReadsAsOllama`, `cmd/usage_llm_test.go::TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama` (provider labels, N3)
 - `internal/llmusage/tokens_test.go::TestLLMUSAGE01_CallTokenKeysStayFlat` (the embedded token block keeps the spool line's keys)
 - per-leaf tests in `internal/digest`, `internal/codex`, `internal/ollama`, `internal/ai`, `internal/agentloop` and `internal/chat` (one fake response with known usage gives one row with the right split)
 
@@ -70,7 +70,7 @@
 
 ## Changelog
 
-- 2026-11-06: **LLMUSAGE-01 amended** (transport independence task A3, N3 signed off in ask #514) — provider values: runtime B over Ollama records `ollama`, `http` is retired and read as `ollama` through `llmusage.ProviderLabel`; no migration, no row rewritten. The token split moved into `llmusage.Tokens`, embedded in `Call` with the same flat keys. No guard relaxed; guards added: `TestLLMUSAGE01_AgentloopRecordsOllamaLabel`, `TestLLMUSAGE01_ProviderLabelHTTPReadsAsOllama`, `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama`, `TestLLMUSAGE01_CallTokenKeysStayFlat`.
+- 2026-11-06: **LLMUSAGE-01 amended** (transport independence task A3, N3 signed off in ask #514) — provider values: runtime B over Ollama records `ollama`, `http` is retired and read as `ollama` through `providers.LedgerLabel`; no migration, no row rewritten. The token split moved into `llmusage.Tokens`, embedded in `Call` with the same flat keys. No guard relaxed; guards added: `TestLLMUSAGE01_AgentloopRecordsOllamaLabel`, `TestLLMUSAGE01_LedgerLabelHTTPReadsAsOllama`, `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama`, `TestLLMUSAGE01_CallTokenKeysStayFlat`.
 - 2026-10-28: LLMUSAGE-01 added by the LLM usage ledger (spec `docs/superpowers/specs/2026-10-27-llm-usage-ledger-design.md`, note `docs/features/llm-usage-ledger.md`); the file also covers `internal/llmusage/`.
 - 2026-10-15: PLANUSAGE-03 wording — the key's reset time is rounded to the minute, past windows never notify; same contract.
 - 2026-10-15: file created with 3 contracts (PLANUSAGE-01..03), introduced by the Claude plan limits feature (spec `docs/superpowers/specs/2026-10-15-claude-plan-limits-design.md`).

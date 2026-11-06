@@ -507,7 +507,7 @@ func TestUsageLLM_AutomationRowsCarryCacheAndChatsAreNeverUntagged(t *testing.T)
 }
 
 // N3 (ask #514): the CLI reads a spooled runtime-B call labelled "http" as
-// ollama, through llmusage.ProviderLabel, the one place a future provider
+// ollama, through providers.LedgerLabel, the one place a future provider
 // dimension of the report maps it; the spool file itself is not rewritten.
 func TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama(t *testing.T) {
 	ws := t.TempDir()
