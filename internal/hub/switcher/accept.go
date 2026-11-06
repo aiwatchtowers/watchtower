@@ -77,18 +77,20 @@ func (s *Switcher) Pending() bool {
 	return err == nil && ok && !r.Done
 }
 
-// Request is a person's switch toward target (rules 8–10): from is the
-// asking phone's device id or wire.SwitchedByEntitlement. Toward the relay
-// it is rejected (*actions.SwitchRejected) within AntiFlap of the last switch
-// (too_soon with the wait), from a phone the relay account does not list as
-// paying (not_paying; an account that cannot be read counts as paying, as in
-// Stale), or on a hub with no relay side; toward CloudKit it is always
-// accepted. An accepted request is recorded (the last one wins) and carried
-// out by Step; a request for the transport the hub is on or moving to
-// changes nothing and re-sends the asking phone where the hub runs. It never
-// calls into a processor's pass. A request toward CloudKit with reason
-// entitlement_expired is the phone's lapse (sim rule 16, entitlement.go).
-func (s *Switcher) Request(ctx context.Context, from string, target transport.Kind, reason string) error {
+// Request is a person's switch toward target (rules 8–10), read on transport
+// k: from is the asking phone's device id or wire.SwitchedByEntitlement. It
+// reads nothing from the relay and never calls into a processor: it runs inside
+// a processor's pass. Toward the relay the request is recorded and the Step
+// decides it (asks.go): rejected within AntiFlap of the last switch (too_soon
+// with the wait), from a phone the relay account does not list as paying
+// (not_paying; an account that cannot be read counts as paying), accepted, or,
+// for the transport the hub is on or moving to, the asking phone is sent where
+// the hub runs. Rejected here only on a hub with no such side. Toward CloudKit
+// it is always accepted, behind any request still waiting so the last one read
+// wins. An accepted request is recorded (the last one wins) and carried out by
+// Step. A request toward CloudKit with reason entitlement_expired is the phone's
+// lapse (sim rule 16, entitlement.go).
+func (s *Switcher) Request(_ context.Context, k transport.Kind, from string, target transport.Kind, reason string) error {
 	if s.transport(target) == nil {
 		return &actions.SwitchRejected{Reason: actions.SwitchNotSupported}
 	}
@@ -99,22 +101,26 @@ func (s *Switcher) Request(ctx context.Context, from string, target transport.Ki
 	if !person && target != transport.KindCloudKit {
 		return &actions.SwitchRejected{Reason: actions.SwitchNotSupported}
 	}
-	if target == transport.KindRelay && person && !s.canFollowToRelay(ctx, from) {
-		return &actions.SwitchRejected{Reason: wire.SwitchNotPaying}
+	if target == transport.KindRelay {
+		return s.recordAsk(waitingAsk{Read: k, Device: from, Target: target})
 	}
-	if target == transport.KindRelay && person {
-		// A lapsed phone that pays again (a fresh account read lists it)
-		// is lapsed no more, whether or not the hub moves.
-		s.endLapseIfPaying(ctx, from)
+	var accepted, behind bool
+	var err error
+	if person {
+		accepted, behind, err = s.requestToCloudKit(k, from)
+	} else {
+		s.mu.Lock()
+		accepted, err = s.accept(from, target, s.now())
+		s.mu.Unlock()
 	}
-	now := s.now()
-	s.mu.Lock()
-	accepted, err := s.accept(from, target, now)
-	s.mu.Unlock()
-	if err != nil {
+	switch {
+	case err != nil:
 		return err
-	}
-	if !accepted {
+	case behind:
+		s.resetBackoff()
+		s.Kick()
+		return nil
+	case !accepted:
 		if person {
 			s.answerWhereItRuns(from)
 		}
@@ -131,49 +137,55 @@ func (s *Switcher) Request(ctx context.Context, from string, target transport.Ki
 func (s *Switcher) accept(from string, target transport.Kind, now time.Time) (bool, error) {
 	ok := false
 	err := s.c.Store.WithTx(context.Background(), func(tx *sql.Tx) error {
-		r, has, err := recordTx(tx)
-		if err != nil {
-			return err
-		}
-		pending := has && !r.Done
-		heading := s.active
-		switch {
-		case pending && r.Epoch != 0 && r.Next != nil:
-			heading = r.Next.Target
-		case pending:
-			heading = r.Target
-		}
-		if target == heading {
-			return nil
-		}
-		if target == transport.KindRelay {
-			if wait, err := antiFlapWait(tx, now); err != nil {
-				return err
-			} else if wait > 0 {
-				return &actions.SwitchRejected{Reason: wire.SwitchTooSoon, RetryAfter: wait}
-			}
-		}
-		switch {
-		case pending && r.Epoch == 0:
-			// Not rotated yet: the last request wins outright; the replaced
-			// requester is answered when it ends.
-			r.Waiting = appendWaiting(r.Waiting, r.By)
-			r.Target, r.By, r.At = target, from, now
-		case pending && r.Next != nil:
-			r.Next = &request{Target: target, By: from, At: now, Waiting: appendWaiting(r.Next.Waiting, r.Next.By)}
-		case pending:
-			r.Next = &request{Target: target, By: from, At: now}
-		default:
-			id, err := newUUID()
-			if err != nil {
-				return err
-			}
-			r = switchRecord{ID: id, From: s.active, Target: target, By: from, At: now}
-		}
-		ok = true
-		return saveRecordTx(tx, r)
+		var err error
+		ok, err = s.acceptTx(tx, from, target, now)
+		return err
 	})
 	return ok, err
+}
+
+// acceptTx is accept inside the caller's transaction.
+func (s *Switcher) acceptTx(tx *sql.Tx, from string, target transport.Kind, now time.Time) (bool, error) {
+	r, has, err := recordTx(tx)
+	if err != nil {
+		return false, err
+	}
+	pending := has && !r.Done
+	heading := s.active
+	switch {
+	case pending && r.Epoch != 0 && r.Next != nil:
+		heading = r.Next.Target
+	case pending:
+		heading = r.Target
+	}
+	if target == heading {
+		return false, nil
+	}
+	if target == transport.KindRelay {
+		if wait, err := antiFlapWait(tx, now); err != nil {
+			return false, err
+		} else if wait > 0 {
+			return false, &actions.SwitchRejected{Reason: wire.SwitchTooSoon, RetryAfter: wait}
+		}
+	}
+	switch {
+	case pending && r.Epoch == 0:
+		// Not rotated yet: the last request wins outright; the replaced
+		// requester is answered when it ends.
+		r.Waiting = appendWaiting(r.Waiting, r.By)
+		r.Target, r.By, r.At = target, from, now
+	case pending && r.Next != nil:
+		r.Next = &request{Target: target, By: from, At: now, Waiting: appendWaiting(r.Next.Waiting, r.Next.By)}
+	case pending:
+		r.Next = &request{Target: target, By: from, At: now}
+	default:
+		id, err := newUUID()
+		if err != nil {
+			return false, err
+		}
+		r = switchRecord{ID: id, From: s.active, Target: target, By: from, At: now}
+	}
+	return true, saveRecordTx(tx, r)
 }
 
 func appendWaiting(w []string, by string) []string {
@@ -226,21 +238,32 @@ func (s *Switcher) SwitchedAt() (at time.Time, by string, ok bool, err error) {
 // pay) gets hub_on_relay; one that has not acked the current epoch gets
 // transport_switched again (a new id, its keybox sealed now); anyone else
 // nothing. The answer is sealed in an epoch the phone holds (sealEpochFor).
-func (s *Switcher) Stale(ctx context.Context, k transport.Kind, device string) (wire.Control, uint32, bool, error) {
+// With the hub on the relay the answer needs an account read, which a pass may
+// not make: it is recorded, the Step queues it on k, and Stale returns no
+// control (asks.go).
+func (s *Switcher) Stale(_ context.Context, k transport.Kind, device string) (wire.Control, uint32, bool, error) {
 	dev, linked, err := s.c.Store.Device(device)
 	if err != nil || !linked {
-		return wire.Control{}, 0, false, err
-	}
-	current, err := s.c.Keys.CurrentEpoch()
-	if err != nil {
 		return wire.Control{}, 0, false, err
 	}
 	active := s.activeKind()
 	if active == k {
 		return wire.Control{}, 0, false, nil
 	}
+	if active == transport.KindRelay && s.c.Paying != nil {
+		return wire.Control{}, 0, false, s.recordAsk(waitingAsk{Read: k, Device: dev.ID, Stale: true})
+	}
+	return s.staleAnswer(dev, true)
+}
+
+// staleAnswer is rule 12a's answer for dev, given whether it can follow the hub.
+func (s *Switcher) staleAnswer(dev state.Device, follows bool) (wire.Control, uint32, bool, error) {
+	current, err := s.c.Keys.CurrentEpoch()
+	if err != nil {
+		return wire.Control{}, 0, false, err
+	}
 	epoch := s.sealEpochFor(dev, current, s.epochBeforeLastSwitch())
-	if active == transport.KindRelay && !s.canFollowToRelay(ctx, dev.ID) {
+	if !follows {
 		return wire.Control{Kind: wire.ControlHubOnRelay}, epoch, true, nil
 	}
 	if dev.AckedEpoch >= current {
@@ -285,24 +308,6 @@ func (s *Switcher) sealEpochFor(dev state.Device, ceiling uint32, fallbacks ...u
 		}
 	}
 	return 0
-}
-
-// canFollowToRelay: a phone follows the hub onto the relay only if the
-// relay account lists it as paying; unknown (no Paying, an unreadable or
-// unanswered account read) counts as able, so no phone is refused or told
-// it cannot follow by mistake, and no mailbox waits on the account.
-func (s *Switcher) canFollowToRelay(ctx context.Context, device string) bool {
-	if s.c.Paying == nil {
-		return true
-	}
-	pctx, cancel := context.WithTimeout(ctx, s.oldSide())
-	defer cancel()
-	paying, err := s.readPaying(pctx)
-	if err != nil {
-		log.Printf("hub: switch: the relay account is unreadable (%s): the phone counts as paying", errClass(err))
-		return true
-	}
-	return paying[canonical(device)]
 }
 
 // stamp writes t as hub_meta's seconds since 1970 (decimal).

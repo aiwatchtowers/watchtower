@@ -185,14 +185,14 @@ func TestAnEntitlementRequestOnCloudKitIsAnsweredAndSupersedes(t *testing.T) {
 		a, b := w.addPhone(true), w.addPhone(true)
 		e := w.epoch()
 		target, reason := wire.TransportCloudKit, wire.SwitchedByEntitlement
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindCloudKit, reason); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindCloudKit, reason); err != nil {
 			t.Fatal(err)
 		}
 		w.settle(a, b)
 		if len(switched(a)) != 1 || *switched(a)[0].Target != wire.TransportCloudKit {
 			t.Fatalf("a read %+v", a.Controls)
 		}
-		if err := w.sw.Request(w.ctx, b.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), b.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := a.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target, Reason: &reason}); err != nil {

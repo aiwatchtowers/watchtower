@@ -68,6 +68,8 @@ type world struct {
 	notFresh  bool   // the reader answers from an earlier read
 	onRead    func() // runs inside an account read (a phone linking meanwhile)
 	reads     int    // account reads made through AccountPhones
+	payReads  int    // account reads made through Paying
+	onPayRead func() // runs inside a Paying read (the host closing meanwhile)
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -139,13 +141,23 @@ func newWorld(t *testing.T, flavour string) *world {
 			HubRelayID: hubRelayID, Clock: w.clock, Links: w.center,
 		},
 		Keyboxes: w.center.Keyboxes,
-		Paying: func(context.Context) (map[string]bool, error) {
+		Paying: func(ctx context.Context) (map[string]bool, error) {
 			w.mu.Lock()
-			defer w.mu.Unlock()
-			if w.payErr != nil {
-				return nil, w.payErr
+			w.payReads++
+			hang, err, hook := w.payHang, w.payErr, w.onPayRead
+			paying := maps.Clone(w.paying)
+			w.mu.Unlock()
+			if hook != nil {
+				hook()
 			}
-			return maps.Clone(w.paying), nil
+			if hang {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			if err != nil {
+				return nil, err
+			}
+			return paying, nil
 		},
 		AccountPhones: func(ctx context.Context) ([]switcher.AccountPhone, error) {
 			w.mu.Lock()
@@ -475,10 +487,10 @@ func TestLastAcceptedSwitchWins(t *testing.T) {
 		a, b := w.addPhone(true), w.addPhone(true)
 		e := w.epoch()
 		// Both read before the switch runs: relay then CloudKit — no move.
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.sw.Request(w.ctx, b.ID().String(), transport.KindCloudKit, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), b.ID().String(), transport.KindCloudKit, ""); err != nil {
 			t.Fatal(err)
 		}
 		w.settle(a, b)
@@ -497,13 +509,13 @@ func TestLastAcceptedSwitchWins(t *testing.T) {
 			}
 		}
 		// One after the other: the later one is where the hub ends.
-		if err := w.sw.Request(w.ctx, a.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.sw.Request(w.ctx, b.ID().String(), transport.KindCloudKit, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), b.ID().String(), transport.KindCloudKit, ""); err != nil {
 			t.Fatal(err)
 		}
 		w.settle(a, b)
@@ -520,7 +532,7 @@ func TestSwitchRotatesEpochOnce(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		ph := w.addPhone(true)
 		e := w.epoch()
-		if err := w.sw.Request(w.ctx, ph.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), ph.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		// The relay is down for the notices: Step still finishes, once.
@@ -556,7 +568,7 @@ func TestSwitchResumesAfterTheRotation(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		ph := w.addPhone(true)
 		e := w.epoch()
-		if err := w.sw.Request(w.ctx, ph.ID().String(), transport.KindRelay, ""); err != nil {
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), ph.ID().String(), transport.KindRelay, ""); err != nil {
 			t.Fatal(err)
 		}
 		calls := 0
