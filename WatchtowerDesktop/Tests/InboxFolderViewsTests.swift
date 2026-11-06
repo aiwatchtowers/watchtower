@@ -33,12 +33,14 @@ final class InboxFolderViewsTests: XCTestCase {
                            depth: 1 + index % 3, count: index)
         }
         let hundred = InboxFolderMenu(content: InboxFolderMenuContent(rows: [tree[0], tree[1]] + many))
-        try assertRenders(hundred, width: 220)
-        // The tree scrolls: a hundred folders do not make the column a
-        // hundred rows tall, so New Folder and the note stay on screen.
-        let height = ViewRenderProbe.fittingHeight(hundred, width: 220)
-        XCTAssertTrue(height.isFinite)
-        XCTAssertLessThan(height, 100 * ListLayout.rowMinHeight, "the rows must scroll, not grow the column")
+        // In a column 400 pt tall the tree scrolls: the menu fits the
+        // column (a plain VStack of a hundred rows would ask for ~3 000 pt),
+        // so New Folder and the note stay on screen.
+        let column = CGSize(width: 220, height: 400)
+        let fitted = NSHostingController(rootView: hundred).sizeThatFits(in: column)
+        XCTAssertTrue(fitted.height.isFinite)
+        XCTAssertLessThanOrEqual(fitted.height, column.height, "the rows must scroll, not grow the column")
+        try assertRenders(hundred, size: column)
     }
 
     // MARK: - Helpers
@@ -57,10 +59,15 @@ final class InboxFolderViewsTests: XCTestCase {
     ) throws {
         let height = ViewRenderProbe.fittingHeight(view, width: width)
         XCTAssertGreaterThan(height, 0, file: file, line: line)
-        let bitmap = try ViewRenderProbe(size: NSSize(width: width, height: max(height, 1)))
+        try assertRenders(view, size: CGSize(width: width, height: height), file: file, line: line)
+    }
+
+    /// Draws the view at `size`: not blank.
+    private func assertRenders(
+        _ view: some View, size: CGSize, file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        let bitmap = try ViewRenderProbe(size: NSSize(width: size.width, height: max(size.height, 1)))
             .render(view, try XCTUnwrap(NSAppearance(named: .aqua)))
-        XCTAssertGreaterThan(bitmap.pixelsWide, 0, file: file, line: line)
-        XCTAssertGreaterThan(bitmap.pixelsHigh, 0, file: file, line: line)
         XCTAssertGreaterThan(Self.distinctColours(bitmap, limit: 2), 1, "the view drew nothing", file: file,
                              line: line)
     }
