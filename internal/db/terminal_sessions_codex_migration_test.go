@@ -228,8 +228,9 @@ func TestMigrationCodex_DownDropsCodexRowsAndColumn(t *testing.T) {
 }
 
 // The readers that open a database without migrating it read a claude row
-// of a 00108 database: GetTerminalSession needs agent_transcript_path only
-// for a codex row, which a 00108 database cannot hold.
+// of a 00108 database: GetTerminalSession never reads agent_transcript_path
+// (sessionagent.LoadSession reads it for a codex row, which a 00108
+// database cannot hold).
 func TestGetTerminalSessionNeedsNoTranscriptPathColumnForClaude(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)

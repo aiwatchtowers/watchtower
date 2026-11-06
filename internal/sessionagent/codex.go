@@ -133,26 +133,26 @@ const codexLoginCommand = `exec /bin/sh -c 'eval "$` + LaunchScriptEnv + `"'`
 // the subcommand would replace every root `-c`). The prompt is read after
 // `--`, so one starting with "-" is no flag.
 func (codexAdapter) LaunchCommand(s Start) LaunchCommand {
-	var prompt string
-	if s.Prompt != nil && !s.Resume {
-		prompt = *s.Prompt
+	var prompt *string
+	if !s.Resume {
+		prompt = s.Prompt
 	}
 	if s.Binary == nil {
 		return LaunchCommand{Command: "exit 127", Prompt: prompt}
 	}
-	words := []string{"exec", "env", "-u", FirstPromptEnv, "-u", LaunchScriptEnv, ShellQuote(s.Binary.Binary)}
+	words := []string{"exec", "env", "-u", FirstPromptEnv, "-u", LaunchScriptEnv, shellQuote(s.Binary.Binary)}
 	for _, a := range s.Binary.Args {
-		words = append(words, ShellQuote(a))
+		words = append(words, shellQuote(a))
 	}
 	if s.Resume {
-		words = append(words, "resume", ShellQuote(s.SessionID))
+		words = append(words, "resume", shellQuote(s.SessionID))
 	}
-	if s.Prompt != nil && !s.Resume {
+	if prompt != nil {
 		words = append(words, "--", `"$`+FirstPromptEnv+`"`)
 	}
 	path := ""
 	if s.Binary.PathPrepend != "" {
-		path = "PATH=" + ShellQuote(s.Binary.PathPrepend) + `:"$PATH" `
+		path = "PATH=" + shellQuote(s.Binary.PathPrepend) + `:"$PATH" `
 	}
 	return LaunchCommand{
 		Command: codexLoginCommand,

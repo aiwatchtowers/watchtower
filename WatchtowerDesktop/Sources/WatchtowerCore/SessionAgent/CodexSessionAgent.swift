@@ -36,7 +36,7 @@ package struct CodexSessionAgent: SessionAgent {
     /// run and the start exits 127 (`TerminalCenter.start` refuses such a
     /// launch before it gets here; this stays total for any other caller).
     package func launchCommand(_ start: AgentStart) -> AgentLaunchCommand {
-        let prompt = start.resume ? nil : start.prompt
+        let prompt = start.newPrompt
         guard let args = start.launchArgs else {
             return AgentLaunchCommand(command: "exit 127", prompt: prompt, runs: false)
         }
@@ -61,7 +61,7 @@ package struct CodexSessionAgent: SessionAgent {
         var words = ["exec", "env", "-u", TerminalLaunch.firstPromptEnv, "-u", TerminalLaunch.codexCommandEnv,
                      quote(codex.binary)] + codex.args.map(quote)
         if start.resume, let id = start.sessionID { words += ["resume", quote(id)] }
-        if !start.resume, start.prompt != nil { words += ["--", "\"$\(TerminalLaunch.firstPromptEnv)\""] }
+        if start.newPrompt != nil { words += ["--", "\"$\(TerminalLaunch.firstPromptEnv)\""] }
         let path = codex.pathPrepend.isEmpty ? "" : "PATH=\(quote(codex.pathPrepend)):\"$PATH\" "
         return path + words.joined(separator: " ")
     }

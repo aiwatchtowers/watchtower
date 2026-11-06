@@ -43,3 +43,21 @@ func ReadSession(ctx context.Context, d *db.DB, sessionID int64, toolUseID strin
 	}
 	return feed.Entries, nil
 }
+
+// LoadSession is terminal_sessions row id with its stored transcript path
+// when the row's agent keeps the path its SessionStart reported
+// (Adapter.StoresTranscriptPath): Codex's rows; a Claude row's readers find
+// the transcript by id, and a shell has none. A missing row is
+// db.ErrTerminalSessionNotFound.
+func LoadSession(d *db.DB, id int64) (*db.TerminalSession, error) {
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if a, ok := Of(s.Kind); ok && a.StoresTranscriptPath() {
+		if s.TranscriptPath, err = d.TerminalTranscriptPath(id); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}

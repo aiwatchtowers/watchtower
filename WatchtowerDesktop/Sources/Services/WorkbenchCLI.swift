@@ -636,7 +636,9 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// Each agent's part, decoded from the status's shape: Claude Code's is
     /// the top level (`claude_found`, `skill`, `group_prompt`; the format
     /// predates Codex), Codex's the `codex` object. A CLI older than Codex
-    /// support has no codex part.
+    /// support has no codex part. This is the decoder of the CLI's per-agent
+    /// JSON (an LLMTRANSPORT-01 `permanent:` kind of mapping, written as a
+    /// table the guard does not scan): consumers read a part, never the kind.
     var agentParts: [AgentKind: AgentPart] {
         var parts: [AgentKind: AgentPart] = [
             .claude: AgentPart(found: claudeFound, skill: skill != "missing", groupPrompt: groupPrompt)

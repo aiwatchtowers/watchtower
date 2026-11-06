@@ -1202,18 +1202,18 @@ extension WorkbenchesViewModel {
         // The stored rollout path needs no home. Past it, never reset an id
         // on a lookup in a home that is not the login shell's: an
         // unresolved environment is "unknown", not "no rollout".
-        let codexHome: URL
+        let agentHome: URL
         do {
-            if try center.mintedIDResumes(row, home: nil) { return (row, true) }
+            if try center.resumesStoredID(row, home: nil) { return (row, true) }
             guard let home = await resolveAgentHome(agent) else { throw CodexHomeUnresolved() }
-            codexHome = home
-            if try center.mintedIDResumes(row, home: home) { return (row, true) }
+            agentHome = home
+            if try center.resumesStoredID(row, home: home) { return (row, true) }
         } catch {
             await failed(row, "Could not check \(agent.displayName)'s saved sessions", error, ticket: ticket, background: ticket == nil)
             return nil
         }
         NSLog("WorkbenchesViewModel: %@ session %lld starts anew: no transcript for id %@ (stored path %@) under %@",
-              agent.displayName, row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", codexHome.path)
+              agent.displayName, row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", agentHome.path)
         do {
             let reset = try await dbPool.write { db in
                 try TerminalSessionQueries.resetAgentSession(db, id: row.id)

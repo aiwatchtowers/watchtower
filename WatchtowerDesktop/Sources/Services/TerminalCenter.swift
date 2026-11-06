@@ -524,7 +524,7 @@ final class TerminalCenter {
     /// through its session adapter: Claude Code's under `~/.claude`, Codex's
     /// rollout under its home in the app's environment. No id, no transcript.
     /// A lookup that failed reads as none here: a relaunch of an agent that
-    /// mints its own id is decided by the view model with `mintedIDResumes`,
+    /// mints its own id is decided by the view model with `resumesStoredID`,
     /// which passes the answer.
     func hasTranscript(_ session: TerminalSession) -> Bool {
         guard let id = session.claudeSessionID, let agent = session.kind.agent?.session else { return false }
@@ -539,7 +539,7 @@ final class TerminalCenter {
     /// under `home` (the login shell's, resolved by the caller; nil checks the
     /// stored path alone). Throws when the agent's transcript folder could not
     /// be listed, so the caller does not drop the id on it.
-    func mintedIDResumes(_ session: TerminalSession, home: URL?) throws -> Bool {
+    func resumesStoredID(_ session: TerminalSession, home: URL?) throws -> Bool {
         guard let agent = session.kind.agent?.session, !agent.caps.appSessionID,
               let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
             return false
@@ -979,7 +979,7 @@ final class TerminalCenter {
     /// for the row of an agent whose id the app chooses
     /// (`AgentSessionCaps.appSessionID`) without a valid id. The row of an
     /// agent that mints its own resumes as `codexResume` says when the caller
-    /// decided it (`mintedIDResumes`, one walk of the transcript tree); else
+    /// decided it (`resumesStoredID`, one walk of the transcript tree); else
     /// it looks for the transcript here.
     private func mode(
         for session: TerminalSession, fresh: Bool, prompt: String?, codexResume: Bool? // swiftlint:disable:this discouraged_optional_boolean

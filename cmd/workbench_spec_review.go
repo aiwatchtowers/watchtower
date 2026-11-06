@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/specreview"
 )
@@ -193,7 +194,7 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 // does; a shell session or a missing one is an error the run turns into a note.
 func specReviewFeed(database *db.DB) func(context.Context, int64) ([]sessionfeed.Entry, error) {
 	return func(ctx context.Context, id int64) ([]sessionfeed.Entry, error) {
-		sess, err := database.GetTerminalSession(id)
+		sess, err := sessionagent.LoadSession(database, id)
 		if err != nil {
 			return nil, fmt.Errorf("session %d: %w", id, err)
 		}

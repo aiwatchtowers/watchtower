@@ -30,9 +30,6 @@ const (
 	FirstPromptEnv = sessionagent.FirstPromptEnv
 	// SetupCommandEnv carries the owner's worktree setup command verbatim.
 	SetupCommandEnv = "WATCHTOWER_WORKTREE_SETUP"
-	// CodexCommandEnv carries the /bin/sh script a Codex launch runs
-	// (sessionagent.LaunchScriptEnv).
-	CodexCommandEnv = sessionagent.LaunchScriptEnv
 )
 
 // FallbackShell is the login shell when none (or a relative one) is given.
@@ -114,8 +111,8 @@ func Launch(m Mode, row int64, dir, shell string, codex *devpack.LaunchArgs, set
 		spec.Env = append(spec.Env, SessionRowEnv+"="+strconv.FormatInt(row, 10))
 	}
 	spec.Env = append(spec.Env, cmd.Env...)
-	if m.Prompt != nil && !m.Resume {
-		spec.Env = append(spec.Env, FirstPromptEnv+"="+cmd.Prompt)
+	if cmd.Prompt != nil {
+		spec.Env = append(spec.Env, FirstPromptEnv+"="+*cmd.Prompt)
 	}
 	if withSetup {
 		spec.Env = append(spec.Env, SetupCommandEnv+"="+setup)

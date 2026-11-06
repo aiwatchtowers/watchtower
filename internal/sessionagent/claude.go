@@ -145,7 +145,7 @@ func (claudeAdapter) LaunchCommand(s Start) LaunchCommand {
 	return LaunchCommand{
 		Command: "exec /bin/sh -c 'exec env -u " + FirstPromptEnv + " claude --session-id " + s.SessionID +
 			` "$` + FirstPromptEnv + `"'`,
-		Prompt: positionalPrompt(*s.Prompt),
+		Prompt: new(positionalPrompt(*s.Prompt)),
 		Runs:   true,
 	}
 }

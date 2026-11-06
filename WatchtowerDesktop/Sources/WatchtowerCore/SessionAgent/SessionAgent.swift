@@ -60,6 +60,9 @@ package struct AgentStart: Equatable, Sendable {
     /// with its launch flags (`AgentSessionCaps.launchHooks`); nil when none.
     package var launchArgs: CodexLaunchArgs?
 
+    /// The first prompt a new session gets; a resume takes none.
+    var newPrompt: String? { resume ? nil : prompt }
+
     package init(sessionID: String?, prompt: String?, resume: Bool, launchArgs: CodexLaunchArgs?) {
         self.sessionID = sessionID
         self.prompt = prompt

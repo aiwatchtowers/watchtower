@@ -1,11 +1,6 @@
 package sessionagent
 
-import (
-	"fmt"
-	"strings"
-
-	"watchtower/internal/db"
-)
+import "strings"
 
 // The environment names an agent's start command reads (TerminalLaunch's
 // twins on the Desktop).
@@ -50,34 +45,15 @@ type LaunchCommand struct {
 	Command string
 	// Env is the NAME=value entries the start needs ahead of its prompt.
 	Env []string
-	// Prompt is the FirstPromptEnv value for a start with a prompt; "" for
-	// none.
-	Prompt string
+	// Prompt is the FirstPromptEnv value; nil for a start without one.
+	Prompt *string
 	// Runs is false when the agent has no binary to run: Command exits 127
 	// ("not found") and no setup command runs before it.
 	Runs bool
 }
 
-// ShellQuote wraps v in POSIX single quotes; each single quote inside is
+// shellQuote wraps v in POSIX single quotes; each single quote inside is
 // written as quote, backslash, quote, quote (the shell idiom for a quote).
-func ShellQuote(v string) string {
+func shellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
-}
-
-// LoadSession is terminal_sessions row id with its stored transcript path
-// when the row's agent keeps the path its SessionStart reported
-// (Adapter.StoresTranscriptPath): Codex's rows; a Claude row's readers find
-// the transcript by id, and a shell has none. A missing row wraps
-// db.ErrTerminalSessionNotFound.
-func LoadSession(d *db.DB, id int64) (*db.TerminalSession, error) {
-	s, err := d.GetTerminalSession(id)
-	if err != nil {
-		return nil, err
-	}
-	if a, ok := Of(s.Kind); ok && a.StoresTranscriptPath() {
-		if s.TranscriptPath, err = d.TerminalTranscriptPath(id); err != nil {
-			return nil, fmt.Errorf("reading terminal session %d transcript path: %w", id, err)
-		}
-	}
-	return s, nil
 }

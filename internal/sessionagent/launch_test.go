@@ -34,16 +34,16 @@ func TestSessionAgent_LaunchCommand(t *testing.T) {
 			LaunchCommand{Command: "exec claude --session-id " + launchTestID, Runs: true}},
 		{"claude new with a prompt", claudeAdapter{}, Start{SessionID: launchTestID, Prompt: &prompt},
 			LaunchCommand{Command: "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id " +
-				launchTestID + ` "$WATCHTOWER_FIRST_PROMPT"'`, Prompt: " -fix it", Runs: true}},
+				launchTestID + ` "$WATCHTOWER_FIRST_PROMPT"'`, Prompt: new(" -fix it"), Runs: true}},
 		{"claude resume", claudeAdapter{}, Start{SessionID: launchTestID, Resume: true},
 			LaunchCommand{Command: "exec claude --resume " + launchTestID, Runs: true}},
 		{"codex without its binary", codexAdapter{}, Start{Prompt: &prompt},
-			LaunchCommand{Command: "exit 127", Prompt: "-fix it"}},
+			LaunchCommand{Command: "exit 127", Prompt: &prompt}},
 		{"codex new with a prompt", codexAdapter{}, Start{Prompt: &prompt, Binary: binary},
 			LaunchCommand{Command: `exec /bin/sh -c 'eval "$WATCHTOWER_CODEX_COMMAND"'`,
 				Env: []string{`WATCHTOWER_CODEX_COMMAND=PATH='/opt/node':"$PATH" exec env -u WATCHTOWER_FIRST_PROMPT ` +
 					`-u WATCHTOWER_CODEX_COMMAND '/opt/codex' '-c' 'a='\''b'\''' -- "$WATCHTOWER_FIRST_PROMPT"`},
-				Prompt: "-fix it", Runs: true}},
+				Prompt: &prompt, Runs: true}},
 		{"codex resume", codexAdapter{}, Start{SessionID: launchTestID, Resume: true, Binary: &LaunchArgs{Binary: "codex"}},
 			LaunchCommand{Command: `exec /bin/sh -c 'eval "$WATCHTOWER_CODEX_COMMAND"'`,
 				Env: []string{"WATCHTOWER_CODEX_COMMAND=exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND " +
