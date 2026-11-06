@@ -20,21 +20,30 @@ package struct InboxRef: Hashable, Sendable {
     }
 
     /// Every list row's ref of a stored `blocks_json`, in document order: the
-    /// Kit's `ArtifactDocument.refs` for a document it reads. A document the
-    /// Kit could not read as v1 (not JSON, another version, no `blocks`
-    /// array, or a row whose `ref` is malformed) has none, so it counts as a
-    /// plain artifact. The Kit is stricter about the other blocks' fields;
-    /// those never carry a ref.
+    /// Kit's `ArtifactDocument.refs` whenever the Kit reads the document
+    /// (`InboxRefParityTests`). A document the Kit marks unreadable has none,
+    /// so it counts as a plain artifact, for the cases checked here: not
+    /// JSON, another version, no `blocks` array, a block that is not an
+    /// object or has an unknown `type`, a list without `rows`, a row that is
+    /// not an object or has no `title`, a malformed `ref`. Known gap: the
+    /// other required fields of non-list blocks (a heading's `text`, a
+    /// table's `columns` …) are not checked, so such a document still gives
+    /// its list refs here while the Kit reads it as unreadable — pinned by
+    /// `InboxRefParityTests.testKnownGapOtherBlockFieldsAreNotChecked`.
     package static func refs(blocksJSON: String) -> [Self] {
         guard !blocksJSON.isEmpty,
               let object = (try? JSONSerialization.jsonObject(with: Data(blocksJSON.utf8))) as? [String: Any],
               integer(object["v"]) == 1,
               let blocks = object["blocks"] as? [Any] else { return [] }
         var out: [Self] = []
-        for case let block as [String: Any] in blocks where block["type"] as? String == "list" {
+        for block in blocks {
+            guard let block = block as? [String: Any],
+                  let type = block["type"] as? String, blockTypes.contains(type) else { return [] }
+            guard type == "list" else { continue }
             guard let rows = block["rows"] as? [Any] else { return [] }
             for row in rows {
-                guard let row = row as? [String: Any] else { return [] }
+                guard let row = row as? [String: Any],
+                      let title = row["title"] as? String, !title.isEmpty else { return [] }
                 guard let value = row["ref"], !(value is NSNull) else { continue }
                 guard let ref = value as? [String: Any],
                       let kind = (ref["kind"] as? String).flatMap(Kind.init(rawValue:)),
@@ -44,6 +53,11 @@ package struct InboxRef: Hashable, Sendable {
         }
         return out
     }
+
+    /// The block types the Kit's v1 decoder reads (`ArtifactJSON.block`).
+    private static let blockTypes: Set<String> = [
+        "heading", "text", "list", "table", "person", "metrics", "link", "actions"
+    ]
 
     /// A JSON integer (never a bool or a fraction), as the Kit reads one.
     private static func integer(_ value: Any?) -> Int64? {
