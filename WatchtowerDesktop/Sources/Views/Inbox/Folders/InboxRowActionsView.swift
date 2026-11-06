@@ -1,52 +1,6 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The native actions of one artifact row with a `ref` (spec "Native row
-/// actions for a `ref`"): exactly that kind's Inbox card buttons today, plus
-/// **Reply…** on an `inbox_item` with a write path (asks #445, #451).
-struct InboxRowActionsContent: Equatable {
-    enum Kind: Equatable {
-        /// A ping: Open (with a permalink, under its source's label),
-        /// Reply… (Slack, Jira, Linear), Done, Hide, Snooze ▾, ⋯ (Discuss in
-        /// Chat, Hand to Agent…).
-        case inboxItem(openLabel: String?, canReply: Bool)
-        /// A track: Done, ⋯ (Stop watching, Make a Task — or, for a custom
-        /// track, Go to Target and Delete…).
-        case track(custom: Bool)
-        /// An idea: the verdict buttons while it awaits one (Approve,
-        /// Reject, Not now ▾), else Activate and Drop.
-        case idea(awaitsVerdict: Bool)
-        /// A due reminder: Done, Snooze 1h.
-        case reminder
-        /// A proposal: Approve, Reject, Edit…; after a failed apply Retry
-        /// and Dismiss.
-        case action(failed: Bool)
-    }
-
-    enum State: Equatable {
-        case idle
-        /// A press on this row runs: its buttons wait, a progress mark shows.
-        case busy
-        /// The last press failed: the row stays with the error and **Retry**.
-        case failed(message: String)
-    }
-
-    /// The Reply composer under an `inbox_item` row, or the caption while
-    /// its proposal waits in Needs approval.
-    enum Reply: Equatable {
-        case composing(text: String, error: String?)
-        case waiting
-    }
-
-    let kind: Kind
-    var state: State = .idle
-    var reply: Reply?
-    /// A's `.preview` mode: every native action drawn disabled.
-    var isPreview = false
-
-    var isBusy: Bool { state == .busy }
-}
-
 /// A press on a row's native actions.
 enum InboxRowPress: Equatable {
     case open, reply, done, hide, snooze(duration: String), discussInChat, handToAgent

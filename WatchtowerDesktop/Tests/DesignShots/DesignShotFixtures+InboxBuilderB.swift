@@ -123,16 +123,16 @@ enum InboxBuilderBShotFixtures {
     // MARK: - Folder lists
 
     private static func rootList(selection: String?, readError: String? = nil) -> InboxFolderListContent {
-        InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", entries: [
-            InboxFolderEntry(id: "waiting", kind: .artifact, title: "Waiting for me", summary: "4 waiting",
+        InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
+            InboxFolderListRow(id: "waiting", kind: .artifact, title: "Waiting for me", summary: "4 waiting",
                              detail: "updated 6 min ago · after every sync", unread: true),
-            InboxFolderEntry(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
+            InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
                              detail: "Your day · Fri 6 Nov", unread: true),
-            InboxFolderEntry(id: "tracks", kind: .legacy, title: "Track my threads", summary: "2 unread",
+            InboxFolderListRow(id: "tracks", kind: .legacy, title: "Track my threads", summary: "2 unread",
                              detail: "updated 1 h ago"),
-            InboxFolderEntry(id: "ideas", kind: .legacy, title: "Idea finder", summary: "1 to judge",
+            InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder", summary: "1 to judge",
                              detail: "updated 3 h ago"),
-            InboxFolderEntry(id: "weekly", kind: .artifact, title: "Weekly mail roundup", detail: "run #12 · 2 h ago",
+            InboxFolderListRow(id: "weekly", kind: .artifact, title: "Weekly mail roundup", detail: "run #12 · 2 h ago",
                              unread: true)
         ], selection: selection, readError: readError)
     }
@@ -461,10 +461,10 @@ enum InboxBuilderBShotFixtures {
     /// Before Waiting for me's first run: the root lists the Messages legacy
     /// entry in its place, and its message card has Reply… like a row.
     private static func waitingNotRun() -> AnyView {
-        let list = InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", entries: [
-            InboxFolderEntry(id: "messages", kind: .legacy, title: "Messages", summary: "4 waiting",
+        let list = InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
+            InboxFolderListRow(id: "messages", kind: .legacy, title: "Messages", summary: "4 waiting",
                              detail: "Mentions, DMs and replies", unread: true),
-            InboxFolderEntry(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
+            InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
                              detail: "Your day · Fri 6 Nov", unread: true)
         ], selection: "messages")
         let actions = pingActions()
@@ -523,7 +523,7 @@ enum InboxBuilderBShotFixtures {
             },
             DesignShot(name: "inbox-b-idea-finder-menu", size: NSSize(width: 620, height: 0)) {
                 AnyView(HStack(alignment: .top, spacing: Spacing.large) {
-                    InboxFolderEntryRow(entry: InboxFolderEntry(id: "ideas", kind: .legacy, title: "Idea finder",
+                    InboxFolderListRowView(row: InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder",
                                                                 summary: "1 to judge", detail: "updated 3 h ago"),
                                         isSelected: true)
                         .frame(width: 280)
