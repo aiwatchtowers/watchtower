@@ -28,13 +28,6 @@ const (
 // read from, in order: the first non-empty string wins.
 var approvalSummaryArgs = []string{"text", "summary", "title", "body", "message", "essence", "note", "query", "project_key"}
 
-// ReadPrimitives are the built-ins' read primitives
-// (automations.ReadPrimitiveNames) over d: what every executor and dry run
-// carries, since a dry run calls them.
-func ReadPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
-	return ApprovalsPrimitives(d, now)
-}
-
 // ApprovalsPrimitives returns approvals.list over d — Needs approval's one
 // read (no model): the open approvals at now() (db.ReadApprovalsView, the
 // same set, order and cap of automations.MaxOutputsPerRun that the approval

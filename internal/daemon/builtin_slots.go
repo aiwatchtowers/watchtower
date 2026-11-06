@@ -19,6 +19,7 @@ const (
 	ideaFinderID     = "idea-finder"
 	customTracksID   = "custom-tracks"
 	reactionsID      = "reactions"
+	waitingForMeID   = "waiting-for-me"
 )
 
 // TrackMyThreadsPrimitives is tracks.extract over the daemon's tracks
@@ -62,6 +63,73 @@ func (d *Daemon) WatchPrimitives() map[string]automations.PrimitiveFunc {
 		s = d.customTracksPipe
 	}
 	return builtin.WatchPrimitives(d.db, s, d.planOwner, nil)
+}
+
+// WaitingForMePrimitives is attention.waiting over the daemon's database.
+func (d *Daemon) WaitingForMePrimitives() map[string]automations.PrimitiveFunc {
+	return builtin.WaitingPrimitives(d.db, time.Now)
+}
+
+// WaitingForMeGate is Waiting for me's sync gate: due when what it would
+// show differs from what its last succeeded run showed — the open items as
+// their rows read by the shipped recipe (builtin.WaitingFingerprint) with
+// the recipe's hashes. A quiet cycle writes no run. An owner's copy runs
+// every cycle: it may show what the fingerprint does not cover. A failed read is
+// due (the run reports it); a daemon start knows no fingerprint, so its
+// first cycle runs. Attention detection off skips the built-in before the
+// gate is asked (its feature, FEAT-01), and a queued Run Now runs without
+// asking it.
+func (d *Daemon) WaitingForMeGate() builtin.Gate { return waitingForMeGate{d: d} }
+
+type waitingForMeGate struct{ d *Daemon }
+
+func (g waitingForMeGate) Due(ctx context.Context, _ builtin.Entry, now time.Time) bool {
+	d := g.d
+	d.waitingSeen = ""
+	a, err := d.db.GetBuiltinAutomation(waitingForMeID)
+	if err != nil {
+		d.logger.Printf("waiting-for-me: reading its row: %v", err)
+		return true
+	}
+	if a.Overridden {
+		// The owner's copy may show what the fingerprint does not cover
+		// (other reads, other fields): it runs every cycle.
+		return true
+	}
+	fp, err := builtin.WaitingFingerprint(ctx, d.db, now)
+	if err != nil {
+		d.logger.Printf("waiting-for-me: reading the open items: %v", err)
+		return true
+	}
+	d.waitingSeen = fp + "/" + a.ContentHash + "/" + a.ConfirmedHash
+	return d.waitingSeen != d.waitingShown
+}
+
+// phaseWaitingForMe is Waiting for me's slot, right after phaseInbox: the
+// built-in rewrites its one living artifact from the open attention items
+// when its gate finds a change. A succeeded slot run records what the gate
+// read as shown; any failed run (a Run Now included) forgets what was
+// shown, so the next cycle runs again. It
+// has no legacy phase: until it is active its queued Run Now is cancelled
+// (only the slot would take it).
+func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
+	if !d.builtinOn(waitingForMeID) {
+		d.cancelQueuedBuiltinRuns(waitingForMeID, time.Now())
+		return
+	}
+	d.ensureBuiltinsSwept()
+	d.waitingSeen = ""
+	for _, o := range d.builtins.RunSlot(ctx, builtin.SlotWaitingForMe) {
+		switch {
+		case o.BuiltinID != waitingForMeID:
+		case slotRunFailed(o):
+			// Any failed run — a Run Now too, which the gate never saw —
+			// leaves the artifact behind: the next cycle runs again.
+			d.waitingShown = ""
+		case o.RunID != 0 && o.Status == db.RunSucceeded && d.waitingSeen != "":
+			d.waitingShown = d.waitingSeen
+		}
+	}
 }
 
 // TrackMyThreadsGate is Track my threads' sync gate: tracks and digests on, a

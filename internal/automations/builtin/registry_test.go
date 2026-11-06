@@ -303,7 +303,7 @@ func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
 // Needs approval's own folder).
 func TestCard_DoesAndResultFilter(t *testing.T) {
 	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations",
-		NeedsApprovalID: "automations"}
+		"waiting-for-me": "messages", NeedsApprovalID: "automations"}
 	wantFolder := map[string]string{NeedsApprovalID: NeedsApprovalID}
 	f := newFixture(t)
 	for _, e := range All() {

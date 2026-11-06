@@ -46,6 +46,17 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertFalse(reactions.runNow)
     }
 
+    /// Inbox builder B's Waiting for me golden.
+    func testDecodesWaitingForMeGolden() throws {
+        let waiting = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_waiting_for_me"))
+        XCTAssertEqual(waiting.id, "waiting-for-me")
+        XCTAssertEqual(waiting.slot, "waiting_for_me")
+        XCTAssertEqual(waiting.featureIDs, ["secretary-inbox"])
+        XCTAssertEqual(waiting.parameters, [])
+        XCTAssertEqual(waiting.resultFilter, .messages)
+        XCTAssertTrue(waiting.runNow)
+    }
+
     func testDecodesDoesAndResultFilter() throws {
         let detail = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden())
         XCTAssertGreaterThanOrEqual(detail.does.count, 1)

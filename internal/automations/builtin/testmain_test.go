@@ -143,6 +143,7 @@ func newFixture(t *testing.T) *fixture {
 		f.c3[name] = &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
 		prims[name] = f.c3[name].fn
 	}
+	maps.Copy(prims, WaitingPrimitives(f.d, f.clock.Now))
 	maps.Copy(prims, ApprovalsPrimitives(f.d, f.clock.Now))
 	b := automations.Backends{DB: f.d, Clock: f.clock,
 		Primitives: prims,

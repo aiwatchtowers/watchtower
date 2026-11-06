@@ -361,6 +361,8 @@ func sameBuiltinTrigger(got, want Trigger) bool {
 		return got.Sync == want.Sync
 	case TriggerEvent:
 		return got.Event != nil && want.Event != nil && got.Event.Type == want.Event.Type && len(got.Event.Where) == 0
+	case TriggerSchedule, TriggerButton, TriggerManual:
+		return false // no built-in ships one
 	}
 	return false
 }
