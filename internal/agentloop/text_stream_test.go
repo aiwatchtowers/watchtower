@@ -289,18 +289,19 @@ func TestAgentloopQuerySync_DoesNotStream(t *testing.T) {
 	assert.NotContains(t, body, "stream_options")
 }
 
-// At the iteration cap a v2 consumer already shows the last text, so only
-// the note follows it.
-func TestAgentloopQuery_CapNoteAfterShownText(t *testing.T) {
+// At the iteration cap a v2 consumer keeps the text it already shows, and
+// the stream ends with the budget failure instead of a note (L13).
+func TestAgentloopQuery_CapKeepsShownTextAndFails(t *testing.T) {
 	srv, _ := scriptedServer(t, textAndTool("partial progress"))
 	c := clientWith(listTargetsReg(), srv.URL)
 	c.maxIter = 1
 	c.EmitToolEvents()
 	chunks, err := collect(t, c)
-	require.NoError(t, err)
+	var f *providers.Failure
+	require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+	assert.Equal(t, providers.Budget, f.Category)
 	text := strings.Join(textsOf(chunks), "")
-	assert.Equal(t, 1, strings.Count(text, "partial progress"), text)
-	assert.True(t, strings.HasSuffix(text, "partial progress\n\n(Note: I reached the tool-call limit before finishing.)"), text)
+	assert.Equal(t, "partial progress", text)
 }
 
 // A tool name split across deltas is joined; a server that repeats the
