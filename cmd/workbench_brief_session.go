@@ -170,13 +170,19 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 	if !w.moveID && !w.markRun && !w.clearState {
 		return nil
 	}
-	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
-		return err
-	}
 	if w.moveID {
-		if _, err := database.SetTerminalClaudeSessionID(rowID, workbenchID, sessionID); err != nil {
+		// The state hooks' longer wait with one retry (board #988, ask
+		// #525): a lost move leaves the row on the old conversation, and
+		// every later hook of the new one is dropped as foreign.
+		if err := stateHookLockWait.write(database, func() error {
+			_, err := setTerminalClaudeSessionID(database, rowID, workbenchID, sessionID)
+			return err
+		}); err != nil {
 			return err
 		}
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
 	}
 	if w.markRun {
 		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow(), w.cwd); err != nil {
@@ -190,6 +196,9 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 	}
 	return nil
 }
+
+// setTerminalClaudeSessionID is the SessionStart's id move; a seam for tests.
+var setTerminalClaudeSessionID = (*db.DB).SetTerminalClaudeSessionID
 
 // sessionStartPlan is the id write a Codex SessionStart makes on its row
 // (spec 2026-10-12-codex-workbench-agent §5).

@@ -400,6 +400,11 @@ type AgentOrder struct {
 	// since then ended the turn that ran the tool.
 	ToolRun     bool
 	SeenTurnEnd sql.NullInt64
+	// NotOverApproval holds the write back over a stored `approval`: a
+	// main-thread tool start (PreToolUse) or failed tool
+	// (PostToolUseFailure) says nothing about a permission dialog being
+	// answered (board #988, ask #525).
+	NotOverApproval bool
 	// Stop marks the sync Stop hook's write. It replaces a `working` a
 	// main-thread PostToolUse wrote whatever that write's time: no main-thread
 	// tool of a later turn runs before the Stop hook returns, so that
@@ -438,7 +443,8 @@ type AgentOrder struct {
 // at is later than the stored time (a late async hook never overwrites a
 // newer state; order.Stop over a tool run's `working` is the one exception,
 // and keeps the later stored time), with onlyFrom set the stored state is
-// onlyFrom, and order's turn guard holds. The background agent count
+// onlyFrom, with order.NotOverApproval the stored state is not `approval`,
+// and order's turn guard holds. The background agent count
 // (board #411) follows the state: a `working` NULLs agent_background and
 // agent_background_at (a main turn began, or a subagent's tool result
 // outranks background); the Stop's `waiting` stores order.Background
@@ -457,7 +463,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	failure *AgentFailure, prompt bool, order AgentOrder) (bool, error) {
 	stamp := at.UTC().Format(agentStateAtLayout)
 	var failedAt sql.NullString
-	agentError, failed, fromPrompt, toolRun, stop := "", 0, 0, 0, 0
+	agentError, failed, fromPrompt, toolRun, stop, notOverApproval := "", 0, 0, 0, 0, 0
 	if prompt {
 		fromPrompt = 1
 	}
@@ -470,6 +476,9 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	}
 	if order.Stop {
 		stop = 1
+	}
+	if order.NotOverApproval {
+		notOverApproval = 1
 	}
 	// keepBackground: an `approval` keeps the count; otherwise the write
 	// stores background (NULL unless the Stop counted some) stamped at.
@@ -506,6 +515,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`'
 		       OR (? = 1 AND agent_state = 'working' AND agent_tool_run = 1))
 		  AND (? = '' OR agent_state = ?)
+		  AND (? = 0 OR agent_state IS NOT 'approval')
 		  AND (? = 0 OR agent_turn_end IS ?)`,
 		state, stamp, stamp,
 		failed, state, stamp, stamp, failedAt, failed, state, agentError,
@@ -513,7 +523,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		state, fromPrompt,
 		order.Cwd, stamp, stamp, order.Cwd, order.Cwd, stamp, stamp, stamp,
 		id, workbenchID, sessionID, state, failed, agentError,
-		state, fromPrompt, state, background, stamp, stop, onlyFrom, onlyFrom, toolRun, order.SeenTurnEnd)
+		state, fromPrompt, state, background, stamp, stop, onlyFrom, onlyFrom, notOverApproval, toolRun, order.SeenTurnEnd)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
 	}

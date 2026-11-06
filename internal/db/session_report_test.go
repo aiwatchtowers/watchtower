@@ -304,6 +304,40 @@ func TestProj11_ToolRunOutOfWaitingClearsFinished(t *testing.T) {
 	}
 }
 
+// PROJ-11, board #988 (ask #525): a tool start's or failed tool's `working`
+// (AgentOrder.NotOverApproval) lands out of `waiting` and out of the run
+// mark (a stamp, no state), and never over `approval`.
+func TestProj11_ToolStartNeverOverwritesApproval(t *testing.T) {
+	for _, tc := range []struct {
+		from  string
+		lands bool
+	}{{"waiting", true}, {"", true}, {"approval", false}} {
+		d := openTestDB(t)
+		pid := newTestWorkbench(t, d)
+		sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		t0 := time.Now().UTC().Truncate(time.Millisecond)
+		if tc.from == "" {
+			_, err := d.MarkTerminalAgentRun(sid, pid, agentStateUUID, t0, "")
+			require.NoError(t, err)
+		} else {
+			ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, tc.from, t0, "", nil, false, AgentOrder{})
+			require.NoError(t, err)
+			require.True(t, ok)
+		}
+		ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(time.Second), "", nil, false,
+			AgentOrder{ToolRun: true, NotOverApproval: true})
+		require.NoError(t, err)
+		assert.Equal(t, tc.lands, ok, "from %q", tc.from)
+		s, err := d.GetTerminalSession(sid)
+		require.NoError(t, err)
+		want := "working"
+		if !tc.lands {
+			want = tc.from
+		}
+		assert.Equal(t, want, s.AgentState.String, "from %q", tc.from)
+	}
+}
+
 // An older working event, refused by the time guard, clears nothing.
 func TestSetTerminalAgentState_RefusedWorkingKeepsFinished(t *testing.T) {
 	d := openTestDB(t)

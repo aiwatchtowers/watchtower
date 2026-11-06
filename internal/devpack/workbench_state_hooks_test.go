@@ -10,10 +10,14 @@ import (
 )
 
 // The session state hooks (UserPromptSubmit, Notification, PostToolUse,
-// StopFailure, SubagentStop, SubagentStart) are installed, recognised and removed under the
+// StopFailure, SubagentStop, SubagentStart, PostToolUseFailure and, in its
+// own "*" group, PreToolUse) are installed, recognised and removed under the
 // same PROJ-02/04 rules as the SessionStart and Stop hooks.
 
-var stateEvents = []string{"UserPromptSubmit", "Notification", "PostToolUse", "StopFailure", "SubagentStop", "SubagentStart"}
+// stateEvents are the state events whose group has no matcher; PreToolUse
+// is the eighth, with matcher "*" (assertToolStartEntry).
+var stateEvents = []string{"UserPromptSubmit", "Notification", "PostToolUse", "StopFailure", "SubagentStop", "SubagentStart",
+	"PostToolUseFailure"}
 
 func eventGroups(t *testing.T, m map[string]any, event string) []any {
 	t.Helper()
@@ -49,6 +53,30 @@ func assertOneAsyncStateEntry(t *testing.T, event string, groups []any, cmd stri
 	}
 }
 
+// assertToolStartEntry: PreToolUse holds exactly one group with matcher "*"
+// (every tool) running cmd — one async command entry with timeout 5 — and
+// cmd in no other group (board #988).
+func assertToolStartEntry(t *testing.T, groups []any, cmd string) {
+	t.Helper()
+	if countCommand(groups, cmd) != 1 {
+		t.Fatalf("expected one PreToolUse entry running %q, got %#v", cmd, groups)
+	}
+	for _, g := range groups {
+		gm := g.(map[string]any)
+		hs := gm["hooks"].([]any)
+		if countCommand([]any{g}, cmd) == 0 {
+			continue
+		}
+		if gm["matcher"] != "*" || len(hs) != 1 {
+			t.Fatalf("PreToolUse: our entry sits alone in a \"*\" group: %#v", gm)
+		}
+		h := hs[0].(map[string]any)
+		if h["async"] != true || h["timeout"] != float64(5) || h["type"] != "command" {
+			t.Fatalf("PreToolUse: entry %#v, want an async command with timeout 5", h)
+		}
+	}
+}
+
 func TestInstallWorkbenchInstallsTheStateHooks(t *testing.T) {
 	folder := fakeRepo(t)
 	o := workbenchOpts(folder, newFakeClaude())
@@ -61,6 +89,13 @@ func TestInstallWorkbenchInstallsTheStateHooks(t *testing.T) {
 	m := decodeSettings(t, folder)
 	for _, event := range stateEvents {
 		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
+	}
+	// PreToolUse holds the ask tool block's AskUserQuestion group and our
+	// "*" state group side by side.
+	preToolUse := eventGroups(t, m, "PreToolUse")
+	assertToolStartEntry(t, preToolUse, cmd)
+	if len(preToolUse) != 2 || countCommand(preToolUse, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 {
+		t.Fatalf("PreToolUse must hold the ask tool block and the state entry: %#v", preToolUse)
 	}
 	// Stop keeps its one synchronous drift entry, next to the ask guard's
 	// prompt hook; the state is written by the drift entry.
@@ -122,7 +157,7 @@ func TestProj04_StateHooksKeepOwnerHooksAndKeys(t *testing.T) {
 		}
 	}
 	hooks := removed["hooks"].(map[string]any)
-	for _, event := range []string{"PostToolUse", "StopFailure"} {
+	for _, event := range []string{"PostToolUse", "StopFailure", "PostToolUseFailure"} {
 		if _, ok := hooks[event]; ok {
 			t.Fatalf("an event left empty is dropped: %s in %#v", event, hooks)
 		}
@@ -130,7 +165,7 @@ func TestProj04_StateHooksKeepOwnerHooksAndKeys(t *testing.T) {
 }
 
 func TestProj04_MalformedStateEventLeavesTheFileByteIdentical(t *testing.T) {
-	for _, event := range stateEvents {
+	for _, event := range append(slices.Clone(stateEvents), "PreToolUse") {
 		t.Run(event, func(t *testing.T) {
 			dir := t.TempDir()
 			content := `{"hooks": {"` + event + `": {"hooks": []}}}`
@@ -181,9 +216,10 @@ func TestStatusWorkbench_StateHooksFalseWithOneMissing(t *testing.T) {
 	}
 }
 
-// Boards #411, #543: the SubagentStop and SubagentStart entries join the four
-// older ones — async, timeout 5, no matcher, the same command line — and a
-// second install changes nothing.
+// Boards #411, #543, #988: the SubagentStop, SubagentStart and
+// PostToolUseFailure entries join the four older ones — async, timeout 5, no
+// matcher, the same command line —, PreToolUse the same in a "*" group, and
+// a second install changes nothing.
 func TestInstallStateHooksAddsSubagentStopAndStart(t *testing.T) {
 	dir := t.TempDir()
 	changed, err := InstallStateHooks(dir, "/usr/local/bin/watchtower", 7)
@@ -192,13 +228,14 @@ func TestInstallStateHooksAddsSubagentStopAndStart(t *testing.T) {
 	}
 	cmd := WorkbenchSessionStateHookCommand("/usr/local/bin/watchtower", 7)
 	m := decodeSettings(t, dir)
-	// Six state events plus the permission-wait hook (#517).
-	if hooks := m["hooks"].(map[string]any); len(hooks) != 7 {
-		t.Fatalf("expected six state events and PermissionRequest, got %#v", hooks)
+	// Eight state events plus the permission-wait hook (#517).
+	if hooks := m["hooks"].(map[string]any); len(hooks) != 9 {
+		t.Fatalf("expected eight state events and PermissionRequest, got %#v", hooks)
 	}
 	for _, event := range stateEvents {
 		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
 	}
+	assertToolStartEntry(t, eventGroups(t, m, "PreToolUse"), cmd)
 	before := readTestFile(t, settingsFile(dir))
 	if changed, err := InstallStateHooks(dir, "/usr/local/bin/watchtower", 7); err != nil || changed {
 		t.Fatalf("reinstall: changed=%v err=%v", changed, err)
@@ -208,18 +245,21 @@ func TestInstallStateHooksAddsSubagentStopAndStart(t *testing.T) {
 	}
 }
 
-// Boards #411, #543: HasStateHooks (the status's state_hooks) needs all six
-// entries, so a folder installed before SubagentStop or SubagentStart reads
-// "missing" and the Desktop offers Repair; HasCoreStateHooks (what gates the
-// Stop's state write and the run mark) needs only the four older ones, so
-// that folder keeps its "waiting" until the repair.
-func TestHasStateHooksNeedsAllSixCoreNeedsFour(t *testing.T) {
+// Boards #411, #543, #988: HasStateHooks (the status's state_hooks) needs
+// all eight entries, so a folder installed before SubagentStop,
+// SubagentStart, PreToolUse or PostToolUseFailure reads "missing" and the
+// Desktop offers Repair; HasCoreStateHooks (what gates the Stop's state
+// write and the run mark) needs only the four older ones, so that folder
+// keeps its "waiting" until the repair.
+func TestHasStateHooksNeedsAllEightCoreNeedsFour(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		drop       []string
 		full, core bool
 	}{
-		{"all six", nil, true, true},
+		{"all eight", nil, true, true},
+		{"the six of 2026-10-11", []string{"PreToolUse", "PostToolUseFailure"}, false, true},
+		{"without the tool start", []string{"PreToolUse"}, false, true},
 		{"the five of 2026-10-10", []string{"SubagentStart"}, false, true},
 		{"the four older entries", []string{"SubagentStop", "SubagentStart"}, false, true},
 		{"the older entries without PostToolUse", []string{"SubagentStop", "SubagentStart", "PostToolUse"}, false, false},
