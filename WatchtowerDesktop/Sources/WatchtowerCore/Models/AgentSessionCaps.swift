@@ -33,6 +33,10 @@ package struct AgentSessionCaps: Equatable, Sendable {
     /// and a relaunch resumes it; otherwise the agent mints its own and its
     /// first SessionStart reports it.
     package let appSessionID: Bool
+    /// The transcript records the context parts at session start and the
+    /// skill listing that agent analytics' Context and Skills blocks read
+    /// (a Codex rollout records neither).
+    package let analyticsContext: Bool
 
     package init(
         midturnInput: Bool,
@@ -42,7 +46,8 @@ package struct AgentSessionCaps: Equatable, Sendable {
         elicitation: Bool,
         rolloutWatch: Bool = false,
         launchHooks: Bool = false,
-        appSessionID: Bool = false
+        appSessionID: Bool = false,
+        analyticsContext: Bool = false
     ) {
         self.midturnInput = midturnInput
         self.phoneInput = phoneInput
@@ -52,6 +57,7 @@ package struct AgentSessionCaps: Equatable, Sendable {
         self.rolloutWatch = rolloutWatch
         self.launchHooks = launchHooks
         self.appSessionID = appSessionID
+        self.analyticsContext = analyticsContext
     }
 
     /// A kind that is not an agent (a shell) offers nothing.
@@ -81,5 +87,14 @@ package struct AgentSessionCaps: Equatable, Sendable {
         let names = AgentKind.allCases.filter { !caps($0).idleSignal }.map(\.displayName)
         guard !names.isEmpty else { return nil }
         return "Idle notices are not available for \(names.joined(separator: " and ")) sessions."
+    }
+
+    /// Agent analytics' caption for the Context and Skills blocks (U4): the
+    /// agents whose transcripts record no context breakdown, from the
+    /// capability rows; nil when every agent's does.
+    package static func contextNotMeasuredCaption(caps: (AgentKind) -> Self = of) -> String? {
+        let names = AgentKind.allCases.filter { !caps($0).analyticsContext }.map(\.displayName)
+        guard !names.isEmpty else { return nil }
+        return "Not measured for \(names.joined(separator: " and ")) sessions."
     }
 }

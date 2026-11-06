@@ -11,7 +11,7 @@ package struct ClaudeSessionAgent: SessionAgent {
     package var caps: AgentSessionCaps {
         AgentSessionCaps(
             midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true,
-            appSessionID: true
+            appSessionID: true, analyticsContext: true
         )
     }
 

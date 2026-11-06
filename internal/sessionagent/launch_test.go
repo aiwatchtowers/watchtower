@@ -19,6 +19,13 @@ func TestSessionAgent_AppSessionID(t *testing.T) {
 	assert.False(t, codexAdapter{}.Caps().AppSessionID)
 }
 
+// A Claude Code transcript records the context parts and the skill listing
+// the Analytics Context and Skills blocks read; a Codex rollout does not.
+func TestSessionAgent_AnalyticsContext(t *testing.T) {
+	assert.True(t, claudeAdapter{}.Caps().AnalyticsContext)
+	assert.False(t, codexAdapter{}.Caps().AnalyticsContext)
+}
+
 // Each adapter's start command is the one sessionstart.Launch built by kind
 // (testdata/launch_cases.json pins the whole launch on both sides).
 func TestSessionAgent_LaunchCommand(t *testing.T) {
