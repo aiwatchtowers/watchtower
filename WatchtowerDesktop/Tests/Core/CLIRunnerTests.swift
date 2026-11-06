@@ -52,8 +52,10 @@ struct CLIRunnerTests {
     /// AGENT-07 (board #568): the Desktop's own launch is the owner's, so its
     /// owner-only gesture is confirmed without a window — while the child
     /// runs; the grant goes when it exits (F9).
-    @Test("ProcessCLIRunner registers the child's argv and pid while it runs")
-    func processRunnerRegistersOwnerLaunch() async throws {
+    /// Both launch paths register: `run(args:)` and `run(args:stdin:)` (the
+    /// Look step's `automations preview --stdin`, Inbox builder A).
+    @Test("ProcessCLIRunner registers the child's argv and pid while it runs", arguments: [false, true])
+    func processRunnerRegistersOwnerLaunch(withStdin: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("owner-launch-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -64,7 +66,11 @@ struct CLIRunnerTests {
         // grant. Closing the FIFO writer releases read through EOF, with no
         // timer or descendant that can outlive cancellation of the runner.
         let args = ["-c", #"echo $$ > "$1"; read -r release < "$2" || :"#, "sh", pidFile, releaseFile]
-        let run = Task { try await ProcessCLIRunner(binaryPath: "/bin/sh").run(args: args) }
+        let run = Task {
+            let runner = ProcessCLIRunner(binaryPath: "/bin/sh")
+            return withStdin ? try await runner.run(args: args, stdin: Data("RECIPE".utf8))
+                             : try await runner.run(args: args)
+        }
         var releaseFD: Int32?
         do {
             var pid: Int32?

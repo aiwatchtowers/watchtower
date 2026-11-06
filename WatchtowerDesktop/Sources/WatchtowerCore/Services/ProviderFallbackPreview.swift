@@ -1,6 +1,5 @@
-/// Presentation-only proposal for provider fallback (#1480). No runtime
-/// selection, settings writes or model calls. The design shots and their
-/// semantic tests consume the same copy before this feature is approved.
+/// Shared provider-fallback presentation copy for runtime and approved catalog
+/// scenes. This model performs no selection, settings writes or model calls.
 package struct ProviderFallbackPreview {
     package enum Provider: String, CaseIterable {
         case claude = "Claude", codex = "Codex"
@@ -23,25 +22,45 @@ package struct ProviderFallbackPreview {
 
     package let preferred: Provider
     package let state: State
-    package init(preferred: Provider, state: State) {
+    package let nextCheck: String?
+    package var chatTitle: String
+    package var modelDescription: String
+    package var observedProvider: String?
+    package var observedModel: String?
+    package init(
+        preferred: Provider,
+        state: State,
+        nextCheck: String? = nil,
+        chatTitle: String = "",
+        modelDescription: String = "",
+        observedProvider: String? = nil,
+        observedModel: String? = nil
+    ) {
         self.preferred = preferred
         self.state = state
+        self.nextCheck = nextCheck
+        self.chatTitle = chatTitle; self.modelDescription = modelDescription
+        self.observedProvider = observedProvider; self.observedModel = observedModel
     }
     package var reserve: Provider { preferred.other }
     package var isChat: Bool { [.recovered, .stopped, .pinned, .unsupported].contains(state) }
     package var pageTitle: String { isChat ? "AI Chat" : "AI providers" }
     package var pageSubtitle: String {
-        isChat ? "Quarterly planning" : "Settings · System · AI"
+        isChat ? chatTitle : "Settings · System · AI"
     }
     package static let preferredLabel = "Preferred provider"
     package static let reserveLabel = "Reserve provider"
     package static let modelsLabel = "Models"
-    package static let modelsValue = "Light: Default · Strong: Default"
     package static let automaticLabel = "Use reserve when limits are reached"
     package static let scope = "Applies to Watchtower AI. Workbench sessions keep their own agent."
     package static let recovery = "Background tasks return after the preferred provider is available. Existing chats keep their current provider."
+    package static let reviewEmpty = "No actions were recorded. Check any external tools before sending a new message."
     package static let chatPolicyLabel = "Provider choice"
     package static let chatPolicyAutomatic = "Preferred + reserve"
+    package static let automaticChoice = chatPolicyAutomatic + " · Auto model"
+    package static func pinnedChoice(provider: String, model: String? = nil) -> String {
+        "Only " + provider + (model.map { " · " + ($0.isEmpty ? "Auto" : $0) } ?? "")
+    }
     package var chatPolicyValue: String {
         state == .pinned ? "Only \(preferred.rawValue) · explicit model" : Self.chatPolicyAutomatic
     }
@@ -59,10 +78,11 @@ package struct ProviderFallbackPreview {
         ![.empty, .checking, .notInstalled, .notVerified, .connectionNetworkError, .connectionError].contains(state)
     }
     package var actualProvider: String {
-        [.fallback, .recovered].contains(state) ? reserve.rawValue : preferred.rawValue
+        observedProvider ?? ([.fallback, .recovered].contains(state) ? reserve.rawValue : preferred.rawValue)
     }
-    package var actualLabel: String { "Current provider: \(actualProvider)" }
+    package var actualLabel: String { "Current provider: \(actualProvider)" + (observedModel.map { " · " + $0 } ?? "") }
 
+    private var checkDetail: String { nextCheck.map { " Next recovery check: " + $0 + "." } ?? "" }
     package var copy: Copy {
         let p = preferred.rawValue, r = reserve.rawValue
         switch state {
@@ -118,28 +138,28 @@ package struct ProviderFallbackPreview {
         case .applying:
             return Copy(
                 title: "Applying provider settings",
-                detail: "Finishing the current background task before applying this change. Workbench sessions keep running.",
+                detail: "Waiting for the background service to confirm the saved settings. Active tasks and Workbench sessions keep running.",
                 action: nil,
                 emphasis: .neutral, busy: true
             )
         case .applyError:
             return Copy(
                 title: "Settings saved; background update failed",
-                detail: "The running background service still uses its previous settings. Retry to apply the saved settings.",
+                detail: "The current background configuration is not confirmed. Retry to apply the latest saved settings.",
                 action: "Retry",
                 emphasis: .error
             )
         case .fallback:
             return Copy(
                 title: "Using \(r)",
-                detail: "\(p) reached its limit. Next recovery check: 14:30. Supported AI tasks continue with \(r).",
+                detail: "\(p) reached its limit. Supported AI tasks continue with \(r)." + checkDetail,
                 action: nil,
                 emphasis: .warning
             )
         case .bothLimited:
             return Copy(
                 title: "AI is waiting for limits to reset",
-                detail: "Both providers reached their limits. Unprocessed source data is kept; syncing continues. Next recovery check: 14:30.",
+                detail: "Both providers reached their limits. Unprocessed source data is kept; syncing continues." + checkDetail,
                 action: "Check again",
                 emphasis: .warning
             )

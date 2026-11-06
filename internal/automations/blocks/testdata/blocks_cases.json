@@ -1,0 +1,3773 @@
+{
+  "valid": [
+    {
+      "name": "every block and optional field",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "Open threads",
+            "level": 2
+          },
+          {
+            "type": "text",
+            "markdown": "Three threads wait for **you**. See [the board](https://example.com/board)."
+          },
+          {
+            "type": "list",
+            "title": "Waiting for me",
+            "empty": "All clear",
+            "rows": [
+              {
+                "title": "Deploy plan",
+                "subtitle": "colleague A asked 2 days ago",
+                "badge": {
+                  "text": "2d",
+                  "tone": "danger"
+                },
+                "tone": "warning",
+                "link": "https://example.com/thread/1",
+                "actions": [
+                  {
+                    "label": "Reply",
+                    "reply": "reply",
+                    "data": {
+                      "thread": "T-1"
+                    }
+                  },
+                  {
+                    "label": "Make a task",
+                    "target": {
+                      "title": "Answer the deploy plan",
+                      "intent": "Reply with the rollout dates",
+                      "parent": 12
+                    }
+                  },
+                  {
+                    "label": "Open",
+                    "open": "watchtower-nav://inbox"
+                  }
+                ],
+                "ref": {
+                  "kind": "inbox_item",
+                  "id": 41
+                }
+              },
+              {
+                "title": "Budget",
+                "badge": {
+                  "text": "new"
+                },
+                "ref": {
+                  "kind": "track",
+                  "id": 7
+                }
+              },
+              {
+                "title": "Idea",
+                "ref": {
+                  "kind": "idea",
+                  "id": 3
+                },
+                "actions": [
+                  {
+                    "label": "Discuss",
+                    "chat": "Tell me about this idea",
+                    "primary": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "table",
+            "title": "Tickets",
+            "columns": [
+              {
+                "title": "Key"
+              },
+              {
+                "title": "Hours",
+                "align": "trailing"
+              }
+            ],
+            "rows": [
+              [
+                "ACME-1",
+                {
+                  "text": "26",
+                  "tone": "danger",
+                  "link": "https://example.com/ACME-1"
+                }
+              ],
+              [
+                {
+                  "text": "ACME-2"
+                },
+                "3"
+              ]
+            ]
+          },
+          {
+            "type": "person",
+            "name": "Colleague A",
+            "role": "Release manager",
+            "avatar": {
+              "slack_user": "acme:U0000000A"
+            },
+            "lines": [
+              "Asked about the rollout",
+              {
+                "text": "Waiting 2 days",
+                "tone": "warning"
+              }
+            ],
+            "link": "https://example.com/people/a"
+          },
+          {
+            "type": "metrics",
+            "items": [
+              {
+                "label": "Open",
+                "value": "12",
+                "tone": "info",
+                "hint": "Threads still open"
+              },
+              {
+                "label": "Done",
+                "value": "4"
+              }
+            ]
+          },
+          {
+            "type": "link",
+            "title": "Release notes",
+            "url": "https://example.com/notes",
+            "subtitle": "Draft for 1.2"
+          },
+          {
+            "type": "actions",
+            "actions": [
+              {
+                "label": "Fix it",
+                "agent": {
+                  "task": "Fix the failing build",
+                  "workbench": 3
+                }
+              },
+              {
+                "label": "Ask",
+                "agent": {
+                  "task": "Summarise",
+                  "workbench": "acme"
+                }
+              }
+            ]
+          }
+        ],
+        "priority": "high",
+        "link": "https://example.com/digest",
+        "actions": [
+          {
+            "label": "Open board",
+            "open": "https://example.com/board"
+          },
+          {
+            "label": "Snooze",
+            "reply": "snooze"
+          }
+        ]
+      },
+      "card_actions": "[{\"label\":\"Open board\",\"kind\":\"link\",\"open\":\"https://example.com/board\",\"primary\":true},{\"label\":\"Snooze\",\"kind\":\"reply\",\"reply\":\"snooze\"}]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"heading\",\"text\":\"Open threads\",\"level\":2},{\"type\":\"text\",\"markdown\":\"Three threads wait for **you**. See [the board](https://example.com/board).\"},{\"type\":\"list\",\"title\":\"Waiting for me\",\"rows\":[{\"title\":\"Deploy plan\",\"subtitle\":\"colleague A asked 2 days ago\",\"badge\":{\"text\":\"2d\",\"tone\":\"danger\"},\"tone\":\"warning\",\"link\":\"https://example.com/thread/1\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"reply\",\"data\":{\"thread\":\"T-1\"},\"primary\":true},{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Answer the deploy plan\",\"intent\":\"Reply with the rollout dates\",\"parent\":12}},{\"label\":\"Open\",\"kind\":\"link\",\"open\":\"watchtower-nav://inbox\"}],\"ref\":{\"kind\":\"inbox_item\",\"id\":41}},{\"title\":\"Budget\",\"badge\":{\"text\":\"new\"},\"actions\":[],\"ref\":{\"kind\":\"track\",\"id\":7}},{\"title\":\"Idea\",\"actions\":[{\"label\":\"Discuss\",\"kind\":\"chat\",\"chat\":\"Tell me about this idea\"}],\"ref\":{\"kind\":\"idea\",\"id\":3}}],\"empty\":\"All clear\"},{\"type\":\"table\",\"title\":\"Tickets\",\"columns\":[{\"title\":\"Key\",\"align\":\"leading\"},{\"title\":\"Hours\",\"align\":\"trailing\"}],\"rows\":[[{\"text\":\"ACME-1\"},{\"text\":\"26\",\"tone\":\"danger\",\"link\":\"https://example.com/ACME-1\"}],[{\"text\":\"ACME-2\"},{\"text\":\"3\"}]]},{\"type\":\"person\",\"name\":\"Colleague A\",\"role\":\"Release manager\",\"avatar\":{\"slack_user\":\"acme:U0000000A\"},\"lines\":[{\"text\":\"Asked about the rollout\"},{\"text\":\"Waiting 2 days\",\"tone\":\"warning\"}],\"link\":\"https://example.com/people/a\"},{\"type\":\"metrics\",\"items\":[{\"label\":\"Open\",\"value\":\"12\",\"tone\":\"info\",\"hint\":\"Threads still open\"},{\"label\":\"Done\",\"value\":\"4\"}]},{\"type\":\"link\",\"title\":\"Release notes\",\"url\":\"https://example.com/notes\",\"subtitle\":\"Draft for 1.2\"},{\"type\":\"actions\",\"actions\":[{\"label\":\"Fix it\",\"kind\":\"agent\",\"agent\":{\"task\":\"Fix the failing build\",\"workbench\":3},\"primary\":true},{\"label\":\"Ask\",\"kind\":\"agent\",\"agent\":{\"task\":\"Summarise\",\"workbench\":\"acme\"}}]}]}",
+      "plain_text": "Open threads\n\nThree threads wait for **you**. See [the board](https://example.com/board).\n\nWaiting for me\n- Deploy plan — colleague A asked 2 days ago [2d]\n- Budget [new]\n- Idea\n\nTickets\nKey | Hours\nACME-1 | 26\nACME-2 | 3\n\nColleague A — Release manager\nAsked about the rollout\nWaiting 2 days\n\nOpen: 12\nDone: 4\n\nRelease notes (https://example.com/notes)",
+      "actions": [
+        "Open board",
+        "Snooze",
+        "Reply",
+        "Make a task",
+        "Open",
+        "Discuss",
+        "Fix it",
+        "Ask"
+      ],
+      "action_hashes": [
+        "6d7c0fc45df7d97c",
+        "b4e6d0a62eb3f4b9",
+        "40754f06ef6aea69",
+        "45480703d9421588",
+        "d96f8620c9efb584",
+        "b5ee8c4f4066108d",
+        "3952095ff937c471",
+        "e40050e42285be38"
+      ],
+      "content_hash": "b26c9d1d9a0268add78d3d072baae2ea4f009d8fcb9d8e3dd471fb7816eb62a1"
+    },
+    {
+      "name": "empty document",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": []
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[]}",
+      "plain_text": "",
+      "actions": [],
+      "action_hashes": [],
+      "content_hash": "a47faeb391e508d3f7bdbbf27833bd6c6cc3d0fc6d987556eea7dbd5703f4a2e"
+    },
+    {
+      "name": "defaults written",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "Today"
+          },
+          {
+            "type": "list",
+            "rows": []
+          },
+          {
+            "type": "table",
+            "columns": [
+              {
+                "title": "A"
+              }
+            ],
+            "rows": []
+          },
+          {
+            "type": "person",
+            "name": "Colleague B"
+          },
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "One"
+              }
+            ]
+          }
+        ]
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"heading\",\"text\":\"Today\",\"level\":1},{\"type\":\"list\",\"rows\":[],\"empty\":\"Nothing here\"},{\"type\":\"table\",\"columns\":[{\"title\":\"A\",\"align\":\"leading\"}],\"rows\":[]},{\"type\":\"person\",\"name\":\"Colleague B\",\"lines\":[]},{\"type\":\"list\",\"rows\":[{\"title\":\"One\",\"actions\":[]}],\"empty\":\"Nothing here\"}]}",
+      "plain_text": "Today\n\nNothing here\n\nA\n\nColleague B\n\n- One",
+      "actions": [],
+      "action_hashes": [],
+      "content_hash": "7e64c048f8560ec165460fd31f852bac0474b59495961195daf69e58e45c4504"
+    },
+    {
+      "name": "strings trimmed",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "  Padded  "
+          },
+          {
+            "type": "text",
+            "markdown": "\n body \n"
+          },
+          {
+            "type": "list",
+            "title": " t ",
+            "rows": [
+              {
+                "title": " row ",
+                "subtitle": " sub "
+              }
+            ]
+          }
+        ]
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"heading\",\"text\":\"Padded\",\"level\":1},{\"type\":\"text\",\"markdown\":\"body\"},{\"type\":\"list\",\"title\":\"t\",\"rows\":[{\"title\":\"row\",\"subtitle\":\"sub\",\"actions\":[]}],\"empty\":\"Nothing here\"}]}",
+      "plain_text": "Padded\n\nbody\n\nt\n- row — sub",
+      "actions": [],
+      "action_hashes": [],
+      "content_hash": "9a14c015ba3db96f9dfaf8ff5e91a932b96ad896faf377763fae32caf8b90681"
+    },
+    {
+      "name": "built-in action and reminder refs",
+      "built_in": true,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "Send the reply",
+                "ref": {
+                  "kind": "action",
+                  "id": 5
+                }
+              },
+              {
+                "title": "Call colleague A",
+                "ref": {
+                  "kind": "reminder",
+                  "id": 9
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Send the reply\",\"actions\":[],\"ref\":{\"kind\":\"action\",\"id\":5}},{\"title\":\"Call colleague A\",\"actions\":[],\"ref\":{\"kind\":\"reminder\",\"id\":9}}],\"empty\":\"Nothing here\"}]}",
+      "plain_text": "- Send the reply\n- Call colleague A",
+      "actions": [],
+      "action_hashes": [],
+      "content_hash": "e1ab0cb2bf885c75de84ded42836df276de2dc2176d82a88d9dfc270b11b7d77"
+    },
+    {
+      "name": "target without intent or parent",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "actions",
+            "actions": [
+              {
+                "label": "Make a task",
+                "target": {
+                  "title": "Follow up"
+                }
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "label": "Task",
+            "target": {
+              "title": "  Card task  ",
+              "intent": ""
+            }
+          }
+        ]
+      },
+      "card_actions": "[{\"label\":\"Task\",\"kind\":\"target\",\"target\":{\"title\":\"Card task\"},\"primary\":true}]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Follow up\"},\"primary\":true}]}]}",
+      "plain_text": "",
+      "actions": [
+        "Task",
+        "Make a task"
+      ],
+      "action_hashes": [
+        "9643c67a5edfa3c5",
+        "24549c2aea30cf86"
+      ],
+      "content_hash": "ebf55636cc7283a248cb61704eecbdab4147f20bb112ae63241c6251771eb793"
+    },
+    {
+      "name": "flattened order",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "actions",
+            "actions": [
+              {
+                "label": "B1",
+                "chat": "x"
+              }
+            ]
+          },
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r1",
+                "actions": [
+                  {
+                    "label": "R1a",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "R1b",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r2"
+              },
+              {
+                "title": "r3",
+                "actions": [
+                  {
+                    "label": "R3a",
+                    "chat": "x"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "actions",
+            "actions": [
+              {
+                "label": "B2",
+                "chat": "x"
+              },
+              {
+                "label": "B3",
+                "chat": "x"
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "label": "C1",
+            "chat": "x"
+          },
+          {
+            "label": "C2",
+            "chat": "x"
+          }
+        ]
+      },
+      "card_actions": "[{\"label\":\"C1\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true},{\"label\":\"C2\",\"kind\":\"chat\",\"chat\":\"x\"}]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"B1\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true}]},{\"type\":\"list\",\"rows\":[{\"title\":\"r1\",\"actions\":[{\"label\":\"R1a\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true},{\"label\":\"R1b\",\"kind\":\"chat\",\"chat\":\"x\"}]},{\"title\":\"r2\",\"actions\":[]},{\"title\":\"r3\",\"actions\":[{\"label\":\"R3a\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true}]}],\"empty\":\"Nothing here\"},{\"type\":\"actions\",\"actions\":[{\"label\":\"B2\",\"kind\":\"chat\",\"chat\":\"x\",\"primary\":true},{\"label\":\"B3\",\"kind\":\"chat\",\"chat\":\"x\"}]}]}",
+      "plain_text": "- r1\n- r2\n- r3",
+      "actions": [
+        "C1",
+        "C2",
+        "B1",
+        "R1a",
+        "R1b",
+        "R3a",
+        "B2",
+        "B3"
+      ],
+      "action_hashes": [
+        "08cc1ce067effa57",
+        "3ce2805e430a27ed",
+        "ab2f9d10c0fa5f50",
+        "da19314dea89436a",
+        "e8be03f4124c0120",
+        "1710e6fdca7b773a",
+        "8da40750b8aa3c3d",
+        "bc2d5c3e89809d0c"
+      ],
+      "content_hash": "5a476ab7610787eb0ae4266a96c03c35bf79f2c4613c157dcf74b5e96b4be133"
+    },
+    {
+      "name": "html characters are not escaped",
+      "built_in": false,
+      "input": {
+        "title": "R&D <weekly>",
+        "blocks": [
+          {
+            "type": "text",
+            "markdown": "a <b> & c > d"
+          },
+          {
+            "type": "table",
+            "columns": [
+              {
+                "title": "<x>"
+              }
+            ],
+            "rows": [
+              [
+                ""
+              ],
+              [
+                "&"
+              ]
+            ]
+          }
+        ]
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"text\",\"markdown\":\"a <b> & c > d\"},{\"type\":\"table\",\"columns\":[{\"title\":\"<x>\",\"align\":\"leading\"}],\"rows\":[[{\"text\":\"\"}],[{\"text\":\"&\"}]]}]}",
+      "plain_text": "a <b> & c > d\n\n<x>\n&",
+      "actions": [],
+      "action_hashes": [],
+      "content_hash": "33997692bd1018cb8e271b5984f8411db8491a535227570ff214bd174b33a6f9"
+    },
+    {
+      "name": "non-ASCII text",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "metrics",
+            "items": [
+              {
+                "label": "Δ",
+                "value": "−3 %"
+              }
+            ]
+          }
+        ],
+        "priority": "low"
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"metrics\",\"items\":[{\"label\":\"Δ\",\"value\":\"−3 %\"}]}]}",
+      "plain_text": "Δ: −3 %",
+      "actions": [],
+      "action_hashes": [],
+      "content_hash": "cf73bd16a69ea899b29963a3b542b1d59da41fc3df20557742c1dc29655a1cfa"
+    },
+    {
+      "name": "escaping of special characters",
+      "built_in": false,
+      "input": {
+        "title": "Card / <&>",
+        "actions": [
+          {
+            "label": "Card <&>",
+            "chat": "a\u2028\u0007 / <&>"
+          }
+        ],
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "a\u2028b\u0007c / <&>",
+                "actions": [
+                  {
+                    "label": "Task <&>",
+                    "target": {
+                      "title": "t\u2028\u0007 / <&>",
+                      "intent": "i\u2029\u0007 / <&>"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "card_actions": "[{\"label\":\"Card \\u003c\\u0026\\u003e\",\"kind\":\"chat\",\"chat\":\"a\\u2028\\u0007 / \\u003c\\u0026\\u003e\",\"primary\":true}]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"a\\u2028b\\u0007c / <&>\",\"actions\":[{\"label\":\"Task <&>\",\"kind\":\"target\",\"target\":{\"title\":\"t\\u2028\\u0007 / <&>\",\"intent\":\"i\\u2029\\u0007 / <&>\"},\"primary\":true}]}],\"empty\":\"Nothing here\"}]}",
+      "plain_text": "- a\u2028b\u0007c / <&>",
+      "actions": [
+        "Card <&>",
+        "Task <&>"
+      ],
+      "action_hashes": [
+        "9dd63205adb09a72",
+        "a37c5ef6cfadaea4"
+      ],
+      "content_hash": "441b01e7d7587abc04d703bd654754eaf8d476bf80630101fb5ac2b5b93d8927"
+    },
+    {
+      "name": "reply data bytes",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "actions",
+            "actions": [
+              {
+                "label": "Reply",
+                "reply": "v",
+                "data": {
+                  "a": "<&>",
+                  "big": 531995931301175800000,
+                  "f": 1.5,
+                  "n": [
+                    1,
+                    {
+                      "b": null
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Reply\",\"kind\":\"reply\",\"reply\":\"v\",\"data\":{\"a\":\"\\u003c\\u0026\\u003e\",\"big\":531995931301175800000,\"f\":1.5,\"n\":[1,{\"b\":null}]},\"primary\":true}]}]}",
+      "plain_text": "",
+      "actions": [
+        "Reply"
+      ],
+      "action_hashes": [
+        "31a9faffb8f40ef3"
+      ],
+      "content_hash": "6cbcc3f508c9b92c26f23a6a91667386b342e01258855bad515d3ce17ca8b42a"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown block type",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "a"
+          },
+          {
+            "type": "heading",
+            "text": "a"
+          },
+          {
+            "type": "heading",
+            "text": "a"
+          },
+          {
+            "type": "chart"
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[3]: unknown block type \"chart\"; the blocks are heading, text, list, table, person, metrics, link, actions"
+    },
+    {
+      "name": "block without type",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "text": "a"
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0]: a block needs a type; the blocks are heading, text, list, table, person, metrics, link, actions"
+    },
+    {
+      "name": "null block",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          null
+        ]
+      },
+      "error": "output.inbox(): blocks[0] must be an object {type, …}"
+    },
+    {
+      "name": "badge tone",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "text",
+            "markdown": "x"
+          },
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r0"
+              },
+              {
+                "title": "r1"
+              },
+              {
+                "title": "r2"
+              },
+              {
+                "title": "r3"
+              },
+              {
+                "title": "r4"
+              },
+              {
+                "title": "r5",
+                "badge": {
+                  "text": "x",
+                  "tone": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[1].rows[5].badge.tone must be one of neutral, info, success, warning, danger, accent"
+    },
+    {
+      "name": "cells per row",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "text",
+            "markdown": "x"
+          },
+          {
+            "type": "text",
+            "markdown": "y"
+          },
+          {
+            "type": "table",
+            "columns": [
+              {
+                "title": "a"
+              },
+              {
+                "title": "b"
+              },
+              {
+                "title": "c"
+              }
+            ],
+            "rows": [
+              [
+                "1",
+                "2",
+                "3",
+                "4"
+              ]
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[2].rows[0] has 4 cells; the table has 3 columns"
+    },
+    {
+      "name": "unknown block field",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "a",
+            "colour": "red"
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0]: unknown field \"colour\""
+    },
+    {
+      "name": "action ref from a personal recipe",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "text",
+            "markdown": "x"
+          },
+          {
+            "type": "text",
+            "markdown": "x"
+          },
+          {
+            "type": "text",
+            "markdown": "x"
+          },
+          {
+            "type": "text",
+            "markdown": "x"
+          },
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "a"
+              },
+              {
+                "title": "b"
+              },
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "action",
+                  "id": 4
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[4].rows[2].ref: an action ref is only for built-in automations"
+    },
+    {
+      "name": "reminder ref from a personal recipe",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "reminder",
+                  "id": 4
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref: a reminder ref is only for built-in automations"
+    },
+    {
+      "name": "ref kind",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "user",
+                  "id": 4
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.kind must be one of inbox_item, track, idea, reminder, action"
+    },
+    {
+      "name": "ref id zero",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "track",
+                  "id": 0
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a positive integer"
+    },
+    {
+      "name": "61 actions",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r0",
+                "actions": [
+                  {
+                    "label": "a0.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a0.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a0.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r1",
+                "actions": [
+                  {
+                    "label": "a1.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a1.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a1.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r2",
+                "actions": [
+                  {
+                    "label": "a2.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a2.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a2.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r3",
+                "actions": [
+                  {
+                    "label": "a3.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a3.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a3.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r4",
+                "actions": [
+                  {
+                    "label": "a4.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a4.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a4.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r5",
+                "actions": [
+                  {
+                    "label": "a5.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a5.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a5.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r6",
+                "actions": [
+                  {
+                    "label": "a6.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a6.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a6.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r7",
+                "actions": [
+                  {
+                    "label": "a7.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a7.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a7.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r8",
+                "actions": [
+                  {
+                    "label": "a8.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a8.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a8.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r9",
+                "actions": [
+                  {
+                    "label": "a9.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a9.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a9.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r10",
+                "actions": [
+                  {
+                    "label": "a10.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a10.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a10.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r11",
+                "actions": [
+                  {
+                    "label": "a11.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a11.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a11.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r12",
+                "actions": [
+                  {
+                    "label": "a12.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a12.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a12.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r13",
+                "actions": [
+                  {
+                    "label": "a13.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a13.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a13.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r14",
+                "actions": [
+                  {
+                    "label": "a14.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a14.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a14.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r15",
+                "actions": [
+                  {
+                    "label": "a15.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a15.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a15.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r16",
+                "actions": [
+                  {
+                    "label": "a16.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a16.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a16.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r17",
+                "actions": [
+                  {
+                    "label": "a17.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a17.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a17.2",
+                    "chat": "x"
+                  }
+                ]
+              },
+              {
+                "title": "r18",
+                "actions": [
+                  {
+                    "label": "a18.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a18.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a18.2",
+                    "chat": "x"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "label": "c0",
+            "chat": "x"
+          },
+          {
+            "label": "c1",
+            "chat": "x"
+          },
+          {
+            "label": "c2",
+            "chat": "x"
+          },
+          {
+            "label": "c3",
+            "chat": "x"
+          }
+        ]
+      },
+      "error": "output.inbox(): the card has 61 actions; the limit is 50"
+    },
+    {
+      "name": "blocks not an array",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": "x"
+      },
+      "error": "output.inbox(): blocks must be an array of blocks"
+    },
+    {
+      "name": "number where a string is expected",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": 5
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].text must be a non-empty string"
+    },
+    {
+      "name": "heading level",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "a",
+            "level": 3
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].level must be 1 or 2"
+    },
+    {
+      "name": "seven columns",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "table",
+            "columns": [
+              {
+                "title": "0"
+              },
+              {
+                "title": "1"
+              },
+              {
+                "title": "2"
+              },
+              {
+                "title": "3"
+              },
+              {
+                "title": "4"
+              },
+              {
+                "title": "5"
+              },
+              {
+                "title": "6"
+              }
+            ],
+            "rows": []
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].columns has 7 columns; the limit is 6"
+    },
+    {
+      "name": "no columns",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "table",
+            "columns": [],
+            "rows": []
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].columns needs at least 1 of columns"
+    },
+    {
+      "name": "column align",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "table",
+            "columns": [
+              {
+                "title": "a",
+                "align": "center"
+              }
+            ],
+            "rows": []
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].columns[0].align must be leading or trailing"
+    },
+    {
+      "name": "no metrics",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "metrics",
+            "items": []
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].items needs at least 1 of items"
+    },
+    {
+      "name": "list without rows",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "title": "x"
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows must be an array"
+    },
+    {
+      "name": "four row actions",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r0",
+                "actions": [
+                  {
+                    "label": "a0.0",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a0.1",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a0.2",
+                    "chat": "x"
+                  },
+                  {
+                    "label": "a0.3",
+                    "chat": "x"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].actions has 4 actions; the limit is 3"
+    },
+    {
+      "name": "empty actions block",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "actions",
+            "actions": []
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].actions needs at least 1 of actions"
+    },
+    {
+      "name": "link scheme",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "link",
+            "title": "a",
+            "url": "file:///etc/hosts"
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].url must be an http, https or watchtower-nav:// link with a host"
+    },
+    {
+      "name": "avatar shape",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "person",
+            "name": "a",
+            "avatar": {
+              "slack_user": "U1"
+            }
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].avatar.slack_user must be \"<account>:<user id>\""
+    },
+    {
+      "name": "501 rows",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              }
+            ]
+          },
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              }
+            ]
+          },
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): the card has 501 list and table rows; the limit is 500"
+    },
+    {
+      "name": "201 list rows",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              },
+              {
+                "title": "r"
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows has 201 rows; the limit is 200"
+    },
+    {
+      "name": "target title empty",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [],
+        "actions": [
+          {
+            "label": "a",
+            "chat": "x"
+          },
+          {
+            "label": "Task",
+            "target": {
+              "title": "  "
+            }
+          }
+        ]
+      },
+      "error": "output.inbox(): actions[1].target.title must be a non-empty string of at most 200 characters"
+    },
+    {
+      "name": "target title 201 characters",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [],
+        "actions": [
+          {
+            "label": "a",
+            "chat": "x"
+          },
+          {
+            "label": "Task",
+            "target": {
+              "title": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+            }
+          }
+        ]
+      },
+      "error": "output.inbox(): actions[1].target.title must be a non-empty string of at most 200 characters"
+    },
+    {
+      "name": "target intent 1204 characters",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [],
+        "actions": [
+          {
+            "label": "a",
+            "chat": "x"
+          },
+          {
+            "label": "Task",
+            "target": {
+              "title": "t",
+              "intent": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          }
+        ]
+      },
+      "error": "output.inbox(): actions[1].target.intent is 1204 characters; the limit is 1000"
+    },
+    {
+      "name": "target parent not an id",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [],
+        "actions": [
+          {
+            "label": "a",
+            "chat": "x"
+          },
+          {
+            "label": "Task",
+            "target": {
+              "title": "t",
+              "parent": "x"
+            }
+          }
+        ]
+      },
+      "error": "output.inbox(): actions[1].target.parent must be a target id"
+    },
+    {
+      "name": "target unknown field",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [],
+        "actions": [
+          {
+            "label": "a",
+            "chat": "x"
+          },
+          {
+            "label": "Task",
+            "target": {
+              "title": "t",
+              "due": "2026-11-03"
+            }
+          }
+        ]
+      },
+      "error": "output.inbox(): actions[1].target: unknown field \"due\""
+    },
+    {
+      "name": "data on a target",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "actions",
+            "actions": [
+              {
+                "label": "Task",
+                "target": {
+                  "title": "t"
+                },
+                "data": {
+                  "a": 1
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].actions[0]: data is only for a reply action"
+    },
+    {
+      "name": "block action with two kinds",
+      "built_in": false,
+      "input": {
+        "title": "Weekly digest",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "r",
+                "actions": [
+                  {
+                    "label": "x",
+                    "chat": "x",
+                    "target": {
+                      "title": "t"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].actions[0] has more than one of open, chat, agent, reply, target"
+    }
+  ],
+  "unsupported": [
+    {
+      "name": "version 2",
+      "document": {
+        "v": 2,
+        "blocks": [
+          {
+            "type": "chart",
+            "series": []
+          }
+        ]
+      },
+      "version": 2
+    },
+    {
+      "name": "version 7 without blocks",
+      "document": {
+        "v": 7
+      },
+      "version": 7
+    }
+  ]
+}

@@ -51,6 +51,13 @@ struct AgentActionCardView: View {
     /// ended" and offers no Approve, so an approval nobody can run never
     /// reads as a call about to run. Unused for every other tool.
     var sessionHoldsCall = false
+    /// The Inbox target button's state of this `create_target` proposal
+    /// (Inbox builder A, the resolver of plan Task 15); nil elsewhere. When
+    /// it is `.stuck` the card draws the shared "Didn't finish" line with
+    /// **Try again** in place of its Approve/Retry row. Try again runs
+    /// `onRetry`, which the host makes `actions apply` on an approved row
+    /// and `actions apply --force` on an executing one — the same row.
+    var targetButtonState: ArtifactTargetButtonState?
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -75,6 +82,8 @@ struct AgentActionCardView: View {
             var meta: [String] = []
             if let due = action.argString("due"), !due.isEmpty { meta.append("Due: \(due)") }
             if let p = action.argString("priority"), !p.isEmpty { meta.append("Priority: \(p)") }
+            // An Inbox card's target button may name a parent task (Inbox builder A).
+            if let parent = action.argString("parent_id"), !parent.isEmpty { meta.append("Under task #\(parent)") }
             if !meta.isEmpty { lines.append(meta.joined(separator: " · ")) }
             if let intent = action.argString("intent"), !intent.isEmpty { lines.append("Why: \(intent)") }
             return lines
@@ -490,6 +499,18 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private func actions(connector: ConnectorCallProposal?) -> some View {
+        if targetButtonState == .stuck {
+            ArtifactTargetStuckLine(onTryAgain: onRetry)
+                .controlSize(.small)
+                .disabled(inFlight)
+                .accessibilityIdentifier("agentAction.targetStuck")
+        } else {
+            decisionRow(connector: connector)
+        }
+    }
+
+    @ViewBuilder
+    private func decisionRow(connector: ConnectorCallProposal?) -> some View {
         HStack {
             // A claimed row is being executed by another process: there is
             // nothing the owner can decide about it until it lands. (A

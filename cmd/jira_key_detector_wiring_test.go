@@ -104,6 +104,7 @@ func TestOrchestratorConstructionSitesAreTheKnownOnes(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, []string{
+		"../cmd/slack_backfill.go:runSlackBackfill",
 		"../cmd/sync.go:wireSlackSyncers",
 		"../internal/repl/commands.go:runSyncCommand",
 	}, got)

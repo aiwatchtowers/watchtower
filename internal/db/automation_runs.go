@@ -738,11 +738,14 @@ type RunFinish struct {
 	Now      time.Time
 }
 
-// RunCommit is what a succeeded run commits: the new state (nil = unchanged)
-// and its outputs.
+// RunCommit is what a succeeded run commits: the new state (nil = unchanged),
+// its outputs in buffer order and the living keys output.remove deleted. A
+// key is either written or removed in one commit, never both (the buffer
+// already collapsed repeats of one key).
 type RunCommit struct {
 	StateJSON json.RawMessage
 	Outputs   []AutomationOutput
+	Removals  []string
 }
 
 // FinishAutomationRun ends a running or waiting run with f (else
@@ -806,6 +809,34 @@ func validateRunFinish(runID int64, f RunFinish, c *RunCommit) error {
 	if c.StateJSON != nil && !json.Valid(c.StateJSON) {
 		return fmt.Errorf("finishing automation run %d: state is not valid JSON", runID)
 	}
+	return validateLivingCommit(runID, c)
+}
+
+// validateLivingCommit refuses a malformed living part of a commit: a keyed
+// output that is not an inbox card or has no content hash (its read state
+// could never follow a change), an empty removal key, or a key both written
+// and removed.
+func validateLivingCommit(runID int64, c *RunCommit) error {
+	removed := make(map[string]bool, len(c.Removals))
+	for _, k := range c.Removals {
+		if k == "" {
+			return fmt.Errorf("finishing automation run %d: a removal has no key", runID)
+		}
+		removed[k] = true
+	}
+	for i, o := range c.Outputs {
+		if o.OutputKey == "" {
+			continue
+		}
+		switch {
+		case o.Kind != "inbox":
+			return fmt.Errorf("finishing automation run %d: output %d is a living %s; only inbox cards are living", runID, i, o.Kind)
+		case o.ContentHash == "":
+			return fmt.Errorf("finishing automation run %d: living output %d has no content hash", runID, i)
+		case removed[o.OutputKey]:
+			return fmt.Errorf("finishing automation run %d: living key %q is both written and removed", runID, o.OutputKey)
+		}
+	}
 	return nil
 }
 
@@ -818,6 +849,14 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 			return fmt.Errorf("committing state of automation run %d: %w", runID, err)
 		}
 	}
+	// Removals first: a key is never both removed and written in one commit
+	// (validateLivingCommit), so the order between the two lists is free.
+	for _, key := range c.Removals {
+		if _, err := tx.Exec(`DELETE FROM automation_outputs WHERE automation_id = ? AND output_key = ?`,
+			automationID, key); err != nil {
+			return fmt.Errorf("removing living output %q of automation run %d: %w", key, runID, err)
+		}
+	}
 	for i, o := range c.Outputs {
 		if (o.AutomationID != 0 && o.AutomationID != automationID) || (o.RunID != 0 && o.RunID != runID) {
 			return fmt.Errorf("committing output %d of automation run %d: belongs to automation %d run %d",
@@ -825,7 +864,7 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 		}
 		priority := o.Priority
 		if priority == "" {
-			priority = "medium"
+			priority = "medium" // mirrors blocks.DefaultPriority (db cannot import blocks)
 		}
 		actions := o.Actions
 		if actions == nil {
@@ -835,15 +874,37 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 		if err != nil {
 			return fmt.Errorf("committing output %d of automation run %d: encoding actions: %w", i, runID, err)
 		}
-		if _, err := tx.Exec(`INSERT INTO automation_outputs
-			(automation_id, run_id, kind, title, body, priority, created_at, link, actions_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp,
-			o.Link, string(actionsJSON)); err != nil {
+		if _, err := tx.Exec(insertAutomationOutputSQL, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp,
+			o.Link, string(actionsJSON), o.BlocksJSON, nullRunText(o.OutputKey), o.ContentHash, stamp, stamp); err != nil {
 			return fmt.Errorf("committing output %d of automation run %d: %w", i, runID, err)
 		}
 	}
 	return nil
 }
+
+// insertAutomationOutputSQL writes one output. A feed output (NULL key)
+// always inserts. A living output upserts on (automation_id, output_key): a
+// new key inserts; an existing one keeps its id and created_at and takes the
+// run, the content and written_at. Only a changed content_hash also moves
+// changed_at and clears the read, done, dismissed and press state: a changed
+// artifact is new to the owner, a same-hash rewrite is not (SET expressions
+// read the row before the update).
+const insertAutomationOutputSQL = `INSERT INTO automation_outputs
+	(automation_id, run_id, kind, title, body, priority, created_at, link, actions_json,
+	 blocks_json, output_key, content_hash, written_at, changed_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(automation_id, output_key) WHERE output_key IS NOT NULL DO UPDATE SET
+	run_id = excluded.run_id, title = excluded.title, body = excluded.body, priority = excluded.priority,
+	link = excluded.link, actions_json = excluded.actions_json, blocks_json = excluded.blocks_json,
+	written_at = excluded.written_at,
+	changed_at     = CASE WHEN content_hash = excluded.content_hash THEN changed_at ELSE excluded.changed_at END,
+	read_at        = CASE WHEN content_hash = excluded.content_hash THEN read_at ELSE NULL END,
+	done_at        = CASE WHEN content_hash = excluded.content_hash THEN done_at ELSE NULL END,
+	dismissed_at   = CASE WHEN content_hash = excluded.content_hash THEN dismissed_at ELSE NULL END,
+	pressed_action = CASE WHEN content_hash = excluded.content_hash THEN pressed_action ELSE NULL END,
+	pressed_run_id = CASE WHEN content_hash = excluded.content_hash THEN pressed_run_id ELSE NULL END,
+	pressed_at     = CASE WHEN content_hash = excluded.content_hash THEN pressed_at ELSE NULL END,
+	content_hash = excluded.content_hash`
 
 // liveDryRunSQL matches a dry run still inside its deadline: started_at +
 // budget minutes (the run's snapshot, else the automation's) + a 1-minute
@@ -1240,6 +1301,14 @@ type AutomationOutput struct {
 	PressedAction *int
 	PressedRunID  int64
 	PressedAt     *time.Time
+	// BlocksJSON is the canonical block document ('' = none, the body is
+	// markdown); OutputKey a living artifact's key ('' = feed); ContentHash
+	// the card's content hash ('' on rows from before 00173). WrittenAt is
+	// the last write, ChangedAt the last write that changed ContentHash (the
+	// Inbox order); both read as CreatedAt when a writer left them NULL. On a
+	// commit the run's finish time is used for both, whatever they hold.
+	BlocksJSON, OutputKey, ContentHash string
+	WrittenAt, ChangedAt               time.Time
 }
 
 // Inbox card action kinds (automation_outputs.actions_json).
@@ -1248,19 +1317,32 @@ const (
 	InboxActionChat  = "chat"
 	InboxActionAgent = "agent"
 	InboxActionReply = "reply"
+	// InboxActionTarget's press proposes create_target (Inbox builder A).
+	InboxActionTarget = "target"
 )
 
 // InboxAction is one button of an Inbox card. Kind names the one payload
-// field set: Open (link), Chat (chat), Agent (agent) or Reply + Data (reply).
+// field set: Open (link), Chat (chat), Agent (agent), Reply + Data (reply)
+// or Target (target). The field order is the canonical JSON order that
+// blocks.ActionHash hashes.
 type InboxAction struct {
-	Label   string            `json:"label"`
-	Kind    string            `json:"kind"`
-	Open    string            `json:"open,omitempty"`
-	Chat    string            `json:"chat,omitempty"`
-	Agent   *InboxAgentAction `json:"agent,omitempty"`
-	Reply   string            `json:"reply,omitempty"`
-	Data    json.RawMessage   `json:"data,omitempty"`
-	Primary bool              `json:"primary,omitempty"`
+	Label   string             `json:"label"`
+	Kind    string             `json:"kind"`
+	Open    string             `json:"open,omitempty"`
+	Chat    string             `json:"chat,omitempty"`
+	Agent   *InboxAgentAction  `json:"agent,omitempty"`
+	Reply   string             `json:"reply,omitempty"`
+	Target  *InboxTargetAction `json:"target,omitempty"`
+	Data    json.RawMessage    `json:"data,omitempty"`
+	Primary bool               `json:"primary,omitempty"`
+}
+
+// InboxTargetAction is a target action's proposed task: its title, an
+// optional intent and an optional parent target id (0 = top level).
+type InboxTargetAction struct {
+	Title  string `json:"title"`
+	Intent string `json:"intent,omitempty"`
+	Parent int64  `json:"parent,omitempty"`
 }
 
 // InboxAgentAction is an agent action's task and its optional workbench.
@@ -1270,10 +1352,13 @@ type InboxAgentAction struct {
 }
 
 // ListAutomationOutputs returns up to limit outputs of kind (” = every
-// kind), newest first; limit ≤ 0 returns all of them.
+// kind), most recently changed first (a same-hash living rewrite does not
+// move a card); limit ≤ 0 returns all of them. changed_at is set on every
+// commit and backfilled by 00173, so it is ordered on directly (the
+// (kind, changed_at) index applies).
 func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput, error) {
 	q := `SELECT ` + automationOutputCols + `
-		FROM automation_outputs WHERE (? = '' OR kind = ?) ORDER BY created_at DESC, id DESC`
+		FROM automation_outputs WHERE (? = '' OR kind = ?) ORDER BY changed_at DESC, id DESC`
 	args := []any{kind, kind}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -1362,7 +1447,9 @@ type NamedAutomationOutput struct {
 func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, maxBodyChars int) ([]NamedAutomationOutput, int, error) {
 	rows, err := db.Query(`SELECT o.id, o.automation_id, o.run_id, o.kind, o.title, substr(o.body, 1, ?), o.priority,
 			o.created_at, o.read_at, o.dismissed_at, o.link, o.actions_json, o.done_at, o.pressed_action,
-			o.pressed_run_id, o.pressed_at, COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
+			o.pressed_run_id, o.pressed_at, o.blocks_json, o.output_key, o.content_hash,
+			COALESCE(o.written_at, o.created_at), COALESCE(o.changed_at, o.created_at),
+			COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
 		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
 		maxBodyChars, kind, formatAutomationTime(since), limit)
@@ -1386,25 +1473,35 @@ func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, ma
 }
 
 const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at,
-	link, actions_json, done_at, pressed_action, pressed_run_id, pressed_at`
+	link, actions_json, done_at, pressed_action, pressed_run_id, pressed_at, blocks_json, output_key, content_hash,
+	COALESCE(written_at, created_at), COALESCE(changed_at, created_at)`
 
 // scanAutomationOutput scans one automationOutputCols row; extra receives any
 // columns the query selects after them.
 func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error) {
 	var (
-		o                           AutomationOutput
-		created, actions            string
-		read, dismissed, done, prAt sql.NullString
-		prAction, prRun             sql.NullInt64
+		o                                AutomationOutput
+		created, actions, written, chged string
+		read, dismissed, done, prAt      sql.NullString
+		key                              sql.NullString
+		prAction, prRun                  sql.NullInt64
 	)
 	dest := append([]any{&o.ID, &o.AutomationID, &o.RunID, &o.Kind, &o.Title, &o.Body, &o.Priority, &created,
-		&read, &dismissed, &o.Link, &actions, &done, &prAction, &prRun, &prAt}, extra...)
+		&read, &dismissed, &o.Link, &actions, &done, &prAction, &prRun, &prAt, &o.BlocksJSON, &key, &o.ContentHash,
+		&written, &chged}, extra...)
 	if err := rows.Scan(dest...); err != nil {
 		return o, fmt.Errorf("scanning automation output: %w", err)
 	}
+	o.OutputKey = key.String
 	var err error
 	if o.CreatedAt, err = time.Parse(automationTimeLayout, created); err != nil {
 		return o, fmt.Errorf("automation output %d created_at %q: %w", o.ID, created, err)
+	}
+	if o.WrittenAt, err = time.Parse(automationTimeLayout, written); err != nil {
+		return o, fmt.Errorf("automation output %d written_at %q: %w", o.ID, written, err)
+	}
+	if o.ChangedAt, err = time.Parse(automationTimeLayout, chged); err != nil {
+		return o, fmt.Errorf("automation output %d changed_at %q: %w", o.ID, chged, err)
 	}
 	if o.ReadAt, err = parseAutomationTime(read, "read_at"); err != nil {
 		return o, err

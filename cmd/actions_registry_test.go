@@ -125,6 +125,13 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	require.True(t, ok, "apply_track_action missing")
 	assert.Equal(t, []string{tools.InboxSurface}, press.Surfaces)
 	assert.True(t, press.AlwaysAsk)
+	// An Inbox card's target button (Inbox builder A, ask #445): create_target
+	// is on the inbox surface too, which is no trust place.
+	inbox := surfaceToolNames(reg, tools.InboxSurface)
+	assert.True(t, inbox["create_target"], "create_target answers an Inbox card's target button")
+	ct, ok := reg.Get("create_target")
+	require.True(t, ok)
+	assert.NotContains(t, tools.TrustSurfaces(ct), tools.InboxSurface, "the inbox keeps no trust level")
 	for _, m := range []map[string]bool{main, target, reaction, project, surfaceToolNames(reg, tools.AutomationSurface),
 		surfaceToolNames(reg, tools.AutomationEditorSurface)} {
 		assert.False(t, m["apply_track_action"], "apply_track_action is offered to no model")
@@ -307,9 +314,10 @@ func pinAutomationSurface(t *testing.T, reg *tools.Registry, main, target, react
 
 // automationWriteSurfaces is the pinned surface set of each write tool
 // offered to automations (Automations P2, spec 2026-10-14 §6.1): its
-// pre-P2 surfaces plus the automation surface.
+// pre-P2 surfaces plus the automation surface. create_target is also on the
+// inbox surface (an Inbox card's target button, Inbox builder A, ask #445).
 var automationWriteSurfaces = map[string][]string{
-	"create_target":         {"main", "reaction", tools.AutomationSurface},
+	"create_target":         {"main", "reaction", tools.AutomationSurface, tools.InboxSurface},
 	"create_idea":           {"reaction", "main", tools.AutomationSurface},
 	"create_track":          {"reaction", "main", tools.AutomationSurface},
 	"remind_me":             {"reaction", "main", tools.AutomationSurface},

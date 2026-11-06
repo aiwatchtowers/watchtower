@@ -214,9 +214,10 @@ final class AppHomeFeedPerformer: HomeFeedPerforming {
         self.appState = appState
     }
 
-    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws {
+    func perform(_ action: FeedAction, on ref: FeedRef, contentHash: String, now: Date, calendar: Calendar)
+        async throws -> Bool {
         guard let pool = appState?.databaseManager?.dbPool else { throw HomeFeedActionError.databaseUnavailable }
-        try await LiveHomeFeedPerformer(runner: ProcessCLIRunner.makeDefault(), pool: pool)
-            .perform(action, on: ref, now: now, calendar: calendar)
+        return try await LiveHomeFeedPerformer(runner: ProcessCLIRunner.makeDefault(), pool: pool)
+            .perform(action, on: ref, contentHash: contentHash, now: now, calendar: calendar)
     }
 }

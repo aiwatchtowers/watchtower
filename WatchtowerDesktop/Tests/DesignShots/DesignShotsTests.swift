@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import XCTest
+import WatchtowerCore
 @testable import WatchtowerDesktop
 
 /// Renders every `DesignShotCatalog` entry in light and dark mode (style
@@ -26,6 +27,11 @@ final class DesignShotsTests: XCTestCase {
     /// unfiltered suite (style guide spec §6).
     func testEveryShotRenders() throws {
         try renderShots(DesignShotCatalog.all)
+    }
+
+    /// Inbox builder A's shots alone (mockups a-01 … a-11).
+    func testInboxBuilderAShotsRender() throws {
+        try renderShots(InboxBuilderAShotFixtures.shots)
     }
 
     func testWorkchatActivityShotsRender() throws {
@@ -71,5 +77,79 @@ final class DesignShotsTests: XCTestCase {
             }
         }
         return seen.count
+    }
+}
+
+extension DesignShotsTests {
+    func testRuntimeFallbackChatShotsRender() throws {
+        try renderShots(ProviderFallbackShotFixtures.runtimeShots)
+    }
+}
+
+extension DesignShotsTests {
+    func testHistoricalActualOnlyShotsRender() throws {
+        try renderShots(ProviderFallbackShotFixtures.historicalActualShots)
+    }
+}
+
+extension DesignShotsTests {
+    func testRuntimeProviderApplyShotsRender() async throws {
+        for provider in ["claude", "codex"] {
+            for state in ["applying", "failed", "applied"] {
+                let bytes = Data("""
+                    {"preferred_provider":"\(provider)","enabled":true,"revision":"fixture-revision",
+                     "saved_version":"fixture-file","providers":[],
+                     "application":{"identity":"fixture-run","revision":"fixture-revision",
+                     "saved_version":"fixture-file","preferred_provider":"\(provider)"}}
+                    """.utf8)
+                let model = ProviderRoutingApplication(attempts: 1, read: {
+                    if state == "failed" { throw CocoaError(.fileReadNoPermission) }
+                    return try ChatRoutingStatus.parse(bytes)
+                }, pause: {})
+                model.saved()
+                if state != "applying" { await model.applyLatest() }
+                let shot = DesignShot(name: "provider-apply-\(state)-\(provider)-narrow",
+                                      size: CGSize(width: 360, height: 0)) {
+                    AnyView(ProviderRoutingApplicationStatus(model: model) {}
+                        .padding(.vertical, Spacing.large).background(Color(nsColor: .windowBackgroundColor)))
+                }
+                try renderShots([shot])
+            }
+        }
+    }
+}
+
+extension DesignShotsTests {
+    func testRuntimeProviderSettingsShotsRender() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for provider in ["claude", "codex"] {
+            let other = provider == "claude" ? "codex" : "claude"
+            for (name, metadata) in [("unverified", ProviderConnection.Metadata.notVerified),
+                                     ("notInstalled", .missingCLI), ("signInRequired", .missingSignIn), ("networkError", .networkError)] {
+                let connection = ProviderConnection { _ in metadata }
+                let path = directory.appendingPathComponent("\(provider)-\(name).yaml").path
+                let yaml = """
+                ai:
+                  provider: \(provider)
+                  fallback: {enabled: false, provider: \(other)}
+                  providers:
+                    \(provider): {models: {light: sample-light, strong: sample-strong}}
+                    \(other): {models: {light: reserve-light, strong: reserve-strong}}
+                """
+                try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+                let config = ConfigService(configPath: path, connection: connection)
+                await connection.check(.init(provider: other, model: "reserve-strong", path: "", configPath: path), policy: .none)
+                for narrow in [false, true] {
+                    let shot = DesignShot(name: "provider-settings-\(name)-\(provider)\(narrow ? "-narrow" : "")",
+                                          size: CGSize(width: narrow ? 360 : 640, height: 0)) {
+                        AnyView(ProviderSettings(config: config, catalog: AIModelCatalog(), policy: .none)
+                            .padding(Spacing.page).detailBackground())
+                    }
+                    try renderShots([shot])
+                }
+            }
+        }
     }
 }

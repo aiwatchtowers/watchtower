@@ -1108,7 +1108,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL);
+    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS chat_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
@@ -1480,7 +1480,7 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     read_at       TEXT,                                      -- Desktop-written
     dismissed_at  TEXT                                       -- Desktop-written
-, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT);
+, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT, blocks_json TEXT NOT NULL DEFAULT '', output_key TEXT, content_hash TEXT NOT NULL DEFAULT '', written_at TEXT, changed_at TEXT);
 CREATE TABLE IF NOT EXISTS plan_usage_samples (
     taken_at   TEXT NOT NULL,
     limit_key  TEXT NOT NULL,
@@ -2719,6 +2719,10 @@ CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at
 CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_action_source ON targets(source_id) WHERE source_type = 'chat' AND source_id LIKE 'action:%' AND source_id != 'action:0';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_actions_open_context ON agent_actions(context_type, context_id) WHERE context_type = 'automation_output' AND status IN ('pending','approved','executing');
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

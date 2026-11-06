@@ -101,8 +101,11 @@ final class AppState {
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
-    @ObservationIgnored lazy var sharedConfig = ConfigService()
-
+    @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
+    @ObservationIgnored weak var observedRoutingApplication: ProviderRoutingApplication?
+    @ObservationIgnored lazy var sharedConfig = makeSharedConfig() {
+        didSet { observedRoutingApplication = sharedConfig.routingApplication; observedProviderConnection = sharedConfig.providerConnection }
+    }
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
 
@@ -534,7 +537,10 @@ final class AppState {
         wireDaemonStartQueue()
         wireDatabaseCompaction()
         daemonManager.onRunningChanged = { [weak self] running in
-            guard running else { return }
+            guard running else {
+                self?.observedRoutingApplication?.daemonUnavailable()
+                return
+            }
             self?.daemonStartFailure = nil
             self?.clearRestartFailedTurnOnErrors()
         }
@@ -551,13 +557,7 @@ final class AppState {
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
     func ensureChatViewModels() {
         guard let db = databaseManager, chatViewModel == nil else { return }
-        let provider = AIProvider.fromConfig(ConfigService().aiProvider)
-        let cvm = ChatViewModel(
-            dbManager: db,
-            pool: ensureChatSessionPool(db),
-            provider: provider,
-            cliRunner: ProcessCLIRunner.makeDefault()
-        )
+        let cvm = makeMainChatViewModel(db)
         // Once per launch, before anything is shown or listed.
         cvm.cleanUpUntouchedConversations()
         let hvm = ChatHistoryViewModel(dbManager: db)

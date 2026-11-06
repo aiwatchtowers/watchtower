@@ -38,11 +38,61 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
         package var tokens: Int64 = 0
     }
 
+    /// One would-be output of the dry run (Go `DraftOutput`). `blocks` is
+    /// the canonical block document re-encoded as text ("" for JSON null: a
+    /// markdown card, whose `body` is then the markdown, else Go's plain
+    /// text); `key` a living card's key ("" for feed); `contentHash` ""
+    /// for an output other than `inbox`; `actionsJSON` the card's own
+    /// buttons as `automation_outputs.actions` stores them ("[]" when none,
+    /// or from an older CLI).
+    package struct Output: Decodable, Equatable, Sendable {
+        package var kind = ""
+        package var title = ""
+        package var body = ""
+        package var priority = ""
+        package var blocksJSON = ""
+        package var key = ""
+        package var contentHash = ""
+        package var actionsJSON = "[]"
+
+        enum CodingKeys: String, CodingKey {
+            case kind, title, body, priority, blocks, key, actions
+            case contentHash = "content_hash"
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+            title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+            body = try c.decodeIfPresent(String.self, forKey: .body) ?? ""
+            priority = try c.decodeIfPresent(String.self, forKey: .priority) ?? ""
+            key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+            contentHash = try c.decodeIfPresent(String.self, forKey: .contentHash) ?? ""
+            blocksJSON = try c.decodeIfPresent(DraftJSONValue.self, forKey: .blocks)?.encodedText() ?? ""
+            let actions = try c.decodeIfPresent(DraftJSONValue.self, forKey: .actions)?.encodedText() ?? ""
+            actionsJSON = actions.isEmpty ? "[]" : actions
+        }
+    }
+
     package struct DryRun: Decodable, Equatable, Sendable {
         package var steps: [Step] = []
+        package var outputs: [Output] = []
         package var tokens: Int64 = 0
         package var status = ""
         package var error = ""
+
+        enum CodingKeys: String, CodingKey { case steps, outputs, tokens, status, error }
+
+        /// `outputs` is absent from cache entries an older CLI wrote: they
+        /// still decode, with no outputs.
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            steps = try c.decode([Step].self, forKey: .steps)
+            outputs = try c.decodeIfPresent([Output].self, forKey: .outputs) ?? []
+            tokens = try c.decode(Int64.self, forKey: .tokens)
+            status = try c.decode(String.self, forKey: .status)
+            error = try c.decode(String.self, forKey: .error)
+        }
     }
 
     package struct Result: Decodable, Equatable, Sendable {
@@ -60,9 +110,15 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
     /// nil when the evaluation failed (`error` says why).
     package let result: Result?
     package let error: String?
+    /// When the entry was written (RFC 3339 UTC); nil when absent or unreadable.
+    package let atText: String?
+
+    /// When the entry was written: the Look step compares it with the
+    /// owner's own Dry run of the same text.
+    package var at: Date? { AutomationDates.parse(atText) }
 
     enum CodingKeys: String, CodingKey {
-        case recipeText = "recipe_text", result, error
+        case recipeText = "recipe_text", result, error, atText = "at"
     }
 
     /// The newest cache entry: none (no entry yet), a decoded entry, or one
@@ -115,6 +171,8 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     /// Recipe text → the sessions of the newest cached draft with that text
     /// and a dry run (the save card's block); only `load` fills it.
     package private(set) var dryRunSessions: [String: AutomationDryRunSessions] = [:]
+    /// The conversation's cache entries, oldest first; only `load` fills it.
+    package private(set) var entries: [String] = []
 
     package static let empty = Self(entry: nil)
     package static let unreadable = Self(entry: nil, unreadable: true)
@@ -135,7 +193,16 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
         }
         var model = Self(newest: AutomationDraftEntry.newest(in: entries))
         model.dryRunSessions = dryRunSessions(in: entries)
+        model.entries = entries
         return model
+    }
+
+    /// The Look step's chat entry for `text`
+    /// (`AutomationLookPreviewModel.chatEntry`): a cache that could not be
+    /// read is `.undecodable`, never "no draft yet".
+    package func lookEntry(text: String) -> AutomationDraftEntry.Newest {
+        if isUnreadable, entries.isEmpty { return .undecodable }
+        return AutomationLookPreviewModel.chatEntry(in: entries, text: text)
     }
 
     /// Every decodable cache entry, oldest first, keyed by its recipe text:
@@ -216,9 +283,63 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
               : "Your local time · if the Mac was asleep, runs once when it wakes"
     }
 
-    private static func runStep(_ step: AutomationDraftEntry.Step) -> AutomationRunStep {
+    package static func runStep(_ step: AutomationDraftEntry.Step) -> AutomationRunStep {
         AutomationRunStep(seq: step.seq, kind: step.kind, name: step.name, argsJSON: step.args,
                           resultSummary: step.result, status: step.status, permission: step.permission,
                           inputTokens: step.tokens, error: step.error)
+    }
+}
+
+/// Any JSON value, decoded to be written back as text: a dry-run output's
+/// `blocks` document travels as raw JSON inside the draft result, and the
+/// Look pane decodes it with the Kit's block decoder (WatchtowerCore stays
+/// Kit-free); so do its card `actions`. JSON null is "".
+private enum DraftJSONValue: Codable, Equatable {
+    case null
+    case bool(Bool)
+    case int(Int64)
+    case double(Double)
+    case string(String)
+    case array([Self])
+    case object([String: Self])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() {
+            self = .null
+        } else if let value = try? c.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? c.decode(Int64.self) {
+            self = .int(value)
+        } else if let value = try? c.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? c.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? c.decode([Self].self) {
+            self = .array(value)
+        } else {
+            self = .object(try c.decode([String: Self].self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null: try c.encodeNil()
+        case let .bool(value): try c.encode(value)
+        case let .int(value): try c.encode(value)
+        case let .double(value): try c.encode(value)
+        case let .string(value): try c.encode(value)
+        case let .array(value): try c.encode(value)
+        case let .object(value): try c.encode(value)
+        }
+    }
+
+    /// The value as JSON text; "" for null.
+    func encodedText() throws -> String {
+        if self == .null { return "" }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return String(bytes: try encoder.encode(self), encoding: .utf8) ?? ""
     }
 }

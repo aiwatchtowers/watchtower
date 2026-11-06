@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+	"watchtower/internal/codex"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
@@ -20,6 +22,7 @@ import (
 	"watchtower/internal/instructions"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
@@ -65,6 +68,7 @@ var aiQueryCmd = &cobra.Command{
 }
 
 var aiModelsFlagJSON bool
+var aiTestCLIPath string
 
 var aiModelsCmd = &cobra.Command{
 	Use:   "models",
@@ -74,19 +78,27 @@ var aiModelsCmd = &cobra.Command{
 }
 
 var aiTestCmd = &cobra.Command{
-	Use:   "test",
-	Short: "Test AI provider connectivity",
-	Long:  "Verifies that the configured AI provider is available and responds. Outputs JSON with status.",
-	RunE:  runAITest,
+	Use:               "test",
+	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	Short:             "Test AI provider connectivity",
+	Long:              "Verifies that the configured AI provider is available and responds. Outputs JSON with status.",
+	RunE:              runAITest,
 }
 
 // aiStreamEvent is a JSON line emitted by `watchtower ai query`.
 // Maps 1:1 to Swift StreamEvent enum.
 type aiStreamEvent struct {
-	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Type              string `json:"type"`
+	Text              string `json:"text,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
+	Error             string `json:"error,omitempty"`
+	Code              string `json:"code,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	Retryable         bool   `json:"retryable,omitempty"`
+	Provider          string `json:"provider,omitempty"`
+	Model             string `json:"model,omitempty"`
+	PreferredProvider string `json:"preferred_provider,omitempty"`
+	RoutingMode       string `json:"routing_mode,omitempty"`
 }
 
 func init() {
@@ -97,6 +109,7 @@ func init() {
 
 	aiModelsCmd.Flags().BoolVar(&aiModelsFlagJSON, "json", false, "output JSON")
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
+	aiTestCmd.Flags().StringVar(&aiTestCLIPath, "cli-path", "", "test this CLI path without saving it")
 
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	// Ignored since #604 G11 (no Claude session is stored); kept so an
@@ -297,6 +310,11 @@ func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan
 	// event so the desktop drops the pre-tool preamble and renders only the
 	// answer that follows the tool call.
 	for chunk := range textCh {
+		if route := chunk.Routing; route != nil {
+			_ = enc.Encode(aiStreamEvent{Type: "routing", Provider: route.Provider, Model: route.Model,
+				PreferredProvider: route.PreferredProvider, RoutingMode: route.Mode, Reason: route.Reason})
+			continue
+		}
 		if chunk.ToolBoundary {
 			_ = enc.Encode(aiStreamEvent{Type: "reset"})
 			continue
@@ -314,7 +332,17 @@ func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan
 	// Check for errors
 	for err := range errCh {
 		if err != nil {
-			_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err)})
+			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
+			reason := ""
+			var failure *providers.Failure
+			if errors.Is(err, providerrouting.ErrDeferred) {
+				retry, reason = false, "quota_wait"
+			} else if errors.As(err, &failure) && failure.Category == providers.Quota {
+				retry, reason = false, "quota_exhausted"
+			} else if failure != nil && failure.Category == providers.Capability {
+				retry, reason = false, "required_capability_missing"
+			}
+			_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err), Code: code, Retryable: retry, Reason: reason})
 		}
 	}
 
@@ -328,33 +356,58 @@ func runAITest(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return enc.Encode(map[string]any{
 			"ok":    false,
-			"error": fmt.Sprintf("loading config: %v", err),
+			"error": "Could not read provider configuration",
 		})
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	applyProviderOverride(cfg)
+	wireLLMUsage(cfg)
 
 	_, model := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	if aiFlagModel != "" {
 		model = aiFlagModel
 	}
 
-	// Quick connectivity check — ask for a minimal response
-	aiClient := newAIClientWithModel(cfg, "", model)
-
-	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
+	// Explicit single-provider probe: never enter the fallback router or mount
+	// chat tools. The same canonical batch leaves enforce startup isolation.
+	var gen digest.Generator
+	switch cfg.AI.Provider {
+	case "claude":
+		path := cfg.ClaudePath
+		if aiTestCLIPath != "" {
+			path = aiTestCLIPath
+		}
+		leaf := digest.NewClaudeGenerator(model, model, path)
+		leaf.SetIsolatedChild()
+		gen = leaf
+	case "codex":
+		path := cfg.CodexPath
+		if aiTestCLIPath != "" {
+			path = aiTestCLIPath
+		}
+		leaf := codex.NewCodexGenerator(model, model, path)
+		leaf.SetIsolatedChild()
+		gen = leaf
+	case "ollama":
+		if aiTestCLIPath != "" {
+			return enc.Encode(map[string]any{"ok": false, "error": "CLI path is unavailable for HTTP providers", "provider": cfg.AI.Provider, "model": model})
+		}
+		gen = ollama.NewGenerator(model, model, cfg.AI.OllamaURL)
+	default:
+		return enc.Encode(map[string]any{"ok": false, "error": "Unknown AI provider", "provider": cfg.AI.Provider, "model": model})
+	}
+	ctx, shutdown := notifyShutdownContext(context.Background(), stderrLogf)
+	defer shutdown()
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-
-	_, _, err = aiClient.QuerySync(digest.WithSource(ctx, "probe"), "", "respond with exactly: OK", "")
+	err = providers.Allowed(cfg.AI.Provider)
+	if err == nil {
+		_, _, _, err = gen.Generate(digest.WithSource(ctx, "probe"), "", "respond with exactly: OK", "")
+	}
 	if err != nil {
-		return enc.Encode(map[string]any{
-			"ok":       false,
-			"error":    err.Error(),
-			"provider": cfg.AI.Provider,
-			"model":    model,
-		})
+		return enc.Encode(map[string]any{"ok": false, "error": connectionTestError(err), "error_code": connectionTestCode(err), "provider": cfg.AI.Provider, "model": model})
 	}
 
 	return enc.Encode(map[string]any{
@@ -362,6 +415,24 @@ func runAITest(_ *cobra.Command, _ []string) error {
 		"provider": cfg.AI.Provider,
 		"model":    model,
 	})
+}
+
+// The Desktop boundary contains classifications, never arbitrary child stderr,
+// owner paths, tokens or managed-configuration contents.
+func connectionTestCode(err error) providers.ErrorCategory {
+	var failure *providers.Failure
+	if errors.As(err, &failure) {
+		return failure.Category
+	}
+	return providers.Unknown
+}
+
+func connectionTestError(err error) string {
+	var failure *providers.Failure
+	if errors.As(err, &failure) {
+		return "Provider request failed (" + string(failure.Category) + ")."
+	}
+	return "Provider request failed. Check the CLI installation and sign-in in Terminal."
 }
 
 // aiModelsProvider is one provider entry in the `ai models` output.
@@ -486,7 +557,19 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 	for err := range errCh {
 		if err != nil {
 			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
-			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
+			reason := ""
+			var failure *providers.Failure
+			if errors.Is(err, providerrouting.ErrDeferred) {
+				retry = false
+				reason = "quota_wait"
+			} else if errors.As(err, &failure) && failure.Category == providers.Quota {
+				retry = false
+				reason = "quota_exhausted"
+			} else if failure != nil && failure.Category == providers.Capability {
+				retry = false
+				reason = "required_capability_missing"
+			}
+			_ = out.Emit(chat.Event{Reason: reason, Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
 			return
 		}
 	}

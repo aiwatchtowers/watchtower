@@ -11,8 +11,9 @@ enum InboxCardCommand: Equatable {
     /// A target with `task` and a session in a workbench. The buttons emit
     /// the workbench they resolved (`InboxAgentHandoff`) or the owner picked.
     case agent(InboxCardSubject, task: String, workbench: InboxCardAction.WorkbenchRef?)
-    /// A Reply press: `action` is the stored index (`InboxCardAction.index`).
-    case reply(outputID: Int64, action: Int)
+    /// A Reply press: `action` is its index in the card's flattened action
+    /// list (`InboxCardAction.index`), `contentHash` the version drawn.
+    case reply(outputID: Int64, action: Int, contentHash: String)
     /// The automation's card, where a recipe that cannot run is confirmed or
     /// turned on.
     case openAutomation(AutomationOutputCard)

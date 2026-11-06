@@ -8,6 +8,7 @@ struct ChatRowActions {
     var copy: (String) -> Void = { _ in }
     var regenerate: ((Int64) -> Void)? = { _ in }
     var retry: ((Int64) -> Void)? = { _ in }
+    var reviewActions: ((Int64) -> Void)?
     var continueStopped: ((Int64) -> Void)? = { _ in }
     var showVariant: ((Int64, Int) -> Void)? = { _, _ in }
     var beginEdit: ((Int64) -> Void)? = { _ in }
@@ -25,9 +26,10 @@ struct ChatRowActions {
     static func embedded(
         copy: @escaping (String) -> Void,
         retry: ((Int64) -> Void)?,
+        reviewActions: ((Int64) -> Void)? = nil,
         answerQuestion: ((String) -> Void)? = nil
     ) -> Self {
-        Self(copy: copy, regenerate: nil, retry: retry, continueStopped: nil, showVariant: nil,
+        Self(copy: copy, regenerate: nil, retry: retry, reviewActions: reviewActions, continueStopped: nil, showVariant: nil,
              beginEdit: nil, answerQuestion: answerQuestion)
     }
 }
@@ -91,6 +93,10 @@ struct ChatMessageRow: View, Equatable {
     }
 
     @ViewBuilder private var statusCard: some View {
+        if item.message.errorCode == ChatErrorCode.quotaExhausted.rawValue {
+            ChatRoutingStatusView(preview: ProviderFallbackPreview(preferred: .claude, state: .stopped),
+                                  onAction: actions.reviewActions.map { review in { review(item.id) } })
+        } else {
         switch item.message.status {
         case "error":
             HStack(spacing: 8) {
@@ -127,6 +133,7 @@ struct ChatMessageRow: View, Equatable {
             }
         default:
             EmptyView()
+        }
         }
     }
 

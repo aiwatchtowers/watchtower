@@ -695,7 +695,7 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, mb mailbox, bound 
 		return p.initEmailFloor(mb)
 	}
 	reached, err := p.emailDigestPass(ctx, mb, floor, bound)
-	if err != nil || reached == floor || digest.RoutingEnabled(p.generator) {
+	if err != nil || reached == floor || digest.RoutingEnabled(p.generator, ctx) {
 		return err
 	}
 	if err := p.setMailFloor(mb, reached); err != nil {

@@ -115,7 +115,12 @@ workbench was deleted fails at Apply, and a row whose run is gone fails closed
 (`ErrAutomationRunGone`, `NotAvailable` to the script) (AGENT-01). The automation read
 tools write nothing either: `memory_open` skips its access-stat bump on the
 `automation` surface and `buildAutomationRegistry` mounts `memory_recall`
-without the shadow handle, so it writes no shadow row.
+without the shadow handle, so it writes no shadow row. An Inbox card may carry
+a `target` button (`{label, target: {title, intent?, parent?}}`, Inbox builder
+A, ask #445): writing the card creates nothing; the button needs
+`outputs: [target]` (`PermissionDenied` otherwise), and its press only proposes
+`create_target` through `Registry.Propose` on the `inbox` surface, so nothing
+is written until the owner's Approve.
 
 **Why locked:** Every write an automation makes must be one reviewable
 `agent_actions` row (AGENT-01) or a declared automation output; a module that
@@ -123,6 +128,8 @@ wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 
 **Test guards:**
 - `internal/automations/sdk_tool_write_test.go` — `TestAuto02_ToolWriteGoesThroughPropose` (P2: a `tool()` write is one pending `agent_actions` row on the `automation` surface with `context_type='automation_run'`; no target is created before an approval), `TestToolWait_AppliedRejectedFailed`
+- `internal/automations/sdk_output_card_test.go` — `TestOutput_TargetActionNeedsTargetOutput` (a target action — on the card or in a list row of its blocks — is a `PermissionDenied` without `outputs: [target]`, nothing buffered)
+- `cmd/actions_target_button_test.go` — `TestAuto02_TargetButtonOnlyProposes` (the target button's press, `actions propose --tool create_target --surface inbox` without `--approve`, records one pending row with the button's `automation_output` context and creates no target); `internal/tools/targets_inbox_test.go` — `TestCreateTarget_ParentIDOnlyOnInbox` (`parent_id` refused on main, reaction and automation, no row; on the inbox the approved row creates the child under its parent)
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`, `TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable`, `TestWorkbenchAutomation_WritesAreProposals`
 - `internal/tools/registry_automation_test.go` — `TestAgent01_AutomationWriteRecordsProposalOnly`, `TestWorkbenchAutomation_ProposesInItsRunsWorkbench`, `TestWorkbenchAutomation_RowAppliesOnlyWhileItsWorkbenchLives`
 - `internal/tools/automation_reads_test.go` — `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestD23Tools_AutomationSurfaceOnly`
@@ -191,15 +198,27 @@ interrupted run — leaves `automation_state` and `automation_outputs`
 byte-identical. Reads see the committed state plus the run's own sets. A dry
 run never commits. A succeeded script whose journal lost a write still commits
 (its writes already happened; failing it would make the next run repeat them),
-and the run's error notes the incomplete journal (board #562).
+and the run's error notes the incomplete journal (board #562). The same
+commit upserts living outputs by `(automation_id, output_key)` (migration
+00173: a changed `content_hash` moves `changed_at` and clears the read, done,
+dismissed and press state; a same-hash rewrite moves only `written_at`) and
+applies `output.remove` (`RunCommit.Removals`, delete by key, a missing key
+is a no-op); every other terminal status leaves living rows byte-identical
+too (Inbox builder A, ask #961). The run's buffer keeps one operation per
+living key — the later of `output.inbox({key})` and `output.remove({key})`
+wins — so a commit never writes and removes one key, and the outputs cap
+counts each kept output once; a resumed run's replay rebuilds the same
+buffer.
 
 **Why locked:** A run that dies halfway must be safe to rerun; a half-written
 cursor in `state` would silently skip or repeat work.
 
 **Test guards:**
 - `internal/db/automation_runs_test.go` — `TestAuto04_FinishCommitOnlyOnSuccess`, `TestFinish_RefusesTerminalRun`, `TestFinish_RefusesForeignOutput`
+- `internal/db/automation_outputs_living_test.go` — `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess` (Inbox builder A)
 - `internal/automations/executor_test.go` — `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed out, over budget, cancelled), `TestAuto04_SucceededCommitsStateAndOutputsAtomically`
 - `internal/automations/sdk_test.go` — `TestState_ReadsCommittedPlusOwnSets`, `TestState_RejectsUnserialisableValues`
+- `internal/automations/sdk_output_blocks_test.go` — `TestAuto04_LivingRunCommitsUpsertAndRemoval`, `TestOutput_RemoveLaterWins`, `TestOutput_OutputsCapCountsKeptOutputs`, `TestAuto08_ResumeRebuildsLivingBuffer` (Inbox builder A: the SDK buffer and the executor's commit of living outputs)
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_BriefingBufferedAndCommittedOnSuccess` (P2: `output.briefing` is buffered like `report` and committed only with `succeeded`)
 - `internal/automations/run_limits_test.go` — `TestAuto04_JournalErrorAfterSuccessStillCommits` (board #562)
 
@@ -222,7 +241,14 @@ and a waiting run resumes only into a free running slot
 `state`, a post per day) must never see two of itself; the global bound keeps
 a burst of schedules from loading the machine.
 
+A recipe that keeps living artifacts (`artifacts: living`, Inbox builder A,
+ask #961) must declare `concurrency: 1`: the parser refuses any other value
+("concurrency: an automation with living artifacts runs one at a time; set
+concurrency: 1"), so two runs never upsert one key at once. The serial-run
+reasons live in one function, `automations.serialRunReasons`.
+
 **Test guards:**
+- `internal/automations/recipe_test.go` — `TestAuto05_LivingArtifactsNeedConcurrencyOne`
 - `internal/db/automation_runs_test.go` — `TestAuto05_OneActiveRunPerAutomation`, `TestAuto05_ConcurrencyN`, `TestAuto05_ConcurrentClaimsOneWinner` (8 goroutines on a file DB), `TestClaimWithin_HonoursTheGlobalRunningBound`, `TestResumeIfSlot_WaitsForAFreeRunningSlot`
 - `internal/automations/executor_test.go` — `TestAuto05_OneActiveRunPerAutomation`, `TestExecutor_MaxConcurrentRuns`, `TestExecutor_ReadyWaitsGetFreedSlotsBeforeQueuedRuns`, `TestWaiter_ResumeWaitsForAFreeSlot`
 
@@ -243,8 +269,10 @@ does not touch that run, and the next rescan makes the automation
 non-runnable when `approval_hash` changed. `approval_hash` covers the script,
 permissions, outputs, scope, the trigger (without a button's cosmetic label;
 its `confirm` counts), the `missed` policy, the budget (tokens and minutes)
-and `concurrency` (ask #294), so a schedule, missed-policy, budget or
-concurrency edit waits for the owner like a script edit; a name, `summary`, description
+and `concurrency` (ask #294), and `artifacts` when it is `living` (absent
+for feed, so every feed recipe's hash is unchanged; ask #961), so a schedule,
+missed-policy, budget, concurrency or feed → living edit waits for the owner
+like a script edit; a name, `summary`, description
 or button-label edit does not (`summary` since 2026-10-24). A recipe new to the index, or
 changed outside an owner save, is indexed unconfirmed (an insert never sets
 `confirmed_hash`/`enabled`; an upsert never touches them). `confirmed_hash`
@@ -264,20 +292,29 @@ model call, no registry call) — owner-confirmed reading in ask #280. The
 comparison is within the draft's scope: `approval_hash` covers the scope, so
 the same text with another `workbench_id` hashes differently and dry-runs,
 which is equivalent to the allowed one-line edit (any edit makes a draft).
+The owner's preview (`automations preview --stdin --json`, the Look step's
+**Dry run**, Inbox builder A, ask #445) shares `draft_automation`'s
+evaluation (`authoring.EvaluateDraft`) and, as the owner's press, dry-runs
+an unconfirmed recipe too: it refuses under every marker
+(`WATCHTOWER_AUTOMATION_RUN_ID` included) before reading stdin, then runs
+only after the owner confirms the text in the running Desktop (AGENT-07; the
+Desktop's own launch is granted without a window), and the D16 refusal
+above stays on the chat path (the zero evaluation options refuse; only
+`EvaluateDraft` allows).
 `save_automation` (P3) is the third caller of `ConfirmAutomation`: an
 `AlwaysAsk` write whose `Execute` runs only after the owner's Approve
 (AGENT-07) and confirms only the pinned `approval_hash`, refusing when the
 re-parsed text hashes differently or the file's content hash changed since
 propose (a hand edit, a file that appeared at a new slug, one that vanished).
-Its card shows what Approve confirms: every hashed field (missed policy and
-concurrency included) and the code — the whole text of a new recipe, the diff
+Its card shows what Approve confirms: every hashed field (missed policy,
+concurrency and artifacts included) and the code — the whole text of a new recipe, the diff
 of an edit (`SaveAutomationCardModelTests`).
 The built-ins' one-time upgrade step (C2) is the fourth caller: it confirms
 only the owner copy it rendered from a customised prompt-store row that was
 already running, after the index shows exactly those bytes. The daemon runs
 the step at start, under agent markers too (it carries no code); its Retry,
 `automations upgrade-builtins`, is owner-only and refuses under every marker.
-The Desktop confirms only what it showed (as amended with the owner's approval in ask #475). Its confirming screen is the draft column of the Automations panel: it shows every hashed field of the exact bytes it saves — the script (through **Show recipe**), permissions, outputs, scope, trigger, missed policy, budget and concurrency — and the hashed fields changed since the confirmed text (`validate --against` `changes`), or says the change is unknown (D26). The column shows the Go-reported hashed fields (`validate --json` `fields`), and every save and confirm button is off when it cannot show them. **Save and Turn On**, **Save and Confirm** and **Save Turned Off** save with `--confirm-hash` = the `approval_hash` `validate` returned for the very bytes saved and `--expect-content-hash` of the file the draft started from (a recipe changed on disk is refused, never overwritten); while a validation is in flight, or the bytes changed since the last one, every save and confirm button is disabled, and a press that finds the bytes changed re-validates instead of saving. **Confirm** and **Confirm and Turn On** on unchanged bytes pass the hash the column displayed (`confirm --hash <shown>`; a stale one is refused and re-read). A draft saved from the panel is enabled unless the owner picks **Save Turned Off**: `enable` runs as a separate owner call after the confirmed save, and **Save Turned Off** on an enabled automation disables it before saving. A template is installed from its panel only after the column showed `install-template --render`'s validation of the rendered text in the chosen scope; **Save and Turn On** then runs `install-template`, which still installs unconfirmed and disabled, and confirms each installed copy only when its `approval_hash` equals the one shown, then enables it — two further owner gestures. A mismatch stops at Needs confirmation; a failed confirm or enable leaves the installed copy in the list with its chip and is never rolled back. Quick run (P3, D27) never runs what the CLI would refuse: a palette or tray row that is unconfirmed, disabled or unreadable runs nothing — it opens the automation's card — and a `confirm: true` recipe runs only after **Run** in its sheet or alert. A run from the iPhone (`automation_run`, as amended with the owner's approval in ask #692) takes the same path for a workbench recipe only: the hub re-reads the row and refuses the same unconfirmed, disabled and unreadable recipes, and runs a `confirm: true` one only when the request carries `confirmed: true`, which the phone sends only after **Run** in its own "Run “<name>” on the Mac?" — so the confirmation is on the phone, and no sheet comes up on the Mac.
+The Desktop confirms only what it showed (as amended with the owner's approval in ask #475). Its confirming screen is the draft column of the Automations panel: it shows every hashed field of the exact bytes it saves. In the editor the column is stepped (What it collects · Look · When it runs, as amended with the owner's approval in ask #486), and the confirming screen is the current step plus the Changed row pinned above the footer: for an edit with a known diff, every changed field in the Changed box's words on each step but What it collects (where the box is); otherwise every field the step does not show with its value, under the box's "First confirmation" or unknown-diff line — with the scope named, a workbench by its name; the column as a whole shows — the script (through **Show recipe**), permissions, outputs, scope, trigger, missed policy, budget, concurrency and artifacts — and the hashed fields changed since the confirmed text (`validate --against` `changes`), or says the change is unknown (D26). The column shows the Go-reported hashed fields (`validate --json` `fields`), and every save and confirm button is off when it cannot show them. **Save and Turn On**, **Save and Confirm** and **Save Turned Off** save with `--confirm-hash` = the `approval_hash` `validate` returned for the very bytes saved and `--expect-content-hash` of the file the draft started from (a recipe changed on disk is refused, never overwritten); while a validation is in flight, or the bytes changed since the last one, every save and confirm button is disabled, and a press that finds the bytes changed re-validates instead of saving. **Confirm** and **Confirm and Turn On** on unchanged bytes pass the hash the column displayed (`confirm --hash <shown>`; a stale one is refused and re-read). A draft saved from the panel is enabled unless the owner picks **Save Turned Off**: `enable` runs as a separate owner call after the confirmed save, and **Save Turned Off** on an enabled automation disables it before saving. A template is installed from its panel only after the column showed `install-template --render`'s validation of the rendered text in the chosen scope; **Save and Turn On** then runs `install-template`, which still installs unconfirmed and disabled, and confirms each installed copy only when its `approval_hash` equals the one shown, then enables it — two further owner gestures. A mismatch stops at Needs confirmation; a failed confirm or enable leaves the installed copy in the list with its chip and is never rolled back. Quick run (P3, D27) never runs what the CLI would refuse: a palette or tray row that is unconfirmed, disabled or unreadable runs nothing — it opens the automation's card — and a `confirm: true` recipe runs only after **Run** in its sheet or alert. A run from the iPhone (`automation_run`, as amended with the owner's approval in ask #692) takes the same path for a workbench recipe only: the hub re-reads the row and refuses the same unconfirmed, disabled and unreadable recipes, and runs a `confirm: true` one only when the request carries `confirmed: true`, which the phone sends only after **Run** in its own "Run “<name>” on the Mac?" — so the confirmation is on the phone, and no sheet comes up on the Mac.
 Switching a recipe on and deleting an automation are owner gestures too
 (ask #293): `automations enable` and `automations delete` refuse under every
 marker before anything is read or written (AGENT-07); `disable` stays open.
@@ -291,7 +328,17 @@ buttons", and `output.inbox` refuses a `reply` action without it
 is not runnable or its confirmed recipe lacks the capability, and the executor
 fails a `reply` run whose claimed snapshot lacks it (`error_kind='permission'`).
 A press runs the currently confirmed text; a button's `value` and `data` only
-steer code the owner confirmed.
+steer code the owner confirmed. A press names its button by its index in the
+card's flattened action list (the card's own actions, then each block action
+in document order, Inbox builder A). With `--content-hash` (the Desktop
+always passes the hash of the card it drew) a press on a card whose
+`content_hash` changed since is refused (`db.ErrOutputChanged`, "This card
+changed — look again") and nothing is queued. The press writes the card's
+`content_hash` into the run's payload, and the executor, on every start of a
+`reply` run (a resumed one too), ends the run `cancelled`/`cancelled` before
+its script when the card no longer carries that hash or was removed: the
+button it was pressed for is gone. A payload without the hash (a card or a
+press from before content hashes) runs as before.
 A built-in automation (`origin = 'builtin'`) whose recipe bytes equal the
 version shipped in the running app is runnable without the owner's
 confirmation — the release is its confirmation: the built-in indexer
@@ -325,12 +372,15 @@ code or permissions the owner did not see.
 - `cmd/automations_test.go` — `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes` (`--confirm-hash` under a marker refused, file not written), `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers`, `TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused`, `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`
 - `cmd/automations_templates_test.go` — `TestInstallTemplate_InstalledUnconfirmedAndDisabled` (P6: an installed template is unconfirmed and disabled; `run` is refused and a queued run is cancelled `not_runnable`), `TestInstallTemplate_RenderHashMatchesInstall`
 - P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_RefusesDryRunOfUnconfirmedRecipe`, `TestDraftAutomation_RemovedUnconfirmedRecipeDoesNotBlock`; `internal/automations/authoring/save_test.go` — `TestSaveAutomation_AlwaysAskAndPinsHash`, `TestSaveAutomation_RefusesWhenFileChangedSincePropose`, `TestSaveAutomation_RefusesWhenFileAppearedForNewSlug`, `TestSaveAutomation_RefusesHashDrift`; `cmd/automations_test.go` — `TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad`, `TestAutomationsCLI_ShowChangesFromConfirmedSnapshot`, `TestAutomationsCLI_ShowChangesUnknownWithoutSource`, `TestAutomationsCLI_ShowChangesUnknownAfterRehash`
-- P3 Desktop: `WatchtowerDesktop/Tests/Core/AutomationEditorCenterTests.swift` — `testSaveConfirmsTheValidatedHashOnly`, `testAuto06_ConfirmSheetPassesTheShownHash`, `testAuto06_ConfirmSheetShowsHashedFieldChanges`, `testAuto06_SavePressAfterAnUnflushedEditRechecksInsteadOfSaving`, `testAuto06_SaveDisabledWhileChecking`; `WatchtowerDesktop/Tests/Core/AutomationTemplatePanelModelTests.swift` — `testAuto06_TemplateConfirmsOnlyTheShownHash`; `WatchtowerDesktop/Tests/Core/AutomationCardPresentationTests.swift` — `testButtonsForStates`; quick run: `WatchtowerDesktop/Tests/Core/QuickRunCenterTests.swift` — `testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun`; `WatchtowerDesktop/Tests/Core/TrayRunAutomationMenuTests.swift` — `testDisabledItemsAreNotActionable`
+- P3 Desktop: `WatchtowerDesktop/Tests/Core/AutomationEditorCenterTests.swift` — `testSaveConfirmsTheValidatedHashOnly`, `testAuto06_ConfirmSheetPassesTheShownHash`, `testAuto06_ConfirmSheetShowsHashedFieldChanges`, `testAuto06_SavePressAfterAnUnflushedEditRechecksInsteadOfSaving`, `testAuto06_SaveDisabledWhileChecking`; `WatchtowerDesktop/Tests/Core/AutomationDraftColumnModelTests.swift` — `testAuto06_EveryHashedFieldVisibleWhereverAPressLands`, `testAuto06_ChangeMarkOnEveryStep`; `WatchtowerDesktop/Tests/Core/AutomationTemplatePanelModelTests.swift` — `testAuto06_TemplateConfirmsOnlyTheShownHash`; `WatchtowerDesktop/Tests/Core/AutomationCardPresentationTests.swift` — `testButtonsForStates`; quick run: `WatchtowerDesktop/Tests/Core/QuickRunCenterTests.swift` — `testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun`; `WatchtowerDesktop/Tests/Core/TrayRunAutomationMenuTests.swift` — `testDisabledItemsAreNotActionable`
 
 - C2 built-ins (ask #500): `internal/automations/builtin/sync_test.go` — `TestAuto06_ShippedBuiltinRunsWithoutOwnerConfirmation`, `TestAuto06_OwnerCopyNeedsConfirmation`, `TestAuto06_HandEditedCopyStopsTheBuiltIn`, `TestAuto06_CopyEqualToShippedRuns`, `TestBuiltinSync_CopySymlinkIsNeverRead`, `TestBuiltinSync_ShippedUpdateMovesSilently`, `TestBuiltinSync_OverriddenKeepsCopyAndFlagsUpdate`, `TestBuiltinSync_ResetReturnsToShipped`, `TestBuiltinSync_PersonalSlugTwinIsSeparate`, `TestBuiltinSync_PersonalRecipeDeclaringSyncIsAParseError`; `internal/automations/builtin/runner_test.go` — `TestRunner_UnconfirmedCancelsQueuedManual`; `internal/automations/sdk_builtin_test.go` — `TestAuto06_BuiltinInlineRefusesUnconfirmed`; `internal/automations/manifest_test.go` — `TestAuto06_PersonalRecipeCannotDeclareSyncOrBuiltinCapability`; `internal/db/automation_builtins_test.go` — `TestAuto06_ConfirmShippedBuiltinRefusesOtherBytes`, `TestBuiltinAutomation_UpsertNeverSetsOwnerColumns`, `TestGetAutomationBySlug_IgnoresBuiltinTwin`, `TestMarkAutomationsRemovedExcept_LeavesBuiltinRows`; `cmd/builtins_test.go` — `TestBriefingGenerate_RefusedForUnconfirmedCopy`, `TestAutomationsReset_RefusedUnderAgentMarkers`, `TestAutomationsSave_BuiltinRefusedUnderAgentBeforeReading`, `TestAutomationsCLI_BuiltinEnableDisableDeletePointers`; `cmd/builtin_upgrade_test.go` — `TestAuto06_UpgradeConfirmsOnlyCarriedPrompt`, `TestBuiltinUpgrade_RetryRefusedUnderAgentMarkers`
 
 - C3 watch recipes (board #801, spec §6.3/§8): `internal/automations/recipe_test.go` — `TestParseRecipe_SyncTriggerBuiltinOnly`, `TestParseRecipe_PersonalWatchRecipeParses`, `TestParseRecipe_WatchShapeRefusals`, `TestApprovalHash_TrackScanIsHashed`; `internal/automations/manifest_test.go` — `TestCapabilityForPrimitive_TrackScanIsPersonal`; `internal/automations/sdk_builtin_test.go` — `TestExecutor_PollNeverClaimsWatchRecipeRuns`, `TestExecutor_InlineRunsWatchRecipeOnlyWhenEnabled`, `TestAuto06_InlineRefusesUnconfirmedWatchRecipe` (Task 3); `internal/automations/builtin/watchslot_test.go` — `TestWatchSlot_RunsConfirmedEnabledRecipes`, `TestWatchSlot_HandEditedRecipeStopsTheScan`, `TestWatchSlot_DeletedRecipeLeavesTrackUnbound`, `TestWatchSlot_InstructionMirroredToTrack`; `internal/automations/builtin/runner_test.go` — `TestRunSyncInline_OffOrUnconfirmedWritesNothing`; `internal/automations/builtin/capture_test.go` — `TestCapturePrompts_RefusesUnconfirmed` (Task 8); `cmd/tracks_test.go` — `TestTracksCreate_WritesConfirmedWatch`, `TestTracksCreate_UnderAgentLeavesUnconfirmed`, `TestTracksStart_RefusedUnderAgentMarkers`, `TestTracksInstruction_RewritesAndConfirms`, `TestTracksInstruction_RefusesEditedRecipe`, `TestTracksGenerate_RefusedForUnconfirmedCopy`, `TestTracksScan_BoundUnconfirmedRecipeNeverScanned` (Task 11); `cmd/builtin_upgrade_test.go` — `TestAuto06_UpgradeConfirmsOnlyRenderedWatchRecipes`, `TestCustomTracksUpgrade_DismissedStaysUnbound` (Task 12)
 
+- 2026-11-03 (Inbox builder A, owner preview, ask #445): `cmd/automations_preview_test.go` — `TestAutomationsCLI_PreviewRefusedUnderAgentMarkers`, `TestAutomationsCLI_PreviewNeedsTheDesktopsConfirmation`; `internal/automations/authoring/draft_test.go` — `TestEvaluateDraft_DryRunsAnUnconfirmedRecipe`
+- 2026-11-03 (Inbox builder A, reply on a changed card): `cmd/automations_reply_test.go` — `TestAutomationsCLI_ReplyRefusedWhenCardChanged`; `internal/automations/executor_reply_card_test.go` — `TestExecutor_ReplyRunOnChangedCardCancelled`, `TestAuto08_ResumedReplyRunIsCheckedForChangedCard`; `internal/db/automation_outputs_press_blocks_test.go` — `TestPressInboxOutputAction_ContentHash`
+- 2026-11-03 (Inbox builder A, `artifacts`): `internal/automations/recipe_test.go` — `TestApprovalHash_ArtifactsIsHashed`; `internal/automations/indexer_test.go` — the `artifacts` case of `TestAuto06_ScheduleBudgetEditNeedsConfirmation`
 - 2026-10-21 (Inbox Reply): `internal/automations/indexer_test.go` — `TestApprovalHash_InboxReplyIsHashed`; `internal/automations/sdk_output_card_test.go` — `TestOutput_ReplyActionNeedsInboxReply`; `cmd/automations_reply_test.go` — `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`; `internal/automations/executor_test.go` — `TestExecutor_ReplyRunWithoutCapabilityFails`
 
 **Locked since:** 2026-10-14
@@ -582,7 +632,8 @@ change; P5: no `shell()` process, no session, no ask; ask #326: a draft calls
 no Quick Connection)
 
 **Observable:** A dry run makes no `agent_actions` row, no output, no state
-change, starts no session and runs no `shell()`: `output.*` and `state.set`
+change, starts no session and runs no `shell()`: `output.*` (`output.remove`
+included: it removes nothing) and `state.set`
 steps record `status='dry_run'` and nothing is committed; `llm` and read
 tools run for real and their tokens count on the run. The in-memory dry run (`DryRunInMemory`, P3's `draft_automation`)
 writes no row of any table, not even a run row, and does not execute
@@ -598,7 +649,10 @@ chat-written and a read tool's arguments still carry data out (ask #326).
 real, QC-02 reads only. The
 editor's draft cache (`<workspace>/automation-drafts/<conversation id>.jsonl`,
 P3) is a UI cache of the tool's own result written by `draft_automation`
-itself, not by the script, and no database row.
+itself, not by the script, and no database row. The owner's preview
+(`automations preview --stdin --json`, Inbox builder A, ask #445) is the
+same dry run in memory: no row of any table, no draft-cache entry (its
+database handle is `query_only`), `output.remove` journaled `dry_run`.
 
 **Why locked:** Dry run is how the owner (and, for a confirmed recipe, the
 assistant) checks a recipe before trusting it; a dry run with side effects
@@ -610,6 +664,7 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_P2KindsDryRun` (P2: `output.briefing`/`target`/`slack` in a dry run commit nothing and propose nothing)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
+- `internal/automations/sdk_output_blocks_test.go` — `TestOutput_RemoveDryRun`, `TestAuto12_LivingDryRunWritesNothing` (Inbox builder A: a dry-run `output.remove` journals `dry_run`; a living dry run with blocks commits no card and removes nothing)
 - P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_WritesNothing` (a draft whose script calls `output.*`, `state.set` and a write tool writes no row); `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_AgentIsNotRun`, `TestDryRunInMemory_MCPIsNotCalled` (ask #326: a draft's `mcp()` never reaches the caller and stops the draft cleanly), `TestDryRunInMemory_MCPOutsideManifestIsDenied` (the manifest check precedes the stop)
 - P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a saved recipe's dry run, QC-02 reads only, and never called in a draft); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
 - `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
@@ -664,6 +719,7 @@ turn a recipe into arbitrary code execution.
 - `internal/automations/sdk_shell_test.go` — `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`, `TestShell_RefusedInProtectedFolder`, `TestShell_RefusedWhenTheFolderPathHasALink`, `TestShell_NotAvailable`, `TestShell_ValidationError`, `TestShell_EnvHasRunMarkerAndNoSecrets`, `TestShell_KillsProcessGroupOnInterrupt`, `TestShell_TimeoutIsRemainingActiveBudget`, `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails`, `TestShell_NonZeroExitIsAResult`, `TestShell_DryRunStartsNoProcess`
 - `internal/automations/manifest_test.go` — `TestManifest_PersonalRefusesShellSessionAsk`, `TestManifest_ShellExactOnly` (P1)
 - `cmd/automations_agent_test.go` — `TestAutomationBackends_WireMCPAndAgent` (`Backends.Shell` and `Backends.Workbench` wired)
+- Inbox builder A (ask #445): `cmd/automations_preview_test.go` — `TestAutomationsCLI_PreviewWritesNoRows` (every table's row count unchanged, `llm()` faked); `internal/automations/sdk_output_blocks_test.go` — `TestOutput_RemoveDryRun`
 
 **Locked since:** 2026-10-14
 
@@ -671,6 +727,15 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-05 (Inbox builder A Task 12, board #1400, **AUTO-06 amended, owner approved in ask #486**): the editor's draft column is a step picker (What it collects · Look · When it runs), so no step shows every hashed field on its own. A save or confirm press on a step confirms what the step shows plus a **Changed** row pinned above the footer on every step: for an edit with a known diff, every changed field as the Changed box words them (old → new) on Look and When it runs — the box itself is on What it collects; for a new recipe, one never confirmed or an unknown diff, every hashed field (script, permissions, outputs, scope, trigger, missed, budget, concurrency, artifacts) the step does not show with its value (**Also confirms**), under the box's "First confirmation" / unknown-diff line; the scope is named, a workbench by its name; absent when the step shows them all; lines wrap, none is cut. The rule is pure Core (`AutomationDraftColumnModel.confirmationRow(on:)`/`visibleFields(on:)`, `AutomationEditorStep.shownFields`). The footer's AI-step line comes from `validate --json` `adds_llm`. Strengthening, no guard relaxed: `testAuto06_SaveDisabledWhileChecking` and `testAuto06_ConfirmSheetShowsHashedFieldChanges` unchanged. Guards added: `testAuto06_EveryHashedFieldVisibleWhereverAPressLands` (every step × every changed field, all at once, an unknown diff, a new recipe) and `testAuto06_ChangeMarkOnEveryStep` (D26: each changed field's line, or the unknown-diff / first-confirmation line, on every step). Tests added: `testConfirmationRowPerStep`, `testConfirmationRowForANewDraftNamesTheWorkbench`; shot `look-save-changed-row`.
+- 2026-11-05 (Inbox builder A Task 11, board #1400): `DraftOutput` (draft_automation and `automations preview`) gains `actions`, the card's own buttons in the form `automation_outputs.actions` stores (`[]` when none), so the Look step previews the card as the Inbox draws it. An added key only; no guard changed. Tests: `TestDraftAutomation_OutputCarriesCardActions`, the preview key pin.
+- 2026-11-03 (Inbox builder A Task 6, board #1400, **AUTO-06/AUTO-12 amended, owner approved in ask #445**): the owner preview `watchtower automations preview --stdin --json [--slug S] [--workbench N] [--builtin ID]` — the editor Look step's **Dry run** — evaluates the text on stdin as `draft_automation` does (`authoring.EvaluateDraft`: validate, widening, `DryRunInMemory` with the draft bounds) and prints its `DraftResult` (draft_automation's keys; `DraftOutput` gains `blocks` (null when none), `key` and `content_hash`). **AUTO-12**: it writes no row of any table and no draft-cache entry (`query_only` handle). **AUTO-06**: owner-only, refused under every agent marker before stdin is read and then run only after the owner's confirmation in the Desktop (AGENT-07); as the owner's press it dry-runs an unconfirmed recipe too, the D16 refusal staying on the chat path. A new dry-run path, no guard relaxed. Guards added: `TestAutomationsCLI_PreviewRefusedUnderAgentMarkers`, `TestAutomationsCLI_PreviewNeedsTheDesktopsConfirmation`, `TestAutomationsCLI_PreviewWritesNoRows` (a real `list_messages` read and `llm()`), `TestEvaluateDraft_DryRunsAnUnconfirmedRecipe`.
+- 2026-11-03 (Inbox builder A Task 5, board #1400, **owner approved in asks #961 and #445**): the SDK side of blocks and living artifacts. `output.inbox` takes `blocks` (exclusive with `body`; stored canonical, `body` = its plain text), `key` (required with `artifacts: living`, refused otherwise) and hook-registered fields (`folder` reserved for sub-project B); every inbox card carries `blocks.ContentHash` (an omitted priority hashes as `medium`). `output.remove({key})` (gated by `outputs: [inbox]` and `artifacts: living`) is buffered and committed only with the success (**AUTO-04**), journaled `dry_run` in a dry run (**AUTO-12**); the buffer keeps one operation per key, the later wins. A target action inside a block needs `outputs: [target]` like a card's (**AUTO-02**); the card's own actions count toward the 50-action cap. Strengthening, no guard relaxed. Guards added: `TestOutput_RemoveDryRun`, `TestAuto12_LivingDryRunWritesNothing`, `TestAuto04_LivingRunCommitsUpsertAndRemoval`, `TestOutput_RemoveLaterWins`, `TestOutput_OutputsCapCountsKeptOutputs`, `TestAuto08_ResumeRebuildsLivingBuffer`; `TestOutput_TargetActionNeedsTargetOutput` gains its list-row case.
+- 2026-11-03 (board #1400, Inbox builder A, **owner approved in ask #961**): **AUTO-04 extended** — the run's one finish transaction also upserts living Inbox outputs by `(automation_id, output_key)` and deletes the keys `output.remove` buffered (migration 00173: `blocks_json`, `output_key`, `content_hash`, `written_at`, `changed_at`, partial unique index `idx_automation_outputs_key`); only a changed content hash makes a card new again (moves `changed_at`, clears read/done/dismissed/press). A failed, timed-out, over-budget or cancelled run leaves living rows byte-identical, like every other output. Guards added: `TestAuto04_LivingUpsertCommittedOnlyOnSuccess`, `TestAuto04_RemoveCommittedOnlyOnSuccess`. No guard relaxed.
+- 2026-11-03 (board #1400, Inbox builder A Task 4, **owner approved in ask #961**): **AUTO-05 extended** — `artifacts: living` requires `concurrency: 1` and `outputs: [inbox]` (parse errors otherwise; one rule function, `serialRunReasons`). **AUTO-06 extended** — `artifacts` is in `approval_hash`, written to the canonical form only when `living`, so feed recipes hash as before (`TestApprovalHash_GoldenCanonicalBytes` unchanged); `ApprovalFields` and `validate --json` `fields` carry `artifacts` so the confirming screen lists it. Strengthening, no guard relaxed. Guards added: `TestAuto05_LivingArtifactsNeedConcurrencyOne`, `TestApprovalHash_ArtifactsIsHashed`, the `artifacts` case of `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.
+- 2026-11-03 (Inbox builder A Task 14, board #1400, AUTO-02 as amended in ask #445): the press path lands — `create_target` on the `inbox` surface (never trusted, so always pending until the owner's Approve) with `parent_id` accepted only there; one open proposal per button and one task per proposal (AGENT-05, `docs/inventory/agent-actions.md`). Guards added: `TestAuto02_TargetButtonOnlyProposes`, `TestCreateTarget_ParentIDOnlyOnInbox`.
+- 2026-11-03 (board #1400, Inbox builder A Task 7, **owner approved in ask #961**): **AUTO-06 extended** — a Reply press addresses its button by the card's flattened action list (card actions, then block actions in document order); `automations reply --content-hash` refuses a press on a card changed since it was drawn (`ErrOutputChanged`, nothing queued); the reply payload carries `content_hash`, and the executor ends a `reply` run `cancelled`/`cancelled` before its script, on every start, when its card changed or was removed. A payload without the hash runs as before. Strengthening, no guard relaxed (the existing reply guards pass unchanged). Guards added: `TestAutomationsCLI_ReplyRefusedWhenCardChanged`, `TestExecutor_ReplyRunOnChangedCardCancelled`, `TestAuto08_ResumedReplyRunIsCheckedForChangedCard`, `TestPressInboxOutputAction_ContentHash`.
+- 2026-11-03 (Inbox builder A Task 2, board #1400, **AUTO-02 amended, owner approved in ask #445**): an Inbox card's actions gain the `target` kind; the card action grammar moves into `internal/automations/blocks` (`blocks.ValidateAction`, shared with block actions); a target action needs `outputs: [target]`. The press path (`create_target` on the `inbox` surface) lands with Task 14. Strengthening, no guard relaxed. Guard added: `TestOutput_TargetActionNeedsTargetOutput`.
 - 2026-10-28 (board #1194, **AUTO-06 amended, owner approved in ask #692**): quick run gains a third origin, the iPhone (`QuickRunCenter.runFromPhone` through `AutomationRunHandler`), for workbench recipes only; the not-runnable states refuse as on the Mac, and a `confirm: true` recipe needs the phone's own confirmation, carried as `confirmed: true` and checked by the hub. No guard relaxed (`testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun` unchanged). Guards added: `AutomationRunHandlerTests.testAConfirmRecipeRunsOnlyWhenThePhoneConfirmedIt`, `testARecipeThatCannotRunIsRefusedWithItsReason`.
 - 2026-10-25 (board #606, ask #567): **AUTO-08 amended** — a run is also bounded by the read budget (READ-01, key `run:<id>`, `mcp()` counts as a call); reaching it is a catchable `ValidationError`, not an interrupt; an `agent()` CLI child keeps its own counter under the same key. Strengthening, no guard relaxed. Guards added: `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes`.
 - 2026-10-23 (board #801, C2 final review fix batch 1): **AUTO-08 strengthened** — a runaway-disabled built-in stays off until the owner turns it on (the slot runner, Run Now and `automations run` check `disabled_reason`; the built-in sync's mirror never turns such a row on; only the owner's `features enable` — the card's Turn On — clears it, and not under AI-agent markers), and a CLI inline built-in run (a running `manual` run) is swept at daemon start only past its deadline, as a live CLI dry run is. No guard relaxed. Guards added: `TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives`, `TestSetBuiltinEnabled_NeverTurnsOnARunawayStop`, `TestRunner_RunawayStoppedBuiltinStaysOff`, `TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn`.

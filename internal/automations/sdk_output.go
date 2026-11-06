@@ -8,15 +8,25 @@ import (
 
 	"github.com/dop251/goja"
 
+	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 )
 
 // OutputMod is the output module: one output.<kind> path per registered
 // kind. P1 registers inbox and report; later phases register further kinds
 // (briefing, target, slack) on the same *OutputMod before it is installed.
+// It also defines output.remove (living artifacts) and carries the
+// output.inbox field hooks (RegisterInboxField).
 type OutputMod struct {
-	kinds map[string]SDKFunc
+	kinds       map[string]SDKFunc
+	inboxFields map[string]InboxFieldFunc
 }
+
+// InboxFieldFunc handles one output.inbox field a later sub-project owns
+// (RegisterInboxField): fn is the call's name, v the field's raw
+// goja-exported value and o the output being built, which the hook may
+// change. Its error is thrown into the script and nothing is buffered.
+type InboxFieldFunc func(env *Env, fn string, v any, o *db.AutomationOutput) error
 
 // The output kinds P1 registers (automation_outputs.kind).
 const (
@@ -27,10 +37,23 @@ const (
 // OutputModule returns the output module with output.inbox and
 // output.report registered.
 func OutputModule() *OutputMod {
-	m := &OutputMod{kinds: map[string]SDKFunc{}}
-	m.RegisterOutputKind(outputKindInbox, bufferedOutput(outputKindInbox, outputOpts{priority: true, card: true}))
+	m := &OutputMod{kinds: map[string]SDKFunc{}, inboxFields: map[string]InboxFieldFunc{}}
+	m.RegisterOutputKind(outputKindInbox, bufferedOutput(outputKindInbox,
+		outputOpts{priority: true, card: true, blocks: true, key: true, hooks: m.inboxFields}))
 	m.RegisterOutputKind(outputKindReport, bufferedOutput(outputKindReport, outputOpts{}))
+	m.kinds[outputRemove] = removeOutput
 	return m
+}
+
+// RegisterInboxField hands output.inbox's field name to fn (sub-project B's
+// folder). A field output.inbox owns cannot be registered (a programming
+// error: it panics). A field no hook takes stays an unknown field, except
+// folder, which is reserved for its hook.
+func (m *OutputMod) RegisterInboxField(name string, fn InboxFieldFunc) {
+	if slices.Contains(inboxOwnFields, name) {
+		panic(fmt.Sprintf("automations: output.inbox owns the field %q", name))
+	}
+	m.inboxFields[name] = fn
 }
 
 // RegisterOutputKind defines output.<kind> as fn (a later registration of
@@ -49,10 +72,19 @@ func (m *OutputMod) Install(def Definer) {
 
 var outputPriorities = []string{"high", "medium", "low"}
 
-// outputOpts are the optional fields an output kind takes: priority, and
-// the Inbox card's link and actions (card).
+// inboxOwnFields are the fields output.inbox validates itself.
+var inboxOwnFields = []string{"title", "body", "priority", "link", "actions", "blocks", "key"}
+
+// inboxFolderField is reserved for sub-project B's hook: refused with its
+// own message until the hook is registered.
+const inboxFolderField = "folder"
+
+// outputOpts are the optional fields an output kind takes: priority, the
+// Inbox card's link and actions (card), its block document (blocks), a
+// living artifact's key (key), and the fields registered hooks take.
 type outputOpts struct {
-	priority, card bool
+	priority, card, blocks, key bool
+	hooks                       map[string]InboxFieldFunc
 }
 
 // bufferedOutput is output.<kind>({title, body, priority?, link?, actions?})
@@ -97,8 +129,9 @@ func bufferedOutput(kind string, opts outputOpts) SDKFunc {
 	}
 }
 
-// outputRow validates {title, body, priority?, link?, actions?} into a
-// buffered output.
+// outputRow validates {title, body | blocks, key?, priority?, link?,
+// actions?, <hook fields>} into a buffered output. An inbox card (opts.card)
+// gets its content hash.
 func outputRow(env *Env, fn, kind string, arg any, opts outputOpts) (db.AutomationOutput, error) {
 	o := db.AutomationOutput{Kind: kind}
 	if env.Automation != nil {
@@ -120,13 +153,25 @@ func outputRow(env *Env, fn, kind string, arg any, opts outputOpts) (db.Automati
 	if n := utf8.RuneCountInString(o.Title); n > MaxOutputTitleChars {
 		return o, validationf("%s(): the title is %d characters; the limit is %d", fn, n, MaxOutputTitleChars)
 	}
-	if o.Body, ok = fields["body"].(string); !ok {
-		return o, validationf("%s(): body must be a string", fn)
+	_, hasBlocks := fields["blocks"]
+	if _, hasBody := fields["body"]; hasBody && hasBlocks {
+		return o, validationf("%s(): pass body or blocks, not both", fn)
+	}
+	if !hasBlocks {
+		if o.Body, ok = fields["body"].(string); !ok {
+			return o, validationf("%s(): body must be a string", fn)
+		}
 	}
 	if p, has := fields["priority"]; has {
 		o.Priority, ok = p.(string)
 		if !ok || !slices.Contains(outputPriorities, o.Priority) {
 			return o, validationf("%s(): priority must be one of high, medium, low", fn)
+		}
+	}
+	if opts.key {
+		var err error
+		if o.OutputKey, err = outputKey(env, fn, fields); err != nil {
+			return o, err
 		}
 	}
 	if opts.card {
@@ -135,10 +180,35 @@ func outputRow(env *Env, fn, kind string, arg any, opts outputOpts) (db.Automati
 			return o, err
 		}
 	}
+	var doc *blocks.Document
+	if hasBlocks {
+		d, err := blocks.Validate(fn, fields["blocks"], blocks.Options{
+			BuiltIn: isBuiltinRun(env), AllowKind: allowActionKind(env, fn), CardActions: len(o.Actions),
+		})
+		if err != nil {
+			return o, blockError(err)
+		}
+		canonical, err := d.Canonical()
+		if err != nil {
+			return o, fmt.Errorf("%s(): encoding blocks: %w", fn, err) // unreachable: Validate encoded it
+		}
+		doc, o.BlocksJSON, o.Body = &d, string(canonical), blocks.PlainText(d, MaxOutputBodyBytes)
+	}
+	for _, name := range slices.Sorted(maps.Keys(opts.hooks)) {
+		if v, has := fields[name]; has {
+			if err := opts.hooks[name](env, fn, v, &o); err != nil {
+				return o, err
+			}
+		}
+	}
+	if opts.card {
+		o.ContentHash = blocks.ContentHash(o.Title, o.Body, doc, o.Priority, o.Link, o.Actions)
+	}
 	return o, nil
 }
 
-// checkOutputFields refuses a field output.<kind> does not take.
+// checkOutputFields refuses a field output.<kind> does not take. folder is
+// reserved for its hook (sub-project B) on a kind that takes hook fields.
 func checkOutputFields(fn string, fields map[string]any, opts outputOpts) error {
 	allowed := []string{"title", "body"}
 	if opts.priority {
@@ -147,10 +217,37 @@ func checkOutputFields(fn string, fields map[string]any, opts outputOpts) error 
 	if opts.card {
 		allowed = append(allowed, "link", "actions")
 	}
+	if opts.blocks {
+		allowed = append(allowed, "blocks")
+	}
+	if opts.key {
+		allowed = append(allowed, "key")
+	}
 	for k := range fields {
-		if !slices.Contains(allowed, k) {
-			return validationf("%s(): unknown field %q", fn, k)
+		if slices.Contains(allowed, k) {
+			continue
 		}
+		if _, hooked := opts.hooks[k]; hooked {
+			continue
+		}
+		if k == inboxFolderField && opts.hooks != nil {
+			return validationf("%s(): folder is not available yet", fn)
+		}
+		return validationf("%s(): unknown field %q", fn, k)
 	}
 	return nil
+}
+
+// isBuiltinRun reports a built-in automation's run (origin builtin), whose
+// cards may carry action and reminder refs.
+func isBuiltinRun(env *Env) bool {
+	if env.Automation != nil {
+		return env.Automation.IsBuiltin()
+	}
+	return env.Recipe != nil && env.Recipe.Scope.IsBuiltin()
+}
+
+// keepsLivingArtifacts reports a recipe that keeps living artifacts.
+func keepsLivingArtifacts(env *Env) bool {
+	return env.Recipe != nil && env.Recipe.Artifacts == ArtifactsLiving
 }

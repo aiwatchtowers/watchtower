@@ -151,6 +151,7 @@ var cliNoContentCommands = map[string]bool{
 	"agents scan":                      true,
 	"agents stats":                     true,
 	"ai models":                        true,
+	"ai routing-status":                true, // Local provider health/revision metadata only.
 	"ai session":                       true,
 	"ai test":                          true,
 	"auth check-cert":                  true,
@@ -341,6 +342,7 @@ var cliNoContentCommands = map[string]bool{
 	"remind":                           true,
 	"session-host":                     true,
 	"slack add":                        true,
+	"slack backfill":                   true, // fetches into the database; prints counts only
 	"slack disable":                    true,
 	"slack enable":                     true,
 	"slack login":                      true,

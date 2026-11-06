@@ -43,7 +43,7 @@ action: chat:How do I make an automation that runs every Monday?
 
 **Where answers come from.** The assistant searches everything Watchtower synced and indexed (Slack, mail, Jira with comments, calendar, transcripts and recaps, digests, decisions, ideas). That search follows the Knowledge search feature switch. Each answer folds its steps into "Worked for 12s · 4 steps", and a line below it opens the **Sources** panel, grouped by Slack channel, Jira project, Confluence space, mail, meetings and other.
 
-**Providers.** The pill in the composer picks Claude, Codex or Ollama and a model; **Auto** is the provider's strong model. Codex and Ollama may show the reply all at once or no steps, and cannot read images or PDFs.
+**Providers.** Choose **Preferred + reserve · Auto** or **Only** a provider. See [limits, pins and recovery](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits).
 
 **Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, and a running reply is never cut off.
 
@@ -134,7 +134,7 @@ Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same 
 
 ### Artifacts
 
-Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. On the Claude provider a page, deck or doc is published to your claude.ai account instead. See [Artifacts in Chats](ai-chat-artifacts.md).
+Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. On the Claude provider you can ask for a page, deck or doc on claude.ai instead. See [Artifacts in Chats](ai-chat-artifacts.md).
 
 ### Ask about a passage
 <!-- learn
@@ -169,7 +169,7 @@ When your request can be read two ways, the assistant asks with a card of one to
 
 ## When it's empty or wrong
 
-- **A reply fails.** The card shows the provider's own reason and **Retry**; your message is never lost. A sign-in error names the command for that provider.
+- **A reply fails.** Your message stays. After a started-turn limit, **Review actions** opens saved actions; send a new message after checking. Other errors may offer **Retry**.
 - **Answers miss recent items.** The assistant sees only what has synced. Check the source in **Connections**, or see [Search and knowledge](search-and-knowledge.md).
 - **An attachment is refused.** It is over the size cap, or the provider cannot read that type (Codex and Ollama take no images or PDFs).
 - **A project edit seems ignored.** A reply being written finishes first; the change applies from the next message.

@@ -23,7 +23,16 @@ package final class ChatTurnDriver {
 
     package private(set) var liveTurn: LiveTurn?
     package private(set) var sessionID: String?
+    package private(set) var actualProvider: String?
+    package private(set) var actualModel: String?
+    package private(set) var routing: ChatRoutingMetadata?
     package private(set) var lastSessionError: ChatSessionError?
+    /// An eager ready can fail before any turn exists. Keep the real storage
+    /// cause observable until an actual-metadata write succeeds.
+    package private(set) var actualPersistenceError: Error?
+    package var actualPersistenceErrorMessage: String? {
+        actualPersistenceError.map(Self.actualPersistenceMessage)
+    }
     /// The turn ended and its terminal write is under way: the turn can no
     /// longer be stopped, and no next turn starts until it landed.
     package private(set) var isFinishing = false
@@ -65,14 +74,22 @@ package final class ChatTurnDriver {
     package func begin(messageID: Int64, turnID: String) -> LiveTurn {
         let turn = LiveTurn(messageID: messageID, turnID: turnID, startedAt: clock())
         liveTurn = turn
+        turn.persistError = actualPersistenceErrorMessage
+        // Eager pinned/off hosts already reported their resolved actual model.
+        // Automatic preflight hosts must report a new selection for this turn.
+        if routing?.mode == "pinned" || routing?.reason == "fallback_disabled",
+           let provider = actualProvider, let model = actualModel {
+            recordActual(provider: provider, model: model, routing: routing)
+        }
         lastFlush = .distantPast
         return turn
     }
 
     package func apply(_ event: ChatEvent) {
         switch event {
-        case let .sessionReady(sid, _, _):
+        case let .sessionReady(sid, provider, model, routing):
             recordSession(sid)
+            recordActual(provider: provider, model: model, routing: routing)
         case .turnStart:
             break
         case let .textDelta(turnID, text):
@@ -136,6 +153,39 @@ package final class ChatTurnDriver {
     private func running(_ turnID: String) -> LiveTurn? {
         guard let turn = liveTurn, turn.isRunning, turn.turnID == turnID else { return nil }
         return turn
+    }
+
+    private func recordActual(provider: String, model: String, routing: ChatRoutingMetadata?) {
+        guard recordsSession else { return }
+        self.routing = routing
+        guard !provider.isEmpty else { return }
+        actualProvider = provider
+        actualModel = model
+        let (store, conversationID, projectID, turn) = (store, conversationID, projectID, liveTurn)
+        writes.start { [weak self] in
+            do {
+                try await store.saveActual(conversationID: conversationID, messageID: turn?.messageID,
+                                           provider: provider, model: model, routing: routing, projectID: projectID)
+                guard let self else { return }
+                let previous = self.actualPersistenceErrorMessage
+                self.actualPersistenceError = nil
+                if let previous {
+                    if self.lastSessionError?.message == previous { self.lastSessionError = nil }
+                    if turn?.persistError == previous { turn?.persistError = nil }
+                    if self.liveTurn?.persistError == previous { self.liveTurn?.persistError = nil }
+                }
+            } catch {
+                guard let self else { return }
+                self.actualPersistenceError = error
+                let message = Self.actualPersistenceMessage(error)
+                self.lastSessionError = ChatSessionError(turnID: nil, code: .internalError, message: message, retryable: false)
+                turn?.persistError = message
+            }
+        }
+    }
+
+    private static func actualPersistenceMessage(_ error: Error) -> String {
+        "Couldn't save the actual provider: \(error.localizedDescription)"
     }
 
     private func recordSession(_ sid: String?) {
@@ -227,7 +277,8 @@ package final class ChatTurnDriver {
         case .complete:
             finalizePersist(turn, status: "complete", failure: nil)
         case let .failed(failure):
-            finalizePersist(turn, status: "error", failure: failure)
+            finalizePersist(turn, status: failure.persistenceCode == "quota_exhausted" && !turn.fullText.isEmpty ? "partial" : "error",
+                            failure: failure)
         case .interrupted, .running:
             finalizePersist(turn, status: "partial", failure: nil)
         }

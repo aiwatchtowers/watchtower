@@ -13,6 +13,8 @@ struct ArtifactPanelView: View {
     var onClose: () -> Void
 
     @State private var notice: String?
+    /// Drops a late notice raised on an artifact no longer shown.
+    @State private var noticeGate = ArtifactNoticeGate()
     /// Bumped by Reload on an html artifact.
     @State private var htmlReload = 0
     /// The comment list is open. Survives new comments, versions and
@@ -33,6 +35,30 @@ struct ArtifactPanelView: View {
             Divider()
             toolbar
         }
+        // A notice belongs to the artifact it was raised on.
+        .onChange(of: shownArtifact) {
+            notice = nil
+            noticeGate.advance()
+        }
+    }
+
+    /// Which artifact and version the panel shows.
+    private var shownArtifact: ShownArtifact {
+        ShownArtifact(model: ObjectIdentifier(model), version: model.selectedVersion)
+    }
+
+    private struct ShownArtifact: Equatable {
+        let model: ObjectIdentifier
+        let version: Int?
+    }
+
+    /// Sets the notice of an action that answers later (a panel, a print
+    /// job) only while the same artifact is still shown. The gate, not a
+    /// comparison of `shownArtifact`: the closure holds a copy of this view,
+    /// whose `model` stays the artifact it was raised on after the chat
+    /// shows another one in the same panel.
+    private func noticeForShown() -> (String) -> Void {
+        noticeGate.guarded { notice = $0 }
     }
 
     private var header: some View {
@@ -130,7 +156,21 @@ struct ArtifactPanelView: View {
                 Button("Edit") { model.beginEdit() }.disabled(model.liveDraft != nil)
                 Button("Copy") { run(.copy(draft.content)) }
                 Button("Export…") {
-                    ArtifactExporter.export(draft) { notice = $0 }
+                    ArtifactExporter.export(draft, onError: noticeForShown())
+                }
+                if ArtifactPrint.offersWord(draft) {
+                    Button("Export as Word…") { ArtifactExporter.exportWord(draft, onError: noticeForShown()) }
+                        .disabled(!ArtifactPrint.canExportWord(draft))
+                }
+                if ArtifactPrint.offersPrint(draft) {
+                    // ⌘P while the panel shows a printable artifact; the
+                    // print panel's PDF menu saves it as a PDF.
+                    Button("Print…") {
+                        ArtifactPrinter.print(draft, window: NSApp.keyWindow ?? NSApp.mainWindow, onError: noticeForShown())
+                    }
+                    .keyboardShortcut("p", modifiers: .command)
+                    .disabled(!ArtifactPrint.canPrint(draft))
+                    .help("Print, or save as a PDF from the print panel")
                 }
                 ForEach(ArtifactActions.kindActions(for: draft, gmailConnected: gmailConnected, slackLinks: slackLinks), id: \.title) { item in
                     Button { run(item.action) } label: { Label(item.title, systemImage: item.systemImage) }
@@ -194,7 +234,7 @@ struct ArtifactPanelView: View {
         .disabled(!draft.isComplete)
     }
 
-    private func run(_ action: ArtifactAction) {
+    private func run(_ action: ChatArtifactAction) {
         let outcome = ArtifactActionPerformer.perform(action)
         if case .copyThenOpen(_, let url) = action, outcome.copied {
             notice = url == nil ? "Copied to the clipboard." : "Copied to the clipboard — paste it into the opened draft."

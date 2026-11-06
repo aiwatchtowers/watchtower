@@ -43,6 +43,7 @@ import (
 	"watchtower/internal/customtracks"
 	"watchtower/internal/logredact"
 	"watchtower/internal/reactioncmd"
+	"watchtower/internal/sessions"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -118,6 +119,10 @@ const maxDailyAIAttempts = 3
 
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
+	aiWorkerPool *sessions.SessionPool
+	routingJob   func(context.Context, context.Context) (context.Context, context.Context)
+	routingWatch func(context.Context)
+
 	orchestrators       []*sync.Orchestrator
 	config              *config.Config
 	logger              *log.Logger
@@ -472,6 +477,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 		defer d.advertiseCaps()()
 	}
 
+	if d.routingWatch != nil {
+		watchCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); d.routingWatch(watchCtx) }()
+		defer func() { cancel(); <-done }()
+	}
+
 	pollInterval := d.config.Sync.PollInterval
 	if pollInterval < minPollInterval {
 		pollInterval = config.DefaultPollInterval
@@ -557,6 +569,9 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 // budgets, throttle stamps and pipeline_runs rows see a cancel only on
 // shutdown. It moves d.cycleSection along for runLoop.
 func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
+	if d.routingJob != nil {
+		ctx, fetchCtx = d.routingJob(ctx, fetchCtx)
+	}
 	// First of all: this cycle's AI usage counts the calls other processes
 	// spooled since the last one.
 	d.phaseLLMLedger(ctx)
@@ -773,7 +788,8 @@ const stalePipelineRunError = "interrupted: the process running it exited before
 
 // staleTempAge is how old a prompt temp file or an extract spool file must
 // be before the startup sweep removes it: a live call removes its own long
-// before (fsutil.StaleTempPatterns, extract.StaleTempAge).
+// before, or holds a long-lived one, which the sweep skips (fsutil.HoldTempFile;
+// fsutil.StaleTempPatterns, extract.StaleTempAge).
 const staleTempAge = 10 * time.Minute
 
 // sweepStaleTemp removes what a killed process left holding the owner's
@@ -848,9 +864,12 @@ func (d *Daemon) reapStalePipelineRuns() {
 // inboxErr is what must freeze the inbox watermark (INBOX-09): every account
 // whose sync failed or left its search window incomplete (a rate limit,
 // broken pagination — Run returns nil for those), named by account — except
-// an account whose token is revoked. A revoked account fails every cycle
-// until the owner reconnects it, so freezing on it would stop every other
-// account's watermark for good; its status row already shows it as revoked.
+// an account whose token is revoked or signed in to another Slack team
+// (sync.ErrSlackTeamMismatch, amended 2026-11-03, ask #454). Either fails
+// every cycle until the owner reconnects it, so freezing on it would stop
+// every other account's watermark for good; recordAuthResult marks its
+// status row (revoked, or the mismatch's Re-login error), and the error is
+// still logged and returned as the cycle's sync error.
 func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil
@@ -882,7 +901,7 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 				if firstErr == nil {
 					firstErr = err
 				}
-				if !sync.IsRevokedAuthError(err) {
+				if !sync.IsRevokedAuthError(err) && !errors.Is(err, sync.ErrSlackTeamMismatch) {
 					freezing = append(freezing, fmt.Errorf("slack account %d: %w", o.AccountID(), err))
 				}
 			case o.SearchIncomplete():
@@ -1768,12 +1787,12 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	// without data writes no empty "people" row every cycle (the
 	// phaseCustomTrackScan precedent). A failed check falls through so Run
 	// reports the error in a tracked row.
-	if has, err := d.peoplePipe.HasData(); err != nil {
+	if has, err := d.peoplePipe.HasData(ctx); err != nil {
 		d.logger.Printf("people: data check failed, running anyway: %v", err)
 	} else if !has {
 		// Current source eligibility can remove all input from an old window.
 		// Drop that empty descriptor without claiming success for newer data.
-		if err := d.peoplePipe.AcknowledgeWindow(); err != nil {
+		if err := d.peoplePipe.AcknowledgeWindow(ctx); err != nil {
 			d.logger.Printf("people: %v", err)
 		}
 		return
@@ -1805,7 +1824,7 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 				d.lastPeople = previous
 				err = fmt.Errorf("saving people success stamp: %w", stampErr)
 			} else {
-				if ackErr := d.peoplePipe.AcknowledgeWindow(); ackErr != nil {
+				if ackErr := d.peoplePipe.AcknowledgeWindow(ctx); ackErr != nil {
 					d.logger.Printf("people: %v", ackErr)
 				}
 			}
@@ -2865,3 +2884,15 @@ func (d *Daemon) markAccessOK(source string, id int64) {
 		d.logger.Printf("%s: account %d: record access: %v", source, id, err)
 	}
 }
+
+// SetRoutingJob installs the immutable routing snapshot captured per sync job.
+// It is configured before Run; pipelines and their checkpoints remain intact.
+func (d *Daemon) SetRoutingJob(bind func(context.Context, context.Context) (context.Context, context.Context)) {
+	d.routingJob = bind
+}
+
+// SetRoutingWatch installs the routing publisher after the daemon owns its PID.
+func (d *Daemon) SetRoutingWatch(watch func(context.Context)) { d.routingWatch = watch }
+
+// SetAIWorkerPool shares admission with separately constructed coach factories.
+func (d *Daemon) SetAIWorkerPool(pool *sessions.SessionPool) { d.aiWorkerPool = pool }

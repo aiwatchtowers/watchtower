@@ -616,8 +616,10 @@ content width). No migration, no AI, no daemon phase.
   `UnsnoozeExpiredTargets` compares against (a bare date would come back at
   00:00 UTC, the same evening west of UTC). Automation outputs through
   `AutomationQueries.markOutputDone` (Done, writes `done_at`) / `dismissOutput` (Hide — no
-  snooze, the output is dismissed as in Inbox); an output closed elsewhere
-  matches no row, which is success. Proposals and events have no
+  snooze, the output is dismissed as in Inbox), both only at the content hash
+  the feed drew; an output closed elsewhere, or a living card rewritten since
+  it was drawn, matches no row: the row comes back without an error and the
+  feed is read again. Proposals and events have no
   action: `HomeCenter.act` ignores them (`FeedRef.hasActions`). A failure un-hides the
   row and stores the message in `feedErrors` (a second press clears it). An
   item already gone (Go's resolve/dismiss exit 0 on a missing row;

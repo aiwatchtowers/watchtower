@@ -195,7 +195,20 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 // widened by a day to keep both edge days inside; the overlap is harmless
 // (messages upsert).
 func slackSearchRange(from, to time.Time) (after, before string) {
-	return from.UTC().AddDate(0, 0, -1).Format(searchDateFormat), to.UTC().AddDate(0, 0, 1).Format(searchDateFormat)
+	first, last := BackfillSearchDays(from, to)
+	return first.Format(searchDateFormat), last.Format(searchDateFormat)
+}
+
+// BackfillSearchDays is the UTC midnight of the "after:" day and of the
+// "before:" day BackfillSearch sends for [from, to). The search may store
+// messages of any UTC day from first to last, both included (the operators
+// are day-granular, and Slack may read them in the user's own zone), so a
+// caller that must know what the search can have stored takes this whole
+// span (`slack backfill` freezes its coverage over it).
+func BackfillSearchDays(from, to time.Time) (first, last time.Time) {
+	first = from.UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	last = to.UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
+	return first, last
 }
 
 // ErrBackfillIncomplete is BackfillSearch's error when Slack's search did not
@@ -208,8 +221,24 @@ var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate l
 // (widened to whole days; the fetch side of the chunk convention in
 // internal/historybackfill/chunk.go) without touching the search watermark, the
 // progress heartbeat or the account's auth/error state. An incomplete search
-// returns an error wrapping ErrBackfillIncomplete.
+// returns an error wrapping ErrBackfillIncomplete, and so does an account
+// whose token is for another team than its data (TeamMismatchError): nothing
+// is searched until the owner signs in to the home team again.
 func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {
+	acct, err := o.db.GetSlackAccount(o.accountID)
+	if err != nil {
+		return 0, err
+	}
+	// A moved account (#915) waits for its Re-login. The daemon pauses its
+	// row on the cycle's TeamMismatch; wrapped as incomplete, a chunk that
+	// still gets here is held, never struck.
+	if err := o.checkHomeTeam(acct, acct.TeamID, acct.TeamName); err != nil {
+		return 0, fmt.Errorf("%w: %w", ErrBackfillIncomplete, err)
+	}
+	// A caller that never ran Run (`slack backfill`) still saves the owner's
+	// own media as theirs and links on the right domain.
+	o.account = acct
+	o.slackClient.SetTeamDomain(acct.TeamDomain)
 	o.resetMediaPlan()
 	after, before := slackSearchRange(from, to)
 	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false, nil)

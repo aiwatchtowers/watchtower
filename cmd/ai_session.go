@@ -85,22 +85,6 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := notifyShutdownContext(ctx, stderrLogf)
 	defer cancel()
 
-	if err := providers.Allowed(cfg.AI.Provider); err != nil {
-		return fail(chat.CodeProviderUnavailable, err.Error())
-	}
-	model := aiSessionFlagModel
-	if model == "" {
-		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	}
-	// One decision drives the prompt, the flags and the gate (#737).
-	claudeAI := resolveClaudeAI(cfg, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
-	writeUnavailableConnectors(dbPath, claudeAI, cmd.ErrOrStderr())
-	prompt, err := chat.BuildSystemPrompt(ctx, database, cfg,
-		sessionPromptOptions(cfg, aiSessionFlagSurface, aiSessionFlagProjectID, time.Now(), claudeAI.prompt))
-	if err != nil {
-		return fail(chat.CodeInternal, fmt.Sprintf("building the system prompt: %v", err))
-	}
-
 	turnFile, err := newTurnFile()
 	if err != nil {
 		return fail(chat.CodeInternal, fmt.Sprintf("creating the turn file: %v", err))
@@ -113,23 +97,14 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
-	var mounted []ai.ExternalMCPServer
-	backend, err := newSessionBackend(sessionWiring{
-		cfg: cfg, database: database, dbPath: dbPath, conv: conv,
-		model: model, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile,
-		project: project, chatProjectID: chatProjectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI,
-		onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext },
-	})
+	backend, err := routedSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
+	s := chat.NewSession(backend, out)
+	s.Provider = cfg.AI.Provider
+	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 
-	// The policy is asked again at every turn (#608).
-	s := chat.NewSession(policyCheckedBackend{
-		Backend: backend, provider: cfg.AI.Provider, mounted: mounted, claudeAIOn: claudeAI.mode.On, end: cancel,
-	}, out)
-	s.Provider = providers.ByID(cfg.AI.Provider).ID
-	s.Model = model
 	s.TurnFile = turnFile
 	return s.Run(ctx, cmd.InOrStdin())
 }

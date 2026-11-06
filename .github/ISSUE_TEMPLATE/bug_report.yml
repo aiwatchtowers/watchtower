@@ -1,0 +1,99 @@
+name: Bug report
+description: Something in Watchtower does not work as it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Before filing, please check
+        [Troubleshooting](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/README.md)
+        and the existing issues.
+
+        **This issue is public.** Do not paste real names, company or workspace names,
+        email addresses, account ids or message text. Security problems go to
+        [private reporting](https://github.com/aiwatchtowers/watchtower/security/advisories/new) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Watchtower version
+      description: Output of `watchtower version`, or the version in **About Watchtower**.
+      placeholder: "0.26.5"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.5"
+    validations:
+      required: true
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Mac chip
+      options:
+        - Apple M1
+        - Apple M2
+        - Apple M3
+        - Apple M4
+        - Apple M5
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: AI provider
+      options:
+        - Claude Code
+        - Codex
+        - Ollama (or another local server)
+        - Not set up yet
+    validations:
+      required: true
+  - type: checkboxes
+    id: sources
+    attributes:
+      label: Connected sources
+      description: Which sources are connected? Leave all unchecked if none.
+      options:
+        - label: Slack
+        - label: Gmail
+        - label: Google Calendar
+        - label: Jira
+        - label: Confluence
+        - label: Linear
+        - label: Email over IMAP
+        - label: iPhone companion
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead. Screenshots help; blur any names and message text in them.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Relevant lines from `~/.local/share/watchtower/<workspace>/watchtower.log` or the command's output.
+        **Redact before pasting:** replace names, email addresses, channel names, ids and any message
+        text with placeholders such as `<colleague-a>` or `<channel>`.
+      render: text

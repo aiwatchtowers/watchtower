@@ -28,8 +28,9 @@ package struct AutomationsCLI {
         case sessionLaunched(step: Int64, session: Int64)
         case sessionEnded(step: Int64, status: SessionEnd, error: String?)
         case rescan(workbenchID: Int64)
-        /// The owner's press of Reply action `action` of Inbox card `outputID`.
-        case reply(outputID: Int64, action: Int)
+        /// The owner's press of Reply action `action` (its flattened index) of
+        /// Inbox card `outputID`, drawn at `contentHash`.
+        case reply(outputID: Int64, action: Int, contentHash: String)
         /// Deletes a built-in's owner copy: the shipped text runs again.
         case reset(Int64)
         /// Retries the one-time move of the built-ins' old settings.
@@ -43,6 +44,9 @@ package struct AutomationsCLI {
         case trackStart(Int)
         /// Rewrites a bound watch's instruction line from stdin (owner only).
         case trackInstruction(Int)
+        /// The owner's Dry run in the editor's Look step: the recipe text on
+        /// stdin, dry-run in memory as `draft_automation` does (owner only).
+        case preview(slug: String?, workbench: Int64?, builtin: String?)
     }
 
     /// How a `session()` step's session ended, as `session-ended --status`
@@ -108,8 +112,9 @@ package struct AutomationsCLI {
         case let .rescan(workbenchID):
             // The personal folder and this workbench's (spec §13.4).
             return ["automations", "rescan", "--workbench", String(workbenchID)]
-        case let .reply(outputID, action):
-            return ["automations", "reply", "--output", String(outputID), "--action", String(action), "--json"]
+        case let .reply(outputID, action, contentHash):
+            return ["automations", "reply", "--output", String(outputID), "--action", String(action),
+                    "--content-hash", contentHash, "--json"]
         case let .reset(id):
             return ["automations", "reset", String(id), "--json"]
         case .upgradeBuiltins:
@@ -124,6 +129,12 @@ package struct AutomationsCLI {
             return ["tracks", "start", String(trackID), "--json"]
         case let .trackInstruction(trackID):
             return ["tracks", "instruction", String(trackID), "--text-file", "-"]
+        case let .preview(slug, workbench, builtin):
+            var out = ["automations", "preview", "--stdin", "--json"]
+            if let slug { out += ["--slug", slug] }
+            if let workbench { out += ["--workbench", String(workbench)] }
+            if let builtin { out += ["--builtin", builtin] }
+            return out
         }
     }
 
@@ -224,9 +235,10 @@ package struct AutomationsCLI {
     }
 
     /// Records the press of a card's Reply action and queues one
-    /// `trigger='reply'` run (AUTO-09); the CLI wakes the daemon itself.
-    package func reply(outputID: Int64, action: Int) async throws -> ReplyResult {
-        try await decode(.reply(outputID: outputID, action: action))
+    /// `trigger='reply'` run (AUTO-09); the CLI wakes the daemon itself. A
+    /// card whose content changed since it was drawn is refused, nothing queued.
+    package func reply(outputID: Int64, action: Int, contentHash: String) async throws -> ReplyResult {
+        try await decode(.reply(outputID: outputID, action: action, contentHash: contentHash))
     }
 
     /// Resets built-in `id` to its shipped text (runnable at once, AUTO-06
@@ -262,6 +274,16 @@ package struct AutomationsCLI {
     /// text; refused (stderr) for a recipe changed in the chat.
     package func trackInstruction(_ trackID: Int, text: String) async throws {
         _ = try await runner.run(args: Self.args(.trackInstruction(trackID)), stdin: Data(text.utf8))
+    }
+
+    /// The owner's **Dry run** of `text` (`preview --stdin --json`): the
+    /// `draft_automation` result, nothing written. It goes through the
+    /// runner's stdin path, which registers the launch with
+    /// `OwnerConfirmGrants`, so the CLI's owner confirmation (AGENT-07) is
+    /// granted without a window. Cancelling the calling task terminates it.
+    package func preview(text: String, slug: String?, workbench: Int64?, builtin: String?) async throws
+        -> AutomationDraftEntry.Result {
+        try await decode(.preview(slug: slug, workbench: workbench, builtin: builtin), stdin: Data(text.utf8))
     }
 
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
@@ -362,6 +384,10 @@ extension AutomationsCLI {
         /// The hashed fields the manifest keys do not carry (`fields`): `{}`
         /// when the text does not parse, nil from an older CLI.
         package let fields: Fields?
+        /// The text adds an AI step (`adds_llm`): more `llm()` call sites
+        /// than the confirmed text, or a new `llm:` permission; for a new
+        /// recipe, any. False from an older CLI.
+        package let addsLLM: Bool
 
         /// `fields`: the trigger in one line ("schedule: 0 9 * * 1-5",
         /// "event: slack.new_messages where account=\"a\"", "button", "button
@@ -377,6 +403,10 @@ extension AutomationsCLI {
             package let missed: String
             package let concurrency: String
             package let budget: Budget?
+            /// `artifacts`: `feed` (a new card each run) or `living` (one card
+            /// per key, kept current); "" from an older CLI, which knows only
+            /// feed.
+            package let artifacts: String
 
             /// Every field present: what the column needs to show them all.
             package var isComplete: Bool {
@@ -389,9 +419,10 @@ extension AutomationsCLI {
                 missed = try c.decodeIfPresent(String.self, forKey: .missed) ?? ""
                 concurrency = try c.decodeIfPresent(String.self, forKey: .concurrency) ?? ""
                 budget = try c.decodeIfPresent(Budget.self, forKey: .budget)
+                artifacts = try c.decodeIfPresent(String.self, forKey: .artifacts) ?? ""
             }
 
-            private enum CodingKeys: String, CodingKey { case trigger, missed, concurrency, budget }
+            private enum CodingKeys: String, CodingKey { case trigger, missed, concurrency, budget, artifacts }
         }
 
         /// The validated text is `ok` and every hashed field can be shown
@@ -403,6 +434,7 @@ extension AutomationsCLI {
             case changesKnown = "changes_known"
             case approvalHash = "approval_hash", contentHash = "content_hash"
             case feedsSourcesToLLM = "feeds_sources_to_llm"
+            case addsLLM = "adds_llm"
         }
 
         package init(from decoder: Decoder) throws {
@@ -421,6 +453,7 @@ extension AutomationsCLI {
             changes = try c.decodeIfPresent([AutomationChange].self, forKey: .changes) ?? []
             changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
             fields = try c.decodeIfPresent(Fields.self, forKey: .fields)
+            addsLLM = try c.decodeIfPresent(Bool.self, forKey: .addsLLM) ?? false
         }
     }
 

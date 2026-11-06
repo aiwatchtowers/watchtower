@@ -15,11 +15,16 @@ final class FakeHomeFeedPerformer: HomeFeedPerforming {
     var write: ((FeedAction, FeedRef) async throws -> Void)?
     private var gate: CheckedContinuation<Void, Never>?
 
-    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws {
+    /// What the next calls return when they do not throw.
+    var written = true
+
+    func perform(_ action: FeedAction, on ref: FeedRef, contentHash: String, now: Date, calendar: Calendar)
+        async throws -> Bool {
         calls.append((action, ref))
         if gated { await withCheckedContinuation { gate = $0 } }
         if let error { throw error }
         try await write?(action, ref)
+        return written
     }
 
     var isWaiting: Bool { gate != nil }
@@ -36,8 +41,10 @@ final class FakeHomeFeedPerformer: HomeFeedPerforming {
 private final class PerRowGatedPerformer: HomeFeedPerforming {
     private var gates: [FeedRef: CheckedContinuation<Error?, Never>] = [:]
 
-    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws {
+    func perform(_ action: FeedAction, on ref: FeedRef, contentHash: String, now: Date, calendar: Calendar)
+        async throws -> Bool {
         if let error = await withCheckedContinuation({ gates[ref] = $0 }) { throw error }
+        return true
     }
 
     func isWaiting(_ ref: FeedRef) -> Bool { gates[ref] != nil }
@@ -223,6 +230,39 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertTrue(shows(ref)(center.snapshot))
         XCTAssertEqual(center.feedErrors[ref], "watchtower exited with error: database is locked")
         XCTAssertFalse(center.hiddenRefs.contains(ref))
+    }
+
+    /// Done on a living card rewritten since the feed drew it writes
+    /// nothing (the drawn hash no longer matches): the row comes back with
+    /// no error, and the re-read shows the new version.
+    func testDoneOnACardRewrittenUnderTheViewBringsItBack() async throws {
+        let pool = try makePool()
+        let stamp = AutomationDates.format(Date().addingTimeInterval(-60))
+        let (automation, id) = try await pool.write { db -> (Int64, Int64) in
+            let automation = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return (automation, try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run, createdAt: stamp, outputKey: "threads", contentHash: "h1"))
+        }
+        let ref = FeedRef.output(id)
+        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: nil, pool: pool))
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center, shows(ref))
+        try await pool.write { db in
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            try TestDatabase.rewriteLivingOutput(db, id: id, runID: run, body: "new", blocksJSON: "",
+                                                 contentHash: "h2", at: AutomationDates.format(Date()))
+        }
+
+        await center.act(.done, on: ref)
+        XCTAssertTrue(shows(ref)(center.snapshot))
+        XCTAssertNil(center.feedErrors[ref])
+        XCTAssertFalse(center.hiddenRefs.contains(ref))
+        let doneAt = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT done_at FROM automation_outputs WHERE id = ?", arguments: [id])
+        }
+        XCTAssertNil(doneAt)
     }
 
     func testASecondPressClearsTheRowsError() async throws {
@@ -470,9 +510,9 @@ final class HomeFeedActionTests: XCTestCase {
         }
         let runner = RecordingRunner()
         let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
-        try await performer.perform(.done, on: .output(done), now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .output(hidden), now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .output(done), now: Date(), calendar: .current)
+        try await performer.perform(.done, on: .output(done), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .output(hidden), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .output(done), contentHash: "", now: Date(), calendar: .current)
         let rows = try await pool.read { db in
             try Row.fetchAll(db, sql: "SELECT id, read_at, done_at, dismissed_at FROM automation_outputs ORDER BY id")
         }
@@ -488,8 +528,8 @@ final class HomeFeedActionTests: XCTestCase {
     func testInboxDoneRunsResolve() async throws {
         let runner = RecordingRunner()
         let performer = LiveHomeFeedPerformer(runner: runner, pool: try makePool())
-        try await performer.perform(.done, on: .inbox(1), now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .inbox(1), now: Date(), calendar: .current)
+        try await performer.perform(.done, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
         XCTAssertEqual(runner.calls, [["inbox", "resolve", "1"], ["inbox", "dismiss", "1"]])
         XCTAssertEqual(runner.timeouts, [30, 30])
     }
@@ -500,7 +540,7 @@ final class HomeFeedActionTests: XCTestCase {
         runner.error = CLIRunnerError.nonZeroExit(code: 1, stderr: "resolving inbox item 1: database is locked")
         let performer = LiveHomeFeedPerformer(runner: runner, pool: try makePool())
         do {
-            try await performer.perform(.done, on: .inbox(1), now: Date(), calendar: .current)
+            try await performer.perform(.done, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
             XCTFail("expected the CLI error")
         } catch let error as CLIRunnerError {
             guard case .nonZeroExit(1, _) = error else { return XCTFail("unexpected \(error)") }
@@ -510,7 +550,7 @@ final class HomeFeedActionTests: XCTestCase {
     func testNoCLIIsAnError() async throws {
         let performer = LiveHomeFeedPerformer(runner: nil, pool: try makePool())
         do {
-            try await performer.perform(.done, on: .inbox(1), now: Date(), calendar: .current)
+            try await performer.perform(.done, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
             XCTFail("expected cliUnavailable")
         } catch let error as HomeFeedActionError {
             XCTAssertEqual(error, .cliUnavailable)
@@ -522,7 +562,7 @@ final class HomeFeedActionTests: XCTestCase {
         let id = try insertReminder(pool)
         let (now, calendar) = try berlin()
         try await LiveHomeFeedPerformer(runner: nil, pool: pool)
-            .perform(.hide, on: .reminder(id), now: now, calendar: calendar)
+            .perform(.hide, on: .reminder(id), contentHash: "", now: now, calendar: calendar)
         let row = try await pool.read { db in
             try Row.fetchOne(db, sql: "SELECT remind_at, status FROM reminders WHERE id = ?", arguments: [id])
         }
@@ -535,7 +575,7 @@ final class HomeFeedActionTests: XCTestCase {
         let pool = try makePool()
         let id = try insertReminder(pool)
         try await LiveHomeFeedPerformer(runner: nil, pool: pool)
-            .perform(.done, on: .reminder(id), now: Date(), calendar: .current)
+            .perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
         let status = try await pool.read { db in
             try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
         }
@@ -548,8 +588,8 @@ final class HomeFeedActionTests: XCTestCase {
             (Int(try TestDatabase.insertTarget(db, text: "A")), Int(try TestDatabase.insertTarget(db, text: "B")))
         }
         let performer = LiveHomeFeedPerformer(runner: nil, pool: pool)
-        try await performer.perform(.done, on: .target(done), now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .target(hidden), now: Date(), calendar: .current)
+        try await performer.perform(.done, on: .target(done), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .target(hidden), contentHash: "", now: Date(), calendar: .current)
         let rows = try await pool.read { db in
             try Row.fetchAll(db, sql: "SELECT status, snooze_until FROM targets ORDER BY id")
         }
@@ -568,7 +608,7 @@ final class HomeFeedActionTests: XCTestCase {
             let pool = try makePool()
             let id = try await pool.write { db in Int(try TestDatabase.insertTarget(db, text: "A")) }
             try await LiveHomeFeedPerformer(runner: nil, pool: pool)
-                .perform(.hide, on: .target(id), now: now, calendar: calendar)
+                .perform(.hide, on: .target(id), contentHash: "", now: now, calendar: calendar)
             let stored = try await pool.read { db in
                 try String.fetchOne(db, sql: "SELECT snooze_until FROM targets WHERE id = ?", arguments: [id])
             }
@@ -578,16 +618,16 @@ final class HomeFeedActionTests: XCTestCase {
 
     func testAReminderOrTargetGoneElsewhereIsQuiet() async throws {
         let performer = LiveHomeFeedPerformer(runner: nil, pool: try makePool())
-        try await performer.perform(.hide, on: .reminder(999), now: Date(), calendar: .current)
-        try await performer.perform(.done, on: .target(999), now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .target(999), now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .reminder(999), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.done, on: .target(999), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .target(999), contentHash: "", now: Date(), calendar: .current)
     }
 
     func testProposalAndEventAreNoOps() async throws {
         let runner = RecordingRunner()
         let performer = LiveHomeFeedPerformer(runner: runner, pool: try makePool())
-        try await performer.perform(.done, on: .proposal(1), now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .event("e1"), now: Date(), calendar: .current)
+        try await performer.perform(.done, on: .proposal(1), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .event("e1"), contentHash: "", now: Date(), calendar: .current)
         XCTAssertEqual(runner.calls, [])
     }
 }

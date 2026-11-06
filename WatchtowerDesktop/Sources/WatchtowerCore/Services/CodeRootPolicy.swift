@@ -48,7 +48,7 @@ package enum CodeRootPolicy {
 
     /// The path with symlinks resolved (realpath(3)) when it exists, the
     /// standardized path otherwise. Comparison only — never a root's identity.
-    private static func symlinkResolvedPath(_ url: URL) -> String {
+    package static func symlinkResolvedPath(_ url: URL) -> String {
         let standard = url.standardizedFileURL.path
         guard let resolved = realpath(standard, nil) else { return standard }
         defer { free(resolved) }

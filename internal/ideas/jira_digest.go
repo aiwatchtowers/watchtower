@@ -465,7 +465,7 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return p.initJiraFloor(acct)
 	}
 	reached, err := p.jiraDigestPass(ctx, acct, floor, bound)
-	if err != nil || reached == floor || digest.RoutingEnabled(p.generator) {
+	if err != nil || reached == floor || digest.RoutingEnabled(p.generator, ctx) {
 		return err
 	}
 	if err := p.db.SetIdeasJiraFloor(acct.ID, reached); err != nil {

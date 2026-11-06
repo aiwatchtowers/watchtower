@@ -132,8 +132,9 @@ connection secrets travels over an inherited pipe as well
 backend's argv is flags and `/dev/fd` paths only (`--model`,
 `--no-session-persistence`, etc.; never `--resume`), and the codex-backed
 turn hands codex the system prompt as a 0600 `model_instructions_file`
-(only its path on argv; codex refuses a pipe there, so the file is removed
-at codex's first output) and the replay + user text on stdin (`codex exec -`),
+(only its path on argv; codex refuses a pipe there; codex re-reads the file
+for every model request, so it is held — under a flock the stale-temp sweep
+skips — until codex exits, then removed) and the replay + user text on stdin (`codex exec -`),
 never as `-c developer_instructions=...` or a positional prompt.
 `ai session`'s own argv (the Swift session-launch side) carries only
 ids and names (`--conversation`, `--provider`, `--model`, `--surface`,
@@ -179,7 +180,10 @@ Extends QC-03's "secrets never on argv" to all chat content.
 opens a Gmail compose URL (or a `mailto:` fallback), a `slack` artifact
 copies its body and opens the channel/thread deep link, an `event` artifact
 opens a Google Calendar template URL, `document`/`table`/`code`/`html` artifacts
-copy or export (.md/.csv/.txt/.html) locally — every action any artifact kind can
+copy or export (.md/.csv/.txt/.html, and .docx for a `document`) locally, and a
+`document`/`html` artifact can be printed through the macOS print panel, whose
+PDF menu (Save as PDF, Mail, Messages, network printers) acts only on the
+owner's own choice there, on a static rendering in the same no-network web view — every action any artifact kind can
 produce is a `copy`, an `open` of a compose/deep-link URL, or a
 `copyThenOpen`, never a value that could perform a network or CLI write.
 Nothing is sent, posted or created in an external system from an artifact.
@@ -248,6 +252,10 @@ child is never started without it.
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`)
 
 ## Changelog
+
+- 2026-11-05 (board #962, owner decision ask #501): **CHAT-05** extended by owner decision, no guard relaxed. The artifact panel gains **Print…** for `document` and `html` (the macOS print panel; its PDF menu — Save as PDF, Open in Preview, Mail, Messages, network printers — runs only on the owner's choice, like Copy then paste) and **Export as Word…** for `document` (a local `.docx`, like Export…). The page prints from an offscreen web view built by `SandboxedHTMLView.makeWebView` with the same content rules (no network; `testThePrinterRouteLoadsNothingFromTheNetwork`), and a `document` prints as `ArtifactPrint.documentPage`, built from the parsed Markdown with everything escaped and nothing that loads (allow-list test `testNothingInTheDocumentPageLoadsOrRuns`). `ArtifactChat05ScanTests` also scans `ArtifactPrint.swift` and `ArtifactPrinter.swift`; every other scan and guard passes unchanged.
+
+- 2026-11-04 (fix: codex prompt file lifetime, owner approved ask #481): **CHAT-04** Observable amended, no guard relaxed; the "nothing on argv" rule is unchanged. codex re-reads its `model_instructions_file` for every model request of a run, so removing it at codex's first output failed the next request ("failed to load workspace requirements", codex-cli 0.159.2) and every codex-provider call with tools broke. The file now lives until codex exits (`fsutil.HoldTempFile`, a deferred release in `codex.Client.Query`/`QuerySync` and `codex.CodexGenerator.run`); its holder's shared flock keeps `fsutil.SweepStaleTemp` off it. `TestPromptFile_GoneAfterFirstOutput` is replaced by `TestPromptFile_KeptUntilCodexExits` (the fake re-reads the file after its first output; no file left after return); `TestHoldTempFile_SweepSkipsAHeldFile` covers the sweep. Trade-off: a process killed mid-run leaves the 0600 file until the 10-minute sweep. Feature note: `docs/features/files-outside-db.md`.
 
 - 2026-10-26 (Chats panel, spec `docs/superpowers/specs/2026-10-26-chats-panel-design.md`): note only — the tab's name changed (AI Chat → Chats) and `chat_conversations.read_at` was added (migration 00161). No guard changed or relaxed.
 - 2026-10-25 (board #604 Stage A, ask #571): **CHAT-04** strengthened; two guard assertions changed shape, the "nothing on argv" assertions are unchanged. Prompts and secret MCP configs reach the claude child over inherited pipes (`fsutil.AttachPayloads`, `/dev/fd/N`), so `TestChat04_ClaudeArgvCarriesNoContent` now asserts `/dev/fd` paths and that no prompt temp file exists, where it used to assert a 0600 temp file. No Claude Code session store exists (`--no-session-persistence` on every claude call, G11): `TestChat04_ClaudeArgsOnResume` is replaced by `TestChat04_ClaudeArgsNeverResume` (no spawn, first or after a crash, carries `--resume`; each gets `--system-prompt-file`), and the Swift `testChat04SessionArgvNeverCarriesContent` gains a no-`--resume` check. **CHAT-01**: the contract holds, one guard's shape changed. A respawned session replays the history from the database instead of resuming, so `testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes` (name kept) now asserts that the next turn carries `replay: true` and no `--resume`; before saving a turn's rows the view model awaits the session driver's writes, so the replay holds a stopped reply's last save (`testSendAfterAStopReplaysTheStoppedReplysSavedText`). Embedded chats no longer store or resume a session id either: every turn sends the system prompt plus `EmbeddedChatReplay`'s block. The queued embedded-chat draft moved from UserDefaults to `chat_queued_drafts` (migration 00157), legacy keys imported once. Feature note: `docs/features/files-outside-db.md`.

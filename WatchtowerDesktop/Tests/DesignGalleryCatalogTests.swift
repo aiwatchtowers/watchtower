@@ -10,7 +10,7 @@ final class DesignGalleryCatalogTests: XCTestCase {
     func testEveryPageBelongsToItsSection() {
         let expected: [CatalogSection: [CatalogPage]] = [
             .foundations: [.colours, .spacing, .radius, .strokes, .typography, .icons, .motion],
-            .components: [.actions, .selection, .inputs, .display, .containers],
+            .components: [.actions, .selection, .inputs, .display, .containers, .artifacts],
             .patterns: [.settings, .panels, .popover]
         ]
         for section in CatalogSection.allCases {
@@ -67,8 +67,10 @@ final class DesignGalleryCatalogTests: XCTestCase {
             desktop.appendingPathComponent("Sources/DesignKit"),
             desktop.appendingPathComponent("../WatchtowerKit/Sources/WatchtowerDesign").standardized
         ]
-        let files = try dirs.flatMap { dir in
-            try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        // Recursive: the kit keeps a family of components in a subfolder (`Artifacts/`).
+        let files = try dirs.flatMap { dir -> [URL] in
+            let walk = try XCTUnwrap(FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil))
+            return walk.compactMap { $0 as? URL }
         }
         .filter { $0.pathExtension == "swift" }
         var names = Set<String>()

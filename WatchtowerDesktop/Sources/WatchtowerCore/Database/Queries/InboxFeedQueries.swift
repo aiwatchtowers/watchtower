@@ -21,6 +21,15 @@ package enum InboxFeedQueries {
         snapshot.proposals = try emptyIfTableMissing { try AgentActionQueries.fetchStrip(db, terminalSince: terminalSince) }
         snapshot.reminders = try emptyIfTableMissing { try ReminderQueries.fetchDue(db, nowUTC: nowUTC) }
         snapshot.outputs = try emptyIfTableMissing { try AutomationQueries.fetchInboxOutputs(db, includeRead: true) }
+        if !snapshot.outputs.isEmpty {
+            // Names for avatars only: a failure must not take every card
+            // with it. Logged; the person blocks draw their own initials.
+            do {
+                snapshot.artifactPeople = try AutomationQueries.artifactPeople(db)
+            } catch {
+                NSLog("InboxFeedQueries: the artifact people read failed: %@", "\(error)")
+            }
+        }
         // One date past the page tells whether an older one exists.
         let days = try emptyIfTableMissing { try BriefingQueries.fetchDayCards(db, limit: dayLimit + 1) }
         snapshot.days = Array(days.prefix(dayLimit))

@@ -130,6 +130,11 @@ func resolveSlackIdentity(ctx context.Context, accessToken string) (slackIdentit
 // back (soft delete) so a failed connect never leaves an un-loginable ghost
 // account — mirrors createEmailAccountWithCredentials. Returns the resolved
 // identity on success.
+//
+// A sign-in into another team than the one the account's data belongs to is
+// refused before anything is written (checkSlackLoginTeam, #915), and a
+// sign-in that brings a moved account back to its home team rewinds its
+// search watermark first (rewindMovedSlackAccount).
 func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, grant *auth.OAuthResult, isNewRow bool, warnOut io.Writer) (slackIdentity, error) {
 	accessToken := grant.AccessToken
 	identity, err := resolveSlackIdentity(ctx, accessToken)
@@ -139,8 +144,29 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 		}
 		return slackIdentity{}, fmt.Errorf("resolving slack identity: %w", err)
 	}
+	moved, err := checkSlackLoginTeam(database, id, identity, isNewRow)
+	if err != nil {
+		if isNewRow {
+			rollbackSlackAccount(database, id, warnOut)
+		}
+		return slackIdentity{}, err
+	}
 	if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
 		return slackIdentity{}, err
+	}
+	// First of the writes, so a failure leaves the row moved and the next
+	// sign-in tries again; once the row is home, nothing would.
+	if moved {
+		covered, err := rewindMovedSlackAccount(database, id)
+		if err != nil {
+			return slackIdentity{}, fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
+		}
+		if !covered {
+			// Nothing to rewind to (rewindMovedSlackAccount): the days the
+			// other team's searches passed over may stay missing.
+			fmt.Fprintf(warnOut, "warning: slack account %d is back on its workspace, but the next sync may not fetch "+
+				"the days it missed; fetch them with `watchtower slack backfill --account %d --from YYYY-MM-DD --to YYYY-MM-DD`\n", id, id)
+		}
 	}
 
 	namespacedUser := watchtowerslack.Namespace(id, identity.UserID)
@@ -175,6 +201,100 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 			"workspace; the Slack app's user scopes (or the workspace admin) must allow it first\n", watchtowerslack.SendScope)
 	}
 	return identity, nil
+}
+
+// checkSlackLoginTeam decides whether a sign-in as identity may be recorded
+// on account id. It refuses a team other than the home team of the account's
+// stored data (db.SlackAccountHomeTeam) — re-consenting with it would mix two
+// teams under one "<id>:" namespace — and, for a row a command just created
+// (`slack add`), a team another live account already holds. An account with
+// no team yet accepts any team. moved reports that the row had been moved to
+// another team (a Re-login before #915) and this sign-in brings it home.
+func checkSlackLoginTeam(database *db.DB, id int64, identity slackIdentity, isNewRow bool) (moved bool, err error) {
+	acct, err := database.GetSlackAccount(id)
+	if err != nil {
+		return false, err
+	}
+	home, err := database.SlackAccountHomeTeam(acct)
+	if err != nil {
+		return false, err
+	}
+	if home.Conflicts(identity.TeamID) {
+		return false, slackOtherTeamError(identity, home)
+	}
+	if isNewRow {
+		return false, refuseDuplicateSlackTeam(database, id, identity)
+	}
+	return acct.TeamID != "" && acct.TeamID != identity.TeamID, nil
+}
+
+// slackOtherTeamError is checkSlackLoginTeam's refusal, actionable part first
+// and short: the Desktop shows only the first 200 characters of stderr under
+// "Re-login failed".
+func slackOtherTeamError(identity slackIdentity, home db.SlackHomeTeam) error {
+	got := identity.TeamName
+	if got == "" {
+		got = identity.TeamID
+	}
+	return fmt.Errorf("sign in to %q, this account's Slack workspace (you chose %q); "+
+		"to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)", home.DisplayName(), got)
+}
+
+// refuseDuplicateSlackTeam refuses a new account for a team another live
+// (not removed) account already holds: both would sync the same team. It
+// compares home teams, so the other team a moved account #1 was signed in to
+// can still be added.
+func refuseDuplicateSlackTeam(database *db.DB, id int64, identity slackIdentity) error {
+	accounts, err := database.ListSlackAccounts()
+	if err != nil {
+		return err
+	}
+	for _, a := range accounts {
+		if a.ID == id || a.Status == "removed" {
+			continue
+		}
+		home, err := database.SlackAccountHomeTeam(a)
+		if err != nil {
+			return err
+		}
+		if home.ID != "" && home.ID == identity.TeamID {
+			return fmt.Errorf("slack workspace %q is already connected as account %d; use Re-login on it instead",
+				home.DisplayName(), a.ID)
+		}
+	}
+	return nil
+}
+
+// rewindMovedSlackAccount moves a repaired account's search watermark back to
+// the day of its newest stored message when that is earlier, so the next
+// search sync fetches the days the wrong team's empty searches marked as done.
+// The search window clamps a gap over 30 days and records it on the account.
+// An account with no stored message or no watermark is left as it is.
+// covered reports that the next sync searches the missed days: the watermark
+// moved back, it already sits before the newest message, or there is none (a
+// first sync). It is false when there is nothing to rewind to — no stored
+// message, or the newest one on the watermark's own day (possibly the other
+// team's, stored under the account after its move).
+func rewindMovedSlackAccount(database *db.DB, id int64) (covered bool, err error) {
+	current, err := database.GetSlackAccountSearchWatermark(id)
+	if err != nil {
+		return false, err
+	}
+	if current == "" {
+		return true, nil
+	}
+	newest, ok, err := database.LatestSlackMessageTime(id)
+	if err != nil || !ok {
+		return false, err
+	}
+	switch day := newest.Format("2006-01-02"); {
+	case day == current:
+		return false, nil
+	case day > current:
+		return true, nil
+	default:
+		return true, database.SetSlackAccountSearchWatermark(id, day)
+	}
 }
 
 // rollbackSlackAccount soft-removes a row a command just created after its

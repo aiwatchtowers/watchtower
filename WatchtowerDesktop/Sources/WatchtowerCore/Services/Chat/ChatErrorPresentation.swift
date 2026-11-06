@@ -11,6 +11,7 @@ package enum ChatErrorPresentation {
     package static func message(for code: String?, provider: String? = nil) -> String {
         switch code {
         case "auth": "The AI provider isn't signed in. " + signInHint(provider: provider)
+        case "quota_exhausted": ProviderFallbackPreview(preferred: .claude, state: .stopped).copy.title
         case "rate_limit": "The provider is rate-limiting requests. Try again in a moment."
         case "provider_unavailable": "The AI provider couldn't be started."
         case "session_lost": "The previous session couldn't be resumed."
@@ -32,12 +33,12 @@ package enum ChatErrorPresentation {
     }
 
     package static func isRetryable(_ code: String?) -> Bool {
-        code != "auth" && code != "attachment_unsupported" && code != "workdir_unsafe"
+        code != "quota_exhausted" && code != "auth" && code != "attachment_unsupported" && code != "workdir_unsafe"
     }
 
     private static func signInHint(provider: String?) -> String {
         switch provider {
-        case nil, "", "claude": "Open Terminal and run: claude login"
+        case nil, "claude": "Open Terminal and run: claude login"
         case "codex": "Open Terminal and run: codex login"
         default: "Check its settings in Settings → AI."
         }

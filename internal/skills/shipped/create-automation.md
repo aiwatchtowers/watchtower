@@ -100,6 +100,7 @@ Rules the parser enforces (a violation makes the recipe not runnable):
 | `trigger.manual` | `true`: only Run now |
 | `missed` | `run_once` (default) or `skip`; only meaningful for `schedule` |
 | `concurrency` | integer 1 to 4, default 1 |
+| `artifacts` | `feed` (default: every run files new cards) or `living` (one card per key, kept current; see "Living cards"); `living` needs `outputs: [inbox]` and `concurrency: 1` |
 | `permissions` | list, default empty; grammar below |
 | `outputs` | list from `inbox`, `briefing`, `report`, `target`, `slack`, default empty; the only gate for `output.*` |
 | `budget` | `{tokens, minutes}`, default `{tokens: 50000, minutes: 5}`; `1000 <= tokens <= 2000000` (input plus output tokens across `llm` calls), `1 <= minutes <= 60`; budgets are TOKENS, never dollars: a `usd` key is a parse error |
@@ -206,7 +207,8 @@ error ("the script API is synchronous"). Use `log(...)` for notes.
 | `llm(prompt, {input?, schema?, tier?})` | `llm:light` (default) or `llm:strong` | One model call; `input` is JSON-serialised after the prompt (prompt plus input at most 200 KiB). With `schema` (a JSON Schema object) it returns the parsed object, else a string |
 | `tool(name, args, {wait?})` | the permission for that tool | Read tools return data. A write returns `{status: "proposed", id}` (the owner approves) or `{status: "applied", ...}` when the owner turned auto on; with `{wait: true}` the run pauses until the owner answers |
 | `state.get(key)`, `state.set(key, value)`, `state.all()` | none | Per-automation JSON (at most 64 KiB). Sets are committed only when the run succeeds, so a failed run re-reads the same window |
-| `output.inbox({title, body, priority?, link?, actions?})` | `outputs: [inbox]` (a Reply action also needs `inbox:reply`) | An Inbox item; `priority` is `"high"`, `"medium"` or `"low"` (anything else fails the run); `link` is its source, `actions` are its buttons (see "Buttons on an Inbox card") |
+| `output.inbox({title, body \| blocks, key?, priority?, link?, actions?})` | `outputs: [inbox]` (a Reply action also needs `inbox:reply`, a Target action `outputs: [target]`) | An Inbox card; `body` is Markdown, `blocks` is a laid-out card (see "Cards with a layout"); pass `body` or `blocks`, not both. `key` is required with `artifacts: living` and refused without it. `priority` is `"high"`, `"medium"` or `"low"` (anything else fails the run); `link` is its source, `actions` are its buttons (see "Buttons on an Inbox card"). `folder` is refused for now ("folder is not available yet") |
+| `output.remove({key})` | `outputs: [inbox]` and `artifacts: living` | Deletes the living card with that key when the run succeeds; a key with no card is a no-op |
 | `output.report({title, body})` | `outputs: [report]` | A report on the card |
 | `output.briefing({title, body})` | `outputs: [briefing]` | A section for the next daily briefing |
 | `output.target({...create_target args})` | `outputs: [target]` | Proposes a target |
@@ -250,6 +252,7 @@ section says. Never put secrets in a recipe.
 | Chat | `chat: "<first message>"` | Starts a chat in Chats with that message (at most 4 KB) |
 | Agent | `agent: {task, workbench?}` | Hands the task to an agent session (task at most 4 KB) |
 | Reply | `reply: "<value>", data?: {...}` | Runs this same automation once more (value at most 100 characters, `data` at most 8 KB of JSON) |
+| Target | `target: {title, intent?, parent?}` | Proposes a task with that title (at most 200 characters), `intent` (at most 1000) and, optionally, the id of the personal task it goes under; the owner approves it before it exists. Needs `outputs: [target]` |
 
 A Chat message and an Agent `task` are instructions: the chat or the agent
 does what they say. Write them as fixed text in the recipe; never build them
@@ -263,7 +266,10 @@ make it a plain one (`primary` may only be `false`, and only on the first
 action). `link` and `open` take `http`, `https` or `watchtower-nav://` URLs
 only; anything else is refused when the output is written. Prefer a Link or
 Chat button when the owner only needs to look or talk; use Reply only when the
-recipe itself must act on the answer.
+recipe itself must act on the answer, and Target when the owner wants to turn
+the card or a row into a task. A Target press creates nothing by itself: it
+makes a proposal the owner approves, and the button then shows the task.
+Only Reply takes `data`.
 
 A Reply needs the permission `inbox:reply` (and `outputs: [inbox]`). It is a
 permission, never a trigger: the recipe keeps its one trigger, and the
@@ -284,6 +290,92 @@ if (trigger.kind === "reply") {
 A dry run (`draft_automation`) never has `trigger.kind === "reply"`, so the
 reply branch is not exercised by it; tell the owner that branch stays untested
 until a button is pressed.
+
+## Cards with a layout
+
+Instead of a Markdown `body`, `output.inbox` can take `blocks`: an array of
+blocks the Desktop draws as a laid-out card (a count on top, a list with
+coloured dots, a table, buttons on each row). The card's plain text is made
+from the blocks, so search, notifications and Home keep working. Use blocks
+when the owner wants to scan or press something; plain `body` is fine for a
+paragraph of prose.
+
+Every block is `{type, ...}`; blocks never nest. Fields in **bold** are
+required; limits are characters unless marked.
+
+| `type` | Fields |
+|---|---|
+| `heading` | **`text`** (200), `level` 1 or 2 |
+| `text` | **`markdown`** (16 KB); links http, https or `watchtower-nav://`; images are not shown |
+| `list` | `title` (200), **`rows`** (0 to 200), `empty` (200, shown when there is no row; default "Nothing here"). A row: **`title`** (300), `subtitle` (500), `badge: {text (40), tone?}`, `tone` (a coloured dot), `link`, `actions` (0 to 3), `ref: {kind, id}` |
+| `table` | `title` (200), **`columns`** (1 to 6) `{title (60), align: "leading" or "trailing"}`, **`rows`** (0 to 100), each with exactly one cell per column; a cell is a string (200) or `{text, tone?, link?}` |
+| `person` | **`name`** (120), `role` (120), `avatar: {slack_user: "<account>:<user id>"}`, `lines` (0 to 10) of strings (300) or `{text, tone?}`, `link` |
+| `metrics` | **`items`** (1 to 6) `{label (40), value (24), tone?, hint (120)}`; `value` is text, so format the number in the script |
+| `link` | **`title`** (200), **`url`**, `subtitle` (300) |
+| `actions` | **`actions`** (1 to 4): a row of buttons |
+
+- `tone` is one of neutral, info, success, warning, danger, accent. There
+  are no colours or conditions in the JSON: compute the tone in the script
+  (`tone: hours > 24 ? "danger" : "neutral"`).
+- Every block action, a row's included, uses the button grammar of "Buttons
+  on an Inbox card", with the same permissions. A card has at most 50
+  buttons in all, its own included.
+- A row's `ref` points at a Watchtower record: `kind` is `inbox_item`,
+  `track` or `idea` and `id` a positive integer (`action` and `reminder`
+  refs are for built-in automations only).
+- At most 40 blocks, 500 list and table rows in all, 128 KB of JSON.
+- Leave a field out when you have no value for it. `null` or `undefined` is
+  refused, and so is an empty `link`: add the key only when the value exists
+  (`if (it.permalink) row.link = it.permalink;`).
+- A refusal names the path and the rule (`output.inbox(): blocks[1].rows[5].badge.tone
+  must be one of neutral, info, success, warning, danger, accent`) and fails
+  the run; read it in the dry run and fix that field.
+
+## Living cards
+
+A feed automation files new cards on every run. A living one keeps **one
+card per key** and rewrites it: "the threads waiting for me" stays one card
+that is always current, instead of a new card every half hour.
+
+- Write `artifacts: living` and `concurrency: 1` in the frontmatter (with
+  `outputs: [inbox]`).
+- Every `output.inbox` passes a `key`: a short stable string (1 to 200
+  characters), such as `"waiting"` for a single card or an issue key for one
+  card per issue. Writing a key again replaces that card's content. Only
+  when the content changed does the card come back unread (Done and Dismiss
+  are lifted) and its buttons take a press again: a card takes one press per
+  version, so a Reply run that rewrites the card makes it pressable again.
+- `output.remove({key})` deletes the card of that key, for example when the
+  list it shows became empty. Like every output it takes effect only when the
+  run succeeds; in one run the later of an `output.inbox` and an
+  `output.remove` of the same key wins.
+- Choose living when the owner wants a view that stays current, feed when
+  they want a record of each run (a daily summary, a weekly report).
+
+## Designing the look
+
+When the recipe makes an Inbox card, design the card with the owner.
+
+1. Ask what the owner wants to see, in their words: what one glance should
+   answer, what to list and in what order, what is urgent, and what they want
+   to press. Ask whether they want one card that stays current (living) or a
+   new card each run.
+2. Never name blocks to the owner. Say "a count on top, then the threads,
+   oldest first, red past a day, with a Done button on each", not "a metrics
+   block and a list block with tone danger". The block names are yours.
+3. Emit the blocks from the script, and compute every tone, badge and order
+   in code from the data.
+4. After any change to the look, call `draft_automation` before you answer.
+   The draft column's **Look** step shows the card from your newest dry run
+   of the text on screen; without a fresh draft the owner looks at an old
+   card. The owner can also press **Dry run** there (`watchtower automations
+   preview`), which runs the same evaluation.
+5. Prefer the look a script can compute. When a change adds an `llm()` call
+   or an `llm:` permission, say so plainly before the owner saves: this
+   change adds an AI step, every run will use the model, and the dry run used
+   N tokens.
+6. A dry run reads the owner's real data. When it made no card, or an empty
+   one, say that the preview showed only the empty case.
 
 ## Reliable recipes
 
@@ -458,6 +550,81 @@ state.set("done", done);
 ```
 ````
 
+### Threads waiting for me (personal, schedule, living)
+
+One card that stays current: a count on top, then the mentions and direct
+messages still waiting for the owner, oldest first, red past a day, each with
+a **Done** button. No AI step. The card goes away when nothing waits.
+
+````markdown
+---
+name: Threads waiting for me
+summary: Mentions and DMs still waiting for a reply
+trigger:
+  schedule: "*/30 8-19 * * 1-5"
+concurrency: 1
+artifacts: living
+permissions:
+  - tool:list_inbox
+  - inbox:reply
+outputs: [inbox]
+budget: { tokens: 5000, minutes: 2 }
+---
+Keeps one Inbox card with the mentions and direct messages still waiting for
+you. **Done** on a row takes it off the card.
+
+```js
+const KEY = "waiting";
+const handled = state.get("handled") || {};
+if (trigger.kind === "reply" && trigger.reply.value === "done") {
+  const id = trigger.reply.data && trigger.reply.data.id;
+  if (id) handled[id] = new Date().toISOString();
+  // No return: the run goes on and rewrites the card without that row.
+}
+const items = (tool("list_inbox", { status: "pending", limit: 200 }) || {}).items || [];
+const pending = {};
+items.forEach(function (it) { pending[it.id] = true; });
+Object.keys(handled).forEach(function (id) { if (!pending[id]) delete handled[id]; });
+state.set("handled", handled);
+
+const waiting = items
+  .filter(function (it) { return (it.trigger_type === "mention" || it.trigger_type === "dm") && !handled[it.id]; })
+  .sort(function (a, b) { return Date.parse(a.created_at) - Date.parse(b.created_at); });
+if (waiting.length === 0) {
+  output.remove({ key: KEY });
+  return;
+}
+const now = Date.now();
+let overdue = 0;
+const rows = waiting.slice(0, 50).map(function (it) {
+  const hours = Math.max(0, Math.floor((now - Date.parse(it.created_at)) / 3600000));
+  if (hours >= 24) overdue++;
+  const row = {
+    title: (it.snippet || "").trim().slice(0, 120) || "A message",
+    tone: hours >= 24 ? "danger" : hours >= 4 ? "warning" : "neutral",
+    badge: { text: hours + "h", tone: hours >= 24 ? "danger" : "neutral" },
+    ref: { kind: "inbox_item", id: it.id },
+    actions: [{ label: "Done", reply: "done", data: { id: it.id } }]
+  };
+  if (it.why_matters) row.subtitle = it.why_matters.slice(0, 200);
+  if (it.permalink) row.link = it.permalink;
+  return row;
+});
+output.inbox({
+  key: KEY,
+  title: waiting.length + (waiting.length === 1 ? " thread waits" : " threads wait") + " for you",
+  priority: overdue > 0 ? "high" : "medium",
+  blocks: [
+    { type: "metrics", items: [
+      { label: "Waiting", value: String(waiting.length) },
+      { label: "Over a day", value: String(overdue), tone: overdue > 0 ? "danger" : "success" }
+    ] },
+    { type: "list", title: "Oldest first", rows: rows }
+  ]
+});
+```
+````
+
 ### PR review rounds (workbench, schedule)
 
 ````markdown
@@ -618,7 +785,7 @@ Runs the release command and reports its output.
 ```js
 const res = shell("make release");
 if (res.exit_code !== 0) {
-  output.report({ title: "Release failed", body: res.stderr });
+  output.report({ title: "Release failed", body: res.stderr || "" });
 } else {
   output.report({ title: "Release ran", body: res.stdout });
 }
@@ -633,8 +800,9 @@ if (res.exit_code !== 0) {
    `manifest` (what it may do), `widening` (what an edit newly allows), and the
    `dry_run`: the steps, the outputs it would produce, the tokens used. The
    dry run is real for reads (`tool()`) and `llm` and touches nothing else;
-   `agent()` and `mcp()` are never called in a draft. Say what you
-   see, including a result that looks wrong.
+   `agent()` and `mcp()` are never called in a draft. Each Inbox output
+   carries its `blocks` (or `null`) and its `key`. Say what you see,
+   including a result that looks wrong.
 3. Iterate until the owner is satisfied. Always `draft_automation` and read
    its dry run with the owner before `save_automation`.
 4. In the Automations panel's chat (surface `automation_editor`) never call
