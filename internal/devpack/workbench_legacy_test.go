@@ -167,7 +167,8 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 	}
 	afterHooks, beforeHooks := after["hooks"].(map[string]any), before["hooks"].(map[string]any)
 	// The owner's PreToolUse group stays first and as it was; ours (the
-	// session state's "*" group and the ask guard) are added after it.
+	// ask guard's AskUserQuestion group, then the session state's "*"
+	// group) are added after it.
 	afterPre, beforePre := afterHooks["PreToolUse"].([]any), beforeHooks["PreToolUse"].([]any)
 	if len(afterPre) != 3 || !reflect.DeepEqual(afterPre[0], beforePre[0]) {
 		t.Fatalf("PROJ-04: the owner's PreToolUse hooks changed: %#v", afterPre)

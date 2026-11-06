@@ -524,7 +524,8 @@ func (w hookLockWait) until(deadline time.Time) hookLockWait {
 }
 
 // attemptWait is the busy timeout of the next try: the wait, cut to what
-// the budget has left; ok is false when nothing is left.
+// the budget has left; ok is false when under 1 ms is left — busy_timeout
+// counts whole milliseconds, so such a try would not wait at all.
 func (w hookLockWait) attemptWait() (wait time.Duration, ok bool) {
 	wait = w.wait
 	if wait <= 0 {
@@ -534,7 +535,7 @@ func (w hookLockWait) attemptWait() (wait time.Duration, ok bool) {
 		return wait, true
 	}
 	left := w.deadline.Sub(lockNow())
-	if left <= 0 {
+	if left < time.Millisecond {
 		return 0, false
 	}
 	return min(wait, left), true

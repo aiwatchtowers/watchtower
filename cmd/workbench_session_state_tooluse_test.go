@@ -71,28 +71,28 @@ func TestProj11_PreToolUseOutOfWaitingIsWorking(t *testing.T) {
 // PROJ-11, board #988 (ask #525): a tool start never hides a permission
 // dialog. PreToolUse fires before the prompt; its async hook may start after
 // the prompt's notification and still writes nothing over `approval`.
+// (PostToolUse and PostToolUseFailure do end `approval`: the tool ran, or
+// failed, after the owner's answer — ask #527.)
 func TestProj11_PreToolUseNeverOverwritesApproval(t *testing.T) {
-	for _, event := range []string{"PreToolUse"} {
-		database, pid, row := briefSessionFixture(t)
-		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-		_, at := hookClock(t)
-		recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
-		recordToolEvent(t, pid, at, 2, statePayload("Notification", briefLaunchID, "permission_prompt"))
-		before := rowSnapshot(t, database, row)
-		require.Equal(t, "approval", before["agent_state"])
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	recordToolEvent(t, pid, at, 2, statePayload("Notification", briefLaunchID, "permission_prompt"))
+	before := rowSnapshot(t, database, row)
+	require.Equal(t, "approval", before["agent_state"])
 
-		recordToolEvent(t, pid, at, 3, toolEventPayload(event, "toolu_A", "", ""))
-		assert.Equal(t, before, rowSnapshot(t, database, row), "%s over approval wrote", event)
+	recordToolEvent(t, pid, at, 3, toolEventPayload("PreToolUse", "toolu_A", "", ""))
+	assert.Equal(t, before, rowSnapshot(t, database, row), "PreToolUse over approval wrote")
 
-		// The guard is in the write itself too: a racing approval between
-		// the hook's read and its write keeps the dialog.
-		s, err := database.GetTerminalSession(row)
-		require.NoError(t, err)
-		written, err := database.SetTerminalAgentState(row, pid, briefLaunchID, agentStateWorking, time.Now().Add(time.Hour),
-			"", nil, false, db.AgentOrder{ToolRun: true, NotOverApproval: true, SeenTurnEnd: s.TurnEnd})
-		require.NoError(t, err)
-		assert.False(t, written, "%s: the guarded UPDATE wrote over approval", event)
-	}
+	// The guard is in the write itself too: a racing approval between the
+	// hook's read and its write keeps the dialog.
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	written, err := database.SetTerminalAgentState(row, pid, briefLaunchID, agentStateWorking, time.Now().Add(time.Hour),
+		"", nil, false, db.AgentOrder{ToolRun: true, NotOverApproval: true, SeenTurnEnd: s.TurnEnd})
+	require.NoError(t, err)
+	assert.False(t, written, "the guarded UPDATE wrote over approval")
 }
 
 // PROJ-11, board #988 (ask #525): a tool start and a failed tool keep the
@@ -393,6 +393,8 @@ func TestHookLockWaitStopsAtTheBudget(t *testing.T) {
 	wait, ok := stateHookLockWait.until(base.Add(300 * time.Millisecond)).attemptWait()
 	assert.True(t, ok)
 	assert.Equal(t, 300*time.Millisecond, wait, "a try's wait is cut to the budget left")
+	_, ok = stateHookLockWait.until(base.Add(time.Millisecond - time.Nanosecond)).attemptWait()
+	assert.False(t, ok, "under 1 ms left: busy_timeout would be 0, so no try")
 	wait, ok = hookLockWait{}.attemptWait()
 	assert.True(t, ok)
 	assert.Equal(t, sessionRecordBusyTimeout, wait, "the zero value is the sync hooks' one short wait")

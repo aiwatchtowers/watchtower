@@ -196,5 +196,14 @@ final class SessionTargetBranchTests: XCTestCase {
             linkedTargetIDs: [5, 6], worktrees: [record("/repo/.claude/worktrees/a", after)], runStart: runStart
         )])
         XCTAssertNil(links[idle])
+
+        // Review L2: a `since` that is not text reads as no run start, never
+        // a GRDB conversion trap.
+        try db.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET agent_turns = '{\"since\": 5}' WHERE id = ?", arguments: [ctl])
+        }
+        let numeric = try db.read { try TerminalSessionQueries.fetchWorkLinks($0, projectID: projectID) }
+        XCTAssertNil(numeric[ctl]?.runStart)
+        XCTAssertEqual(numeric[ctl]?.worktrees.count, 1)
     }
 }
