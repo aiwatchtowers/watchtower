@@ -144,3 +144,19 @@ func TestPhaseWaitingForMe_DetectionOffWritesNoRun(t *testing.T) {
 	f.d.phaseWaitingForMe(context.Background())
 	assert.Empty(t, f.waitingRuns(t))
 }
+
+// An owner's copy (overridden) runs every cycle: the fingerprint covers
+// only what the shipped recipe shows.
+func TestPhaseWaitingForMe_OwnerCopyRunsEveryCycle(t *testing.T) {
+	f := newMBFixture(t, nil)
+	f.d.builtinActive[waitingForMeID] = true
+	_, err := f.db.Exec(`UPDATE automations SET overridden = 1 WHERE builtin_id = ?`, waitingForMeID)
+	require.NoError(t, err)
+	f.d.phaseWaitingForMe(context.Background())
+	f.d.phaseWaitingForMe(context.Background())
+	runs := f.waitingRuns(t)
+	require.Len(t, runs, 2, "no quiet-cycle skip for an owner's copy")
+	for _, r := range runs {
+		assert.Equal(t, db.RunSucceeded, r.Status, r.Error)
+	}
+}

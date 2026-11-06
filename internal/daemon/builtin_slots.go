@@ -72,8 +72,9 @@ func (d *Daemon) WaitingForMePrimitives() map[string]automations.PrimitiveFunc {
 
 // WaitingForMeGate is Waiting for me's sync gate: due when what it would
 // show differs from what its last succeeded run showed — the open items as
-// their rows read (builtin.WaitingFingerprint) with the recipe's hashes, so
-// an edited look runs too. A quiet cycle writes no run. A failed read is
+// their rows read by the shipped recipe (builtin.WaitingFingerprint) with
+// the recipe's hashes. A quiet cycle writes no run. An owner's copy runs
+// every cycle: it may show what the fingerprint does not cover. A failed read is
 // due (the run reports it); a daemon start knows no fingerprint, so its
 // first cycle runs. Attention detection off skips the built-in before the
 // gate is asked (its feature, FEAT-01), and a queued Run Now runs without
@@ -85,14 +86,19 @@ type waitingForMeGate struct{ d *Daemon }
 func (g waitingForMeGate) Due(ctx context.Context, _ builtin.Entry, now time.Time) bool {
 	d := g.d
 	d.waitingSeen = ""
-	fp, err := builtin.WaitingFingerprint(ctx, d.db, now)
-	if err != nil {
-		d.logger.Printf("waiting-for-me: reading the open items: %v", err)
-		return true
-	}
 	a, err := d.db.GetBuiltinAutomation(waitingForMeID)
 	if err != nil {
 		d.logger.Printf("waiting-for-me: reading its row: %v", err)
+		return true
+	}
+	if a.Overridden {
+		// The owner's copy may show what the fingerprint does not cover
+		// (other reads, other fields): it runs every cycle.
+		return true
+	}
+	fp, err := builtin.WaitingFingerprint(ctx, d.db, now)
+	if err != nil {
+		d.logger.Printf("waiting-for-me: reading the open items: %v", err)
 		return true
 	}
 	d.waitingSeen = fp + "/" + a.ContentHash + "/" + a.ConfirmedHash
