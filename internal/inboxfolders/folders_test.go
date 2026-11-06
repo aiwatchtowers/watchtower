@@ -247,6 +247,28 @@ func TestDelete_TitleClashRenameKeepsTheCap(t *testing.T) {
 	assert.NoError(t, err, "the new title passes the title rules")
 }
 
+// Deleting a hidden folder brings its visible children back into the menu:
+// hidden belongs to the deleted folder, not to what moves up.
+func TestDelete_HiddenFolderItsVisibleChildrenComeBack(t *testing.T) {
+	f := newFixture(t)
+	archive := f.create("Archive", 0)
+	kid := f.create("Old", archive.ID)
+	hiddenKid := f.create("Older", archive.ID)
+	_, _, err := f.s.Update(f.ctx, hiddenKid.ID, UpdateRequest{Hidden: ptr(true), ExpectRevision: f.rev()})
+	require.NoError(t, err)
+	_, _, err = f.s.Update(f.ctx, archive.ID, UpdateRequest{Hidden: ptr(true), ExpectRevision: f.rev()})
+	require.NoError(t, err)
+
+	tree, _, err := f.s.Delete(f.ctx, archive.ID, f.rev())
+	require.NoError(t, err)
+	got, _ := tree.find(kid.ID)
+	require.NotNil(t, got.ParentID)
+	assert.Equal(t, f.root, *got.ParentID)
+	assert.False(t, got.Hidden, "no hidden ancestor left: shown in the menu and counted in the badge")
+	got, _ = tree.find(hiddenKid.ID)
+	assert.True(t, got.Hidden, "a child hidden on its own stays hidden")
+}
+
 func TestDelete_AtMaxDepthChildrenMoveUpOneLevel(t *testing.T) {
 	f := newFixture(t)
 	a := f.create("A", 0)
