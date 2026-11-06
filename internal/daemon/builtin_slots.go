@@ -108,7 +108,8 @@ func (g waitingForMeGate) Due(ctx context.Context, _ builtin.Entry, now time.Tim
 // phaseWaitingForMe is Waiting for me's slot, right after phaseInbox: the
 // built-in rewrites its one living artifact from the open attention items
 // when its gate finds a change. A succeeded slot run records what the gate
-// read as shown; a failed one leaves it, so the next cycle runs again. It
+// read as shown; any failed run (a Run Now included) forgets what was
+// shown, so the next cycle runs again. It
 // has no legacy phase: until it is active its queued Run Now is cancelled
 // (only the slot would take it).
 func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
@@ -119,7 +120,13 @@ func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
 	d.ensureBuiltinsSwept()
 	d.waitingSeen = ""
 	for _, o := range d.builtins.RunSlot(ctx, builtin.SlotWaitingForMe) {
-		if o.BuiltinID == waitingForMeID && o.RunID != 0 && o.Status == db.RunSucceeded && d.waitingSeen != "" {
+		switch {
+		case o.BuiltinID != waitingForMeID:
+		case slotRunFailed(o):
+			// Any failed run — a Run Now too, which the gate never saw —
+			// leaves the artifact behind: the next cycle runs again.
+			d.waitingShown = ""
+		case o.RunID != 0 && o.Status == db.RunSucceeded && d.waitingSeen != "":
 			d.waitingShown = d.waitingSeen
 		}
 	}

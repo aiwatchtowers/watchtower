@@ -160,3 +160,32 @@ func TestPhaseWaitingForMe_OwnerCopyRunsEveryCycle(t *testing.T) {
 		assert.Equal(t, db.RunSucceeded, r.Status, r.Error)
 	}
 }
+
+// A Run Now that fails after a succeeded run is retried at the next cycle
+// even though the open items did not change.
+func TestPhaseWaitingForMe_FailedRunNowIsRetriedNextCycle(t *testing.T) {
+	f := newMBFixture(t, nil)
+	var fail atomic.Bool
+	f.wireWaitingRunner(t, &fail)
+	f.d.phaseWaitingForMe(context.Background())
+	require.Len(t, f.waitingRuns(t), 1)
+
+	fail.Store(true)
+	a, err := f.db.GetBuiltinAutomation(waitingForMeID)
+	require.NoError(t, err)
+	_, _, err = builtin.EnqueueManual(f.db, a.ID, automations.BuiltinInput{}, f.clock.Now())
+	require.NoError(t, err)
+	f.d.phaseWaitingForMe(context.Background())
+	runs := f.waitingRuns(t)
+	require.Len(t, runs, 2)
+	assert.Equal(t, db.RunFailed, runs[0].Status)
+	assert.Equal(t, db.TriggerManual, runs[0].Trigger)
+
+	fail.Store(false)
+	f.d.phaseWaitingForMe(context.Background())
+	runs = f.waitingRuns(t)
+	require.Len(t, runs, 3, "the failed Run Now is retried by the next cycle")
+	assert.Equal(t, db.RunSucceeded, runs[0].Status, runs[0].Error)
+	f.d.phaseWaitingForMe(context.Background())
+	assert.Len(t, f.waitingRuns(t), 3, "quiet after the success")
+}
