@@ -2,6 +2,7 @@ package sessionreport
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/gitbin"
 )
 
 // mergedFixture (board #986): session 1 bound to epic 100 on feature/x.
@@ -317,3 +319,22 @@ func TestRefreshedSummaries_StopAtTheSummaryBudget(t *testing.T) {
 	assert.Equal(t, []int{1, 8, 3}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
 }
 
+// Review H2: a squash read the filter guard refused leaves the verdict
+// unknown, and the note says why.
+func TestRefresh_RefusedSquashReadIsNamed(t *testing.T) {
+	dir := newFeatureRepo(t)
+	d, id := newWorkbench(t, dir)
+	prev := run
+	run = func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		if name == "git" && len(args) > 0 && args[0] == "diff" {
+			return nil, -1, fmt.Errorf("%w: test", gitbin.ErrFilterGuard)
+		}
+		return prev(ctx, dir, stdin, name, args...)
+	}
+	t.Cleanup(func() { run = prev })
+	ref := "into:feature/x:wt/open"
+	res := Refresh(context.Background(), d, id, []string{ref}, RefreshOptions{Now: fixedNow})
+	assert.Contains(t, res.Note, "squash-merge checks skipped: "+gitbin.ErrFilterGuard.Error())
+	assert.Contains(t, res.Note, "the state of 1 ref(s) could not be read ("+ref)
+	assert.Equal(t, "unknown", states(t, d, id)[ref].State, "no verdict without the squash read")
+}

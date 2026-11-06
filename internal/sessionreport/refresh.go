@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -121,6 +122,7 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 			break
 		}
 	}
+	r.noteGuards()
 	r.noteSkipped()
 	return RefreshResult{Note: strings.Join(r.notes, "; ")}, cache
 }
@@ -191,6 +193,23 @@ func (r *refresher) skip(ref, why string) {
 		r.firstErr = workbenchcheck.ClipNote(ref + ": " + why)
 	}
 	r.skipped++
+}
+
+// noteGuards names a squash read the filter guard refused, once per
+// distinct note: it is set during the merge checks, so read after them.
+func (r *refresher) noteGuards() {
+	repos := []*workbenchcheck.Repository{r.repo}
+	for _, base := range slices.Sorted(maps.Keys(r.bases)) {
+		repos = append(repos, r.bases[base])
+	}
+	for _, repo := range repos {
+		if repo == nil {
+			continue
+		}
+		if n := repo.GuardNote(); n != "" && !slices.Contains(r.notes, n) {
+			r.note(n)
+		}
+	}
 }
 
 func (r *refresher) noteSkipped() {

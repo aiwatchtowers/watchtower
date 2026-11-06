@@ -201,6 +201,12 @@ func (r *Repository) GitMissing() bool { return r.g.noGit }
 // Notes say why branch checks are skipped, if they are.
 func (r *Repository) Notes() []string { return r.g.notes }
 
+// GuardNote says why squash-merge checks were skipped — a file-content read
+// refused because the folder's filter drivers could not be switched off —
+// or is "". It is set during BranchMerge, so it is read after the merge
+// checks, not with Notes after the open.
+func (r *Repository) GuardNote() string { return r.g.guardNote }
+
 // BranchMerge is a branch's merge state against the default branch (or the
 // base OpenRepositoryAgainst named).
 type BranchMerge int
