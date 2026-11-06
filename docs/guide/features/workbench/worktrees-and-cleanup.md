@@ -54,7 +54,7 @@ A session row shows where the agent works, and **Show Worktree in Finder** opens
 
 ### What the session line shows
 
-The line under a session shows where its agent works: **main folder · main**, **⑂ name · branch** in a git worktree, or **worktree removed**. Until Watchtower knows the place, it shows the main folder.
+The line under a session shows where its agent works: **main folder · main**, **⑂ name · branch** in a git worktree, or **worktree removed**. Until Watchtower knows the place, it shows the main folder and counts no lanes.
 
 When the session works on a task with a branch, the line shows the branch the work is merged into, such as **⎇ feature/login**. A task without a branch uses its group's. Tasks on different branches show as **⎇ 2 target branches**.
 
