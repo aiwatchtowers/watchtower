@@ -152,7 +152,7 @@ func TestWaitingForMe_WritesOneRowPerOpenItem(t *testing.T) {
 		tone, link             string
 	}{
 		{1, "Colleague A in #general", "Can you look at the release notes?", "2 h", "", "https://acme.slack.com/archives/C001/p10000001"},
-		{2, "Colleague A", "Got a minute?", "1 h", "", "https://acme.slack.com/archives/D001/p10000002"},
+		{2, "Colleague A in a DM", "Got a minute?", "1 h", "", "https://acme.slack.com/archives/D001/p10000002"},
 		{17, "Colleague A in #general", "3 mentions · Any news on the launch?", "< 1 h", "", "https://acme.slack.com/archives/C001/p10000017"},
 		{18, "Colleague A in #general", "", "2 h", "", ""},
 		{15, "colleague-a@example.com — Budget review", "Budget review — please confirm the numbers", "2 h", "", "https://mail.example.com/m/15"},
@@ -386,5 +386,22 @@ func TestWaitingFingerprint(t *testing.T) {
 	f.insertItem(t, "1000.0002", "mention", now)
 	if fp(now) == first {
 		t.Error("fingerprint kept after a new item")
+	}
+}
+
+// An item whose stamp does not parse gets no badge (never a made-up age).
+func TestWaitingForMe_UnparsableStampHasNoBadge(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, created_at)
+		VALUES ('C009', '1000.0001', 'U009', 'mention', 'not a time')`); err != nil {
+		t.Fatal(err)
+	}
+	if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
+		t.Fatalf("run = %+v", run)
+	}
+	rows := f.waitingArtifacts(t)[0].list.Rows
+	if len(rows) != 1 || rows[0].Badge != nil || rows[0].Tone != "" {
+		t.Errorf("rows = %+v; want one row without a badge or tone", rows)
 	}
 }

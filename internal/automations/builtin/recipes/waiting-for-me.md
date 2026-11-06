@@ -14,20 +14,26 @@ After every sync, lists the mentions, messages, tickets and mail that wait on yo
 ```js
 var waiting = attention.waiting();
 
+// "<who> in #channel" or "<who> in a DM" for Slack; "<key> — assigned to
+// you" for a ticket and "<address> — <subject>" for mail.
 function titleOf(item) {
   var who = item.who || "Someone";
   if (!item.where) {
     return who;
   }
-  return item.where.charAt(0) === "#" ? who + " in " + item.where : who + " — " + item.where;
+  var t = item.trigger;
+  var dash = t.indexOf("jira_") === 0 || t.indexOf("linear_") === 0 || t === "email_received";
+  return who + (dash ? " — " : " in ") + item.where;
 }
 
 var rows = waiting.items.map(function (item) {
   var row = {
     title: titleOf(item),
-    badge: { text: item.age },
     ref: { kind: "inbox_item", id: item.id }
   };
+  if (item.age) {
+    row.badge = { text: item.age };
+  }
   var subtitle = item.count > 1 ? item.count_label + (item.text ? " · " + item.text : "") : item.text;
   if (subtitle) {
     row.subtitle = subtitle;

@@ -116,13 +116,13 @@ func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time) ([]any, erro
 	for _, o := range open {
 		mentions, _ := db.ParseInboxMentions(o.Mentions)
 		count := len(mentions) + o.MentionsEarlier
-		who, label := waitingWho(o), ""
+		label := ""
 		if count > 1 {
-			who = db.InboxMentionSenders(mentions, names)
 			label = db.InboxMentionCountLabel(mentions, o.MentionsEarlier)
 		} else {
 			count = 1
 		}
+		who := waitingWho(o, count > 1, mentions, names)
 		at := parseStamp(o.At)
 		hours := 0
 		if !at.IsZero() && now.After(at) {
@@ -154,21 +154,24 @@ func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time) ([]any, erro
 	return items, nil
 }
 
-// waitingWho is a single item's sender: the issue key for Jira and Linear,
-// the address for mail, else the Slack user's name.
-func waitingWho(o db.OpenInboxItem) string {
+// waitingWho is the item's sender, in HomeFeedQueries.who's order: the
+// issue key for Jira and Linear, the address for mail, a folded item's
+// senders, else the Slack user's name.
+func waitingWho(o db.OpenInboxItem, folded bool, mentions []db.InboxMention, names map[string]string) string {
 	switch t := o.TriggerType; {
 	case strings.HasPrefix(t, "jira_"), strings.HasPrefix(t, "linear_"):
 		return o.ChannelID
 	case t == "email_received":
 		return o.SenderUserID
+	case folded:
+		return db.InboxMentionSenders(mentions, names)
 	}
 	return o.SenderName
 }
 
 // waitingWhere is where the item happened: "assigned to you" or "mentioned
-// you" for a tracker, the subject for mail, "#channel" for Slack ("" for a
-// DM or an unknown channel).
+// you" for a tracker, the subject for mail, "a DM" or "#channel" for Slack
+// ("" for an unknown channel).
 func waitingWhere(o db.OpenInboxItem) string {
 	switch o.TriggerType {
 	case "jira_assigned", "linear_assigned":
@@ -179,7 +182,7 @@ func waitingWhere(o db.OpenInboxItem) string {
 		subject, _, _ := strings.Cut(o.Snippet, " — ")
 		return subject
 	case "dm":
-		return ""
+		return "a DM"
 	}
 	if o.ChannelName == "" {
 		return ""
@@ -200,10 +203,13 @@ func webLink(raw string) string {
 
 // ageText is how long ago at was, coarse so the artifact changes at most
 // once an hour (a living rewrite with a new content hash clears the card's
-// read state): "< 1 h", "3 h", "26 h", "2 days" (from 48 hours).
+// read state): "< 1 h", "3 h", "26 h", "2 days" (from 48 hours); "" for an
+// unknown at (no badge).
 func ageText(at, now time.Time) string {
 	switch d := now.Sub(at); {
-	case at.IsZero() || d < time.Hour:
+	case at.IsZero():
+		return ""
+	case d < time.Hour:
 		return "< 1 h"
 	case d < 48*time.Hour:
 		return fmt.Sprintf("%d h", int(d/time.Hour))

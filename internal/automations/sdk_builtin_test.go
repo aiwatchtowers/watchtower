@@ -3,6 +3,7 @@ package automations_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -622,5 +623,15 @@ func TestBuiltinSDK_ReadPrimitiveErrorAndDryRun(t *testing.T) {
 	}
 	if dry.Status != db.RunSucceeded || dry.Summary != "done" || p.count() != 2 {
 		t.Errorf("dry run = %s %q (%s), calls %d; want the read made", dry.Status, dry.Summary, dry.Error, p.count())
+	}
+}
+
+// Every read primitive is a built-in primitive: a builtin: entry admits it
+// and BuiltinModule defines it.
+func TestReadPrimitiveNamesAreBuiltinPrimitives(t *testing.T) {
+	for _, name := range automations.ReadPrimitiveNames {
+		if !slices.Contains(automations.BuiltinPrimitiveNames, name) {
+			t.Errorf("read primitive %q is not in BuiltinPrimitiveNames", name)
+		}
 	}
 }
