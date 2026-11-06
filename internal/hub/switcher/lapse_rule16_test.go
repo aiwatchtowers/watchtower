@@ -1,8 +1,10 @@
 package switcher_test
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/switcher"
@@ -174,5 +176,86 @@ func TestALapseAndTheNoPayerPollDoNotCollide(t *testing.T) {
 		w.pollAfterInterval()
 		w.wantActive(transport.KindCloudKit)
 		_ = switcher.NoPayerPoll
+	})
+}
+
+// A press behind a lapse is read and acted on while the account read hangs:
+// the lapse only records (the pass never reads the relay), and the Step
+// carries out the accepted press before it spends a read on the lapse.
+func TestAPressBehindALapseIsActedOnWhileTheAccountReadHangs(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay, b)
+		w.mu.Lock()
+		w.payHang = true
+		w.mu.Unlock()
+		w.askLapse(a) // a's request, first in the CloudKit pass
+		w.onCloudKit(b)
+		target := wire.TransportCloudKit
+		if _, err := b.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil { // b presses Switch to iCloud
+			t.Fatal(err)
+		}
+		start := time.Now()
+		w.sw.PollOther(w.ctx)
+		if d := time.Since(start); d > testOldSide/2 {
+			t.Fatalf("the pass waited %s on the account read", d)
+		}
+		start = time.Now()
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if d := time.Since(start); d > testOldSide/2 {
+			t.Fatalf("the press waited %s behind the lapse's account read", d)
+		}
+		w.wantActive(transport.KindCloudKit)
+		if _, by, ok, err := w.sw.SwitchedAt(); err != nil || !ok || by != b.ID().String() {
+			t.Fatalf("switched_by %q %v %v: the press was not the one acted on", by, ok, err)
+		}
+	})
+}
+
+// A phone with no relay id cannot be excluded from the account's list, so a
+// paying phone there counts as another one and the hub stays (the safe side).
+func TestALapsedPhoneWithNoRelayIDLeavesTheHubOnTheRelay(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		w.moveTo(a, wire.TransportRelay, b)
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE devices SET relay_device_id = NULL WHERE device_id = ? COLLATE NOCASE`, a.ID().String())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w.mu.Lock()
+		w.paying[b.ID().String()] = false
+		w.unmatched = true // the account lists a paying phone this hub cannot tell from the lapsed one
+		w.mu.Unlock()
+		w.expire(a)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.settle(a, b)
+		w.wantActive(transport.KindRelay)
+	})
+}
+
+// On a host with no CloudKit (or for a phone with no CloudKit mailbox) a
+// lapse that leaves the hub on the relay still marks the phone lapsed: its
+// relay actions are not applied either.
+func TestALapseOnAHostWithNoCloudKitStillMarksThePhoneLapsed(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a, b := w.addPhone(true), w.addPhone(true)
+		w.rebuild(func(c *switcher.Config) { c.CloudKit = nil })
+		w.wantActive(transport.KindRelay)
+		w.expire(a)
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !w.lapsedNow(a) {
+			t.Fatal("the lapsed phone is not marked lapsed")
+		}
+		if w.lapsedNow(b) {
+			t.Fatal("the paying phone is marked lapsed")
+		}
 	})
 }

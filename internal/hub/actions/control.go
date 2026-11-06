@@ -63,8 +63,8 @@ type Switch interface {
 	Skipped(k transport.Kind, device string, seq uint64, writtenAt time.Time) (bool, error)
 	// EntitlementInactive reports a hub write into device's mailbox on k
 	// refused with transport.ErrEntitlementInactive (sim rule 16): the
-	// switcher acts on it outside the pass. It must not call back into a
-	// processor.
+	// switcher records it and decides it in its next Step, outside the pass:
+	// it must neither read the relay nor call back into a processor.
 	EntitlementInactive(k transport.Kind, device string)
 }
 

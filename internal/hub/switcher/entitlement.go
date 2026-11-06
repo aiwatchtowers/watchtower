@@ -21,8 +21,9 @@ import (
 // naming the phone in its detail (OnControl), the phone's own
 // transport_switch(cloudkit, reason = entitlement_expired) (Request), or a
 // hub write into the phone's relay mailbox refused ENTITLEMENT_INACTIVE
-// (EntitlementInactive, acted on at the next Step). Each runs lapse, which
-// decides over a fresh account read (ask #1075): another phone pays when
+// (EntitlementInactive). Each only records the lapse and kicks (queueLapse:
+// nothing in a processor's pass or flush reads the relay), and the Step runs
+// lapse, which decides over a fresh account read (ask #1075): another phone pays when
 // any phone of the relay account other than the lapsed one does, linked to
 // this Mac or not; a read that failed or was not made afresh decides
 // nothing, and the lapse waits (kept in hub_meta across a restart) and is
@@ -50,7 +51,8 @@ import (
 
 // OnControl handles a relay server control the switcher acts on: an
 // ENTITLEMENT_EXPIRED whose detail names a linked phone (its relay device id
-// or its device id, R31) is that phone's lapse, at once. Other controls and
+// or its device id, R31) is that phone's lapse, recorded at once and decided
+// by the Step it kicks. Other controls and
 // a detail that names no linked phone are ignored.
 func (s *Switcher) OnControl(_ context.Context, c transport.Control) error {
 	if c.Kind != transport.EntitlementExpired || c.Detail == "" {
@@ -130,9 +132,11 @@ type lapseRequest struct{ asked, told bool }
 const metaLapsePending = "lapse_pending"
 
 // queueLapse records that device's relay entitlement lapsed and wakes the
-// Step that decides it. It never reads the relay (it runs inside a
-// processor's pass); the ids are kept in hub_meta, so a restart does not
-// lose a lapse that was waiting for an account read.
+// Step that decides it. It never reads the relay and never blocks on it: it
+// runs inside a processor's pass (OnControl, Request) or flush
+// (EntitlementInactive, with the processor's lock held), so a slow account
+// read there would burn the pass and starve every phone behind it. The ids
+// are kept in hub_meta, so a restart does not lose a lapse that was waiting.
 func (s *Switcher) queueLapse(device string, asked bool) error {
 	id := canonical(device)
 	s.mu.Lock()
@@ -147,10 +151,7 @@ func (s *Switcher) queueLapse(device string, asked bool) error {
 	req.asked = req.asked || asked
 	err := s.savePendingLocked()
 	s.mu.Unlock()
-	// At once, as the contract says (sim rule 16): the one fresh account read
-	// is bounded by the old-side timeout, as Request's paying check is. What
-	// it cannot decide waits for the next Step.
-	s.decideLapses(context.Background(), id)
+	s.Kick()
 	return err
 }
 
@@ -186,22 +187,23 @@ func (s *Switcher) loadPending() {
 // (the run loop's tick, every OtherPoll, 30 s, and any kick); there is no
 // limit on the tries, each bounded by the old-side timeout. It ends when the
 // read answers, the phone is unlinked or the hub is no longer on the relay.
-func (s *Switcher) lapses(ctx context.Context) { s.decideLapses(ctx, "") }
+func (s *Switcher) lapses(ctx context.Context) { s.decideLapses(ctx) }
 
-// decideLapses decides the waiting lapse of device (every one when empty),
-// one at a time (lapseMu); the switcher's lock is never held over the read.
-func (s *Switcher) decideLapses(ctx context.Context, only string) {
+// decideLapses decides the waiting lapses, one at a time (lapseMu); the switcher's lock is never held over the read.
+func (s *Switcher) decideLapses(ctx context.Context) {
 	s.lapseMu.Lock()
 	defer s.lapseMu.Unlock()
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.pending))
 	for d := range s.pending {
-		if only == "" || d == only {
-			ids = append(ids, d)
-		}
+		ids = append(ids, d)
 	}
 	s.mu.Unlock()
-	for _, d := range ids {
+	for i, d := range ids {
+		if i > 0 && s.Pending() {
+			s.Kick() // an accepted switch is carried out first; the rest wait for the next Step
+			return
+		}
 		s.mu.Lock()
 		req := s.pending[d]
 		s.mu.Unlock()
@@ -224,8 +226,8 @@ func (s *Switcher) decideLapses(ctx context.Context, only string) {
 // lapse is rule 16 for device (see the package note above): the hub stays on
 // the relay while any phone other than the lapsed one pays (a fresh account
 // read, linked to this Mac or not, no route check: ask #1075), and moves to
-// CloudKit when nobody does. An error means undecided; the phone's own
-// request is then answered once with where the hub runs.
+// CloudKit when nobody does. An error means undecided (see undecided). It
+// runs in a Step, never in a processor's pass.
 func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) error {
 	dev, linked, err := s.c.Store.Device(device)
 	if err != nil || !linked {
@@ -236,10 +238,7 @@ func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) 
 	others := false
 	if onRelay {
 		if others, err = s.othersPay(ctx, dev); err != nil {
-			if req.asked && !req.told {
-				req.told = true
-				s.answerWhereItRuns(dev.ID)
-			}
+			s.undecided(dev.ID, req)
 			return err
 		}
 	}
@@ -252,6 +251,7 @@ func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) 
 	}
 	s.mu.Lock()
 	accepted, err := s.accept(wire.SwitchedByEntitlement, transport.KindCloudKit, s.now())
+	asked := req.asked
 	s.mu.Unlock()
 	if err != nil {
 		return err
@@ -260,10 +260,26 @@ func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) 
 		log.Printf("hub: the relay entitlement of device %s lapsed and no other phone pays: transport switch to cloudkit accepted", id)
 		s.resetBackoff()
 		s.Kick()
-	} else if req.asked {
+	} else if asked {
 		s.answerWhereItRuns(dev.ID)
 	}
 	return nil
+}
+
+// undecided is the one place for what a lapse that could not be decided (no
+// fresh account read) does for the phone that asked: it is told where the
+// hub runs, once, and the hub stays where it is. The lapse itself waits for
+// the next Step.
+func (s *Switcher) undecided(device string, req *lapseRequest) {
+	s.mu.Lock()
+	tell := req.asked && !req.told
+	if tell {
+		req.told = true
+	}
+	s.mu.Unlock()
+	if tell {
+		s.answerWhereItRuns(device)
+	}
 }
 
 // heading is the transport the hub runs on, or moves to with a switch not
@@ -305,6 +321,10 @@ func (s *Switcher) othersPay(ctx context.Context, dev state.Device) (bool, error
 	if s.c.OthersPay != nil {
 		pctx, cancel := context.WithTimeout(ctx, s.oldSide())
 		defer cancel()
+		// A phone with no relay id cannot be told apart in the account, so
+		// nothing is excluded: any paying phone counts as another, and the
+		// hub stays (the safe side: a false stay costs a free phone a wait,
+		// a false move cuts a paying owner off).
 		return s.c.OthersPay(pctx, dev.RelayDeviceID)
 	}
 	s.mu.Lock()
@@ -401,22 +421,27 @@ func (s *Switcher) endLapse(ctx context.Context, device string) {
 // owe moves device's queued relay echoes to its CloudKit mailbox (the rest
 // of its relay queue is dropped) and, with stay, marks it lapsed — a
 // compare-and-set — and on the first mark queues hub_on_relay there after
-// them, in one transaction.
+// them, in one transaction. A phone with no CloudKit mailbox, or a host with
+// no CloudKit, has nothing to move and no one to tell, but is still marked
+// lapsed on stay: its relay actions must not apply either.
 func (s *Switcher) owe(device string, stay bool) error {
 	rp, cp := s.procs[transport.KindRelay], s.procs[transport.KindCloudKit]
-	if rp == nil || cp == nil {
+	var from, to string
+	var okFrom, okTo bool
+	var err error
+	if rp != nil && cp != nil {
+		if from, okFrom, err = rp.QueueOf(device); err != nil {
+			return err
+		}
+		if to, okTo, err = cp.QueueOf(device); err != nil {
+			return err
+		}
+	}
+	if !stay && !(okFrom && okTo) {
 		return nil
 	}
-	from, okFrom, err := rp.QueueOf(device)
-	if err != nil {
-		return err
-	}
-	to, okTo, err := cp.QueueOf(device)
-	if err != nil || !okTo {
-		return err
-	}
 	var notice *state.Control
-	if stay {
+	if stay && okTo {
 		row, ok, err := cp.SealControlFor(device, wire.Control{Kind: wire.ControlHubOnRelay}, 0)
 		if err != nil {
 			return fmt.Errorf("switcher: sealing hub_on_relay: %w", err)
@@ -429,7 +454,7 @@ func (s *Switcher) owe(device string, stay bool) error {
 	told := false
 	err = s.c.Store.WithTx(context.Background(), func(tx *sql.Tx) error {
 		moved, told = 0, false
-		if okFrom {
+		if okFrom && okTo {
 			n, err := state.OweOver(tx, device, from, to, actions.QueueEcho, wire.ControlResendFrom)
 			if err != nil {
 				return err

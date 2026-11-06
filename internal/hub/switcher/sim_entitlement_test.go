@@ -337,6 +337,9 @@ func TestEntitlementExpiredOtherPayingPhoneKeepsHub(t *testing.T) {
 		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
 			t.Fatal(err)
 		}
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
 		w.onCloudKit(a)
 		target, reason := wire.TransportCloudKit, wire.SwitchedByEntitlement
 		if _, err := a.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target, Reason: &reason}); err != nil {

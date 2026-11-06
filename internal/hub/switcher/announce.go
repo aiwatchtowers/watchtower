@@ -22,7 +22,17 @@ import (
 func (s *Switcher) Step(ctx context.Context) error {
 	s.stepMu.Lock()
 	defer s.stepMu.Unlock()
+	// A lapse that needs an account read only happens with no switch pending
+	// (the hub on the relay and heading there): a pending one, the hub's own
+	// or a person's accepted while a read ran, ends the lapses early (the rest
+	// wait for the next Step, kicked) and is carried out below. One that needs
+	// no read supersedes a pending move like any request toward CloudKit.
 	s.lapses(ctx)
+	return s.carryOut(ctx)
+}
+
+// carryOut is the accepted switch's steps and any request accepted meanwhile.
+func (s *Switcher) carryOut(ctx context.Context) error {
 	for {
 		r, ok, err := s.record()
 		if err != nil || !ok || r.Done {

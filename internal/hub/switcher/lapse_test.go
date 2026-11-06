@@ -33,6 +33,9 @@ func (w *world) lapseWithAnotherPayer() (a, b *hubtest.Phone, z uint64) {
 	if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
 		w.t.Fatal(err)
 	}
+	if err := w.sw.Step(w.ctx); err != nil {
+		w.t.Fatal(err)
+	}
 	w.settle(b)
 	w.onCloudKit(a)
 	w.settle(a, b)
@@ -216,6 +219,9 @@ func TestAnOldEpochIsKeptWhileAQueuedNoticeIsSealedInIt(t *testing.T) {
 		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
 			t.Fatal(err)
 		}
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
 		w.settle(b) // the notice waits in a's CloudKit queue
 		if err := w.keys.Rotate(identity.ReasonManual); err != nil {
 			t.Fatal(err)
@@ -295,6 +301,9 @@ func TestAnUnreadPreLapseActionNeverAppliesAfterTheLapseEnds(t *testing.T) {
 		z := w.act(a) // on the relay; no hub pass reads it
 		w.lapse(a)
 		if err := w.sw.OnControl(w.ctx, transport.Control{Kind: transport.EntitlementExpired, Detail: a.RelayDeviceID()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.sw.Step(w.ctx); err != nil {
 			t.Fatal(err)
 		}
 		a.Forget(z) // R32: listed as not delivered

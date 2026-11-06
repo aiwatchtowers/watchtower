@@ -125,6 +125,11 @@ func startG2(t *testing.T, unvouched bool) *g2Rig {
 func (g *g2Rig) poll() {
 	g.clock.Advance(switcher.NoPayerPoll + time.Second)
 	g.h.sw.PollOther(context.Background())
+	// A read the host made at the same frozen instant (its own polls) leaves
+	// this one in the reader's window, not fresh and not counted: one more
+	// poll once the window has passed counts it (a counted one throttles it).
+	g.clock.Advance(unvouchedPoll + time.Second)
+	g.h.sw.PollOther(context.Background())
 }
 
 func TestG2TheDesktopWiringMovesOffARelayNobodyPays(t *testing.T) {
@@ -207,7 +212,9 @@ func TestALapseReadsTheAccountThroughTheDesktopWiring(t *testing.T) {
 				t.Fatalf("devices %v %v", devices, err)
 			}
 			lapsed := devices[0]
-			phones := []*relayv1.SlotHolder{{PhoneDeviceId: lapsed.RelayDeviceID, Paying: false}}
+			// The relay may still list the lapsed phone as paying on a stale snapshot:
+			// it is never "another" payer.
+			phones := []*relayv1.SlotHolder{{PhoneDeviceId: lapsed.RelayDeviceID, Paying: true}}
 			if unlinkedPays {
 				phones = append(phones, &relayv1.SlotHolder{PhoneDeviceId: "unlinked-phone", Paying: true})
 			}

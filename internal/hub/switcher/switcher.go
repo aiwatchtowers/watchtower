@@ -10,8 +10,9 @@
 // entitlement lapsing (by = "entitlement_expired"), which is also what the
 // relay's answer that no phone pays for the hub moves it by (nopayer.go, G2,
 // by ruling, two fresh answers and every phone with an iCloud route); a
-// transport failure never does. Toward the relay a switch is accepted at least AntiFlap after
-// the previous one; toward CloudKit always and at once (rules 9–10). The
+// transport failure never does. Toward the relay a switch is accepted at
+// least AntiFlap after the previous one; toward CloudKit always (rules 9–10),
+// a lapse's only once a fresh account read says nobody else pays (rule 16). The
 // last accepted request wins.
 //
 // An accepted switch (rule 11; Step) runs in this order, each step durable
