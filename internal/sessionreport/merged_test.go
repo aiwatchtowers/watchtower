@@ -296,27 +296,36 @@ func TestMergeRefs_CoverThePhaseLeaves(t *testing.T) {
 		"every not-done leaf the phase counts is refreshed")
 }
 
-// Review F10: the row lines' refresh stops at SummaryRefreshBudget (a
-// fake clock moving 2 s per read), keeps the unchecked verdicts, and
-// still returns every row line, its counts from the cache.
+// Review F10: the row lines' refresh stops at SummaryRefreshBudget — here
+// a fake clock moving 1 s per git call, on a real repository — keeps the
+// verdicts it did not reach, marks the row's merged share stale and still
+// returns the row line, its counts from the cache.
 func TestRefreshedSummaries_StopAtTheSummaryBudget(t *testing.T) {
-	d := mergedFixture(t)
-	calls := ghStub(t)
+	d, id, _, _ := repoBoard(t)
 	var mu sync.Mutex
-	tick := 0
+	now := refreshNow
 	clock := func() time.Time {
 		mu.Lock()
 		defer mu.Unlock()
-		at := refreshNow.Add(time.Duration(tick) * 2 * time.Second)
-		tick++
-		return at
+		return now
 	}
-	rows, res, err := RefreshedSummaries(context.Background(), d, 1, RefreshOptions{Network: true, Now: clock})
+	prev := run
+	run = func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		mu.Lock()
+		now = now.Add(time.Second)
+		mu.Unlock()
+		return prev(ctx, dir, stdin, name, args...)
+	}
+	t.Cleanup(func() { run = prev })
+	rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: clock})
 	require.NoError(t, err)
-	assert.Contains(t, res.Note, "the 3s time budget ran out; 3 ref(s) keep their cached state")
-	assert.Empty(t, calls(), "gh never runs, whatever Network says")
+	assert.Contains(t, res.Note, "the 3s time budget ran out")
+	got := states(t, d, id)
+	assert.NotEmpty(t, got, "the refs read before the budget's end are stored")
+	assert.Less(t, len(got), 3, "a ref past the budget is not read")
 	require.Len(t, rows, 1)
-	assert.Equal(t, []int{1, 8, 3}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
+	assert.Equal(t, 3, rows[0].Total)
+	assert.True(t, rows[0].MergedStale, "a verdict the row reads was not checked")
 }
 
 // Review H2: a squash read the filter guard refused leaves the verdict
@@ -337,4 +346,40 @@ func TestRefresh_RefusedSquashReadIsNamed(t *testing.T) {
 	assert.Contains(t, res.Note, "squash-merge checks skipped: "+gitbin.ErrFilterGuard.Error())
 	assert.Contains(t, res.Note, "the state of 1 ref(s) could not be read ("+ref)
 	assert.Equal(t, "unknown", states(t, d, id)[ref].State, "no verdict without the squash read")
+}
+
+// Review (test gap 1): the --session refresh mixes the kinds. One Refresh
+// over a PR, a branch and a merge verdict reads the PR through gh, the
+// branch against the default branch and the verdict against its own base,
+// with no note.
+func TestRefresh_MixedRefKinds(t *testing.T) {
+	dir := newFeatureRepo(t)
+	calls := ghStub(t)
+	d, id := newWorkbench(t, dir)
+	res := Refresh(context.Background(), d, id, []string{"pr:12", "branch:wt/m", "into:feature/x:wt/m"},
+		RefreshOptions{Network: true, Now: fixedNow})
+	assert.Empty(t, res.Note)
+	assert.Contains(t, calls(), "pr view 12 --json state,title,additions,deletions,mergedAt")
+	got := states(t, d, id)
+	assert.Equal(t, "merged", got["pr:12"].State)
+	assert.Equal(t, "none", got["branch:wt/m"].State, "no PR, and not merged into main")
+	assert.Equal(t, "merged", got["into:feature/x:wt/m"].State, "merged into its own base")
+}
+
+// Review (test gap 3): a cached merged verdict whose local branch gains new
+// work reads open again.
+func TestRefresh_MergedBranchWithNewWorkReadsOpen(t *testing.T) {
+	dir := newFeatureRepo(t)
+	d, id := newWorkbench(t, dir)
+	ref := "into:feature/x:wt/m"
+	Refresh(context.Background(), d, id, []string{ref}, RefreshOptions{Now: fixedNow})
+	require.Equal(t, "merged", states(t, d, id)[ref].State)
+
+	gitRun(t, dir, "checkout", "-q", "wt/m")
+	commitFile(t, dir, "more.txt", "more")
+	gitRun(t, dir, "checkout", "-q", "main")
+	later := refreshNow.Add(time.Hour)
+	res := Refresh(context.Background(), d, id, []string{ref}, RefreshOptions{Now: func() time.Time { return later }})
+	assert.Empty(t, res.Note)
+	assert.Equal(t, "open", states(t, d, id)[ref].State, "unmerged work on the branch again")
 }
