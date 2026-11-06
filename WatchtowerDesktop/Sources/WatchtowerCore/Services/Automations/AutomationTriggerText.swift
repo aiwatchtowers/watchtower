@@ -36,7 +36,9 @@ package enum AutomationTriggerText {
         "jira.issue_changed": "On Jira change",
         "calendar.event_changed": "On calendar change",
         "confluence.page_changed": "On Confluence change",
-        "slack.reaction_added": "On a Slack reaction"
+        "slack.reaction_added": "On a Slack reaction",
+        // Built-in only (Go `automations.ApprovalEvent`): Needs approval.
+        "approval": "When an action or a reminder needs you"
     ]
 
     /// The event type and `where` map of an event recipe's `trigger_spec`, nil

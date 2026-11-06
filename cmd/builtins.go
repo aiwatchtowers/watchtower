@@ -196,6 +196,7 @@ func cliBuiltinBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 		add(builtin.ReactionPrimitives(p.reactions, p.reactionSlot))
 	}
 	add(builtin.WaitingPrimitives(database, time.Now))
+	add(builtin.ApprovalsPrimitives(database, time.Now))
 	b.DefaultPrompt = builtin.DefaultPromptFunc
 	return b
 }

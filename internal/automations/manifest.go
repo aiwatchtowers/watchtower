@@ -85,17 +85,21 @@ var capabilitySpecs = map[string]capabilitySpec{
 
 // BuiltinPrimitiveNames are the engine primitives a builtin: entry may name.
 var BuiltinPrimitiveNames = []string{"brief.compose", "plan.compose", "tracks.extract", "ideas.consolidate", "reaction.compose",
-	PrimitiveAttentionWaiting}
+	PrimitiveAttentionWaiting, PrimitiveApprovalsList}
 
 // PrimitiveAttentionWaiting is Waiting for me's read of the open attention
 // items (Inbox builder B).
 const PrimitiveAttentionWaiting = "attention.waiting"
 
+// PrimitiveApprovalsList is Needs approval's read of the open approvals
+// (Inbox builder B).
+const PrimitiveApprovalsList = "approvals.list"
+
 // ReadPrimitiveNames are the built-in primitives that only read: they take
 // no argument (no prompt), call no model and are journalled as a tool step,
 // outside the run's meter (sdk_builtin.go callRead). A dry run calls them
 // too, as it calls a read tool.
-var ReadPrimitiveNames = []string{PrimitiveAttentionWaiting}
+var ReadPrimitiveNames = []string{PrimitiveAttentionWaiting, PrimitiveApprovalsList}
 
 // PrimitiveCapability maps a primitive to its capability entry when that is
 // not builtin:<name>.

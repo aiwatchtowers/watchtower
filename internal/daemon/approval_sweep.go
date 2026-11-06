@@ -4,8 +4,14 @@ import (
 	"context"
 	"time"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 )
+
+// NeedsApprovalPrimitives is approvals.list over the daemon's database.
+func (d *Daemon) NeedsApprovalPrimitives() map[string]automations.PrimitiveFunc {
+	return builtin.ApprovalsPrimitives(d.db, time.Now)
+}
 
 // phaseApprovalSweep redraws the Needs approval folder when its artifacts
 // drifted from the open approvals (builtin.SweepApprovals): a reminder that

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"strings"
 	"time"
@@ -43,7 +44,9 @@ const (
 // (automations.ReadPrimitiveNames) over d: what every executor and dry run
 // carries, since a dry run calls them.
 func ReadPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
-	return WaitingPrimitives(d, now)
+	out := WaitingPrimitives(d, now)
+	maps.Copy(out, ApprovalsPrimitives(d, now))
+	return out
 }
 
 // WaitingPrimitives returns attention.waiting over d: the open attention

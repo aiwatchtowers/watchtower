@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -35,8 +37,9 @@ func TestRegistry_ShippedRecipesParse(t *testing.T) {
 			if r.Name != e.Name || r.Scope.BuiltinID != e.ID {
 				t.Errorf("name %q scope %+v, want %q in built-in %s", r.Name, r.Scope, e.Name, e.ID)
 			}
-			if r.Trigger.Kind != automations.TriggerSync || r.Trigger.Sync != string(e.Slot) {
-				t.Errorf("trigger = %+v, want sync %s", r.Trigger, e.Slot)
+			if want := e.Trigger(); r.Trigger.Kind != want.Kind || r.Trigger.Sync != want.Sync ||
+				!reflect.DeepEqual(r.Trigger.Event, want.Event) {
+				t.Errorf("trigger = %+v, want %+v", r.Trigger, want)
 			}
 			var want []string
 			for _, p := range e.Primitives {
@@ -296,11 +299,12 @@ func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
 }
 
 // TestCard_DoesAndResultFilter: every card lists what it does and names the
-// Inbox filter its result lands in and its default folder (the root for
-// every shipped built-in so far).
+// Inbox filter its result lands in and its default folder (the root, but
+// Needs approval's own folder).
 func TestCard_DoesAndResultFilter(t *testing.T) {
 	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations",
-		"waiting-for-me": "messages"}
+		"waiting-for-me": "messages", NeedsApprovalID: "automations"}
+	wantFolder := map[string]string{NeedsApprovalID: NeedsApprovalID}
 	f := newFixture(t)
 	for _, e := range All() {
 		card, err := Card(f.d, f.cfg, f.ws, e, nil, f.clock.Now())
@@ -313,8 +317,9 @@ func TestCard_DoesAndResultFilter(t *testing.T) {
 		if card.ResultFilter != want[e.ID] {
 			t.Errorf("%s: result_filter %q, want %q", e.ID, card.ResultFilter, want[e.ID])
 		}
-		if card.DefaultFolder != RootFolder {
-			t.Errorf("%s: default_folder %q, want %q", e.ID, card.DefaultFolder, RootFolder)
+		folder := cmp.Or(wantFolder[e.ID], RootFolder)
+		if card.DefaultFolder != folder {
+			t.Errorf("%s: default_folder %q, want %q", e.ID, card.DefaultFolder, folder)
 		}
 	}
 }

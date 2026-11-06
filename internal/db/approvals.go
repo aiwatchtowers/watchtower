@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -166,12 +167,12 @@ func (db *DB) ApprovalDriftOf(ctx context.Context, automationID int64, now time.
 		return drift, err
 	}
 	for i, a := range open {
-		at, ok := written[a.ref]
-		delete(written, a.ref)
+		at, ok := written[a.Ref()]
+		delete(written, a.Ref())
 		// A tie is drift: both stamps have whole seconds, so an artifact
 		// written in the second of the change may predate it. The redraw
 		// writes a later written_at, so the sweep converges.
-		if (limit <= 0 || i < limit) && (!ok || at <= a.changedAt) {
+		if (limit <= 0 || i < limit) && (!ok || at <= a.ChangedAt) {
 			drift.Missing++
 		}
 	}
@@ -179,27 +180,104 @@ func (db *DB) ApprovalDriftOf(ctx context.Context, automationID int64, now time.
 	return drift, nil
 }
 
-type openApproval struct{ ref, changedAt string }
+// OpenApproval is one open approval as the needs-approval built-in reads it
+// (approvals.list): an agent_actions row (Kind action) or a due reminder
+// (Kind reminder). ChangedAt is its last change: the latest of an action's
+// created_at, decided_at and applied_at, or of a reminder's created_at and
+// remind_at. The action fields are empty for a reminder and the reminder
+// fields for an action.
+type OpenApproval struct {
+	Kind      string // ApprovalKindAction | ApprovalKindReminder
+	ID        int64
+	CreatedAt string
+	ChangedAt string
+	// An action's.
+	Tool, ArgsJSON, Reason, Status, Error, ContextType, ContextID string
+	// A reminder's.
+	Note, RemindAt, MessageRef string
+}
 
-// openApprovals lists the open approvals, oldest created first.
-func openApprovals(ctx context.Context, tx *sql.Tx, now string) ([]openApproval, error) {
+// Ref is the approval's ref, action:<id> or reminder:<id> — the
+// needs-approval built-in's artifact key.
+func (a OpenApproval) Ref() string {
+	if a.Kind == ApprovalKindReminder {
+		return ReminderRef(a.ID)
+	}
+	return ActionRef(a.ID)
+}
+
+// ApprovalsView is what approvals.list reads in one read-only transaction:
+// the open approvals at now in ApprovalDriftOf's order (created_at, actions
+// before reminders, id) — the oldest limit of them (limit ≤ 0: every one) —
+// with their total count, and Closed, the action:/reminder: keys of
+// automation automationID's living inbox artifacts whose approval is not
+// open (closed or gone), sorted. A run that writes Open and removes Closed
+// leaves ApprovalDriftOf nothing to find.
+type ApprovalsView struct {
+	Open   []OpenApproval
+	Total  int
+	Closed []string
+}
+
+// ReadApprovalsView reads the ApprovalsView of automation automationID at
+// now; it never blocks a writer and writes nothing.
+func (db *DB) ReadApprovalsView(ctx context.Context, automationID int64, now time.Time, limit int) (ApprovalsView, error) {
+	var view ApprovalsView
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return view, fmt.Errorf("reading open approvals: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	written, err := approvalArtifacts(ctx, tx, automationID)
+	if err != nil {
+		return view, err
+	}
+	open, err := openApprovals(ctx, tx, formatAutomationTime(now))
+	if err != nil {
+		return view, err
+	}
+	for _, a := range open {
+		delete(written, a.Ref())
+	}
+	view.Total = len(open)
+	if limit > 0 && len(open) > limit {
+		open = open[:limit]
+	}
+	view.Open = open
+	view.Closed = slices.Sorted(maps.Keys(written))
+	return view, nil
+}
+
+// openApprovals lists the open approvals, oldest created first (actions
+// before reminders on a tie, then id).
+func openApprovals(ctx context.Context, tx *sql.Tx, now string) ([]OpenApproval, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT ref, changed_at FROM (
-			SELECT 'action:' || id AS ref, MAX(created_at, decided_at, applied_at) AS changed_at, created_at, 0 AS k, id
+		SELECT k, id, created_at, changed_at, tool, args_json, reason, status, error, context_type, context_id,
+		       note, remind_at, message_ref FROM (
+			SELECT 0 AS k, id, created_at, MAX(created_at, decided_at, applied_at) AS changed_at,
+			       tool, args_json, reason, status, error, context_type, context_id,
+			       '' AS note, '' AS remind_at, '' AS message_ref
 			FROM agent_actions WHERE `+openActionClause+`
 			UNION ALL
-			SELECT 'reminder:' || id, MAX(created_at, remind_at), created_at, 1, id
+			SELECT 1, id, created_at, MAX(created_at, remind_at), '', '', '', status, '', '', '', note, remind_at, message_ref
 			FROM reminders WHERE `+openReminderClause+`)
 		ORDER BY created_at, k, id`, now)
 	if err != nil {
 		return nil, fmt.Errorf("reading open approvals: %w", err)
 	}
 	defer rows.Close()
-	var out []openApproval
+	var out []OpenApproval
 	for rows.Next() {
-		var a openApproval
-		if err := rows.Scan(&a.ref, &a.changedAt); err != nil {
+		var a OpenApproval
+		var k int
+		if err := rows.Scan(&k, &a.ID, &a.CreatedAt, &a.ChangedAt, &a.Tool, &a.ArgsJSON, &a.Reason, &a.Status, &a.Error,
+			&a.ContextType, &a.ContextID, &a.Note, &a.RemindAt, &a.MessageRef); err != nil {
 			return nil, fmt.Errorf("reading open approvals: %w", err)
+		}
+		a.Kind = ApprovalKindAction
+		if k == 1 {
+			a.Kind = ApprovalKindReminder
 		}
 		out = append(out, a)
 	}
@@ -229,6 +307,39 @@ func approvalArtifacts(ctx context.Context, tx *sql.Tx, automationID int64) (map
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading approval artifacts of automation %d: %w", automationID, err)
+	}
+	return out, nil
+}
+
+// AutomationRunLabels maps each of runIDs to its card label, "⚙ <name> · run
+// #<id>" (the automation's name, else its slug) — the Go twin of the
+// Desktop's AutomationQueries.runLabels; a run that is gone is absent.
+func (db *DB) AutomationRunLabels(ctx context.Context, runIDs []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(runIDs) == 0 {
+		return out, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, len(runIDs))
+	for i, id := range runIDs {
+		args[i] = id
+	}
+	rows, err := db.QueryContext(ctx, `SELECT r.id, COALESCE(NULLIF(a.name, ''), a.slug)
+		FROM automation_runs r JOIN automations a ON a.id = r.automation_id WHERE r.id IN (`+marks+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading run labels: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("reading run labels: %w", err)
+		}
+		out[id] = fmt.Sprintf("⚙ %s · run #%d", name, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading run labels: %w", err)
 	}
 	return out, nil
 }

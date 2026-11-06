@@ -24,6 +24,7 @@ final class AutomationTriggerTextTests: XCTestCase {
             ("event", #"{"event":{"type":"slack.reaction_added"}}"#, "On a Slack reaction"),
             ("event", #"{"event":{"type":"slack.reaction_added","where":{"emoji":"eyes"}}}"#, "On :eyes: reactions"),
             ("event", #"{"event":{"type":"slack.reaction_added","where":{"emoji":":eyes:"}}}"#, "On :eyes: reactions"),
+            ("event", #"{"event":{"type":"approval"}}"#, "When an action or a reminder needs you"),
             ("manual", #"{"manual":true}"#, "Manual"),
             ("", "{}", "—")
         ]
@@ -113,5 +114,7 @@ final class AutomationTriggerTextTests: XCTestCase {
         XCTAssertEqual(AutomationCardPresentation.permissionLine("track:scan"), "Add events to this watch's track")
         XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:attention.waiting"),
                        "Read the messages waiting on you")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:approvals.list"),
+                       "Read the actions and reminders that wait for you")
     }
 }

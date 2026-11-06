@@ -57,6 +57,19 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertTrue(waiting.runNow)
     }
 
+    /// Inbox builder B's Needs approval golden: no slot, its own feature.
+    func testDecodesNeedsApprovalGolden() throws {
+        let needs = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_needs_approval"))
+        XCTAssertEqual(needs.id, "needs-approval")
+        XCTAssertEqual(needs.slot, "", "it runs at no slot")
+        XCTAssertEqual(needs.featureIDs, ["approval-cards"])
+        XCTAssertEqual(needs.parameters, [])
+        XCTAssertEqual(needs.defaultPrompts, [:])
+        XCTAssertEqual(needs.resultFilter, .automations)
+        XCTAssertTrue(needs.runNow)
+        XCTAssertTrue(needs.shippedText.contains("type: approval"))
+    }
+
     func testDecodesDoesAndResultFilter() throws {
         let detail = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden())
         XCTAssertGreaterThanOrEqual(detail.does.count, 1)

@@ -649,3 +649,60 @@ func TestReadPrimitiveNamesAreBuiltinPrimitives(t *testing.T) {
 		}
 	}
 }
+
+// approvals.list is a read primitive: no argument, one tool step under its
+// builtin: permission with no tokens debited, {status, ...Fields} back.
+func TestBuiltinSDK_ApprovalsListIsAReadStep(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done", Fields: map[string]any{"count": 3}}}
+	f := builtinFixture(t, map[string]*fakePrimitive{automations.PrimitiveApprovalsList: p})
+	a := f.seedBuiltin(t, builtinRecipeText(`const out = [];
+for (const arg of [undefined, {}, {prompt: "P"}, "x"]) {
+  try { const r = approvals.list(arg); out.push(r.status + ":" + r.count); } catch (e) { out.push(e.name); }
+}
+return out.join(",");`, "", "builtin:approvals.list"), true)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	want := "done:3,done:3," + automations.ErrNameValidation + "," + automations.ErrNameValidation
+	if r.Status != db.RunSucceeded || r.Summary != want {
+		t.Fatalf("run = %s %q (%s); want %q", r.Status, r.Summary, r.Error, want)
+	}
+	if p.count() != 2 || p.calls[0].Prompt != "" || p.calls[0].BuiltinID != testBuiltinID {
+		t.Errorf("calls = %+v; want two, without a prompt", p.calls)
+	}
+	for _, s := range f.steps(t, r.ID) {
+		if s.Kind != automations.StepKindTool || s.Name != automations.PrimitiveApprovalsList ||
+			s.Permission != "builtin:approvals.list" || s.InputTokens != 0 || s.OutputTokens != 0 {
+			t.Errorf("step = %+v", s)
+		}
+	}
+	if r.InputTokens != 0 || r.OutputTokens != 0 {
+		t.Errorf("run usage = %d/%d; want none", r.InputTokens, r.OutputTokens)
+	}
+}
+
+// approvals.list's error fails the run as PrimitiveFailed; a dry run calls
+// it, as a dry run calls a read tool.
+func TestBuiltinSDK_ApprovalsListErrorAndDryRun(t *testing.T) {
+	p := &fakePrimitive{err: errors.New("no such table")}
+	f := builtinFixture(t, map[string]*fakePrimitive{automations.PrimitiveApprovalsList: p})
+	a := f.seedBuiltin(t, builtinRecipeText(`return approvals.list().status;`, "", "builtin:approvals.list"), true)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	if r.Status != db.RunFailed || !strings.Contains(r.Error, automations.ErrNamePrimitiveFailed) {
+		t.Errorf("run = %s (%s); want failed with %s", r.Status, r.Error, automations.ErrNamePrimitiveFailed)
+	}
+	p.err, p.res = nil, automations.PrimitiveResult{Status: "done"}
+	id := f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerDryRun})
+	dry, err := f.e.ExecuteInline(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Status != db.RunSucceeded || dry.Summary != "done" || p.count() != 2 {
+		t.Errorf("dry run = %s %q (%s), calls %d; want the read made", dry.Status, dry.Summary, dry.Error, p.count())
+	}
+}
+
+// approvals.list is one of the read primitives.
+func TestReadPrimitiveNames_HoldApprovalsList(t *testing.T) {
+	if !slices.Contains(automations.ReadPrimitiveNames, automations.PrimitiveApprovalsList) {
+		t.Error("approvals.list is not a read primitive")
+	}
+}

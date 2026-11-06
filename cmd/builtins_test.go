@@ -807,3 +807,33 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 	tracksCreateFlagTarget = 0
 	return code, out.String(), string(stderr)
 }
+
+// TestAuto09_SlotlessBuiltinRunNowWakesThePoll: `automations run` of a
+// built-in with no slot (Needs approval) only queues a manual run and wakes
+// the executor's poll — no sync is asked for and no at_next_sync promised.
+func TestAuto09_SlotlessBuiltinRunNowWakesThePoll(t *testing.T) {
+	c := newBuiltinCLI(t, true)
+	require.NoError(t, c.d.RecordBuiltinMigration(builtin.NeedsApprovalID, db.BuiltinMigrationDone, "", time.Now()))
+	a, err := builtin.SyncOne(context.Background(), c.d, c.ws, c.cfg, builtin.NeedsApprovalID, time.Now())
+	require.NoError(t, err)
+	require.True(t, a.Runnable())
+	signals := 0
+	orig := builtinRunSignal
+	builtinRunSignal = func(*config.Config) (int, error) { signals++; return 4242, nil }
+	t.Cleanup(func() { builtinRunSignal = orig })
+
+	m := runAutomationsJSON(t, "run", idArg(a.ID))
+	_, hasNextSync := m["at_next_sync"]
+	assert.False(t, hasNextSync, "a slotless built-in's run is not at the next sync")
+	assert.Equal(t, false, m["daemon_running"], "no daemon in the test: the run waits for it")
+	assert.Zero(t, signals, "no sync is asked for")
+	runs := (&autoCLI{d: c.d}).runs(t, a.ID)
+	require.Len(t, runs, 1)
+	assert.Equal(t, db.RunQueued, runs[0].Status)
+	assert.Equal(t, db.TriggerManual, runs[0].Trigger)
+
+	out, err := runAutomations(t, "run", idArg(a.ID))
+	require.NoError(t, err)
+	assert.Contains(t, out, "was already queued.")
+	assert.NotContains(t, out, "next sync")
+}
