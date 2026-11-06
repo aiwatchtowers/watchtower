@@ -155,3 +155,18 @@ func TestRefreshedSummaries_GitCannotTellIsQuiet(t *testing.T) {
 	assert.Equal(t, "unknown", row.State)
 	assert.Equal(t, refreshNow.Format(time.RFC3339), row.CheckedAt, "the ordinary backoff, not due again")
 }
+
+// Verify R2: merged_stale follows the refs Merged reads. A session bound to
+// a done leaf counts no merge verdict, so a sibling's failed read (one its
+// phase line reads) leaves the row's mark off.
+func TestRefreshedSummaries_PhaseOnlyFailureLeavesTheRowUnmarked(t *testing.T) {
+	d, id, _, _ := repoBoard(t)
+	runSQL(t, d, `UPDATE targets SET status = 'done' WHERE id = 101; UPDATE terminal_sessions SET target_id = 101 WHERE id = 1`)
+	stubGitCalls(t, nil, "cherry")
+	rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: fixedNow})
+	require.NoError(t, err)
+	assert.Contains(t, res.Note, "into:feature/x:wt/open: git could not read its merge state", "the sibling failed")
+	require.Len(t, rows, 1)
+	assert.Equal(t, []int{1, 1, 0}, []int{rows[0].Done, rows[0].Total, rows[0].Merged})
+	assert.False(t, rows[0].MergedStale, "the row's Merged reads no verdict")
+}

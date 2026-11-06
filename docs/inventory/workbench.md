@@ -1772,7 +1772,9 @@ board. Done keeps its meaning (the board status); with nothing merged the
 numbers read as before. Part of the same amendment's failure reporting
 (board #985 review): a summary row whose merged share holds a verdict the
 refresh could not check — a git call failed, the base did not resolve, the
-budget ran out, the cache could not be read — carries `merged_stale: true`
+budget ran out, the cache could not be read; not a verdict git only cannot
+give, such as a base too far ahead for the squash check, and only for the
+verdicts the row's own `merged` count reads — carries `merged_stale: true`
 (additive key; false when absent) and the Desktop row caption says so
 ("N merged (stale)", "merged not checked"); a verdict read but not saved
 still counts in that run's rows.

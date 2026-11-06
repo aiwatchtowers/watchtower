@@ -80,7 +80,7 @@ func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts R
 }
 
 // summarize is each session's row line from the PR cache states; a
-// session with a merge ref in unchecked has MergedStale.
+// session whose Merged reads a ref in unchecked has MergedStale.
 func summarize(sessions []agentSession, states map[string]db.PRState, unchecked map[string]bool) []Summary {
 	out := []Summary{}
 	for _, as := range sessions {
@@ -88,7 +88,7 @@ func summarize(sessions []agentSession, states map[string]db.PRState, unchecked 
 		p := as.sc.counts(states)
 		s.Done, s.Total, s.Merged = p.Done, p.Total, p.Merged
 		if len(unchecked) > 0 {
-			s.MergedStale = slices.ContainsFunc(as.sc.mergeRefs(), func(ref string) bool { return unchecked[ref] })
+			s.MergedStale = slices.ContainsFunc(as.sc.countedMergeRefs(), func(ref string) bool { return unchecked[ref] })
 		}
 		s.PRLine = as.sc.prLine(as.sc.prs(states))
 		out = append(out, s)
