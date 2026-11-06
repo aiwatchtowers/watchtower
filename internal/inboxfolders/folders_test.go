@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -157,7 +158,7 @@ func TestFolder01_DeleteMovesContentsUp(t *testing.T) {
 
 	tree, moved, err := f.s.Delete(f.ctx, release.ID, f.rev())
 	require.NoError(t, err)
-	assert.Equal(t, Moved{Folders: 2, Automations: 1, Artifacts: 1}, moved)
+	assert.Equal(t, Moved{Folders: 2, Automations: 1, Artifacts: 1, Renamed: []Renamed{}}, moved)
 
 	assert.Equal(t, []string{"Needs approval", "Other", "Alpha", "Beta"}, f.childTitles(f.root))
 	assert.Equal(t, []string{"Gamma"}, f.childTitles(alpha.ID))
@@ -183,8 +184,67 @@ func TestDelete_EmptyFolderMovesNothing(t *testing.T) {
 	empty := f.create("Empty", 0)
 	_, moved, err := f.s.Delete(f.ctx, empty.ID, f.rev())
 	require.NoError(t, err)
-	assert.Equal(t, Moved{}, moved)
+	assert.Equal(t, Moved{Renamed: []Renamed{}}, moved)
 	assert.Equal(t, []string{"Needs approval"}, f.childTitles(f.root))
+}
+
+func TestDelete_TitleClashIgnoringCaseRenamesMovedChild(t *testing.T) {
+	f := newFixture(t)
+	f.create("Notes", 0)
+	release := f.create("Release", 0)
+	notes := f.create("notes", release.ID)
+	approvalsLike := f.create("Needs Approval", release.ID)
+	f.create("Other", release.ID)
+
+	tree, moved, err := f.s.Delete(f.ctx, release.ID, f.rev())
+	require.NoError(t, err)
+	assert.Equal(t, []Renamed{
+		{ID: notes.ID, From: "notes", To: "notes (2)"},
+		{ID: approvalsLike.ID, From: "Needs Approval", To: "Needs Approval (2)"},
+	}, moved.Renamed)
+	assert.Equal(t, []string{"Needs approval", "Notes", "notes (2)", "Needs Approval (2)", "Other"}, f.childTitles(f.root))
+	got, _ := tree.find(notes.ID)
+	assert.Equal(t, notes.Slug, got.Slug, "a rename never changes the slug")
+
+	// Sibling titles stay unique, so the usual writes keep working.
+	_, _, err = f.s.Update(f.ctx, notes.ID, UpdateRequest{Title: ptr("notes (2)"), Icon: ptr("bell"), ExpectRevision: f.rev()})
+	require.NoError(t, err)
+	parked := f.create("Parked", 0)
+	_, _, err = f.s.Move(f.ctx, notes.ID, parked.ID, 0, f.rev())
+	require.NoError(t, err)
+	_, _, err = f.s.Move(f.ctx, notes.ID, f.root, 9, f.rev())
+	require.NoError(t, err)
+}
+
+func TestDelete_TitleClashChainsNumbers(t *testing.T) {
+	f := newFixture(t)
+	f.create("Notes", 0)
+	f.create("Notes (2)", 0)
+	release := f.create("Release", 0)
+	notes := f.create("notes", release.ID)
+	f.create("NOTES (3)", release.ID) // a moving child's title is taken too
+
+	_, moved, err := f.s.Delete(f.ctx, release.ID, f.rev())
+	require.NoError(t, err)
+	assert.Equal(t, []Renamed{{ID: notes.ID, From: "notes", To: "notes (4)"}}, moved.Renamed)
+	assert.Equal(t, []string{"Needs approval", "Notes", "Notes (2)", "notes (4)", "NOTES (3)"}, f.childTitles(f.root))
+}
+
+func TestDelete_TitleClashRenameKeepsTheCap(t *testing.T) {
+	f := newFixture(t)
+	long := strings.Repeat("a", MaxTitleRunes-1) + "я"
+	f.create(long, 0)
+	release := f.create("Release", 0)
+	kid := f.create(strings.ToUpper(long), release.ID)
+
+	_, moved, err := f.s.Delete(f.ctx, release.ID, f.rev())
+	require.NoError(t, err)
+	require.Len(t, moved.Renamed, 1)
+	want := strings.Repeat("A", MaxTitleRunes-4) + " (2)"
+	assert.Equal(t, Renamed{ID: kid.ID, From: strings.ToUpper(long), To: want}, moved.Renamed[0])
+	assert.Equal(t, MaxTitleRunes, utf8.RuneCountInString(want))
+	_, err = cleanTitle(want)
+	assert.NoError(t, err, "the new title passes the title rules")
 }
 
 func TestDelete_AtMaxDepthChildrenMoveUpOneLevel(t *testing.T) {

@@ -13,7 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"watchtower/internal/db"
 )
@@ -81,9 +84,18 @@ type RouteRequest struct {
 
 // Moved counts what a delete moved to the deleted folder's parent: its
 // child folders, the automations routed to it and the artifacts placed in it
-// explicitly.
+// explicitly. Renamed lists the moved folders whose title clashed with one
+// of the parent's children (never nil).
 type Moved struct {
 	Folders, Automations, Artifacts int
+	Renamed                         []Renamed
+}
+
+// Renamed is a folder a delete moved up under a new title: From clashed,
+// ignoring case, with a title among its new siblings. Its slug is unchanged.
+type Renamed struct {
+	ID       int64
+	From, To string
 }
 
 // Store reads and writes the folder tree.
@@ -234,12 +246,15 @@ func (s *Store) Move(ctx context.Context, id, parentID int64, position int, expe
 // Delete removes an owner folder and nothing else (FOLDER-01): its child
 // folders move to its parent, appended after the parent's children in their
 // order; the automations routed to it and the artifacts placed in it
-// explicitly move to the parent too. It returns the counts moved.
+// explicitly move to the parent too. A moved child whose title clashes with
+// one of the parent's children, ignoring case, gets " (2)", " (3)"… so
+// titles stay unique among siblings; a delete is never refused for it. It
+// returns the counts moved and the renames.
 func (s *Store) Delete(ctx context.Context, id int64, expect int64) (Tree, Moved, error) {
 	if expect < 1 {
 		return Tree{}, Moved{}, ErrRevisionRequired
 	}
-	var moved Moved
+	moved := Moved{Renamed: []Renamed{}}
 	tree, err := s.write(ctx, expect, func(tx *sql.Tx, snap *snapshot) error {
 		f, err := snap.ownerFolder(id)
 		if err != nil {
@@ -247,9 +262,18 @@ func (s *Store) Delete(ctx context.Context, id int64, expect int64) (Tree, Moved
 		}
 		parent := *f.ParentID
 		kids := snap.children[id]
+		moved.Renamed = snap.titlesMovingUp(id, parent)
+		titles := map[int64]string{}
+		for _, r := range moved.Renamed {
+			titles[r.ID] = r.To
+		}
 		for _, kid := range kids {
-			if _, err := tx.ExecContext(ctx, `UPDATE inbox_folders SET parent_id = ?,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, parent, kid); err != nil {
+			title, ok := titles[kid]
+			if !ok {
+				title = snap.byID[kid].Title
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE inbox_folders SET parent_id = ?, title = ?,
+				updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, parent, title, kid); err != nil {
 				return fmt.Errorf("moving inbox folder %d up: %w", kid, err)
 			}
 		}
@@ -560,6 +584,51 @@ func (s *snapshot) titleTaken(parent int64, title string, except int64) bool {
 		}
 	}
 	return false
+}
+
+// titlesMovingUp renames the children of id that are moving up to parent
+// whose title clashes, ignoring case, with one of parent's other children:
+// "<title> (2)", "(3)"…, the first free among parent's children and every
+// moving child's title, the title cut to keep MaxTitleRunes.
+func (s *snapshot) titlesMovingUp(id, parent int64) []Renamed {
+	taken := map[string]bool{}
+	staying := map[string]bool{}
+	for _, sib := range s.children[parent] {
+		if sib != id {
+			key := strings.ToLower(s.byID[sib].Title)
+			staying[key], taken[key] = true, true
+		}
+	}
+	for _, kid := range s.children[id] {
+		taken[strings.ToLower(s.byID[kid].Title)] = true
+	}
+	renamed := []Renamed{}
+	for _, kid := range s.children[id] {
+		title := s.byID[kid].Title
+		if !staying[strings.ToLower(title)] {
+			continue
+		}
+		next := numberedTitle(title, taken)
+		taken[strings.ToLower(next)] = true
+		renamed = append(renamed, Renamed{ID: kid, From: title, To: next})
+	}
+	return renamed
+}
+
+// numberedTitle is title + " (n)" for the lowest n ≥ 2 not in taken
+// (lower-cased keys), the title cut so the result fits MaxTitleRunes.
+func numberedTitle(title string, taken map[string]bool) string {
+	for n := 2; ; n++ {
+		suffix := " (" + strconv.Itoa(n) + ")"
+		base := []rune(title)
+		if keep := MaxTitleRunes - utf8.RuneCountInString(suffix); len(base) > keep {
+			base = base[:keep]
+		}
+		next := strings.TrimRightFunc(string(base), unicode.IsSpace) + suffix
+		if !taken[strings.ToLower(next)] {
+			return next
+		}
+	}
 }
 
 func (s *snapshot) slugTaken(slug string) bool {
