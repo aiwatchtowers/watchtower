@@ -2690,3 +2690,12 @@ Entry format:
 - weak-dimension: 7. The library-level hold test passes with a lock-less `HoldTempFile`, and the codex-level guard never runs a sweep mid-run, so the composition "sweep while codex is running" is proven only by the fsutil sweep test. Codex could not run tests in its read-only sandbox. [7]
 - rule-gap (candidate, dim 8): *when a change overturns a contract that a CLAUDE.md index entry summarises, update that summary line in the same change. The inventory and feature note alone leave the agent-facing index wrong.*
 - outcome: TBD
+
+## 2026-11-05 — feature/chat-artifacts-export (prompt default flip to in-app artifacts unless claude.ai is asked + Print… / Save as PDF via the print panel + Export as Word; panel: prosecutor (8) + all three pr-review-toolkit specialists, codex timed out; judge verified by reading, `go test ./internal/learn ./internal/chat -run 'TestGuideCardsValid|TestPrompt_ClaudeAI'` green) — verdict: changes-needed
+
+- contested: does the print panel's PDF menu (Mail, Messages, iCloud) breach CHAT-05's "nothing hands content to a networked app"? Held major as a documentation and inventory gap, not a security blocker. It is an OS panel the owner opens and picks from, like Copy then paste, and the owner asked for exactly this panel. But the Observable lists the export formats one by one, and every earlier scan-list extension carried a changelog line, so a new export path updates both in the same change. [8/9]
+- false-positive: an empty .docx (silent-failure lane). `canExportWord` already refuses blank content, so only a document of nothing but rules could produce one. [9]
+- miss: only the test lane ran a probe and found that AppKit's `.officeOpenXML` writer flattens tables into one paragraph per cell, while the guide promises "headings, lists and tables". The added test checked only the zip magic and two strings, so it could not catch this. **A user-facing promise about an export format needs a test that opens the output and checks that promise.** [6/7]
+- weak-dimension: 7. The new Coordinator callbacks (`onLoaded`/`onFailed`) and the printer's lifecycle (load that never finishes, content-process crash) have no tests. The only printer coverage is a source scan.
+- rule-gap (candidate, dim 6): *an offscreen web-view job kept alive in a static set needs a terminal path for every way a load can end: finish, fail, content-process termination and a timeout. Otherwise the button silently does nothing and the job leaks.*
+- outcome: TBD

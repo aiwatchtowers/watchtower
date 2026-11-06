@@ -180,7 +180,10 @@ Extends QC-03's "secrets never on argv" to all chat content.
 opens a Gmail compose URL (or a `mailto:` fallback), a `slack` artifact
 copies its body and opens the channel/thread deep link, an `event` artifact
 opens a Google Calendar template URL, `document`/`table`/`code`/`html` artifacts
-copy or export (.md/.csv/.txt/.html) locally — every action any artifact kind can
+copy or export (.md/.csv/.txt/.html, and .docx for a `document`) locally, and a
+`document`/`html` artifact can be printed through the macOS print panel, whose
+PDF menu (Save as PDF, Mail, Messages, network printers) acts only on the
+owner's own choice there, on a static rendering in the same no-network web view — every action any artifact kind can
 produce is a `copy`, an `open` of a compose/deep-link URL, or a
 `copyThenOpen`, never a value that could perform a network or CLI write.
 Nothing is sent, posted or created in an external system from an artifact.
@@ -249,6 +252,8 @@ child is never started without it.
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`)
 
 ## Changelog
+
+- 2026-11-05 (board #962, owner decision ask #501): **CHAT-05** extended by owner decision, no guard relaxed. The artifact panel gains **Print…** for `document` and `html` (the macOS print panel; its PDF menu — Save as PDF, Open in Preview, Mail, Messages, network printers — runs only on the owner's choice, like Copy then paste) and **Export as Word…** for `document` (a local `.docx`, like Export…). The page prints from an offscreen web view built by `SandboxedHTMLView.makeWebView` with the same content rules (no network; `testThePrinterRouteLoadsNothingFromTheNetwork`), and a `document` prints as `ArtifactPrint.documentPage`, built from the parsed Markdown with everything escaped and nothing that loads (allow-list test `testNothingInTheDocumentPageLoadsOrRuns`). `ArtifactChat05ScanTests` also scans `ArtifactPrint.swift` and `ArtifactPrinter.swift`; every other scan and guard passes unchanged.
 
 - 2026-11-04 (fix: codex prompt file lifetime, owner approved ask #481): **CHAT-04** Observable amended, no guard relaxed; the "nothing on argv" rule is unchanged. codex re-reads its `model_instructions_file` for every model request of a run, so removing it at codex's first output failed the next request ("failed to load workspace requirements", codex-cli 0.159.2) and every codex-provider call with tools broke. The file now lives until codex exits (`fsutil.HoldTempFile`, a deferred release in `codex.Client.Query`/`QuerySync` and `codex.CodexGenerator.run`); its holder's shared flock keeps `fsutil.SweepStaleTemp` off it. `TestPromptFile_GoneAfterFirstOutput` is replaced by `TestPromptFile_KeptUntilCodexExits` (the fake re-reads the file after its first output; no file left after return); `TestHoldTempFile_SweepSkipsAHeldFile` covers the sweep. Trade-off: a process killed mid-run leaves the 0600 file until the 10-minute sweep. Feature note: `docs/features/files-outside-db.md`.
 
