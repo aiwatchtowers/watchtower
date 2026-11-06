@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -391,30 +390,17 @@ func (d *DB) AgentLogSessionFolder(sessionUUID string) (string, bool, error) {
 }
 
 // CodexResumeState is what a codex rollout read that starts past offset 0
-// needs from the stored rows: the session's model and the running token
-// total of its last stored response (the number after the last ':' of its
-// "api_call:codex:<ts>:<total>" key; 0 when none or not a number).
-func (d *DB) CodexResumeState(sessionUUID string) (model string, lastTotal int64, err error) {
-	err = d.QueryRow(`SELECT model FROM agent_log_sessions WHERE session_uuid = ?`, sessionUUID).Scan(&model)
+// needs from the stored session: its model and its home working directory
+// ("" for both when the session is not stored).
+func (d *DB) CodexResumeState(sessionUUID string) (model, homeCWD string, err error) {
+	err = d.QueryRow(`SELECT model, home_cwd FROM agent_log_sessions WHERE session_uuid = ?`, sessionUUID).Scan(&model, &homeCWD)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", 0, nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", 0, err
+		return "", "", fmt.Errorf("reading codex session %s: %w", sessionUUID, err)
 	}
-	var key string
-	err = d.QueryRow(`SELECT key FROM agent_log_events WHERE session_uuid = ? AND +kind = 'api_call'
-		AND key LIKE 'api_call:codex:%' ORDER BY ts DESC, src_offset DESC LIMIT 1`, sessionUUID).Scan(&key)
-	if errors.Is(err, sql.ErrNoRows) {
-		return model, 0, nil
-	}
-	if err != nil {
-		return "", 0, err
-	}
-	if n, perr := strconv.ParseInt(key[strings.LastIndexByte(key, ':')+1:], 10, 64); perr == nil {
-		lastTotal = n
-	}
-	return model, lastTotal, nil
+	return model, homeCWD, nil
 }
 
 // AgentLaneBaseline reports whether a lane (a session's agent id, "" for the

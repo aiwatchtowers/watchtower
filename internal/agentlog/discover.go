@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"watchtower/internal/db"
 )
 
 // TranscriptFile is one agent transcript found on disk: a Claude Code
@@ -222,15 +224,6 @@ func resolved(p string) string {
 	return filepath.Clean(p)
 }
 
-// CodexRow is one codex terminal session of the workbench: its row id, the
-// codex session id it runs and the rollout path its SessionStart hook stored
-// ("" = none).
-type CodexRow struct {
-	TerminalSessionID int64
-	SessionID         string
-	StoredPath        string
-}
-
 // DefaultCodexHome is `$CODEX_HOME` when it is set to an absolute path, else
 // ~/.codex (Codex's own rule, as cmd's defaultTerminalCodexHome).
 func DefaultCodexHome() string {
@@ -245,59 +238,70 @@ func DefaultCodexHome() string {
 }
 
 // CodexTranscripts finds the rollouts of the workbench's codex rows
-// (AGENTLOG-04 as amended in ask #507): a row's stored path when it is an
-// absolute regular file named for its session, else
-// codexHome/sessions/<y>/<m>/<d>/rollout-*-<id>.jsonl. Nothing is reached
-// through a symlink: the stored file, every folder below the sessions root
-// and the file itself are checked with Lstat. Rows of other workbenches and
-// rollouts with no row are never listed, so never opened. Whether the rollout
-// ran in the workbench is decided by the scan (its session_meta cwd).
+// (AGENTLOG-04 as amended in ask #507): a row's stored path, else
+// codexHome/sessions/<y>/<m>/<d>/rollout-*-<id>.jsonl, else (codex archived
+// it) codexHome/archived_sessions/rollout-*-<id>.jsonl. Every candidate must
+// lie under one of those roots with nothing below the root a symlink: each
+// folder and the file itself are checked with Lstat. Rows of other
+// workbenches and rollouts with no row are never listed, so never opened.
+// Whether the rollout ran in the workbench is decided by the scan (its
+// session_meta cwd). missing counts the rows whose rollout was not found.
 //
 // Interim wiring: A5 moves this discovery onto the session adapter's
-// Transcript (internal/sessionagent) and removes it here.
-func CodexTranscripts(codexHome string, rows []CodexRow) []TranscriptFile {
-	var root string
+// Transcript (internal/sessionagent) and removes it here. Keep its rules in
+// step with sessionfeed.LocateCodex until then.
+func CodexTranscripts(codexHome string, rows []db.CodexAnalyticsRow) (files []TranscriptFile, missing int) {
+	var roots []string // each root as given and resolved, so a symlinked CODEX_HOME still matches
 	if codexHome != "" {
-		if r, err := filepath.EvalSymlinks(filepath.Join(codexHome, "sessions")); err == nil {
-			root = r
+		for _, dir := range []string{"sessions", "archived_sessions"} {
+			raw := filepath.Join(codexHome, dir)
+			roots = append(roots, raw)
+			if r, err := filepath.EvalSymlinks(raw); err == nil && r != raw {
+				roots = append(roots, r)
+			}
 		}
 	}
-	var out []TranscriptFile
 	for _, row := range rows {
-		path, ok := locateCodexRollout(root, row)
+		path, ok := locateCodexRollout(roots, row)
 		if !ok {
+			missing++
 			continue
 		}
 		if f, ok := statTranscript(path); ok {
 			f.SessionUUID, f.Agent = row.SessionID, AgentCodex
-			out = append(out, f)
+			files = append(files, f)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, missing
 }
 
 // codexIDRe is a codex session id (a UUID), the only shape put into a glob.
 var codexIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-func locateCodexRollout(root string, row CodexRow) (string, bool) {
+func locateCodexRollout(roots []string, row db.CodexAnalyticsRow) (string, bool) {
 	if !codexIDRe.MatchString(row.SessionID) {
 		return "", false
 	}
 	suffix := "-" + row.SessionID + ".jsonl"
-	if p := row.StoredPath; filepath.IsAbs(p) && strings.HasPrefix(filepath.Base(p), "rollout-") && strings.HasSuffix(p, suffix) {
-		if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() {
-			return p, true
+	if p := filepath.Clean(row.TranscriptPath); filepath.IsAbs(p) && strings.HasPrefix(filepath.Base(p), "rollout-") && strings.HasSuffix(p, suffix) {
+		for _, root := range roots {
+			if noSymlinkBelow(root, p) {
+				return p, true
+			}
 		}
 	}
-	if root == "" {
-		return "", false
-	}
-	matches, _ := filepath.Glob(filepath.Join(root, "*", "*", "*", "rollout-*"+suffix))
-	sort.Strings(matches)
-	for _, m := range matches {
-		if noSymlinkBelow(root, m) {
-			return m, true
+	for _, root := range roots {
+		pattern := filepath.Join(root, "*", "*", "*", "rollout-*"+suffix)
+		if filepath.Base(root) == "archived_sessions" {
+			pattern = filepath.Join(root, "rollout-*"+suffix)
+		}
+		matches, _ := filepath.Glob(pattern)
+		sort.Strings(matches)
+		for _, m := range matches {
+			if noSymlinkBelow(root, m) {
+				return m, true
+			}
 		}
 	}
 	return "", false

@@ -24,18 +24,18 @@ type Totals struct {
 // SessionRow is one session's line in the overview. An old-format session
 // (stored before the parser kept timing) has no time fields.
 type SessionRow struct {
-	UUID          string   `json:"session_uuid"`
-	Agent         string   `json:"agent"`          // "claude" or "codex"
-	UnpricedCalls int      `json:"unpriced_calls"` // API calls of a model without a price: tokens only, cost 0 ("no price")
-	StartedAt     string   `json:"started_at"`
-	EndedAt       string   `json:"ended_at"`
-	Model         string   `json:"model"`
-	Branch        string   `json:"branch"`
-	ActiveMS      int64    `json:"active_ms"`
-	CostUSD       float64  `json:"cost_usd"`
-	AvgParallel   float64  `json:"avg_parallel"`
-	OldFormat     bool     `json:"old_format"`
-	PRs           []string `json:"prs"`
+	UUID               string   `json:"session_uuid"`
+	Agent              string   `json:"agent"`                // "claude" or "codex"
+	CostEstimatedCalls int      `json:"cost_estimated_calls"` // API calls of a model without a price: tokens only, cost 0 ("no price")
+	StartedAt          string   `json:"started_at"`
+	EndedAt            string   `json:"ended_at"`
+	Model              string   `json:"model"`
+	Branch             string   `json:"branch"`
+	ActiveMS           int64    `json:"active_ms"`
+	CostUSD            float64  `json:"cost_usd"`
+	AvgParallel        float64  `json:"avg_parallel"`
+	OldFormat          bool     `json:"old_format"`
+	PRs                []string `json:"prs"`
 }
 
 // Overview is the report of one workbench over a period (`agents report --json`).
@@ -126,7 +126,7 @@ func assemble(sessions []agentlogdb.AgentReportSession, allEvents map[string][]a
 				row.CostUSD += e.CostUSD
 				if e.CostEstimated {
 					b.totals.CostEstimatedCalls++
-					row.UnpricedCalls++
+					row.CostEstimatedCalls++
 				}
 				in += e.InputTokens
 				out += e.OutputTokens

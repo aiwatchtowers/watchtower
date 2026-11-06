@@ -100,9 +100,9 @@ func TestReport_CodexSessionsIncludedAndUnpriced(t *testing.T) {
 	cx, cl := rows[cxSession], rows["claude-1"]
 	assert.Equal(t, "codex", cx.Agent)
 	assert.Equal(t, "claude", cl.Agent)
-	assert.Equal(t, 3, cx.UnpricedCalls, "a codex model without a price shows tokens and no price")
+	assert.Equal(t, 3, cx.CostEstimatedCalls, "a codex model without a price shows tokens and no price")
 	assert.Zero(t, cx.CostUSD)
-	assert.Zero(t, cl.UnpricedCalls)
+	assert.Zero(t, cl.CostEstimatedCalls)
 	assert.Positive(t, cx.ActiveMS, "codex sessions have a time model")
 	assert.Equal(t, int64(2*10+3*600), ov.Totals.Tokens.Input, "both agents' tokens are in the totals")
 	assert.Equal(t, 3, ov.Totals.CostEstimatedCalls)

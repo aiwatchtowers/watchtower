@@ -2,21 +2,24 @@ package agentlog
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"watchtower/internal/agentlogdb"
 )
 
-// AgentCodex is the agent column of a Codex rollout's file and session rows
-// (ask #507, decision D); Claude Code transcripts keep "claude".
-const AgentCodex = "codex"
+// The agent column of a transcript's file and session rows: Claude Code, or a
+// Codex rollout (ask #507, decision D).
+const (
+	AgentClaude = "claude"
+	AgentCodex  = "codex"
+)
 
 // codexRolloutLine is one line of a Codex rollout: {timestamp, type, payload}.
 type codexRolloutLine struct {
@@ -83,26 +86,32 @@ var codexShellTools = map[string]bool{"exec_command": true, "shell": true, "shel
 // final line without '\n' waits for the next scan, a bad line never fails the
 // file, Consumed is the new offset minus startOffset.
 //
-// Rows: one api_call per token_count response (its last_token_usage; a repeat
-// with unchanged totals and a count with no info add nothing), an owner_turn
-// per owner message (the Watchtower brief is a hook turn) and per interrupted
-// turn (trigger interrupt), a tool per
-// function or custom tool call paired with its output. Keys are content keys
-// a forked or resumed rollout replays unchanged (item and call ids, the
-// line's timestamp), so a replayed line counts once (AGENTLOG-02). Only the
-// session's own session_meta sets its folder, branch and start; a replayed
-// parent's is ignored.
+// Rows: one api_call per token_count response (its last_token_usage; a count
+// with no info adds nothing), an owner_turn per owner message (the Watchtower
+// brief is a hook turn) and per interrupted turn (trigger interrupt), a tool
+// per function or custom tool call paired with its output. Keys are content
+// keys a forked or resumed rollout replays unchanged, so a replayed line
+// counts once (AGENTLOG-02): an api_call is keyed by its usage figures (the
+// response's and the session's running totals), never by the line's time, so
+// a repeated report of one response, or a replay re-stamped when written,
+// stores one row; tools by call id, paginated owner turns by item id. Only
+// the session's own session_meta sets its folder, branch and start; a
+// replayed parent's is ignored. A token_count whose info lacks a usage block
+// and a legacy user_message whose message is not a string are counted in
+// Unknown, never dropped silently.
 func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, error) {
 	if o.SessionUUID == "" {
 		return nil, errors.New("parsing a codex rollout: no session id")
 	}
 	p := &codexParser{o: o, res: &ParseResult{Sessions: map[string]*agentlogdb.AgentLogSession{}, Unknown: map[string]int{}},
-		toolIdx: map[string]bool{}, model: o.CodexModel, lastTotal: o.CodexLastTotal, fromStart: startOffset == 0}
+		seen: map[string]bool{}, model: o.CodexModel, cwd: o.CodexCWD, fromStart: startOffset == 0}
 	br := bufio.NewReaderSize(r, 64<<10)
 	off := startOffset
 	for {
 		raw, n, complete, err := NextLine(br, maxLineBytes)
 		if !complete {
+			// Unlike ParseClaude, a read error here fails the file: a codex
+			// rollout may be a zstd stream, whose decode errors surface here.
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("reading %s: %w", o.Path, err)
 			}
@@ -127,7 +136,6 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 			break
 		}
 	}
-	p.res.CodexLastTotal = p.lastTotal
 	return p.res, nil
 }
 
@@ -135,8 +143,8 @@ type codexParser struct {
 	o         ParseOptions
 	res       *ParseResult
 	model     string
-	toolIdx   map[string]bool // call ids seen in this read
-	lastTotal int64           // total_token_usage.total_tokens of the last stored response
+	cwd       string          // the session's own working directory (its session_meta)
+	seen      map[string]bool // event keys added in this read
 	fromStart bool            // read from offset 0: the first line's time may start the session
 }
 
@@ -160,6 +168,9 @@ func (p *codexParser) handle(raw []byte, off int64) {
 	case "session_meta":
 		if pl.ID == p.o.SessionUUID { // a fork replays its parent's session_meta: never ours
 			s.HomeCWD = pl.CWD
+			if pl.CWD != "" {
+				p.cwd = pl.CWD
+			}
 			if pl.Git != nil {
 				s.GitBranch = pl.Git.Branch
 			}
@@ -197,7 +208,12 @@ func (p *codexParser) session(ts string) *agentlogdb.AgentLogSession {
 	return s
 }
 
+// add appends e unless this read already added its key (a repeated report).
 func (p *codexParser) add(l codexRolloutLine, off int64, e agentlogdb.AgentLogEvent) {
+	if p.seen[e.Key] {
+		return
+	}
+	p.seen[e.Key] = true
 	e.SessionUUID, e.TS, e.SrcPath, e.SrcOffset = p.o.SessionUUID, l.Timestamp, p.o.Path, off
 	p.res.Events = append(p.res.Events, e)
 }
@@ -212,9 +228,11 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 		}
 	case "user_message": // legacy dialect: no id, the line's timestamp keys it
 		var text string
-		if json.Unmarshal(pl.Message, &text) == nil {
-			p.add(l, off, agentlogdb.AgentLogEvent{Key: "owner_turn:codex:" + l.Timestamp, Kind: "owner_turn", Trigger: codexTrigger(text)})
+		if json.Unmarshal(pl.Message, &text) != nil {
+			p.res.Unknown["<codex-user-message>"]++
+			return
 		}
+		p.add(l, off, agentlogdb.AgentLogEvent{Key: "owner_turn:codex:" + l.Timestamp, Kind: "owner_turn", Trigger: codexTrigger(text)})
 	case "item_completed": // paginated dialect
 		if pl.Item == nil || pl.Item.Type != "UserMessage" {
 			return
@@ -234,7 +252,8 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 	}
 }
 
-// codexBriefPrefix opens the brief Watchtower types into a new codex session.
+// codexBriefPrefix opens the brief Watchtower types into a new codex session
+// (cmd/workbench_brief.go; keep in step with sessionfeed's briefPrefix).
 const codexBriefPrefix = "Watchtower workbench #"
 
 // codexTrigger is turnTrigger plus the Watchtower brief, which is a hook turn.
@@ -245,22 +264,23 @@ func codexTrigger(text string) string {
 	return turnTrigger(text)
 }
 
-// tokens stores one model response. The key is the line's timestamp and the
-// session's running total, both replayed unchanged by a fork; a repeated
-// report of the same response (same total) is skipped.
+// tokens stores one model response, keyed by its usage figures and the
+// session's running totals: a repeated report of the same response and a
+// fork's replay of it carry the same figures whatever their line time.
 func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
-	if pl.Info == nil || pl.Info.Last == nil || pl.Info.Total == nil {
+	if pl.Info == nil {
+		return // a rate-limit-only count
+	}
+	if pl.Info.Last == nil || pl.Info.Total == nil {
+		p.res.Unknown["<codex-token-count>"]++
 		return
 	}
-	total := pl.Info.Total.Total
-	if total == p.lastTotal {
-		return
-	}
-	p.lastTotal = total
-	u := pl.Info.Last
+	u, t := pl.Info.Last, pl.Info.Total
 	in := max(u.Input-u.Cached, 0) // OpenAI's input_tokens include the cached part
 	usd, known := Cost(p.model, "", in, u.Output, u.Cached, 0, 0)
-	p.add(l, off, agentlogdb.AgentLogEvent{Key: "api_call:codex:" + l.Timestamp + ":" + strconv.FormatInt(total, 10),
+	key := fmt.Sprintf("api_call:codex:%d.%d.%d.%d.%d/%d.%d.%d.%d.%d", u.Input, u.Cached, u.Output, u.Reasoning, u.Total,
+		t.Input, t.Cached, t.Output, t.Reasoning, t.Total)
+	p.add(l, off, agentlogdb.AgentLogEvent{Key: key,
 		Kind: "api_call", Name: p.model, InputTokens: in, OutputTokens: u.Output, CacheReadTokens: u.Cached,
 		ThinkingTokens: u.Reasoning, CostUSD: usd, CostEstimated: !known, PriceVersion: PriceVersion})
 }
@@ -268,11 +288,10 @@ func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
 func (p *codexParser) responseItem(l codexRolloutLine, pl codexPayload, off int64) {
 	switch pl.Type {
 	case "function_call", "custom_tool_call":
-		if pl.CallID == "" || p.toolIdx[pl.CallID] {
+		if pl.CallID == "" {
 			return
 		}
-		p.toolIdx[pl.CallID] = true
-		name, target := codexTool(pl, p.o.Folder)
+		name, target := codexTool(pl, p.o.Folder, p.cwd)
 		p.add(l, off, agentlogdb.AgentLogEvent{Key: "tool:codex:" + pl.CallID, Kind: "tool", Name: name, Target: target, Outcome: "pending"})
 	case "function_call_output", "custom_tool_call_output":
 		if pl.CallID == "" {
@@ -292,7 +311,7 @@ func (p *codexParser) responseItem(l codexRolloutLine, pl codexPayload, off int6
 // apply_patch is "Edit" with the first file's folder-relative path, an MCP
 // call keeps its name (a workbench call its "#<id>"), anything else its name
 // with no target.
-func codexTool(pl codexPayload, folder string) (name, target string) {
+func codexTool(pl codexPayload, folder, cwd string) (name, target string) {
 	switch {
 	case codexShellTools[pl.Name]:
 		return "Bash", shellTarget(codexCommand(pl.Arguments))
@@ -312,7 +331,7 @@ func codexTool(pl codexPayload, folder string) (name, target string) {
 		}
 		path := patchFile(patch)
 		if path != "" && !filepath.IsAbs(path) {
-			path = filepath.Join(folder, path) // apply_patch paths are relative to the session's cwd
+			path = filepath.Join(cmp.Or(cwd, folder), path) // apply_patch paths are relative to the session's cwd
 		}
 		return "Edit", relativeTarget(path, folder)
 	case strings.HasPrefix(pl.Name, "mcp__"):

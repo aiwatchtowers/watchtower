@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
@@ -264,8 +265,9 @@ func TestAgentlog04_CodexRowWithForeignCwdNotRead(t *testing.T) {
 	elsewhere := t.TempDir()
 	stored := f.writeRollout(cxParent, cxSession(t, cxParent, elsewhere)) // the rollout ran outside the workbench
 	f.codexRow(f.wb, cxParent, f.folder, stored)
-	f.scan()
+	r := f.scan()
 	assert.Empty(t, f.sessionUUIDs())
+	assert.Equal(t, 1, r.CodexOutsideWorkbench, "a skipped rollout is counted, not silent")
 }
 
 func TestAgentlog04_CodexSymlinkSkipped(t *testing.T) {
@@ -450,4 +452,125 @@ func treeSnapshot(t *testing.T, root string) map[string]string {
 		out[p] += " " + hex.EncodeToString(sum[:])
 	}
 	return out
+}
+
+func TestAgentlog04_CodexStoredPathInSymlinkedFolderSkipped(t *testing.T) {
+	f := newFixture(t)
+	realDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(f.codex, "sessions", "2026", "11"), 0o755))
+	linkDir := filepath.Join(f.codex, "sessions", "2026", "11", "03")
+	require.NoError(t, os.Symlink(realDir, linkDir))
+	name := "rollout-2026-11-03T10-00-00-" + cxParent + ".jsonl"
+	require.NoError(t, os.WriteFile(filepath.Join(realDir, name), []byte(cxSession(t, cxParent, f.folder)), 0o600))
+	f.codexRow(f.wb, cxParent, f.folder, filepath.Join(linkDir, name)) // the stored path runs through the symlinked folder
+	r := f.scan()
+	assert.Empty(t, f.sessionUUIDs())
+	assert.Equal(t, 1, r.CodexRolloutsMissing)
+}
+
+func TestAgentlog04_CodexArchivedRolloutRead(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.codex, "archived_sessions")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rollout-2026-11-01T10-00-00-"+cxParent+".jsonl"),
+		[]byte(cxSession(t, cxParent, f.folder)), 0o600))
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	r := f.scan()
+	assert.Zero(t, r.CodexRolloutsMissing)
+	assert.Equal(t, []string{cxParent}, f.sessionUUIDs())
+}
+
+func TestScan_CodexUnreadableRolloutCountsAsFailed(t *testing.T) {
+	f := newFixture(t)
+	p := f.writeRollout(cxParent, cxSession(t, cxParent, f.folder))
+	require.NoError(t, os.Chmod(p, 0o000))
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	r := f.scan()
+	assert.Equal(t, 1, r.FailedFiles, "an unreadable rollout of the workbench's own row is a failed file, not a foreign one")
+	assert.Zero(t, r.CodexOutsideWorkbench)
+	require.NoError(t, os.Chmod(p, 0o600))
+	r = f.scan()
+	assert.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	assert.Equal(t, []string{cxParent}, f.sessionUUIDs(), "the next scan asks again")
+}
+
+func TestScan_CodexIncrementalSeedsModelAndCwd(t *testing.T) {
+	f := newFixture(t)
+	sub := filepath.Join(f.folder, "sub")
+	require.NoError(t, os.Mkdir(sub, 0o755))
+	first := cxSession(t, cxParent, sub)
+	p := f.writeRollout(cxParent, first)
+	f.codexRow(f.wb, cxParent, sub, "")
+	f.scan()
+	// The next lines: a late repeat of the last response (a new line time,
+	// the same figures), a new response with no turn_context, a relative patch.
+	more := cxTokens(t, "20.000", 1200, 900, 80, 30, 2330) +
+		cxTokens(t, "25.000", 1500, 1000, 40, 0, 3870) +
+		cx(t, "26.000", "response_item", map[string]any{"type": "custom_tool_call", "name": "apply_patch", "call_id": "call-p",
+			"input": "*** Begin Patch\n*** Update File: a.go\n@@\n-x\n+y\n*** End Patch"})
+	fh, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	_, err = fh.WriteString(more)
+	require.NoError(t, err)
+	require.NoError(t, fh.Close())
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	calls, out := f.totals()
+	assert.Equal(t, int64(3), calls, "the late repeat adds nothing")
+	assert.Equal(t, int64(170), out)
+	var name string
+	require.NoError(t, f.al.QueryRow(`SELECT name FROM agent_log_events WHERE kind = 'api_call' ORDER BY src_offset DESC LIMIT 1`).Scan(&name))
+	assert.Equal(t, "gpt-test", name, "the model of the earlier read")
+	var target string
+	require.NoError(t, f.al.QueryRow(`SELECT target FROM agent_log_events WHERE key = 'tool:codex:call-p'`).Scan(&target))
+	assert.Equal(t, "sub/a.go", target, "relative to the session's cwd, then to the workbench folder")
+}
+
+// A compressed rollout that takes several scans resumes where the last one
+// stopped instead of rereading its start every time.
+func TestScan_CodexCompressedResumesAcrossScans(t *testing.T) {
+	old := batchRows
+	batchRows = 2
+	t.Cleanup(func() { batchRows = old })
+	f := newFixture(t)
+	var b strings.Builder
+	b.WriteString(cxMeta(t, "00.000", cxParent, f.folder) + cxModel(t, "00.500", "gpt-test"))
+	for i := range 8 {
+		b.WriteString(cxTokens(t, fmt.Sprintf("%02d.000", 10+i), 100, 0, int64(i+1), 0, int64(1000*(i+1))))
+	}
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf)
+	require.NoError(t, err)
+	_, err = enc.Write([]byte(b.String()))
+	require.NoError(t, err)
+	require.NoError(t, enc.Close())
+	f.writeRollout(cxParent, buf.String())
+	f.codexRow(f.wb, cxParent, f.folder, "")
+
+	// Each scan has time for one slice: the third clock read (after the
+	// first slice) is past the deadline.
+	oneSlice := func() Options {
+		n, base := 0, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+		return Options{ClaudeDir: f.claude, CodexHome: f.codex, Budget: time.Minute, Now: func() time.Time {
+			n++
+			if n > 2 {
+				return base.Add(time.Hour)
+			}
+			return base
+		}}
+	}
+	done := false
+	for range 8 {
+		r, err := Scan(t.Context(), f.d, f.al, f.wb, oneSlice())
+		require.NoError(t, err)
+		require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+		if !r.Incomplete {
+			done = true
+			break
+		}
+	}
+	require.True(t, done, "the import finishes one slice per scan")
+	calls, out := f.totals()
+	assert.Equal(t, int64(8), calls)
+	assert.Equal(t, int64(36), out)
 }

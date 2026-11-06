@@ -25,6 +25,7 @@ func TestDB_CodexSessionsResolveTerminalIDs(t *testing.T) {
 	}
 	cx := insert(wb, "codex", "cx-1", "/r/rollout-x-cx-1.jsonl")
 	cx2 := insert(wb, "codex", "cx-2", nil)
+	insert(wb, "codex", "cx-1", nil)  // a second row resuming cx-1: listed once
 	insert(wb, "codex", nil, nil)     // never started: no session id
 	insert(wb, "claude", "cl-1", nil) // a Claude row
 	insert(other, "codex", "cx-9", nil)
