@@ -269,7 +269,7 @@ Ending the link needs those two answered account reads and nothing else. No feed
 
 **A purchase brings back neither a lost slot nor a moved Mac.** A phone that pays and has lost the slot (`.slot`) pays already. A phone with `macMoved` true and the cause `.lapse` would pay for a Mac that is not on the relay. So neither kind of row holds those terms, and no line speaks of one: both are on S59. The purchase itself stays with Apple, for the next link.
 
-**The warning (S61).** It cannot be undone, so the phone says so first, with the date. From the first refusal, for every refused link, one line goes where the person looks, in the secondary tone. The strings live in `RelayBannerModel.termLine(for:surface:now:heldPurchase:)`, and the line goes when the mark clears. **Three strings go on every surface:**
+**The warning (S61).** It cannot be undone, so the phone says so first, with the date. From the first refusal, for every refused link, one line goes where the person looks, in the secondary tone. The strings live in `RelayBannerModel.termLine(for:surface:now:heldPurchase:)`, and the line goes when the mark clears. **On every surface:**
 
 - **Before the date:** "If this stays as it is, the link to <Mac> ends on <date>. Its history and unsent actions on this iPhone will go."
 - **Past the date:** "The link to <Mac> will end the next time this iPhone can confirm Relay still refuses it. Its history and unsent actions on this iPhone will go."
