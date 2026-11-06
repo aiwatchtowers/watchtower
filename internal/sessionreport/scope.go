@@ -230,21 +230,17 @@ func (s scope) counts(states map[string]db.PRState) Progress {
 }
 
 // mergeBase is leaf e's base for the merged share (board #986): the branch
-// of its nearest ancestor that carries one. ok is false when e has no
-// branch, no ancestor carries one, or that ancestor carries e's own branch
-// (plan tasks working on their feature's branch: nothing to merge).
+// of its nearest ancestor whose branch differs from e's own, skipping
+// ancestors with no branch or with e's branch (plan tasks working on their
+// feature's branch). ok is false when e has no branch or no ancestor
+// carries another one.
 func (b *board) mergeBase(e *boardEntry) (base, branch string, ok bool) {
 	branch = strings.TrimSpace(e.target.Branch)
 	if branch == "" {
 		return "", "", false
 	}
 	for p := b.byID[e.parent]; p != nil; p = b.byID[p.parent] {
-		switch anc := strings.TrimSpace(p.target.Branch); anc {
-		case "":
-			continue
-		case branch:
-			return "", "", false
-		default:
+		if anc := strings.TrimSpace(p.target.Branch); anc != "" && anc != branch {
 			return anc, branch, true
 		}
 	}
