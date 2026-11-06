@@ -1283,9 +1283,13 @@ the background count and the chat question, as a `PostToolUse`'s does. A
 subagent's `PreToolUse` writes nothing; a subagent's `PostToolUseFailure` is
 only a background heartbeat (never a state, never over `approval`). The async
 state hooks wait up to 2 s for the write lock and try once more after a busy
-lock (both tries inside the 5 s hook timeout), and so does the `SessionStart`
-id move (`SetTerminalClaudeSessionID`); the sync Stop hook, the run mark and
-Codex's synchronous hooks keep their one 1 s wait. Codex is unchanged (no
+lock, every write of one hook process inside one 4.5 s budget from its start
+(the hook's 5 s timeout less a margin; a write or retry with no time left is
+not tried and is reported as one stderr line), the state write first (a
+`UserPromptSubmit` clears the chat question after it); so does the
+`SessionStart` id move (`SetTerminalClaudeSessionID`, its own 4.5 s budget);
+the sync Stop hook, the run mark and Codex's synchronous hooks keep their one
+1 s wait. Codex is unchanged (no
 `PostToolUseFailure` event there, and its hooks are synchronous).
 
 Since 2026-10-12 (board #399, Codex): a `codex` row gets the same guarantees

@@ -212,7 +212,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 	}
 	turn, subagentToolRun := in.toolRunTurn()
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
-	turn.lock = stateHookLockWait
+	turn.lock = stateHookLockWait.until(lockNow().Add(stateHookBudget))
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,
 	// so Claude Code never waits for it.
@@ -426,34 +426,78 @@ type hookTurn struct {
 }
 
 // stateHookLockWait is how the async Claude Code state hooks wait for the
-// write lock (board #988, ask #525): 2 s, and once more after a busy lock —
-// both tries inside the hook's 5 s timeout. A lost write used to leave
-// "Stopped" on a working session until the next event.
+// write lock (board #988, ask #525): up to 2 s, and once more after a busy
+// lock, every write of one hook process inside one budget (until,
+// stateHookBudget). A lost write used to leave "Stopped" on a working
+// session until the next event.
 var stateHookLockWait = hookLockWait{wait: 2 * time.Second, retry: true}
 
+// stateHookBudget is the lock waiting one async state hook process may do in
+// all, from its start: the hook's 5 s timeout less a margin for the process
+// start, the input and the database open. A write past it is not tried, so
+// Claude Code never kills the hook part-way through its writes.
+const stateHookBudget = 4500 * time.Millisecond
+
+// lockNow is the clock the lock budget reads; a var for tests.
+var lockNow = time.Now
+
+// errHookOutOfTime is a write the hook's lock budget left no time for.
+var errHookOutOfTime = errors.New("no time left in the hook's lock budget")
+
 // hookLockWait is how a hook write waits for the database's write lock. The
-// zero value is the synchronous hooks' one short wait
-// (sessionRecordBusyTimeout): Claude Code waits for them.
+// zero value is one sessionRecordBusyTimeout wait with no retry and no
+// budget: the Stop hook, the SessionStart's run mark and codex's synchronous
+// hooks, which Claude Code (or codex) waits for.
 type hookLockWait struct {
-	wait  time.Duration
-	retry bool
+	wait     time.Duration
+	retry    bool
+	deadline time.Time // zero = no budget
+}
+
+// until is w with every write bounded by deadline.
+func (w hookLockWait) until(deadline time.Time) hookLockWait {
+	w.deadline = deadline
+	return w
+}
+
+// attemptWait is the busy timeout of the next try: the wait, cut to what
+// the budget has left; ok is false when nothing is left.
+func (w hookLockWait) attemptWait() (wait time.Duration, ok bool) {
+	wait = w.wait
+	if wait <= 0 {
+		wait = sessionRecordBusyTimeout
+	}
+	if w.deadline.IsZero() {
+		return wait, true
+	}
+	left := w.deadline.Sub(lockNow())
+	if left <= 0 {
+		return 0, false
+	}
+	return min(wait, left), true
 }
 
 // write runs fn under the wait's busy timeout and, with retry, once more
-// when it gave up on another connection's lock.
+// when it gave up on another connection's lock and the budget has time left.
 func (w hookLockWait) write(database *db.DB, fn func() error) error {
-	wait := w.wait
-	if wait <= 0 {
-		wait = sessionRecordBusyTimeout
+	wait, ok := w.attemptWait()
+	if !ok {
+		return errHookOutOfTime
 	}
 	if err := database.SetBusyTimeout(wait); err != nil {
 		return err
 	}
 	err := fn()
-	if w.retry && db.IsBusy(err) {
-		err = fn()
+	if !w.retry || !db.IsBusy(err) {
+		return err
 	}
-	return err
+	if wait, ok = w.attemptWait(); !ok {
+		return err
+	}
+	if serr := database.SetBusyTimeout(wait); serr != nil {
+		return errors.Join(err, serr)
+	}
+	return fn()
 }
 
 // terminalSessionRowID is the terminal_sessions row the Desktop launched
@@ -507,11 +551,14 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 			turn.background = sql.NullInt64{Int64: n, Valid: true}
 		}
 	}
+	// The state first: under the hook's lock budget it is the write that
+	// must land (board #988); the prompt's clear of the question follows.
+	stateErr := recordAgentStateOver(database, row, workbenchID, sessionID, state, onlyFrom, failure, prompt, at, turn)
 	var clearErr error
 	if prompt {
 		clearErr = clearChatQuestion(database, row, workbenchID, sessionID, at, turn.lock)
 	}
-	return errors.Join(clearErr, recordAgentStateOver(database, row, workbenchID, sessionID, state, onlyFrom, failure, prompt, at, turn))
+	return errors.Join(stateErr, clearErr)
 }
 
 // recordAgentStateOver is recordAgentState's decision over the row it read:

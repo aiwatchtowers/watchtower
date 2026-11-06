@@ -289,3 +289,69 @@ func TestApplySessionStart_BusyIDMoveIsRetried(t *testing.T) {
 	assert.Equal(t, 2, calls)
 	assert.Equal(t, briefClearedID, storedClaudeSessionID(t, database, row))
 }
+
+// lockClock pins lockNow to the times returned by next, one per read.
+func lockClock(t *testing.T, next func() time.Time) {
+	t.Helper()
+	orig := lockNow
+	lockNow = next
+	t.Cleanup(func() { lockNow = orig })
+}
+
+// Board #988 review (F1): one hook process's writes share one lock budget.
+// A write past the deadline is not tried, a retry is tried only while time
+// is left, and a try's wait is cut to what is left.
+func TestHookLockWaitStopsAtTheBudget(t *testing.T) {
+	database, _, _ := briefSessionFixture(t)
+	base := time.Now()
+
+	lockClock(t, func() time.Time { return base })
+	calls := 0
+	err := stateHookLockWait.until(base.Add(-time.Millisecond)).write(database, func() error { calls++; return nil })
+	assert.ErrorIs(t, err, errHookOutOfTime)
+	assert.Zero(t, calls, "a write past the deadline was tried")
+
+	reads := 0
+	lockClock(t, func() time.Time {
+		reads++
+		if reads == 1 {
+			return base
+		}
+		return base.Add(stateHookBudget)
+	})
+	calls = 0
+	err = stateHookLockWait.until(base.Add(stateHookBudget)).write(database, func() error { calls++; return busyError })
+	assert.True(t, db.IsBusy(err), "the busy error is returned: %v", err)
+	assert.Equal(t, 1, calls, "a retry was tried with no time left")
+
+	lockClock(t, func() time.Time { return base })
+	wait, ok := stateHookLockWait.until(base.Add(300 * time.Millisecond)).attemptWait()
+	assert.True(t, ok)
+	assert.Equal(t, 300*time.Millisecond, wait, "a try's wait is cut to the budget left")
+	wait, ok = hookLockWait{}.attemptWait()
+	assert.True(t, ok)
+	assert.Equal(t, sessionRecordBusyTimeout, wait, "the zero value is the sync hooks' one short wait")
+}
+
+// Board #988 review (F1): a UserPromptSubmit's state write goes before its
+// clear of the chat question, so a budget spent on the first write leaves
+// the state recorded and only the clear undone.
+func TestSessionState_PromptStateWriteGoesFirstWithinTheBudget(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now()
+	askChatQuestion(t, database, pid, row, base)
+	reads := 0
+	lockClock(t, func() time.Time {
+		reads++
+		if reads == 1 {
+			return base
+		}
+		return base.Add(time.Hour)
+	})
+	turn := hookTurn{lock: stateHookLockWait.until(base.Add(stateHookBudget))}
+	err := recordAgentState(database, row, pid, briefLaunchID, agentStateWorking, "", nil, true, base.Add(time.Second), turn)
+	assert.ErrorIs(t, err, errHookOutOfTime, "the clear past the budget is reported")
+	assert.Equal(t, "working", storedAgentState(t, database, row), "the state write went first")
+	assert.NotEmpty(t, chatQuestionAt(t, database, row), "the clear had no time left")
+}
