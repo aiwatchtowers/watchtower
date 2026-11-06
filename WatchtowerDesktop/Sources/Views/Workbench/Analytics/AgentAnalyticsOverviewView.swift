@@ -101,8 +101,9 @@ struct AgentAnalyticsOverviewView: View {
             if let first = overview.hints.first {
                 AgentAnalyticsMainThingCard(hint: first, actions: actions)
             }
-            AgentAnalyticsContextView(context: overview.context, actions: actions)
-            AgentAnalyticsSkillsView(skills: overview.skills)
+            let codex = AgentAnalyticsCodexShare.of(overview.sessions)
+            AgentAnalyticsContextView(context: overview.context, codex: codex, actions: actions)
+            AgentAnalyticsSkillsView(skills: overview.skills, codex: codex)
             AgentAnalyticsTroubleView(trouble: overview.trouble, actions: actions)
             if overview.hints.count > 1 {
                 section("What else would save") {

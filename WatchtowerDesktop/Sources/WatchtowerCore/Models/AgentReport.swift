@@ -172,6 +172,11 @@ package struct AgentTaskRow: Decodable, Equatable, Sendable {
 /// One session's line in the overview; an old-format session has no time fields.
 package struct AgentSessionRow: Decodable, Equatable, Sendable {
     package let uuid: String
+    /// The agent that ran the session: an `AgentKind` raw value ("claude",
+    /// "codex"); kept a string so a newer CLI never fails the decode.
+    package let agent: String
+    /// API calls of a model with no price: tokens only, cost 0 ("no price").
+    package let costEstimatedCalls: Int
     package let startedAt: String
     package let endedAt: String
     package let model: String
@@ -183,11 +188,14 @@ package struct AgentSessionRow: Decodable, Equatable, Sendable {
     package let prs: [String]
 
     enum CodingKeys: String, CodingKey {
-        case model, branch, prs
+        case model, branch, prs, agent
         case uuid = "session_uuid", startedAt = "started_at", endedAt = "ended_at"
         case activeMS = "active_ms", costUSD = "cost_usd", avgParallel = "avg_parallel"
-        case oldFormat = "old_format"
+        case oldFormat = "old_format", costEstimatedCalls = "cost_estimated_calls"
     }
+
+    /// The session's agent, nil for a value this app does not know.
+    package var agentKind: AgentKind? { AgentKind(rawValue: agent) }
 }
 
 package struct AgentSegment: Decodable, Equatable, Sendable {

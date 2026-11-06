@@ -398,6 +398,13 @@ enum DesignShotCatalog {
             DesignShot(name: "analytics-statistics", size: NSSize(width: 900, height: 1340)) {
                 StatisticsShotFixtures.screen()
             },
+            // Codex sessions on the Analytics pane (U4, board #975).
+            DesignShot(name: "analytics-codex-blocks", size: NSSize(width: 900, height: 1340)) {
+                CodexAnalyticsShotFixtures.blocks()
+            },
+            DesignShot(name: "analytics-codex-sessions", size: NSSize(width: 900, height: 260)) {
+                CodexAnalyticsShotFixtures.sessions()
+            },
             DesignShot(name: "analytics-coach-edit-sheet", size: NSSize(width: 520, height: 320)) {
                 CoachShotFixtures.screen(.editSheet)
             },
