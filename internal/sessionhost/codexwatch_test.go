@@ -551,3 +551,27 @@ func TestCodexWatch_StoreThatDoesNotOpenLeavesTheRunToTheBridge(t *testing.T) {
 		t.Fatalf("log lines = %q; want one, with no path", lines)
 	}
 }
+
+// A hook that clears the issue before the next tick (the watch never sees
+// it set) still gives the next prompt a fresh 30 s: the give-up ends the arm.
+func TestCodexWatch_GiveUpEndsTheArmEvenWhenClearedBeforeTheNextTick(t *testing.T) {
+	f := newWatchFixture(t)
+	for i := 0; i < 16; i++ {
+		f.tick(CodexWatchEvery)
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 1 {
+		t.Fatalf("issues = %v; want one missing", issues)
+	}
+	f.store.set(func(r *db.CodexWatchRow) { r.WatchIssue = "" }) // the next hook event
+	for i := 0; i < 14; i++ {                                    // 28 s missing again
+		f.tick(CodexWatchEvery)
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 1 {
+		t.Fatalf("issues = %v; want no second give-up before a fresh 30 s", issues)
+	}
+	f.tick(CodexWatchEvery)
+	f.tick(CodexWatchEvery)
+	if issues, _ := f.store.snapshot(); len(issues) != 2 {
+		t.Fatalf("issues = %v; want the second give-up after a fresh 30 s", issues)
+	}
+}

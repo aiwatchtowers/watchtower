@@ -144,6 +144,13 @@ func TestProj11_NextHookEventClearsWatchIssue(t *testing.T) {
 	mark()
 	runCodexBriefHook(t, string(codexHookFixture(t, "session_start_resume")))
 	assert.Empty(t, issue(), "SessionStart")
+
+	// A compaction of the current session with nothing else to store (same
+	// id, same path) is a hook event too.
+	runCodexBriefHook(t, string(codexHookFixture(t, "session_start_compact")))
+	mark()
+	runCodexBriefHook(t, string(codexHookFixture(t, "session_start_compact")))
+	assert.Empty(t, issue(), "a no-op SessionStart (compact)")
 }
 
 // The bridge marks a rollout it cannot read for good at once (spec §3.5):

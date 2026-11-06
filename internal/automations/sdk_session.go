@@ -101,7 +101,10 @@ func logNotWatched(env *Env, out any) error {
 		Status    string `json:"status"`
 		Reason    string `json:"reason"`
 	}
-	if json.Unmarshal(raw, &end) != nil || end.Status != sessionNotWatched {
+	if err := json.Unmarshal(raw, &end); err != nil {
+		return fmt.Errorf("reading the session step's result: %w", err)
+	}
+	if end.Status != sessionNotWatched {
 		return nil
 	}
 	msg := fmt.Sprintf("session %d is not watched (%s): its outcome is unknown", end.SessionID, end.Reason)
