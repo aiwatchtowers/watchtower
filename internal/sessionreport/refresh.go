@@ -399,12 +399,13 @@ func (r *refresher) readBranch(ctx context.Context, ref, branch string) (db.PRSt
 // any checked ref: a branch git cannot find (session cleanup deletes a merged
 // worktree branch — expected, so quiet) and a cached merged branch left only
 // on origin with a tip the base contains — there git cannot tell a
-// fast-forward merge from a branch with no work of its own. A read that
-// failed (a git call, an unresolvable base, a refused squash read) is
-// counted in the note and stamped due again (check, dueAgain): it goes behind the
-// refs not checked for longer, yet every run tries it, so a row's
-// merged_stale holds while the failure lasts instead of blinking off for
-// the fresh window.
+// fast-forward merge from a branch with no work of its own; so does a
+// branch git cannot tell about (a base too far ahead for the squash check,
+// for one), quietly. A read that failed (Repository.MergeFailed: a git
+// call, an unresolvable base, a refused squash read) is counted in the note
+// and stamped due again (check, dueAgain): every run tries it, last in line
+// (refresh's order), so a row's merged_stale holds while the failure lasts
+// instead of blinking off for the fresh window.
 func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.PRState, bool) {
 	repo, ok := r.bases[base]
 	if !ok {
@@ -431,7 +432,9 @@ func (r *refresher) readInto(ctx context.Context, ref, base, branch string) (db.
 			return db.PRState{State: "open"}, true
 		}
 	case workbenchcheck.BranchUnknown:
-		r.skip(ref, "git could not read its merge state")
+		if repo.MergeFailed(ctx, branch) {
+			r.skip(ref, "git could not read its merge state")
+		}
 	case workbenchcheck.BranchMissing:
 	}
 	if !hasRow {

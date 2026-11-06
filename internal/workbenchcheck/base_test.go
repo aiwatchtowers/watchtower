@@ -2,6 +2,7 @@ package workbenchcheck
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -122,5 +123,62 @@ func TestOpenRepositoryAgainst_OriginOnlyContained(t *testing.T) {
 	if repo.OriginOnlyContained(ctx, "wt/open") || repo.OriginOnlyContained(ctx, "wt/merge") ||
 		repo.OriginOnlyContained(ctx, "feature") {
 		t.Fatal("flagged a tip with own work, a local branch or the base")
+	}
+}
+
+// stubGit runs git for real except for the subcommands in answers, which
+// return the given output (err nil) or fail (err set).
+func stubGit(answers map[string]struct {
+	out string
+	err error
+}) Runner {
+	return func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		if name == "git" && len(args) > 0 {
+			if a, ok := answers[args[0]]; ok {
+				if a.err != nil {
+					return nil, 1, a.err
+				}
+				return []byte(a.out), 0, nil
+			}
+		}
+		return ExecRunner(ctx, dir, stdin, name, args...)
+	}
+}
+
+// Verify R1: a BranchUnknown from a failed git call is MergeFailed; one
+// where git only cannot tell (an empty cherry and a diff of two patches) is
+// not; an unresolvable base is.
+func TestRepository_MergeFailedOnlyForFailures(t *testing.T) {
+	dir := newFeatureRepo(t)
+	ctx := context.Background()
+	type answer = struct {
+		out string
+		err error
+	}
+	failed := OpenRepositoryAgainst(ctx, dir, "feature", stubGit(map[string]answer{"cherry": {err: errors.New("cherry broke")}}))
+	if got := failed.BranchMerge(ctx, "wt/open"); got != BranchUnknown {
+		t.Fatalf("a failed cherry: %v, want unknown", got)
+	}
+	if !failed.MergeFailed(ctx, "wt/open") {
+		t.Fatal("a failed git call must be MergeFailed")
+	}
+
+	cannot := OpenRepositoryAgainst(ctx, dir, "feature", stubGit(map[string]answer{
+		"cherry":   {out: ""},
+		"patch-id": {out: "aaa 111\nbbb 222\n"},
+	}))
+	if got := cannot.BranchMerge(ctx, "wt/open"); got != BranchUnknown {
+		t.Fatalf("git cannot tell: %v, want unknown", got)
+	}
+	if cannot.MergeFailed(ctx, "wt/open") {
+		t.Fatal("git that only cannot tell is no failure")
+	}
+
+	plain := OpenRepositoryAgainst(ctx, dir, "feature", nil)
+	if plain.MergeFailed(ctx, "wt/open") || plain.MergeFailed(ctx, "wt/merge") || plain.MergeFailed(ctx, "wt/gone") {
+		t.Fatal("a verdict, or a missing branch, is no failure")
+	}
+	if !OpenRepositoryAgainst(ctx, dir, "nope", nil).MergeFailed(ctx, "wt/open") {
+		t.Fatal("an unresolvable base is a failure")
 	}
 }

@@ -3,7 +3,9 @@ package sessionreport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -117,4 +119,39 @@ func TestSummary_MergedStaleKey(t *testing.T) {
 	b, err := json.Marshal(Summary{SessionID: 1})
 	require.NoError(t, err)
 	assert.Contains(t, string(b), `"merged_stale":false`)
+}
+
+// stubGitCalls answers the named git subcommands (err set: they fail) and
+// runs every other call for real.
+func stubGitCalls(t *testing.T, answers map[string]string, failing ...string) {
+	t.Helper()
+	prev := run
+	run = func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		if name == "git" && len(args) > 0 {
+			if slices.Contains(failing, args[0]) {
+				return nil, 1, errors.New("git " + args[0] + " broke")
+			}
+			if out, ok := answers[args[0]]; ok {
+				return []byte(out), 0, nil
+			}
+		}
+		return prev(ctx, dir, stdin, name, args...)
+	}
+	t.Cleanup(func() { run = prev })
+}
+
+// Verify R1: where git only cannot tell (an empty cherry, a diff of two
+// patches) the verdict stays as it was, quietly: no note, no merged_stale,
+// the ordinary stamp.
+func TestRefreshedSummaries_GitCannotTellIsQuiet(t *testing.T) {
+	d, id, _, _ := repoBoard(t)
+	stubGitCalls(t, map[string]string{"cherry": "", "patch-id": "aaa 111\nbbb 222\n"})
+	rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: fixedNow})
+	require.NoError(t, err)
+	assert.Empty(t, res.Note)
+	require.Len(t, rows, 1)
+	assert.False(t, rows[0].MergedStale)
+	row := states(t, d, id)["into:feature/x:wt/open"]
+	assert.Equal(t, "unknown", row.State)
+	assert.Equal(t, refreshNow.Format(time.RFC3339), row.CheckedAt, "the ordinary backoff, not due again")
 }

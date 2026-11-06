@@ -97,6 +97,11 @@ type gitState struct {
 	// commitPatch is each default-branch commit's patch id ("" for an empty
 	// diff), kept across branches: their squash windows mostly overlap.
 	commitPatch map[string]string
+	// readFailed is set while one branch is read (readBranch) when a git
+	// call its verdict needed failed — not when git only cannot tell (a
+	// squash window past squashWindow, an empty cherry, a diff of several
+	// patches).
+	readFailed bool
 }
 
 // refInfo is one branch ref as the batch read saw it.
@@ -237,6 +242,22 @@ func (r *Repository) BranchMerge(ctx context.Context, branch string) BranchMerge
 	return BranchUnknown
 }
 
+// MergeFailed reports that branch's merge state is BranchUnknown because
+// something failed — a git call, a base that did not resolve, a read the
+// filter guard refused — rather than because git cannot tell (a base too far
+// ahead for the squash check, an empty cherry, a diff of several patches);
+// such a verdict is worth asking again. false for any other state.
+func (r *Repository) MergeFailed(ctx context.Context, branch string) bool {
+	if branch == "" || branch == r.g.defaultName {
+		return false
+	}
+	if !r.g.ready() {
+		return true
+	}
+	tip := r.g.branchState(ctx, branch)
+	return tip.state == tipUnknown || (tip.state == tipFound && tip.merge == unknown && tip.failed)
+}
+
 // OriginOnlyContained reports that branch exists only on origin and a base
 // already contains its tip. Without the local reflog git cannot tell a
 // fast-forward merge from a branch pushed with no work of its own, so a "not
@@ -311,6 +332,8 @@ type branchTip struct {
 	committed time.Time // its newest commit's time
 	// originOnly: no local branch, the tip read from origin (no reflog).
 	originOnly bool
+	// failed: a git call the verdict needed failed (gitState.readFailed).
+	failed bool
 }
 
 // tipOf resolves ref to its commit; "" with known=true when ref does not
@@ -454,6 +477,16 @@ func (g *gitState) branchState(ctx context.Context, branch string) branchTip {
 }
 
 func (g *gitState) readBranch(ctx context.Context, branch string) branchTip {
+	g.readFailed = false
+	tip := g.readBranchTip(ctx, branch)
+	tip.failed = g.readFailed
+	return tip
+}
+
+// fail notes that a git call a verdict needed failed (readFailed).
+func (g *gitState) fail() { g.readFailed = true }
+
+func (g *gitState) readBranchTip(ctx context.Context, branch string) branchTip {
 	local := true
 	info, known := g.lookup(ctx, "refs/heads/"+branch)
 	if known && info.sha == "" {
@@ -514,6 +547,7 @@ func (g *gitState) reflogOf(ctx context.Context, branch, sha string) branchReflo
 	out, _, err := g.git(ctx, "reflog", "show", "--format=%H %gs", "refs/heads/"+branch, "--")
 	r := branchReflog{read: true, ok: err == nil}
 	if err != nil {
+		g.fail()
 		return r
 	}
 	for line := range strings.SplitSeq(out, "\n") {
@@ -548,6 +582,7 @@ func (g *gitState) mergedInto(ctx context.Context, branch, sha, base string, loc
 	if ahead < 0 {
 		var ok bool
 		if ahead, ok = g.count(ctx, base+".."+sha); !ok {
+			g.fail()
 			return unknown, -1
 		}
 	}
@@ -620,10 +655,12 @@ func (g *gitState) onFirstParentLine(ctx context.Context, sha, base string) (onL
 	}
 	out, _, err := g.git(ctx, "rev-list", "--first-parent", "--count", sha+".."+base)
 	if err != nil {
+		g.fail()
 		return false, false
 	}
 	at, _, err := g.git(ctx, "rev-parse", "--verify", "--quiet", base+"~"+strings.TrimSpace(out))
 	if err != nil {
+		g.fail()
 		return false, false
 	}
 	return strings.TrimSpace(at) == sha, true
@@ -661,14 +698,16 @@ func (g *gitState) cherryMerged(ctx context.Context, sha, base string, behind in
 	if behind < 0 {
 		var ok bool
 		if behind, ok = g.count(ctx, sha+".."+base); !ok {
+			g.fail()
 			return unknown
 		}
 	}
 	if behind > squashWindow {
-		return unknown
+		return unknown // git cannot tell here: not a failure
 	}
 	out, _, err := g.git(ctx, "cherry", base, sha)
 	if err != nil {
+		g.fail()
 		return unknown
 	}
 	lines := strings.Fields(out)
@@ -689,6 +728,7 @@ func (g *gitState) cherryMerged(ctx context.Context, sha, base string, behind in
 func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	mb, _, err := g.git(ctx, "merge-base", base, sha)
 	if err != nil {
+		g.fail()
 		return unknown
 	}
 	fork := strings.TrimSpace(mb)
@@ -697,21 +737,28 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	// squash differ.
 	diff, _, err := g.git(ctx, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "-U0", fork, sha)
 	if err != nil {
+		g.fail()
 		return unknown
 	}
 	if strings.TrimSpace(diff) == "" {
 		return notMerged
 	}
 	want, ok := g.patchIDsOf(ctx, []byte(diff))
-	if !ok || len(want) != 1 {
+	if !ok {
+		g.fail()
 		return unknown
+	}
+	if len(want) != 1 {
+		return unknown // several patches: git cannot tell, not a failure
 	}
 	window, _, err := g.git(ctx, "rev-list", "--no-merges", "--max-count="+strconv.Itoa(squashWindow), fork+".."+base)
 	if err != nil {
+		g.fail()
 		return unknown
 	}
 	commits := strings.Fields(window)
 	if !g.readPatches(ctx, commits) {
+		g.fail()
 		return unknown
 	}
 	for id := range want {
