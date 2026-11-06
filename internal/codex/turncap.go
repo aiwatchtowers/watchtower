@@ -200,7 +200,17 @@ func (r *rolloutTurns) read() (n int, ok bool) {
 	for line := range bytes.SplitSeq(data[:end+1], []byte{'\n'}) {
 		r.count(line)
 	}
-	return max(r.tokenCount, r.record), true
+	return r.responses(), true
+}
+
+// responses is the count so far: the token_usage_records when codex writes
+// them (one per response, never repeated), else the token_counts with
+// usage info.
+func (r *rolloutTurns) responses() int {
+	if r.record > 0 {
+		return r.record
+	}
+	return r.tokenCount
 }
 
 // count adds line's response marker, if it is one.
@@ -228,11 +238,6 @@ func (r *rolloutTurns) count(line []byte) {
 		}
 	}
 }
-
-// errNoResponses makes a rollout that records no model response while the
-// stream shows a finished one unusable: its markers changed shape, and
-// counting it would leave the run with no cap at all.
-var errNoResponses = errors.New("the rollout records no model response")
 
 // findRollout is the rollout file under home/sessions, "" while there is
 // none. The home is the run's own, so it holds this run's rollout only; the
@@ -326,21 +331,20 @@ func (g *turnCap) watch(ctx context.Context) {
 	}
 }
 
-// done is the run's last check, once codex exited: the budget failure of a
-// run the cap stopped, or of a run that succeeded otherwise (failed is
-// false) whose finished rollout records more responses than the cap (a
-// last, text-only response is recorded as codex ends); nil otherwise, so a
-// run's own failure is never relabelled a budget one.
-func (g *turnCap) done(failed bool) error {
-	if g == nil {
+// done is the run's last check, once codex exited: nil for a run that
+// reported its own turn failure (reported: a failed turn in its output,
+// which a stop by the cap never writes), so that failure is never
+// relabelled a budget one; else the budget failure of a run the cap
+// stopped, or of a run that did not fail otherwise (failed: a failed exit
+// or no turn.completed) whose finished rollout records more responses than
+// the cap (a last, text-only response is recorded as codex ends).
+func (g *turnCap) done(reported, failed bool) error {
+	if g == nil || reported {
 		return nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.stopped {
-		return errTurnCap(g.limit)
-	}
-	if !failed && g.overLocked(true) {
+	if g.stopped || !failed && g.overLocked(true) {
 		return errTurnCap(g.limit)
 	}
 	return nil
@@ -357,21 +361,22 @@ func (g *turnCap) checkLocked() {
 // overLocked says whether the run's turns pass the cap: the rollout's count
 // when it can be read, else the stream rule's — which during the run
 // decides only the past-the-cap case, so a rollout that is merely not
-// written yet costs nothing. A rollout that counts no response while the
-// stream has seen one finish (a tool round during the run, any turn at the
-// end) is not trusted.
+// written yet costs nothing. A rollout that counts no response is not
+// trusted (its markers changed shape) at the end once the stream saw any
+// turn, and during the run only once the stream rule passes twice the cap:
+// a codex writing only token_count records its first response after that
+// response's tool calls, which run one after another and which the stream
+// rule counts as turns, so a lower bar would stop a long first response.
 func (g *turnCap) overLocked(final bool) bool {
 	n := g.stream.turns
 	if g.rollout != nil {
 		r, ok := g.rollout.read()
-		if ok && r == 0 && (n >= 2 || final && n >= 1) {
-			g.rollout.err, ok = errNoResponses, false
-		}
+		noRecords := ok && r == 0 && (n > 2*g.limit || final && n > 0)
 		switch {
-		case ok:
+		case ok && !noRecords:
 			n = r
 		case n > g.limit || final && n > 0:
-			g.logFallbackLocked()
+			g.logFallbackLocked(noRecords)
 		}
 	}
 	return n > g.limit
@@ -379,14 +384,14 @@ func (g *turnCap) overLocked(final bool) bool {
 
 // logFallbackLocked logs once that the stream rule counted in place of the
 // rollout (a class, never a path: FILES-01).
-func (g *turnCap) logFallbackLocked() {
+func (g *turnCap) logFallbackLocked(noRecords bool) {
 	if g.logged {
 		return
 	}
 	g.logged = true
 	reason := "missing"
 	switch err := g.rollout.err; {
-	case errors.Is(err, errNoResponses):
+	case noRecords:
 		reason = "without response records"
 	case errors.Is(err, fs.ErrPermission):
 		reason = "unreadable (permission)"

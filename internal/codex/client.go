@@ -371,7 +371,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				_ = cmd.Wait()
 				s.finish()
 				// The cap's kill may close the pipe under the read.
-				if capErr := turns.done(true); capErr != nil {
+				if capErr := turns.done(s.terminal != nil, true); capErr != nil {
 					errCh <- capErr
 					return
 				}
@@ -382,7 +382,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		s.finish()
 
 		err = cmd.Wait()
-		capErr := turns.done(s.terminal != nil || err != nil || !s.completed)
+		capErr := turns.done(s.terminal != nil, err != nil || !s.completed)
 		switch {
 		case capErr != nil:
 			errCh <- capErr
@@ -450,7 +450,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	output := stdout.buf.Bytes()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
-	if capErr := turns.done(err != nil); capErr != nil {
+	// A failed turn is the run's own failure even when codex exits 0.
+	if capErr := turns.done(failedTurn(c.model, output) != nil, err != nil); capErr != nil {
 		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, capErr
 	}

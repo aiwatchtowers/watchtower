@@ -109,13 +109,31 @@ func TestTurnCounter_RolloutWithoutRecordsFallsBackToStream(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	// During the run the bar is twice the cap (a long first response is
+	// not a drift): the fifth stream turn at a cap of 2 passes it.
 	steps := []string{"R:" + `{"type":"session_meta","payload":{},"synthetic":true}`, turnStarted,
-		toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"), "HOLD"}
+		toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"), toolDone("c"),
+		toolStart("d"), toolDone("d"), toolStart("e"), "HOLD"}
 	c, pid := cappedClient(t, steps, 2, t.TempDir())
 	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
 	assertBudget(t, err, 2)
 	assertGroupGone(t, pid())
 	assert.Equal(t, 1, strings.Count(logs.String(), "without response records"), logs.String())
+}
+
+// On a codex that writes only token_count, after a response's tool results,
+// a response's sequential calls look like turns to the stream rule while
+// the rollout still counts none: that is no reason to distrust the rollout.
+func TestTurnCounter_TokenCountAfterSequentialToolsKeepsTheRollout(t *testing.T) {
+	// Four serial calls of one response: the stream rule sees 4 turns, past
+	// the cap of 2, while the rollout records the response only after them.
+	steps := []string{"R:" + `{"type":"session_meta","payload":{},"synthetic":true}`, turnStarted,
+		toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"), toolDone("c"),
+		toolStart("d"), toolDone("d"), "R:" + rolloutTokenCount,
+		message("m", "done"), "R:" + rolloutTokenCount, turnCompleted}
+	c, _ := cappedClient(t, steps, 2, t.TempDir())
+	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
+	require.NoError(t, err, "two responses at a cap of 2")
 }
 
 // A run that failed on its own keeps its failure; only a stop by the cap,
@@ -130,6 +148,23 @@ func TestCodexClient_OwnFailureIsNotRelabelledBudget(t *testing.T) {
 	var f *providers.Failure
 	require.True(t, errors.As(err, &f), "a typed failure: %v", err)
 	assert.NotEqual(t, providers.Budget, f.Category, err.Error())
+
+	// QuerySync too, though codex exits 0 after the failed turn.
+	c, _ = cappedClient(t, steps, 1, t.TempDir())
+	_, _, err = c.QuerySync(context.Background(), "sys", "hi", "")
+	require.Error(t, err)
+	require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+	assert.NotEqual(t, providers.Budget, f.Category, err.Error())
+}
+
+// A token_count repeated without a new response (a rate-limit update) does
+// not count when codex writes token_usage_records: those decide.
+func TestRolloutTurns_RecordsWinOverRepeatedTokenCounts(t *testing.T) {
+	home := t.TempDir()
+	writeRollout(t, home, rolloutRecord+"\n"+rolloutTokenCount+"\n"+rolloutTokenCount+"\n"+rolloutTokenCount+"\n")
+	n, ok := (&rolloutTurns{home: home}).read()
+	require.True(t, ok)
+	assert.Equal(t, 1, n)
 }
 
 func TestTurnCounter_ReasoningOpensTheNextTurn(t *testing.T) {
@@ -162,9 +197,12 @@ func TestRolloutTurns_CountsResponses(t *testing.T) {
 	n, ok := r.read()
 	require.True(t, ok)
 	assert.Equal(t, 1, n, "a rate-limit token_count and a half line do not count")
-	appendFile(t, path, rolloutTokenCount[20:]+"\n"+rolloutRecord+"\n")
+	appendFile(t, path, rolloutTokenCount[20:]+"\n")
 	n, _ = r.read()
-	assert.Equal(t, 2, n, "the finished line counts; the record count trails")
+	assert.Equal(t, 2, n, "the finished line counts")
+	appendFile(t, path, rolloutRecord+"\n")
+	n, _ = r.read()
+	assert.Equal(t, 1, n, "once codex writes records, they decide")
 }
 
 // N5 (ask #522): codex 0.159 runs one response's MCP calls one after
