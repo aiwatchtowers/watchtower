@@ -200,7 +200,7 @@ struct AgentAnalyticsOverviewView: View {
                 Spacer(minLength: 0)
             }
             if totals.costEstimatedCalls > 0 {
-                Text("\(totals.costEstimatedCalls) \(totals.costEstimatedCalls == 1 ? "call" : "calls") priced by estimate")
+                Text("\(totals.costEstimatedCalls) \(totals.costEstimatedCalls == 1 ? "call" : "calls") with no price")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
