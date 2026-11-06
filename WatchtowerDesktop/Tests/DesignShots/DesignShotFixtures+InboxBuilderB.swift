@@ -37,7 +37,7 @@ enum InboxBuilderBShotFixtures {
             ("inbox-b-menu-write-refused", InboxFolderMenuContent(
                 rows: [root, approvals, shortRelease], selection: 1,
                 folderDraft: InboxFolderDraft(.create(parent: 1), title: "Release",
-                                                 error: #"a folder named "Release" already exists here"#))),
+                                              error: #"a folder named "Release" already exists here"#))),
             ("inbox-b-menu-move-pending", InboxFolderMenuContent(
                 rows: [root, approvals, release(depth: 1, count: 2), team], selection: 1, pendingMoveID: 3)),
             ("inbox-b-folder-delete-confirm", InboxFolderMenuContent(
@@ -125,15 +125,15 @@ enum InboxBuilderBShotFixtures {
     private static func rootList(selection: String?, readError: String? = nil) -> InboxFolderListContent {
         InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
             InboxFolderListRow(id: "waiting", kind: .artifact, title: "Waiting for me", summary: "4 waiting",
-                             detail: "updated 6 min ago · after every sync", unread: true),
+                               detail: "updated 6 min ago · after every sync", unread: true),
             InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
-                             detail: "Your day · Fri 6 Nov", unread: true),
+                               detail: "Your day · Fri 6 Nov", unread: true),
             InboxFolderListRow(id: "tracks", kind: .legacy, title: "Track my threads", summary: "2 unread",
-                             detail: "updated 1 h ago"),
+                               detail: "updated 1 h ago"),
             InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder", summary: "1 to judge",
-                             detail: "updated 3 h ago"),
+                               detail: "updated 3 h ago"),
             InboxFolderListRow(id: "weekly", kind: .artifact, title: "Weekly mail roundup", detail: "run #12 · 2 h ago",
-                             unread: true)
+                               unread: true)
         ], selection: selection, readError: readError)
     }
 
@@ -360,8 +360,8 @@ enum InboxBuilderBShotFixtures {
                 ping("Colleague A", "#acme-release", "Can you check the checklist?", age: "2 days", late: true,
                      pingActions()),
                 ping("Colleague G", "a DM", "Mail me the invoice when you can", age: "1 h", late: false,
-                     InboxRowActionsContent(kind: .inboxItem(openLabel: "Open in Mail", openEnabled: true,
-                                                            canReply: false, showsHandToAgent: true)))
+                     InboxRowActionsContent(kind: .inboxItem(
+                         openLabel: "Open in Mail", openEnabled: true, canReply: false, showsHandToAgent: true)))
             ]),
             ("inbox-b-row-busy", [ping("Colleague B", "a DM", "Will you approve the budget?", age: "26 h", late: true,
                                        pingActions(.busy))]),
@@ -470,9 +470,9 @@ enum InboxBuilderBShotFixtures {
     private static func waitingNotRun() -> AnyView {
         let list = InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
             InboxFolderListRow(id: "messages", kind: .legacy, title: "Messages", summary: "4 waiting",
-                             detail: "Mentions, DMs and replies", unread: true),
+                               detail: "Mentions, DMs and replies", unread: true),
             InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
-                             detail: "Your day · Fri 6 Nov", unread: true)
+                               detail: "Your day · Fri 6 Nov", unread: true)
         ], selection: "messages")
         let actions = pingActions()
         return AnyView(HStack(spacing: 0) {
@@ -531,7 +531,7 @@ enum InboxBuilderBShotFixtures {
             DesignShot(name: "inbox-b-idea-finder-menu", size: NSSize(width: 620, height: 0)) {
                 AnyView(HStack(alignment: .top, spacing: Spacing.large) {
                     InboxFolderListRowView(row: InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder",
-                                                                summary: "1 to judge", detail: "updated 3 h ago"))
+                                                                   summary: "1 to judge", detail: "updated 3 h ago"))
                         .kitRow(isSelected: true)
                         .frame(width: 280)
                     menuPanel("Idea finder ⋯", InboxArtifactMenuContent.ideaFinderEntries)

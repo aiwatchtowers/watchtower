@@ -16,8 +16,14 @@ package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
     package var detail: String
     package var unread: Bool
 
-    package init(id: String, kind: Kind, title: String, summary: String = "", detail: String = "",
-                 unread: Bool = false) {
+    package init(
+        id: String,
+        kind: Kind,
+        title: String,
+        summary: String = "",
+        detail: String = "",
+        unread: Bool = false
+    ) {
         self.id = id
         self.kind = kind
         self.title = title
@@ -38,8 +44,13 @@ package struct InboxFolderListContent: Equatable, Sendable {
     /// error line.
     package var readError: String?
 
-    package init(folderKind: InboxFolderKind, folderTitle: String, rows: [InboxFolderListRow] = [],
-                 selection: String? = nil, readError: String? = nil) {
+    package init(
+        folderKind: InboxFolderKind,
+        folderTitle: String,
+        rows: [InboxFolderListRow] = [],
+        selection: String? = nil,
+        readError: String? = nil
+    ) {
         self.folderKind = folderKind
         self.folderTitle = folderTitle
         self.rows = rows

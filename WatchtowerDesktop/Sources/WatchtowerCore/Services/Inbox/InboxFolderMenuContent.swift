@@ -21,8 +21,14 @@ package struct InboxFolderRow: Identifiable, Equatable, Sendable {
     package var isExpanded: Bool
 
     package init(
-        id: Int64, kind: InboxFolderKind, title: String, icon: String, depth: Int, count: Int,
-        hidden: Bool = false, isExpanded: Bool = true
+        id: Int64,
+        kind: InboxFolderKind,
+        title: String,
+        icon: String,
+        depth: Int,
+        count: Int,
+        hidden: Bool = false,
+        isExpanded: Bool = true
     ) {
         self.id = id
         self.kind = kind
@@ -152,10 +158,16 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     package var approvalsEnabled: Bool
 
     package init(
-        rows: [InboxFolderRow], selection: Int64? = nil, note: InboxFolderMenuNote? = nil,
-        dropIndicator: InboxFolderDrop? = nil, deleteConfirmation: InboxFolderDeleteSummary? = nil,
-        folderDraft: InboxFolderDraft? = nil, pendingMoveID: Int64? = nil, showsHidden: Bool = false,
-        icons: [InboxFolderIcon] = [], approvalsEnabled: Bool = true
+        rows: [InboxFolderRow],
+        selection: Int64? = nil,
+        note: InboxFolderMenuNote? = nil,
+        dropIndicator: InboxFolderDrop? = nil,
+        deleteConfirmation: InboxFolderDeleteSummary? = nil,
+        folderDraft: InboxFolderDraft? = nil,
+        pendingMoveID: Int64? = nil,
+        showsHidden: Bool = false,
+        icons: [InboxFolderIcon] = [],
+        approvalsEnabled: Bool = true
     ) {
         self.rows = rows
         self.selection = selection
@@ -233,8 +245,13 @@ package struct InboxMenuEntry: Equatable, Sendable {
     package var children: [Self]
 
     package init(
-        title: String, command: InboxMenuCommand? = nil, destructive: Bool = false, checked: Bool = false,
-        indent: Int = 0, systemImage: String? = nil, children: [Self] = []
+        title: String,
+        command: InboxMenuCommand? = nil,
+        destructive: Bool = false,
+        checked: Bool = false,
+        indent: Int = 0,
+        systemImage: String? = nil,
+        children: [Self] = []
     ) {
         self.title = title
         self.command = command
@@ -260,8 +277,12 @@ package struct InboxArtifactMenuContent: Equatable, Sendable {
     package var currentFolderID: Int64?
 
     package init(
-        isBuiltin: Bool = false, offersRunNow: Bool = true, movable: Bool = true, isEnabled: Bool = true,
-        folders: [InboxFolderRow] = [], currentFolderID: Int64? = nil
+        isBuiltin: Bool = false,
+        offersRunNow: Bool = true,
+        movable: Bool = true,
+        isEnabled: Bool = true,
+        folders: [InboxFolderRow] = [],
+        currentFolderID: Int64? = nil
     ) {
         self.isBuiltin = isBuiltin
         self.offersRunNow = offersRunNow
