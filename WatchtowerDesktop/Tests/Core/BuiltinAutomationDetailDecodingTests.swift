@@ -66,7 +66,7 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertEqual(Set(detail.defaultPrompts.keys), ["brief", "plan"])
         XCTAssertEqual(detail.when, "Every morning at the first sync after 08:00")
         XCTAssertEqual(detail.reads.count, 5)
-        XCTAssertEqual(detail.sends, ["Your day card in the Inbox, under Day"])
+        XCTAssertEqual(detail.sends, ["Your day card in your Inbox"])
         XCTAssertEqual(detail.parameters.map(\.key), [
             "briefing.hour", "day_plan.working_hours_start", "day_plan.working_hours_end",
             "day_plan.max_timeblocks", "day_plan.min_backlog", "day_plan.max_backlog"

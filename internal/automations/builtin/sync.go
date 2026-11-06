@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 // copyNotRegularNote is the sync note of an owner copy that is a symlink, a
 // directory or a special file: it is never read, the shipped text is used.
 const copyNotRegularNote = "the edited copy is not a regular file; using the built-in"
+
+// logf logs what a sync does not fail on (a route seed that failed); a var
+// so a test can read it.
+var logf = log.Printf
 
 // SyncReport is what one Sync did, by built-in id.
 type SyncReport struct {
@@ -44,7 +49,7 @@ func Sync(ctx context.Context, d *db.DB, workspaceDir string, cfg *config.Config
 		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
-		res, err := syncEntry(d, workspaceDir, cfg, e, now)
+		res, err := syncEntry(ctx, d, workspaceDir, cfg, e, now)
 		if res.note != "" {
 			rep.Errors[e.ID] = res.note
 		}
@@ -77,7 +82,7 @@ func SyncOne(ctx context.Context, d *db.DB, workspaceDir string, cfg *config.Con
 	if !ok {
 		return nil, fmt.Errorf("unknown built-in automation %q", id)
 	}
-	res, err := syncEntry(d, workspaceDir, cfg, e, now)
+	res, err := syncEntry(ctx, d, workspaceDir, cfg, e, now)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +156,7 @@ func copyState(path string) (present bool, note string, err error) {
 	return true, "", nil
 }
 
-func syncEntry(d *db.DB, workspaceDir string, cfg *config.Config, e Entry, now time.Time) (syncResult, error) {
+func syncEntry(ctx context.Context, d *db.DB, workspaceDir string, cfg *config.Config, e Entry, now time.Time) (syncResult, error) {
 	var res syncResult
 	prev, err := d.GetBuiltinAutomation(e.ID)
 	if errors.Is(err, db.ErrAutomationNotFound) {
@@ -200,10 +205,25 @@ func syncEntry(d *db.DB, workspaceDir string, cfg *config.Config, e Entry, now t
 	if err := d.SetBuiltinEnabled(e.ID, e.Enabled(cfg), now); err != nil {
 		return res, err
 	}
+	seedRoute(ctx, d, e, id)
 	if res.row, err = d.GetAutomation(id); err != nil {
 		return res, err
 	}
 	return res, nil
+}
+
+// seedRoute routes built-in e (row id) to its default folder when that is
+// not the root and it has no route yet (db.SeedInboxFolderRoute), so a move
+// the owner made later is kept. A failure is logged, never the sync's: the
+// built-in stays indexed, its artifacts show in the root meanwhile, and the
+// next sync seeds it.
+func seedRoute(ctx context.Context, d *db.DB, e Entry, id int64) {
+	if e.DefaultFolder == RootFolder {
+		return
+	}
+	if _, err := d.SeedInboxFolderRoute(ctx, id, e.DefaultFolder); err != nil {
+		logf("built-in %s: seeding its inbox folder route: %v", e.ID, err)
+	}
 }
 
 // rowFields is the part of a built-in's row its source determines.

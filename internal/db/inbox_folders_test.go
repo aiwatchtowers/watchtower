@@ -530,3 +530,73 @@ func TestInboxFolders_MissLineClipped(t *testing.T) {
 	assert.True(t, utf8.ValidString(line))
 	assert.True(t, strings.HasPrefix(line, `folder "éé`))
 }
+
+// The built-in indexer's route seed writes a route only when the automation
+// has none, bumping the revision when it writes; a route the owner set is
+// kept; an unknown slug writes nothing.
+func TestSeedInboxFolderRoute_OnlyWhenNoneAndBumpsRevision(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	root, approvals := inboxRootAndApprovals(t, d)
+	a := seedRunAutomation(t, d, "acme-approvals", 1)
+	rev := inboxRevision(t, d)
+
+	seeded, err := d.SeedInboxFolderRoute(ctx, a, "needs-approval")
+	require.NoError(t, err)
+	assert.True(t, seeded)
+	assert.Equal(t, rev+1, inboxRevision(t, d), "a seed that writes bumps the revision")
+
+	seeded, err = d.SeedInboxFolderRoute(ctx, a, "needs-approval")
+	require.NoError(t, err)
+	assert.False(t, seeded, "seeded once")
+	assert.Equal(t, rev+1, inboxRevision(t, d), "a seed that writes nothing leaves the revision")
+
+	// The owner moves it (to the root, an explicit row): the next seed keeps it.
+	_, err = d.Exec(`UPDATE inbox_folder_routes SET folder_id = ? WHERE automation_id = ?`, root, a)
+	require.NoError(t, err)
+	seeded, err = d.SeedInboxFolderRoute(ctx, a, "needs-approval")
+	require.NoError(t, err)
+	assert.False(t, seeded)
+	_, _, routes, err := d.InboxFolderTree(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[int64]int64{a: root}, routes, "the owner's route is kept")
+	assert.NotEqual(t, approvals, routes[a])
+
+	b := seedRunAutomation(t, d, "acme-other", 1)
+	seeded, err = d.SeedInboxFolderRoute(ctx, b, "no-such-folder")
+	require.Error(t, err)
+	assert.False(t, seeded)
+	assert.Contains(t, err.Error(), `no inbox folder "no-such-folder"`)
+	_, _, routes, err = d.InboxFolderTree(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, routes, b)
+	assert.Equal(t, rev+1, inboxRevision(t, d))
+}
+
+// An automation that already has a route is answered by a plain read: the
+// seed succeeds while another connection holds the write lock, and one
+// without a route waits for it (busy).
+func TestSeedInboxFolderRoute_RoutedTakesNoWriteLock(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "w.db")
+	holder, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = holder.Close() })
+	routed := seedRunAutomation(t, holder, "acme-routed", 1)
+	unrouted := seedRunAutomation(t, holder, "acme-unrouted", 1)
+	_, err = holder.SeedInboxFolderRoute(ctx, routed, "needs-approval")
+	require.NoError(t, err)
+	held, err := holder.Begin() // BEGIN IMMEDIATE: holds the write lock
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = held.Rollback() })
+
+	writer, err := OpenExistingRW(path, 50*time.Millisecond)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = writer.Close() })
+	seeded, err := writer.SeedInboxFolderRoute(ctx, routed, "needs-approval")
+	require.NoError(t, err, "a routed automation needs no write lock")
+	assert.False(t, seeded)
+
+	_, err = writer.SeedInboxFolderRoute(ctx, unrouted, "needs-approval")
+	assert.True(t, IsBusy(err), "an unrouted one takes the write lock: %v", err)
+}

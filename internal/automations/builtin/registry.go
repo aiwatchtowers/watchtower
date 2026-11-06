@@ -34,6 +34,10 @@ const (
 	SlotIdeas        Slot = "ideas"
 )
 
+// RootFolder is the slug of the Inbox's root folder: an automation with no
+// route shows its artifacts there.
+const RootFolder = "inbox"
+
 // ParamKind is how a card parameter is edited.
 type ParamKind string
 
@@ -80,7 +84,11 @@ type Entry struct {
 	// Inbox filter ("day", "tracks", "ideas", "automations") the result lands in.
 	Does         []string
 	ResultFilter string
-	When         func(cfg *config.Config) string
+	// DefaultFolder is the slug of the Inbox folder the built-in's artifacts
+	// go to: RootFolder, or another folder whose route the indexer seeds
+	// when the built-in has none (Sync), so the owner's later move is kept.
+	DefaultFolder string
+	When          func(cfg *config.Config) string
 	// RunNow: the card offers Run Now and `automations run <id>` queues a
 	// manual run. Every entry sets it explicitly.
 	RunNow bool
@@ -116,8 +124,9 @@ var registry = []Entry{
 			"Plans your day around your meetings from that brief, in the same run, at the first sync after your briefing hour",
 			"Still makes the plan when the brief fails",
 		},
-		Sends:        []string{"Your day card in the Inbox, under Day"},
-		ResultFilter: "day",
+		Sends:         []string{"Your day card in your Inbox"},
+		ResultFilter:  "day",
+		DefaultFolder: RootFolder,
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every morning at the first sync after %02d:00", briefingHour(cfg))
 		},
@@ -138,10 +147,11 @@ var registry = []Entry{
 			"Reads the new channel digests with your profile and your tracks, only while Slack Digests are on",
 			"Starts a track for a new thread, or adds news to one you already follow",
 		},
-		Sends:        []string{"Track cards in your Inbox, under Tracks"},
-		ResultFilter: "tracks",
-		When:         func(*config.Config) string { return "After every sync, while Slack Digests are on" },
-		RunNow:       true,
+		Sends:         []string{"Track cards in your Inbox"},
+		ResultFilter:  "tracks",
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After every sync, while Slack Digests are on" },
+		RunNow:        true,
 	},
 	{
 		ID:         "idea-finder",
@@ -159,8 +169,9 @@ var registry = []Entry{
 			"Reads Slack digests, mail and tracker digests, meeting recaps and your AI chats, every few hours",
 			"Merges repeats and keeps what is worth your attention",
 		},
-		Sends:        []string{"Idea cards in your Inbox, under Ideas; decisions go to your brief"},
-		ResultFilter: "ideas",
+		Sends:         []string{"Idea cards in your Inbox; decisions go to your brief"},
+		ResultFilter:  "ideas",
+		DefaultFolder: RootFolder,
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every %d hours", ideasIntervalHours(cfg))
 		},
@@ -182,11 +193,12 @@ var registry = []Entry{
 			"Reads the message and its thread",
 			"Prepares what that emoji stands for, for example a reminder, an idea or a ticket; one run handles one reaction",
 		},
-		Sends:        []string{"A proposal in your Inbox, under Automations; ideas, reminders and brief notes are saved at once"},
-		ResultFilter: "automations",
-		When:         func(*config.Config) string { return "When you react to a Slack message" },
-		RunNow:       false,
-		NoRunNowNote: "Reactions run for each reaction you place",
+		Sends:         []string{"A proposal in your Inbox, in Needs approval; ideas, reminders and brief notes are saved at once"},
+		ResultFilter:  "automations",
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "When you react to a Slack message" },
+		RunNow:        false,
+		NoRunNowNote:  "Reactions run for each reaction you place",
 	},
 }
 

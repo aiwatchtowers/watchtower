@@ -24,9 +24,10 @@
     "Still makes the plan when the brief fails"
   ],
   "sends": [
-    "Your day card in the Inbox, under Day"
+    "Your day card in your Inbox"
   ],
   "result_filter": "day",
+  "default_folder": "inbox",
   "parameters": [
     {
       "key": "briefing.hour",

@@ -30,6 +30,7 @@ type CardInfo struct {
 	Does            []string          `json:"does"`
 	Sends           []string          `json:"sends"`
 	ResultFilter    string            `json:"result_filter"`
+	DefaultFolder   string            `json:"default_folder"`
 	Parameters      []ParameterValue  `json:"parameters"`
 	FeatureIDs      []string          `json:"feature_ids"`
 	Enabled         bool              `json:"enabled"`
@@ -67,7 +68,7 @@ func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Auto
 	c := CardInfo{
 		ID: e.ID, Slot: e.Slot, ShippedHash: e.ShippedContentHash(), ShippedText: string(e.Recipe),
 		DefaultPrompts: map[string]string{}, Reads: nonNil(e.Reads), Does: nonNil(e.Does), Sends: nonNil(e.Sends), ResultFilter: e.ResultFilter,
-		Parameters: []ParameterValue{}, FeatureIDs: nonNil(e.FeatureIDs),
+		DefaultFolder: e.DefaultFolder, Parameters: []ParameterValue{}, FeatureIDs: nonNil(e.FeatureIDs),
 		Enabled: e.Enabled(cfg), RunNow: e.RunNow, Costs: Costs{Days: CostDays},
 	}
 	if e.When != nil {

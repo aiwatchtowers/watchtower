@@ -134,23 +134,31 @@ func seedWatchRow(t *testing.T, d *DB, slug string) int64 {
 	return id
 }
 
-// slotAutomationSQL is RunsAtSlot() in SQL: the two agree on a watch
-// recipe, a manual owner recipe, a workbench recipe with a sync trigger and
-// a built-in whatever its trigger.
+// slotAutomationSQL is RunsAtSlot() in SQL: the two agree on a built-in with
+// a sync trigger (a slot run), a built-in with an event trigger (run by the
+// executor's poll), a Personal watch recipe (a slot run), an owner event
+// recipe, a manual owner recipe and a workbench row with a sync trigger
+// (the predicate is the trigger alone; no workbench recipe parses with one).
 func TestAutomation_RunsAtSlotMatchesSlotSQL(t *testing.T) {
 	d := openTestDB(t)
 	watch := seedWatchRow(t, d, "watch")
 	owner := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "a1")
+	ownerEvent := seedAutomationRow(t, d, "on-mail", "/acme/automations/on-mail.md", "a3")
+	_, err := d.Exec(`UPDATE automations SET trigger_kind = 'event', trigger_spec = '{"event":"gmail.new_messages"}' WHERE id = ?`, ownerEvent)
+	require.NoError(t, err)
 	wb, err := d.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
 	wbSync := seedAutomationRow(t, d, "wb-sync", "/acme/wb/automations/wb-sync.md", "a2")
 	_, err = d.Exec(`UPDATE automations SET scope = 'workbench', project_id = ?, trigger_kind = 'sync' WHERE id = ?`, wb, wbSync)
 	require.NoError(t, err)
-	builtin := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
-	_, err = d.Exec(`UPDATE automations SET trigger_kind = 'manual' WHERE id = ?`, builtin)
+	builtinSync := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	builtinEvent := seedBuiltinRow(t, d, "needs-approval", "needs-approval", "c2", "a2")
+	_, err = d.Exec(`UPDATE automations SET trigger_kind = 'event', trigger_spec = '{"event":"approval"}' WHERE id = ?`, builtinEvent)
 	require.NoError(t, err)
 
-	for id, want := range map[int64]bool{watch: true, owner: false, wbSync: false, builtin: true} {
+	for id, want := range map[int64]bool{
+		watch: true, owner: false, ownerEvent: false, wbSync: true, builtinSync: true, builtinEvent: false,
+	} {
 		a := mustGetAutomation(t, d, id)
 		var inSQL bool
 		require.NoError(t, d.QueryRow(`SELECT EXISTS (SELECT 1 FROM automations a WHERE a.id = ? AND (`+slotAutomationSQL+`))`,
@@ -201,6 +209,37 @@ func TestMarkInterruptedRuns_WatchRunsAreSlotRuns(t *testing.T) {
 	wantAutomationRun(t, d, stale, RunFailed, ErrKindInterrupted)
 }
 
+// A reindex that turns a built-in's owner copy into a parse error (its
+// trigger cleared) while an inline run of it is live leaves that run to the
+// slot sweeps: the executor's start sweep never ends it, and the daemon's
+// slot sweep ends it only past its deadline (AUTO-08's live inline run).
+func TestMarkInterruptedRuns_BuiltinReindexedToParseErrorKeepsLiveInlineRun(t *testing.T) {
+	d := openTestDB(t)
+	b := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: b, Trigger: TriggerManual})
+	ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, 5, runTestNow.Add(-time.Minute))
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, err = d.Exec(`UPDATE automations SET trigger_kind = '', trigger_spec = '{}', parse_error = 'bad copy' WHERE id = ?`, b)
+	require.NoError(t, err)
+	require.False(t, mustGetAutomation(t, d, b).RunsAtSlot(), "no trigger: never claimed as a slot run")
+
+	n, err := d.MarkInterruptedAutomationRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	wantAutomationRun(t, d, run, RunRunning, "")
+
+	n, err = d.MarkInterruptedBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "a live inline run inside its deadline")
+	wantAutomationRun(t, d, run, RunRunning, "")
+
+	n, err = d.MarkStaleBuiltinRuns(runTestNow.Add(10 * time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "past its deadline the stale guard ends it")
+	wantAutomationRun(t, d, run, RunFailed, ErrKindInterrupted)
+}
+
 func TestAutomation_RunsAtSlotHoldsPersonalSyncRecipes(t *testing.T) {
 	for _, c := range []struct {
 		a    Automation
@@ -208,8 +247,13 @@ func TestAutomation_RunsAtSlotHoldsPersonalSyncRecipes(t *testing.T) {
 	}{
 		{Automation{Scope: "personal", TriggerKind: TriggerKindSync}, true},
 		{Automation{Scope: "personal", TriggerKind: "manual"}, false},
-		{Automation{Scope: "workbench", TriggerKind: TriggerKindSync}, false},
-		{Automation{Scope: "personal", TriggerKind: "manual", Origin: OriginBuiltin}, true},
+		// The predicate is the trigger alone (no workbench recipe parses with one).
+		{Automation{Scope: "workbench", TriggerKind: TriggerKindSync}, true},
+		{Automation{Scope: "personal", TriggerKind: TriggerKindSync, Origin: OriginBuiltin}, true},
+		// An event built-in runs on the executor's poll, not at a slot.
+		{Automation{Scope: "personal", TriggerKind: "event", Origin: OriginBuiltin}, false},
+		// A built-in whose copy does not parse has no trigger: not a slot run.
+		{Automation{Scope: "personal", Origin: OriginBuiltin}, false},
 	} {
 		assert.Equal(t, c.want, c.a.RunsAtSlot(), "%+v", c.a)
 	}

@@ -252,3 +252,56 @@ func clipStepText(s string) string {
 	}
 	return s[:cut]
 }
+
+// SeedInboxFolderRoute routes automation automationID to the folder with
+// slug folderSlug only when it has no route yet (the built-in indexer's
+// seed of a built-in's default folder), so a route the owner set later is
+// kept. A plain read first: an automation with a route (every sync after
+// the first) takes no write lock. A seed that writes bumps the tree's
+// revision, in the same BEGIN IMMEDIATE transaction, so a client holding the
+// old tree re-reads it; the insert still yields to a route written between
+// the read and the write. It reports whether it wrote; a slug no folder has
+// is an error, nothing written.
+func (db *DB) SeedInboxFolderRoute(ctx context.Context, automationID int64, folderSlug string) (seeded bool, err error) {
+	var routed bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM inbox_folder_routes WHERE automation_id = ?)`,
+		automationID).Scan(&routed); err != nil {
+		return false, fmt.Errorf("reading the route of automation %d: %w", automationID, err)
+	}
+	if routed {
+		return false, nil
+	}
+	tx, err := db.BeginTx(ctx, nil) // BEGIN IMMEDIATE (_txlock=immediate)
+	if err != nil {
+		return false, fmt.Errorf("starting the route seed of automation %d: %w", automationID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var folderID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM inbox_folders WHERE slug = ?`, folderSlug).Scan(&folderID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("seeding the route of automation %d: no inbox folder %q", automationID, folderSlug)
+	}
+	if err != nil {
+		return false, fmt.Errorf("seeding the route of automation %d: %w", automationID, err)
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO inbox_folder_routes (automation_id, folder_id) VALUES (?, ?)
+		ON CONFLICT (automation_id) DO NOTHING`, automationID, folderID)
+	if err != nil {
+		return false, fmt.Errorf("seeding the route of automation %d: %w", automationID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("seeding the route of automation %d: %w", automationID, err)
+	}
+	if n == 0 {
+		return false, nil // it has a route: the owner's, or an earlier seed
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE inbox_folder_state SET revision = revision + 1 WHERE id = 1`); err != nil {
+		return false, fmt.Errorf("bumping the inbox folder revision: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("committing the route seed of automation %d: %w", automationID, err)
+	}
+	return true, nil
+}

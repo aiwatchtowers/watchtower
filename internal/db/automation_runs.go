@@ -936,14 +936,24 @@ const interruptedRunSQL = `status IN ('running','waiting') AND NOT (` + liveDryR
 // one argument is now.
 const staleDryRunSQL = `status IN ('running','waiting') AND trigger = 'dry_run' AND NOT (` + liveDryRunSQL + `)`
 
-// slotAutomationSQL is Automation.RunsAtSlot() over automations a: a
-// built-in, or a Personal recipe with a sync trigger (a custom_tracks watch
-// recipe). The two must agree (TestAutomation_RunsAtSlotMatchesSlotSQL).
-const slotAutomationSQL = `a.origin = 'builtin' OR (a.scope = 'personal' AND a.trigger_kind = 'sync')`
+// slotAutomationSQL is Automation.RunsAtSlot() over automations a: its
+// trigger is sync (a built-in at its slot, or a custom_tracks watch recipe).
+// The two must agree (TestAutomation_RunsAtSlotMatchesSlotSQL).
+const slotAutomationSQL = `a.trigger_kind = 'sync'`
 
-// slotRunSQL matches the runs of a slot automation (RunsAtSlot: they run
-// only at their slot, inline in the daemon's sync cycle).
-const slotRunSQL = `automation_id IN (SELECT a.id FROM automations a WHERE ` + slotAutomationSQL + `)`
+// slotRunAutomationSQL is the automations whose runs the run sweeps treat
+// as slot runs: every slot automation (slotAutomationSQL), plus a built-in
+// whose row has no trigger. A reindex turns an owner copy that does not
+// parse into such a row (an empty trigger_kind), possibly while a run it started
+// at its slot or inline in a CLI (`briefing generate`) is still live; that
+// run keeps the slot sweeps' rules (a live inline run is ended only past its
+// deadline), never the executor start sweep's. The claim side is the trigger
+// alone (RunsAtSlot): nothing runs a row with no trigger.
+const slotRunAutomationSQL = slotAutomationSQL + ` OR (a.origin = 'builtin' AND a.trigger_kind = '')`
+
+// slotRunSQL matches the runs of a slot automation (they run only at their
+// slot, inline in the daemon's sync cycle or a CLI), slotRunAutomationSQL.
+const slotRunSQL = `automation_id IN (SELECT a.id FROM automations a WHERE ` + slotRunAutomationSQL + `)`
 
 // MarkInterruptedAutomationRuns is the owner-recipe executor's start sweep
 // (AUTO-08): in one transaction it keeps every resumable waiting run

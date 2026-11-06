@@ -296,7 +296,8 @@ func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
 }
 
 // TestCard_DoesAndResultFilter: every card lists what it does and names the
-// Inbox filter its result lands in.
+// Inbox filter its result lands in and its default folder (the root for the
+// shipped four).
 func TestCard_DoesAndResultFilter(t *testing.T) {
 	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations"}
 	f := newFixture(t)
@@ -310,6 +311,9 @@ func TestCard_DoesAndResultFilter(t *testing.T) {
 		}
 		if card.ResultFilter != want[e.ID] {
 			t.Errorf("%s: result_filter %q, want %q", e.ID, card.ResultFilter, want[e.ID])
+		}
+		if card.DefaultFolder != RootFolder {
+			t.Errorf("%s: default_folder %q, want %q", e.ID, card.DefaultFolder, RootFolder)
 		}
 	}
 }
