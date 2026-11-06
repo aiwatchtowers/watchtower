@@ -145,17 +145,17 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(errCh)
 		defer close(sidCh)
 		_, usage, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch })
-		if err != nil {
-			errCh <- err
-			return
-		}
 		if c.toolEvents && usage != nil {
-			// The answer is complete: a stop now drops the usage, nothing else.
+			// The calls made count on a failed turn too (a budget stop at the
+			// cap); a stop now drops the usage, nothing else.
 			select {
 			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model,
 				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}}:
 			case <-ctx.Done():
 			}
+		}
+		if err != nil {
+			errCh <- err
 		}
 	}()
 	return textCh, errCh, sidCh

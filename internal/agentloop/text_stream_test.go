@@ -292,7 +292,7 @@ func TestAgentloopQuerySync_DoesNotStream(t *testing.T) {
 // At the iteration cap a v2 consumer keeps the text it already shows, and
 // the stream ends with the budget failure instead of a note (L13).
 func TestAgentloopQuery_CapKeepsShownTextAndFails(t *testing.T) {
-	srv, _ := scriptedServer(t, textAndTool("partial progress"))
+	srv, _ := scriptedServer(t, usageResp(textAndTool("partial progress"), 40, 5))
 	c := clientWith(listTargetsReg(), srv.URL)
 	c.maxIter = 1
 	c.EmitToolEvents()
@@ -302,6 +302,14 @@ func TestAgentloopQuery_CapKeepsShownTextAndFails(t *testing.T) {
 	assert.Equal(t, providers.Budget, f.Category)
 	text := strings.Join(textsOf(chunks), "")
 	assert.Equal(t, "partial progress", text)
+	var usage *ai.TurnUsage
+	for _, ch := range chunks {
+		if ch.Usage != nil {
+			usage = ch.Usage
+		}
+	}
+	require.NotNil(t, usage, "the calls made at the cap keep their usage")
+	assert.Equal(t, 40, usage.InputTokens)
 }
 
 // A tool name split across deltas is joined; a server that repeats the
