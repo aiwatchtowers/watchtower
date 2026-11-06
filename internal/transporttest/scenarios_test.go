@@ -209,7 +209,7 @@ func (c *Cell) refusedBeforeStart() error {
 	case err == nil:
 		return errors.New("not refused")
 	case errors.As(err, &f) && f.Category == providers.Capability:
-	case errors.As(err, &ae) && ae.RequiresClaude:
+	case errors.As(err, &ae) && ae.CapabilityMissing:
 		// Today's refusal of a binary file by a text-only backend (A2 makes
 		// it a capability refusal).
 	default:

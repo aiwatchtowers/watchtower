@@ -250,13 +250,11 @@ reply gone
 	}{
 		{"client", func(ctx context.Context, script string) (string, error) {
 			c := NewClient("m", "", script)
-			c.SetProcessGroup(true)
 			out, _, err := c.QuerySync(ctx, "sys "+marker, "hi", "")
 			return out, err
 		}},
 		{"client stream", func(ctx context.Context, script string) (string, error) {
 			c := NewClient("m", "", script)
-			c.SetProcessGroup(true)
 			chunks, errs, sids := c.Query(ctx, "sys "+marker, "hi", "")
 			go func() {
 				for range sids {

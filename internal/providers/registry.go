@@ -9,6 +9,7 @@ import (
 	"regexp"
 
 	"watchtower/internal/config"
+	"watchtower/internal/providers/caps"
 )
 
 // Provider describes one AI backend.
@@ -29,6 +30,8 @@ type Provider struct {
 	// suggest them (e.g. claude's opus). Not serialized directly: `ai models`
 	// folds it into the same `models` field the live listing uses.
 	KnownModels []string `json:"-"`
+	// Caps is what the provider's transport offers (capabilities.go).
+	Caps Capabilities `json:"capabilities"`
 }
 
 // registry order is the display order in UIs.
@@ -61,6 +64,18 @@ var registry = []Provider{
 		// UI/CLI surfaces prompt the user to pick from the live list.
 		LiveModels: true,
 	},
+}
+
+// init fills each row's Caps from the capability table by its id; a
+// registry id without a row is a bug, caught at start.
+func init() {
+	for i := range registry {
+		c, ok := caps.For(registry[i].ID)
+		if !ok {
+			panic("providers: no capability row for " + registry[i].ID)
+		}
+		registry[i].Caps = c
+	}
 }
 
 // All returns the registry in display order.

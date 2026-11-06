@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"time"
 
-	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
@@ -21,9 +19,9 @@ import (
 	"watchtower/internal/logredact"
 	"watchtower/internal/mcpoauth"
 	"watchtower/internal/netsec"
-	"watchtower/internal/ollama"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/sessions"
 	"watchtower/internal/tools"
 )
@@ -82,15 +80,7 @@ func routedGenerator(cfg *config.Config, legacy digest.Generator, pool *sessions
 
 // buildGenerator is the configured provider's generator, unchecked.
 func buildGenerator(cfg *config.Config) digest.Generator {
-	light, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	switch cfg.AI.Provider {
-	case "codex":
-		return codex.NewCodexGenerator(light, strong, cfg.CodexPath)
-	case "ollama":
-		return ollama.NewGenerator(light, strong, cfg.AI.OllamaURL)
-	default:
-		return digest.NewClaudeGenerator(light, strong, cfg.ClaudePath)
-	}
+	return transport.For(cfg.AI.Provider).NewGenerator(transport.Options{Config: cfg})
 }
 
 // cliBoundedGenerator is cliGenerator plus the H8 wall-clock cap and nothing
@@ -158,30 +148,28 @@ func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.P
 
 // buildAIClient is the configured provider's client, unchecked.
 func buildAIClient(cfg *config.Config, dbPath, modelOverride string) ai.Provider {
-	model := modelOverride
-	if model == "" {
-		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	}
-	switch cfg.AI.Provider {
-	case "codex":
-		return codex.NewClient(model, dbPath, cfg.CodexPath)
-	case "ollama":
-		return ollama.NewClient(model, cfg.AI.OllamaURL)
-	default:
-		return ai.NewClient(model, dbPath, cfg.ClaudePath)
-	}
+	return buildQuerier(cfg, transport.Options{DBPath: dbPath, Model: modelOverride})
 }
 
-// newQueryClient builds the ai.Provider for `watchtower ai query`. On a
-// tool-bearing chat surface (--tools chat) it wires tools two ways: claude/codex
-// get the MCP-args set on their client (the subprocess MCP path); the ollama
-// provider gets the runtime-B in-process tool loop (agentloop) instead, since it
-// has no subprocess. All three get the owner's Quick Connections except on
-// the automation editor. It returns a cleanup to run after the query drains (closing
-// the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
-func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
+// buildQuerier is the configured provider's client built with opts (its
+// Config set to cfg), unchecked.
+func buildQuerier(cfg *config.Config, opts transport.Options) ai.Provider {
+	opts.Config = cfg
+	return transport.For(cfg.AI.Provider).NewQuerier(opts)
+}
+
+// newQueryClient builds the ai.Provider for `watchtower ai query`; opts
+// carries what the run asks of the client (the read folder, the chat
+// events). On a tool-bearing chat surface (--tools chat) it wires tools two
+// ways: a provider with an MCP child gets the MCP args on its client; one
+// without (ollama) gets the runtime-B in-process tool loop (agentloop)
+// instead. All get the owner's Quick Connections except on the automation
+// editor. It returns a cleanup to run after the query drains (closing the
+// tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
+func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (ai.Provider, func(), error) {
 	if toolRoutingEnabled(cfg, aiFlagModel) {
-		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath) })
+		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath, opts) })
+		routed.readFolder = opts.ReadFolder
 		routed.capable = func(provider string) (bool, error) {
 			if provider == cfg.AI.Provider || aiFlagTools != "chat" {
 				return true, nil
@@ -199,11 +187,11 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
 		return nil, noop, err
 	}
-	// Runtime B: the ollama provider on a tool-bearing chat surface gets the
-	// in-process loop — it has no MCP subprocess. Handled first so we never build
-	// (and discard) a plain ollama client, nor resolve the model twice.
-	if aiFlagTools == "chat" && cfg.AI.Provider == "ollama" {
-		model := aiFlagModel
+	model := aiFlagModel
+	// Runtime B: a provider with no MCP child on a tool-bearing chat surface
+	// gets the in-process loop. Handled first so we never build (and
+	// discard) a plain client, nor resolve the model twice.
+	if aiFlagTools == "chat" && !providers.RunsChild(providers.ByID(cfg.AI.Provider).ID) {
 		if model == "" {
 			_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 		}
@@ -211,7 +199,6 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 		if err != nil {
 			return nil, noop, err
 		}
-		reg := buildToolRegistry(cfg, database)
 		binding := tools.Binding{
 			Surface:        aiFlagSurface,
 			ConversationID: aiFlagConversation,
@@ -219,37 +206,26 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 			ContextID:      aiFlagContextID,
 			TurnID:         aiFlagTurn,
 		}
-		loop := agentloop.NewClient(model, cfg.AI.OllamaURL, reg, binding)
-		// The owner's Quick Connections, as claude and codex get them; the
-		// editor chat carries only draft/save and read tools (D11).
+		// The owner's Quick Connections, as the MCP-child transports get
+		// them; the editor chat carries only draft/save and read tools (D11).
+		var ext []ai.ExternalMCPServer
 		if aiFlagSurface != tools.AutomationEditorSurface {
-			loop.SetExternalMCPServers(loadExternalMCPServersFrom(cfg, database, nil))
+			ext = loadExternalMCPServersFrom(cfg, database, nil)
 		}
+		loop := newRuntimeBQuerier(cfg, model, buildToolRegistry(cfg, database), binding, ext, opts.ToolEvents)
 		return loop, func() { _ = database.Close() }, nil
 	}
 
-	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
-	if c, ok := client.(processGroupConfigurable); ok {
-		// The embedded chats and the read-folder code questions: a stop
-		// (SIGINT/SIGTERM on this process) ends claude or codex with its MCP
-		// servers and shells, not the CLI alone.
-		c.SetProcessGroup(true)
-	}
+	opts.DBPath, opts.Model = dbPath, model
 	if aiFlagTools == "chat" {
-		if c, ok := client.(mcpConfigurable); ok {
-			c.SetMCPArgs(chatMCPArgs()) // claude/codex reach tools via the MCP subprocess
-		}
+		opts.MCPArgs = chatMCPArgs() // the MCP-child transports reach tools via the MCP subprocess
 		// The editor chat carries only draft/save and read tools (spec
 		// 2026-10-14 §14.5, D11); an external server may expose writes.
-		if c, ok := client.(externalMCPConfigurable); ok && aiFlagSurface != tools.AutomationEditorSurface {
-			var codexEnv []string
-			if _, isCodex := client.(*codex.Client); isCodex {
-				codexEnv = os.Environ() // the codex child's environment
-			}
-			c.SetExternalMCPServers(loadExternalMCPServersWith(cfg, dbPath, codexEnv))
+		if aiFlagSurface != tools.AutomationEditorSurface {
+			opts.ExternalMCP = loadExternalMCPServersWith(cfg, dbPath, quickConnectionEnv(cfg.AI.Provider))
 		}
 	}
-	return client, noop, nil
+	return buildQuerier(cfg, opts), noop, nil
 }
 
 // loadExternalMCPServers reads the owner's enabled external MCP connections

@@ -191,7 +191,6 @@ echo '{"type":"turn.completed"}'
 // other line: its result reaches the chat and the answer follows.
 func TestQuery_LineOverOneMiBIsRead(t *testing.T) {
 	c := NewClient("gpt-x", "", longLineStub(t, 3<<20))
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	chunks, err := queryAll(t, c)
 	require.NoError(t, err)
@@ -215,7 +214,6 @@ func TestQuery_LineOverLimitIsSkippedAndTheRunEnds(t *testing.T) {
 	t.Cleanup(func() { maxStreamLine = old })
 
 	c := NewClient("gpt-x", "", longLineStub(t, 1<<20))
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	chunks, err := queryAll(t, c)
 	require.NoError(t, err)
@@ -511,7 +509,6 @@ exec sleep 30
 	})
 
 	c := NewClient("gpt-x", "", script)
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

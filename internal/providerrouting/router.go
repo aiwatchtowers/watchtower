@@ -264,9 +264,7 @@ func modelQuota(f *providers.Failure, model string) bool {
 	if f.Scope == "model" && f.Bucket != "" && f.Bucket == model {
 		return true
 	}
-	if f.Provider != "claude" {
-		return false
-	}
+	// Only Claude reports per-family weekly windows (seven_day_opus, …).
 	for _, family := range []string{"opus", "sonnet"} {
 		if f.Window == "seven_day_"+family && (model == family || strings.HasPrefix(model, "claude-"+family+"-")) {
 			return true
@@ -292,12 +290,12 @@ func (r *Router) capability(req Request, p string) error {
 	return nil
 }
 
+// validPair reports whether the request's providers are each other's
+// reserve peers (the capability table).
+func validPair(req Request) bool { return providers.Pairs(req.Preferred, req.Reserve) }
+
 // Select chooses before a tool child starts. It does not claim recovery probes,
 // invoke a model, or enable replay. Callers must check policy again at dispatch.
-func validPair(req Request) bool {
-	return (req.Preferred == "claude" && req.Reserve == "codex") || (req.Preferred == "codex" && req.Reserve == "claude")
-}
-
 func (r *Router) Select(ctx context.Context, req Request) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -353,7 +351,7 @@ func (r *Router) Run(ctx context.Context, req Request, call func(context.Context
 	if req.OperationID == "" {
 		req.OperationID = operationID()
 	}
-	safe := req.Mode == PreferredReserve && req.Retry == Isolated && req.Profile.ReplaySafe() && req.Preferred != "ollama" && req.Reserve != "" && req.Reserve != req.Preferred && (req.Reserve == "claude" || req.Reserve == "codex")
+	safe := req.Mode == PreferredReserve && req.Retry == Isolated && req.Profile.ReplaySafe() // the pair was checked above
 	candidates := []string{req.Preferred}
 	if safe {
 		candidates = append(candidates, req.Reserve)

@@ -67,7 +67,6 @@ func TestCodexProcessGroupKilledOnCancel(t *testing.T) {
 	})
 	c := NewClient("m", "", "")
 	c.codexCmd = writeStubCodex(t, "echo $$ > "+pidFile+".tmp; mv "+pidFile+".tmp "+pidFile+"\nsleep 60 &\nwait\n")
-	c.SetProcessGroup(true)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

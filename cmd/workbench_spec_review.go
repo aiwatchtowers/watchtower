@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/ai"
-	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -103,42 +103,34 @@ type specReviewCLIAgent struct {
 
 func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user string) (string, bool, error) {
 	ctx = digest.WithSource(ctx, specreview.ModelSource)
-	if a.cfg.AI.Provider == "ollama" {
+	if provider := providers.ByID(a.cfg.AI.Provider); !provider.Caps.ReadsFolder() {
+		// A transport with no file tools answers from the prompt's data.
 		out, _, _, err := cliBoundedGenerator(a.cfg).Generate(ctx, system, user, "")
-		return out, false, wrapSpecReviewErr("ollama reviewer", err)
+		return out, false, wrapSpecReviewErr(provider.ID+" reviewer", err)
 	}
 	if folder == "" {
-		// Never a claude or codex run outside read-folder mode.
+		// Never a file-reading run outside read-folder mode.
 		return "", false, errors.New("no folder to read")
 	}
-	var out string
-	var err error
-	if a.cfg.AI.Provider == "codex" {
-		out, _, err = specReviewCodexClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
-		return out, true, wrapSpecReviewErr("codex reviewer", err)
+	out, err := specReviewReadFolder(ctx, a.cfg, a.model, folder, system, user)
+	return out, true, err
+}
+
+// specReviewCodexHome is the codex reviewer's private CODEX_HOME, a fresh
+// 0700 temp folder the caller removes after the run: it holds the run's
+// rollout, so the review never reaches the owner's codex history. The
+// owner's sign-in and config.toml (model provider, profiles; its MCP
+// servers are switched off by SetNoMCPServers) are linked, never copied.
+// An owner signed in without an auth.json (codex's keyring store, which is
+// tied to the home) gets "": the reviewer keeps the owner's home, as before,
+// and its cap counts the stream (remove is then a no-op).
+func specReviewCodexHome() (dir string, remove func(), err error) {
+	_, err = os.Stat(filepath.Join(ownerCodexHome(), "auth.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		log.Printf("codex reviewer: no auth.json in the codex home; it runs there and its turn cap counts the stream")
+		return "", func() {}, nil
 	}
-	out, _, err = specReviewClaudeClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
-	return out, true, wrapSpecReviewErr("claude reviewer", err)
-}
-
-// specReviewClaudeClient: no database path, so no --mcp-config; with
-// --strict-mcp-config claude then mounts no server.
-func specReviewClaudeClient(cfg *config.Config, model, folder string) *ai.Client {
-	c := ai.NewClient(model, "", cfg.ClaudePath)
-	c.SetReadFolder(folder)
-	c.SetMaxTurns(specreview.MaxTurns)
-	c.SetProcessGroup(true)
-	return c
-}
-
-// specReviewCodexClient: SetNoMCPServers disables the owner's codex servers
-// and mounts none (an empty database path alone would leave them on).
-func specReviewCodexClient(cfg *config.Config, model, folder string) *codex.Client {
-	c := codex.NewClient(model, "", cfg.CodexPath)
-	c.SetReadFolder(folder)
-	c.SetNoMCPServers()
-	c.SetProcessGroup(true)
-	return c
+	return newCodexHome("wt-review-codex-home-*", "auth.json", "config.toml")
 }
 
 // wrapSpecReviewErr names the reviewer a failure came from; nil stays nil.

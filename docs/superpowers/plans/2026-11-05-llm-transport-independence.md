@@ -572,6 +572,8 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 - [ ] **Step 4:** PASS; `go test ./internal/transporttest`; `go test ./internal/llmusage`; `make lint-diff`.
 - [ ] **Step 5:** Commit `refactor(transport): one factory with options; process groups always on`.
 
+**As built (2026-11-06):** `Transport` and `Options` live in `internal/providers/transport` (an import cycle rules out `internal/providers`; the daemon's coach uses it too); `Options` carries `Config` and `DBPath`, and leaves out `Tier`, `ChildEnv`, `MaxTurns` and `Images`, which no factory caller needs. `NewChatBackend` and the agent() child are cmd-bound, so they are `transportWiring` rows in `cmd/transport_wiring.go`; the Quick Connection env rule is `quickConnectionEnv` there. Group-only `ConfigureChild` made a terminal Ctrl-C miss the child of the three `jira` AI commands, which now cancel on a signal (`cancelAIChildOnSignal`). Deferred, with the reason, in spec §3.4: the wrapper-level `SetIsolatedChild` probes and the `turn_backend` probes.
+
 ### Task A5: `internal/sessionagent`, the Workbench session adapter
 
 **Depends on:** G5 (the watch and events), G7 (its temporary `AgentSessionCaps`, replaced here), G8 (its interim rollout wiring, replaced here) and A1.

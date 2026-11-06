@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,9 @@ type queryStream struct {
 	// started tools (id, name) in order, for closing the open ones.
 	toolsOpen map[string]bool
 	toolOrder []ai.ToolEvent
+	// searchesPending are the web searches started without a query whose
+	// step waits for it (tool); finish shows one never completed.
+	searchesPending []string
 	// anonymous numbers the ids given to items codex sent without one;
 	// anonOpen lists the id-less tools started and not yet completed,
 	// anonMsg the id-less agent message started and not yet completed.
@@ -107,17 +111,12 @@ func (s *queryStream) handle(line []byte) bool {
 	case "turn.completed":
 		s.terminal, s.errLines, s.completed = nil, nil, true
 	}
-	if event.Usage != nil {
-		if s.usage == nil {
-			s.usage = &CodexUsage{}
-		}
-		s.usage.add(event.Usage)
-	}
+	s.noteUsage(event.Usage)
 	item := event.Item
 	switch {
 	case item == nil:
 		return true
-	case item.Type == "mcp_tool_call" || item.Type == "command_execution":
+	case item.Type == "mcp_tool_call" || item.Type == "command_execution" || item.Type == "web_search":
 		if item.ID == "" {
 			item.ID = s.anonTool(event.Type)
 		}
@@ -129,6 +128,26 @@ func (s *queryStream) handle(line []byte) bool {
 		return s.message(item)
 	}
 	return true
+}
+
+// noteUsage adds an event's usage to the run's.
+func (s *queryStream) noteUsage(u *CodexUsage) {
+	if u == nil {
+		return
+	}
+	if s.usage == nil {
+		s.usage = &CodexUsage{}
+	}
+	s.usage.add(u)
+}
+
+// addUsage counts only the usage of a line the turn cap keeps from the
+// consumer (the run is being stopped), so the ledger keeps codex's figures.
+func (s *queryStream) addUsage(line []byte) {
+	var event CodexEvent
+	if json.Unmarshal(line, &event) == nil {
+		s.noteUsage(event.Usage)
+	}
 }
 
 // newAnon is a fresh per-run id for an item codex sent without one, so
@@ -189,6 +208,17 @@ func (s *queryStream) tool(eventType string, item *CodexItem) bool {
 	}
 	if s.toolsOpen == nil {
 		s.toolsOpen = map[string]bool{}
+	}
+	if item.Type == "web_search" {
+		// codex starts a search before it knows the query: the step starts
+		// when the query is there, so it shows what was searched.
+		if item.Query == "" && eventType != "item.completed" {
+			if !slices.Contains(s.searchesPending, item.ID) {
+				s.searchesPending = append(s.searchesPending, item.ID)
+			}
+			return true
+		}
+		s.searchesPending = slices.DeleteFunc(s.searchesPending, func(id string) bool { return id == item.ID })
 	}
 	if _, seen := s.toolsOpen[item.ID]; !seen {
 		s.toolsOpen[item.ID] = true
@@ -256,6 +286,13 @@ func (s *queryStream) finish() {
 	case s.skipped > 0 || s.undecodable > 0:
 		reason = "codex's report of this tool's result could not be read"
 	}
+	for _, id := range s.searchesPending {
+		// A search that never reported its query is still shown, and closed.
+		if s.send(ai.StreamChunk{Tool: &ai.ToolEvent{ID: id, Name: webSearchTool}}) {
+			_ = s.send(ai.StreamChunk{Tool: &ai.ToolEvent{ID: id, Name: webSearchTool, Done: true, Result: reason}})
+		}
+	}
+	s.searchesPending = nil
 	for _, t := range s.toolOrder {
 		if s.toolsOpen[t.ID] {
 			s.toolsOpen[t.ID] = false
@@ -328,11 +365,13 @@ func lastLine(s string) string {
 // toolName is the item's tool name in the claude CLI's form, so the chat
 // shows and summarises it the same way: mcp__watchtower__<tool> for the
 // watchtower server whatever key it is mounted under, mcp__<server>__<tool>
-// for another server, "shell" for a command.
+// for another server, "shell" for a command, "WebSearch" for a web search.
 func (s *queryStream) toolName(item *CodexItem) string {
 	switch {
 	case item.Type == "command_execution":
 		return "shell"
+	case item.Type == "web_search":
+		return webSearchTool
 	case s.watchtower != "" && item.Server == s.watchtower:
 		return "mcp__watchtower__" + item.Tool
 	}
@@ -341,10 +380,54 @@ func (s *queryStream) toolName(item *CodexItem) string {
 
 func (s *queryStream) toolStart(item *CodexItem) *ai.ToolEvent {
 	args := item.Arguments
-	if item.Type == "command_execution" {
+	switch item.Type {
+	case "command_execution":
 		args, _ = json.Marshal(map[string]string{"command": item.Command})
+	case "web_search":
+		args = webSearchArgs(item)
 	}
 	return &ai.ToolEvent{ID: item.ID, Name: s.toolName(item), Args: args}
+}
+
+// webSearchTool is the name a web search step carries: Claude's WebSearch,
+// so the chat summarises it and lists its pages the same way.
+const webSearchTool = "WebSearch"
+
+// webSearchArgs is a web_search item's query as the step's arguments; nil
+// while codex has not said it.
+func webSearchArgs(item *CodexItem) json.RawMessage {
+	if item.Query == "" {
+		return nil
+	}
+	args, _ := json.Marshal(map[string]string{"query": item.Query}) // strings only: never fails
+	return args
+}
+
+// webSearchEnd is a finished web_search item's step end: failed with
+// codex's error, or the pages found as Claude's WebSearch "Links:" line
+// (chat.webSearchSources).
+func webSearchEnd(ev *ai.ToolEvent, item *CodexItem) *ai.ToolEvent {
+	if item.ToolError != nil || item.Status == "failed" {
+		ev.Result = "the web search failed"
+		if item.ToolError != nil && strings.TrimSpace(item.ToolError.Message) != "" {
+			ev.Result = item.ToolError.Message
+		}
+		return ev
+	}
+	ev.OK = true
+	links := make([]CodexWebResult, 0, len(item.Results))
+	for _, r := range item.Results {
+		if r.URL != "" {
+			links = append(links, r)
+		}
+	}
+	if len(links) == 0 {
+		ev.Result = "No pages found"
+		return ev
+	}
+	b, _ := json.Marshal(links) // strings only: never fails
+	ev.Result = "Links: " + string(b)
+	return ev
 }
 
 // toolEnd is the item's end: OK with its result text, or failed with the
@@ -352,6 +435,9 @@ func (s *queryStream) toolStart(item *CodexItem) *ai.ToolEvent {
 // never an empty reason.
 func (s *queryStream) toolEnd(item *CodexItem) *ai.ToolEvent {
 	ev := &ai.ToolEvent{ID: item.ID, Name: s.toolName(item), Done: true}
+	if item.Type == "web_search" {
+		return webSearchEnd(ev, item)
+	}
 	if item.Type == "command_execution" {
 		ev.OK = item.Status == "completed" && (item.ExitCode == nil || *item.ExitCode == 0)
 		ev.Result = item.AggregatedOutput

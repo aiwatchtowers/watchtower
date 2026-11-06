@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,18 +12,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"watchtower/internal/codex"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/transport"
 
 	"github.com/spf13/cobra"
 )
@@ -279,30 +277,24 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	aiClient, cleanup, err := newQueryClient(cfg, dbPath)
+	aiClient, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{ReadFolder: readFolder, ToolEvents: aiFlagEvents == "v2"})
 	if err != nil {
 		emitError(enc, fmt.Sprintf("preparing tools: %v", err))
 		return nil
 	}
 	defer cleanup()
-	if readFolder != "" {
-		c, ok := aiClient.(readFolderConfigurable)
-		if !ok {
-			// A provider with no file tools (ollama) would answer from the
-			// prompt alone: refused before any model call, never a silent
-			// answer (spec 2026-11-05 §3.3, read_folder none).
-			return refuseQuery(enc, providers.CapabilityError(cfg.AI.Provider, providers.ReviewReadonly,
-				fmt.Errorf("--read-folder: the %s provider has no file tools, so it cannot read the folder; use Claude or Codex for questions about code", cfg.AI.Provider)))
-		}
-		c.SetReadFolder(readFolder)
+	if readFolder != "" && !toolRoutingEnabled(cfg, aiFlagModel) && !providers.ByID(cfg.AI.Provider).Caps.ReadsFolder() {
+		// A provider with no file tools (ollama) would answer from the
+		// prompt alone: refused before any model call, never a silent
+		// answer (spec 2026-11-05 §3.3, read_folder none). A routed query
+		// checks the provider it selects (toolRouteProvider).
+		return refuseQuery(enc, providers.CapabilityError(cfg.AI.Provider, providers.ReviewReadonly,
+			fmt.Errorf("--read-folder: the %s provider has no file tools, so it cannot read the folder; use Claude or Codex for questions about code", cfg.AI.Provider)))
 	}
 
 	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
 	defer cancel()
 
-	if aiFlagEvents == "v2" {
-		enableChatEvents(aiClient)
-	}
 	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
 
 	if aiFlagEvents == "v2" {
@@ -372,32 +364,17 @@ func runAITest(_ *cobra.Command, _ []string) error {
 
 	// Explicit single-provider probe: never enter the fallback router or mount
 	// chat tools. The same canonical batch leaves enforce startup isolation.
-	var gen digest.Generator
-	switch cfg.AI.Provider {
-	case "claude":
-		path := cfg.ClaudePath
-		if aiTestCLIPath != "" {
-			path = aiTestCLIPath
-		}
-		leaf := digest.NewClaudeGenerator(model, model, path)
-		leaf.SetIsolatedChild()
-		gen = leaf
-	case "codex":
-		path := cfg.CodexPath
-		if aiTestCLIPath != "" {
-			path = aiTestCLIPath
-		}
-		leaf := codex.NewCodexGenerator(model, model, path)
-		leaf.SetIsolatedChild()
-		gen = leaf
-	case "ollama":
-		if aiTestCLIPath != "" {
-			return enc.Encode(map[string]any{"ok": false, "error": "CLI path is unavailable for HTTP providers", "provider": cfg.AI.Provider, "model": model})
-		}
-		gen = ollama.NewGenerator(model, model, cfg.AI.OllamaURL)
-	default:
+	if _, known := providers.CapsFor(cfg.AI.Provider); !known {
 		return enc.Encode(map[string]any{"ok": false, "error": "Unknown AI provider", "provider": cfg.AI.Provider, "model": model})
 	}
+	leafCfg := *cfg
+	if aiTestCLIPath != "" {
+		if !providers.RunsChild(cfg.AI.Provider) {
+			return enc.Encode(map[string]any{"ok": false, "error": "CLI path is unavailable for HTTP providers", "provider": cfg.AI.Provider, "model": model})
+		}
+		leafCfg.ClaudePath, leafCfg.CodexPath = aiTestCLIPath, aiTestCLIPath
+	}
+	gen := transport.For(cfg.AI.Provider).NewGenerator(transport.Options{Config: &leafCfg, Model: model, IsolatedChild: true})
 	ctx, shutdown := notifyShutdownContext(context.Background(), stderrLogf)
 	defer shutdown()
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -416,36 +393,6 @@ func runAITest(_ *cobra.Command, _ []string) error {
 		"model":    model,
 	})
 }
-
-// runConnectionProbe sends the test request. Codex gets a system prompt
-// naming a fresh nonce, so the probe goes through the system-prompt path
-// every codex call uses (the model_instructions_file, or stdin on a codex
-// too old for one): an answer without the nonce means the prompt never
-// reached the model and fails as invalid_output, with a content-free stderr
-// line. Claude and Ollama keep the bare request. Both calls carry the
-// "probe" source (TierForSource).
-func runConnectionProbe(ctx context.Context, provider string, gen digest.Generator) error {
-	probeCtx := digest.WithSource(ctx, "probe")
-	if provider != "codex" {
-		_, _, _, err := gen.Generate(probeCtx, "", "respond with exactly: OK", "")
-		return err
-	}
-	nonce := "wt-probe-" + rand.Text()
-	text, _, _, err := gen.Generate(probeCtx, "You are a connection test. Reply with exactly this word and nothing else: "+nonce, "Reply now.", "")
-	if err != nil {
-		return err
-	}
-	// Case-insensitive: a model that lowercases the nonce still saw it.
-	if !strings.Contains(strings.ToLower(text), strings.ToLower(nonce)) {
-		stderrLogf("ai test: the codex answer (%d chars) lacks the system prompt's nonce", len(text))
-		return providers.WithFailure("codex", providers.InvalidOutput, errProbeNonceMissing)
-	}
-	return nil
-}
-
-// errProbeNonceMissing is the codex probe's answer without its nonce: codex
-// ran, but the system prompt did not reach the model.
-var errProbeNonceMissing = errors.New("the answer lacks the system prompt's nonce")
 
 // The Desktop boundary contains classifications, never arbitrary child stderr,
 // owner paths, tokens or managed-configuration contents.
@@ -570,22 +517,10 @@ func v2TurnID() string {
 	return "query"
 }
 
-// enableChatEvents switches a provider that offers them (claude, codex, the
-// runtime B loop, plain ollama — its usage only —, the tool router) onto the
-// protocol-v2 chat events — tool starts/ends, the turn's usage, separated
-// messages — as the chat session's turn backend does; `ai query --events v2`
-// renders them like the session. A wrapper in front of a leaf must forward
-// EmitToolEvents, as toolRouteProvider does.
-func enableChatEvents(p ai.Provider) {
-	if e, ok := p.(interface{ EmitToolEvents() }); ok {
-		e.EmitToolEvents()
-	}
-}
-
 // streamQueryV2 renders a one-shot query as protocol-v2 events: turn_start,
 // text_delta per chunk (a tool boundary never wipes text), tool_start/
 // tool_end and usage from a provider with the chat events on
-// (enableChatEvents), then turn_done —
+// (transport.Options.ToolEvents), then turn_done —
 // or, on failure, one classified turn error in its place.
 func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, errCh <-chan error, sidCh <-chan string) {
 	out := chat.NewEventWriter(w)
@@ -639,11 +574,6 @@ func refuseQuery(enc *json.Encoder, err error) error {
 	return &exitCodeError{code: 1, err: err}
 }
 
-// readFolderConfigurable is implemented by the CLI-backed providers (claude,
-// codex), whose own read tools a read-folder run unhides (spec 2026-10-02
-// §9.1, owner decision 1).
-type readFolderConfigurable interface{ SetReadFolder(dir string) }
-
 // resolveReadFolder resolves --read-folder to the folder of a workbench in
 // the database at dbPath: absolute, symlinks resolved, an existing directory
 // bound to a workbench (a subfolder is not). "" without the flag. Any
@@ -680,27 +610,6 @@ func resolveReadFolder(dbPath string) (string, error) {
 		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
 	}
 	return wb.FolderPath, nil
-}
-
-// mcpConfigurable is implemented by the CLI-backed providers (claude, codex)
-// that relaunch this binary as an MCP server. Ollama has no tools at all, so
-// the flag is a no-op there — the Desktop already builds an honest prompt.
-type mcpConfigurable interface{ SetMCPArgs(extra []string) }
-
-// processGroupConfigurable is implemented by ai.Client (claude) and
-// codex.Client: the CLI runs in its own process group, killed as a whole
-// on cancel (ai.ConfigureChild).
-type processGroupConfigurable interface{ SetProcessGroup(v bool) }
-
-// externalMCPConfigurable is implemented by ai.Client (claude: the chat's
-// mcp-config and tool allowlist) and codex.Client (the -c mcp_servers
-// override, enabled_tools per server) — it mounts owner-added external MCP
-// servers ("Quick Connections", internal/externalmcp) alongside the built-in
-// watchtower server. agentloop.Client (runtime B, the ollama chat) offers
-// the same servers' allowed tools in-process; newQueryClient wires it in its
-// own branch. The plain ollama client has no tools.
-type externalMCPConfigurable interface {
-	SetExternalMCPServers(servers []ai.ExternalMCPServer)
 }
 
 func chatMCPArgs() []string {

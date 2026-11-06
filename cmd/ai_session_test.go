@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
 )
 
@@ -158,7 +159,7 @@ func TestCodexChatMountsOnlyAChatServer(t *testing.T) {
 	aiFlagTools, aiFlagModel = "chat", "m"
 	for _, surface := range []string{"main", "target", tools.AutomationEditorSurface} {
 		aiFlagSurface = surface
-		client, cleanup, err := newQueryClient(cfg, dbPath)
+		client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 		require.NoError(t, err)
 		c, ok := client.(*codex.Client)
 		require.True(t, ok, "%T", client)

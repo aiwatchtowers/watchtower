@@ -50,7 +50,6 @@ func ledgerClient(t *testing.T, script string) *Client {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	c := NewClient("sonnet", "", "")
 	c.claudeCmd = writeMockClaude(t, "echo $$ > '"+pidFile+"'\ncat >/dev/null\n"+script)
-	c.SetProcessGroup(true)
 	t.Cleanup(func() {
 		b, err := os.ReadFile(pidFile)
 		if err != nil {

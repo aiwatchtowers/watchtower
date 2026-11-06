@@ -145,16 +145,16 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(errCh)
 		defer close(sidCh)
 		_, usage, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch })
-		if err != nil {
-			errCh <- err
-			return
-		}
 		if c.toolEvents && usage != nil {
-			// The answer is complete: a stop now drops the usage, nothing else.
+			// The calls made count on a failed turn too (a budget stop at the
+			// cap); a stop now drops the usage, nothing else.
 			select {
 			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model, Tokens: usage.Tokens}}:
 			case <-ctx.Done():
 			}
+		}
+		if err != nil {
+			errCh <- err
 		}
 	}()
 	return textCh, errCh, sidCh
@@ -168,10 +168,12 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 // run is the tool loop. It calls the model, dispatches any tool calls against
 // the registry, feeds the results back, and returns the first assistant turn
-// that makes no tool call. It always terminates: the iteration cap returns the
-// last textual content the model produced. emit (nil for the sync path, which
-// sends unstreamed requests) receives each message's text as it arrives, a
-// ToolBoundary chunk before each tool round, and the tool events.
+// that makes no tool call. It always terminates: past the iteration cap it
+// fails with a budget failure (claude's error_max_turns: AUTO-08's turn
+// cap, L13), the text already streamed staying shown. emit (nil for the
+// sync path, which sends unstreamed requests) receives each message's text
+// as it arrives, a ToolBoundary chunk before each tool round, and the tool
+// events.
 func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit func(ai.StreamChunk)) (string, *ai.Usage, error) {
 	out := &textOut{emit: emit, keep: c.toolEvents}
 	ext := c.mountExternal(ctx)
@@ -224,24 +226,9 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 		}
 	}
 
-	// The cap is reached only while the model is still emitting tool calls, so
-	// whatever text it last produced is mid-work — flag it as truncated rather
-	// than present it as a finished answer. A consumer that still shows that
-	// text gets only the note after it.
-	out.startMessage()
-	if lastContent != "" {
-		const note = "(Note: I reached the tool-call limit before finishing.)"
-		capped := lastContent + messageSeparator + note
-		if out.shown {
-			out.send(note)
-		} else {
-			out.send(capped)
-		}
-		return capped, usage, nil
-	}
-	const limitNote = "I couldn't complete that within the tool-call limit."
-	out.send(limitNote)
-	return limitNote, usage, nil
+	// The cap is reached only while the model still emits tool calls: the
+	// run stops unfinished, as a claude run past --max-turns does.
+	return "", usage, providers.WithFailure("ollama", providers.Budget, fmt.Errorf("stopped after %d model turns", c.maxIter))
 }
 
 // meteredChat is one model call between the BeforeModelCall and
