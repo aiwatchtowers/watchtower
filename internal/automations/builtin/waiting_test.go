@@ -318,3 +318,46 @@ func TestWaitingForMe_SameHourSameHash(t *testing.T) {
 		t.Error("content hash kept after the age moved to the next hour")
 	}
 }
+
+// 200 open items of 300 Cyrillic characters each would pass the block
+// document's cap; the primitive's byte budget trims the texts so the run
+// still succeeds with every row.
+func TestWaitingForMe_ByteBudgetKeepsLongTextsUnderTheCap(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	text := strings.Repeat("Ж", 300)
+	for i := 1; i <= WaitingLimit; i++ {
+		if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
+			VALUES ('C009', ?, 'U009', 'mention', ?, ?, ?)`, fmt.Sprintf("1000.%04d", i), text,
+			fmt.Sprintf("https://acme.slack.com/archives/C009/p1000%04d", i),
+			f.clock.Now().Add(-time.Duration(i)*time.Minute).UTC().Format(time.RFC3339)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := f.runOnce(t, waitingID)
+	if run.Status != db.RunSucceeded {
+		t.Fatalf("run = %s (%s); want succeeded", run.Status, run.Error)
+	}
+	rows := f.waitingArtifacts(t)[0].list.Rows
+	if len(rows) != WaitingLimit || rows[0].Subtitle == "" || !strings.HasSuffix(rows[0].Subtitle, "…") || rows[0].Link == "" {
+		t.Errorf("%d rows, first %+v; want %d rows with trimmed texts and their links", len(rows), rows[0], WaitingLimit)
+	}
+}
+
+func TestClipJSON(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"abc", 5, "abc"},
+		{"abcdef", 7, "ab…"},
+		{"ЖЖЖЖ", 9, "ЖЖ…"},
+		{"abc", 2, ""},
+		{`a"b"c`, 8, `a"…`},
+	} {
+		if got := clipJSON(c.in, c.max); got != c.want || jsonLen(got) > max(c.max, 2) {
+			t.Errorf("clipJSON(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+		}
+	}
+}

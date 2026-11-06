@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -26,6 +27,14 @@ const (
 	// waitingNameRunes caps an item's who and where, so "<who> in <where>"
 	// stays within a list row's title.
 	waitingNameRunes = 120
+	// waitingBudgetBytes bounds the JSON size of every item's shown strings
+	// together, below the block document's cap (blocks.MaxBlocksBytes):
+	// each row gets an even share, and its text gets what the row's other
+	// strings leave of it.
+	waitingBudgetBytes = 100 << 10
+	// waitingRowOverhead is a row's JSON besides its strings: the keys,
+	// badge, tone, ref and the title's joiner.
+	waitingRowOverhead = 160
 )
 
 // ReadPrimitives are the built-ins' read primitives
@@ -72,6 +81,7 @@ func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time) ([]any, erro
 		return nil, err
 	}
 	items := make([]any, 0, len(open))
+	share := waitingBudgetBytes / max(len(open), 1)
 	for _, o := range open {
 		mentions, _ := db.ParseInboxMentions(o.Mentions)
 		count := len(mentions) + o.MentionsEarlier
@@ -87,15 +97,24 @@ func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time) ([]any, erro
 		if !at.IsZero() && now.After(at) {
 			hours = int(now.Sub(at) / time.Hour)
 		}
+		age := ageText(at, now)
+		who = clipJSON(clipRunes(who, waitingNameRunes), share/4)
+		where := clipJSON(clipRunes(waitingWhere(o), waitingNameRunes), share/4)
+		link := webLink(o.Permalink)
+		if jsonLen(link) > share/4 {
+			link = ""
+		}
+		left := share - waitingRowOverhead - jsonLen(who) - jsonLen(where) - jsonLen(link) - jsonLen(label) - jsonLen(age)
+		text := clipJSON(clipRunes(strings.Join(strings.Fields(o.Snippet), " "), WaitingTextRunes), left)
 		items = append(items, map[string]any{
 			"id":          int64(o.ID),
-			"who":         clipRunes(who, waitingNameRunes),
-			"where":       clipRunes(waitingWhere(o), waitingNameRunes),
-			"text":        clipRunes(strings.Join(strings.Fields(o.Snippet), " "), WaitingTextRunes),
+			"who":         who,
+			"where":       where,
+			"text":        text,
 			"trigger":     o.TriggerType,
-			"permalink":   webLink(o.Permalink),
+			"permalink":   link,
 			"at":          o.At,
-			"age":         ageText(at, now),
+			"age":         age,
 			"age_hours":   hours,
 			"count":       count,
 			"count_label": label,
@@ -178,4 +197,32 @@ func clipRunes(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n-1]) + "…"
+}
+
+// jsonLen is s's length as a JSON string (quotes and escapes included).
+func jsonLen(s string) int {
+	data, _ := json.Marshal(s) // a string always marshals
+	return len(data)
+}
+
+// clipJSON is s cut on a rune boundary, an ellipsis marking the cut, so its
+// JSON length is at most maxBytes ("" when nothing fits).
+func clipJSON(s string, maxBytes int) string {
+	if jsonLen(s) <= maxBytes {
+		return s
+	}
+	r := []rune(s)
+	lo, hi := 0, len(r) // the longest prefix that fits lies in [lo, hi)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if jsonLen(string(r[:mid])+"…") <= maxBytes {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo == 0 {
+		return ""
+	}
+	return string(r[:lo]) + "…"
 }
