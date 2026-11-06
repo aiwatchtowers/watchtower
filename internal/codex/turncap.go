@@ -157,6 +157,11 @@ type rolloutTurns struct {
 	// partial is the unfinished last line of the previous read.
 	partial            []byte
 	tokenCount, record int
+	// afterOutput: a tool result was recorded; drift: a model item came
+	// after one while the rollout holds no response marker at all — codex
+	// records a response's marker before its next response, so the markers
+	// changed shape.
+	afterOutput, drift bool
 	// err makes the rollout unreadable for the rest of the run.
 	err error
 }
@@ -215,7 +220,8 @@ func (r *rolloutTurns) responses() int {
 
 // count adds line's response marker, if it is one.
 func (r *rolloutTurns) count(line []byte) {
-	if !bytes.Contains(line, []byte("token_count")) && !bytes.Contains(line, []byte("token_usage_record")) {
+	if !bytes.Contains(line, []byte("token_count")) && !bytes.Contains(line, []byte("token_usage_record")) &&
+		!bytes.Contains(line, []byte(`"response_item"`)) {
 		return
 	}
 	var ev struct {
@@ -236,6 +242,19 @@ func (r *rolloutTurns) count(line []byte) {
 		if info := bytes.TrimSpace(ev.Payload.Info); len(info) > 0 && !bytes.Equal(info, []byte("null")) {
 			r.tokenCount++
 		}
+	case ev.Type == "response_item":
+		r.item(ev.Payload.Type)
+	}
+}
+
+// item notes one response item for the drift check: a tool result, then any
+// later item of the model's while no marker was ever recorded.
+func (r *rolloutTurns) item(typ string) {
+	switch {
+	case strings.HasSuffix(typ, "_call_output"):
+		r.afterOutput = true
+	case r.afterOutput && r.responses() == 0:
+		r.drift = true
 	}
 }
 
@@ -362,16 +381,15 @@ func (g *turnCap) checkLocked() {
 // when it can be read, else the stream rule's — which during the run
 // decides only the past-the-cap case, so a rollout that is merely not
 // written yet costs nothing. A rollout that counts no response is not
-// trusted (its markers changed shape) at the end once the stream saw any
-// turn, and during the run only once the stream rule passes twice the cap:
-// a codex writing only token_count records its first response after that
-// response's tool calls, which run one after another and which the stream
-// rule counts as turns, so a lower bar would stop a long first response.
+// trusted (its markers changed shape) once it shows drift (a model item
+// after a tool result, no marker in between), or at the end once the
+// stream saw any turn. A long first response of serial calls is no drift:
+// its calls are all recorded before their results.
 func (g *turnCap) overLocked(final bool) bool {
 	n := g.stream.turns
 	if g.rollout != nil {
 		r, ok := g.rollout.read()
-		noRecords := ok && r == 0 && (n > 2*g.limit || final && n > 0)
+		noRecords := ok && r == 0 && (g.rollout.drift || final && n > 0)
 		switch {
 		case ok && !noRecords:
 			n = r

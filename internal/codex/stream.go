@@ -107,12 +107,7 @@ func (s *queryStream) handle(line []byte) bool {
 	case "turn.completed":
 		s.terminal, s.errLines, s.completed = nil, nil, true
 	}
-	if event.Usage != nil {
-		if s.usage == nil {
-			s.usage = &CodexUsage{}
-		}
-		s.usage.add(event.Usage)
-	}
+	s.noteUsage(event.Usage)
 	item := event.Item
 	switch {
 	case item == nil:
@@ -129,6 +124,26 @@ func (s *queryStream) handle(line []byte) bool {
 		return s.message(item)
 	}
 	return true
+}
+
+// noteUsage adds an event's usage to the run's.
+func (s *queryStream) noteUsage(u *CodexUsage) {
+	if u == nil {
+		return
+	}
+	if s.usage == nil {
+		s.usage = &CodexUsage{}
+	}
+	s.usage.add(u)
+}
+
+// addUsage counts only the usage of a line the turn cap keeps from the
+// consumer (the run is being stopped), so the ledger keeps codex's figures.
+func (s *queryStream) addUsage(line []byte) {
+	var event CodexEvent
+	if json.Unmarshal(line, &event) == nil {
+		s.noteUsage(event.Usage)
+	}
 }
 
 // newAnon is a fresh per-run id for an item codex sent without one, so

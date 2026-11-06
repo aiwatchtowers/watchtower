@@ -356,8 +356,14 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		for {
 			line, readErr := lines.Next()
 			s.skipped = lines.Skipped()
-			// A line past the turn cap is not handled: that turn never shows.
-			if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && turns.line(trimmed) && !s.handle(trimmed) {
+			// A line past the turn cap is not shown — that turn never does —,
+			// only its usage still counts.
+			trimmed := bytes.TrimSpace(line)
+			past := len(trimmed) != 0 && !turns.line(trimmed)
+			if past {
+				s.addUsage(trimmed)
+			}
+			if len(trimmed) != 0 && !past && !s.handle(trimmed) {
 				_ = cmd.Wait()
 				s.finish()
 				errCh <- ctx.Err()

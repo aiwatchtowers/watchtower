@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/providers"
 )
 
@@ -62,6 +63,9 @@ const (
 	// response, the token_count after its tool results.
 	rolloutRecord     = `{"type":"token_usage_record","payload":{},"synthetic":true}`
 	rolloutTokenCount = `{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1}}},"synthetic":true}`
+	// A model's tool call and its result as the rollout records them.
+	rolloutCall   = `{"type":"response_item","payload":{"type":"function_call"},"synthetic":true}`
+	rolloutOutput = `{"type":"response_item","payload":{"type":"function_call_output"},"synthetic":true}`
 )
 
 func TestTurnCounter_ParallelCallsAreOneTurn(t *testing.T) {
@@ -109,11 +113,12 @@ func TestTurnCounter_RolloutWithoutRecordsFallsBackToStream(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	// During the run the bar is twice the cap (a long first response is
-	// not a drift): the fifth stream turn at a cap of 2 passes it.
+	// Response 2's call is recorded after response 1's result with no
+	// marker in between: drift, so the stream rule stops turn 3.
 	steps := []string{"R:" + `{"type":"session_meta","payload":{},"synthetic":true}`, turnStarted,
-		toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"), toolDone("c"),
-		toolStart("d"), toolDone("d"), toolStart("e"), "HOLD"}
+		"R:" + rolloutCall, toolStart("a"), toolDone("a"), "R:" + rolloutOutput,
+		"R:" + rolloutCall, toolStart("b"), toolDone("b"), "R:" + rolloutOutput,
+		"R:" + rolloutCall, toolStart("c"), "HOLD"}
 	c, pid := cappedClient(t, steps, 2, t.TempDir())
 	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
 	assertBudget(t, err, 2)
@@ -127,10 +132,13 @@ func TestTurnCounter_RolloutWithoutRecordsFallsBackToStream(t *testing.T) {
 func TestTurnCounter_TokenCountAfterSequentialToolsKeepsTheRollout(t *testing.T) {
 	// Four serial calls of one response: the stream rule sees 4 turns, past
 	// the cap of 2, while the rollout records the response only after them.
+	// The response's four calls are recorded before their results, as
+	// codex records a finished response.
 	steps := []string{"R:" + `{"type":"session_meta","payload":{},"synthetic":true}`, turnStarted,
-		toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"), toolDone("c"),
-		toolStart("d"), toolDone("d"), "R:" + rolloutTokenCount,
-		message("m", "done"), "R:" + rolloutTokenCount, turnCompleted}
+		"R:" + rolloutCall, "R:" + rolloutCall, "R:" + rolloutCall, "R:" + rolloutCall,
+		toolStart("a"), toolDone("a"), "R:" + rolloutOutput, toolStart("b"), toolDone("b"), "R:" + rolloutOutput,
+		toolStart("c"), toolDone("c"), "R:" + rolloutOutput, toolStart("d"), toolDone("d"), "R:" + rolloutOutput,
+		"R:" + rolloutTokenCount, message("m", "done"), "R:" + rolloutTokenCount, turnCompleted}
 	c, _ := cappedClient(t, steps, 2, t.TempDir())
 	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
 	require.NoError(t, err, "two responses at a cap of 2")
@@ -400,4 +408,32 @@ func appendFile(t *testing.T, path, content string) {
 	require.NoError(t, err)
 	require.NoError(t, w.Flush())
 	require.NoError(t, f.Close())
+}
+
+// The usage codex reports after the cap stopped the turn still counts.
+func TestCodexClient_UsageAfterTheCapStillCounts(t *testing.T) {
+	steps := []string{turnStarted, toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"),
+		`{"type":"turn.completed","usage":{"input_tokens":70,"output_tokens":9}}`, "HOLD"}
+	c, _ := cappedClient(t, steps, 2, "")
+	c.EmitToolEvents()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	textCh, errCh, sidCh := c.Query(ctx, "sys", "hi", "")
+	var usage *ai.TurnUsage
+	for ch := range textCh {
+		if ch.Usage != nil {
+			usage = ch.Usage
+		}
+	}
+	for range sidCh {
+	}
+	var err error
+	for e := range errCh {
+		if err == nil {
+			err = e
+		}
+	}
+	assertBudget(t, err, 2)
+	require.NotNil(t, usage, "the reported usage is kept")
+	assert.Equal(t, 70, usage.InputTokens)
 }
