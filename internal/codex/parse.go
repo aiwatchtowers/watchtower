@@ -36,6 +36,17 @@ type CodexItem struct {
 	Command          string `json:"command"`
 	AggregatedOutput string `json:"aggregated_output"`
 	ExitCode         *int   `json:"exit_code"`
+
+	// web_search: the query (empty on the item.started line) and the pages
+	// found.
+	Query   string           `json:"query"`
+	Results []CodexWebResult `json:"results"`
+}
+
+// CodexWebResult is one page a web_search item found.
+type CodexWebResult struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 // CodexToolResult is an mcp_tool_call's result: MCP content blocks.

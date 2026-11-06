@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
+	"watchtower/internal/providers"
 	"watchtower/internal/skills"
 	"watchtower/internal/tools"
 )
@@ -424,21 +425,21 @@ func writeProjectTextFiles(b *strings.Builder, files []db.ChatProjectFile) {
 	}
 }
 
-// writeProjectBinaryFiles names the binaries: attached on the Claude backend
-// as far as they fit in one message's encoded cap on their own (the
-// backend's projectBlocks fits them in the same order, but after the owner's
-// own files — a turn whose files leave less room says so in its text),
-// unavailable on any other provider.
+// writeProjectBinaryFiles names the binaries: attached by a transport that
+// takes images and PDFs (the Claude backend) as far as they fit in one
+// message's encoded cap on their own (the backend's projectBlocks fits them
+// in the same order, but after the owner's own files — a turn whose files
+// leave less room says so in its text), unavailable on any other.
 func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, provider string) {
 	if len(files) == 0 {
 		return
 	}
-	if provider != "" && provider != "claude" {
+	if !AttachesProjectFiles(providers.CapsOf(provider)) {
 		names := make([]string, len(files))
 		for i, f := range files {
 			names[i] = f.Name
 		}
-		b.WriteString("Not available in this session (images and PDFs need the Claude provider): " +
+		b.WriteString("Not available in this session (project images and PDFs need a provider that reads both): " +
 			strings.Join(names, ", ") + "\n")
 		return
 	}
@@ -461,3 +462,9 @@ func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, pro
 			MaxTurnAttachmentEncodedBytes>>20, strings.Join(tooLarge, ", "))
 	}
 }
+
+// AttachesProjectFiles reports whether a transport with caps c gets a
+// project's images and PDFs: one that reads both (the Claude backend
+// attaches them to a session's first turn); the routed session's check
+// reads it too.
+func AttachesProjectFiles(c providers.Capabilities) bool { return c.Images && c.PDFs }

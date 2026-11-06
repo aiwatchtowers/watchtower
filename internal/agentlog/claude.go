@@ -107,6 +107,14 @@ type ParseOptions struct {
 	// plus tool results to MaxRows (0 = read to the end); More then says the
 	// input may hold further complete lines.
 	MaxRows int
+	// SessionUUID is the codex session a rollout belongs to (ParseCodex
+	// only): the terminal session row's id, known before the read, so a read
+	// that starts past session_meta still knows its session.
+	SessionUUID string
+	// CodexModel and CodexCWD seed a codex read that does not start at
+	// offset 0: the stored session's model and working directory (ParseCodex
+	// only).
+	CodexModel, CodexCWD string
 }
 
 type ParseResult struct {

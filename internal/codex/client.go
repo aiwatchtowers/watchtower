@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/ai"
@@ -33,11 +35,9 @@ type Client struct {
 	// a run in os.TempDir() with no --cd.
 	readFolder string
 	// childEnv replaces the os.Environ() base of the child's environment
-	// when childEnvSet (SetChildEnv); processGroup runs the child in its own
-	// process group killed as a group (SetProcessGroup).
-	childEnv     []string
-	childEnvSet  bool
-	processGroup bool
+	// when childEnvSet (SetChildEnv).
+	childEnv    []string
+	childEnvSet bool
 	// loadExternal yields the owner's enabled Quick Connections, called once
 	// per launch (SetExternalMCPServers / SetExternalMCPLoader).
 	loadExternal func() []ai.ExternalMCPServer
@@ -48,6 +48,39 @@ type Client struct {
 	noServers bool
 	// toolEvents: Query streams the protocol-v2 chat events (EmitToolEvents).
 	toolEvents bool
+	// maxTurns caps the run's model turns (SetMaxTurns, turncap.go); 0 = none.
+	maxTurns int
+	// runHome is the run's private CODEX_HOME (SetRunHome); "" = the
+	// inherited one and an --ephemeral run.
+	runHome string
+	// images are the next run's --image paths (SetImages), taken by it.
+	imagesMu sync.Mutex
+	images   []string
+}
+
+// SetImages hands the next run, and only it, the images at paths: one
+// --image=<path> each (CHAT-04: a path, never content). The caller owns the
+// files and removes them after the run.
+func (c *Client) SetImages(paths []string) {
+	c.imagesMu.Lock()
+	defer c.imagesMu.Unlock()
+	c.images = slices.Clone(paths)
+}
+
+// peekImages is the images set for the next run, left in place.
+func (c *Client) peekImages() []string {
+	c.imagesMu.Lock()
+	defer c.imagesMu.Unlock()
+	return c.images
+}
+
+// takeImages is the images set for this run, cleared for the next.
+func (c *Client) takeImages() []string {
+	c.imagesMu.Lock()
+	defer c.imagesMu.Unlock()
+	imgs := c.images
+	c.images = nil
+	return imgs
 }
 
 // SetNoMCPServers makes the run tool-less on MCP: every server of the
@@ -78,12 +111,6 @@ func (c *Client) SetExternalMCPLoader(load func() []ai.ExternalMCPServer) { c.lo
 // rich PATH is still appended last). Unset = os.Environ() as today.
 func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, true }
 
-// SetProcessGroup runs the child in its own process group and kills the
-// whole group on cancel or deadline (see ai.ConfigureChild). codex has no
-// per-tool MCP allowlist flag; the server-side tool filter is the
-// enforcement, as for claude.
-func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
-
 // childEnviron is the child's environment: the base (os.Environ() unless
 // replaced) without PATH, then extra (the run's Quick Connection secrets,
 // mcpOverride), then the rich PATH.
@@ -100,10 +127,20 @@ func (c *Client) childEnviron(extra []string) []string {
 }
 
 func (c *Client) baseEnv() []string {
+	base := os.Environ()
 	if c.childEnvSet {
-		return c.childEnv
+		base = c.childEnv
 	}
-	return os.Environ()
+	if c.runHome == "" {
+		return base
+	}
+	env := make([]string, 0, len(base)+1)
+	for _, e := range base {
+		if !strings.HasPrefix(e, "CODEX_HOME=") {
+			env = append(env, e)
+		}
+	}
+	return append(env, "CODEX_HOME="+c.runHome)
 }
 
 // SetReadFolder makes the run a read-only look at dir (`ai query
@@ -125,7 +162,7 @@ func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
 	if err != nil {
 		return nil
 	}
-	args, _, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
+	args, _, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, c.peekImages())
 	if promptFile != "" {
 		_ = os.Remove(promptFile)
 	}
@@ -163,15 +200,22 @@ func NewClient(model, dbPath, codexPath string) *Client {
 // child has exited. workDir is an optional working directory to pass via
 // --cd.
 func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) (args []string, stdin, promptFile string, err error) {
-	return c.buildRunArgs(systemPrompt, userMessage, workDir, nil)
+	return c.buildRunArgs(systemPrompt, userMessage, workDir, nil, nil)
 }
 
 // buildRunArgs is buildArgs with the run's MCP mount flags (mount) after
-// the exec prefix.
-func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount []string) (args []string, stdin, promptFile string, err error) {
+// the exec prefix and the run's images (SetImages) before the prompt.
+func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount, images []string) (args []string, stdin, promptFile string, err error) {
 	args = append(c.execArgs(), mount...)
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
+	}
+	for _, p := range images {
+		// codex splits an --image value on commas (buildImageArgs).
+		if strings.Contains(p, ",") {
+			return nil, "", "", errors.New("an image path contains a comma")
+		}
+		args = append(args, "--image="+p)
 	}
 	instr, stdin, promptFile, err := promptArgs(c.codexCmd, systemPrompt, userMessage)
 	if err != nil {
@@ -186,10 +230,16 @@ func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount [
 // need; for a read-folder run also the read-only sandbox with the shell on
 // and web search off (SetReadFolder). The MCP servers come from mount.
 func (c *Client) execArgs() []string {
-	if c.readFolder == "" {
-		return append(execPrefix(c.model), featuresOff(toolRunFeatures)...)
+	prefix := execPrefix(c.model)
+	if c.runHome != "" {
+		// The rollout the turn cap counts lives in the run's own home,
+		// which the caller removes after the run.
+		prefix = slices.DeleteFunc(prefix, func(a string) bool { return a == "--ephemeral" })
 	}
-	args := append(execPrefix(c.model), featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
+	if c.readFolder == "" {
+		return append(prefix, featuresOff(toolRunFeatures)...)
+	}
+	args := append(prefix, featuresOff(append([]string{"shell_tool"}, toolRunFeatures...))...)
 	return append(args, "-c", "features.shell_tool=true", "--sandbox", "read-only", "-c", `web_search="disabled"`)
 }
 
@@ -269,6 +319,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 	textCh := make(chan ai.StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
+	images := c.takeImages() // now: the caller may set the next turn's while this one runs
 
 	go func() {
 		defer close(textCh)
@@ -280,7 +331,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			errCh <- mountErr
 			return
 		}
-		args, promptStdin, promptFile, buildErr := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
+		args, promptStdin, promptFile, buildErr := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, images)
 		if buildErr != nil {
 			errCh <- buildErr
 			return
@@ -297,9 +348,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// waits on a codex blocked writing into a pipe nobody reads.
 		runCtx, cancelRun := context.WithCancel(ctx)
 		defer cancelRun()
+		turns := newTurnCap(c.maxTurns, c.runHome, cancelRun)
+		go turns.watch(runCtx)
 		cmd := exec.CommandContext(runCtx, c.codexCmd, args...)
 		cmd.Stdin = strings.NewReader(promptStdin)
-		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		reap := ai.ConfigureChild(cmd)
 		defer reap()
 		cmd.Dir = c.processDir()
 		cmd.Env = c.childEnviron(m.env)
@@ -332,7 +385,14 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		for {
 			line, readErr := lines.Next()
 			s.skipped = lines.Skipped()
-			if trimmed := bytes.TrimSpace(line); len(trimmed) != 0 && !s.handle(trimmed) {
+			// A line past the turn cap is not shown — that turn never does —,
+			// only its usage still counts.
+			trimmed := bytes.TrimSpace(line)
+			past := len(trimmed) != 0 && !turns.line(trimmed)
+			if past {
+				s.addUsage(trimmed)
+			}
+			if len(trimmed) != 0 && !past && !s.handle(trimmed) {
 				_ = cmd.Wait()
 				s.finish()
 				errCh <- ctx.Err()
@@ -345,6 +405,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				cancelRun()
 				_ = cmd.Wait()
 				s.finish()
+				// The cap's kill may close the pipe under the read.
+				if capErr := turns.done(s.terminal != nil, true); capErr != nil {
+					errCh <- capErr
+					return
+				}
 				errCh <- providers.ContextFailure("codex", ctx, fmt.Errorf("reading codex output: %w", readErr))
 				return
 			}
@@ -352,7 +417,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		s.finish()
 
 		err = cmd.Wait()
+		capErr := turns.done(s.terminal != nil, err != nil || !s.completed)
 		switch {
+		case capErr != nil:
+			errCh <- capErr
 		case s.terminal != nil:
 			terminal := s.terminal
 			if err != nil {
@@ -385,19 +453,24 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // the full response text and token usage.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (text string, usage *ai.Usage, err error) {
 	defer func() { err = providers.ContextFailure("codex", ctx, providers.ProcessFailure("codex", err)) }()
+	images := c.takeImages()
 	m, mountErr := c.mount()
 	if mountErr != nil {
 		return "", nil, mountErr
 	}
-	args, promptStdin, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
+	args, promptStdin, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args, images)
 	if err != nil {
 		return "", nil, err
 	}
 	defer holdPromptFile(promptFile)() // see Query
 
-	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	turns := newTurnCap(c.maxTurns, c.runHome, cancelRun)
+	go turns.watch(runCtx)
+	cmd := exec.CommandContext(runCtx, c.codexCmd, args...)
 	cmd.Stdin = strings.NewReader(promptStdin)
-	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	reap := ai.ConfigureChild(cmd)
 	defer reap()
 	cmd.Dir = c.processDir()
 	cmd.Env = c.childEnviron(m.env)
@@ -406,9 +479,18 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	start := time.Now()
-	output, err := cmd.Output()
+	stdout := &lineSink{turns: turns}
+	cmd.Stdout = stdout
+	err = cmd.Run()
+	stdout.flush()
+	output := stdout.buf.Bytes()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
+	// A failed turn is the run's own failure even when codex exits 0.
+	if capErr := turns.done(turnFailed(output), err != nil); capErr != nil {
+		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
+		return "", nil, capErr
+	}
 	if err != nil {
 		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)

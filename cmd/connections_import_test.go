@@ -11,14 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 )
-
-// The codex client mounts Quick Connections (board #594), so newQueryClient
-// and the codex session hand them over.
-var _ externalMCPConfigurable = (*codex.Client)(nil)
 
 // writeImportSources gives the test HOME a codex config and a Claude Code
 // config (under CLAUDE_CONFIG_DIR) with the given content, and a login

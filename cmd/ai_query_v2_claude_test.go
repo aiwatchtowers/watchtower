@@ -11,9 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"watchtower/internal/ai"
 	"watchtower/internal/chat"
+	"watchtower/internal/config"
 	"watchtower/internal/policy/policytest"
+	"watchtower/internal/providers/transport"
 )
 
 // v2ClaudeStub prints one claude stream-json turn: a preamble, an MCP call,
@@ -37,8 +38,8 @@ func v2ClaudeStub(t *testing.T) string {
 // the tool call as a step (its display name), the preamble kept as its own
 // paragraph, the usage — the embedded chats' steps and tokens on claude.
 func TestAIQueryV2_ClaudeGetsChatEvents(t *testing.T) {
-	c := ai.NewClient("claude-x", "", v2ClaudeStub(t))
-	enableChatEvents(c)
+	c := buildQuerier(&config.Config{ClaudePath: v2ClaudeStub(t), AI: config.AIConfig{Provider: "claude"}},
+		transport.Options{Model: "claude-x", ToolEvents: true})
 	evs := v2Events(t, c)
 	var types []string
 	var text strings.Builder

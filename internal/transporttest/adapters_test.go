@@ -204,8 +204,7 @@ var adapters = []*Adapter{
 		},
 		Stream: func(r *run) chat.Querier {
 			c := ai.NewClient(fakeModel, r.mcpDB(), bins.claude)
-			c.SetProcessGroup(true) // cmd/generator.go newQueryClient (#957)
-			c.EmitToolEvents()      // `ai query --events v2`
+			c.EmitToolEvents() // `ai query --events v2`
 			c.SetExternalMCPServers(r.external)
 			if r.readFolder != "" {
 				c.SetReadFolder(r.readFolder)
@@ -274,15 +273,25 @@ var adapters = []*Adapter{
 	},
 }
 
-// codexClient is the codex chat/query client as cmd builds it: its own
-// process group (codexSessionClient, newQueryClient), the v2 tool events.
+// codexClient is the codex chat/query client as cmd builds it
+// (codexSessionClient, newQueryClient): the v2 tool events.
 func codexClient(r *run) *codex.Client {
 	c := codex.NewClient(fakeModel, r.mcpDB(), bins.codex)
-	c.SetProcessGroup(true)
 	c.EmitToolEvents()
 	c.SetExternalMCPServers(r.external)
 	if r.readFolder != "" {
 		c.SetReadFolder(r.readFolder)
+	}
+	if r.maxTurns > 0 {
+		// As agent() and the spec reviewer run it: a private home whose
+		// rollout the cap counts (N5, ask #522).
+		home := filepath.Join(r.dir, "codex-home")
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			r.t.Fatal(err)
+		}
+		c.SetRunHome(home)
+		c.SetMaxTurns(r.maxTurns)
+		r.capApplied = true
 	}
 	return c
 }
@@ -340,8 +349,7 @@ type run struct {
 	// external are the Quick Connections a quick-connection cell mounts
 	// (a fake MCP server); nil = none.
 	external []ai.ExternalMCPServer
-	// capApplied is set by an adapter that put maxTurns in force (a codex
-	// client has no turn cap yet: L3).
+	// capApplied is set by an adapter that put maxTurns in force.
 	capApplied bool
 
 	srvOnce sync.Once

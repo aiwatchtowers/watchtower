@@ -3,6 +3,7 @@ package agentlog
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,11 +18,13 @@ import (
 
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
+	"watchtower/internal/rollout"
 )
 
 // Options configures one Scan.
 type Options struct {
 	ClaudeDir string        // ~/.claude; tests pass a temp dir
+	CodexHome string        // $CODEX_HOME or ~/.codex (DefaultCodexHome); tests pass a temp dir
 	Budget    time.Duration // 0 = unbounded
 	Now       func() time.Time
 }
@@ -40,6 +43,19 @@ type Result struct {
 	Incomplete     bool           `json:"incomplete"`
 	FailedFiles    int            `json:"failed_files"` // files whose read or store failed; retried next scan
 	FirstFailure   error          `json:"-"`            // the first of those failures, for the daemon log
+	// CodexRolloutsMissing counts the workbench's codex rows whose rollout
+	// was not found; CodexOutsideWorkbench the rollouts found but not read
+	// because their own session_meta cwd is not the workbench's (AGENTLOG-04).
+	CodexRolloutsMissing  int `json:"codex_rollouts_missing"`
+	CodexOutsideWorkbench int `json:"codex_outside_workbench"`
+}
+
+// fail records one file's read or store failure.
+func (res *Result) fail(err error) {
+	res.FailedFiles++
+	if res.FirstFailure == nil {
+		res.FirstFailure = err
+	}
 }
 
 // DefaultClaudeDir is ~/.claude. Like cmd's defaultTerminalClaudeDir it never
@@ -70,6 +86,9 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 	}
 	if o.ClaudeDir == "" {
 		o.ClaudeDir = DefaultClaudeDir()
+	}
+	if o.CodexHome == "" {
+		o.CodexHome = DefaultCodexHome()
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -105,6 +124,12 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 	if err != nil {
 		return nil, err
 	}
+	codexFiles, codexMissing, err := workbenchCodexFiles(main, id, o.CodexHome)
+	if err != nil {
+		return nil, err
+	}
+	res.CodexRolloutsMissing = codexMissing
+	files = append(files, codexFiles...)
 	deadline := time.Time{}
 	if o.Budget > 0 {
 		deadline = o.Now().Add(o.Budget)
@@ -129,6 +154,20 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 		return res, fmt.Errorf("recording import progress for workbench %d: %w", id, err)
 	}
 	return res, nil
+}
+
+// workbenchCodexFiles lists the rollouts of the workbench's codex rows
+// (interim wiring, see CodexTranscripts; A5 moves it onto the session
+// adapter) and counts the rows whose rollout was not found. They come after
+// the Claude transcripts. A vanished rollout has no path to list, so it is
+// never marked missing; its rows stay (AGENTLOG-03).
+func workbenchCodexFiles(main *db.DB, id int64, codexHome string) ([]TranscriptFile, int, error) {
+	rows, err := main.WorkbenchCodexSessions(id)
+	if err != nil {
+		return nil, 0, err
+	}
+	files, missing := CodexTranscripts(codexHome, rows)
+	return files, missing, nil
 }
 
 // recordImportProgress upserts the workbench's agent_log_import row (spec
@@ -162,18 +201,22 @@ func scanOwnedFiles(ctx context.Context, st store, files []TranscriptFile, wb *d
 			break
 		}
 		mine, err := ownsSession(st.al, tf, owned, folders, wb.FolderPath, roots)
+		if errors.Is(err, errRolloutUnreadable) {
+			res.fail(err) // not cached: the next scan asks again
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
 		if !mine {
+			if tf.Agent == AgentCodex {
+				res.CodexOutsideWorkbench++
+			}
 			continue
 		}
 		sessions[tf.SessionUUID] = true
 		if err := scanFile(st, tf, wb, stop, res); err != nil {
-			res.FailedFiles++
-			if res.FirstFailure == nil {
-				res.FirstFailure = err
-			}
+			res.fail(err)
 		}
 	}
 	return sessions, nil
@@ -237,7 +280,14 @@ func ownsSession(d *agentlogdb.DB, tf TranscriptFile, owned map[string]bool, fol
 		owned[tf.SessionUUID] = equalFold(stored, folder)
 		return owned[tf.SessionUUID], nil
 	}
-	home := firstCWD(tf.Path)
+	var home string
+	if tf.Agent == AgentCodex {
+		if home, err = codexCWD(tf.Path, tf.SessionUUID); err != nil {
+			return false, err
+		}
+	} else {
+		home = firstCWD(tf.Path)
+	}
 	if r, err := filepath.EvalSymlinks(home); err == nil {
 		home = r
 	}
@@ -255,6 +305,9 @@ var batchRows = 1000
 // each slice, and stops between slices when stop says the scan is out of
 // time (res.Incomplete; the next scan resumes from the last committed slice).
 func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
+	if tf.Agent == AgentCodex {
+		return scanCodexFile(st, tf, wb, stop, res)
+	}
 	stored, err := st.al.GetAgentLogFile(tf.Path)
 	if err != nil {
 		return err
@@ -317,14 +370,14 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 // sessions' terminal session ids are read from watchtower.db first, outside
 // agentlog.db's write transaction.
 func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
-	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
+	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: cmp.Or(tf.Agent, AgentClaude), Size: tf.Size, MTime: tf.MTime,
 		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
 	if pr.More {
 		// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
 		f.Size, f.MTime = f.ReadOffset, ""
 	}
 	sessions := ownedSessions(pr.Sessions, tf, wb)
-	if err := resolveTerminalSessions(st.main, sessions); err != nil {
+	if err := resolveTerminalSessions(st.main, tf.Agent, sessions); err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
 	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
@@ -353,9 +406,10 @@ func hasSession(sessions []agentlogdb.AgentLogSession, uuid string) bool {
 	return false
 }
 
-// resolveTerminalSessions sets each session's TerminalSessionID to the Claude
-// terminal session that recorded it in watchtower.db, if any.
-func resolveTerminalSessions(main *db.DB, sessions []agentlogdb.AgentLogSession) error {
+// resolveTerminalSessions sets each session's TerminalSessionID to the
+// terminal session of the transcript's agent (Claude, or codex for a rollout)
+// that recorded it in watchtower.db, if any.
+func resolveTerminalSessions(main *db.DB, agent string, sessions []agentlogdb.AgentLogSession) error {
 	if len(sessions) == 0 {
 		return nil
 	}
@@ -363,7 +417,11 @@ func resolveTerminalSessions(main *db.DB, sessions []agentlogdb.AgentLogSession)
 	for i, s := range sessions {
 		uuids[i] = s.SessionUUID
 	}
-	ids, err := main.ClaudeTerminalSessionIDs(uuids)
+	lookup := main.ClaudeTerminalSessionIDs
+	if agent == AgentCodex {
+		lookup = main.CodexTerminalSessionIDs
+	}
+	ids, err := lookup(uuids)
 	if err != nil {
 		return err
 	}
@@ -484,4 +542,143 @@ func firstCWD(path string) string {
 
 func equalFold(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// scanCodexFile is scanFile for a codex rollout, opened with rollout.Open (a
+// zstd file is decompressed in memory only; nothing is written beside it,
+// AGENTLOG-05). Offsets are in the rollout's text, which compression keeps
+// byte for byte: a plain file seeks to its stored offset, a compressed one
+// decodes and drops the text before it, and both reread from 0 when the text
+// turns out shorter than the offset (idempotent keys). The slices share one
+// buffered reader, so each starts where the previous one stopped.
+func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
+	stored, err := st.al.GetAgentLogFile(tf.Path)
+	if err != nil {
+		return err
+	}
+	start, expect, unchanged := resumePoint(stored, tf)
+	if unchanged {
+		res.FilesSkipped++
+		return nil
+	}
+	if stored != nil && stored.ParserVersion == ParserVersion && start < stored.ReadOffset {
+		start = stored.ReadOffset // resumePoint compares the compressed size with a text offset
+	}
+	rc, err := openCodexAt(tf.Path, start)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // vanished between listing and open
+	}
+	if errors.Is(err, errShorterText) {
+		start = 0
+		rc, err = openCodexAt(tf.Path, 0)
+	}
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", tf.Path, err)
+	}
+	defer rc.Close()
+	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, SessionUUID: tf.SessionUUID, MaxRows: batchRows}
+	if start > 0 {
+		if o.CodexModel, o.CodexCWD, err = st.al.CodexResumeState(tf.SessionUUID); err != nil {
+			return err
+		}
+	}
+	br := bufio.NewReaderSize(rc, 64<<10)
+	for first := true; ; first = false {
+		pr, err := ParseCodex(br, start, o)
+		if err != nil {
+			return err
+		}
+		if s := pr.Sessions[tf.SessionUUID]; s != nil {
+			o.CodexModel = cmp.Or(s.Model, o.CodexModel)
+			o.CodexCWD = cmp.Or(s.HomeCWD, o.CodexCWD)
+		}
+		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
+		if err != nil {
+			return err
+		}
+		if first {
+			res.FilesScanned++
+		}
+		res.addSlice(pr, applied)
+		if !applied || !pr.More {
+			return nil
+		}
+		start, expect = next, next
+		if stop() {
+			res.Incomplete = true
+			return nil
+		}
+	}
+}
+
+// errShorterText: the rollout's text ends before the stored offset.
+var errShorterText = errors.New("rollout text shorter than the stored offset")
+
+// openCodexAt opens the rollout at path positioned at text offset start.
+func openCodexAt(path string, start int64) (io.ReadCloser, error) {
+	rc, compressed, err := rollout.Open(path)
+	if err != nil || start == 0 {
+		return rc, err
+	}
+	if f, ok := rc.(io.Seeker); ok && !compressed {
+		end, err := f.Seek(0, io.SeekEnd)
+		if err == nil && end < start {
+			err = errShorterText
+		}
+		if err == nil {
+			_, err = f.Seek(start, io.SeekStart)
+		}
+		if err != nil {
+			_ = rc.Close()
+			return nil, err
+		}
+		return rc, nil
+	}
+	n, err := io.CopyN(io.Discard, rc, start)
+	if err != nil {
+		_ = rc.Close()
+		if errors.Is(err, io.EOF) && n < start {
+			return nil, errShorterText
+		}
+		return nil, err
+	}
+	return rc, nil
+}
+
+// errRolloutUnreadable: a codex rollout's session_meta could not be read, so
+// its ownership is unknown; the file counts as failed and is asked again.
+var errRolloutUnreadable = errors.New("codex rollout unreadable")
+
+// codexCWD is the cwd of session id's own session_meta among the first 200
+// lines of the rollout at path, or "" when there is none (a fork replays its
+// parent's session_meta after its own; only the session's own counts). An
+// open or read failure is errRolloutUnreadable.
+func codexCWD(path, id string) (string, error) {
+	rc, _, err := rollout.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s: %w", errRolloutUnreadable, path, err)
+	}
+	defer rc.Close()
+	br := bufio.NewReaderSize(rc, 64<<10)
+	for range 200 {
+		raw, _, complete, err := NextLine(br, maxLineBytes)
+		if !complete {
+			if err != nil && !errors.Is(err, io.EOF) {
+				return "", fmt.Errorf("%w: %s: %w", errRolloutUnreadable, path, err)
+			}
+			return "", nil
+		}
+		if raw == nil {
+			continue
+		}
+		var l codexRolloutLine
+		if json.Unmarshal(raw, &l) != nil || l.Type != "session_meta" {
+			continue
+		}
+		var pl codexPayload
+		if json.Unmarshal(l.Payload, &pl) == nil && pl.ID == id && pl.CWD != "" {
+			return pl.CWD, nil
+		}
+	}
+	return "", nil
 }

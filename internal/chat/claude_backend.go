@@ -430,7 +430,7 @@ func (b *claudeBackend) projectBlocks(ownSize int64) (blocks []json.RawMessage, 
 	var squeezed []string
 	blocks = make([]json.RawMessage, 0, len(b.opts.ProjectAttachments))
 	for _, a := range b.opts.ProjectAttachments {
-		l, err := loadAttachment(a, false)
+		l, err := loadAttachment(a, allAttachments)
 		if err == nil {
 			size := l.encodedSize()
 			listed := size <= promptBudget

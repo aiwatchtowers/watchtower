@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -105,4 +106,125 @@ func TestTurnBackend_CodexExitWithoutTurnCompletedIsAnError(t *testing.T) {
 	assert.Equal(t, "t2", e.TurnID)
 	assert.Contains(t, e.Message, "without completing the turn")
 	require.NoError(t, h.finish())
+}
+
+// recordingCodexStub is codexStub that also records its argv (one per line)
+// to argvFile, its stdin to stdinFile, and copies every --image file it is
+// given to <dir>/seen-<n>, so a test sees what the model was handed while
+// the run lived.
+func recordingCodexStub(t *testing.T, jsonl string) (bin, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI")
+	}
+	dir = t.TempDir()
+	bin = filepath.Join(dir, "codex")
+	body := "#!/bin/sh\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> '" + dir + "/argv'; done\n" +
+		"n=0; for a in \"$@\"; do case \"$a\" in --image=*) n=$((n+1)); cp \"${a#--image=}\" '" + dir + "/seen-'$n;; esac; done\n" +
+		"cat > '" + dir + "/stdin'\n" +
+		"cat <<'__EOF__'\n" + jsonl + "\n__EOF__\n"
+	require.NoError(t, os.WriteFile(bin, []byte(body), 0o755))
+	return bin, dir
+}
+
+const codexPlainTurn = `{"type":"thread.started","thread_id":"th1"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"A red square."}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}`
+
+// An image attachment on a codex turn travels as --image=<path> on the
+// exec argv (CHAT-04: a path, never content), and stdin carries no base64.
+func TestCodexTurn_ImageAttachmentPassedAsImageFlag(t *testing.T) {
+	bin, dir := recordingCodexStub(t, codexPlainTurn)
+	d, conv := seedConversation(t)
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", bin), d, conv), nil)
+	h.next(EventSessionReady)
+	p := writeAttachmentFixture(t, "shot.png", fixturePNG)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "what is this?",
+		Attachments: []Attachment{{Path: p, Mime: "image/png", Name: "shot.png"}}})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+
+	argv, err := os.ReadFile(filepath.Join(dir, "argv"))
+	require.NoError(t, err)
+	var images []string
+	for a := range strings.SplitSeq(string(argv), "\n") {
+		if v, ok := strings.CutPrefix(a, "--image="); ok {
+			images = append(images, v)
+		}
+	}
+	require.Len(t, images, 1, "one --image flag: %s", argv)
+	assert.NotEqual(t, p, images[0], "a private copy of the checked bytes, not the owner's path")
+	assert.NoFileExists(t, images[0], "the turn's image copy is removed after the turn")
+	stdin, err := os.ReadFile(filepath.Join(dir, "stdin"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(stdin), base64.StdEncoding.EncodeToString(fixturePNG))
+	assert.NotContains(t, string(stdin), "shot.png", "the image is not inlined as a file block")
+}
+
+// A PDF stays refused on codex, before any child starts.
+func TestCodexTurn_PDFStillRefusedBeforeSpawn(t *testing.T) {
+	bin, dir := recordingCodexStub(t, codexPlainTurn)
+	d, conv := seedConversation(t)
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", bin), d, conv), nil)
+	h.next(EventSessionReady)
+	p := writeAttachmentFixture(t, "doc.pdf", fixturePDF)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "read this",
+		Attachments: []Attachment{{Path: p, Mime: "application/pdf", Name: "doc.pdf"}}})
+	e := h.next(EventError)
+	assert.Equal(t, CodeAttachmentUnsupported, e.Code)
+	assert.Contains(t, e.Message, "PDF")
+	require.NoError(t, h.finish())
+	assert.NoFileExists(t, filepath.Join(dir, "argv"), "codex never started")
+}
+
+// The image codex is handed holds the attachment's bytes while the run
+// lives: the model gets the picture the owner attached.
+func TestTurnBackend_CodexImageAttachmentReachesTheModel(t *testing.T) {
+	bin, dir := recordingCodexStub(t, codexPlainTurn)
+	d, conv := seedConversation(t)
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", bin), d, conv), nil)
+	h.next(EventSessionReady)
+	p := writeAttachmentFixture(t, "shot.png", fixturePNG)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "what is this?",
+		Attachments: []Attachment{{Path: p, Mime: "image/png", Name: "shot.png"}}})
+	evs := h.turnEvents()
+	assert.Equal(t, StatusComplete, evs[len(evs)-1].Status)
+	seen, err := os.ReadFile(filepath.Join(dir, "seen-1"))
+	require.NoError(t, err, "codex was handed a readable image")
+	assert.Equal(t, fixturePNG, seen)
+
+	// The session's next turn carries no image: SetImages is per turn.
+	require.NoError(t, os.Remove(filepath.Join(dir, "argv")))
+	h.send(Command{Type: CommandTurn, TurnID: "t3", Text: "and now?"})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+	argv, err := os.ReadFile(filepath.Join(dir, "argv"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(argv), "--image")
+}
+
+// A failed codex turn still removes its image copy, after codex had it.
+func TestCodexTurn_FailedTurnRemovesItsImage(t *testing.T) {
+	bin, dir := recordingCodexStub(t, `{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"model overloaded"}}`)
+	d, conv := seedConversation(t)
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", bin), d, conv), nil)
+	h.next(EventSessionReady)
+	p := writeAttachmentFixture(t, "shot.png", fixturePNG)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "what is this?",
+		Attachments: []Attachment{{Path: p, Mime: "image/png", Name: "shot.png"}}})
+	h.next(EventError)
+	require.NoError(t, h.finish())
+	seen, err := os.ReadFile(filepath.Join(dir, "seen-1"))
+	require.NoError(t, err, "codex had the image while it ran")
+	assert.Equal(t, fixturePNG, seen)
+	argv, err := os.ReadFile(filepath.Join(dir, "argv"))
+	require.NoError(t, err)
+	for a := range strings.SplitSeq(string(argv), "\n") {
+		if v, ok := strings.CutPrefix(a, "--image="); ok {
+			assert.NoFileExists(t, v, "the failed turn's image copy is removed")
+		}
+	}
 }
