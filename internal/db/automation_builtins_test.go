@@ -247,6 +247,8 @@ func TestAutomation_RunsAtSlotHoldsPersonalSyncRecipes(t *testing.T) {
 	}{
 		{Automation{Scope: "personal", TriggerKind: TriggerKindSync}, true},
 		{Automation{Scope: "personal", TriggerKind: "manual"}, false},
+		// The predicate is the trigger alone (no workbench recipe parses with one).
+		{Automation{Scope: "workbench", TriggerKind: TriggerKindSync}, true},
 		{Automation{Scope: "personal", TriggerKind: TriggerKindSync, Origin: OriginBuiltin}, true},
 		// An event built-in runs on the executor's poll, not at a slot.
 		{Automation{Scope: "personal", TriggerKind: "event", Origin: OriginBuiltin}, false},
