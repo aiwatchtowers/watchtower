@@ -2,6 +2,7 @@
   "providers": [
     {
       "id": "claude",
+      "display_name": "Claude",
       "capabilities": {
         "tools": "watchtower+quick_connections",
         "tool_events": true,
@@ -22,6 +23,7 @@
     },
     {
       "id": "codex",
+      "display_name": "Codex",
       "capabilities": {
         "tools": "watchtower+quick_connections",
         "tool_events": true,
@@ -42,6 +44,7 @@
     },
     {
       "id": "ollama",
+      "display_name": "Ollama / Local",
       "capabilities": {
         "tools": "watchtower+quick_connections",
         "tool_events": true,

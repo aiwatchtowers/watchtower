@@ -1614,17 +1614,18 @@ final class TargetChatViewModelTests: XCTestCase {
 }
 
 extension TargetChatViewModelTests {
-    /// The target chat's tools follow the configured provider's capability
-    /// row (`AIModelCatalog`), never its name: every table row with tools
-    /// gets them, a catalog not read yet gives none.
+    /// The capability rows the chat surfaces read say every table provider
+    /// runs the tools, and a catalog not read yet offers none. Whether the
+    /// target and editor chats open them on Ollama is AGENT-04's (draft-only
+    /// there today, pending the owner), not this table's.
     func testToolsAvailableFromCapabilities() {
         ProviderCatalogFixture.seedShared()
         let catalog = AIModelCatalog.shared
         for id in ["claude", "codex", "ollama"] {
             XCTAssertTrue(catalog.capabilities(for: id).hasTools, id)
-            XCTAssertTrue(AutomationEditorChatSurface.toolsAvailable(provider: id), id)
         }
-        XCTAssertFalse(AutomationEditorChatSurface.toolsAvailable(provider: "gemini"), "an unknown provider has no tools")
+        XCTAssertFalse(catalog.capabilities(for: "gemini").hasTools, "an unknown provider has no tools")
         XCTAssertFalse(AIModelCatalog().capabilities(for: "claude").hasTools, "a catalog not read yet offers nothing")
+        XCTAssertFalse(AutomationEditorChatSurface.toolsAvailable(provider: "ollama"), "AGENT-04: draft-only")
     }
 }

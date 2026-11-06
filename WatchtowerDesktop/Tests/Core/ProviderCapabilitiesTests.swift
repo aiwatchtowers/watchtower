@@ -57,7 +57,11 @@ final class ProviderCapabilitiesTests: XCTestCase {
     /// A session_ready names its provider's row; one without (the routing
     /// placeholder) decodes to nil.
     func testSessionReadyCarriesCapabilities() throws {
-        let line = #"{"type":"session_ready","provider":"codex","model":"m","capabilities":{"tools":"watchtower+quick_connections","tool_events":true,"text_stream":"message","usage":"split","cost_reported":false,"images":true,"pdfs":false,"web_search":false,"read_folder":"shell_sandbox","turn_cap":"counted","interrupt":"kill_turn","warm_session":false,"claude_ai_tools":false,"reserve_peer":"claude","quota":true}}"#
+        let caps = #"{"tools":"watchtower+quick_connections","tool_events":true,"text_stream":"message","usage":"split","#
+            + #""cost_reported":false,"images":true,"pdfs":false,"web_search":false,"read_folder":"shell_sandbox","#
+            + #""turn_cap":"counted","interrupt":"kill_turn","warm_session":false,"claude_ai_tools":false,"#
+            + #""reserve_peer":"claude","quota":true}"#
+        let line = #"{"type":"session_ready","provider":"codex","model":"m","capabilities":"# + caps + "}"
         guard case let .sessionReady(_, provider, _, _, capabilities)? = ChatEvent.parse(line) else {
             return XCTFail("not a session_ready")
         }

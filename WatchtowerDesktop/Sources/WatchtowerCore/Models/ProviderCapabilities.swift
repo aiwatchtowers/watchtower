@@ -48,10 +48,21 @@ package struct ProviderCapabilities: Decodable, Equatable, Sendable {
     }
 
     package init(
-        tools: String = "none", toolEvents: Bool = false, textStream: String = "final", usage: String = "none",
-        costReported: Bool = false, images: Bool = false, pdfs: Bool = false, webSearch: Bool = false,
-        readFolder: String = "none", turnCap: String = "none", interrupt: String = "kill_turn",
-        warmSession: Bool = false, claudeAITools: Bool = false, reservePeer: String = "", quota: Bool = false
+        tools: String = "none",
+        toolEvents: Bool = false,
+        textStream: String = "final",
+        usage: String = "none",
+        costReported: Bool = false,
+        images: Bool = false,
+        pdfs: Bool = false,
+        webSearch: Bool = false,
+        readFolder: String = "none",
+        turnCap: String = "none",
+        interrupt: String = "kill_turn",
+        warmSession: Bool = false,
+        claudeAITools: Bool = false,
+        reservePeer: String = "",
+        quota: Bool = false
     ) {
         self.tools = tools; self.toolEvents = toolEvents; self.textStream = textStream; self.usage = usage
         self.costReported = costReported; self.images = images; self.pdfs = pdfs; self.webSearch = webSearch
@@ -62,7 +73,7 @@ package struct ProviderCapabilities: Decodable, Equatable, Sendable {
 
     /// A row that offers nothing: what an unknown provider, or a catalog not
     /// read yet, takes — the honest default.
-    package static let none = ProviderCapabilities()
+    package static let none = Self()
 
     /// The transport runs the watchtower tools.
     package var hasTools: Bool { !tools.isEmpty && tools != "none" }

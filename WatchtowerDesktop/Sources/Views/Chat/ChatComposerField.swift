@@ -30,8 +30,9 @@ struct ChatComposerField: View {
     var onRemoveAttachment: ((Int64) -> Void)?
     var attachmentProgress = AttachmentProgress()
     /// Why this provider takes no images or PDFs (its capability row, U1):
-    /// the paperclip stays visible but disabled with this help, and a
-    /// dropped or pasted image or PDF is not added. nil = it takes them.
+    /// the paperclip stays and picks text files only, with this help; a
+    /// dropped or pasted image or PDF is not added and the reason shows as
+    /// a caption. nil = it takes them.
     var attachUnavailableReason: String?
     /// Called with the full text and the caret (UTF-16 offset) on every edit
     /// or caret move — the @/ pickers' input. nil for a surface with no
@@ -101,8 +102,9 @@ struct ChatComposerFieldContent: View {
     var onRemoveAttachment: ((Int64) -> Void)?
     var attachmentProgress = AttachmentProgress()
     /// Why this provider takes no images or PDFs (its capability row, U1):
-    /// the paperclip stays visible but disabled with this help, and a
-    /// dropped or pasted image or PDF is not added. nil = it takes them.
+    /// the paperclip stays and picks text files only, with this help; a
+    /// dropped or pasted image or PDF is not added and the reason shows as
+    /// a caption. nil = it takes them.
     var attachUnavailableReason: String?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
@@ -113,28 +115,37 @@ struct ChatComposerFieldContent: View {
     /// The text of a long paste the field offers to attach as a file
     /// instead; nil once acted on, or once the field no longer holds it.
     @State private var longPaste: LongPaste?
+    /// The U1 reason after a refused drop or paste; cleared on the next
+    /// accepted one.
+    @State private var refusedNotice: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let refusedNotice {
+                Text(refusedNotice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Spacing.large)
+            }
             if let attachmentError {
                 Text(attachmentError)
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Spacing.large)
             }
             if attachmentProgress.sendWaits {
                 Text("Sending once the files are attached…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Spacing.large)
             }
             if !attachments.isEmpty || !attachmentProgress.isEmpty {
                 AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment, progress: attachmentProgress)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, Spacing.medium)
             }
             if let longPaste, onPasteData != nil {
                 LongPasteOffer(characterCount: longPaste.text.count, onAttach: attachLongPaste) { self.longPaste = nil }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Spacing.large)
             }
             row
         }
@@ -143,7 +154,9 @@ struct ChatComposerFieldContent: View {
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let onAttachFiles else { return false }
-            let files = urls.filter(\.isFileURL).filter { attachUnavailableReason == nil || !Self.isBinary($0) }
+            let dropped = urls.filter(\.isFileURL)
+            let files = dropped.filter { attachUnavailableReason == nil || !Self.isBinary($0) }
+            refusedNotice = files.count < dropped.count ? attachUnavailableReason : nil
             guard !files.isEmpty else { return false }
             onAttachFiles(files)
             return true
@@ -160,10 +173,9 @@ struct ChatComposerFieldContent: View {
                         .font(.system(size: 16))
                         .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.kitIcon(isOn: false))
-                .disabled(attachUnavailableReason != nil)
+                .buttonStyle(.borderless)
                 .accessibilityLabel("Attach files")
-                .help(attachUnavailableReason ?? "Attach images, PDFs or text files")
+                .help(attachUnavailableReason.map { "Attach text files. " + $0 } ?? "Attach images, PDFs or text files")
                 .padding(.bottom, 6)
             }
 
@@ -182,7 +194,7 @@ struct ChatComposerFieldContent: View {
                     maxHeight: maxHeight,
                     onEscape: onEscape,
                     onArrowUpWhenEmpty: onArrowUpWhenEmpty,
-                    onPasteData: attachUnavailableReason == nil ? onPasteData : nil,
+                    onPasteData: pastableData,
                     onAttachFiles: attachableFiles,
                     onLongTextPaste: offerLongPaste,
                     onCursorChange: onCursorChange,
@@ -233,12 +245,28 @@ struct ChatComposerFieldContent: View {
     }
 
     /// onAttachFiles without the images and PDFs a provider that reads none
-    /// refuses (U1): a pasted Finder file of those kinds is not added.
+    /// refuses (U1): a pasted Finder file of those kinds is not added, and
+    /// the reason shows.
     private var attachableFiles: (([URL]) -> Void)? {
-        guard let onAttachFiles, attachUnavailableReason != nil else { return onAttachFiles }
+        guard let onAttachFiles, let reason = attachUnavailableReason else { return onAttachFiles }
         return { urls in
             let files = urls.filter { !Self.isBinary($0) }
+            refusedNotice = files.count < urls.count ? reason : nil
             if !files.isEmpty { onAttachFiles(files) }
+        }
+    }
+
+    /// onPasteData refusing pasted image or PDF bytes (U1) with the reason.
+    private var pastableData: ((Data, String) async -> Bool)? {
+        guard let onPasteData, let reason = attachUnavailableReason else { return onPasteData }
+        return { data, name in
+            if Self.isBinary(URL(fileURLWithPath: name)) || data.starts(with: [0x25, 0x50, 0x44, 0x46])
+                || NSImage(data: data) != nil {
+                refusedNotice = reason
+                return false
+            }
+            refusedNotice = nil
+            return await onPasteData(data, name)
         }
     }
 
@@ -253,7 +281,10 @@ struct ChatComposerFieldContent: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.message = "Attach images, PDFs or text files"
+        panel.message = attachUnavailableReason == nil ? "Attach images, PDFs or text files" : "Attach text files"
+        if attachUnavailableReason != nil {
+            panel.allowedContentTypes = [.text, .json, .xml, .yaml, .commaSeparatedText, .sourceCode]
+        }
         panel.begin { response in
             guard response == .OK else { return }
             onAttachFiles(panel.urls)

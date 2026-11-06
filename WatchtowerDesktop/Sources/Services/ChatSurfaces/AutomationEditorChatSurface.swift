@@ -20,13 +20,14 @@ enum AutomationEditorChatSurface {
     static let draftContextType = "automation_draft"
     static let surface = AgentSurface.automationEditor.rawValue
     static let dryRunAgainText = "Dry run the draft again."
-    static let unavailableHelp = "Needs a provider with tools"
+    static let unavailableHelp = "Needs Claude or Codex"
     static let sendRefusedNote = "The assistant is still answering — try again when the reply finishes."
 
-    /// Whether the provider's transport runs the tools (its capability row).
-    @MainActor
+    /// AGENT-04 (ask #270): under ollama the editor chat is draft-only. It
+    /// stays a name check until the owner decides whether runtime B's tools
+    /// (its capability row) open it (ask pending, A2).
     static func toolsAvailable(provider: String?) -> Bool {
-        AIModelCatalog.shared.capabilities(for: provider ?? Constants.aiProviderID()).hasTools
+        (provider ?? Constants.aiProviderID()) != "ollama"
     }
 
     /// The automation's conversation, created on first use.

@@ -6,6 +6,7 @@
 # entries stay (decoders, display names, config migration, path conventions);
 # every other entry names the task that removes it.
 
+WatchtowerDesktop/Sources/Services/ChatSurfaces/AutomationEditorChatSurface.swift | toolsAvailable | "ollama" | 1 | A2: tool access decided from the provider name; AGENT-04 keeps the editor draft-only under ollama until the owner decides
 WatchtowerDesktop/Sources/Services/ConfigService.swift | applyWorkbenchSection | .claude | 1 | permanent: config writer omits the default workbench.default_agent value
 WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "claude" | 1 | permanent: config migration: the legacy model regexes
 WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "codex" | 1 | permanent: config migration: the legacy model regexes
@@ -30,6 +31,7 @@ WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .co
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .ollama | 1 | permanent: display-name table of the closed AIProvider enum
 WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .claude | 1 | permanent: display name of the asking agent
 WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .codex | 1 | permanent: display name of the asking agent
+WatchtowerDesktop/Sources/ViewModels/TargetChatViewModel.swift | init | "ollama" | 1 | A2: tool access decided from the provider name; AGENT-04 keeps the target chat draft-only under ollama until the owner decides
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift | newStandalone | .claude | 2 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift | newStandalone | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift | rowToLaunch | .codex | 1 | A5: Workbench agent kind branch; moves behind the session adapter capabilities

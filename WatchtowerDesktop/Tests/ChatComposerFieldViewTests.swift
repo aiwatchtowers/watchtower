@@ -156,8 +156,9 @@ final class ChatComposerFieldViewTests: XCTestCase {
 }
 
 extension ChatComposerFieldViewTests {
-    /// U1: with a provider that reads no images or PDFs the paperclip stays,
-    /// disabled, its help the reason; with one that does it is enabled.
+    /// U1: with a provider that reads no images or PDFs the paperclip stays
+    /// enabled (text files still attach), its help naming the reason; the
+    /// test keeps its old name from the plan.
     func testAttachDisabledWithReasonWhenNoImages() throws {
         let reason = try XCTUnwrap(ProviderCapabilities.none.attachUnavailableReason)
         XCTAssertEqual(reason, "Images and PDFs need a provider that reads them.")
@@ -166,11 +167,11 @@ extension ChatComposerFieldViewTests {
                                     onSend: {}, placeholder: "Ask", onAttachFiles: { _ in },
                                     attachUnavailableReason: reason)
         let clip = try off.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" }
-        XCTAssertTrue(try clip.isDisabled())
-        XCTAssertEqual(try clip.help().string(), reason)
+        XCTAssertFalse(try clip.isDisabled(), "text files still attach")
+        XCTAssertEqual(try clip.help().string(), "Attach text files. " + reason)
 
         let on = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
-                                   onSend: {}, placeholder: "Ask", onAttachFiles: { _ in })
+                                   onSend: {}, placeholder: "Ask", onAttachFiles: { _ in }, attachUnavailableReason: nil)
         let enabled = try on.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" }
         XCTAssertFalse(try enabled.isDisabled())
         XCTAssertTrue(ChatComposerFieldContent.isBinary(URL(fileURLWithPath: "/tmp/a.png")))

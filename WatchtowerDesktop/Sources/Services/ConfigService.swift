@@ -113,9 +113,9 @@ final class ConfigService {
         configPath: String,
         routingRead: (() async throws -> ChatRoutingStatus)? = nil,
         connection: ProviderConnection? = nil,
-        catalog: AIModelCatalog = .shared
+        catalog: AIModelCatalog? = nil
     ) {
-        self.catalog = catalog
+        self.catalog = catalog ?? .shared
         providerConnection = connection ?? ProviderConnection()
         routingApplication = ProviderRoutingApplication(read: routingRead ?? {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }

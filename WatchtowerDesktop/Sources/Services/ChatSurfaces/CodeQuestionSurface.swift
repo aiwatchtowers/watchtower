@@ -199,7 +199,9 @@ enum CodeQuestionSurface {
     }
 
     static func buildSystemPrompt(
-        workbench: Workbench, origin: CodeQuestionOrigin, context: CodeQuestionContext?,
+        workbench: Workbench,
+        origin: CodeQuestionOrigin,
+        context: CodeQuestionContext?,
         capabilities: ProviderCapabilities
     ) -> String {
         // Open Quickly with no file open: `<wb>::0`, the folder only.

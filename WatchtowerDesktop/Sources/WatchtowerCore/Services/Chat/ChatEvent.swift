@@ -129,6 +129,9 @@ package struct ChatRoutingMetadata: Equatable, Sendable {
 /// One `watchtower ai session` protocol-v2 event (spec §1.1). There is no
 /// `reset` in v2: text already shown is never wiped (CHAT-02).
 package enum ChatEvent: Equatable, Sendable {
+    // The wire's session_ready fields, as decoded; a struct would rename
+    // every existing construction for one optional field.
+    // swiftlint:disable:next enum_case_associated_values_count
     case sessionReady(sessionID: String?, provider: String, model: String, routing: ChatRoutingMetadata? = nil,
                       capabilities: ProviderCapabilities? = nil)
     case turnStart(turnID: String)

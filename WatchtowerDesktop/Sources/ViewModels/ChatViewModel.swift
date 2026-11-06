@@ -97,9 +97,9 @@ final class ChatViewModel {
         // capability row, U3); before the catalog is read the pair copy keeps
         // today's presentation.
         let paired = !catalog.isLoaded || catalog.reservePeer(of: provider.rawValue) != nil
-        let preferred = paired ? ProviderFallbackPreview.Provider.allCases.first(where: {
+        let preferred = paired ? ProviderFallbackPreview.Provider.allCases.first {
             $0.rawValue.lowercased() == provider.rawValue
-        }) : nil
+        } : nil
         let driver = pool.client(for: conversationID)?.driver
         let actualProvider = driver?.actualProvider ?? currentConversation?.actualProvider
         return ChatRoutingPresentation(preferred: preferred, automatic: automaticRouting,
