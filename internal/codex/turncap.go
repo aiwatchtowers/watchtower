@@ -369,6 +369,26 @@ func (g *turnCap) done(reported, failed bool) error {
 	return nil
 }
 
+// turnFailed says whether a run's JSONL output ends its turn with a
+// failure codex reported (a turn.failed or error event carrying an error,
+// queryStream's terminal), not a bare retry notice.
+func turnFailed(output []byte) bool {
+	failed := false
+	for line := range bytes.SplitSeq(output, []byte("\n")) {
+		var event CodexEvent
+		if json.Unmarshal(bytes.TrimSpace(line), &event) != nil {
+			continue
+		}
+		switch {
+		case (event.Type == "turn.failed" || event.Type == "error") && event.Error != nil:
+			failed = true
+		case event.Type == "turn.started" || event.Type == "turn.completed":
+			failed = false
+		}
+	}
+	return failed
+}
+
 // checkLocked stops the run once its turns pass the cap.
 func (g *turnCap) checkLocked() {
 	if g.overLocked(false) {

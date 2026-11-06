@@ -437,3 +437,14 @@ func TestCodexClient_UsageAfterTheCapStillCounts(t *testing.T) {
 	require.NotNil(t, usage, "the reported usage is kept")
 	assert.Equal(t, 70, usage.InputTokens)
 }
+
+// A retry notice earlier in the run is no failure of the run's own: the
+// cap's stop stays a budget failure.
+func TestCodexClient_RetryNoticeDoesNotHideTheCap(t *testing.T) {
+	steps := []string{turnStarted, `{"type":"error","message":"Reconnecting... 1/5"}`,
+		toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"), "HOLD"}
+	c, pid := cappedClient(t, steps, 2, "")
+	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
+	assertBudget(t, err, 2)
+	assertGroupGone(t, pid())
+}
