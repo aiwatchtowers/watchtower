@@ -196,3 +196,14 @@ func TestRefresh_AFailedReadGoesLast(t *testing.T) {
 	assert.Equal(t, "merged", got[ok].State, "the ref due longer is read first")
 	assert.Equal(t, dueAgain("merged", refreshNow), got[failing].CheckedAt, "the failed one waits")
 }
+
+// Verify R5: the row lines' refresh gives the handle its busy_timeout back.
+func TestRefreshedSummaries_RestoresTheBusyTimeout(t *testing.T) {
+	d, id, _, _ := repoBoard(t)
+	require.NoError(t, d.SetBusyTimeout(7*time.Second))
+	_, _, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{})
+	require.NoError(t, err)
+	var ms int64
+	require.NoError(t, d.QueryRow("PRAGMA busy_timeout").Scan(&ms))
+	assert.Equal(t, int64(7000), ms)
+}

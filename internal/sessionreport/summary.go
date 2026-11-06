@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
@@ -48,8 +49,8 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 // RefreshedSummaries is Summaries after a refresh of the merge verdicts
 // every agent session's counts read (board #986): git only — opts.Network
 // is ignored, gh never runs — within opts.Budget (0 = SummaryRefreshBudget),
-// each cache write waiting at most summaryWriteWait for the write lock (it
-// sets d's busy_timeout: d is the caller's own handle). A verdict read but
+// each cache write waiting at most summaryWriteWait for the write lock (d's
+// busy_timeout during the writes, restored after). A verdict read but
 // not saved still counts in the rows. The board and the cache are each read
 // once. The result's note says what could not be refreshed.
 func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts RefreshOptions) ([]Summary, RefreshResult, error) {
@@ -61,9 +62,17 @@ func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts R
 	for _, as := range sessions {
 		refs = append(refs, as.sc.mergeRefs()...)
 	}
-	opts.Network, opts.writeWait = false, summaryWriteWait
+	opts.Network = false
 	if opts.Budget <= 0 {
 		opts.Budget = SummaryRefreshBudget
+	}
+	// The short write wait is the handle's busy_timeout while the refresh
+	// writes; the caller's own wait comes back after. Without a readable one
+	// the writes keep the handle's wait.
+	var prevMS int64
+	if err := d.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&prevMS); err == nil {
+		opts.writeWait = summaryWriteWait
+		defer func() { _ = d.SetBusyTimeout(time.Duration(prevMS) * time.Millisecond) }()
 	}
 	res, states, unchecked := refresh(ctx, d, workbenchID, refs, opts)
 	if states == nil {
