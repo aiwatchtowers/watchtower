@@ -151,13 +151,13 @@ func TestWaitingForMe_WritesOneRowPerOpenItem(t *testing.T) {
 		title, subtitle, badge string
 		tone, link             string
 	}{
-		{1, "Colleague A in #general", "Can you look at the release notes?", "2h", "", "https://acme.slack.com/archives/C001/p10000001"},
-		{2, "Colleague A", "Got a minute?", "1h", "", "https://acme.slack.com/archives/D001/p10000002"},
-		{17, "Colleague A in #general", "3 mentions · Any news on the launch?", "30m", "", "https://acme.slack.com/archives/C001/p10000017"},
-		{18, "Colleague A in #general", "", "2h", "", ""},
-		{15, "colleague-a@example.com — Budget review", "Budget review — please confirm the numbers", "2h", "", "https://mail.example.com/m/15"},
-		{10, "ACME-1 — assigned to you", "Fix the login page", "2d", "warning", "https://acme.atlassian.net/browse/ACME-1"},
-		{16, "ENG-7 — assigned to you", "Tidy the settings screen", "16h", "", "https://linear.app/acme/issue/ENG-7"},
+		{1, "Colleague A in #general", "Can you look at the release notes?", "2 h", "", "https://acme.slack.com/archives/C001/p10000001"},
+		{2, "Colleague A", "Got a minute?", "1 h", "", "https://acme.slack.com/archives/D001/p10000002"},
+		{17, "Colleague A in #general", "3 mentions · Any news on the launch?", "< 1 h", "", "https://acme.slack.com/archives/C001/p10000017"},
+		{18, "Colleague A in #general", "", "2 h", "", ""},
+		{15, "colleague-a@example.com — Budget review", "Budget review — please confirm the numbers", "2 h", "", "https://mail.example.com/m/15"},
+		{10, "ACME-1 — assigned to you", "Fix the login page", "2 days", "warning", "https://acme.atlassian.net/browse/ACME-1"},
+		{16, "ENG-7 — assigned to you", "Tidy the settings screen", "16 h", "", "https://linear.app/acme/issue/ENG-7"},
 	}
 	for _, c := range checks {
 		r := byID[c.id]
@@ -209,7 +209,7 @@ func TestWaitingForMe_ItemWithEmptyText(t *testing.T) {
 		t.Fatalf("run = %+v", run)
 	}
 	rows := f.waitingArtifacts(t)[0].list.Rows
-	if len(rows) != 1 || rows[0].Title != "Someone" || rows[0].Subtitle != "" || rows[0].Badge.Text != "5m" || rows[0].Link != "" {
+	if len(rows) != 1 || rows[0].Title != "Someone" || rows[0].Subtitle != "" || rows[0].Badge.Text != "< 1 h" || rows[0].Link != "" {
 		t.Errorf("rows = %+v", rows)
 	}
 }
@@ -225,7 +225,7 @@ func TestWaitingForMe_CapsAt200(t *testing.T) {
 		t.Fatalf("run = %+v (%s)", run, run.Error)
 	}
 	rows := f.waitingArtifacts(t)[0].list.Rows
-	if len(rows) != WaitingLimit || rows[0].Badge.Text != "1m" {
+	if len(rows) != WaitingLimit || rows[0].Badge.Text != "< 1 h" {
 		t.Errorf("%d rows, first %+v; want %d, the newest first", len(rows), rows[0], WaitingLimit)
 	}
 }
@@ -287,5 +287,34 @@ func TestWaitingForMe_ReadIsAToolStep(t *testing.T) {
 		return strings.HasPrefix(k, "llm:")
 	}) {
 		t.Errorf("steps = %v; want a tool step and no llm step", kinds)
+	}
+}
+
+// Ages are whole hours or days, never minutes: two runs within the same
+// hour with nothing changed write the same content hash, so the living
+// rewrite keeps the card's read state.
+func TestWaitingForMe_SameHourSameHash(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	f.insertItem(t, "1000.0001", "mention", f.clock.Now().Add(-2*time.Hour-5*time.Minute))
+	hash := func() string {
+		t.Helper()
+		if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
+			t.Fatalf("run = %+v", run)
+		}
+		var h string
+		if err := f.d.QueryRow(`SELECT content_hash FROM automation_outputs WHERE output_key = 'waiting'`).Scan(&h); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	first := hash()
+	f.clock.Advance(20 * time.Minute)
+	if second := hash(); second != first {
+		t.Errorf("content hash moved within the hour: %s → %s", first, second)
+	}
+	f.clock.Advance(time.Hour)
+	if third := hash(); third == first {
+		t.Error("content hash kept after the age moved to the next hour")
 	}
 }

@@ -148,19 +148,18 @@ func webLink(raw string) string {
 	return raw
 }
 
-// ageText is how long ago at was, in its largest unit: "now", "5m", "3h",
-// "2d".
+// ageText is how long ago at was, coarse so the artifact changes at most
+// once an hour (a living rewrite with a new content hash clears the card's
+// read state): "< 1 h", "3 h", "26 h", "2 days" (from 48 hours).
 func ageText(at, now time.Time) string {
-	d := now.Sub(at)
-	switch {
-	case at.IsZero() || d < time.Minute:
-		return "now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d/time.Minute))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d/time.Hour))
+	switch d := now.Sub(at); {
+	case at.IsZero() || d < time.Hour:
+		return "< 1 h"
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%d h", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%d days", int(d/(24*time.Hour)))
 	}
-	return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 }
 
 // parseStamp reads an RFC 3339 stamp (zero when it is not one).
