@@ -52,6 +52,14 @@ In the title row's **…** menu, **Worktree Setup Command…** sets one shell co
 
 A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session. A session resumes in its worktree on a branch its own agent switched to there, including a detached HEAD, once Watchtower has seen the agent on it. If the worktree is on a branch the session never used, for example after you switched it by hand, the row says to start a new session.
 
+### What the session line shows
+
+The line under a session shows where its agent works: **main folder · main**, **⑂ name · branch** in a git worktree, or **worktree removed**. Until Watchtower knows the place, it shows the main folder.
+
+When the session works on a task with a branch, the line shows the branch the work is merged into, such as **⎇ feature/login**. A task without a branch uses its group's. Tasks on different branches show as **⎇ 2 target branches**.
+
+A helper the agent starts in its own git worktree is a lane, counted at the end: **⎇ feature/login · 3 lanes**. Only lanes from the current run that still exist count. Hover over the line for the branch names, the agent's terminal folder and the lane folders.
+
 ### What cleanup removes
 
 Cleanup is Watchtower's own command, because an agent in auto mode is blocked from `git worktree remove` and `git branch -D`. It removes only what the session created, never a worktree or branch that holds work:
