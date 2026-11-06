@@ -224,3 +224,31 @@ func TestActionsPropose_ContextFlagIsAnInboxItem(t *testing.T) {
 		assert.Equal(t, strconv.Itoa(7), ctxID)
 	})
 }
+
+// A second Reply to the same item while the first waits is refused before
+// anything is written (approving both would post twice); another item is
+// free, and so is the item once its reply is rejected.
+func TestActionsPropose_SecondReplyToAnItemIsRefused(t *testing.T) {
+	database := writeActionsConfig(t)
+	f := seedReplyFixture(t, database)
+	out, err := runPropose(t, replyPressArgs("send_slack_message", f.replyArgs("send_slack_message"))...)
+	require.NoError(t, err, out)
+
+	for _, tool := range tools.InboxReplyTools() {
+		out, err = runPropose(t, replyPressArgs(tool, f.replyArgs(tool))...)
+		require.Error(t, err, out)
+		assert.Contains(t, err.Error(), "a reply to this item is already waiting for approval", tool)
+	}
+	assert.Equal(t, 1, actionRowCount(t, database), "no second row")
+
+	other := []string{"--tool", "add_jira_comment", "--surface", "inbox", "--context", "inbox_item:43",
+		"--args", f.replyArgs("add_jira_comment"), "--json"}
+	out, err = runPropose(t, other...)
+	require.NoError(t, err, out)
+
+	_, err = database.Exec(`UPDATE agent_actions SET status = 'rejected' WHERE context_id = '42'`)
+	require.NoError(t, err)
+	out, err = runPropose(t, replyPressArgs("add_linear_comment", f.replyArgs("add_linear_comment"))...)
+	require.NoError(t, err, out)
+	assert.Equal(t, 3, actionRowCount(t, database))
+}

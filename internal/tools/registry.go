@@ -562,12 +562,22 @@ func (r *Registry) propose(ctx context.Context, name string, args json.RawMessag
 // insertProposal records row. An Inbox button's proposal goes through
 // db.InsertInboxButtonProposal, whose one write transaction refuses a second
 // open proposal for the button and one whose task already exists (AGENT-05);
-// its typed refusals come back wrapped.
+// a Reply to an Inbox item goes through db.InsertInboxReplyProposal, which
+// refuses a second open reply to the same item. Typed refusals come back
+// wrapped.
 func (r *Registry) insertProposal(row db.AgentAction) (int64, error) {
-	if row.ContextType != db.InboxButtonContextType {
+	var (
+		id  int64
+		err error
+	)
+	switch {
+	case row.ContextType == db.InboxButtonContextType:
+		id, err = r.db.InsertInboxButtonProposal(row)
+	case row.ContextType == db.InboxItemContextType && IsInboxReplyTool(row.Tool):
+		id, err = r.db.InsertInboxReplyProposal(row, inboxReplyTools)
+	default:
 		return r.db.InsertAgentAction(row)
 	}
-	id, err := r.db.InsertInboxButtonProposal(row)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", row.Tool, err)
 	}

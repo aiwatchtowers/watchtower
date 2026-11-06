@@ -105,10 +105,6 @@ func proposeInboxAction() (int64, error) {
 	return rc.ActionID, nil
 }
 
-// inboxItemContextType is the context of a Reply from an Inbox row: the
-// inbox_items row the reply answers (`--context inbox_item:<id>`).
-const inboxItemContextType = "inbox_item"
-
 // proposeContextFlags is the context the flags name: --context
 // inbox_item:<positive id> (a row's Reply), or --context-type/--context-id;
 // --context together with either of the other two is refused.
@@ -121,8 +117,8 @@ func proposeContextFlags() (string, string, error) {
 	}
 	typ, rawID, _ := strings.Cut(actionsProposeFlagContext, ":")
 	id, err := strconv.ParseInt(rawID, 10, 64)
-	if typ != inboxItemContextType || err != nil || id <= 0 || strconv.FormatInt(id, 10) != rawID {
-		return "", "", fmt.Errorf("--context %q: want %s:<positive id>", actionsProposeFlagContext, inboxItemContextType)
+	if typ != db.InboxItemContextType || err != nil || id <= 0 || strconv.FormatInt(id, 10) != rawID {
+		return "", "", fmt.Errorf("--context %q: want %s:<positive id>", actionsProposeFlagContext, db.InboxItemContextType)
 	}
 	return typ, rawID, nil
 }
