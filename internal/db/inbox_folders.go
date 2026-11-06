@@ -43,13 +43,25 @@ func (db *DB) InboxFolderTree(ctx context.Context) (revision int64, folders []In
 	if revision, err = inboxFolderRevisionTx(ctx, tx); err != nil {
 		return 0, nil, nil, err
 	}
-	if folders, err = inboxFoldersTx(ctx, tx); err != nil {
-		return 0, nil, nil, err
-	}
-	if routes, err = inboxFolderRoutesTx(ctx, tx); err != nil {
+	if folders, routes, err = InboxFolderTreeTx(ctx, tx); err != nil {
 		return 0, nil, nil, err
 	}
 	return revision, folders, routes, nil
+}
+
+// InboxFolderTreeTx reads the folders (InboxFolderTree's order) and the
+// routes inside tx: a folder write reads the tree it validates against, and
+// the tree it returns, in its own WithInboxFolderRevision transaction.
+func InboxFolderTreeTx(ctx context.Context, tx *sql.Tx) ([]InboxFolder, map[int64]int64, error) {
+	folders, err := inboxFoldersTx(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	routes, err := inboxFolderRoutesTx(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return folders, routes, nil
 }
 
 func inboxFolderRevisionTx(ctx context.Context, tx *sql.Tx) (int64, error) {

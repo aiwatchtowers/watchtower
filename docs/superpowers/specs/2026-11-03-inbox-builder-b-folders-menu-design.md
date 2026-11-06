@@ -66,7 +66,7 @@ A folder row: `id`, `kind` (`root` | `approvals` | `owner`), `parent_id`, `slug`
 
 ### Deleting a folder
 
-One transaction: child folders move to the deleted folder's parent (appended after its siblings, keeping their order), routes pointing at it move to the parent, artifacts with it as explicit folder move to the parent (`folder_id = parent`), then the row goes. Nothing else is deleted *(umbrella, agent's call)*. The CLI reports the counts moved. Root and Needs approval are refused. `automation_outputs.folder_id` also carries `ON DELETE SET NULL` as a safety net (an artifact then follows its route).
+One transaction: child folders move to the deleted folder's parent (appended after its siblings, keeping their order), routes pointing at it move to the parent, artifacts with it as explicit folder move to the parent (`folder_id = parent`), then the row goes. Nothing else is deleted *(umbrella, agent's call)*. The CLI reports the counts moved. A moved child whose title equals, ignoring case, a title among its new siblings is renamed " (2)", " (3)"… (cut to fit 60 characters; the slug stays), so sibling titles stay unique and the delete is never refused; the renames are reported with the counts *(controller default)*. Deleting a hidden folder brings its children that are not hidden themselves back into the menu and the badge (hidden belongs to the deleted folder only). Root and Needs approval are refused. `automation_outputs.folder_id` also carries `ON DELETE SET NULL` as a safety net (an artifact then follows its route).
 
 ### Creating a folder from the editor
 
