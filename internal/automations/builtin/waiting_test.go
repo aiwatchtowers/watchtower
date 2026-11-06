@@ -361,3 +361,30 @@ func TestClipJSON(t *testing.T) {
 		}
 	}
 }
+
+// The fingerprint is stable while nothing shown changes, moves with a new
+// item, and ignores a minute that leaves every age as it reads.
+func TestWaitingFingerprint(t *testing.T) {
+	f := newFixture(t)
+	ctx, now := context.Background(), f.clock.Now()
+	f.insertItem(t, "1000.0001", "mention", now.Add(-2*time.Hour-5*time.Minute))
+	fp := func(at time.Time) string {
+		t.Helper()
+		s, err := WaitingFingerprint(ctx, f.d, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	first := fp(now)
+	if fp(now.Add(20*time.Minute)) != first {
+		t.Error("fingerprint moved within the hour")
+	}
+	if fp(now.Add(time.Hour)) == first {
+		t.Error("fingerprint kept after the age moved")
+	}
+	f.insertItem(t, "1000.0002", "mention", now)
+	if fp(now) == first {
+		t.Error("fingerprint kept after a new item")
+	}
+}

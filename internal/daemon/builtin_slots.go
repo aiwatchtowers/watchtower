@@ -70,26 +70,53 @@ func (d *Daemon) WaitingForMePrimitives() map[string]automations.PrimitiveFunc {
 	return builtin.WaitingPrimitives(d.db, time.Now)
 }
 
-// WaitingForMeGate is Waiting for me's sync gate: due every cycle, so its
-// list follows the detector's pass that just ran. Attention detection off
-// skips it before the gate is asked (its feature, FEAT-01).
-func (d *Daemon) WaitingForMeGate() builtin.Gate { return everyCycle{} }
+// WaitingForMeGate is Waiting for me's sync gate: due when what it would
+// show differs from what its last succeeded run showed — the open items as
+// their rows read (builtin.WaitingFingerprint) with the recipe's hashes, so
+// an edited look runs too. A quiet cycle writes no run. A failed read is
+// due (the run reports it); a daemon start knows no fingerprint, so its
+// first cycle runs. Attention detection off skips the built-in before the
+// gate is asked (its feature, FEAT-01), and a queued Run Now runs without
+// asking it.
+func (d *Daemon) WaitingForMeGate() builtin.Gate { return waitingForMeGate{d: d} }
 
-type everyCycle struct{}
+type waitingForMeGate struct{ d *Daemon }
 
-func (everyCycle) Due(context.Context, builtin.Entry, time.Time) bool { return true }
+func (g waitingForMeGate) Due(ctx context.Context, _ builtin.Entry, now time.Time) bool {
+	d := g.d
+	d.waitingSeen = ""
+	fp, err := builtin.WaitingFingerprint(ctx, d.db, now)
+	if err != nil {
+		d.logger.Printf("waiting-for-me: reading the open items: %v", err)
+		return true
+	}
+	a, err := d.db.GetBuiltinAutomation(waitingForMeID)
+	if err != nil {
+		d.logger.Printf("waiting-for-me: reading its row: %v", err)
+		return true
+	}
+	d.waitingSeen = fp + "/" + a.ContentHash + "/" + a.ConfirmedHash
+	return d.waitingSeen != d.waitingShown
+}
 
 // phaseWaitingForMe is Waiting for me's slot, right after phaseInbox: the
-// built-in rewrites its one living artifact from the open attention items.
-// It has no legacy phase: until it is active its queued Run Now is
-// cancelled (only the slot would take it).
+// built-in rewrites its one living artifact from the open attention items
+// when its gate finds a change. A succeeded slot run records what the gate
+// read as shown; a failed one leaves it, so the next cycle runs again. It
+// has no legacy phase: until it is active its queued Run Now is cancelled
+// (only the slot would take it).
 func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
 	if !d.builtinOn(waitingForMeID) {
 		d.cancelQueuedBuiltinRuns(waitingForMeID, time.Now())
 		return
 	}
 	d.ensureBuiltinsSwept()
-	d.builtins.RunSlot(ctx, builtin.SlotWaitingForMe)
+	d.waitingSeen = ""
+	for _, o := range d.builtins.RunSlot(ctx, builtin.SlotWaitingForMe) {
+		if o.BuiltinID == waitingForMeID && o.RunID != 0 && o.Status == db.RunSucceeded && d.waitingSeen != "" {
+			d.waitingShown = d.waitingSeen
+		}
+	}
 }
 
 // TrackMyThreadsGate is Track my threads' sync gate: tracks and digests on, a

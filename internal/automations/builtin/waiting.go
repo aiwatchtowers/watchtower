@@ -2,6 +2,8 @@ package builtin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -67,6 +69,35 @@ func WaitingPrimitives(d *db.DB, now func() time.Time) map[string]automations.Pr
 			return automations.PrimitiveResult{Status: "done", Fields: map[string]any{"items": items}}, nil
 		},
 	}
+}
+
+// WaitingFingerprint hashes what attention.waiting returns at now, as the
+// row shows it: every item's fields but its exact stamp and hours, with
+// whether its row is past 24 hours instead. Equal fingerprints mean the
+// shipped recipe would write the same artifact, so a quiet cycle can skip
+// the run.
+func WaitingFingerprint(ctx context.Context, d *db.DB, now time.Time) (string, error) {
+	open, err := d.OpenInboxItems(ctx, now, WaitingLimit)
+	if err != nil {
+		return "", err
+	}
+	items, err := waitingItems(d, open, now)
+	if err != nil {
+		return "", err
+	}
+	shown := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		m := it.(map[string]any)
+		shown = append(shown, map[string]any{"id": m["id"], "who": m["who"], "where": m["where"], "text": m["text"],
+			"trigger": m["trigger"], "permalink": m["permalink"], "age": m["age"], "warning": m["age_hours"].(int) >= 24,
+			"count": m["count"], "count_label": m["count_label"]})
+	}
+	data, err := json.Marshal(shown)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // waitingItems is the script's view of open: who and where as the Desktop's

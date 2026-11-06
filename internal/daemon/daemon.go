@@ -195,6 +195,10 @@ type Daemon struct {
 	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
 	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
+	// waitingShown is the fingerprint Waiting for me's last succeeded slot
+	// run showed, waitingSeen the one its gate read this cycle (both ""
+	// until known); phaseWaitingForMe's goroutine only.
+	waitingShown, waitingSeen string
 
 	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
 	// finder's gate reads them on the slot's goroutine and its primitive
