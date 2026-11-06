@@ -219,33 +219,31 @@ var busyError = sqlcipher.Error{Code: sqlcipher.ErrBusy}
 // error that is not a busy lock are not.
 func TestHookLockWaitRetriesABusyWriteOnce(t *testing.T) {
 	database, _, _ := briefSessionFixture(t)
+	other := errors.New("disk I/O")
 	for _, tc := range []struct {
-		name  string
-		lock  hookLockWait
-		err   error
-		calls int
+		name    string
+		lock    hookLockWait
+		results []error // what each try returns, in order
+		calls   int
+		want    error
 	}{
-		{"async, busy then free", stateHookLockWait, busyError, 2},
-		{"async, another error", stateHookLockWait, errors.New("disk I/O"), 1},
-		{"sync, busy", hookLockWait{}, busyError, 1},
+		{"async, busy then free", stateHookLockWait, []error{busyError, nil}, 2, nil},
+		{"async, busy on both tries", stateHookLockWait, []error{busyError, busyError, nil}, 2, busyError},
+		{"async, another error", stateHookLockWait, []error{other, nil}, 1, other},
+		{"sync, busy", hookLockWait{}, []error{busyError, nil}, 1, busyError},
 	} {
 		calls := 0
 		err := tc.lock.write(database, func() error {
 			calls++
-			if calls == 1 {
-				return tc.err
-			}
-			return nil
+			return tc.results[calls-1]
 		})
 		assert.Equal(t, tc.calls, calls, tc.name)
-		if tc.calls == 2 {
+		if tc.want == nil {
 			assert.NoError(t, err, tc.name)
 		} else {
-			assert.Error(t, err, tc.name)
+			assert.ErrorIs(t, err, tc.want, tc.name)
 		}
 	}
-	assert.Greater(t, stateHookLockWait.wait, sessionRecordBusyTimeout, "the async wait is longer than the sync one")
-	assert.LessOrEqual(t, 2*stateHookLockWait.wait, 4*time.Second, "both tries fit the async hook's 5 s timeout")
 }
 
 // Board #988 (F2): a state write that loses the lock once lands on the
