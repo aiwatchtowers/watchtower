@@ -259,6 +259,28 @@ func TestExecutor_PollNeverClaimsBuiltinRuns(t *testing.T) {
 	}
 }
 
+// A built-in whose trigger is not sync (an event built-in such as Needs
+// approval) is not a slot automation: the poll claims and runs its queued
+// run like an owner recipe's, while a sync built-in's stays queued
+// (TestExecutor_PollNeverClaimsBuiltinRuns).
+func TestExecutor_PollClaimsEventBuiltinRuns(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"brief.compose": p})
+	a := f.seedBuiltin(t, builtinRecipeText(`brief.compose({prompt: "P"});`, "", "builtin:brief.compose"), true)
+	if err := f.d.SetBuiltinEnabled(testBuiltinID, true, exStart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`UPDATE automations SET trigger_kind = 'event', trigger_spec = '{"event":"approval"}' WHERE id = ?`,
+		a.ID); err != nil {
+		t.Fatal(err)
+	}
+	id := f.enqueue(t, a, db.TriggerManual)
+	f.step(t, 1)
+	if r := f.run(t, id); r.Status != db.RunSucceeded || p.count() != 1 {
+		t.Errorf("run = %s/%s, primitive calls %d; want succeeded and one", r.Status, r.ErrorKind, p.count())
+	}
+}
+
 func TestAuto06_BuiltinInlineRefusesUnconfirmed(t *testing.T) {
 	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
 	f := builtinFixture(t, map[string]*fakePrimitive{"brief.compose": p})

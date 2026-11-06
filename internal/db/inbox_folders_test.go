@@ -411,3 +411,45 @@ func TestInboxFolders_TreeOrderNestedAndHidden(t *testing.T) {
 	require.NotNil(t, folders[7].ParentID)
 	assert.Equal(t, now, *folders[7].ParentID)
 }
+
+// The built-in indexer's route seed writes a route only when the automation
+// has none, bumping the revision when it writes; a route the owner set is
+// kept; an unknown slug writes nothing.
+func TestSeedInboxFolderRoute_OnlyWhenNoneAndBumpsRevision(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	root, approvals := inboxRootAndApprovals(t, d)
+	a := seedRunAutomation(t, d, "acme-approvals", 1)
+	rev := inboxRevision(t, d)
+
+	seeded, err := d.SeedInboxFolderRoute(ctx, a, "needs-approval")
+	require.NoError(t, err)
+	assert.True(t, seeded)
+	assert.Equal(t, rev+1, inboxRevision(t, d), "a seed that writes bumps the revision")
+
+	seeded, err = d.SeedInboxFolderRoute(ctx, a, "needs-approval")
+	require.NoError(t, err)
+	assert.False(t, seeded, "seeded once")
+	assert.Equal(t, rev+1, inboxRevision(t, d), "a seed that writes nothing leaves the revision")
+
+	// The owner moves it (to the root, an explicit row): the next seed keeps it.
+	_, err = d.Exec(`UPDATE inbox_folder_routes SET folder_id = ? WHERE automation_id = ?`, root, a)
+	require.NoError(t, err)
+	seeded, err = d.SeedInboxFolderRoute(ctx, a, "needs-approval")
+	require.NoError(t, err)
+	assert.False(t, seeded)
+	_, _, routes, err := d.InboxFolderTree(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[int64]int64{a: root}, routes, "the owner's route is kept")
+	assert.NotEqual(t, approvals, routes[a])
+
+	b := seedRunAutomation(t, d, "acme-other", 1)
+	seeded, err = d.SeedInboxFolderRoute(ctx, b, "no-such-folder")
+	require.Error(t, err)
+	assert.False(t, seeded)
+	assert.Contains(t, err.Error(), `no inbox folder "no-such-folder"`)
+	_, _, routes, err = d.InboxFolderTree(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, routes, b)
+	assert.Equal(t, rev+1, inboxRevision(t, d))
+}

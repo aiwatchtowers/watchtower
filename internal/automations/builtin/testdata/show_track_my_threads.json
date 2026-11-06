@@ -21,9 +21,10 @@
     "Starts a track for a new thread, or adds news to one you already follow"
   ],
   "sends": [
-    "Track cards in your Inbox, under Tracks"
+    "Track cards in your Inbox"
   ],
   "result_filter": "tracks",
+  "default_folder": "inbox",
   "parameters": [],
   "feature_ids": [
     "tracks"

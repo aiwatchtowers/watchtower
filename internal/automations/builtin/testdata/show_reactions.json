@@ -20,9 +20,10 @@
     "Prepares what that emoji stands for, for example a reminder, an idea or a ticket; one run handles one reaction"
   ],
   "sends": [
-    "A proposal in your Inbox, under Automations; ideas, reminders and brief notes are saved at once"
+    "A proposal in your Inbox, in Needs approval; ideas, reminders and brief notes are saved at once"
   ],
   "result_filter": "automations",
+  "default_folder": "inbox",
   "parameters": [
     {
       "key": "reaction_command_map",

@@ -931,10 +931,10 @@ const interruptedRunSQL = `status IN ('running','waiting') AND NOT (` + liveDryR
 // one argument is now.
 const staleDryRunSQL = `status IN ('running','waiting') AND trigger = 'dry_run' AND NOT (` + liveDryRunSQL + `)`
 
-// slotAutomationSQL is Automation.RunsAtSlot() over automations a: a
-// built-in, or a Personal recipe with a sync trigger (a custom_tracks watch
-// recipe). The two must agree (TestAutomation_RunsAtSlotMatchesSlotSQL).
-const slotAutomationSQL = `a.origin = 'builtin' OR (a.scope = 'personal' AND a.trigger_kind = 'sync')`
+// slotAutomationSQL is Automation.RunsAtSlot() over automations a: its
+// trigger is sync (a built-in at its slot, or a custom_tracks watch recipe).
+// The two must agree (TestAutomation_RunsAtSlotMatchesSlotSQL).
+const slotAutomationSQL = `a.trigger_kind = 'sync'`
 
 // slotRunSQL matches the runs of a slot automation (RunsAtSlot: they run
 // only at their slot, inline in the daemon's sync cycle).
